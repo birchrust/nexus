@@ -390,13 +390,12 @@ impl<T> Storage<T> for BoxedStorage<T> {
 
     #[inline]
     fn remove(&mut self, key: Self::Key) -> Option<T> {
-        let i = key.as_usize();
-        if i >= self.capacity || !self.is_occupied(i) {
+        if key >= self.capacity || !self.is_occupied(key) {
             return None;
         }
 
-        self.set_vacant(i);
-        let value = unsafe { self.entries_ptr().add(i).read().assume_init() };
+        self.set_vacant(key);
+        let value = unsafe { self.entries_ptr().add(key).read().assume_init() };
 
         unsafe {
             self.free_stack_ptr().add(self.free_len).write(key);
@@ -408,22 +407,20 @@ impl<T> Storage<T> for BoxedStorage<T> {
 
     #[inline]
     fn get(&self, key: Self::Key) -> Option<&T> {
-        let i = key.as_usize();
-        if i >= self.capacity || !self.is_occupied(i) {
+        if key >= self.capacity || !self.is_occupied(key) {
             return None;
         }
 
-        Some(unsafe { (*self.entries_ptr().add(i)).assume_init_ref() })
+        Some(unsafe { (*self.entries_ptr().add(key)).assume_init_ref() })
     }
 
     #[inline]
     fn get_mut(&mut self, key: Self::Key) -> Option<&mut T> {
-        let i = key.as_usize();
-        if i >= self.capacity || !self.is_occupied(i) {
+        if key >= self.capacity || !self.is_occupied(key) {
             return None;
         }
 
-        Some(unsafe { (*self.entries_ptr().add(i)).assume_init_mut() })
+        Some(unsafe { (*self.entries_ptr().add(key)).assume_init_mut() })
     }
 
     #[inline]
@@ -433,20 +430,18 @@ impl<T> Storage<T> for BoxedStorage<T> {
 
     #[inline]
     unsafe fn get_unchecked(&self, key: Self::Key) -> &T {
-        unsafe { (*self.entries_ptr().add(key.as_usize())).assume_init_ref() }
+        unsafe { (*self.entries_ptr().add(key)).assume_init_ref() }
     }
 
     #[inline]
     unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T {
-        unsafe { (*self.entries_ptr().add(key.as_usize())).assume_init_mut() }
+        unsafe { (*self.entries_ptr().add(key)).assume_init_mut() }
     }
 
     #[inline]
     unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T {
-        let i = key.as_usize();
-
-        self.set_vacant(i);
-        let value = unsafe { self.entries_ptr().add(i).read().assume_init() };
+        self.set_vacant(key);
+        let value = unsafe { self.entries_ptr().add(key).read().assume_init() };
 
         unsafe {
             self.free_stack_ptr().add(self.free_len).write(key);
@@ -466,12 +461,11 @@ impl<T> BoundedStorage<T> for BoxedStorage<T> {
 
         self.free_len -= 1;
         let key = unsafe { *self.free_stack_ptr().add(self.free_len) };
-        let i = key.as_usize();
 
         unsafe {
-            self.entries_ptr().add(i).write(MaybeUninit::new(value));
+            self.entries_ptr().add(key).write(MaybeUninit::new(value));
         }
-        self.set_occupied(i);
+        self.set_occupied(key);
 
         Ok(key)
     }
@@ -868,14 +862,6 @@ mod tests {
     // Implement Key trait for OrderId
     impl crate::Key for OrderId {
         const NONE: Self = OrderId(u64::MAX);
-
-        fn from_usize(val: usize) -> Self {
-            OrderId(val as u64)
-        }
-
-        fn as_usize(&self) -> usize {
-            self.0 as usize
-        }
 
         fn is_none(&self) -> bool {
             self.0 == u64::MAX

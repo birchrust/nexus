@@ -1,11 +1,11 @@
 //! Key trait for storage indices.
 //!
 //! The [`Key`] trait abstracts over index types used in storage.
-//! It provides a sentinel value (`NONE`) and conversion to/from `usize`.
+//! It provides a sentinel value (`NONE`).
 
 /// Trait for key/index types used in storage.
 ///
-/// Provides a sentinel value (`NONE`) and conversion to/from `usize`.
+/// Provides a sentinel value (`NONE`).
 /// Implemented for common integer types and can be implemented for
 /// custom key types (e.g., strongly-typed order IDs).
 ///
@@ -32,14 +32,6 @@
 /// impl Key for OrderId {
 ///     const NONE: Self = OrderId(u64::MAX);
 ///
-///     fn from_usize(val: usize) -> Self {
-///         OrderId(val as u64)
-///     }
-///
-///     fn as_usize(&self) -> usize {
-///         self.0 as usize
-///     }
-///
 ///     fn is_none(&self) -> bool {
 ///         self.0 == u64::MAX
 ///     }
@@ -51,16 +43,6 @@ pub trait Key: Copy + Eq {
     /// Used internally to represent empty links in data structures.
     /// For integer types, this is typically `MAX` (e.g., `u32::MAX`).
     const NONE: Self;
-
-    /// Creates a key from a `usize` value.
-    ///
-    /// Used when storage assigns sequential indices.
-    fn from_usize(val: usize) -> Self;
-
-    /// Returns the key as a `usize`.
-    ///
-    /// Used for indexing into arrays and bounds checking.
-    fn as_usize(&self) -> usize;
 
     /// Returns `true` if this is the sentinel value.
     #[inline]
@@ -84,16 +66,6 @@ macro_rules! impl_key_for_uint {
         $(
             impl Key for $ty {
                 const NONE: Self = <$ty>::MAX;
-
-                #[inline]
-                fn from_usize(val: usize) -> Self {
-                    val as $ty
-                }
-
-                #[inline]
-                fn as_usize(&self) -> usize {
-                    *self as usize
-                }
             }
         )+
     };
@@ -104,19 +76,6 @@ impl_key_for_uint!(u8, u16, u32, u64, usize);
 #[cfg(feature = "nexus-slab")]
 impl Key for nexus_slab::Key {
     const NONE: Self = unsafe { nexus_slab::Key::from_raw(u64::MAX) };
-
-    #[inline]
-    fn from_usize(val: usize) -> Self {
-        // Safety: Used for internal position tracking (heap positions, not storage lookups).
-        // Creates key encoding val in low bits. Positions are bounded by heap size << u32::MAX.
-        // Storage lookup keys come from Slab::insert/try_insert, not from this method.
-        unsafe { nexus_slab::Key::from_raw(val as u64) }
-    }
-
-    #[inline]
-    fn as_usize(&self) -> usize {
-        self.into_raw() as usize
-    }
 
     #[inline]
     fn is_none(&self) -> bool {
@@ -133,18 +92,9 @@ mod tests {
         let key: u32 = 42;
         assert!(!key.is_none());
         assert!(key.is_some());
-        assert_eq!(key.as_usize(), 42);
 
         assert!(u32::NONE.is_none());
         assert!(!u32::NONE.is_some());
-    }
-
-    #[test]
-    fn from_usize_roundtrip() {
-        for i in [0usize, 1, 100, 1000, u16::MAX as usize] {
-            let key = u32::from_usize(i);
-            assert_eq!(key.as_usize(), i);
-        }
     }
 
     #[test]
