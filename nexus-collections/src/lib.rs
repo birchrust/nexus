@@ -158,11 +158,11 @@ pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, V
 pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
 
 #[cfg(feature = "nexus-slab")]
-pub use heap::NexusHeapStorage;
+pub use heap::{BoundedNexusHeapStorage, UnboundedNexusHeapStorage};
 #[cfg(feature = "nexus-slab")]
-pub use list::NexusListStorage;
+pub use list::{BoundedNexusListStorage, UnboundedNexusListStorage};
 #[cfg(feature = "nexus-slab")]
-pub use skiplist::NexusSkipStorage;
+pub use skiplist::{BoundedNexusSkipStorage, UnboundedNexusSkipStorage};
 
 #[cfg(feature = "slab")]
 pub use heap::SlabHeapStorage;

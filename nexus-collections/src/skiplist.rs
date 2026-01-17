@@ -1240,10 +1240,15 @@ pub type BoxedSkipStorage<K, V, Idx = u32, const MAX_LEVEL: usize = 16> =
 pub type SlabSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
     slab::Slab<SkipNode<K, V, usize, MAX_LEVEL>>;
 
+/// Type alias for bounded skip list storage backed by `nexus_slab::FixedSlab`.
 #[cfg(feature = "nexus-slab")]
-/// Nexus slab storage for skip list nodes (bounded).
-pub type NexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
-    nexus_slab::Slab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
+pub type BoundedNexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
+    nexus_slab::FixedSlab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
+
+/// Type alias for unbounded skip list storage backed by `nexus_slab::DynamicSlab`.
+#[cfg(feature = "nexus-slab")]
+pub type UnboundedNexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
+    nexus_slab::DynamicSlab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
 
 #[cfg(test)]
 mod tests {

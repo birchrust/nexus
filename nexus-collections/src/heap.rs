@@ -69,9 +69,13 @@ pub type BoxedHeapStorage<T, K = u32> = BoxedStorage<HeapNode<T, K>, K>;
 #[cfg(feature = "slab")]
 pub type SlabHeapStorage<T> = slab::Slab<HeapNode<T, usize>>;
 
-/// Type alias for bounded heap storage backed by `nexus_slab::Slab`.
+/// Type alias for bounded heap storage backed by `nexus_slab::FixedSlab`.
 #[cfg(feature = "nexus-slab")]
-pub type NexusHeapStorage<T> = nexus_slab::Slab<HeapNode<T, nexus_slab::Key>>;
+pub type BoundedNexusHeapStorage<T> = nexus_slab::FixedSlab<HeapNode<T, nexus_slab::Key>>;
+
+/// Type alias for unbounded heap storage backed by `nexus_slab::DynamicSlab`.
+#[cfg(feature = "nexus-slab")]
+pub type UnboundedNexusHeapStorage<T> = nexus_slab::DynamicSlab<HeapNode<T, nexus_slab::Key>>;
 
 /// A node in the heap. Wraps user data with heap position tracking.
 #[derive(Debug)]
@@ -2299,45 +2303,47 @@ mod bench_nexus_slab_storage {
 
     #[test]
     #[ignore]
-    fn bench_heap_try_push() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> =
+    fn bench_heap_push() {
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
+                .expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
             Heap::with_capacity(ITERATIONS + WARMUP);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
-            let _ = heap.try_push(&mut storage, i as u64);
+            let _ = heap.push(&mut storage, i as u64);
             let _ = heap.pop(&mut storage);
         }
 
         for i in 0..ITERATIONS {
             let start = rdtscp();
-            let _ = heap.try_push(&mut storage, i as u64);
+            let _ = heap.push(&mut storage, i as u64);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
             let _ = heap.pop(&mut storage);
         }
 
-        print_histogram("try_push", &hist);
+        print_histogram("push", &hist);
     }
 
     #[test]
     #[ignore]
     fn bench_heap_pop() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> =
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
+                .expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
             Heap::with_capacity(ITERATIONS + WARMUP);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let _ = heap.try_push(&mut storage, 1);
+            let _ = heap.push(&mut storage, 1);
             let _ = heap.pop(&mut storage);
         }
 
         for i in 0..ITERATIONS {
-            let _ = heap.try_push(&mut storage, i as u64);
+            let _ = heap.push(&mut storage, i as u64);
             let start = rdtscp();
             let _ = heap.pop(&mut storage);
             let elapsed = rdtscp() - start;
@@ -2350,13 +2356,14 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_peek() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> = Heap::with_capacity(1024);
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+            Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..1000 {
-            heap.try_push(&mut storage, i as u64).unwrap();
+            heap.push(&mut storage, i as u64);
         }
 
         for _ in 0..WARMUP {
@@ -2376,24 +2383,25 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_remove() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> = Heap::with_capacity(16);
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+            Heap::with_capacity(16);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let a = heap.try_push(&mut storage, 1).unwrap();
-            let b = heap.try_push(&mut storage, 2).unwrap();
-            let c = heap.try_push(&mut storage, 3).unwrap();
+            let a = heap.push(&mut storage, 1);
+            let b = heap.push(&mut storage, 2);
+            let c = heap.push(&mut storage, 3);
             let _ = heap.remove(&mut storage, b);
             let _ = heap.remove(&mut storage, a);
             let _ = heap.remove(&mut storage, c);
         }
 
         for _ in 0..ITERATIONS {
-            let a = heap.try_push(&mut storage, 1).unwrap();
-            let b = heap.try_push(&mut storage, 2).unwrap();
-            let c = heap.try_push(&mut storage, 3).unwrap();
+            let a = heap.push(&mut storage, 1);
+            let b = heap.push(&mut storage, 2);
+            let c = heap.push(&mut storage, 3);
 
             let start = rdtscp();
             let _ = heap.remove(&mut storage, b);
@@ -2410,14 +2418,15 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_decrease_key() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> = Heap::with_capacity(1024);
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+            Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
         for i in 0..1000 {
-            keys.push(heap.try_push(&mut storage, (i * 2) as u64).unwrap());
+            keys.push(heap.push(&mut storage, (i * 2) as u64));
         }
 
         for _ in 0..WARMUP {
@@ -2448,14 +2457,15 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_increase_key() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> = Heap::with_capacity(1024);
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+            Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
         for i in 0..1000 {
-            keys.push(heap.try_push(&mut storage, (i * 2) as u64).unwrap());
+            keys.push(heap.push(&mut storage, (i * 2) as u64));
         }
 
         for _ in 0..WARMUP {
@@ -2486,9 +2496,10 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_timer_workflow() {
-        let mut storage: NexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
-        let mut heap: Heap<u64, NexusHeapStorage<u64>, nexus_slab::Key> = Heap::with_capacity(1024);
+        let mut storage: UnboundedNexusHeapStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+            Heap::with_capacity(1024);
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_fire = Histogram::<u64>::new(3).unwrap();
@@ -2496,7 +2507,7 @@ mod bench_nexus_slab_storage {
 
         for i in 0..WARMUP {
             let deadline = (i % 100) as u64;
-            let key = heap.try_push(&mut storage, deadline).unwrap();
+            let key = heap.push(&mut storage, deadline);
             if i % 3 == 0 {
                 heap.remove(&mut storage, key);
             } else {
@@ -2508,7 +2519,7 @@ mod bench_nexus_slab_storage {
             let deadline = (i % 100) as u64;
 
             let start = rdtscp();
-            let key = heap.try_push(&mut storage, deadline).unwrap();
+            let key = heap.push(&mut storage, deadline);
             hist_insert.record(rdtscp() - start).unwrap();
 
             if i % 3 == 0 {
@@ -2522,7 +2533,7 @@ mod bench_nexus_slab_storage {
             }
         }
 
-        println!("\n=== Timer Workflow (nexus_slab::Slab) ===");
+        println!("\n=== Timer Workflow (nexus_slab::DynamicSlab) ===");
         print_histogram("insert (schedule)", &hist_insert);
         print_histogram("fire (pop)", &hist_fire);
         print_histogram("cancel (remove)", &hist_cancel);
@@ -2531,12 +2542,12 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_all() {
-        println!("\n=== Heap Benchmarks (nexus_slab::Slab) ===");
+        println!("\n=== Heap Benchmarks (nexus_slab::DynamicSlab) ===");
         println!(
             "Run with: cargo test --release --features nexus-slab bench_nexus_slab_storage::bench_heap_all -- --ignored --nocapture\n"
         );
 
-        bench_heap_try_push();
+        bench_heap_push();
         bench_heap_pop();
         bench_heap_peek();
         bench_heap_remove();

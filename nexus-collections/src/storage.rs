@@ -618,59 +618,78 @@ impl<T> UnboundedStorage<T> for slab::Slab<T> {
 }
 
 // =============================================================================
-// nexus_slab::Slab implementation (BoundedStorage)
+// nexus_slab implementation
 // =============================================================================
 
 #[cfg(feature = "nexus-slab")]
-impl<T> Storage<T> for nexus_slab::Slab<T> {
-    type Key = nexus_slab::Key;
+use nexus_slab::{DynamicSlab, FixedSlab, Key as NexusKey};
+
+// Base Storage impl - works for both modes via const generic
+#[cfg(feature = "nexus-slab")]
+impl<T, const MODE: bool> Storage<T> for nexus_slab::Slab<T, MODE> {
+    type Key = NexusKey;
 
     #[inline]
     fn remove(&mut self, key: Self::Key) -> Option<T> {
-        self.remove(key)
+        if self.contains(key) {
+            Some(nexus_slab::Slab::remove(self, key))
+        } else {
+            None
+        }
     }
 
     #[inline]
     fn get(&self, key: Self::Key) -> Option<&T> {
-        self.get(key)
+        nexus_slab::Slab::get(self, key)
     }
 
     #[inline]
     fn get_mut(&mut self, key: Self::Key) -> Option<&mut T> {
-        self.get_mut(key)
+        nexus_slab::Slab::get_mut(self, key)
     }
 
     #[inline]
     fn len(&self) -> usize {
-        self.len()
+        nexus_slab::Slab::len(self)
     }
 
     #[inline]
     unsafe fn get_unchecked(&self, key: Self::Key) -> &T {
-        unsafe { self.get_unchecked(key) }
+        unsafe { nexus_slab::Slab::get_unchecked(self, key) }
     }
 
     #[inline]
     unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T {
-        unsafe { self.get_unchecked_mut(key) }
+        unsafe { nexus_slab::Slab::get_unchecked_mut(self, key) }
     }
 
     #[inline]
     unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T {
-        unsafe { self.remove_unchecked(key) }
+        // 0.5.0 remove() panics on invalid key, so this is safe if caller upholds invariant
+        nexus_slab::Slab::remove(self, key)
     }
 }
 
+// FixedSlab: bounded, fallible insert
 #[cfg(feature = "nexus-slab")]
-impl<T> BoundedStorage<T> for nexus_slab::Slab<T> {
+impl<T> BoundedStorage<T> for FixedSlab<T> {
     #[inline]
     fn try_insert(&mut self, value: T) -> Result<Self::Key, Full<T>> {
-        self.insert(value).map_err(|e| Full(e.into_inner()))
+        self.try_insert(value).map_err(|e| Full(e.0))
     }
 
     #[inline]
     fn capacity(&self) -> usize {
-        self.capacity()
+        nexus_slab::Slab::capacity(self)
+    }
+}
+
+// DynamicSlab: unbounded, infallible insert
+#[cfg(feature = "nexus-slab")]
+impl<T> UnboundedStorage<T> for DynamicSlab<T> {
+    #[inline]
+    fn insert(&mut self, value: T) -> Self::Key {
+        nexus_slab::Slab::insert(self, value)
     }
 }
 
@@ -993,9 +1012,9 @@ mod tests {
 
         #[test]
         fn insert_get_remove() {
-            let mut storage: nexus_slab::Slab<u64> = nexus_slab::Slab::with_capacity(16).unwrap();
+            let mut storage: nexus_slab::DynamicSlab<u64> = nexus_slab::Slab::with_capacity(16).unwrap();
 
-            let key = BoundedStorage::try_insert(&mut storage, 42).unwrap();
+            let key = UnboundedStorage::insert(&mut storage, 42);
             assert_eq!(Storage::get(&storage, key), Some(&42));
 
             let removed = Storage::remove(&mut storage, key);

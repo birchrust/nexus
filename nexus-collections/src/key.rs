@@ -103,21 +103,24 @@ impl_key_for_uint!(u8, u16, u32, u64, usize);
 
 #[cfg(feature = "nexus-slab")]
 impl Key for nexus_slab::Key {
-    const NONE: Self = unsafe { nexus_slab::Key::from_raw(u32::MAX) };
+    const NONE: Self = unsafe { nexus_slab::Key::from_raw(u64::MAX) };
 
     #[inline]
     fn from_usize(val: usize) -> Self {
-        unsafe { nexus_slab::Key::from_raw(val as u32) }
+        // Safety: Used for internal position tracking (heap positions, not storage lookups).
+        // Creates key encoding val in low bits. Positions are bounded by heap size << u32::MAX.
+        // Storage lookup keys come from Slab::insert/try_insert, not from this method.
+        unsafe { nexus_slab::Key::from_raw(val as u64) }
     }
 
     #[inline]
     fn as_usize(&self) -> usize {
-        self.index() as usize
+        self.into_raw() as usize
     }
 
     #[inline]
     fn is_none(&self) -> bool {
-        self.index() == u32::MAX
+        self.into_raw() == u64::MAX
     }
 }
 

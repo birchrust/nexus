@@ -120,9 +120,13 @@ pub type BoxedListStorage<T, K = u32> = BoxedStorage<ListNode<T, K>, K>;
 #[cfg(feature = "slab")]
 pub type SlabListStorage<T> = slab::Slab<ListNode<T, usize>>;
 
-/// Type alias for bounded list storage backed by `nexus_slab::Slab`.
+/// Type alias for bounded list storage backed by `nexus_slab::FixedSlab`.
 #[cfg(feature = "nexus-slab")]
-pub type NexusListStorage<T> = nexus_slab::Slab<ListNode<T, nexus_slab::Key>>;
+pub type BoundedNexusListStorage<T> = nexus_slab::FixedSlab<ListNode<T, nexus_slab::Key>>;
+
+/// Type alias for unbounded list storage backed by `nexus_slab::DynamicSlab`.
+#[cfg(feature = "nexus-slab")]
+pub type UnboundedNexusListStorage<T> = nexus_slab::DynamicSlab<ListNode<T, nexus_slab::Key>>;
 
 /// A node in the linked list.
 ///
@@ -2803,67 +2807,67 @@ mod bench_nexus_slab_storage {
 
     #[test]
     #[ignore]
-    fn bench_list_try_push_back() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+    fn bench_list_push_back() {
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
-            let _ = list.try_push_back(&mut storage, i as u64);
+            let _ = list.push_back(&mut storage, i as u64);
             let _ = list.pop_back(&mut storage);
         }
 
         for i in 0..ITERATIONS {
             let start = rdtscp();
-            let _ = list.try_push_back(&mut storage, i as u64);
+            let _ = list.push_back(&mut storage, i as u64);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
             let _ = list.pop_back(&mut storage);
         }
 
-        print_histogram("try_push_back", &hist);
+        print_histogram("push_back", &hist);
     }
 
     #[test]
     #[ignore]
-    fn bench_list_try_push_front() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+    fn bench_list_push_front() {
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
-            let _ = list.try_push_front(&mut storage, i as u64);
+            let _ = list.push_front(&mut storage, i as u64);
             let _ = list.pop_front(&mut storage);
         }
 
         for i in 0..ITERATIONS {
             let start = rdtscp();
-            let _ = list.try_push_front(&mut storage, i as u64);
+            let _ = list.push_front(&mut storage, i as u64);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
             let _ = list.pop_front(&mut storage);
         }
 
-        print_histogram("try_push_front", &hist);
+        print_histogram("push_front", &hist);
     }
 
     #[test]
     #[ignore]
     fn bench_list_pop_front() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let _ = list.try_push_back(&mut storage, 1);
+            let _ = list.push_back(&mut storage, 1);
             let _ = list.pop_front(&mut storage);
         }
 
         for i in 0..ITERATIONS {
-            let _ = list.try_push_back(&mut storage, i as u64);
+            let _ = list.push_back(&mut storage, i as u64);
             let start = rdtscp();
             let _ = list.pop_front(&mut storage);
             let elapsed = rdtscp() - start;
@@ -2876,18 +2880,18 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_pop_back() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let _ = list.try_push_back(&mut storage, 1);
+            let _ = list.push_back(&mut storage, 1);
             let _ = list.pop_back(&mut storage);
         }
 
         for i in 0..ITERATIONS {
-            let _ = list.try_push_back(&mut storage, i as u64);
+            let _ = list.push_back(&mut storage, i as u64);
             let start = rdtscp();
             let _ = list.pop_back(&mut storage);
             let elapsed = rdtscp() - start;
@@ -2900,14 +2904,14 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_get() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
         for i in 0..1000 {
-            keys.push(list.try_push_back(&mut storage, i as u64).unwrap());
+            keys.push(list.push_back(&mut storage, i as u64));
         }
 
         let mid_key = keys[500];
@@ -2928,24 +2932,24 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_remove_middle() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let a = list.try_push_back(&mut storage, 1).unwrap();
-            let b = list.try_push_back(&mut storage, 2).unwrap();
-            let c = list.try_push_back(&mut storage, 3).unwrap();
+            let a = list.push_back(&mut storage, 1);
+            let b = list.push_back(&mut storage, 2);
+            let c = list.push_back(&mut storage, 3);
             let _ = list.remove(&mut storage, b);
             let _ = list.remove(&mut storage, a);
             let _ = list.remove(&mut storage, c);
         }
 
         for _ in 0..ITERATIONS {
-            let a = list.try_push_back(&mut storage, 1).unwrap();
-            let b = list.try_push_back(&mut storage, 2).unwrap();
-            let c = list.try_push_back(&mut storage, 3).unwrap();
+            let a = list.push_back(&mut storage, 1);
+            let b = list.push_back(&mut storage, 2);
+            let c = list.push_back(&mut storage, 3);
 
             let start = rdtscp();
             let _ = list.remove(&mut storage, b);
@@ -2962,19 +2966,19 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_unlink() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let key = list.try_push_back(&mut storage, 1).unwrap();
+            let key = list.push_back(&mut storage, 1);
             list.unlink(&mut storage, key);
             storage.remove(key);
         }
 
         for _ in 0..ITERATIONS {
-            let key = list.try_push_back(&mut storage, 1).unwrap();
+            let key = list.push_back(&mut storage, 1);
 
             let start = rdtscp();
             list.unlink(&mut storage, key);
@@ -2990,20 +2994,20 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_link_back() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
-            let key = list.try_push_back(&mut storage, 1).unwrap();
+            let key = list.push_back(&mut storage, 1);
             list.unlink(&mut storage, key);
             list.link_back(&mut storage, key);
             list.remove(&mut storage, key);
         }
 
         for _ in 0..ITERATIONS {
-            let key = list.try_push_back(&mut storage, 1).unwrap();
+            let key = list.push_back(&mut storage, 1);
             list.unlink(&mut storage, key);
 
             let start = rdtscp();
@@ -3020,14 +3024,14 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_move_to_back() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
-        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(100);
         for i in 0..100 {
-            keys.push(list.try_push_back(&mut storage, i as u64).unwrap());
+            keys.push(list.push_back(&mut storage, i as u64));
         }
 
         for _ in 0..WARMUP {
@@ -3048,17 +3052,17 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_order_queue_workflow() {
-        let mut storage: NexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(32).expect("failed to allocate");
-        let mut queue_a: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
-        let mut queue_b: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: UnboundedNexusListStorage<u64> =
+            nexus_slab::DynamicSlab::with_capacity(32).expect("failed to allocate");
+        let mut queue_a: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut queue_b: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_move = Histogram::<u64>::new(3).unwrap();
         let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
-            let key = queue_a.try_push_back(&mut storage, i as u64).unwrap();
+            let key = queue_a.push_back(&mut storage, i as u64);
             queue_a.unlink(&mut storage, key);
             queue_b.link_back(&mut storage, key);
             queue_b.remove(&mut storage, key);
@@ -3066,7 +3070,7 @@ mod bench_nexus_slab_storage {
 
         for i in 0..ITERATIONS {
             let start = rdtscp();
-            let key = queue_a.try_push_back(&mut storage, i as u64).unwrap();
+            let key = queue_a.push_back(&mut storage, i as u64);
             hist_insert.record(rdtscp() - start).unwrap();
 
             let start = rdtscp();
@@ -3079,7 +3083,7 @@ mod bench_nexus_slab_storage {
             hist_cancel.record(rdtscp() - start).unwrap();
         }
 
-        println!("\n=== Order Queue Workflow (nexus_slab::Slab) ===");
+        println!("\n=== Order Queue Workflow (nexus_slab::DynamicSlab) ===");
         print_histogram("insert (new order)", &hist_insert);
         print_histogram("move (price amend)", &hist_move);
         print_histogram("cancel", &hist_cancel);
@@ -3088,13 +3092,13 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_all() {
-        println!("\n=== List Benchmarks (nexus_slab::Slab) ===");
+        println!("\n=== List Benchmarks (nexus_slab::DynamicSlab) ===");
         println!(
             "Run with: cargo test --release --features nexus-slab bench_nexus_slab_storage::bench_list_all -- --ignored --nocapture\n"
         );
 
-        bench_list_try_push_back();
-        bench_list_try_push_front();
+        bench_list_push_back();
+        bench_list_push_front();
         bench_list_pop_front();
         bench_list_pop_back();
         bench_list_get();
