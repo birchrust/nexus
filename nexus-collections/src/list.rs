@@ -111,7 +111,9 @@
 
 use std::marker::PhantomData;
 
-use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
+use crate::{
+    BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage, storage::KeyedStorage,
+};
 
 /// Type alias for bounded list storage backed by a boxed allocation.
 pub type BoxedListStorage<T> = BoxedStorage<ListNode<T, usize>>;
@@ -952,6 +954,141 @@ where
         let key = storage.insert(ListNode::new(value));
         self.link_before(storage, before, key);
         key
+    }
+}
+
+// =============================================================================
+// Keyed storage impl - caller-provided keys
+// =============================================================================
+
+impl<T, S, K: Key> List<T, S, K>
+where
+    S: KeyedStorage<ListNode<T, K>, Key = K>,
+{
+    /// Pushes a value to the back of the list with a caller-provided key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` already exists in storage.
+    #[inline]
+    pub fn push_back_with_key(&mut self, storage: &mut S, key: K, value: T) {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .ok()
+            .expect("key already exists in storage");
+        self.link_back(storage, key);
+    }
+
+    /// Pushes a value to the back of the list with a caller-provided key.
+    ///
+    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
+    #[inline]
+    pub fn try_push_back_with_key(&mut self, storage: &mut S, key: K, value: T) -> Result<(), T> {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .map_err(|node| node.data)?;
+        self.link_back(storage, key);
+        Ok(())
+    }
+
+    /// Pushes a value to the front of the list with a caller-provided key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` already exists in storage.
+    #[inline]
+    pub fn push_front_with_key(&mut self, storage: &mut S, key: K, value: T) {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .ok()
+            .expect("key already exists in storage");
+        self.link_front(storage, key);
+    }
+
+    /// Pushes a value to the front of the list with a caller-provided key.
+    ///
+    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
+    #[inline]
+    pub fn try_push_front_with_key(&mut self, storage: &mut S, key: K, value: T) -> Result<(), T> {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .map_err(|node| node.data)?;
+        self.link_front(storage, key);
+        Ok(())
+    }
+
+    /// Inserts a value after an existing node with a caller-provided key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` already exists in storage.
+    /// Panics if `after` is not valid in storage (debug builds only).
+    #[inline]
+    pub fn insert_after_with_key(&mut self, storage: &mut S, after: K, key: K, value: T) {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .ok()
+            .expect("key already exists in storage");
+        self.link_after(storage, after, key);
+    }
+
+    /// Inserts a value after an existing node with a caller-provided key.
+    ///
+    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `after` is not valid in storage (debug builds only).
+    #[inline]
+    pub fn try_insert_after_with_key(
+        &mut self,
+        storage: &mut S,
+        after: K,
+        key: K,
+        value: T,
+    ) -> Result<(), T> {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .map_err(|node| node.data)?;
+        self.link_after(storage, after, key);
+        Ok(())
+    }
+
+    /// Inserts a value before an existing node with a caller-provided key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` already exists in storage.
+    /// Panics if `before` is not valid in storage (debug builds only).
+    #[inline]
+    pub fn insert_before_with_key(&mut self, storage: &mut S, before: K, key: K, value: T) {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .ok()
+            .expect("key already exists in storage");
+        self.link_before(storage, before, key);
+    }
+
+    /// Inserts a value before an existing node with a caller-provided key.
+    ///
+    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `before` is not valid in storage (debug builds only).
+    #[inline]
+    pub fn try_insert_before_with_key(
+        &mut self,
+        storage: &mut S,
+        before: K,
+        key: K,
+        value: T,
+    ) -> Result<(), T> {
+        storage
+            .try_insert(key, ListNode::new(value))
+            .map_err(|node| node.data)?;
+        self.link_before(storage, before, key);
+        Ok(())
     }
 }
 
@@ -3119,7 +3256,6 @@ mod bench_nexus_slab_storage {
 #[cfg(test)]
 mod bench_hashmap_storage {
     use super::*;
-    use crate::Keyed;
     use hdrhistogram::Histogram;
     use std::collections::HashMap;
 
@@ -3128,21 +3264,6 @@ mod bench_hashmap_storage {
     #[derive(Clone)]
     struct Order {
         id: u64,
-    }
-
-    impl Keyed for Order {
-        type Key = u64;
-        fn key(&self) -> u64 {
-            self.id
-        }
-    }
-
-    // Implement Keyed for ListNode<Order> so HashMap storage works
-    impl Keyed for ListNode<Order, u64> {
-        type Key = u64;
-        fn key(&self) -> u64 {
-            self.data.id
-        }
     }
 
     type HashMapListStorage = HashMap<u64, ListNode<Order, u64>>;
@@ -3185,7 +3306,7 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let _ = list.push_back(&mut storage, order);
+            let _ = list.push_back_with_key(&mut storage, order.id, order);
             let _ = list.pop_back(&mut storage);
         }
 
@@ -3194,7 +3315,7 @@ mod bench_hashmap_storage {
             id_counter += 1;
 
             let start = rdtscp();
-            let _ = list.push_back(&mut storage, order);
+            let _ = list.push_back_with_key(&mut storage, order.id, order);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
@@ -3215,7 +3336,7 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let _ = list.push_front(&mut storage, order);
+            let _ = list.push_front_with_key(&mut storage, order.id, order);
             let _ = list.pop_front(&mut storage);
         }
 
@@ -3224,7 +3345,7 @@ mod bench_hashmap_storage {
             id_counter += 1;
 
             let start = rdtscp();
-            let _ = list.push_front(&mut storage, order);
+            let _ = list.push_front_with_key(&mut storage, order.id, order);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
@@ -3245,14 +3366,14 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let _ = list.push_back(&mut storage, order);
+            let _ = list.push_back_with_key(&mut storage, order.id, order);
             let _ = list.pop_front(&mut storage);
         }
 
         for _ in 0..ITERATIONS {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let _ = list.push_back(&mut storage, order);
+            let _ = list.push_back_with_key(&mut storage, order.id, order);
 
             let start = rdtscp();
             let _ = list.pop_front(&mut storage);
@@ -3274,14 +3395,14 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let _ = list.push_back(&mut storage, order);
+            let _ = list.push_back_with_key(&mut storage, order.id, order);
             let _ = list.pop_back(&mut storage);
         }
 
         for _ in 0..ITERATIONS {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let _ = list.push_back(&mut storage, order);
+            let _ = list.push_back_with_key(&mut storage, order.id, order);
 
             let start = rdtscp();
             let _ = list.pop_back(&mut storage);
@@ -3302,7 +3423,8 @@ mod bench_hashmap_storage {
         let mut keys = Vec::with_capacity(1000);
         for i in 0..1000u64 {
             let order = Order { id: i };
-            keys.push(list.push_back(&mut storage, order));
+            keys.push(order.id);
+            list.push_back_with_key(&mut storage, order.id, order);
         }
 
         let mid_key = keys[500];
@@ -3329,11 +3451,14 @@ mod bench_hashmap_storage {
         let mut id_counter = 0u64;
 
         for _ in 0..WARMUP {
-            let a = list.push_back(&mut storage, Order { id: id_counter });
+            let a = id_counter;
+            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
             id_counter += 1;
-            let b = list.push_back(&mut storage, Order { id: id_counter });
+            let b = id_counter;
+            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
             id_counter += 1;
-            let c = list.push_back(&mut storage, Order { id: id_counter });
+            let c = id_counter;
+            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
             id_counter += 1;
             let _ = list.remove(&mut storage, b);
             let _ = list.remove(&mut storage, a);
@@ -3341,11 +3466,14 @@ mod bench_hashmap_storage {
         }
 
         for _ in 0..ITERATIONS {
-            let a = list.push_back(&mut storage, Order { id: id_counter });
+            let a = id_counter;
+            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
             id_counter += 1;
-            let b = list.push_back(&mut storage, Order { id: id_counter });
+            let b = id_counter;
+            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
             id_counter += 1;
-            let c = list.push_back(&mut storage, Order { id: id_counter });
+            let c = id_counter;
+            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
             id_counter += 1;
 
             let start = rdtscp();
@@ -3371,7 +3499,8 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let key = list.push_back(&mut storage, order);
+            let key = order.id;
+            list.push_back_with_key(&mut storage, order.id, order);
             list.unlink(&mut storage, key);
             storage.remove(&key);
         }
@@ -3379,7 +3508,8 @@ mod bench_hashmap_storage {
         for _ in 0..ITERATIONS {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let key = list.push_back(&mut storage, order);
+            let key = order.id;
+            list.push_back_with_key(&mut storage, order.id, order);
 
             let start = rdtscp();
             list.unlink(&mut storage, key);
@@ -3403,7 +3533,8 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let key = list.push_back(&mut storage, order);
+            let key = order.id;
+            list.push_back_with_key(&mut storage, order.id, order);
             list.unlink(&mut storage, key);
             list.link_back(&mut storage, key);
             list.remove(&mut storage, key);
@@ -3412,7 +3543,8 @@ mod bench_hashmap_storage {
         for _ in 0..ITERATIONS {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let key = list.push_back(&mut storage, order);
+            let key = order.id;
+            list.push_back_with_key(&mut storage, order.id, order);
             list.unlink(&mut storage, key);
 
             let start = rdtscp();
@@ -3436,7 +3568,8 @@ mod bench_hashmap_storage {
         let mut keys = Vec::with_capacity(100);
         for i in 0..100u64 {
             let order = Order { id: i };
-            keys.push(list.push_back(&mut storage, order));
+            keys.push(order.id);
+            list.push_back_with_key(&mut storage, order.id, order);
         }
 
         for _ in 0..WARMUP {
@@ -3470,7 +3603,8 @@ mod bench_hashmap_storage {
         for _ in 0..WARMUP {
             let order = Order { id: id_counter };
             id_counter += 1;
-            let key = queue_a.push_back(&mut storage, order);
+            let key = order.id;
+            queue_a.push_back_with_key(&mut storage, order.id, order);
             queue_a.unlink(&mut storage, key);
             queue_b.link_back(&mut storage, key);
             queue_b.remove(&mut storage, key);
@@ -3481,7 +3615,8 @@ mod bench_hashmap_storage {
             id_counter += 1;
 
             let start = rdtscp();
-            let key = queue_a.push_back(&mut storage, order);
+            let key = order.id;
+            queue_a.push_back_with_key(&mut storage, order.id, order);
             hist_insert.record(rdtscp() - start).unwrap();
 
             let start = rdtscp();

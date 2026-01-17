@@ -155,7 +155,7 @@ pub use key::Key;
 pub use list::{BoxedListStorage, List};
 pub use owned::{OwnedHeap, OwnedList, OwnedSkipList};
 pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, VacantEntry};
-pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
+pub use storage::{BoundedStorage, BoxedStorage, Full, Storage, UnboundedStorage};
 
 #[cfg(feature = "nexus-slab")]
 pub use heap::{BoundedNexusHeapStorage, UnboundedNexusHeapStorage};

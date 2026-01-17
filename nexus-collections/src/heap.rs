@@ -60,7 +60,9 @@
 
 use std::{cmp::Ordering, marker::PhantomData};
 
-use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
+use crate::{
+    BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage, storage::KeyedStorage,
+};
 
 /// Type alias for bounded heap storage backed by a boxed allocation.
 pub type BoxedHeapStorage<T> = BoxedStorage<HeapNode<T>>;
@@ -617,6 +619,51 @@ where
         self.sift_up(storage, heap_pos);
 
         storage_key
+    }
+}
+
+// =============================================================================
+// KeyedStorage impl - caller-provided keys
+// =============================================================================
+
+impl<T: Ord, S, K: Key> Heap<T, S, K>
+where
+    S: KeyedStorage<HeapNode<T>, Key = K>,
+{
+    /// Pushes a value onto the heap with a caller-provided key.
+    ///
+    /// Returns the storage key for O(log n) removal or priority updates.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` already exists in storage.
+    #[inline]
+    pub fn push_with_key(&mut self, storage: &mut S, key: K, value: T) {
+        storage
+            .try_insert(key, HeapNode::new(value))
+            .ok()
+            .expect("key already exists in storage");
+        let heap_pos = self.indices.len();
+        // Safety: we just inserted this
+        unsafe { storage.get_unchecked_mut(key) }.heap_pos = heap_pos;
+        self.indices.push(key);
+        self.sift_up(storage, heap_pos);
+    }
+
+    /// Pushes a value onto the heap with a caller-provided key.
+    ///
+    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
+    #[inline]
+    pub fn try_push_with_key(&mut self, storage: &mut S, key: K, value: T) -> Result<(), T> {
+        storage
+            .try_insert(key, HeapNode::new(value))
+            .map_err(|node| node.data)?;
+        let heap_pos = self.indices.len();
+        // Safety: we just inserted this
+        unsafe { storage.get_unchecked_mut(key) }.heap_pos = heap_pos;
+        self.indices.push(key);
+        self.sift_up(storage, heap_pos);
+        Ok(())
     }
 }
 
@@ -2565,7 +2612,6 @@ mod bench_nexus_slab_storage {
 #[cfg(test)]
 mod bench_hashmap_storage {
     use super::*;
-    use crate::Keyed;
     use hdrhistogram::Histogram;
     use std::collections::HashMap;
 
@@ -2586,21 +2632,6 @@ mod bench_hashmap_storage {
     impl PartialOrd for Timer {
         fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
             Some(self.cmp(other))
-        }
-    }
-
-    impl Keyed for Timer {
-        type Key = u64;
-        fn key(&self) -> u64 {
-            self.id
-        }
-    }
-
-    // Implement Keyed for HeapNode<Timer> so HashMap storage works
-    impl Keyed for HeapNode<Timer> {
-        type Key = u64;
-        fn key(&self) -> u64 {
-            self.data.id
         }
     }
 
@@ -2647,7 +2678,7 @@ mod bench_hashmap_storage {
                 deadline: (i % 100) as u64,
             };
             id_counter += 1;
-            let _ = heap.push(&mut storage, timer);
+            let _ = heap.push_with_key(&mut storage, timer.id, timer);
             let _ = heap.pop(&mut storage);
         }
 
@@ -2659,7 +2690,7 @@ mod bench_hashmap_storage {
             id_counter += 1;
 
             let start = rdtscp();
-            let _ = heap.push(&mut storage, timer);
+            let _ = heap.push_with_key(&mut storage, timer.id, timer);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
@@ -2683,7 +2714,7 @@ mod bench_hashmap_storage {
                 deadline: 100,
             };
             id_counter += 1;
-            let _ = heap.push(&mut storage, timer);
+            let _ = heap.push_with_key(&mut storage, timer.id, timer);
             let _ = heap.pop(&mut storage);
         }
 
@@ -2693,7 +2724,7 @@ mod bench_hashmap_storage {
                 deadline: (i % 100) as u64,
             };
             id_counter += 1;
-            let _ = heap.push(&mut storage, timer);
+            let _ = heap.push_with_key(&mut storage, timer.id, timer);
 
             let start = rdtscp();
             let _ = heap.pop(&mut storage);
@@ -2713,7 +2744,7 @@ mod bench_hashmap_storage {
 
         for i in 0..1000u64 {
             let timer = Timer { id: i, deadline: i };
-            heap.push(&mut storage, timer);
+            heap.push_with_key(&mut storage, timer.id, timer);
         }
 
         for _ in 0..WARMUP {
@@ -2739,24 +2770,30 @@ mod bench_hashmap_storage {
         let mut id_counter = 0u64;
 
         for _ in 0..WARMUP {
-            let a = heap.push(
+            let a = id_counter;
+            heap.push_with_key(
                 &mut storage,
+                id_counter,
                 Timer {
                     id: id_counter,
                     deadline: 1,
                 },
             );
             id_counter += 1;
-            let b = heap.push(
+            let b = id_counter;
+            heap.push_with_key(
                 &mut storage,
+                id_counter,
                 Timer {
                     id: id_counter,
                     deadline: 2,
                 },
             );
             id_counter += 1;
-            let c = heap.push(
+            let c = id_counter;
+            heap.push_with_key(
                 &mut storage,
+                id_counter,
                 Timer {
                     id: id_counter,
                     deadline: 3,
@@ -2769,24 +2806,30 @@ mod bench_hashmap_storage {
         }
 
         for _ in 0..ITERATIONS {
-            let a = heap.push(
+            let a = id_counter;
+            heap.push_with_key(
                 &mut storage,
+                id_counter,
                 Timer {
                     id: id_counter,
                     deadline: 1,
                 },
             );
             id_counter += 1;
-            let b = heap.push(
+            let b = id_counter;
+            heap.push_with_key(
                 &mut storage,
+                id_counter,
                 Timer {
                     id: id_counter,
                     deadline: 2,
                 },
             );
             id_counter += 1;
-            let c = heap.push(
+            let c = id_counter;
+            heap.push_with_key(
                 &mut storage,
+                id_counter,
                 Timer {
                     id: id_counter,
                     deadline: 3,
@@ -2819,7 +2862,8 @@ mod bench_hashmap_storage {
                 id: i,
                 deadline: i * 2,
             };
-            keys.push(heap.push(&mut storage, timer));
+            keys.push(timer.id);
+            heap.push_with_key(&mut storage, timer.id, timer);
         }
 
         for _ in 0..WARMUP {
@@ -2860,7 +2904,8 @@ mod bench_hashmap_storage {
                 id: i,
                 deadline: i * 2,
             };
-            keys.push(heap.push(&mut storage, timer));
+            keys.push(timer.id);
+            heap.push_with_key(&mut storage, timer.id, timer);
         }
 
         for _ in 0..WARMUP {
@@ -2898,7 +2943,8 @@ mod bench_hashmap_storage {
         let mut keys = Vec::with_capacity(1000);
         for i in 0..1000u64 {
             let timer = Timer { id: i, deadline: i };
-            keys.push(heap.push(&mut storage, timer));
+            keys.push(timer.id);
+            heap.push_with_key(&mut storage, timer.id, timer);
         }
 
         let mid_key = keys[500];
@@ -2934,7 +2980,8 @@ mod bench_hashmap_storage {
                 deadline: (i % 100) as u64,
             };
             id_counter += 1;
-            let key = heap.push(&mut storage, timer);
+            let key = timer.id;
+            heap.push_with_key(&mut storage, timer.id, timer);
             if i % 3 == 0 {
                 heap.remove(&mut storage, key);
             } else {
@@ -2950,7 +2997,8 @@ mod bench_hashmap_storage {
             id_counter += 1;
 
             let start = rdtscp();
-            let key = heap.push(&mut storage, timer);
+            let key = timer.id;
+            heap.push_with_key(&mut storage, timer.id, timer);
             hist_insert.record(rdtscp() - start).unwrap();
 
             if i % 3 == 0 {
