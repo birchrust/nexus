@@ -63,7 +63,7 @@ use std::{cmp::Ordering, marker::PhantomData};
 use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
 
 /// Type alias for bounded heap storage backed by a boxed allocation.
-pub type BoxedHeapStorage<T, K = u32> = BoxedStorage<HeapNode<T, K>, K>;
+pub type BoxedHeapStorage<T, K = u32> = BoxedStorage<HeapNode<T>, K>;
 
 /// Type alias for unbounded heap storage backed by `slab::Slab`.
 #[cfg(feature = "slab")]
@@ -77,19 +77,21 @@ pub type BoundedNexusHeapStorage<T> = nexus_slab::FixedSlab<HeapNode<T, nexus_sl
 #[cfg(feature = "nexus-slab")]
 pub type UnboundedNexusHeapStorage<T> = nexus_slab::DynamicSlab<HeapNode<T, nexus_slab::Key>>;
 
+const HEAP_POS_NONE: usize = usize::MAX;
+
 /// A node in the heap. Wraps user data with heap position tracking.
 #[derive(Debug)]
-pub struct HeapNode<T, K: Key = u32> {
+pub struct HeapNode<T> {
     pub(crate) data: T,
-    pub(crate) heap_pos: K, // position in indices vec, or K::NONE if not in heap
+    pub(crate) heap_pos: usize, // position in indices vec
 }
 
-impl<T, K: Key> HeapNode<T, K> {
+impl<T> HeapNode<T> {
     #[inline]
     fn new(data: T) -> Self {
         Self {
             data,
-            heap_pos: K::NONE,
+            heap_pos: HEAP_POS_NONE,
         }
     }
 }
@@ -104,7 +106,7 @@ impl<T, K: Key> HeapNode<T, K> {
 #[derive(Debug)]
 pub struct Heap<T: Ord, S, K: Key = u32>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
 {
     indices: Vec<K>,
     _marker: PhantomData<(T, S)>,
@@ -112,7 +114,7 @@ where
 
 impl<T: Ord, S, K: Key> Default for Heap<T, S, K>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
 {
     fn default() -> Self {
         Self::new()
@@ -125,7 +127,7 @@ where
 
 impl<T: Ord, S, K: Key> Heap<T, S, K>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
 {
     /// Creates an empty heap.
     #[inline]
@@ -181,7 +183,7 @@ where
 
         // Clear heap position and remove from storage
         // Safety: storage_key came from our indices
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = K::NONE;
+        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = HEAP_POS_NONE;
         let node = storage.remove(storage_key)?;
 
         // Restore heap property if heap not empty
@@ -230,7 +232,7 @@ where
             return None;
         }
 
-        let pos = heap_pos.as_usize();
+        let pos = heap_pos;
         let last_pos = self.indices.len() - 1;
 
         // Swap with last and remove
@@ -241,7 +243,7 @@ where
 
         // Clear heap position and remove from storage
         // Safety: storage_key was validated above
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = K::NONE;
+        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = HEAP_POS_NONE;
         let node = storage.remove(storage_key)?;
 
         // Restore heap property if needed
@@ -264,7 +266,7 @@ where
         let heap_pos = self.get_heap_pos(storage, storage_key);
         debug_assert!(heap_pos.is_some(), "key not in heap");
         if heap_pos.is_some() {
-            self.sift_up(storage, heap_pos.as_usize());
+            self.sift_up(storage, heap_pos);
         }
     }
 
@@ -280,7 +282,7 @@ where
         let heap_pos = self.get_heap_pos(storage, storage_key);
         debug_assert!(heap_pos.is_some(), "key not in heap");
         if heap_pos.is_some() {
-            self.sift_down(storage, heap_pos.as_usize());
+            self.sift_down(storage, heap_pos);
         }
     }
 
@@ -296,7 +298,7 @@ where
         let heap_pos = self.get_heap_pos(storage, storage_key);
         debug_assert!(heap_pos.is_some(), "key not in heap");
         if heap_pos.is_some() {
-            self.sift_update(storage, heap_pos.as_usize());
+            self.sift_update(storage, heap_pos);
         }
     }
 
@@ -315,7 +317,7 @@ where
         let node = storage.get_mut(key)?;
         let old = std::mem::replace(&mut node.data, value);
         let cmp = node.data.cmp(&old);
-        let pos = node.heap_pos.as_usize();
+        let pos = node.heap_pos;
         // Compare to decide sift direction
         match cmp {
             Ordering::Less => self.sift_up(storage, pos),
@@ -331,7 +333,7 @@ where
         F: FnOnce(&mut T),
     {
         let node = storage.get_mut(key).expect("invalid key");
-        let pos = node.heap_pos.as_usize();
+        let pos = node.heap_pos;
         f(&mut node.data);
         self.sift_up(storage, pos);
     }
@@ -342,7 +344,7 @@ where
         F: FnOnce(&mut T),
     {
         let node = storage.get_mut(key).expect("invalid key");
-        let pos = node.heap_pos.as_usize();
+        let pos = node.heap_pos;
         f(&mut node.data);
         self.sift_down(storage, pos);
     }
@@ -413,11 +415,11 @@ where
     // ========================================================================
 
     #[inline]
-    fn get_heap_pos(&self, storage: &S, storage_key: K) -> K {
+    fn get_heap_pos(&self, storage: &S, storage_key: K) -> usize {
         storage
             .get(storage_key)
             .map(|n| n.heap_pos)
-            .unwrap_or(K::NONE)
+            .unwrap_or(HEAP_POS_NONE)
     }
 
     /// Swaps two positions in the heap and updates heap_pos in nodes.
@@ -429,8 +431,8 @@ where
         self.indices.swap(pos_a, pos_b);
 
         // Safety: indices came from our vec
-        unsafe { storage.get_unchecked_mut(key_a) }.heap_pos = K::from_usize(pos_b);
-        unsafe { storage.get_unchecked_mut(key_b) }.heap_pos = K::from_usize(pos_a);
+        unsafe { storage.get_unchecked_mut(key_a) }.heap_pos = pos_b;
+        unsafe { storage.get_unchecked_mut(key_b) }.heap_pos = pos_a;
     }
 
     /// Sifts an element up toward the root using hole technique.
@@ -456,7 +458,7 @@ where
             if current < parent_val {
                 // Move parent down into hole
                 *unsafe { self.indices.get_unchecked_mut(hole) } = parent_key;
-                unsafe { storage.get_unchecked_mut(parent_key) }.heap_pos = K::from_usize(hole);
+                unsafe { storage.get_unchecked_mut(parent_key) }.heap_pos = hole;
                 hole = parent;
             } else {
                 break;
@@ -466,7 +468,7 @@ where
         // Place element in final position
         if hole != pos {
             *unsafe { self.indices.get_unchecked_mut(hole) } = key;
-            unsafe { storage.get_unchecked_mut(key) }.heap_pos = K::from_usize(hole);
+            unsafe { storage.get_unchecked_mut(key) }.heap_pos = hole;
         }
     }
 
@@ -506,7 +508,7 @@ where
             // Safety: smaller < len
             let smaller_key = *unsafe { self.indices.get_unchecked(smaller) };
             *unsafe { self.indices.get_unchecked_mut(hole) } = smaller_key;
-            unsafe { storage.get_unchecked_mut(smaller_key) }.heap_pos = K::from_usize(hole);
+            unsafe { storage.get_unchecked_mut(smaller_key) }.heap_pos = hole;
             hole = smaller;
         }
 
@@ -522,7 +524,7 @@ where
 
             if current < parent_val {
                 *unsafe { self.indices.get_unchecked_mut(hole) } = parent_key;
-                unsafe { storage.get_unchecked_mut(parent_key) }.heap_pos = K::from_usize(hole);
+                unsafe { storage.get_unchecked_mut(parent_key) }.heap_pos = hole;
                 hole = parent;
             } else {
                 break;
@@ -531,7 +533,7 @@ where
 
         // Place element in final position
         *unsafe { self.indices.get_unchecked_mut(hole) } = key;
-        unsafe { storage.get_unchecked_mut(key) }.heap_pos = K::from_usize(hole);
+        unsafe { storage.get_unchecked_mut(key) }.heap_pos = hole;
     }
 
     /// Sifts in the appropriate direction after an update.
@@ -544,9 +546,7 @@ where
         self.sift_up(storage, pos);
 
         // Check if we moved by looking at the element's current heap_pos
-        let current_pos = unsafe { storage.get_unchecked(storage_key) }
-            .heap_pos
-            .as_usize();
+        let current_pos = unsafe { storage.get_unchecked(storage_key) }.heap_pos;
 
         // If we didn't move up, try sifting down
         if current_pos == pos {
@@ -561,7 +561,7 @@ where
 
 impl<T: Ord, S, K: Key> Heap<T, S, K>
 where
-    S: BoundedStorage<HeapNode<T, K>, Key = K>,
+    S: BoundedStorage<HeapNode<T>, Key = K>,
 {
     /// Pushes a value onto the heap.
     ///
@@ -581,7 +581,7 @@ where
 
         // Set heap position and add to indices
         // Safety: we just inserted this
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = K::from_usize(heap_pos);
+        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = heap_pos;
         self.indices.push(storage_key);
 
         // Restore heap property
@@ -597,7 +597,7 @@ where
 
 impl<T: Ord, S, K: Key> Heap<T, S, K>
 where
-    S: UnboundedStorage<HeapNode<T, K>, Key = K>,
+    S: UnboundedStorage<HeapNode<T>, Key = K>,
 {
     /// Pushes a value onto the heap.
     ///
@@ -610,7 +610,7 @@ where
 
         // Set heap position and add to indices
         // Safety: we just inserted this
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = K::from_usize(heap_pos);
+        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = heap_pos;
         self.indices.push(storage_key);
 
         // Restore heap property
@@ -627,7 +627,7 @@ where
 /// Iterator that drains elements from the heap in sorted order.
 pub struct Drain<'a, T: Ord, S, K: Key>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
 {
     heap: &'a mut Heap<T, S, K>,
     storage: &'a mut S,
@@ -635,7 +635,7 @@ where
 
 impl<'a, T: Ord, S, K: Key> Iterator for Drain<'a, T, S, K>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
 {
     type Item = T;
 
@@ -652,13 +652,13 @@ where
 }
 
 impl<T: Ord, S, K: Key> ExactSizeIterator for Drain<'_, T, S, K> where
-    S: Storage<HeapNode<T, K>, Key = K>
+    S: Storage<HeapNode<T>, Key = K>
 {
 }
 
 impl<T: Ord, S, K: Key> Drop for Drain<'_, T, S, K>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
 {
     fn drop(&mut self) {
         // Exhaust remaining elements
@@ -669,7 +669,7 @@ where
 /// Iterator that drains elements while a predicate holds.
 pub struct DrainWhile<'a, T: Ord, S, K: Key, F>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
     F: FnMut(&T) -> bool,
 {
     heap: &'a mut Heap<T, S, K>,
@@ -679,7 +679,7 @@ where
 
 impl<'a, T: Ord, S, K: Key, F> Iterator for DrainWhile<'a, T, S, K, F>
 where
-    S: Storage<HeapNode<T, K>, Key = K>,
+    S: Storage<HeapNode<T>, Key = K>,
     F: FnMut(&T) -> bool,
 {
     type Item = T;
@@ -2594,14 +2594,14 @@ mod bench_hashmap_storage {
     }
 
     // Implement Keyed for HeapNode<Timer> so HashMap storage works
-    impl Keyed for HeapNode<Timer, u64> {
+    impl Keyed for HeapNode<Timer> {
         type Key = u64;
         fn key(&self) -> u64 {
             self.data.id
         }
     }
 
-    type HashMapHeapStorage = HashMap<u64, HeapNode<Timer, u64>>;
+    type HashMapHeapStorage = HashMap<u64, HeapNode<Timer>>;
 
     #[inline]
     fn rdtscp() -> u64 {
