@@ -1,7 +1,7 @@
 //! OwnedList - a doubly-linked list that owns its storage.
 
 use crate::list::{BoxedListStorage, Cursor, Drain, Iter, IterMut, Keys, List};
-use crate::{BoundedStorage, Full, Key};
+use crate::{BoundedStorage, Full};
 
 /// A doubly-linked list that owns its storage.
 ///
@@ -34,12 +34,12 @@ use crate::{BoundedStorage, Full, Key};
 /// let values: Vec<_> = list.iter().copied().collect();
 /// assert_eq!(values, vec![1, 3]);
 /// ```
-pub struct OwnedList<T, K: Key = u32> {
-    storage: BoxedListStorage<T, K>,
-    list: List<T, BoxedListStorage<T, K>, K>,
+pub struct OwnedList<T> {
+    storage: BoxedListStorage<T>,
+    list: List<T, BoxedListStorage<T>, usize>,
 }
 
-impl<T, K: Key> OwnedList<T, K> {
+impl<T> OwnedList<T> {
     /// Creates a new list with the given capacity.
     ///
     /// Capacity is rounded up to the next power of 2.
@@ -70,13 +70,13 @@ impl<T, K: Key> OwnedList<T, K> {
 
     /// Returns the head node's key, or `None` if empty.
     #[inline]
-    pub fn front_key(&self) -> Option<K> {
+    pub fn front_key(&self) -> Option<usize> {
         self.list.front_key()
     }
 
     /// Returns the tail node's key, or `None` if empty.
     #[inline]
-    pub fn back_key(&self) -> Option<K> {
+    pub fn back_key(&self) -> Option<usize> {
         self.list.back_key()
     }
 
@@ -92,7 +92,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
-    pub fn try_push_back(&mut self, value: T) -> Result<K, Full<T>> {
+    pub fn try_push_back(&mut self, value: T) -> Result<usize, Full<T>> {
         self.list.try_push_back(&mut self.storage, value)
     }
 
@@ -104,7 +104,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
-    pub fn try_push_front(&mut self, value: T) -> Result<K, Full<T>> {
+    pub fn try_push_front(&mut self, value: T) -> Result<usize, Full<T>> {
         self.list.try_push_front(&mut self.storage, value)
     }
 
@@ -118,7 +118,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Panics if `after` is not a valid key.
     #[inline]
-    pub fn try_insert_after(&mut self, after: K, value: T) -> Result<K, Full<T>> {
+    pub fn try_insert_after(&mut self, after: usize, value: T) -> Result<usize, Full<T>> {
         self.list.try_insert_after(&mut self.storage, after, value)
     }
 
@@ -132,7 +132,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Panics if `before` is not a valid key.
     #[inline]
-    pub fn try_insert_before(&mut self, before: K, value: T) -> Result<K, Full<T>> {
+    pub fn try_insert_before(&mut self, before: usize, value: T) -> Result<usize, Full<T>> {
         self.list
             .try_insert_before(&mut self.storage, before, value)
     }
@@ -161,7 +161,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Returns `None` if the key is invalid.
     #[inline]
-    pub fn remove(&mut self, key: K) -> Option<T> {
+    pub fn remove(&mut self, key: usize) -> Option<T> {
         self.list.remove(&mut self.storage, key)
     }
 
@@ -171,13 +171,13 @@ impl<T, K: Key> OwnedList<T, K> {
 
     /// Returns a reference to the element at the given key.
     #[inline]
-    pub fn get(&self, key: K) -> Option<&T> {
+    pub fn get(&self, key: usize) -> Option<&T> {
         self.list.get(&self.storage, key)
     }
 
     /// Returns a mutable reference to the element at the given key.
     #[inline]
-    pub fn get_mut(&mut self, key: K) -> Option<&mut T> {
+    pub fn get_mut(&mut self, key: usize) -> Option<&mut T> {
         self.list.get_mut(&mut self.storage, key)
     }
 
@@ -225,7 +225,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Panics if `key` is not valid.
     #[inline]
-    pub fn move_to_back(&mut self, key: K) {
+    pub fn move_to_back(&mut self, key: usize) {
         self.list.move_to_back(&mut self.storage, key);
     }
 
@@ -235,7 +235,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Panics if `key` is not valid.
     #[inline]
-    pub fn move_to_front(&mut self, key: K) {
+    pub fn move_to_front(&mut self, key: usize) {
         self.list.move_to_front(&mut self.storage, key);
     }
 
@@ -245,13 +245,13 @@ impl<T, K: Key> OwnedList<T, K> {
 
     /// Returns `true` if the node is currently the head of the list.
     #[inline]
-    pub fn is_head(&self, key: K) -> bool {
+    pub fn is_head(&self, key: usize) -> bool {
         self.list.is_head(key)
     }
 
     /// Returns `true` if the node is currently the tail of the list.
     #[inline]
-    pub fn is_tail(&self, key: K) -> bool {
+    pub fn is_tail(&self, key: usize) -> bool {
         self.list.is_tail(key)
     }
 
@@ -263,7 +263,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Returns `None` if `key` is the tail or invalid.
     #[inline]
-    pub fn next_key(&self, key: K) -> Option<K> {
+    pub fn next_key(&self, key: usize) -> Option<usize> {
         self.list.next_key(&self.storage, key)
     }
 
@@ -271,7 +271,7 @@ impl<T, K: Key> OwnedList<T, K> {
     ///
     /// Returns `None` if `key` is the head or invalid.
     #[inline]
-    pub fn prev_key(&self, key: K) -> Option<K> {
+    pub fn prev_key(&self, key: usize) -> Option<usize> {
         self.list.prev_key(&self.storage, key)
     }
 
@@ -281,42 +281,42 @@ impl<T, K: Key> OwnedList<T, K> {
 
     /// Returns an iterator over references to elements, front to back.
     #[inline]
-    pub fn iter(&self) -> Iter<'_, T, BoxedListStorage<T, K>, K> {
+    pub fn iter(&self) -> Iter<'_, T, BoxedListStorage<T>, usize> {
         self.list.iter(&self.storage)
     }
 
     /// Returns an iterator over mutable references to elements, front to back.
     #[inline]
-    pub fn iter_mut(&mut self) -> IterMut<'_, T, BoxedListStorage<T, K>, K> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T, BoxedListStorage<T>, usize> {
         self.list.iter_mut(&mut self.storage)
     }
 
     /// Returns an iterator over keys, front to back.
     #[inline]
-    pub fn keys(&self) -> Keys<'_, T, K, BoxedListStorage<T, K>> {
+    pub fn keys(&self) -> Keys<'_, T, usize, BoxedListStorage<T>> {
         self.list.keys(&self.storage)
     }
 
     /// Clears the list, returning an iterator over removed elements.
     #[inline]
-    pub fn drain(&mut self) -> Drain<'_, T, BoxedListStorage<T, K>, K> {
+    pub fn drain(&mut self) -> Drain<'_, T, BoxedListStorage<T>, usize> {
         self.list.drain(&mut self.storage)
     }
 
     /// Returns a cursor positioned at the front of the list.
     #[inline]
-    pub fn cursor_front(&mut self) -> Cursor<'_, T, BoxedListStorage<T, K>, K> {
+    pub fn cursor_front(&mut self) -> Cursor<'_, T, BoxedListStorage<T>, usize> {
         self.list.cursor_front(&mut self.storage)
     }
 
     /// Returns a cursor positioned at the back of the list.
     #[inline]
-    pub fn cursor_back(&mut self) -> Cursor<'_, T, BoxedListStorage<T, K>, K> {
+    pub fn cursor_back(&mut self) -> Cursor<'_, T, BoxedListStorage<T>, usize> {
         self.list.cursor_back(&mut self.storage)
     }
 }
 
-impl<T, K: Key> Default for OwnedList<T, K> {
+impl<T> Default for OwnedList<T> {
     fn default() -> Self {
         Self::with_capacity(16)
     }

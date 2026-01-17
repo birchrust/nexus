@@ -3,7 +3,7 @@
 use rand_core::RngCore;
 
 use crate::skiplist::{BoxedSkipStorage, Cursor, Entry, Iter, IterMut, Keys, SkipList, Values};
-use crate::{BoundedStorage, Full, Key};
+use crate::{BoundedStorage, Full};
 
 /// A skip list that owns its storage.
 ///
@@ -32,16 +32,16 @@ use crate::{BoundedStorage, Full, Key};
 /// let keys: Vec<_> = map.keys().copied().collect();
 /// assert_eq!(keys, vec![50, 100]);
 /// ```
-pub struct OwnedSkipList<K, V, R, const MAX_LEVEL: usize = 16, Idx: Key = u32>
+pub struct OwnedSkipList<K, V, R, const MAX_LEVEL: usize = 16>
 where
     K: Ord,
     R: RngCore,
 {
-    storage: BoxedSkipStorage<K, V, Idx, MAX_LEVEL>,
-    list: SkipList<K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, R, MAX_LEVEL>,
+    storage: BoxedSkipStorage<K, V, MAX_LEVEL>,
+    list: SkipList<K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, R, MAX_LEVEL>,
 }
 
-impl<K, V, R, const MAX_LEVEL: usize, Idx: Key> OwnedSkipList<K, V, R, MAX_LEVEL, Idx>
+impl<K, V, R, const MAX_LEVEL: usize> OwnedSkipList<K, V, R, MAX_LEVEL>
 where
     K: Ord,
     R: RngCore,
@@ -186,7 +186,7 @@ where
     pub fn entry(
         &mut self,
         key: K,
-    ) -> Entry<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, R, MAX_LEVEL> {
+    ) -> Entry<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, R, MAX_LEVEL> {
         self.list.entry(&mut self.storage, key)
     }
 
@@ -196,7 +196,7 @@ where
 
     /// Returns an iterator over key-value pairs in sorted order.
     #[inline]
-    pub fn iter(&self) -> Iter<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, MAX_LEVEL> {
+    pub fn iter(&self) -> Iter<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, MAX_LEVEL> {
         self.list.iter(&self.storage)
     }
 
@@ -204,21 +204,19 @@ where
     #[inline]
     pub fn iter_mut(
         &mut self,
-    ) -> IterMut<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, MAX_LEVEL> {
+    ) -> IterMut<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, MAX_LEVEL> {
         self.list.iter_mut(&mut self.storage)
     }
 
     /// Returns an iterator over keys in sorted order.
     #[inline]
-    pub fn keys(&self) -> Keys<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, MAX_LEVEL> {
+    pub fn keys(&self) -> Keys<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, MAX_LEVEL> {
         self.list.keys(&self.storage)
     }
 
     /// Returns an iterator over values in sorted order by key.
     #[inline]
-    pub fn values(
-        &self,
-    ) -> Values<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, MAX_LEVEL> {
+    pub fn values(&self) -> Values<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, MAX_LEVEL> {
         self.list.values(&self.storage)
     }
 
@@ -226,7 +224,7 @@ where
     #[inline]
     pub fn cursor_front(
         &mut self,
-    ) -> Cursor<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, R, MAX_LEVEL> {
+    ) -> Cursor<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, R, MAX_LEVEL> {
         self.list.cursor_front(&mut self.storage)
     }
 
@@ -235,7 +233,7 @@ where
     pub fn cursor_at(
         &mut self,
         key: &K,
-    ) -> Cursor<'_, K, V, BoxedSkipStorage<K, V, Idx, MAX_LEVEL>, Idx, R, MAX_LEVEL> {
+    ) -> Cursor<'_, K, V, BoxedSkipStorage<K, V, MAX_LEVEL>, usize, R, MAX_LEVEL> {
         self.list.cursor_at(&mut self.storage, key)
     }
 }

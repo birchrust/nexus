@@ -1,7 +1,7 @@
 //! OwnedHeap - a min-heap that owns its storage.
 
 use crate::heap::{BoxedHeapStorage, Drain, DrainWhile, Heap};
-use crate::{BoundedStorage, Full, Key};
+use crate::{BoundedStorage, Full};
 
 /// A min-heap that owns its storage.
 ///
@@ -50,12 +50,12 @@ use crate::{BoundedStorage, Full, Key};
 ///
 /// assert_eq!(heap.peek(), Some(&5));
 /// ```
-pub struct OwnedHeap<T: Ord, K: Key = u32> {
-    storage: BoxedHeapStorage<T, K>,
-    heap: Heap<T, BoxedHeapStorage<T, K>, K>,
+pub struct OwnedHeap<T: Ord> {
+    storage: BoxedHeapStorage<T>,
+    heap: Heap<T, BoxedHeapStorage<T>, usize>,
 }
 
-impl<T: Ord, K: Key> OwnedHeap<T, K> {
+impl<T: Ord> OwnedHeap<T> {
     /// Creates a new heap with the given capacity.
     ///
     /// Capacity is rounded up to the next power of 2.
@@ -97,7 +97,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
-    pub fn try_push(&mut self, value: T) -> Result<K, Full<T>> {
+    pub fn try_push(&mut self, value: T) -> Result<usize, Full<T>> {
         self.heap.try_push(&mut self.storage, value)
     }
 
@@ -117,7 +117,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     ///
     /// Returns `None` if the key is invalid or not in the heap.
     #[inline]
-    pub fn remove(&mut self, key: K) -> Option<T> {
+    pub fn remove(&mut self, key: usize) -> Option<T> {
         self.heap.remove(&mut self.storage, key)
     }
 
@@ -135,13 +135,13 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
 
     /// Returns the storage key of the minimum element.
     #[inline]
-    pub fn peek_key(&self) -> Option<K> {
+    pub fn peek_key(&self) -> Option<usize> {
         self.heap.peek_key()
     }
 
     /// Returns `true` if the key is valid and the element is in the heap.
     #[inline]
-    pub fn contains(&self, key: K) -> bool {
+    pub fn contains(&self, key: usize) -> bool {
         self.heap.contains(&self.storage, key)
     }
 
@@ -166,7 +166,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     /// assert_eq!(heap.peek(), Some(&5));
     /// ```
     #[inline]
-    pub fn replace(&mut self, key: K, value: T) -> Option<T> {
+    pub fn replace(&mut self, key: usize, value: T) -> Option<T> {
         self.heap.replace(&mut self.storage, key, value)
     }
 
@@ -192,7 +192,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     /// assert_eq!(heap.peek(), Some(&5));
     /// ```
     #[inline]
-    pub fn decrease_with<F>(&mut self, key: K, f: F)
+    pub fn decrease_with<F>(&mut self, key: usize, f: F)
     where
         F: FnOnce(&mut T),
     {
@@ -221,7 +221,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     /// assert_eq!(heap.peek(), Some(&10));
     /// ```
     #[inline]
-    pub fn increase_with<F>(&mut self, key: K, f: F)
+    pub fn increase_with<F>(&mut self, key: usize, f: F)
     where
         F: FnOnce(&mut T),
     {
@@ -245,7 +245,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     /// Each call to `next()` performs a `pop()`, so this yields
     /// elements from smallest to largest.
     #[inline]
-    pub fn drain(&mut self) -> Drain<'_, T, BoxedHeapStorage<T, K>, K> {
+    pub fn drain(&mut self) -> Drain<'_, T, BoxedHeapStorage<T>, usize> {
         self.heap.drain(&mut self.storage)
     }
 
@@ -271,7 +271,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     /// assert_eq!(heap.peek(), Some(&5));
     /// ```
     #[inline]
-    pub fn drain_while<F>(&mut self, pred: F) -> DrainWhile<'_, T, BoxedHeapStorage<T, K>, K, F>
+    pub fn drain_while<F>(&mut self, pred: F) -> DrainWhile<'_, T, BoxedHeapStorage<T>, usize, F>
     where
         F: FnMut(&T) -> bool,
     {
@@ -279,7 +279,7 @@ impl<T: Ord, K: Key> OwnedHeap<T, K> {
     }
 }
 
-impl<T: Ord, K: Key> Default for OwnedHeap<T, K> {
+impl<T: Ord> Default for OwnedHeap<T> {
     fn default() -> Self {
         Self::with_capacity(16)
     }

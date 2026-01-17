@@ -19,7 +19,7 @@
 //!
 //! // Bounded storage (BoxedStorage, nexus_slab) - fallible insertion
 //! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
 //!
 //! let key = list.try_push_back(&mut storage, 42).unwrap();
 //! ```
@@ -38,7 +38,7 @@
 //! use nexus_collections::{BoxedListStorage, List};
 //!
 //! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
 //!
 //! // Insert values - returns key for O(1) access/removal later
 //! let a = list.try_push_back(&mut storage, 1).unwrap();
@@ -68,8 +68,8 @@
 //! use nexus_collections::{BoxedListStorage, List};
 //!
 //! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list_a: List<u64, BoxedListStorage<u64>> = List::new();
-//! let mut list_b: List<u64, BoxedListStorage<u64>> = List::new();
+//! let mut list_a: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut list_b: List<u64, BoxedListStorage<u64>, _> = List::new();
 //!
 //! let key = list_a.try_push_back(&mut storage, 42).unwrap();
 //!
@@ -98,8 +98,8 @@
 //! let mut orders: BoxedListStorage<Order> = BoxedListStorage::with_capacity(100_000);
 //!
 //! // Separate queues per price level
-//! let mut queue_100: List<Order, BoxedListStorage<Order>> = List::new();
-//! let mut queue_101: List<Order, BoxedListStorage<Order>> = List::new();
+//! let mut queue_100: List<Order, BoxedListStorage<Order>, _> = List::new();
+//! let mut queue_101: List<Order, BoxedListStorage<Order>, _> = List::new();
 //!
 //! let key = queue_100.try_push_back(&mut orders, Order { id: 1, qty: 50 }).unwrap();
 //!
@@ -114,7 +114,7 @@ use std::marker::PhantomData;
 use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
 
 /// Type alias for bounded list storage backed by a boxed allocation.
-pub type BoxedListStorage<T, K = u32> = BoxedStorage<ListNode<T, K>, K>;
+pub type BoxedListStorage<T> = BoxedStorage<ListNode<T, usize>>;
 
 /// Type alias for unbounded list storage backed by `slab::Slab`.
 #[cfg(feature = "slab")]
@@ -133,7 +133,7 @@ pub type UnboundedNexusListStorage<T> = nexus_slab::DynamicSlab<ListNode<T, nexu
 /// This wraps user data with prev/next links. Users interact with `&T` and `&mut T`
 /// through the list's accessor methods; the node structure is an implementation detail.
 #[derive(Debug)]
-pub struct ListNode<T, K: Key = u32> {
+pub struct ListNode<T, K> {
     pub(crate) data: T,
     pub(crate) prev: K,
     pub(crate) next: K,
@@ -168,13 +168,13 @@ impl<T, K: Key> ListNode<T, K> {
 /// use nexus_collections::{BoxedListStorage, List};
 ///
 /// let mut storage: BoxedListStorage<String> = BoxedListStorage::with_capacity(100);
-/// let mut list: List<String, BoxedListStorage<String>> = List::new();
+/// let mut list: List<String, BoxedListStorage<String>, _> = List::new();
 ///
 /// let key = list.try_push_back(&mut storage, "hello".into()).unwrap();
 /// assert_eq!(list.get(&storage, key), Some(&"hello".into()));
 /// ```
 #[derive(Debug)]
-pub struct List<T, S, K: Key = u32>
+pub struct List<T, S, K: Key>
 where
     S: Storage<ListNode<T, K>, Key = K>,
 {
@@ -973,7 +973,7 @@ where
 /// struct Order { qty: u64 }
 ///
 /// let mut storage: BoxedListStorage<Order> = BoxedListStorage::with_capacity(100);
-/// let mut queue: List<Order, BoxedListStorage<Order>> = List::new();
+/// let mut queue: List<Order, BoxedListStorage<Order>, _> = List::new();
 ///
 /// queue.try_push_back(&mut storage, Order { qty: 100 }).unwrap();
 /// queue.try_push_back(&mut storage, Order { qty: 50 }).unwrap();
@@ -1348,7 +1348,7 @@ mod tests {
 
     #[test]
     fn new_list_is_empty() {
-        let list: List<u64, BoxedListStorage<u64>> = List::new();
+        let list: List<u64, BoxedListStorage<u64>, _> = List::new();
         assert!(list.is_empty());
         assert_eq!(list.len(), 0);
         assert!(list.front_key().is_none());
@@ -1358,7 +1358,7 @@ mod tests {
     #[test]
     fn try_push_back_single() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
 
@@ -1373,7 +1373,7 @@ mod tests {
     #[test]
     fn try_push_back_multiple() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let _b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1390,7 +1390,7 @@ mod tests {
     #[test]
     fn try_push_front_multiple() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_front(&mut storage, 1).unwrap();
         let _b = list.try_push_front(&mut storage, 2).unwrap();
@@ -1408,7 +1408,7 @@ mod tests {
     #[test]
     fn pop_front() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1426,7 +1426,7 @@ mod tests {
     #[test]
     fn pop_back() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1441,7 +1441,7 @@ mod tests {
     #[test]
     fn remove_middle() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let _a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1457,8 +1457,8 @@ mod tests {
     #[test]
     fn unlink_and_link_to_another_list() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list_a: List<u64, _> = List::new();
-        let mut list_b: List<u64, _> = List::new();
+        let mut list_a: List<u64, _, _> = List::new();
+        let mut list_b: List<u64, _, _> = List::new();
 
         let key = list_a.try_push_back(&mut storage, 42).unwrap();
         list_a.try_push_back(&mut storage, 99).unwrap();
@@ -1478,7 +1478,7 @@ mod tests {
     #[test]
     fn unlink_not_in_list() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let key = list.try_push_back(&mut storage, 1).unwrap();
         list.unlink(&mut storage, key);
@@ -1490,7 +1490,7 @@ mod tests {
     #[test]
     fn get_and_get_mut() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 10).unwrap();
 
@@ -1503,7 +1503,7 @@ mod tests {
     #[test]
     fn front_and_back() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         assert!(list.front(&storage).is_none());
         assert!(list.back(&storage).is_none());
@@ -1519,7 +1519,7 @@ mod tests {
     #[test]
     fn try_insert_after() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let _c = list.try_push_back(&mut storage, 3).unwrap();
@@ -1532,7 +1532,7 @@ mod tests {
     #[test]
     fn try_insert_before() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let _a = list.try_push_back(&mut storage, 1).unwrap();
         let c = list.try_push_back(&mut storage, 3).unwrap();
@@ -1545,7 +1545,7 @@ mod tests {
     #[test]
     fn clear() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1561,8 +1561,8 @@ mod tests {
     #[test]
     fn append() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list1: List<u64, _> = List::new();
-        let mut list2: List<u64, _> = List::new();
+        let mut list1: List<u64, _, _> = List::new();
+        let mut list2: List<u64, _, _> = List::new();
 
         list1.try_push_back(&mut storage, 1).unwrap();
         list1.try_push_back(&mut storage, 2).unwrap();
@@ -1581,7 +1581,7 @@ mod tests {
     #[test]
     fn move_to_back() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1596,7 +1596,7 @@ mod tests {
     #[test]
     fn move_to_front() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1611,7 +1611,7 @@ mod tests {
     #[test]
     fn split_off() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     fn is_head_and_is_tail() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1649,7 +1649,7 @@ mod tests {
     #[test]
     fn iter_empty() {
         let storage = BoxedListStorage::with_capacity(16);
-        let list: List<u64, _> = List::new();
+        let list: List<u64, _, _> = List::new();
 
         assert_eq!(list.iter(&storage).count(), 0);
     }
@@ -1657,7 +1657,7 @@ mod tests {
     #[test]
     fn iter_mut() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1674,7 +1674,7 @@ mod tests {
     #[test]
     fn keys_iterator() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1687,7 +1687,7 @@ mod tests {
     #[test]
     fn storage_reuse_after_remove() {
         let mut storage = BoxedListStorage::with_capacity(4);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let _b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1709,7 +1709,7 @@ mod tests {
     #[test]
     fn cursor_basic_navigation() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1736,7 +1736,7 @@ mod tests {
     #[test]
     fn cursor_move_prev() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1756,7 +1756,7 @@ mod tests {
     #[test]
     fn cursor_current_mut() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 10).unwrap();
         list.try_push_back(&mut storage, 20).unwrap();
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn cursor_remove_current() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1801,7 +1801,7 @@ mod tests {
     #[test]
     fn cursor_remove_middle() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1822,7 +1822,7 @@ mod tests {
     #[test]
     fn cursor_peek_next() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1845,7 +1845,7 @@ mod tests {
     #[test]
     fn cursor_empty_list() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let mut cursor = list.cursor_front(&mut storage);
 
@@ -1858,7 +1858,7 @@ mod tests {
     #[test]
     fn cursor_single_element() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 42).unwrap();
 
@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn cursor_matching_workflow() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         // Resting orders: 100, 50, 75
         list.try_push_back(&mut storage, 100).unwrap();
@@ -1918,7 +1918,7 @@ mod tests {
     #[test]
     fn iter_rev() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1931,7 +1931,7 @@ mod tests {
     #[test]
     fn iter_double_ended() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1950,7 +1950,7 @@ mod tests {
     #[test]
     fn keys_rev() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1963,7 +1963,7 @@ mod tests {
     #[test]
     fn drain_all() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1979,7 +1979,7 @@ mod tests {
     #[test]
     fn drain_partial_then_drop() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1999,7 +1999,7 @@ mod tests {
     #[test]
     fn next_key_and_prev_key() {
         let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -2017,7 +2017,7 @@ mod tests {
     #[test]
     fn try_push_back_full_error() {
         let mut storage = BoxedListStorage::with_capacity(2);
-        let mut list: List<u64, _> = List::new();
+        let mut list: List<u64, _, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -2147,7 +2147,7 @@ mod bench_boxed_storage {
     fn bench_list_try_push_back() {
         let mut storage: BoxedListStorage<u64> =
             BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -2171,7 +2171,7 @@ mod bench_boxed_storage {
     fn bench_list_try_push_front() {
         let mut storage: BoxedListStorage<u64> =
             BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -2195,7 +2195,7 @@ mod bench_boxed_storage {
     fn bench_list_pop_front() {
         let mut storage: BoxedListStorage<u64> =
             BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2219,7 +2219,7 @@ mod bench_boxed_storage {
     fn bench_list_pop_back() {
         let mut storage: BoxedListStorage<u64> =
             BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2242,7 +2242,7 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_list_get() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1024);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -2269,7 +2269,7 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_list_remove_middle() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2302,7 +2302,7 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_list_unlink() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2329,7 +2329,7 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_list_link_back() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2358,7 +2358,7 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_list_move_to_back() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1024);
-        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         // Build a list of 100 elements
@@ -2386,8 +2386,8 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_list_order_queue_workflow() {
         let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(32);
-        let mut queue_a: List<u64, BoxedListStorage<u64>> = List::new();
-        let mut queue_b: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut queue_a: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut queue_b: List<u64, BoxedListStorage<u64>, _> = List::new();
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_move = Histogram::<u64>::new(3).unwrap();
@@ -2809,7 +2809,8 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_push_back() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
+                .expect("failed to allocate");
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2833,7 +2834,8 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_push_front() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
+                .expect("failed to allocate");
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2857,7 +2859,8 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_pop_front() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
+                .expect("failed to allocate");
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2881,7 +2884,8 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_pop_back() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
+                .expect("failed to allocate");
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 

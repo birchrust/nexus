@@ -95,7 +95,7 @@ impl<K, V, Idx: Key, const MAX_LEVEL: usize> SkipNode<K, V, Idx, MAX_LEVEL> {
 /// - `R`: Random number generator implementing [`RngCore`]
 /// - `MAX_LEVEL`: Maximum number of levels, defaults to 16 (~65K elements efficient)
 #[derive(Debug)]
-pub struct SkipList<K, V, S, Idx = u32, R = (), const MAX_LEVEL: usize = 16>
+pub struct SkipList<K, V, S, Idx, R = (), const MAX_LEVEL: usize = 16>
 where
     K: Ord,
     Idx: Key,
@@ -1232,8 +1232,8 @@ where
 // ============================================================================
 
 /// Boxed storage for skip list nodes.
-pub type BoxedSkipStorage<K, V, Idx = u32, const MAX_LEVEL: usize = 16> =
-    crate::BoxedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Idx>;
+pub type BoxedSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
+    crate::BoxedStorage<SkipNode<K, V, usize, MAX_LEVEL>>;
 
 #[cfg(feature = "slab")]
 /// Slab storage for skip list nodes (unbounded).
@@ -1256,8 +1256,8 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
-    type TestStorage = BoxedSkipStorage<u64, String, u32, 8>;
-    type TestSkipList = SkipList<u64, String, TestStorage, u32, SmallRng, 8>;
+    type TestStorage = BoxedSkipStorage<u64, String, 8>;
+    type TestSkipList = SkipList<u64, String, TestStorage, usize, SmallRng, 8>;
 
     fn make_rng() -> SmallRng {
         SmallRng::seed_from_u64(12345)
@@ -2107,8 +2107,8 @@ mod bench_skiplist {
         );
     }
 
-    type TestStorage = BoxedSkipStorage<u64, u64, u32, 12>;
-    type TestSkipList = SkipList<u64, u64, TestStorage, u32, SmallRng, 12>;
+    type TestStorage = BoxedSkipStorage<u64, u64, 12>;
+    type TestSkipList = SkipList<u64, u64, TestStorage, usize, SmallRng, 12>;
 
     const WARMUP: usize = 10_000;
     const ITERATIONS: usize = 100_000;

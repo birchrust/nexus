@@ -36,7 +36,7 @@
 //! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1000);
 //!
 //! // List coordinates keys into storage
-//! let mut queue: List<u64, BoxedListStorage<u64>> = List::new();
+//! let mut queue: List<u64, BoxedListStorage<u64>, _> = List::new();
 //!
 //! // Insert returns stable key for O(1) access later
 //! let key = queue.try_push_back(&mut storage, 42).unwrap();
@@ -54,8 +54,8 @@
 //! use nexus_collections::{BoxedListStorage, List};
 //!
 //! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(100);
-//! let mut queue_a: List<u64, BoxedListStorage<u64>> = List::new();
-//! let mut queue_b: List<u64, BoxedListStorage<u64>> = List::new();
+//! let mut queue_a: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut queue_b: List<u64, BoxedListStorage<u64>, _> = List::new();
 //!
 //! let key = queue_a.try_push_back(&mut storage, 42).unwrap();
 //!
@@ -78,7 +78,7 @@
 //!
 //! let mut storage_a: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
 //! let mut storage_b: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
 //!
 //! let key = list.try_push_back(&mut storage_a, 1).unwrap();
 //!

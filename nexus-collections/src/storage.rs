@@ -202,6 +202,8 @@ impl<T: core::fmt::Debug> std::error::Error for Full<T> {}
 // BoxedStorage - runtime capacity, single allocation, bitmap occupancy
 // =============================================================================
 
+const NONE: usize = usize::MAX;
+
 /// Fixed-capacity storage with runtime-determined size.
 ///
 /// Uses a single heap allocation containing:
@@ -222,7 +224,7 @@ impl<T: core::fmt::Debug> std::error::Error for Full<T> {}
 /// let key = storage.try_insert(42).unwrap();
 /// assert_eq!(storage.get(key), Some(&42));
 /// ```
-pub struct BoxedStorage<T, K: Key = u32> {
+pub struct BoxedStorage<T> {
     /// Single allocation containing entries, bitmap, and free stack.
     ptr: NonNull<u8>,
     /// Capacity (always power of 2).
@@ -235,10 +237,10 @@ pub struct BoxedStorage<T, K: Key = u32> {
     bitmap_offset: usize,
     /// Offset to free stack from ptr.
     free_stack_offset: usize,
-    _marker: PhantomData<(T, K)>,
+    _marker: PhantomData<T>,
 }
 
-impl<T, K: Key> BoxedStorage<T, K> {
+impl<T> BoxedStorage<T> {
     /// Creates storage with at least `min_capacity` slots.
     ///
     /// Actual capacity is rounded up to the next power of 2.
@@ -252,17 +254,14 @@ impl<T, K: Key> BoxedStorage<T, K> {
         // Round up to power of 2 for bitmap efficiency
         let capacity = min_capacity.next_power_of_two();
 
-        assert!(
-            capacity <= K::NONE.as_usize(),
-            "capacity exceeds key type maximum"
-        );
+        assert!(capacity <= NONE, "capacity exceeds key type maximum");
 
         // Calculate layout
         // Layout: [entries][padding][bitmap][padding][free_stack]
         let entries_layout = Layout::array::<MaybeUninit<T>>(capacity).unwrap();
         let bitmap_words = bitmap_words(capacity);
         let bitmap_layout = Layout::array::<u64>(bitmap_words).unwrap();
-        let free_stack_layout = Layout::array::<K>(capacity).unwrap();
+        let free_stack_layout = Layout::array::<usize>(capacity).unwrap();
 
         let (layout, bitmap_offset) = entries_layout.extend(bitmap_layout).unwrap();
         let (layout, free_stack_offset) = layout.extend(free_stack_layout).unwrap();
@@ -283,9 +282,9 @@ impl<T, K: Key> BoxedStorage<T, K> {
 
         // Initialize free stack
         unsafe {
-            let free_stack_ptr = ptr.as_ptr().add(free_stack_offset) as *mut K;
+            let free_stack_ptr = ptr.as_ptr().add(free_stack_offset) as *mut usize;
             for i in 0..capacity {
-                free_stack_ptr.add(i).write(K::from_usize(i));
+                free_stack_ptr.add(i).write(i);
             }
         }
 
@@ -334,7 +333,7 @@ impl<T, K: Key> BoxedStorage<T, K> {
         let free_stack = self.free_stack_ptr();
         for i in 0..self.capacity {
             unsafe {
-                *free_stack.add(i) = K::from_usize(i);
+                *free_stack.add(i) = i;
             }
         }
         self.free_len = self.capacity;
@@ -351,8 +350,8 @@ impl<T, K: Key> BoxedStorage<T, K> {
     }
 
     #[inline]
-    fn free_stack_ptr(&self) -> *mut K {
-        unsafe { self.ptr.as_ptr().add(self.free_stack_offset) as *mut K }
+    fn free_stack_ptr(&self) -> *mut usize {
+        unsafe { self.ptr.as_ptr().add(self.free_stack_offset) as *mut usize }
     }
 
     #[inline]
@@ -386,8 +385,8 @@ impl<T, K: Key> BoxedStorage<T, K> {
     }
 }
 
-impl<T, K: Key> Storage<T> for BoxedStorage<T, K> {
-    type Key = K;
+impl<T> Storage<T> for BoxedStorage<T> {
+    type Key = usize;
 
     #[inline]
     fn remove(&mut self, key: Self::Key) -> Option<T> {
@@ -458,7 +457,7 @@ impl<T, K: Key> Storage<T> for BoxedStorage<T, K> {
     }
 }
 
-impl<T, K: Key> BoundedStorage<T> for BoxedStorage<T, K> {
+impl<T> BoundedStorage<T> for BoxedStorage<T> {
     #[inline]
     fn try_insert(&mut self, value: T) -> Result<Self::Key, Full<T>> {
         if self.free_len == 0 {
@@ -483,7 +482,7 @@ impl<T, K: Key> BoundedStorage<T> for BoxedStorage<T, K> {
     }
 }
 
-impl<T, K: Key> Drop for BoxedStorage<T, K> {
+impl<T> Drop for BoxedStorage<T> {
     fn drop(&mut self) {
         // Drop all occupied entries
         for i in 0..self.capacity {
@@ -502,7 +501,7 @@ impl<T, K: Key> Drop for BoxedStorage<T, K> {
 }
 
 // Safety: BoxedStorage owns its data, safe to send if T is Send
-unsafe impl<T: Send, K: Key> Send for BoxedStorage<T, K> {}
+unsafe impl<T: Send> Send for BoxedStorage<T> {}
 
 // =============================================================================
 // HashMap implementation (UnboundedStorage for Keyed values)
@@ -859,14 +858,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn u16_key() {
-        let mut storage: BoxedStorage<u64, u16> = BoxedStorage::with_capacity(100);
-
-        let key = storage.try_insert(42).unwrap();
-        assert_eq!(storage.get(key), Some(&42));
-    }
-
     // =========================================================================
     // HashMap tests
     // =========================================================================
@@ -1012,7 +1003,8 @@ mod tests {
 
         #[test]
         fn insert_get_remove() {
-            let mut storage: nexus_slab::DynamicSlab<u64> = nexus_slab::Slab::with_capacity(16).unwrap();
+            let mut storage: nexus_slab::DynamicSlab<u64> =
+                nexus_slab::Slab::with_capacity(16).unwrap();
 
             let key = UnboundedStorage::insert(&mut storage, 42);
             assert_eq!(Storage::get(&storage, key), Some(&42));
@@ -1042,7 +1034,7 @@ mod tests {
             storage.try_insert(i as u64).unwrap();
         }
         for i in 0..CAPACITY {
-            storage.remove(u32::from_usize(i));
+            storage.remove(i);
         }
 
         // Collect timings
@@ -1121,7 +1113,7 @@ mod tests {
             storage.try_insert(i as u64).unwrap();
         }
         for i in 0..CAPACITY {
-            storage.remove(u32::from_usize(i));
+            storage.remove(i);
         }
 
         // Collect timings
