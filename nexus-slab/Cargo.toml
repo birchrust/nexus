@@ -45,6 +45,10 @@ harness = false
 name = "perf_mixed_cycles"
 harness = false
 
+[[example]]
+name = "perf_mixed_cycles_bounded"
+harness = false
+
 [[bench]]
 name = "slab_comparison"
 harness = false

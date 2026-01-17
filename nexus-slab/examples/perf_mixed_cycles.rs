@@ -115,7 +115,7 @@ fn bench_nexus() -> GrowthStats {
 
     let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(FINAL_SIZE);
+    let mut keys: Vec<nexus_slab::OldKey> = Vec::with_capacity(FINAL_SIZE);
 
     // Phase 1: Pre-growth (fill to ~80% of initial capacity)
     let pre_growth_target = INITIAL_CAPACITY * 8 / 10;

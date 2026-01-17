@@ -13,7 +13,7 @@ use std::ptr::NonNull;
 use alloc::{alloc_pages, drop_pages};
 
 #[cfg(unix)]
-use unix::{alloc_pages, drop_pages, mlock_impl};
+use unix::{alloc_pages, drop_pages, mlock_impl, munlock_impl};
 
 #[cfg(unix)]
 use unix::alloc_pages_hugetlb;
@@ -49,6 +49,18 @@ impl Pages {
     #[cfg(unix)]
     pub(crate) fn mlock(&self) -> std::io::Result<()> {
         mlock_impl(self.ptr, self.size)
+    }
+
+    /// Unlock pages, allowing them to be swapped.
+    #[cfg(unix)]
+    pub(crate) fn munlock(&self) -> std::io::Result<()> {
+        munlock_impl(self.ptr, self.size)
+    }
+
+    /// Returns the size of the allocated region in bytes.
+    #[inline]
+    pub(crate) fn size(&self) -> usize {
+        self.size
     }
 }
 

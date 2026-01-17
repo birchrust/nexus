@@ -162,6 +162,23 @@ pub(crate) fn mlock_impl(ptr: NonNull<u8>, size: usize) -> io::Result<()> {
     }
 }
 
+pub(crate) fn munlock_impl(ptr: NonNull<u8>, size: usize) -> io::Result<()> {
+    #[cfg(miri)]
+    {
+        let _ = (ptr, size);
+        Ok(())
+    }
+    #[cfg(not(miri))]
+    {
+        let result = unsafe { libc::munlock(ptr.as_ptr() as *const libc::c_void, size) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+
 // =============================================================================
 // Deallocation
 // =============================================================================
