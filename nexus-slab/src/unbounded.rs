@@ -797,4 +797,342 @@ mod tests {
 
         assert_eq!(slab.len(), 0);
     }
+
+    // =========================================================================
+    // LIFO Behavior
+    // =========================================================================
+
+    #[test]
+    fn insert_after_remove_reuses_slot_lifo() {
+        let mut slab = Slab::with_capacity(100);
+
+        let _k1 = slab.insert(1u64);
+        let k2 = slab.insert(2u64);
+        let _k3 = slab.insert(3u64);
+
+        slab.remove(k2);
+
+        let k4 = slab.insert(4u64);
+        assert_eq!(k4.index(), k2.index()); // LIFO reuse
+        assert_eq!(slab[k4], 4);
+    }
+
+    #[test]
+    fn freelist_chain_works_correctly() {
+        let mut slab = Slab::with_capacity(100);
+
+        let _k1 = slab.insert(1u64);
+        let k2 = slab.insert(2u64);
+        let k3 = slab.insert(3u64);
+        let _k4 = slab.insert(4u64);
+
+        // Remove in order: k2, k3 (builds chain k3 -> k2)
+        slab.remove(k2);
+        slab.remove(k3);
+
+        // Insert should get k3 first (LIFO), then k2
+        let new1 = slab.insert(10u64);
+        let new2 = slab.insert(20u64);
+
+        assert_eq!(new1.index(), k3.index());
+        assert_eq!(new2.index(), k2.index());
+    }
+
+    #[test]
+    fn chunk_freelist_lifo_on_remove() {
+        let mut slab: Slab<u64> = Slab::builder().chunk_capacity(16).build();
+
+        // Fill first chunk completely, spill into second
+        let mut keys = Vec::new();
+        for i in 0..20u64 {
+            keys.push(slab.insert(i));
+        }
+
+        assert_eq!(slab.num_chunks(), 2);
+
+        // First 16 keys are in chunk 0, next 4 in chunk 1
+        // Remove from chunk 0 (was full) - should push chunk 0 back to freelist
+        let k0 = keys[0];
+        slab.remove(k0);
+
+        // Next insert should reuse the freed slot (LIFO within chunk 0)
+        let new_key = slab.insert(999);
+        assert_eq!(new_key.index(), k0.index());
+        assert_eq!(slab[new_key], 999);
+    }
+
+    // =========================================================================
+    // Growth Behavior
+    // =========================================================================
+
+    #[test]
+    fn growth_preserves_existing_values() {
+        let mut slab: Slab<u64> = Slab::builder().chunk_capacity(16).build();
+
+        let mut keys = Vec::new();
+        for i in 0..16u64 {
+            keys.push(slab.insert(i));
+        }
+
+        assert_eq!(slab.num_chunks(), 1);
+
+        // Force growth
+        for i in 16..100u64 {
+            slab.insert(i);
+        }
+
+        assert!(slab.num_chunks() > 1);
+
+        // Verify original values unchanged
+        for (i, &k) in keys.iter().enumerate() {
+            assert_eq!(slab[k], i as u64);
+        }
+    }
+
+    // =========================================================================
+    // No Double Allocation
+    // =========================================================================
+
+    #[test]
+    fn no_double_allocation() {
+        use std::collections::HashSet;
+
+        let mut slab: Slab<u64> = Slab::builder().chunk_capacity(32).build();
+        let mut allocated: HashSet<u32> = HashSet::new();
+
+        let mut keys = Vec::new();
+        for i in 0..200u64 {
+            let k = slab.insert(i);
+            assert!(
+                !allocated.contains(&k.index()),
+                "Double allocation on insert: {}",
+                k.index()
+            );
+            allocated.insert(k.index());
+            keys.push(k);
+        }
+
+        // Remove half
+        for i in (0..200).step_by(2) {
+            let k = keys[i];
+            allocated.remove(&k.index());
+            slab.remove(k);
+        }
+
+        // Insert more
+        for i in 0..100u64 {
+            let k = slab.insert(1000 + i);
+            assert!(
+                !allocated.contains(&k.index()),
+                "Double allocation on reinsert: {}",
+                k.index()
+            );
+            allocated.insert(k.index());
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn no_double_allocation_stress() {
+        use std::collections::HashMap;
+
+        let mut slab: Slab<u64> = Slab::builder().chunk_capacity(64).build();
+        let mut live: HashMap<u32, u64> = HashMap::new();
+
+        for round in 0..100 {
+            for i in 0..50 {
+                let val = (round * 1000 + i) as u64;
+                let k = slab.insert(val);
+
+                if let Some(old) = live.get(&k.index()) {
+                    panic!(
+                        "Double allocation: index {} has {}, inserting {}",
+                        k.index(),
+                        old,
+                        val
+                    );
+                }
+                live.insert(k.index(), val);
+            }
+
+            let to_remove: Vec<_> = live.keys().take(25).cloned().collect();
+            for idx in to_remove {
+                let k = Key::new(idx);
+                let val = slab.remove(k);
+                let expected = live.remove(&idx).unwrap();
+                assert_eq!(val, expected);
+            }
+        }
+    }
+
+    // =========================================================================
+    // Drop Behavior
+    // =========================================================================
+
+    #[test]
+    fn clear_drops_values() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct DropCounter;
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let mut slab = Slab::with_capacity(100);
+        for _ in 0..50 {
+            slab.insert(DropCounter);
+        }
+
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+
+        slab.clear();
+
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 50);
+    }
+
+    #[test]
+    fn drop_cleans_up_all_chunks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct DropCounter;
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        {
+            let mut slab: Slab<DropCounter> = Slab::builder().chunk_capacity(16).build();
+
+            for _ in 0..50 {
+                slab.insert(DropCounter);
+            }
+
+            assert!(slab.num_chunks() >= 3);
+        }
+
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 50);
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn zero_sized_type() {
+        let mut slab = Slab::<()>::with_capacity(100);
+
+        let mut keys = Vec::new();
+        for _ in 0..50 {
+            keys.push(slab.insert(()));
+        }
+
+        assert_eq!(slab.len(), 50);
+
+        for k in keys {
+            slab.remove(k);
+        }
+
+        assert!(slab.is_empty());
+    }
+
+    #[test]
+    fn large_value_type() {
+        #[derive(Clone, PartialEq, Debug)]
+        struct Large([u64; 64]); // 512 bytes
+
+        let mut slab = Slab::with_capacity(16);
+
+        let val = Large([42; 64]);
+        let k = slab.insert(val.clone());
+
+        assert_eq!(slab[k], val);
+    }
+
+    // =========================================================================
+    // Stress Tests (extended)
+    // =========================================================================
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn stress_random_operations() {
+        use std::collections::HashMap;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn pseudo_random(seed: u64) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            seed.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let mut slab: Slab<u64> = Slab::builder().chunk_capacity(64).build();
+        let mut live: HashMap<u32, u64> = HashMap::new();
+        let mut seed = 12345u64;
+
+        for _ in 0..10000 {
+            seed = pseudo_random(seed);
+
+            if live.is_empty() || seed % 3 != 0 {
+                let val = seed;
+                let k = slab.insert(val);
+                live.insert(k.index(), val);
+            } else {
+                let idx = (seed as usize) % live.len();
+                let &index = live.keys().nth(idx).unwrap();
+                let k = Key::new(index);
+                let val = slab.remove(k);
+                let expected = live.remove(&index).unwrap();
+                assert_eq!(val, expected);
+            }
+        }
+
+        assert_eq!(slab.len(), live.len());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn stress_insert_remove_cycles() {
+        use std::collections::HashMap;
+
+        let mut slab: Slab<u64> = Slab::builder().chunk_capacity(64).build();
+        let mut keys: Vec<Key> = Vec::new();
+        let mut expected: HashMap<u32, u64> = HashMap::new();
+
+        for cycle in 0..100 {
+            for i in 0..100 {
+                let val = (cycle * 1000 + i) as u64;
+                let k = slab.insert(val);
+                keys.push(k);
+                expected.insert(k.index(), val);
+            }
+
+            // Verify all values
+            for (&idx, &val) in &expected {
+                let k = Key::new(idx);
+                assert_eq!(slab[k], val);
+            }
+
+            // Remove half
+            let drain_count = keys.len() / 2;
+            for _ in 0..drain_count {
+                let k = keys.pop().unwrap();
+                let val = slab.remove(k);
+                let expected_val = expected.remove(&k.index()).unwrap();
+                assert_eq!(val, expected_val);
+            }
+        }
+    }
 }

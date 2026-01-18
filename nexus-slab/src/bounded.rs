@@ -1004,4 +1004,231 @@ mod tests {
             assert!(slab.is_empty());
         }
     }
+
+    // =========================================================================
+    // LIFO Behavior
+    // =========================================================================
+
+    #[test]
+    fn insert_after_remove_reuses_slot_lifo() {
+        let mut slab = BoundedSlab::with_capacity(100);
+
+        let _k1 = slab.try_insert(1u64).unwrap();
+        let k2 = slab.try_insert(2u64).unwrap();
+        let _k3 = slab.try_insert(3u64).unwrap();
+
+        slab.remove(k2);
+
+        let k4 = slab.try_insert(4u64).unwrap();
+        assert_eq!(k4.index(), k2.index()); // LIFO reuse
+        assert_eq!(slab[k4], 4);
+    }
+
+    #[test]
+    fn freelist_chain_works_correctly() {
+        let mut slab = BoundedSlab::with_capacity(100);
+
+        let _k1 = slab.try_insert(1u64).unwrap();
+        let k2 = slab.try_insert(2u64).unwrap();
+        let k3 = slab.try_insert(3u64).unwrap();
+        let _k4 = slab.try_insert(4u64).unwrap();
+
+        // Remove in order: k2, k3 (builds chain k3 -> k2)
+        slab.remove(k2);
+        slab.remove(k3);
+
+        // Insert should get k3 first (LIFO), then k2
+        let new1 = slab.try_insert(10u64).unwrap();
+        let new2 = slab.try_insert(20u64).unwrap();
+
+        assert_eq!(new1.index(), k3.index());
+        assert_eq!(new2.index(), k2.index());
+    }
+
+    // =========================================================================
+    // No Double Allocation
+    // =========================================================================
+
+    #[test]
+    fn no_double_allocation() {
+        use std::collections::HashSet;
+
+        let mut slab = BoundedSlab::with_capacity(500);
+        let mut allocated: HashSet<u32> = HashSet::new();
+
+        let mut keys = Vec::new();
+        for i in 0..250u64 {
+            let k = slab.try_insert(i).unwrap();
+            assert!(
+                !allocated.contains(&k.index()),
+                "Double allocation on insert: {}",
+                k.index()
+            );
+            allocated.insert(k.index());
+            keys.push(k);
+        }
+
+        // Remove every other one
+        for i in (0..250).step_by(2) {
+            let k = keys[i];
+            allocated.remove(&k.index());
+            slab.remove(k);
+        }
+
+        // Insert 125 more
+        for i in 0..125u64 {
+            let k = slab.try_insert(1000 + i).unwrap();
+            assert!(
+                !allocated.contains(&k.index()),
+                "Double allocation on reinsert: {}",
+                k.index()
+            );
+            allocated.insert(k.index());
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn no_double_allocation_stress() {
+        use std::collections::HashMap;
+
+        let mut slab = BoundedSlab::with_capacity(1000);
+        let mut live: HashMap<u32, u64> = HashMap::new();
+
+        for round in 0..100 {
+            for i in 0..10 {
+                let val = (round * 100 + i) as u64;
+                let k = slab.try_insert(val).unwrap();
+
+                if let Some(old) = live.get(&k.index()) {
+                    panic!(
+                        "Double allocation: index {} has {}, inserting {}",
+                        k.index(),
+                        old,
+                        val
+                    );
+                }
+                live.insert(k.index(), val);
+            }
+
+            let to_remove: Vec<_> = live.keys().take(5).cloned().collect();
+            for idx in to_remove {
+                let k = Key::new(idx);
+                let val = slab.remove(k);
+                let expected = live.remove(&idx).unwrap();
+                assert_eq!(val, expected);
+            }
+        }
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn zero_sized_type() {
+        let mut slab = BoundedSlab::<()>::with_capacity(100);
+
+        let mut keys = Vec::new();
+        for _ in 0..50 {
+            keys.push(slab.try_insert(()).unwrap());
+        }
+
+        assert_eq!(slab.len(), 50);
+
+        for k in keys {
+            slab.remove(k);
+        }
+
+        assert!(slab.is_empty());
+    }
+
+    #[test]
+    fn large_value_type() {
+        #[derive(Clone, PartialEq, Debug)]
+        struct Large([u64; 64]); // 512 bytes
+
+        let mut slab = BoundedSlab::with_capacity(16);
+
+        let val = Large([42; 64]);
+        let k = slab.try_insert(val.clone()).unwrap();
+
+        assert_eq!(slab[k], val);
+    }
+
+    // =========================================================================
+    // Stress Tests (extended)
+    // =========================================================================
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn stress_random_operations() {
+        use std::collections::HashMap;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn pseudo_random(seed: u64) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            seed.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let mut slab = BoundedSlab::with_capacity(500);
+        let mut live: HashMap<u32, u64> = HashMap::new();
+        let mut seed = 12345u64;
+
+        for _ in 0..5000 {
+            seed = pseudo_random(seed);
+
+            if live.is_empty() || (live.len() < 400 && seed % 3 != 0) {
+                let val = seed;
+                if let Ok(k) = slab.try_insert(val) {
+                    live.insert(k.index(), val);
+                }
+            } else if !live.is_empty() {
+                let idx = (seed as usize) % live.len();
+                let &index = live.keys().nth(idx).unwrap();
+                let k = Key::new(index);
+                let val = slab.remove(k);
+                let expected = live.remove(&index).unwrap();
+                assert_eq!(val, expected);
+            }
+        }
+
+        assert_eq!(slab.len(), live.len());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn stress_insert_remove_cycles() {
+        use std::collections::HashMap;
+
+        let mut slab = BoundedSlab::with_capacity(10000);
+        let mut keys: Vec<Key> = Vec::new();
+        let mut expected: HashMap<u32, u64> = HashMap::new();
+
+        for cycle in 0..100 {
+            for i in 0..100 {
+                let val = (cycle * 1000 + i) as u64;
+                let k = slab.try_insert(val).unwrap();
+                keys.push(k);
+                expected.insert(k.index(), val);
+            }
+
+            // Verify all values
+            for (&idx, &val) in &expected {
+                let k = Key::new(idx);
+                assert_eq!(slab[k], val);
+            }
+
+            // Remove half
+            let drain_count = keys.len() / 2;
+            for _ in 0..drain_count {
+                let k = keys.pop().unwrap();
+                let val = slab.remove(k);
+                let expected_val = expected.remove(&k.index()).unwrap();
+                assert_eq!(val, expected_val);
+            }
+        }
+    }
 }
