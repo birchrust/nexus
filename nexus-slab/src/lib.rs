@@ -102,9 +102,9 @@
 //! # Example
 //!
 //! ```
-//! use nexus_slab::DynamicSlab;
+//! use nexus_slab::Slab;
 //!
-//! let mut slab = DynamicSlab::with_capacity(1000).unwrap();
+//! let mut slab = Slab::with_capacity(1000);
 //!
 //! let key = slab.insert(42);
 //! assert_eq!(slab[key], 42);
@@ -128,9 +128,7 @@ mod sys;
 pub mod unbounded;
 
 pub use bounded::BoundedSlab;
-pub use unbounded::{
-    DynamicSlab, FixedSlab, FixedSlabBuilder, OldKey, Slab, SlabBuilder, SlabError,
-};
+pub use unbounded::Slab;
 
 // =============================================================================
 // Constants
@@ -346,6 +344,13 @@ impl<T> Slot<T> {
         self.tag =
             ((generation as u64) << GEN_SHIFT) | VACANT_BIT | ((next_free as u64) & NEXT_FREE_MASK);
     }
+
+    /// Sets vacant state with explicit generation (avoids reading current tag).
+    #[inline(always)]
+    pub(crate) fn set_vacant_with_generation(&mut self, generation: u32, next_free: u32) {
+        self.tag =
+            ((generation as u64) << GEN_SHIFT) | VACANT_BIT | ((next_free as u64) & NEXT_FREE_MASK);
+    }
 }
 
 #[cfg(test)]
@@ -473,7 +478,7 @@ mod tests {
 
     #[test]
     fn slot_max_next_free() {
-        let mut slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
+        let slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
         assert!(slot.is_vacant());
         assert_eq!(slot.next_free(), SLOT_NONE);
     }

@@ -14,7 +14,7 @@
 //! assert_eq!(slab.get(key), Some(&"hello"));
 //!
 //! let removed = slab.remove(key);
-//! assert_eq!(removed, Some("hello"));
+//! assert_eq!(removed, "hello");
 //!
 //! // Stale key returns None (ABA protected)
 //! assert_eq!(slab.get(key), None);
@@ -183,6 +183,46 @@ impl<T> BoundedSlab<T> {
     fn slot_mut(&mut self, index: u32) -> &mut Slot<T> {
         debug_assert!(index < self.capacity);
         unsafe { &mut *self.ptr.as_ptr().add(index as usize) }
+    }
+
+    /// Reserves a slot without inserting. Returns (index, generation).
+    #[inline(always)]
+    pub(crate) fn reserve_slot(&mut self) -> Option<(u32, u32)> {
+        if self.is_full() {
+            return None;
+        }
+
+        let index = self.free_head;
+
+        // Single read: tag contains both next_free and generation
+        let (next_free, new_gen) = {
+            let slot = self.slot(index);
+            (slot.next_free(), slot.generation().wrapping_add(1))
+        };
+
+        // Single write
+        self.free_head = next_free;
+
+        Some((index, new_gen))
+    }
+
+    /// Fills a reserved slot with a value.
+    #[inline(always)]
+    pub(crate) unsafe fn fill_reserved(&mut self, index: u32, generation: u32, value: T) {
+        let slot = self.slot_mut(index);
+        slot.value.write(value);
+        slot.set_occupied(generation);
+        self.len += 1;
+    }
+
+    /// Cancels a reservation, returning slot to freelist.
+    #[inline(always)]
+    pub(crate) unsafe fn cancel_reserved(&mut self, index: u32, generation: u32) {
+        let free_head = self.free_head;
+        let slot = self.slot_mut(index);
+        // Direct write with known generation - no read needed
+        slot.set_vacant_with_generation(generation, free_head);
+        self.free_head = index;
     }
 
     // =========================================================================
@@ -365,7 +405,9 @@ impl<T> BoundedSlab<T> {
 
     /// Removes and returns the value for the given key.
     ///
-    /// Returns `None` if the key is invalid or stale.
+    /// # Panics
+    ///
+    /// Panics if the key is invalid or stale.
     ///
     /// # Example
     ///
@@ -375,38 +417,26 @@ impl<T> BoundedSlab<T> {
     /// let mut slab = BoundedSlab::with_capacity(16);
     /// let key = slab.try_insert(42).unwrap();
     ///
-    /// assert_eq!(slab.remove(key), Some(42));
-    /// assert_eq!(slab.remove(key), None);  // Already removed
+    /// assert_eq!(slab.remove(key), 42);
+    /// // slab.remove(key);  // Would panic - already removed
     /// ```
     #[inline(always)]
-    pub fn remove(&mut self, key: Key) -> Option<T> {
+    pub fn remove(&mut self, key: Key) -> T {
         let index = key.index();
-        let in_bounds = index < self.capacity;
+        assert!(index < self.capacity, "key index out of bounds");
 
-        let safe_index = if in_bounds { index } else { 0 };
-
-        // Read slot state for validation (speculative)
-        let (is_occupied, gen_match) = {
-            let slot = self.slot(safe_index);
-            (slot.is_occupied(), slot.generation() == key.generation())
-        };
-
-        let valid = in_bounds & is_occupied & gen_match;
-
-        if !valid {
-            return None;
-        }
+        let slot = self.slot(index);
+        assert!(slot.is_occupied(), "slot is vacant");
+        assert!(slot.generation() == key.generation(), "stale key");
 
         // Commit phase - we know it's valid now
         let free_head = self.free_head;
         let slot = self.slot_mut(index);
         let value = unsafe { slot.value.assume_init_read() };
-
         slot.set_vacant(free_head);
         self.free_head = index;
         self.len -= 1;
-
-        Some(value)
+        value
     }
 
     /// Removes and returns the value without validation.
@@ -633,9 +663,8 @@ mod tests {
         assert_eq!(slab.get(key), Some(&42));
 
         let removed = slab.remove(key);
-        assert_eq!(removed, Some(42));
+        assert_eq!(removed, 42);
         assert_eq!(slab.len(), 0);
-        assert_eq!(slab.get(key), None);
     }
 
     #[test]
@@ -693,6 +722,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn stale_key_remove_returns_none() {
         let mut slab = BoundedSlab::with_capacity(16);
 
@@ -701,7 +731,7 @@ mod tests {
         let _key2 = slab.try_insert(2u64).unwrap();
 
         // Can't remove with stale key
-        assert_eq!(slab.remove(key1), None);
+        slab.remove(key1);
     }
 
     #[test]
@@ -999,7 +1029,7 @@ mod tests {
         for i in 0..10_000u64 {
             let key = slab.try_insert(i).unwrap();
             assert_eq!(slab.get(key), Some(&i));
-            assert_eq!(slab.remove(key), Some(i));
+            assert_eq!(slab.remove(key), i);
         }
     }
 

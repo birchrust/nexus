@@ -64,26 +64,20 @@ fn generate_random_indices(count: usize, max: usize, seed: u64) -> Vec<usize> {
 }
 
 fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
-    let mut slab = nexus_slab::SlabBuilder::default()
-        .capacity(CAPACITY)
-        .build()
-        .unwrap();
+    let mut slab = nexus_slab::Slab::with_capacity(CAPACITY);
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
-    // Fill the slab - keys are indices 0..CAPACITY
-    for i in 0..CAPACITY as u64 {
-        slab.insert(i);
-    }
+    // Fill the slab - store the actual keys
+    let keys: Vec<_> = (0..CAPACITY as u64).map(|i| slab.insert(i)).collect();
 
     // Warmup - random access
     for &idx in indices.iter().take(10_000) {
-        let key = unsafe { nexus_slab::OldKey::from_raw(idx as u64) };
-        black_box(slab[key]);
+        black_box(slab[keys[idx]]);
     }
 
     // Measured random gets
     for &idx in indices {
-        let key = unsafe { nexus_slab::OldKey::from_raw(idx as u64) };
+        let key = keys[idx];
         let start = rdtscp();
         black_box(slab[key]);
         let end = rdtscp();

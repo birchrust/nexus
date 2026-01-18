@@ -107,15 +107,10 @@ impl GrowthStats {
 
 fn bench_nexus() -> GrowthStats {
     // Start with initial capacity, let it grow
-    let mut slab: nexus_slab::DynamicSlab<u64> = nexus_slab::SlabBuilder::new()
-        .capacity(INITIAL_CAPACITY) // 100K - will need to grow
-        .slab_bytes(2 * 1024 * 1024)
-        .build()
-        .unwrap();
-
+    let mut slab = nexus_slab::Slab::with_base_capacity(INITIAL_CAPACITY);
     let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<nexus_slab::OldKey> = Vec::with_capacity(FINAL_SIZE);
+    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(FINAL_SIZE);
 
     // Phase 1: Pre-growth (fill to ~80% of initial capacity)
     let pre_growth_target = INITIAL_CAPACITY * 8 / 10;
@@ -140,8 +135,9 @@ fn bench_nexus() -> GrowthStats {
         } else if op < 8 && !keys.is_empty() {
             // Get
             let idx = rng.next_usize(keys.len());
+            let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[keys[idx]]);
+            black_box(slab[key]);
             let end = rdtscp();
             let _ = stats.pre_growth.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {
@@ -162,12 +158,12 @@ fn bench_nexus() -> GrowthStats {
         let end = rdtscp();
         let _ = stats.during_growth.insert.record(end.wrapping_sub(start));
         keys.push(key);
-
         // Some gets during growth
         if !keys.is_empty() && rng.next() % 4 == 0 {
             let idx = rng.next_usize(keys.len());
+            let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[keys[idx]]);
+            black_box(slab[key]);
             let end = rdtscp();
             let _ = stats.during_growth.get.record(end.wrapping_sub(start));
         }
@@ -184,8 +180,9 @@ fn bench_nexus() -> GrowthStats {
             keys.push(key);
         } else if op < 8 && !keys.is_empty() {
             let idx = rng.next_usize(keys.len());
+            let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[keys[idx]]);
+            black_box(slab[key]);
             let end = rdtscp();
             let _ = stats.post_growth.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {
