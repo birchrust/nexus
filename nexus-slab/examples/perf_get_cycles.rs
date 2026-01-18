@@ -65,7 +65,7 @@ fn generate_random_indices(count: usize, max: usize, seed: u64) -> Vec<usize> {
 }
 
 fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
-    let mut slab = nexus_slab::Slab::with_capacity(128 * 1024, CAPACITY);
+    let mut slab = nexus_slab::Slab::with_capacity(CAPACITY);
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
     // Fill the slab - store the actual keys

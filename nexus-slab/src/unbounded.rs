@@ -8,6 +8,73 @@ use std::ops::{Index, IndexMut};
 use crate::{BoundedSlab, Key};
 
 const SLAB_NONE: u32 = u32::MAX;
+const DEFAULT_CHUNK_CAPACITY: usize = 4096;
+
+// =============================================================================
+// SlabBuilder
+// =============================================================================
+
+/// Builder for configuring a [`Slab`].
+///
+/// # Example
+///
+/// ```
+/// use nexus_slab::Slab;
+///
+/// let slab: Slab<u64> = Slab::builder()
+///     .chunk_capacity(8192)
+///     .reserve(100_000)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct SlabBuilder {
+    chunk_capacity: usize,
+    reserve: usize,
+}
+
+impl Default for SlabBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SlabBuilder {
+    /// Creates a new builder with default settings.
+    pub fn new() -> Self {
+        Self {
+            chunk_capacity: DEFAULT_CHUNK_CAPACITY,
+            reserve: 0,
+        }
+    }
+
+    /// Sets the capacity of each internal chunk.
+    ///
+    /// Rounded up to the next power of two. Default: 4096.
+    ///
+    /// Smaller chunks = less memory waste, more growth events.
+    /// Larger chunks = fewer growth events, more memory per allocation.
+    pub fn chunk_capacity(mut self, capacity: usize) -> Self {
+        self.chunk_capacity = capacity;
+        self
+    }
+
+    /// Pre-allocates space for at least this many items.
+    ///
+    /// Allocates enough chunks to hold `count` items. Default: 0 (lazy).
+    pub fn reserve(mut self, count: usize) -> Self {
+        self.reserve = count;
+        self
+    }
+
+    /// Builds the slab.
+    pub fn build<T>(self) -> Slab<T> {
+        let mut slab = Slab::with_chunk_capacity(self.chunk_capacity);
+        while slab.capacity() < self.reserve {
+            slab.grow();
+        }
+        slab
+    }
+}
 
 // =============================================================================
 // SlabEntry
@@ -65,11 +132,62 @@ impl<T> Slab<T> {
     // Construction
     // =========================================================================
 
-    /// Creates a new empty slab with the specified chunk capacity.
+    /// Creates a new empty slab with default settings.
+    ///
+    /// Uses a chunk capacity of 4096 slots. No memory is allocated
+    /// until the first insert.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_slab::Slab;
+    ///
+    /// let mut slab: Slab<u64> = Slab::new();
+    /// let key = slab.insert(42);
+    /// ```
+    pub fn new() -> Self {
+        Self::with_chunk_capacity(DEFAULT_CHUNK_CAPACITY)
+    }
+
+    /// Creates a new slab with pre-allocated capacity.
+    ///
+    /// Uses the default chunk capacity (4096 slots) and allocates
+    /// enough chunks to hold at least `capacity` items.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_slab::Slab;
+    ///
+    /// let slab: Slab<u64> = Slab::with_capacity(10_000);
+    /// assert!(slab.capacity() >= 10_000);
+    /// ```
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::builder().reserve(capacity).build()
+    }
+
+    /// Returns a builder for configuring a slab.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_slab::Slab;
+    ///
+    /// let slab: Slab<u64> = Slab::builder()
+    ///     .chunk_capacity(8192)
+    ///     .reserve(50_000)
+    ///     .build();
+    /// ```
+    pub fn builder() -> SlabBuilder {
+        SlabBuilder::new()
+    }
+
+    /// Creates a new slab with the specified chunk capacity.
+    ///
+    /// For most uses, prefer [`new`](Self::new), [`with_capacity`](Self::with_capacity),
+    /// or [`builder`](Self::builder).
     ///
     /// Chunk capacity is rounded up to the next power of two.
-    /// All chunks will have this same capacity.
-    ///
     /// No memory is allocated until the first insert.
     ///
     /// # Panics
@@ -91,17 +209,6 @@ impl<T> Slab<T> {
             chunk_mask,
             len: 0,
         }
-    }
-
-    /// Creates a new slab with pre-allocated capacity.
-    ///
-    /// Allocates enough chunks to hold at least `capacity` items.
-    pub fn with_capacity(chunk_capacity: usize, total_capacity: usize) -> Self {
-        let mut slab = Self::with_chunk_capacity(chunk_capacity);
-        while slab.capacity() < total_capacity {
-            slab.grow();
-        }
-        slab
     }
 
     // =========================================================================
@@ -404,6 +511,12 @@ impl<T> Slab<T> {
 // =============================================================================
 // Traits
 // =============================================================================
+
+impl<T> Default for Slab<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 unsafe impl<T: Send> Send for Slab<T> {}
 

@@ -37,7 +37,7 @@ fn print_stats(name: &str, hist: &Histogram<u64>) {
 }
 
 fn bench_nexus_slab() -> Histogram<u64> {
-    let mut slab = nexus_slab::Slab::with_capacity(128 * 1024, CAPACITY);
+    let mut slab = nexus_slab::Slab::with_capacity(CAPACITY);
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
     // Warmup
