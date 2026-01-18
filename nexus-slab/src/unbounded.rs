@@ -195,23 +195,19 @@ impl<T> Slab<T> {
         if self.slabs_head == SLAB_NONE {
             self.grow();
         }
-
         let slab_idx = self.slabs_head;
         let entry = self.entry_mut(slab_idx);
 
-        let local_key = match entry.inner.try_insert(value) {
-            Ok(key) => key,
-            Err(_) => unsafe { std::hint::unreachable_unchecked() },
-        };
+        // Safety: slabs_head only points to non-full slabs
+        let local_key = unsafe { entry.inner.insert_unchecked(value) };
 
         if entry.inner.is_full() {
             self.slabs_head = entry.next_slab;
         }
-
         self.len += 1;
 
         let global_index = self.encode(slab_idx, local_key.index());
-        Key::new(global_index, local_key.generation())
+        Key::new(global_index)
     }
 
     /// Returns a vacant entry for deferred insertion.
@@ -221,12 +217,12 @@ impl<T> Slab<T> {
         if self.slabs_head == SLAB_NONE {
             self.grow();
         }
-
         let slab_idx = self.slabs_head;
         let entry = self.entry_mut(slab_idx);
 
-        let (local_index, generation) = match entry.inner.reserve_slot() {
-            Some(res) => res,
+        // Safety: slabs_head only points to non-full slabs
+        let local_index = match entry.inner.reserve_slot() {
+            Some(idx) => idx,
             None => unsafe { std::hint::unreachable_unchecked() },
         };
 
@@ -234,7 +230,6 @@ impl<T> Slab<T> {
             slab: self,
             slab_idx,
             local_index,
-            generation,
             inserted: false,
         }
     }
@@ -244,53 +239,41 @@ impl<T> Slab<T> {
     // =========================================================================
 
     /// Returns a reference to the value for the given key.
-    #[inline]
     pub fn get(&self, key: Key) -> Option<&T> {
         if key.is_none() {
             return None;
         }
-
         let (slab_idx, local_index) = self.decode(key.index());
-
         if slab_idx >= self.num_slabs {
             return None;
         }
-
-        let local_key = Key::new(local_index, key.generation());
+        let local_key = Key::new(local_index);
         self.entry(slab_idx).inner.get(local_key)
     }
 
     /// Returns a mutable reference to the value for the given key.
-    #[inline]
     pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
         if key.is_none() {
             return None;
         }
-
         let (slab_idx, local_index) = self.decode(key.index());
-
         if slab_idx >= self.num_slabs {
             return None;
         }
-
-        let local_key = Key::new(local_index, key.generation());
+        let local_key = Key::new(local_index);
         self.entry_mut(slab_idx).inner.get_mut(local_key)
     }
 
     /// Returns `true` if the key refers to a valid, occupied slot.
-    #[inline]
     pub fn contains(&self, key: Key) -> bool {
         if key.is_none() {
             return false;
         }
-
         let (slab_idx, local_index) = self.decode(key.index());
-
         if slab_idx >= self.num_slabs {
             return false;
         }
-
-        let local_key = Key::new(local_index, key.generation());
+        let local_key = Key::new(local_index);
         self.entry(slab_idx).inner.contains(local_key)
     }
 
@@ -302,7 +285,7 @@ impl<T> Slab<T> {
     #[inline]
     pub unsafe fn get_unchecked(&self, key: Key) -> &T {
         let (slab_idx, local_index) = self.decode(key.index());
-        let local_key = Key::new(local_index, key.generation());
+        let local_key = Key::new(local_index);
         unsafe { self.entry(slab_idx).inner.get_unchecked(local_key) }
     }
 
@@ -314,7 +297,7 @@ impl<T> Slab<T> {
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, key: Key) -> &mut T {
         let (slab_idx, local_index) = self.decode(key.index());
-        let local_key = Key::new(local_index, key.generation());
+        let local_key = Key::new(local_index);
         unsafe { self.entry_mut(slab_idx).inner.get_unchecked_mut(local_key) }
     }
 
@@ -336,8 +319,8 @@ impl<T> Slab<T> {
         let slabs_head = self.slabs_head;
         let entry = self.entry_mut(slab_idx);
         let was_full = entry.inner.is_full();
-        let local_key = Key::new(local_index, key.generation());
-        let value = entry.inner.remove(local_key); // BoundedSlab::remove already panics on stale
+        let local_key = Key::new(local_index);
+        let value = entry.inner.remove(local_key);
 
         if was_full {
             entry.next_slab = slabs_head;
@@ -359,14 +342,13 @@ impl<T> Slab<T> {
         let entry = self.entry_mut(slab_idx);
         let was_full = entry.inner.is_full();
 
-        let local_key = Key::new(local_index, key.generation());
+        let local_key = Key::new(local_index);
         let value = unsafe { entry.inner.remove_unchecked(local_key) };
 
         if was_full {
             entry.next_slab = slabs_head;
             self.slabs_head = slab_idx;
         }
-
         self.len -= 1;
         value
     }
@@ -441,12 +423,38 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Slab<T> {
 // VacantEntry
 // =============================================================================
 
-/// A vacant entry in the slab, ready to be filled.
+/// A reserved slot in the slab, ready to be filled.
+///
+/// Obtained from [`Slab::vacant_entry`]. This reserves a slot and provides
+/// the key before the value is inserted, enabling self-referential structures.
+///
+/// # Example
+///
+/// ```
+/// use nexus_slab::{Slab, Key};
+///
+/// struct Node {
+///     self_key: Key,
+///     data: u64,
+/// }
+///
+/// let mut slab = Slab::new();
+///
+/// let entry = slab.vacant_entry();
+/// let key = entry.key();
+/// entry.insert(Node { self_key: key, data: 42 });
+///
+/// assert_eq!(slab.get(key).unwrap().self_key, key);
+/// ```
+///
+/// # Cancellation
+///
+/// If dropped without calling [`insert`](VacantEntry::insert), the slot
+/// is returned to the freelist and the key becomes invalid.
 pub struct VacantEntry<'a, T> {
     slab: &'a mut Slab<T>,
     slab_idx: u32,
     local_index: u32,
-    generation: u32,
     inserted: bool,
 }
 
@@ -455,28 +463,22 @@ impl<'a, T> VacantEntry<'a, T> {
     #[inline]
     pub fn key(&self) -> Key {
         let global_index = self.slab.encode(self.slab_idx, self.local_index);
-        Key::new(global_index, self.generation)
+        Key::new(global_index)
     }
 
-    /// Inserts a value into the vacant entry, returning the key.
+    /// Inserts a value into the reserved slot, returning the key.
     #[inline]
     pub fn insert(mut self, value: T) -> Key {
         let key = self.key();
-
         let entry = self.slab.entry_mut(self.slab_idx);
         unsafe {
-            entry
-                .inner
-                .fill_reserved(self.local_index, self.generation, value);
+            entry.inner.fill_reserved(self.local_index, value);
         }
-
         if entry.inner.is_full() {
             self.slab.slabs_head = entry.next_slab;
         }
-
         self.slab.len += 1;
         self.inserted = true;
-
         key
     }
 }
@@ -486,9 +488,7 @@ impl<T> Drop for VacantEntry<'_, T> {
         if !self.inserted {
             let entry = self.slab.entry_mut(self.slab_idx);
             unsafe {
-                entry
-                    .inner
-                    .cancel_reserved(self.local_index, self.generation);
+                entry.inner.cancel_reserved(self.local_index);
             }
         }
     }
@@ -546,18 +546,6 @@ mod tests {
         for (i, key) in keys.iter().enumerate() {
             assert_eq!(slab.get(*key), Some(&(i as u64)));
         }
-    }
-
-    #[test]
-    fn stale_key_returns_none() {
-        let mut slab = Slab::new();
-
-        let key1 = slab.insert(1u64);
-        slab.remove(key1);
-        let key2 = slab.insert(2u64);
-
-        assert_eq!(slab.get(key1), None);
-        assert_eq!(slab.get(key2), Some(&2));
     }
 
     #[test]

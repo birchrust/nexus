@@ -185,43 +185,48 @@ impl<T> BoundedSlab<T> {
         unsafe { &mut *self.ptr.as_ptr().add(index as usize) }
     }
 
-    /// Reserves a slot without inserting. Returns (index, generation).
+    /// Reserves a slot without inserting. Returns the index.
+    ///
+    /// # Safety
+    ///
+    /// Caller must either call `fill_reserved` or `cancel_reserved` with
+    /// the returned index before any other operations on this slab.
     #[inline(always)]
-    pub(crate) fn reserve_slot(&mut self) -> Option<(u32, u32)> {
+    pub(crate) fn reserve_slot(&mut self) -> Option<u32> {
         if self.is_full() {
             return None;
         }
-
         let index = self.free_head;
-
-        // Single read: tag contains both next_free and generation
-        let (next_free, new_gen) = {
-            let slot = self.slot(index);
-            (slot.next_free(), slot.generation().wrapping_add(1))
-        };
-
-        // Single write
+        let next_free = self.slot(index).next_free();
         self.free_head = next_free;
-
-        Some((index, new_gen))
+        Some(index)
     }
 
     /// Fills a reserved slot with a value.
+    ///
+    /// # Safety
+    ///
+    /// `index` must have been returned by `reserve_slot` and not yet
+    /// filled or cancelled.
     #[inline(always)]
-    pub(crate) unsafe fn fill_reserved(&mut self, index: u32, generation: u32, value: T) {
+    pub(crate) unsafe fn fill_reserved(&mut self, index: u32, value: T) {
         let slot = self.slot_mut(index);
         slot.value.write(value);
-        slot.set_occupied(generation);
+        slot.set_occupied();
         self.len += 1;
     }
 
-    /// Cancels a reservation, returning slot to freelist.
+    /// Cancels a reservation, returning the slot to the freelist.
+    ///
+    /// # Safety
+    ///
+    /// `index` must have been returned by `reserve_slot` and not yet
+    /// filled or cancelled.
     #[inline(always)]
-    pub(crate) unsafe fn cancel_reserved(&mut self, index: u32, generation: u32) {
+    pub(crate) unsafe fn cancel_reserved(&mut self, index: u32) {
         let free_head = self.free_head;
         let slot = self.slot_mut(index);
-        // Direct write with known generation - no read needed
-        slot.set_vacant_with_generation(generation, free_head);
+        slot.set_vacant(free_head);
         self.free_head = index;
     }
 
@@ -250,27 +255,37 @@ impl<T> BoundedSlab<T> {
     /// ```
     pub fn try_insert(&mut self, value: T) -> Result<Key, Full<T>> {
         let free_head = self.free_head;
-
-        // Single branch for capacity check
         if free_head == SLOT_NONE {
             return Err(Full(value));
         }
+        let next_free = self.slot(free_head).next_free();
+        self.free_head = next_free;
+        self.len += 1;
+        let slot = self.slot_mut(free_head);
+        slot.set_occupied();
+        slot.value.write(value);
+        Ok(Key::new(free_head))
+    }
 
-        // Read phase - gather all data we need
-        let (next_free, new_gen) = {
-            let slot = self.slot(free_head);
-            (slot.next_free(), slot.generation().wrapping_add(1))
-        };
+    /// Inserts a value without checking capacity.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure the slab is not full (`!is_full()`).
+    #[inline(always)]
+    pub(crate) unsafe fn insert_unchecked(&mut self, value: T) -> Key {
+        let free_head = self.free_head;
+        debug_assert!(free_head != SLOT_NONE, "insert_unchecked on full slab");
 
-        // Write phase - all writes batched together
+        let next_free = self.slot(free_head).next_free();
         self.free_head = next_free;
         self.len += 1;
 
         let slot = self.slot_mut(free_head);
-        slot.set_occupied(new_gen);
+        slot.set_occupied();
         slot.value.write(value);
 
-        Ok(Key::new(free_head, new_gen))
+        Key::new(free_head)
     }
 
     /// Returns a vacant entry for deferred insertion.
@@ -302,21 +317,12 @@ impl<T> BoundedSlab<T> {
         if self.is_full() {
             return None;
         }
-
         let index = self.free_head;
-        let slot = self.slot_mut(index);
-
-        // Compute generation for this allocation
-        let old_gen = slot.generation();
-        let new_gen = old_gen.wrapping_add(1);
-
-        // Pop from freelist
-        self.free_head = slot.next_free();
-
+        let next_free = self.slot(index).next_free();
+        self.free_head = next_free;
         Some(VacantEntry {
             slab: self,
             index,
-            generation: new_gen,
             inserted: false,
         })
     }
@@ -328,19 +334,13 @@ impl<T> BoundedSlab<T> {
     /// Returns a reference to the value for the given key.
     ///
     /// Returns `None` if the key is invalid or stale.
-    #[inline(always)]
     pub fn get(&self, key: Key) -> Option<&T> {
         let index = key.index();
         let in_bounds = index < self.capacity;
-
-        // Use index 0 as safe fallback for speculative load
         let safe_index = if in_bounds { index } else { 0 };
         let slot = self.slot(safe_index);
 
-        // Branchless: all conditions computed, single branch at end
-        let valid = in_bounds & slot.is_occupied() & (slot.generation() == key.generation());
-
-        if valid {
+        if in_bounds & slot.is_occupied() {
             Some(unsafe { slot.value.assume_init_ref() })
         } else {
             None
@@ -350,17 +350,13 @@ impl<T> BoundedSlab<T> {
     /// Returns a mutable reference to the value for the given key.
     ///
     /// Returns `None` if the key is invalid or stale.
-    #[inline(always)]
     pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
         let index = key.index();
         let in_bounds = index < self.capacity;
-
         let safe_index = if in_bounds { index } else { 0 };
         let slot = self.slot(safe_index);
 
-        let valid = in_bounds & slot.is_occupied() & (slot.generation() == key.generation());
-
-        if valid {
+        if in_bounds & slot.is_occupied() {
             Some(unsafe { self.slot_mut(index).value.assume_init_mut() })
         } else {
             None
@@ -368,15 +364,12 @@ impl<T> BoundedSlab<T> {
     }
 
     /// Returns `true` if the key refers to a valid, occupied slot.
-    #[inline(always)]
     pub fn contains(&self, key: Key) -> bool {
         let index = key.index();
         let in_bounds = index < self.capacity;
-
         let safe_index = if in_bounds { index } else { 0 };
         let slot = self.slot(safe_index);
-
-        in_bounds & slot.is_occupied() & (slot.generation() == key.generation())
+        in_bounds & slot.is_occupied()
     }
 
     /// Returns a reference without validation.
@@ -420,16 +413,11 @@ impl<T> BoundedSlab<T> {
     /// assert_eq!(slab.remove(key), 42);
     /// // slab.remove(key);  // Would panic - already removed
     /// ```
-    #[inline(always)]
     pub fn remove(&mut self, key: Key) -> T {
         let index = key.index();
         assert!(index < self.capacity, "key index out of bounds");
+        assert!(self.slot(index).is_occupied(), "slot is vacant");
 
-        let slot = self.slot(index);
-        assert!(slot.is_occupied(), "slot is vacant");
-        assert!(slot.generation() == key.generation(), "stale key");
-
-        // Commit phase - we know it's valid now
         let free_head = self.free_head;
         let slot = self.slot_mut(index);
         let value = unsafe { slot.value.assume_init_read() };
@@ -559,17 +547,54 @@ impl<T: fmt::Debug> fmt::Debug for BoundedSlab<T> {
 // VacantEntry
 // =============================================================================
 
-/// A vacant entry in the slab, ready to be filled.
+/// A reserved slot in the slab, ready to be filled.
 ///
 /// Obtained from [`BoundedSlab::try_vacant_entry`]. This reserves a slot
-/// and provides the key before the value is inserted.
+/// and provides the key before the value is inserted, enabling
+/// self-referential structures where the value needs to know its own key.
+///
+/// # Self-Referential Example
+///
+/// ```
+/// use nexus_slab::{BoundedSlab, Key};
+///
+/// struct Node {
+///     self_key: Key,
+///     data: u64,
+/// }
+///
+/// let mut slab = BoundedSlab::with_capacity(16);
+///
+/// let entry = slab.try_vacant_entry().unwrap();
+/// let key = entry.key();
+/// entry.insert(Node { self_key: key, data: 42 });
+///
+/// assert_eq!(slab.get(key).unwrap().self_key, key);
+/// ```
+///
+/// # Cancellation
 ///
 /// If dropped without calling [`insert`](VacantEntry::insert), the slot
-/// is returned to the free list and the key becomes invalid.
+/// is returned to the freelist and the key becomes invalid. This is safe
+/// and does not leak memory.
+///
+/// ```
+/// use nexus_slab::BoundedSlab;
+///
+/// let mut slab = BoundedSlab::<u64>::with_capacity(16);
+///
+/// let key = {
+///     let entry = slab.try_vacant_entry().unwrap();
+///     entry.key()
+///     // Dropped without insert
+/// };
+///
+/// assert!(slab.is_empty());
+/// assert!(slab.get(key).is_none());
+/// ```
 pub struct VacantEntry<'a, T> {
     slab: &'a mut BoundedSlab<T>,
     index: u32,
-    generation: u32,
     inserted: bool,
 }
 
@@ -577,21 +602,18 @@ impl<'a, T> VacantEntry<'a, T> {
     /// Returns the key that will be associated with the inserted value.
     #[inline]
     pub fn key(&self) -> Key {
-        Key::new(self.index, self.generation)
+        Key::new(self.index)
     }
 
-    /// Inserts a value into the vacant entry, returning the key.
+    /// Inserts a value into the reserved slot, returning the key.
     #[inline]
     pub fn insert(mut self, value: T) -> Key {
         let key = self.key();
-
         let slot = self.slab.slot_mut(self.index);
         slot.value.write(value);
-        slot.set_occupied(self.generation);
-
+        slot.set_occupied();
         self.slab.len += 1;
         self.inserted = true;
-
         key
     }
 }
@@ -599,17 +621,9 @@ impl<'a, T> VacantEntry<'a, T> {
 impl<T> Drop for VacantEntry<'_, T> {
     fn drop(&mut self) {
         if !self.inserted {
-            // Return slot to freelist
-            // Note: generation was already incremented when we popped,
-            // so we need to preserve it for the next allocation.
             let free_head = self.slab.free_head;
             let slot = self.slab.slot_mut(self.index);
-
-            // Set vacant with the NEW generation (that we computed but didn't use)
-            // so the next alloc increments from there
-            slot.set_occupied(self.generation); // temporarily set to store generation
-            slot.set_vacant(free_head); // now set vacant, preserving generation
-
+            slot.set_vacant(free_head);
             self.slab.free_head = self.index;
         }
     }
@@ -703,51 +717,6 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn stale_key_returns_none() {
-        let mut slab = BoundedSlab::with_capacity(16);
-
-        let key1 = slab.try_insert(1u64).unwrap();
-        slab.remove(key1);
-
-        // Reuse same slot
-        let key2 = slab.try_insert(2u64).unwrap();
-
-        // Same index, different generation
-        assert_eq!(key1.index(), key2.index());
-        assert_ne!(key1.generation(), key2.generation());
-
-        // Stale key returns None
-        assert_eq!(slab.get(key1), None);
-        assert_eq!(slab.get(key2), Some(&2));
-    }
-
-    #[test]
-    #[should_panic]
-    fn stale_key_remove_returns_none() {
-        let mut slab = BoundedSlab::with_capacity(16);
-
-        let key1 = slab.try_insert(1u64).unwrap();
-        slab.remove(key1);
-        let _key2 = slab.try_insert(2u64).unwrap();
-
-        // Can't remove with stale key
-        slab.remove(key1);
-    }
-
-    #[test]
-    fn generation_increments_on_reuse() {
-        let mut slab = BoundedSlab::with_capacity(1);
-
-        let mut last_gen = 0;
-        for i in 0..100u64 {
-            let key = slab.try_insert(i).unwrap();
-            assert!(key.generation() > last_gen || (last_gen == 0 && key.generation() == 1));
-            last_gen = key.generation();
-            slab.remove(key);
-        }
-    }
-
-    #[test]
     fn key_none_returns_none() {
         let slab: BoundedSlab<u64> = BoundedSlab::with_capacity(16);
         assert_eq!(slab.get(Key::NONE), None);
@@ -835,22 +804,6 @@ mod tests {
         assert_eq!(slab.get(k1), None);
         assert_eq!(slab.get(k2), None);
         assert_eq!(slab.get(k3), None);
-    }
-
-    #[test]
-    fn clear_preserves_generations() {
-        let mut slab = BoundedSlab::with_capacity(1);
-
-        let key1 = slab.try_insert(1u64).unwrap();
-        let gen1 = key1.generation();
-
-        slab.clear();
-
-        let key2 = slab.try_insert(2u64).unwrap();
-        let gen2 = key2.generation();
-
-        // Generation should have incremented
-        assert!(gen2 > gen1);
     }
 
     #[test]

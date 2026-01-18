@@ -225,8 +225,9 @@ fn bench_slab_crate() -> GrowthStats {
             keys.push(key);
         } else if op < 8 && !keys.is_empty() {
             let idx = rng.next_usize(keys.len());
+            let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[keys[idx]]);
+            black_box(slab[key]);
             let end = rdtscp();
             let _ = stats.pre_growth.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {
@@ -249,8 +250,9 @@ fn bench_slab_crate() -> GrowthStats {
 
         if !keys.is_empty() && rng.next() % 4 == 0 {
             let idx = rng.next_usize(keys.len());
+            let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[keys[idx]]);
+            black_box(slab[key]);
             let end = rdtscp();
             let _ = stats.during_growth.get.record(end.wrapping_sub(start));
         }
@@ -267,8 +269,9 @@ fn bench_slab_crate() -> GrowthStats {
             keys.push(key);
         } else if op < 8 && !keys.is_empty() {
             let idx = rng.next_usize(keys.len());
+            let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[keys[idx]]);
+            black_box(slab[key]);
             let end = rdtscp();
             let _ = stats.post_growth.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {

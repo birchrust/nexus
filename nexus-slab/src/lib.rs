@@ -134,17 +134,16 @@ pub use unbounded::Slab;
 // Constants
 // =============================================================================
 
-/// Sentinel value indicating end of freelist chain (31-bit max).
-pub(crate) const SLOT_NONE: u32 = (1 << 31) - 1;
-
 /// Bit 31 of tag: set indicates slot is vacant.
-const VACANT_BIT: u64 = 1 << 31;
+const VACANT_BIT: u32 = 1 << 31; // 0x8000_0000
 
 /// Mask for next_free index (bits 0-30).
-const NEXT_FREE_MASK: u64 = (1 << 31) - 1;
+const INDEX_MASK: u32 = (1 << 31) - 1; // 0x7FFF_FFFF
 
-/// Shift for generation (stored in upper 32 bits).
-const GEN_SHIFT: u32 = 32;
+/// Sentinel value indicating end of freelist chain or invalid key.
+///
+/// Max 31-bit value, limiting addressable slots to ~2 billion.
+pub const SLOT_NONE: u32 = INDEX_MASK; // 0x7FFF_FFFF
 
 // =============================================================================
 // Errors
@@ -160,89 +159,100 @@ pub struct Full<T>(pub T);
 
 /// Opaque handle to an allocated slot.
 ///
-/// Keys are generational: each key encodes both a slot index and a generation
-/// counter. When a slot is freed and reallocated, the generation increments,
-/// invalidating old keys that point to the same index.
+/// A `Key` is simply an index into the slab. It does not contain a generation
+/// counter or any other validation mechanism.
 ///
-/// # Layout
+/// # Design Rationale: No Generational Indices
 ///
-/// ```text
-/// ┌──────────────────────────┬──────────────────────────┐
-/// │   generation (32 bits)   │      index (32 bits)     │
-/// └──────────────────────────┴──────────────────────────┘
-///           high                        low
+/// This slab intentionally omits generational indices (ABA protection). Why?
+///
+/// **The slab is dumb storage, not a source of truth.**
+///
+/// In real systems, your data has authoritative external identifiers:
+/// - Exchange order IDs in trading systems
+/// - Database primary keys in web services
+/// - Session tokens in connection managers
+///
+/// When you receive a message referencing an entity, you must validate against
+/// the authoritative identifier anyway:
+///
+/// ```ignore
+/// fn on_fill(fill: Fill, key: Key) {
+///     let Some(order) = slab.get(key) else { return };
+///
+///     // This check is REQUIRED regardless of generational indices
+///     if order.exchange_id != fill.exchange_id {
+///         panic!("order mismatch");
+///     }
+///
+///     // Process...
+/// }
 /// ```
+///
+/// Generational indices would catch the same bug that domain validation catches,
+/// but at a cost of ~8 cycles per operation. Since domain validation is
+/// unavoidable, generations provide no additional safety—only overhead.
+///
+/// **If a stale key reaches the slab, your architecture has a bug.** The fix is
+/// to correct the architecture (clear ownership, proper state machines), not to
+/// add runtime checks that mask the underlying problem.
 ///
 /// # Sentinel
 ///
-/// [`Key::NONE`] (`u64::MAX`) represents an invalid/absent key, useful for
-/// optional key fields without the `Option` overhead.
+/// [`Key::NONE`] represents an invalid/absent key, useful for optional key
+/// fields without `Option` overhead.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct Key(u64);
+pub struct Key(u32);
 
 impl Key {
-    const INDEX_BITS: u32 = 32;
-    const INDEX_MASK: u64 = (1 << Self::INDEX_BITS) - 1;
-    const GEN_SHIFT: u32 = Self::INDEX_BITS;
-
-    /// Sentinel value representing no key.
+    /// Sentinel value representing no key / invalid key.
     ///
-    /// Useful for struct fields where `Option<Key>` would add overhead.
-    /// Check with [`is_none`](Self::is_none) or [`is_some`](Self::is_some).
-    pub const NONE: Self = Key(u64::MAX);
+    /// Equivalent to `SLOT_NONE`. Check with [`is_none`](Self::is_none).
+    pub const NONE: Self = Key(SLOT_NONE);
 
-    /// Creates a new key from an index and generation.
+    /// Creates a new key from an index.
     #[inline]
-    pub(crate) fn new(index: u32, generation: u32) -> Self {
-        Key(((generation as u64) << Self::GEN_SHIFT) | (index as u64))
+    pub(crate) const fn new(index: u32) -> Self {
+        Key(index)
     }
 
-    /// Returns the slot index component.
+    /// Returns the slot index.
     ///
-    /// For [`BoundedSlab`](crate::BoundedSlab), this is the slot directly.
-    /// For [`Slab`](crate::Slab), this encodes slab and slot via power-of-2 math.
+    /// For [`BoundedSlab`](crate::BoundedSlab), this is the direct slot index.
+    /// For [`Slab`](crate::Slab), this encodes slab and local index via
+    /// power-of-2 arithmetic.
     #[inline]
-    pub fn index(self) -> u32 {
-        (self.0 & Self::INDEX_MASK) as u32
-    }
-
-    /// Returns the generation component.
-    ///
-    /// Generation increments each time a slot is reused, providing ABA protection.
-    #[inline]
-    pub fn generation(self) -> u32 {
-        (self.0 >> Self::GEN_SHIFT) as u32
+    pub const fn index(self) -> u32 {
+        self.0
     }
 
     /// Returns `true` if this is the [`Key::NONE`] sentinel.
     #[inline]
-    pub fn is_none(self) -> bool {
-        self.0 == u64::MAX
+    pub const fn is_none(self) -> bool {
+        self.0 == SLOT_NONE
     }
 
     /// Returns `true` if this is a valid key (not [`Key::NONE`]).
     #[inline]
-    pub fn is_some(self) -> bool {
-        self.0 != u64::MAX
+    pub const fn is_some(self) -> bool {
+        self.0 != SLOT_NONE
     }
 
-    /// Returns the raw `u64` representation.
+    /// Returns the raw `u32` representation.
     ///
     /// Useful for serialization or FFI.
     #[inline]
-    pub const fn into_raw(self) -> u64 {
+    pub const fn into_raw(self) -> u32 {
         self.0
     }
 
-    /// Constructs a key from a raw `u64` value.
+    /// Constructs a key from a raw `u32` value.
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure `value` was produced by [`into_raw`](Self::into_raw)
-    /// on a valid key from the same slab, or is [`Key::NONE`]'s raw value.
+    /// No safety invariants—any `u32` is valid. However, using a key not
+    /// returned by this slab's `insert` will return `None` or wrong data.
     #[inline]
-    pub const unsafe fn from_raw(value: u64) -> Self {
+    pub const fn from_raw(value: u32) -> Self {
         Key(value)
     }
 }
@@ -252,10 +262,7 @@ impl std::fmt::Debug for Key {
         if self.is_none() {
             f.write_str("Key::NONE")
         } else {
-            f.debug_struct("Key")
-                .field("index", &self.index())
-                .field("generation", &self.generation())
-                .finish()
+            write!(f, "Key({})", self.0)
         }
     }
 }
@@ -264,92 +271,71 @@ impl std::fmt::Debug for Key {
 // Slot
 // =============================================================================
 
-/// Internal slot storage with generation-tagged state.
+/// Internal slot storage with vacant/occupied state.
 ///
-/// # Tag Encoding (64-bit)
+/// # Tag Encoding (32-bit)
 ///
 /// ```text
-/// ┌────────────────────────────────┬───────────────────────────────┬───┐
-/// │      generation (32 bits)      │    next_free (31 bits)        │ V │
-/// └────────────────────────────────┴───────────────────────────────┴───┘
-///              high                              low                 bit 31
+/// ┌───┬─────────────────────────────────┐
+/// │ V │       next_free (31 bits)       │
+/// └───┴─────────────────────────────────┘
+/// bit 31              low
 /// ```
 ///
 /// - **Bit 31 (V)**: Vacant flag. Set = vacant, clear = occupied.
 /// - **Bits 0-30**: When vacant, the next free slot index (or [`SLOT_NONE`]).
-/// - **Bits 32-63**: Generation counter, preserved across vacant/occupied transitions.
 ///
-/// This encoding stores generation separately from the freelist pointer,
-/// so generation survives the vacant state and can be incremented on reallocation.
+/// When occupied, the entire tag is zero. This enables a single comparison
+/// to validate occupancy.
 #[repr(C)]
 pub(crate) struct Slot<T> {
-    tag: u64,
+    tag: u32,
     pub(crate) value: std::mem::MaybeUninit<T>,
 }
 
 impl<T> Slot<T> {
-    /// Creates a new vacant slot pointing to `next_free` with generation 0.
+    /// Creates a new vacant slot pointing to `next_free`.
     #[inline]
-    pub(crate) fn new_vacant(next_free: u32) -> Self {
+    pub(crate) const fn new_vacant(next_free: u32) -> Self {
         Self {
-            tag: VACANT_BIT | ((next_free as u64) & NEXT_FREE_MASK),
+            tag: VACANT_BIT | (next_free & INDEX_MASK),
             value: std::mem::MaybeUninit::uninit(),
         }
     }
 
     /// Returns `true` if this slot contains a value.
     #[inline]
-    pub(crate) fn is_occupied(&self) -> bool {
-        self.tag & VACANT_BIT == 0
+    pub(crate) const fn is_occupied(&self) -> bool {
+        self.tag == 0
     }
 
     /// Returns `true` if this slot is vacant (in freelist).
     #[inline]
-    pub(crate) fn is_vacant(&self) -> bool {
-        self.tag & VACANT_BIT != 0
-    }
-
-    /// Returns the generation counter.
-    ///
-    /// Valid for both occupied and vacant slots.
-    #[inline]
-    pub(crate) fn generation(&self) -> u32 {
-        (self.tag >> GEN_SHIFT) as u32
+    pub(crate) const fn is_vacant(&self) -> bool {
+        self.tag != 0
     }
 
     /// Returns the next free slot index.
     ///
-    /// # Panics
+    /// # Safety
     ///
-    /// Debug-asserts that the slot is vacant.
+    /// Only valid when slot is vacant. Debug-asserts this invariant.
     #[inline]
-    pub(crate) fn next_free(&self) -> u32 {
-        debug_assert!(self.is_vacant(), "next_free called on occupied slot");
-        (self.tag & NEXT_FREE_MASK) as u32
+    pub(crate) const fn next_free(&self) -> u32 {
+        debug_assert!(self.tag != 0, "next_free called on occupied slot");
+        self.tag & INDEX_MASK
     }
 
-    /// Marks this slot as occupied with the given generation.
+    /// Marks this slot as occupied.
     #[inline]
-    pub(crate) fn set_occupied(&mut self, generation: u32) {
-        // Clear vacant bit, set generation, clear next_free bits
-        self.tag = (generation as u64) << GEN_SHIFT;
+    pub(crate) fn set_occupied(&mut self) {
+        self.tag = 0;
     }
 
     /// Marks this slot as vacant, pointing to the next free slot.
-    ///
-    /// Preserves the current generation for the next allocation to read and increment.
     #[inline]
     pub(crate) fn set_vacant(&mut self, next_free: u32) {
-        let generation = self.generation();
-        self.tag =
-            ((generation as u64) << GEN_SHIFT) | VACANT_BIT | ((next_free as u64) & NEXT_FREE_MASK);
-    }
-
-    /// Sets vacant state with explicit generation (avoids reading current tag).
-    #[inline(always)]
-    pub(crate) fn set_vacant_with_generation(&mut self, generation: u32, next_free: u32) {
-        self.tag =
-            ((generation as u64) << GEN_SHIFT) | VACANT_BIT | ((next_free as u64) & NEXT_FREE_MASK);
+        self.tag = VACANT_BIT | (next_free & INDEX_MASK);
     }
 }
 
@@ -362,18 +348,23 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn key_roundtrip() {
-        let key = Key::new(12345, 67890);
+    fn key_new_and_index() {
+        let key = Key::new(12345);
         assert_eq!(key.index(), 12345);
-        assert_eq!(key.generation(), 67890);
     }
 
     #[test]
-    fn key_max_values() {
-        // Max index (but not u32::MAX, that's reserved for NONE)
-        let key = Key::new(u32::MAX - 1, u32::MAX);
-        assert_eq!(key.index(), u32::MAX - 1);
-        assert_eq!(key.generation(), u32::MAX);
+    fn key_zero_index() {
+        let key = Key::new(0);
+        assert_eq!(key.index(), 0);
+        assert!(key.is_some());
+    }
+
+    #[test]
+    fn key_max_valid_index() {
+        // Max valid index is SLOT_NONE - 1
+        let key = Key::new(SLOT_NONE - 1);
+        assert_eq!(key.index(), SLOT_NONE - 1);
         assert!(key.is_some());
     }
 
@@ -381,36 +372,57 @@ mod tests {
     fn key_none_sentinel() {
         assert!(Key::NONE.is_none());
         assert!(!Key::NONE.is_some());
+        assert_eq!(Key::NONE.index(), SLOT_NONE);
+    }
 
-        let valid = Key::new(0, 0);
-        assert!(!valid.is_none());
-        assert!(valid.is_some());
+    #[test]
+    fn key_valid_is_some() {
+        let key = Key::new(42);
+        assert!(key.is_some());
+        assert!(!key.is_none());
     }
 
     #[test]
     fn key_raw_roundtrip() {
-        let key = Key::new(999, 888);
+        let key = Key::new(999);
         let raw = key.into_raw();
-        let restored = unsafe { Key::from_raw(raw) };
+        let restored = Key::from_raw(raw);
         assert_eq!(key, restored);
+        assert_eq!(restored.index(), 999);
     }
 
     #[test]
     fn key_none_raw_roundtrip() {
         let raw = Key::NONE.into_raw();
-        let restored = unsafe { Key::from_raw(raw) };
+        assert_eq!(raw, SLOT_NONE);
+        let restored = Key::from_raw(raw);
         assert!(restored.is_none());
     }
 
     #[test]
     fn key_debug_format() {
-        let key = Key::new(42, 7);
+        let key = Key::new(42);
         let debug = format!("{:?}", key);
-        assert!(debug.contains("42"));
-        assert!(debug.contains("7"));
+        assert_eq!(debug, "Key(42)");
 
         let none_debug = format!("{:?}", Key::NONE);
         assert_eq!(none_debug, "Key::NONE");
+    }
+
+    #[test]
+    fn key_equality() {
+        let a = Key::new(100);
+        let b = Key::new(100);
+        let c = Key::new(200);
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(Key::NONE, Key::NONE);
+    }
+
+    #[test]
+    fn key_size() {
+        assert_eq!(std::mem::size_of::<Key>(), 4);
     }
 
     // =========================================================================
@@ -423,72 +435,96 @@ mod tests {
         assert!(slot.is_vacant());
         assert!(!slot.is_occupied());
         assert_eq!(slot.next_free(), 42);
-        assert_eq!(slot.generation(), 0);
     }
 
     #[test]
-    fn slot_occupied_state() {
-        let mut slot: Slot<u64> = Slot::new_vacant(0);
+    fn slot_new_vacant_with_none() {
+        let slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
+        assert!(slot.is_vacant());
+        assert_eq!(slot.next_free(), SLOT_NONE);
+    }
 
-        slot.set_occupied(42);
+    #[test]
+    fn slot_set_occupied() {
+        let mut slot: Slot<u64> = Slot::new_vacant(42);
+        assert!(slot.is_vacant());
+
+        slot.set_occupied();
         assert!(slot.is_occupied());
         assert!(!slot.is_vacant());
-        assert_eq!(slot.generation(), 42);
     }
 
     #[test]
-    fn slot_vacant_state() {
+    fn slot_set_vacant() {
         let mut slot: Slot<u64> = Slot::new_vacant(0);
-        slot.set_occupied(99); // Set some generation first
+        slot.set_occupied();
+        assert!(slot.is_occupied());
 
         slot.set_vacant(123);
         assert!(slot.is_vacant());
         assert!(!slot.is_occupied());
         assert_eq!(slot.next_free(), 123);
-        assert_eq!(slot.generation(), 99); // Generation preserved
     }
 
     #[test]
-    fn slot_generation_preserved_across_vacant() {
-        let mut slot: Slot<u64> = Slot::new_vacant(0);
-
-        // Allocate with generation 5
-        slot.set_occupied(5);
-        assert_eq!(slot.generation(), 5);
-
-        // Free - generation should be preserved
-        slot.set_vacant(42);
-        assert_eq!(slot.generation(), 5);
-        assert_eq!(slot.next_free(), 42);
-
-        // Reallocate with incremented generation
-        let new_gen = slot.generation().wrapping_add(1);
-        slot.set_occupied(new_gen);
-        assert_eq!(slot.generation(), 6);
+    fn slot_occupied_tag_is_zero() {
+        let mut slot: Slot<u64> = Slot::new_vacant(42);
+        slot.set_occupied();
+        // Occupied slots have tag == 0
+        assert_eq!(slot.tag, 0);
     }
 
     #[test]
-    fn slot_max_generation() {
-        let mut slot: Slot<u64> = Slot::new_vacant(0);
-
-        slot.set_occupied(u32::MAX);
-        assert!(slot.is_occupied());
-        assert_eq!(slot.generation(), u32::MAX);
+    fn slot_vacant_tag_has_bit_set() {
+        let slot: Slot<u64> = Slot::new_vacant(42);
+        // Vacant slots have VACANT_BIT set
+        assert_ne!(slot.tag & VACANT_BIT, 0);
     }
 
     #[test]
     fn slot_max_next_free() {
-        let slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
+        let slot: Slot<u64> = Slot::new_vacant(INDEX_MASK);
         assert!(slot.is_vacant());
-        assert_eq!(slot.next_free(), SLOT_NONE);
+        assert_eq!(slot.next_free(), INDEX_MASK);
     }
 
     #[test]
-    fn slot_none_sentinel() {
-        // SLOT_NONE should be max 31-bit value
+    fn slot_none_sentinel_value() {
+        // SLOT_NONE equals INDEX_MASK (max 31-bit value)
+        assert_eq!(SLOT_NONE, INDEX_MASK);
         assert_eq!(SLOT_NONE, (1 << 31) - 1);
+    }
 
-        let slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
-        assert_eq!(slot.next_free(), SLOT_NONE);
+    #[test]
+    fn slot_size_u64() {
+        // Slot<u64>: 4-byte tag + 8-byte value = 12 bytes, aligned to 16
+        assert_eq!(std::mem::size_of::<Slot<u64>>(), 16);
+    }
+
+    #[test]
+    fn slot_size_u32() {
+        // Slot<u32>: 4-byte tag + 4-byte value = 8 bytes (no padding)
+        assert_eq!(std::mem::size_of::<Slot<u32>>(), 8);
+    }
+
+    #[test]
+    fn slot_size_u8() {
+        // Slot<u8>: 4-byte tag + 1-byte value = 5 bytes, aligned to 8
+        assert_eq!(std::mem::size_of::<Slot<u8>>(), 8);
+    }
+
+    #[test]
+    fn slot_cycle_occupied_vacant() {
+        let mut slot: Slot<u64> = Slot::new_vacant(10);
+
+        // Cycle through states
+        for next in [20, 30, 40, SLOT_NONE] {
+            assert!(slot.is_vacant());
+            slot.set_occupied();
+            assert!(slot.is_occupied());
+            slot.set_vacant(next);
+            assert!(slot.is_vacant());
+            assert_eq!(slot.next_free(), next);
+        }
     }
 }
