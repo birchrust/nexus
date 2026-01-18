@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-	"nexus-bits", "nexus-bits-derive",
+	"nexus-bits",
+	"nexus-bits-derive",
 	"nexus-channel",
 	"nexus-collections",
+	"nexus-pool",
 	"nexus-queue",
 	"nexus-slab",
 	"nexus-slot",
