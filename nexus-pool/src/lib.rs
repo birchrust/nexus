@@ -19,3 +19,4 @@
 //! | `sync::Pool` | Growable |
 
 pub mod local;
+pub mod sync;
