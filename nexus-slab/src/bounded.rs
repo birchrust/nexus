@@ -414,9 +414,9 @@ impl<T> BoundedSlab<T> {
     /// `key.index()` must be less than `capacity`.
     #[inline]
     pub(crate) unsafe fn get_mut_occupied_unchecked(&mut self, key: Key) -> Option<&mut T> {
-        let slot = self.slot(key.index());
+        let slot = self.slot_mut(key.index());
         if slot.is_occupied() {
-            Some(unsafe { self.slot_mut(key.index()).value.assume_init_mut() })
+            Some(unsafe { slot.value.assume_init_mut() })
         } else {
             None
         }
@@ -528,8 +528,9 @@ impl<T> Drop for BoundedSlab<T> {
     fn drop(&mut self) {
         // Drop all occupied values
         for i in 0..self.capacity {
-            if self.slot(i).is_occupied() {
-                unsafe { ptr::drop_in_place(self.slot_mut(i).value.as_mut_ptr()) };
+            let slot = self.slot_mut(i);
+            if slot.is_occupied() {
+                unsafe { ptr::drop_in_place(slot.value.as_mut_ptr()) };
             }
         }
         // Pages dropped automatically
