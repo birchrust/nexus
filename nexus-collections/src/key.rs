@@ -75,11 +75,11 @@ impl_key_for_uint!(u8, u16, u32, u64, usize);
 
 #[cfg(feature = "nexus-slab")]
 impl Key for nexus_slab::Key {
-    const NONE: Self = unsafe { nexus_slab::Key::from_raw(u64::MAX) };
+    const NONE: Self = nexus_slab::Key::NONE;
 
     #[inline]
     fn is_none(&self) -> bool {
-        self.into_raw() == u64::MAX
+        nexus_slab::Key::is_none(*self)
     }
 }
 

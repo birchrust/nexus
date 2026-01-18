@@ -122,13 +122,13 @@ pub type BoxedListStorage<T> = BoxedStorage<ListNode<T, usize>>;
 #[cfg(feature = "slab")]
 pub type SlabListStorage<T> = slab::Slab<ListNode<T, usize>>;
 
-/// Type alias for bounded list storage backed by `nexus_slab::FixedSlab`.
+/// Type alias for bounded list storage backed by `nexus_slab::BoundedSlab`.
 #[cfg(feature = "nexus-slab")]
-pub type BoundedNexusListStorage<T> = nexus_slab::FixedSlab<ListNode<T, nexus_slab::Key>>;
+pub type BoundedNexusListStorage<T> = nexus_slab::BoundedSlab<ListNode<T, nexus_slab::Key>>;
 
-/// Type alias for unbounded list storage backed by `nexus_slab::DynamicSlab`.
+/// Type alias for unbounded list storage backed by `nexus_slab::Slab`.
 #[cfg(feature = "nexus-slab")]
-pub type UnboundedNexusListStorage<T> = nexus_slab::DynamicSlab<ListNode<T, nexus_slab::Key>>;
+pub type UnboundedNexusListStorage<T> = nexus_slab::Slab<ListNode<T, nexus_slab::Key>>;
 
 /// A node in the linked list.
 ///
@@ -2946,8 +2946,7 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_push_back() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
-                .expect("failed to allocate");
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2971,8 +2970,7 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_push_front() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
-                .expect("failed to allocate");
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2996,8 +2994,7 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_pop_front() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
-                .expect("failed to allocate");
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3021,8 +3018,7 @@ mod bench_nexus_slab_storage {
     #[ignore]
     fn bench_list_pop_back() {
         let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(ITERATIONS + WARMUP)
-                .expect("failed to allocate");
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3045,8 +3041,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_get() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(1024);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3073,8 +3068,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_remove_middle() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(16);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3107,8 +3101,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_unlink() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(16);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3135,8 +3128,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_link_back() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(16).expect("failed to allocate");
+        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(16);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3165,8 +3157,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_move_to_back() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(1024).expect("failed to allocate");
+        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(1024);
         let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -3193,8 +3184,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_order_queue_workflow() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::DynamicSlab::with_capacity(32).expect("failed to allocate");
+        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(32);
         let mut queue_a: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
         let mut queue_b: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
 
@@ -3224,7 +3214,7 @@ mod bench_nexus_slab_storage {
             hist_cancel.record(rdtscp() - start).unwrap();
         }
 
-        println!("\n=== Order Queue Workflow (nexus_slab::DynamicSlab) ===");
+        println!("\n=== Order Queue Workflow (nexus_slab::Slab) ===");
         print_histogram("insert (new order)", &hist_insert);
         print_histogram("move (price amend)", &hist_move);
         print_histogram("cancel", &hist_cancel);
@@ -3233,7 +3223,7 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_all() {
-        println!("\n=== List Benchmarks (nexus_slab::DynamicSlab) ===");
+        println!("\n=== List Benchmarks (nexus_slab::Slab) ===");
         println!(
             "Run with: cargo test --release --features nexus-slab bench_nexus_slab_storage::bench_list_all -- --ignored --nocapture\n"
         );
