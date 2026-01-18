@@ -23,6 +23,7 @@
 use std::alloc::{Layout, alloc, dealloc};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::{fmt, ptr};
 
@@ -396,6 +397,26 @@ impl<T> BoundedSlab<T> {
         } else {
             None
         }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// This is safe because values in the slab have a stable address
+    /// until removed, and removal requires `&mut self` which conflicts
+    /// with the returned reference.
+    #[inline]
+    pub fn get_pinned(&mut self, key: Key) -> Option<Pin<&mut T>> {
+        self.get_mut(key).map(|r| unsafe { Pin::new_unchecked(r) })
+    }
+
+    /// Returns a pinned mutable reference without validation.
+    ///
+    /// # Safety
+    ///
+    /// The key must refer to a valid, occupied slot.
+    #[inline]
+    pub unsafe fn get_pinned_unchecked(&mut self, key: Key) -> Pin<&mut T> {
+        unsafe { Pin::new_unchecked(self.get_unchecked_mut(key)) }
     }
 
     // =========================================================================
@@ -1230,5 +1251,40 @@ mod tests {
                 assert_eq!(val, expected_val);
             }
         }
+    }
+
+    #[test]
+    fn get_pinned_basic() {
+        use std::pin::Pin;
+
+        let mut slab = BoundedSlab::with_capacity(16);
+        let key = slab.try_insert(42u64).unwrap();
+
+        let pinned: Pin<&mut u64> = slab.get_pinned(key).unwrap();
+        assert_eq!(*pinned, 42);
+    }
+
+    #[test]
+    fn get_pinned_modify() {
+        use std::pin::Pin;
+
+        let mut slab = BoundedSlab::with_capacity(16);
+        let key = slab.try_insert(42u64).unwrap();
+
+        {
+            let mut pinned: Pin<&mut u64> = slab.get_pinned(key).unwrap();
+            *pinned = 100;
+        }
+
+        assert_eq!(slab[key], 100);
+    }
+
+    #[test]
+    fn get_pinned_invalid_key_returns_none() {
+        let mut slab = BoundedSlab::<u64>::with_capacity(16);
+        let key = slab.try_insert(42).unwrap();
+        slab.remove(key);
+
+        assert!(slab.get_pinned(key).is_none());
     }
 }

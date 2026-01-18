@@ -6,6 +6,7 @@
 use std::{
     marker::PhantomData,
     ops::{Index, IndexMut},
+    pin::Pin,
 };
 
 use crate::{BoundedSlab, Key};
@@ -427,6 +428,26 @@ impl<T> Slab<T> {
         let (chunk_idx, local_idx) = self.decode(key.index());
         let local_key = Key::new(local_idx);
         unsafe { self.entry_mut(chunk_idx).inner.get_unchecked_mut(local_key) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// This is safe because values in the slab have a stable address
+    /// until removed, and removal requires `&mut self` which conflicts
+    /// with the returned reference.
+    #[inline]
+    pub fn get_pinned(&mut self, key: Key) -> Option<Pin<&mut T>> {
+        self.get_mut(key).map(|r| unsafe { Pin::new_unchecked(r) })
+    }
+
+    /// Returns a pinned mutable reference without validation.
+    ///
+    /// # Safety
+    ///
+    /// The key must refer to a valid, occupied slot.
+    #[inline]
+    pub unsafe fn get_pinned_unchecked(&mut self, key: Key) -> Pin<&mut T> {
+        unsafe { Pin::new_unchecked(self.get_unchecked_mut(key)) }
     }
 
     // =========================================================================
