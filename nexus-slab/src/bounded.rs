@@ -273,7 +273,7 @@ impl<T> BoundedSlab<T> {
     ///
     /// Caller must ensure the slab is not full (`!is_full()`).
     #[inline(always)]
-    pub(crate) unsafe fn insert_unchecked(&mut self, value: T) -> Key {
+    pub(crate) unsafe fn insert_unchecked(&mut self, value: T) -> (u32, bool) {
         let free_head = self.free_head;
         debug_assert!(free_head != SLOT_NONE, "insert_unchecked on full slab");
 
@@ -285,7 +285,7 @@ impl<T> BoundedSlab<T> {
         slot.set_occupied();
         slot.value.write(value);
 
-        Key::new(free_head)
+        (free_head, next_free == SLOT_NONE)
     }
 
     /// Returns a vacant entry for deferred insertion.
@@ -390,6 +390,36 @@ impl<T> BoundedSlab<T> {
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, key: Key) -> &mut T {
         unsafe { self.slot_mut(key.index()).value.assume_init_mut() }
+    }
+
+    /// Returns a reference if occupied, without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// `key.index()` must be less than `capacity`.
+    #[inline]
+    pub(crate) unsafe fn get_occupied_unchecked(&self, key: Key) -> Option<&T> {
+        let slot = self.slot(key.index());
+        if slot.is_occupied() {
+            Some(unsafe { slot.value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
+
+    /// Returns a mutable reference if occupied, without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// `key.index()` must be less than `capacity`.
+    #[inline]
+    pub(crate) unsafe fn get_mut_occupied_unchecked(&mut self, key: Key) -> Option<&mut T> {
+        let slot = self.slot(key.index());
+        if slot.is_occupied() {
+            Some(unsafe { self.slot_mut(key.index()).value.assume_init_mut() })
+        } else {
+            None
+        }
     }
 
     // =========================================================================

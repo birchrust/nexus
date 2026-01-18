@@ -104,7 +104,7 @@
 //! ```
 //! use nexus_slab::Slab;
 //!
-//! let mut slab = Slab::with_capacity(1000);
+//! let mut slab = Slab::with_capacity(128 * 1024, 1000);
 //!
 //! let key = slab.insert(42);
 //! assert_eq!(slab[key], 42);

@@ -3,52 +3,61 @@
 //! [`Slab`] provides O(1) insert, access, and remove with ABA protection.
 //! Grows automatically when capacity is exceeded.
 
-use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use std::ops::{Index, IndexMut};
 
 use crate::{BoundedSlab, Key};
 
 const SLAB_NONE: u32 = u32::MAX;
-const DEFAULT_BASE_CAPACITY: usize = 4096;
 
 // =============================================================================
 // SlabEntry
 // =============================================================================
 
+/// Internal wrapper pairing a bounded slab with freelist linkage.
 struct SlabEntry<T> {
     inner: BoundedSlab<T>,
-    next_slab: u32,
+    next_with_space: u32,
 }
 
 // =============================================================================
 // Slab
 // =============================================================================
 
-/// A growable slab with generational keys.
+/// A growable slab allocator with O(1) operations.
 ///
-/// `Slab` composes multiple [`BoundedSlab`]s with geometric growth.
-/// The first slab has `base_capacity` slots, each subsequent slab doubles.
+/// `Slab` composes multiple fixed-size [`BoundedSlab`]s. Each chunk has the
+/// same capacity, enabling fast index decoding via shift and mask.
 ///
 /// # Growth
 ///
-/// Slabs are allocated on demand. Memory is never freed until the `Slab` is dropped.
+/// When full, a new chunk is allocated on demand. Each growth allocates
+/// exactly one chunk—no geometric doubling. Memory is never freed until
+/// the `Slab` is dropped.
 ///
-/// # Key Safety
+/// # Key Encoding
 ///
-/// Keys are generational - stale keys return `None` instead of wrong data.
+/// Keys encode both chunk index and local slot index:
+///
+/// ```text
+/// ┌─────────────────────┬──────────────────────┐
+/// │  chunk_idx (high)   │  local_idx (low)     │
+/// └─────────────────────┴──────────────────────┘
+/// ```
+///
+/// Decoding is two instructions: shift and mask.
+///
+/// # Memory Layout
+///
+/// Chunks are independent allocations. No copying occurs during growth.
 pub struct Slab<T> {
-    slabs: Box<[MaybeUninit<SlabEntry<T>>]>,
+    slabs: Vec<SlabEntry<T>>,
+    head_with_space: u32,
 
-    num_slabs: u32,
-    slabs_head: u32,
-
-    base_capacity: u32,
-    base_shift: u32,
+    chunk_capacity: u32,
+    chunk_shift: u32,
+    chunk_mask: u32,
 
     len: usize,
-
-    _marker: PhantomData<T>,
 }
 
 impl<T> Slab<T> {
@@ -56,44 +65,40 @@ impl<T> Slab<T> {
     // Construction
     // =========================================================================
 
-    /// Creates a new empty slab with default base capacity (4096).
-    pub fn new() -> Self {
-        Self::with_base_capacity(DEFAULT_BASE_CAPACITY)
-    }
-
-    /// Creates a new empty slab with the specified base capacity.
+    /// Creates a new empty slab with the specified chunk capacity.
     ///
-    /// Base capacity is rounded up to the next power of two.
-    /// Each subsequent internal slab doubles in size.
-    pub fn with_base_capacity(base_capacity: usize) -> Self {
-        let base_capacity = base_capacity.max(1).next_power_of_two().min(1 << 30) as u32;
-        let base_shift = base_capacity.trailing_zeros();
+    /// Chunk capacity is rounded up to the next power of two.
+    /// All chunks will have this same capacity.
+    ///
+    /// No memory is allocated until the first insert.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `chunk_capacity` is zero or exceeds `2^30`.
+    pub fn with_chunk_capacity(chunk_capacity: usize) -> Self {
+        assert!(chunk_capacity > 0, "chunk_capacity must be non-zero");
+        assert!(chunk_capacity <= 1 << 30, "chunk_capacity exceeds maximum");
 
-        // Max slabs needed to cover u32 index space
-        let max_slabs = (32 - base_shift) as usize;
-
-        let slabs = (0..max_slabs)
-            .map(|_| MaybeUninit::uninit())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        let chunk_capacity = chunk_capacity.next_power_of_two() as u32;
+        let chunk_shift = chunk_capacity.trailing_zeros();
+        let chunk_mask = chunk_capacity - 1;
 
         Self {
-            slabs,
-            num_slabs: 0,
-            slabs_head: SLAB_NONE,
-            base_capacity,
-            base_shift,
+            slabs: Vec::new(),
+            head_with_space: SLAB_NONE,
+            chunk_capacity,
+            chunk_shift,
+            chunk_mask,
             len: 0,
-            _marker: PhantomData,
         }
     }
 
     /// Creates a new slab with pre-allocated capacity.
     ///
-    /// Allocates enough slabs to hold at least `capacity` items.
-    pub fn with_capacity(capacity: usize) -> Self {
-        let mut slab = Self::new();
-        while slab.capacity() < capacity {
+    /// Allocates enough chunks to hold at least `capacity` items.
+    pub fn with_capacity(chunk_capacity: usize, total_capacity: usize) -> Self {
+        let mut slab = Self::with_chunk_capacity(chunk_capacity);
+        while slab.capacity() < total_capacity {
             slab.grow();
         }
         slab
@@ -115,73 +120,64 @@ impl<T> Slab<T> {
         self.len == 0
     }
 
-    /// Returns the total capacity across all allocated slabs.
+    /// Returns the total capacity across all allocated chunks.
+    #[inline]
     pub fn capacity(&self) -> usize {
-        if self.num_slabs == 0 {
-            0
-        } else {
-            (self.base_capacity as usize) * ((1usize << self.num_slabs) - 1)
-        }
+        self.slabs.len() * self.chunk_capacity as usize
+    }
+
+    /// Returns the number of allocated chunks.
+    #[inline]
+    pub fn num_chunks(&self) -> usize {
+        self.slabs.len()
     }
 
     // =========================================================================
     // Internal: Geometry
     // =========================================================================
 
-    #[inline]
-    fn slab_capacity(&self, slab_idx: u32) -> u32 {
-        self.base_capacity << slab_idx
-    }
-
-    #[inline]
-    fn cumulative_before(&self, slab_idx: u32) -> u32 {
-        self.base_capacity
-            .wrapping_mul((1u32 << slab_idx).wrapping_sub(1))
-    }
-
+    /// Decodes a global index into (chunk_idx, local_idx).
     #[inline]
     fn decode(&self, index: u32) -> (u32, u32) {
-        let adjusted = (index >> self.base_shift) + 1;
-        let slab_idx = 31 - adjusted.leading_zeros();
-        let local_index = index - self.cumulative_before(slab_idx);
-        (slab_idx, local_index)
+        let chunk_idx = index >> self.chunk_shift;
+        let local_idx = index & self.chunk_mask;
+        (chunk_idx, local_idx)
     }
 
+    /// Encodes (chunk_idx, local_idx) into a global index.
     #[inline]
-    fn encode(&self, slab_idx: u32, local_index: u32) -> u32 {
-        self.cumulative_before(slab_idx) + local_index
+    fn encode(&self, chunk_idx: u32, local_idx: u32) -> u32 {
+        (chunk_idx << self.chunk_shift) | local_idx
     }
 
     // =========================================================================
     // Internal: Slab Management
     // =========================================================================
 
+    /// Allocates a new chunk and adds it to the freelist.
     fn grow(&mut self) {
-        let slab_idx = self.num_slabs;
-        let capacity = self.slab_capacity(slab_idx) as usize;
-
-        let inner = BoundedSlab::with_capacity(capacity);
+        let chunk_idx = self.slabs.len() as u32;
+        let inner = BoundedSlab::with_capacity(self.chunk_capacity as usize);
 
         let entry = SlabEntry {
             inner,
-            next_slab: self.slabs_head,
+            next_with_space: self.head_with_space,
         };
 
-        self.slabs[slab_idx as usize].write(entry);
-        self.slabs_head = slab_idx;
-        self.num_slabs += 1;
+        self.slabs.push(entry);
+        self.head_with_space = chunk_idx;
     }
 
     #[inline]
-    fn entry(&self, slab_idx: u32) -> &SlabEntry<T> {
-        debug_assert!(slab_idx < self.num_slabs);
-        unsafe { self.slabs[slab_idx as usize].assume_init_ref() }
+    fn entry(&self, chunk_idx: u32) -> &SlabEntry<T> {
+        debug_assert!((chunk_idx as usize) < self.slabs.len());
+        unsafe { self.slabs.get_unchecked(chunk_idx as usize) }
     }
 
     #[inline]
-    fn entry_mut(&mut self, slab_idx: u32) -> &mut SlabEntry<T> {
-        debug_assert!(slab_idx < self.num_slabs);
-        unsafe { self.slabs[slab_idx as usize].assume_init_mut() }
+    fn entry_mut(&mut self, chunk_idx: u32) -> &mut SlabEntry<T> {
+        debug_assert!((chunk_idx as usize) < self.slabs.len());
+        unsafe { self.slabs.get_unchecked_mut(chunk_idx as usize) }
     }
 
     // =========================================================================
@@ -192,44 +188,45 @@ impl<T> Slab<T> {
     ///
     /// Grows the slab if necessary.
     pub fn insert(&mut self, value: T) -> Key {
-        if self.slabs_head == SLAB_NONE {
+        if self.head_with_space == SLAB_NONE {
             self.grow();
         }
-        let slab_idx = self.slabs_head;
-        let entry = self.entry_mut(slab_idx);
 
-        // Safety: slabs_head only points to non-full slabs
-        let local_key = unsafe { entry.inner.insert_unchecked(value) };
+        let chunk_idx = self.head_with_space;
+        let entry = self.entry_mut(chunk_idx);
 
-        if entry.inner.is_full() {
-            self.slabs_head = entry.next_slab;
+        // Safety: head_with_space only points to non-full slabs
+        let (local_idx, became_full) = unsafe { entry.inner.insert_unchecked(value) };
+
+        if became_full {
+            self.head_with_space = entry.next_with_space;
         }
-        self.len += 1;
 
-        let global_index = self.encode(slab_idx, local_key.index());
-        Key::new(global_index)
+        self.len += 1;
+        Key::new(self.encode(chunk_idx, local_idx))
     }
 
     /// Returns a vacant entry for deferred insertion.
     ///
     /// Grows the slab if necessary.
     pub fn vacant_entry(&mut self) -> VacantEntry<'_, T> {
-        if self.slabs_head == SLAB_NONE {
+        if self.head_with_space == SLAB_NONE {
             self.grow();
         }
-        let slab_idx = self.slabs_head;
-        let entry = self.entry_mut(slab_idx);
 
-        // Safety: slabs_head only points to non-full slabs
-        let local_index = match entry.inner.reserve_slot() {
+        let chunk_idx = self.head_with_space;
+        let entry = self.entry_mut(chunk_idx);
+
+        // Safety: head_with_space only points to non-full slabs
+        let local_idx = match entry.inner.reserve_slot() {
             Some(idx) => idx,
             None => unsafe { std::hint::unreachable_unchecked() },
         };
 
         VacantEntry {
             slab: self,
-            slab_idx,
-            local_index,
+            chunk_idx,
+            local_idx,
             inserted: false,
         }
     }
@@ -239,29 +236,43 @@ impl<T> Slab<T> {
     // =========================================================================
 
     /// Returns a reference to the value for the given key.
+    ///
+    /// Returns `None` if the key is invalid or the slot is vacant.
     pub fn get(&self, key: Key) -> Option<&T> {
         if key.is_none() {
             return None;
         }
-        let (slab_idx, local_index) = self.decode(key.index());
-        if slab_idx >= self.num_slabs {
+        let (chunk_idx, local_idx) = self.decode(key.index());
+        if chunk_idx >= self.slabs.len() as u32 {
             return None;
         }
-        let local_key = Key::new(local_index);
-        self.entry(slab_idx).inner.get(local_key)
+        let local_key = Key::new(local_idx);
+        // Safety: decode guarantees local_idx < chunk_capacity
+        unsafe {
+            self.entry(chunk_idx)
+                .inner
+                .get_occupied_unchecked(local_key)
+        }
     }
 
     /// Returns a mutable reference to the value for the given key.
+    ///
+    /// Returns `None` if the key is invalid or the slot is vacant.
     pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
         if key.is_none() {
             return None;
         }
-        let (slab_idx, local_index) = self.decode(key.index());
-        if slab_idx >= self.num_slabs {
+        let (chunk_idx, local_idx) = self.decode(key.index());
+        if chunk_idx >= self.slabs.len() as u32 {
             return None;
         }
-        let local_key = Key::new(local_index);
-        self.entry_mut(slab_idx).inner.get_mut(local_key)
+        let local_key = Key::new(local_idx);
+        // Safety: decode guarantees local_idx < chunk_capacity
+        unsafe {
+            self.entry_mut(chunk_idx)
+                .inner
+                .get_mut_occupied_unchecked(local_key)
+        }
     }
 
     /// Returns `true` if the key refers to a valid, occupied slot.
@@ -269,36 +280,42 @@ impl<T> Slab<T> {
         if key.is_none() {
             return false;
         }
-        let (slab_idx, local_index) = self.decode(key.index());
-        if slab_idx >= self.num_slabs {
+        let (chunk_idx, local_idx) = self.decode(key.index());
+        if chunk_idx >= self.slabs.len() as u32 {
             return false;
         }
-        let local_key = Key::new(local_index);
-        self.entry(slab_idx).inner.contains(local_key)
+        let local_key = Key::new(local_idx);
+        // Safety: decode guarantees local_idx < chunk_capacity
+        unsafe {
+            self.entry(chunk_idx)
+                .inner
+                .get_occupied_unchecked(local_key)
+                .is_some()
+        }
     }
 
     /// Returns a reference without validation.
     ///
     /// # Safety
     ///
-    /// The key must refer to a valid, occupied slot with matching generation.
+    /// The key must refer to a valid, occupied slot.
     #[inline]
     pub unsafe fn get_unchecked(&self, key: Key) -> &T {
-        let (slab_idx, local_index) = self.decode(key.index());
-        let local_key = Key::new(local_index);
-        unsafe { self.entry(slab_idx).inner.get_unchecked(local_key) }
+        let (chunk_idx, local_idx) = self.decode(key.index());
+        let local_key = Key::new(local_idx);
+        unsafe { self.entry(chunk_idx).inner.get_unchecked(local_key) }
     }
 
     /// Returns a mutable reference without validation.
     ///
     /// # Safety
     ///
-    /// The key must refer to a valid, occupied slot with matching generation.
+    /// The key must refer to a valid, occupied slot.
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, key: Key) -> &mut T {
-        let (slab_idx, local_index) = self.decode(key.index());
-        let local_key = Key::new(local_index);
-        unsafe { self.entry_mut(slab_idx).inner.get_unchecked_mut(local_key) }
+        let (chunk_idx, local_idx) = self.decode(key.index());
+        let local_key = Key::new(local_idx);
+        unsafe { self.entry_mut(chunk_idx).inner.get_unchecked_mut(local_key) }
     }
 
     // =========================================================================
@@ -309,23 +326,28 @@ impl<T> Slab<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the key is invalid or stale.
+    /// Panics if the key is invalid or the slot is vacant.
     pub fn remove(&mut self, key: Key) -> T {
         assert!(!key.is_none(), "cannot remove with Key::NONE");
 
-        let (slab_idx, local_index) = self.decode(key.index());
-        assert!(slab_idx < self.num_slabs, "key index out of bounds");
+        let (chunk_idx, local_idx) = self.decode(key.index());
+        assert!(
+            (chunk_idx as usize) < self.slabs.len(),
+            "key index out of bounds"
+        );
 
-        let slabs_head = self.slabs_head;
-        let entry = self.entry_mut(slab_idx);
+        let head_with_space = self.head_with_space;
+        let entry = self.entry_mut(chunk_idx);
         let was_full = entry.inner.is_full();
-        let local_key = Key::new(local_index);
+
+        let local_key = Key::new(local_idx);
         let value = entry.inner.remove(local_key);
 
         if was_full {
-            entry.next_slab = slabs_head;
-            self.slabs_head = slab_idx;
+            entry.next_with_space = head_with_space;
+            self.head_with_space = chunk_idx;
         }
+
         self.len -= 1;
         value
     }
@@ -334,21 +356,22 @@ impl<T> Slab<T> {
     ///
     /// # Safety
     ///
-    /// The key must refer to a valid, occupied slot with matching generation.
+    /// The key must refer to a valid, occupied slot.
     pub unsafe fn remove_unchecked(&mut self, key: Key) -> T {
-        let (slab_idx, local_index) = self.decode(key.index());
+        let (chunk_idx, local_idx) = self.decode(key.index());
 
-        let slabs_head = self.slabs_head;
-        let entry = self.entry_mut(slab_idx);
+        let head_with_space = self.head_with_space;
+        let entry = self.entry_mut(chunk_idx);
         let was_full = entry.inner.is_full();
 
-        let local_key = Key::new(local_index);
+        let local_key = Key::new(local_idx);
         let value = unsafe { entry.inner.remove_unchecked(local_key) };
 
         if was_full {
-            entry.next_slab = slabs_head;
-            self.slabs_head = slab_idx;
+            entry.next_with_space = head_with_space;
+            self.head_with_space = chunk_idx;
         }
+
         self.len -= 1;
         value
     }
@@ -359,16 +382,21 @@ impl<T> Slab<T> {
 
     /// Removes all values from the slab.
     ///
-    /// Preserves allocated capacity and generations.
+    /// Preserves allocated capacity. All chunks are cleared and
+    /// added back to the freelist.
     pub fn clear(&mut self) {
-        let num_slabs = self.num_slabs;
-        for i in 0..num_slabs {
-            let entry = self.entry_mut(i);
-            entry.inner.clear();
-            entry.next_slab = if i + 1 < num_slabs { i + 1 } else { SLAB_NONE };
+        if self.len == 0 {
+            return;
         }
 
-        self.slabs_head = if self.num_slabs > 0 { 0 } else { SLAB_NONE };
+        let num_chunks = self.slabs.len() as u32;
+        for i in 0..num_chunks {
+            let entry = self.entry_mut(i);
+            entry.inner.clear();
+            entry.next_with_space = if i + 1 < num_chunks { i + 1 } else { SLAB_NONE };
+        }
+
+        self.head_with_space = if num_chunks > 0 { 0 } else { SLAB_NONE };
         self.len = 0;
     }
 }
@@ -376,22 +404,6 @@ impl<T> Slab<T> {
 // =============================================================================
 // Traits
 // =============================================================================
-
-impl<T> Default for Slab<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> Drop for Slab<T> {
-    fn drop(&mut self) {
-        for i in 0..self.num_slabs {
-            unsafe {
-                self.slabs[i as usize].assume_init_drop();
-            }
-        }
-    }
-}
 
 unsafe impl<T: Send> Send for Slab<T> {}
 
@@ -414,7 +426,8 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Slab<T> {
         f.debug_struct("Slab")
             .field("len", &self.len)
             .field("capacity", &self.capacity())
-            .field("num_slabs", &self.num_slabs)
+            .field("num_chunks", &self.slabs.len())
+            .field("chunk_capacity", &self.chunk_capacity)
             .finish()
     }
 }
@@ -438,7 +451,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Slab<T> {
 ///     data: u64,
 /// }
 ///
-/// let mut slab = Slab::new();
+/// let mut slab = Slab::with_chunk_capacity(1024);
 ///
 /// let entry = slab.vacant_entry();
 /// let key = entry.key();
@@ -453,8 +466,8 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Slab<T> {
 /// is returned to the freelist and the key becomes invalid.
 pub struct VacantEntry<'a, T> {
     slab: &'a mut Slab<T>,
-    slab_idx: u32,
-    local_index: u32,
+    chunk_idx: u32,
+    local_idx: u32,
     inserted: bool,
 }
 
@@ -462,21 +475,23 @@ impl<'a, T> VacantEntry<'a, T> {
     /// Returns the key that will be associated with the inserted value.
     #[inline]
     pub fn key(&self) -> Key {
-        let global_index = self.slab.encode(self.slab_idx, self.local_index);
-        Key::new(global_index)
+        Key::new(self.slab.encode(self.chunk_idx, self.local_idx))
     }
 
     /// Inserts a value into the reserved slot, returning the key.
     #[inline]
     pub fn insert(mut self, value: T) -> Key {
         let key = self.key();
-        let entry = self.slab.entry_mut(self.slab_idx);
+        let entry = self.slab.entry_mut(self.chunk_idx);
+
         unsafe {
-            entry.inner.fill_reserved(self.local_index, value);
+            entry.inner.fill_reserved(self.local_idx, value);
         }
+
         if entry.inner.is_full() {
-            self.slab.slabs_head = entry.next_slab;
+            self.slab.head_with_space = entry.next_with_space;
         }
+
         self.slab.len += 1;
         self.inserted = true;
         key
@@ -486,9 +501,9 @@ impl<'a, T> VacantEntry<'a, T> {
 impl<T> Drop for VacantEntry<'_, T> {
     fn drop(&mut self) {
         if !self.inserted {
-            let entry = self.slab.entry_mut(self.slab_idx);
+            let entry = self.slab.entry_mut(self.chunk_idx);
             unsafe {
-                entry.inner.cancel_reserved(self.local_index);
+                entry.inner.cancel_reserved(self.local_idx);
             }
         }
     }
@@ -511,8 +526,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_is_empty() {
-        let slab: Slab<u64> = Slab::new();
+    fn empty_on_construction() {
+        let slab: Slab<u64> = Slab::with_chunk_capacity(16);
         assert!(slab.is_empty());
         assert_eq!(slab.len(), 0);
         assert_eq!(slab.capacity(), 0);
@@ -520,7 +535,7 @@ mod tests {
 
     #[test]
     fn insert_get_remove() {
-        let mut slab = Slab::new();
+        let mut slab = Slab::with_chunk_capacity(16);
 
         let key = slab.insert(42u64);
         assert_eq!(slab.len(), 1);
@@ -533,7 +548,7 @@ mod tests {
 
     #[test]
     fn grows_automatically() {
-        let mut slab = Slab::with_base_capacity(4);
+        let mut slab = Slab::with_chunk_capacity(4);
 
         let mut keys = Vec::new();
         for i in 0..100u64 {
@@ -550,7 +565,7 @@ mod tests {
 
     #[test]
     fn vacant_entry_basic() {
-        let mut slab = Slab::new();
+        let mut slab = Slab::with_chunk_capacity(16);
 
         let entry = slab.vacant_entry();
         let key = entry.key();
@@ -566,7 +581,7 @@ mod tests {
             data: u64,
         }
 
-        let mut slab = Slab::new();
+        let mut slab = Slab::with_chunk_capacity(16);
 
         let entry = slab.vacant_entry();
         let key = entry.key();
@@ -582,7 +597,7 @@ mod tests {
 
     #[test]
     fn vacant_entry_drop_cancels() {
-        let mut slab = Slab::<usize>::new();
+        let mut slab = Slab::<usize>::with_chunk_capacity(16);
 
         let key = {
             let entry = slab.vacant_entry();
@@ -595,7 +610,7 @@ mod tests {
 
     #[test]
     fn clear_preserves_capacity() {
-        let mut slab = Slab::new();
+        let mut slab = Slab::with_chunk_capacity(16);
 
         for i in 0..100u64 {
             slab.insert(i);
@@ -610,23 +625,37 @@ mod tests {
 
     #[test]
     fn decode_encode_roundtrip() {
-        let slab: Slab<u64> = Slab::with_base_capacity(16);
+        let slab: Slab<u64> = Slab::with_chunk_capacity(16);
 
         for index in [0, 1, 15, 16, 31, 32, 47, 48, 100, 1000] {
-            let (slab_idx, local_index) = slab.decode(index);
-            let encoded = slab.encode(slab_idx, local_index);
+            let (chunk_idx, local_idx) = slab.decode(index);
+            let encoded = slab.encode(chunk_idx, local_idx);
             assert_eq!(encoded, index, "roundtrip failed for {}", index);
         }
     }
 
     #[test]
-    fn geometric_growth() {
-        let slab: Slab<u64> = Slab::with_base_capacity(16);
+    fn fixed_chunk_capacity() {
+        let mut slab: Slab<u64> = Slab::with_chunk_capacity(16);
 
-        assert_eq!(slab.slab_capacity(0), 16);
-        assert_eq!(slab.slab_capacity(1), 32);
-        assert_eq!(slab.slab_capacity(2), 64);
-        assert_eq!(slab.slab_capacity(3), 128);
+        // Fill first chunk
+        for i in 0..16u64 {
+            slab.insert(i);
+        }
+        assert_eq!(slab.num_chunks(), 1);
+        assert_eq!(slab.capacity(), 16);
+
+        // Trigger second chunk
+        slab.insert(16);
+        assert_eq!(slab.num_chunks(), 2);
+        assert_eq!(slab.capacity(), 32);
+
+        // Trigger third chunk
+        for i in 17..33u64 {
+            slab.insert(i);
+        }
+        assert_eq!(slab.num_chunks(), 3);
+        assert_eq!(slab.capacity(), 48);
     }
 
     #[test]
@@ -638,7 +667,7 @@ mod tests {
 
     #[test]
     fn stress_insert_remove() {
-        let mut slab = Slab::with_base_capacity(16);
+        let mut slab = Slab::with_chunk_capacity(16);
         let mut keys = Vec::new();
 
         for i in 0..10_000u64 {

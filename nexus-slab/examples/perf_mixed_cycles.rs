@@ -107,7 +107,7 @@ impl GrowthStats {
 
 fn bench_nexus() -> GrowthStats {
     // Start with initial capacity, let it grow
-    let mut slab = nexus_slab::Slab::with_base_capacity(INITIAL_CAPACITY);
+    let mut slab = nexus_slab::Slab::with_capacity(128 * 1024, INITIAL_CAPACITY);
     let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
     let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(FINAL_SIZE);
