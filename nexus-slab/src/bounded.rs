@@ -336,11 +336,11 @@ impl<T> BoundedSlab<T> {
     /// Returns `None` if the key is invalid or stale.
     pub fn get(&self, key: Key) -> Option<&T> {
         let index = key.index();
-        let in_bounds = index < self.capacity;
-        let safe_index = if in_bounds { index } else { 0 };
-        let slot = self.slot(safe_index);
-
-        if in_bounds & slot.is_occupied() {
+        if index >= self.capacity {
+            return None;
+        }
+        let slot = self.slot(index);
+        if slot.is_occupied() {
             Some(unsafe { slot.value.assume_init_ref() })
         } else {
             None
@@ -352,12 +352,12 @@ impl<T> BoundedSlab<T> {
     /// Returns `None` if the key is invalid or stale.
     pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
         let index = key.index();
-        let in_bounds = index < self.capacity;
-        let safe_index = if in_bounds { index } else { 0 };
-        let slot = self.slot(safe_index);
-
-        if in_bounds & slot.is_occupied() {
-            Some(unsafe { self.slot_mut(index).value.assume_init_mut() })
+        if index >= self.capacity {
+            return None;
+        }
+        let slot = self.slot_mut(index);
+        if slot.is_occupied() {
+            Some(unsafe { slot.value.assume_init_mut() })
         } else {
             None
         }
@@ -366,10 +366,10 @@ impl<T> BoundedSlab<T> {
     /// Returns `true` if the key refers to a valid, occupied slot.
     pub fn contains(&self, key: Key) -> bool {
         let index = key.index();
-        let in_bounds = index < self.capacity;
-        let safe_index = if in_bounds { index } else { 0 };
-        let slot = self.slot(safe_index);
-        in_bounds & slot.is_occupied()
+        if index >= self.capacity {
+            return false;
+        }
+        self.slot(index).is_occupied()
     }
 
     /// Returns a reference without validation.
@@ -416,10 +416,11 @@ impl<T> BoundedSlab<T> {
     pub fn remove(&mut self, key: Key) -> T {
         let index = key.index();
         assert!(index < self.capacity, "key index out of bounds");
-        assert!(self.slot(index).is_occupied(), "slot is vacant");
 
         let free_head = self.free_head;
         let slot = self.slot_mut(index);
+        assert!(slot.is_occupied(), "slot is vacant");
+
         let value = unsafe { slot.value.assume_init_read() };
         slot.set_vacant(free_head);
         self.free_head = index;
