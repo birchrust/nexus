@@ -104,7 +104,7 @@
 //! ```
 //! use nexus_slab::Slab;
 //!
-//! let mut slab = Slab::with_capacity(128 * 1024, 1000);
+//! let mut slab = Slab::with_capacity(1000);
 //!
 //! let key = slab.insert(42);
 //! assert_eq!(slab[key], 42);
@@ -124,7 +124,6 @@
 #![warn(missing_docs)]
 
 pub mod bounded;
-mod sys;
 pub mod unbounded;
 
 pub use bounded::BoundedSlab;
@@ -309,12 +308,6 @@ impl<T> Slot<T> {
         self.tag == 0
     }
 
-    /// Returns `true` if this slot is vacant (in freelist).
-    #[inline]
-    pub(crate) const fn is_vacant(&self) -> bool {
-        self.tag != 0
-    }
-
     /// Returns the next free slot index.
     ///
     /// # Safety
@@ -432,7 +425,6 @@ mod tests {
     #[test]
     fn slot_new_vacant() {
         let slot: Slot<u64> = Slot::new_vacant(42);
-        assert!(slot.is_vacant());
         assert!(!slot.is_occupied());
         assert_eq!(slot.next_free(), 42);
     }
@@ -440,18 +432,17 @@ mod tests {
     #[test]
     fn slot_new_vacant_with_none() {
         let slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
-        assert!(slot.is_vacant());
+        assert!(!slot.is_occupied());
         assert_eq!(slot.next_free(), SLOT_NONE);
     }
 
     #[test]
     fn slot_set_occupied() {
         let mut slot: Slot<u64> = Slot::new_vacant(42);
-        assert!(slot.is_vacant());
+        assert!(!slot.is_occupied());
 
         slot.set_occupied();
         assert!(slot.is_occupied());
-        assert!(!slot.is_vacant());
     }
 
     #[test]
@@ -461,7 +452,6 @@ mod tests {
         assert!(slot.is_occupied());
 
         slot.set_vacant(123);
-        assert!(slot.is_vacant());
         assert!(!slot.is_occupied());
         assert_eq!(slot.next_free(), 123);
     }
@@ -484,7 +474,7 @@ mod tests {
     #[test]
     fn slot_max_next_free() {
         let slot: Slot<u64> = Slot::new_vacant(INDEX_MASK);
-        assert!(slot.is_vacant());
+        assert!(!slot.is_occupied());
         assert_eq!(slot.next_free(), INDEX_MASK);
     }
 
@@ -519,11 +509,11 @@ mod tests {
 
         // Cycle through states
         for next in [20, 30, 40, SLOT_NONE] {
-            assert!(slot.is_vacant());
+            assert!(!slot.is_occupied());
             slot.set_occupied();
             assert!(slot.is_occupied());
             slot.set_vacant(next);
-            assert!(slot.is_vacant());
+            assert!(!slot.is_occupied());
             assert_eq!(slot.next_free(), next);
         }
     }

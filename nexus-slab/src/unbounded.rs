@@ -3,7 +3,10 @@
 //! [`Slab`] provides O(1) insert, access, and remove with ABA protection.
 //! Grows automatically when capacity is exceeded.
 
-use std::ops::{Index, IndexMut};
+use std::{
+    marker::PhantomData,
+    ops::{Index, IndexMut},
+};
 
 use crate::{BoundedSlab, Key};
 
@@ -27,23 +30,25 @@ const DEFAULT_CHUNK_CAPACITY: usize = 4096;
 ///     .build();
 /// ```
 #[derive(Debug, Clone)]
-pub struct SlabBuilder {
+pub struct SlabBuilder<T> {
     chunk_capacity: usize,
     reserve: usize,
+    _marker: PhantomData<T>,
 }
 
-impl Default for SlabBuilder {
+impl<T> Default for SlabBuilder<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SlabBuilder {
+impl<T> SlabBuilder<T> {
     /// Creates a new builder with default settings.
     pub fn new() -> Self {
         Self {
             chunk_capacity: DEFAULT_CHUNK_CAPACITY,
             reserve: 0,
+            _marker: PhantomData,
         }
     }
 
@@ -67,7 +72,7 @@ impl SlabBuilder {
     }
 
     /// Builds the slab.
-    pub fn build<T>(self) -> Slab<T> {
+    pub fn build(self) -> Slab<T> {
         let mut slab = Slab::with_chunk_capacity(self.chunk_capacity);
         while slab.capacity() < self.reserve {
             slab.grow();
@@ -116,15 +121,14 @@ struct SlabEntry<T> {
 /// # Memory Layout
 ///
 /// Chunks are independent allocations. No copying occurs during growth.
+#[repr(C)]
 pub struct Slab<T> {
     slabs: Vec<SlabEntry<T>>,
-    head_with_space: u32,
-
-    chunk_capacity: u32,
     chunk_shift: u32,
     chunk_mask: u32,
-
+    head_with_space: u32,
     len: usize,
+    chunk_capacity: u32,
 }
 
 impl<T> Slab<T> {
@@ -178,7 +182,7 @@ impl<T> Slab<T> {
     ///     .reserve(50_000)
     ///     .build();
     /// ```
-    pub fn builder() -> SlabBuilder {
+    pub fn builder() -> SlabBuilder<T> {
         SlabBuilder::new()
     }
 

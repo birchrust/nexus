@@ -20,12 +20,12 @@
 //! assert_eq!(slab.get(key), None);
 //! ```
 
+use std::alloc::{Layout, alloc, dealloc};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 use std::ptr::NonNull;
 use std::{fmt, ptr};
 
-use crate::sys::Pages;
 use crate::{Full, Key, SLOT_NONE, Slot};
 
 // =============================================================================
@@ -54,14 +54,10 @@ use crate::{Full, Key, SLOT_NONE, Slot};
 /// a 64-bit tag (generation + freelist pointer) followed by the value.
 #[repr(C)]
 pub struct BoundedSlab<T> {
-    // Hot - every operation
     ptr: NonNull<Slot<T>>,
     capacity: u32,
     len: u32,
     free_head: u32,
-
-    // Cold
-    pages: Pages,
     _marker: PhantomData<T>,
 }
 
@@ -92,41 +88,24 @@ impl<T> BoundedSlab<T> {
     /// ```
     pub fn with_capacity(capacity: usize) -> Self {
         assert!(capacity > 0, "capacity must be non-zero");
-        assert!(
-            capacity <= SLOT_NONE as usize,
-            "capacity exceeds maximum ({})",
-            SLOT_NONE
-        );
+        assert!(capacity <= SLOT_NONE as usize, "capacity exceeds maximum");
 
-        let slot_size = std::mem::size_of::<Slot<T>>();
-        let slot_align = std::mem::align_of::<Slot<T>>();
-        let bytes = capacity.checked_mul(slot_size).expect("capacity overflow");
+        let layout = Layout::array::<Slot<T>>(capacity).expect("capacity overflow");
 
-        let pages = Pages::alloc(bytes).expect("allocation failed");
-
-        // Verify alignment
-        let raw_ptr = pages.as_ptr();
-        assert!(
-            raw_ptr as usize % slot_align == 0,
-            "Pages allocation not aligned for Slot<T>"
-        );
-
-        let ptr = NonNull::new(raw_ptr as *mut Slot<T>).expect("Pages returned null");
+        let ptr = unsafe { alloc(layout) } as *mut Slot<T>;
+        let ptr = NonNull::new(ptr).expect("allocation failed");
 
         let capacity = capacity as u32;
 
-        // Pre-build freelist: slot[0] -> slot[1] -> ... -> SLOT_NONE
-        // This touches all memory, ensuring pages are faulted in.
+        // Pre-touch: build freelist, fault in pages
         unsafe {
             for i in 0..capacity {
                 let next = if i + 1 < capacity { i + 1 } else { SLOT_NONE };
-                let slot_ptr = ptr.as_ptr().add(i as usize);
-                ptr::write(slot_ptr, Slot::new_vacant(next));
+                ptr.as_ptr().add(i as usize).write(Slot::new_vacant(next));
             }
         }
 
         Self {
-            pages,
             ptr,
             capacity,
             len: 0,
@@ -161,12 +140,6 @@ impl<T> BoundedSlab<T> {
     #[inline]
     pub fn is_full(&self) -> bool {
         self.free_head == SLOT_NONE
-    }
-
-    /// Returns the size of the backing allocation in bytes.
-    #[inline]
-    pub fn memory_size(&self) -> usize {
-        self.pages.size()
     }
 
     // =========================================================================
@@ -506,18 +479,6 @@ impl<T> BoundedSlab<T> {
         self.len = 0;
         self.free_head = 0;
     }
-
-    /// Locks all pages in physical RAM, preventing swapping.
-    ///
-    /// See [`sys::Pages::mlock`](crate::sys::Pages::mlock) for details.
-    pub fn mlock(&self) -> std::io::Result<()> {
-        self.pages.mlock()
-    }
-
-    /// Unlocks pages, allowing them to be swapped.
-    pub fn munlock(&self) -> std::io::Result<()> {
-        self.pages.munlock()
-    }
 }
 
 // =============================================================================
@@ -528,12 +489,15 @@ impl<T> Drop for BoundedSlab<T> {
     fn drop(&mut self) {
         // Drop all occupied values
         for i in 0..self.capacity {
-            let slot = self.slot_mut(i);
-            if slot.is_occupied() {
-                unsafe { ptr::drop_in_place(slot.value.as_mut_ptr()) };
+            if self.slot(i).is_occupied() {
+                unsafe { ptr::drop_in_place(self.slot_mut(i).value.as_mut_ptr()) };
             }
         }
-        // Pages dropped automatically
+
+        // Recompute layout for dealloc
+        let layout = Layout::array::<Slot<T>>(self.capacity as usize)
+            .expect("layout was valid at construction");
+        unsafe { dealloc(self.ptr.as_ptr() as *mut u8, layout) };
     }
 }
 
