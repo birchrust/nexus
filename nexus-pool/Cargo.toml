@@ -2,7 +2,7 @@
 name = "nexus-pool"
 version = "0.1.0"
 description = "High-performance object pools for low latency systems"
-# readme = "README.md"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
