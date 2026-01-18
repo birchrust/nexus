@@ -1,7 +1,7 @@
-//! Growable slab with generational keys.
+//! Growable slab allocator.
 //!
-//! [`Slab`] provides O(1) insert, access, and remove with ABA protection.
-//! Grows automatically when capacity is exceeded.
+//! [`Slab`] provides O(1) insert, access, and remove. Grows automatically
+//! by adding fixed-size chunks when capacity is exceeded.
 
 use std::{
     marker::PhantomData,
@@ -528,13 +528,13 @@ impl<T> Index<Key> for Slab<T> {
     type Output = T;
 
     fn index(&self, key: Key) -> &Self::Output {
-        self.get(key).expect("invalid or stale key")
+        self.get(key).expect("invalid key")
     }
 }
 
 impl<T> IndexMut<Key> for Slab<T> {
     fn index_mut(&mut self, key: Key) -> &mut Self::Output {
-        self.get_mut(key).expect("invalid or stale key")
+        self.get_mut(key).expect("invalid key")
     }
 }
 

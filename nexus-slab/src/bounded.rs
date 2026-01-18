@@ -1,7 +1,7 @@
-//! Fixed-capacity slab with generational keys.
+//! Fixed-capacity slab allocator.
 //!
-//! [`BoundedSlab`] provides O(1) insert, access, and remove with ABA protection
-//! via generational keys. Capacity is fixed at construction time.
+//! [`BoundedSlab`] provides O(1) insert, access, and remove with fixed
+//! capacity determined at construction time.
 //!
 //! # Example
 //!
@@ -16,7 +16,7 @@
 //! let removed = slab.remove(key);
 //! assert_eq!(removed, "hello");
 //!
-//! // Stale key returns None (ABA protected)
+//! // Key returns None after removal
 //! assert_eq!(slab.get(key), None);
 //! ```
 
@@ -32,26 +32,29 @@ use crate::{Full, Key, SLOT_NONE, Slot};
 // BoundedSlab
 // =============================================================================
 
-/// A fixed-capacity slab with generational keys.
+/// A fixed-capacity slab allocator.
 ///
-/// `BoundedSlab` allocates all memory upfront and provides O(1) operations
-/// with ABA protection through generational keys.
+/// `BoundedSlab` allocates all memory upfront and provides O(1) operations.
 ///
 /// # Capacity
 ///
 /// Capacity is fixed at construction. Use [`try_insert`](Self::try_insert)
 /// which returns `Err(Full)` when the slab is full.
 ///
-/// # Key Safety
+/// # Key Validity
 ///
-/// Unlike simple index-based slabs, `BoundedSlab` uses generational keys.
-/// When a slot is freed and reused, the generation increments, so stale
-/// keys return `None` instead of silently accessing wrong data.
+/// Keys are simple indices. After a slot is removed, its key becomes invalid
+/// and `get()`/`get_mut()` will return `None`. The slab checks occupancy
+/// but does not track key reuse—if you insert a new value and it occupies
+/// the same slot, an old key will access the new value.
+///
+/// For systems requiring protection against stale key reuse, validate against
+/// authoritative external identifiers (see [`Key`](crate::Key) documentation).
 ///
 /// # Memory Layout
 ///
 /// Slots are stored in a single contiguous allocation. Each slot contains
-/// a 64-bit tag (generation + freelist pointer) followed by the value.
+/// a 32-bit tag followed by the value.
 #[repr(C)]
 pub struct BoundedSlab<T> {
     ptr: NonNull<Slot<T>>,
@@ -306,7 +309,7 @@ impl<T> BoundedSlab<T> {
 
     /// Returns a reference to the value for the given key.
     ///
-    /// Returns `None` if the key is invalid or stale.
+    /// Returns `None` if the key is out of bounds or the slot is vacant.
     pub fn get(&self, key: Key) -> Option<&T> {
         let index = key.index();
         if index >= self.capacity {
@@ -322,7 +325,7 @@ impl<T> BoundedSlab<T> {
 
     /// Returns a mutable reference to the value for the given key.
     ///
-    /// Returns `None` if the key is invalid or stale.
+    /// Returns `None` if the key is out of bounds or the slot is vacant.
     pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
         let index = key.index();
         if index >= self.capacity {
@@ -349,7 +352,7 @@ impl<T> BoundedSlab<T> {
     ///
     /// # Safety
     ///
-    /// The key must refer to a valid, occupied slot with matching generation.
+    /// The key must refer to a valid, occupied slot.
     #[inline]
     pub unsafe fn get_unchecked(&self, key: Key) -> &T {
         unsafe { self.slot(key.index()).value.assume_init_ref() }
@@ -359,7 +362,7 @@ impl<T> BoundedSlab<T> {
     ///
     /// # Safety
     ///
-    /// The key must refer to a valid, occupied slot with matching generation.
+    /// The key must refer to a valid, occupied slot.
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, key: Key) -> &mut T {
         unsafe { self.slot_mut(key.index()).value.assume_init_mut() }
@@ -431,11 +434,11 @@ impl<T> BoundedSlab<T> {
         value
     }
 
-    /// Removes and returns the value without validation.
+    /// Returns a mutable reference without validation.
     ///
     /// # Safety
     ///
-    /// The key must refer to a valid, occupied slot with matching generation.
+    /// The key must refer to a valid, occupied slot.
     pub unsafe fn remove_unchecked(&mut self, key: Key) -> T {
         let index = key.index();
         let free_head = self.free_head;
@@ -514,7 +517,7 @@ impl<T> Index<Key> for BoundedSlab<T> {
     /// Panics if the key is invalid or stale.
     #[inline]
     fn index(&self, key: Key) -> &Self::Output {
-        self.get(key).expect("invalid or stale key")
+        self.get(key).expect("invalid key")
     }
 }
 
@@ -526,7 +529,7 @@ impl<T> IndexMut<Key> for BoundedSlab<T> {
     /// Panics if the key is invalid or stale.
     #[inline]
     fn index_mut(&mut self, key: Key) -> &mut Self::Output {
-        self.get_mut(key).expect("invalid or stale key")
+        self.get_mut(key).expect("invalid key")
     }
 }
 
@@ -709,7 +712,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Generation / Stale Keys
+    // Invalid Keys
     // =========================================================================
 
     #[test]
@@ -930,8 +933,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid or stale key")]
-    fn index_stale_key_panics() {
+    #[should_panic(expected = "invalid key")]
+    fn index_removed_key_panics() {
         let mut slab = BoundedSlab::with_capacity(16);
         let key = slab.try_insert(42u64).unwrap();
         slab.remove(key);

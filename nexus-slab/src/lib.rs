@@ -12,12 +12,16 @@
 //!
 //! # Performance Characteristics
 //!
-//! | Metric | nexus-slab | Typical Vec-based |
-//! |--------|------------|-------------------|
-//! | p50    | ~24 cycles | ~22 cycles        |
-//! | p99    | ~26 cycles | ~24 cycles        |
-//! | p999   | ~38-46 cycles (consistent) | 32-3700 cycles (bimodal) |
-//! | max    | ~500-800K cycles (growth) | ~1.5-2M cycles (realloc+copy) |
+//! Benchmarked against the `slab` crate (the standard ecosystem choice):
+//!
+//! | Operation | BoundedSlab | slab crate | Notes |
+//! |-----------|-------------|------------|-------|
+//! | INSERT p50 | ~20 cycles | ~22 cycles | 2 cycles faster |
+//! | GET p50 | ~24 cycles | ~26 cycles | 2 cycles faster |
+//! | REMOVE p50 | ~24 cycles | ~30 cycles | 6 cycles faster |
+//!
+//! For growable `Slab`, steady-state performance matches `slab` crate, but
+//! growth tail latency is **20-50x better** (p999: ~40 cycles vs ~2000+ cycles).
 //!
 //! Trade a few cycles on median for **predictable** tail latency.
 //!
@@ -38,32 +42,32 @@
 //! ## Memory Layout
 //!
 //! ```text
-//! Slab 0                        Slab 1
-//! ┌─────────────────────┐       ┌─────────────────────┐
-//! │ Slot 0              │       │ Slot 0              │
-//! │ ┌─────┬───────────┐ │       │ ┌─────┬───────────┐ │
-//! │ │ tag │   value   │ │       │ │ tag │   value   │ │
-//! │ └─────┴───────────┘ │       │ └─────┴───────────┘ │
-//! │ Slot 1              │       │ Slot 1              │
-//! │ ┌─────┬───────────┐ │       │ ...                 │
-//! │ │ tag │   value   │ │       └─────────────────────┘
-//! │ └─────┴───────────┘ │
-//! │ ...                 │       SlabMeta[]
-//! └─────────────────────┘       ┌─────────────────────┐
-//!                               │ bump_cursor: u32    │
-//!                               │ occupied: u32       │
-//!                               │ freelist_head: u32  │
-//!                               │ next_free_slab: u32 │
-//!                               └─────────────────────┘
+//! BoundedSlab (single contiguous allocation):
+//! ┌─────────────────────────────────────────────┐
+//! │ Slot 0: [tag: u32][value: T]                │
+//! │ Slot 1: [tag: u32][value: T]                │
+//! │ ...                                         │
+//! │ Slot N: [tag: u32][value: T]                │
+//! └─────────────────────────────────────────────┘
+//!
+//! Slab (multiple independent chunks):
+//! ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+//! │ Chunk 0      │  │ Chunk 1      │  │ Chunk 2      │
+//! │ (BoundedSlab)│  │ (BoundedSlab)│  │ (BoundedSlab)│
+//! └──────────────┘  └──────────────┘  └──────────────┘
+//!        ▲                                   ▲
+//!        └─── head_with_space ───────────────┘
+//!              (freelist of non-full chunks)
 //! ```
 //!
 //! ## Slot Tag Encoding
 //!
-//! Each slot has a `tag: u32` that serves double duty:
+//! Each slot has a `tag: u32` that indicates state:
 //!
-//! - **Occupied**: `tag == SLOT_OCCUPIED` (0xFFFF_FFFE), value is valid
-//! - **Vacant (end of chain)**: `tag == SLOT_NONE` (0xFFFF_FFFF)
-//! - **Vacant (chained)**: `tag < slots_per_slab`, points to next free slot
+//! - **Occupied**: `tag == 0` (value is valid)
+//! - **Vacant**: `tag` has bit 31 set, bits 0-30 encode next free slot index
+//!
+//! This enables a single comparison (`tag == 0`) to check occupancy.
 //!
 //! Freelists are **intra-slab only** - chains never cross slab boundaries.
 //! This enables slabs to drain independently.
@@ -113,13 +117,15 @@
 //! assert_eq!(value, 42);
 //! ```
 //!
-//! # Fixed vs Dynamic Mode
+//! # Choosing Between BoundedSlab and Slab
 //!
-//! - **Fixed**: Pre-allocates all memory upfront. Returns `Full` when exhausted.
-//!   Use when capacity is known and you want zero allocation after init.
+//! - **[`BoundedSlab`]**: Fixed capacity, pre-allocated. Returns `Err(Full)` when
+//!   exhausted. Use when capacity is known and you want zero allocation after init.
+//!   This is the production choice for latency-critical systems.
 //!
-//! - **Dynamic**: Grows by adding new slabs. Use when capacity is unbounded
-//!   but growth is infrequent.
+//! - **[`Slab`]**: Grows by adding new chunks. Use when capacity is unbounded
+//!   or as an overflow safety net. Growth allocates one chunk at a time—no
+//!   copying of existing data.
 
 #![warn(missing_docs)]
 
