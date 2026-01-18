@@ -14,16 +14,26 @@
 //!
 //! Benchmarked against the `slab` crate (the standard ecosystem choice):
 //!
+//! ## BoundedSlab (fixed capacity)
+//!
 //! | Operation | BoundedSlab | slab crate | Notes |
 //! |-----------|-------------|------------|-------|
 //! | INSERT p50 | ~20 cycles | ~22 cycles | 2 cycles faster |
 //! | GET p50 | ~24 cycles | ~26 cycles | 2 cycles faster |
 //! | REMOVE p50 | ~24 cycles | ~30 cycles | 6 cycles faster |
 //!
-//! For growable `Slab`, steady-state performance matches `slab` crate, but
-//! growth tail latency is **20-50x better** (p999: ~40 cycles vs ~2000+ cycles).
+//! ## Slab (growable)
 //!
-//! Trade a few cycles on median for **predictable** tail latency.
+//! Steady-state p50 matches `slab` crate (~22-32 cycles depending on operation).
+//! The win is tail latency during growth:
+//!
+//! | Metric | Slab | slab crate | Notes |
+//! |--------|------|------------|-------|
+//! | Growth p999 | ~40 cycles | ~2000+ cycles | 50x better |
+//! | Growth max | ~70K cycles | ~1.5M cycles | 20x better |
+//!
+//! `Slab` adds chunks independently—no copying. `slab` crate uses `Vec`,
+//! which copies all existing data on reallocation.
 //!
 //! # Architecture
 //!
