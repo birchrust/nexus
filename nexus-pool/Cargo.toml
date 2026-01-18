@@ -20,3 +20,7 @@ hdrhistogram = "7.5"
 name = "perf_local_pool"
 harness = false
 
+[[example]]
+name = "perf_sync_pool"
+harness = false
+
