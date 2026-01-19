@@ -15,8 +15,14 @@ workspace = true
 
 [dev-dependencies]
 hdrhistogram = "7.5"
+rustc-hash = "2"
+ahash = "0.8"
 
 [[example]]
 name = "perf_snowflake"
+harness = false
+
+[[example]]
+name = "perf_id_hashing"
 harness = false
 
