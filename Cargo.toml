@@ -5,6 +5,7 @@ members = [
 	"nexus-bits-derive",
 	"nexus-channel",
 	"nexus-collections",
+	"nexus-id",
 	"nexus-pool",
 	"nexus-queue",
 	"nexus-slab",
