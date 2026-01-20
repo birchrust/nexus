@@ -1,0 +1,15 @@
+[package]
+name = "nexus-ascii"
+version = "0.1.0"
+description = "Fixed capacity ascii strings for high performance systems"
+# readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+

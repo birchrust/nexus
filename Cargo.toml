@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
+members = ["nexus-ascii",
 	"nexus-bits",
 	"nexus-bits-derive",
 	"nexus-channel",
