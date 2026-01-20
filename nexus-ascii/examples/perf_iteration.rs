@@ -1,0 +1,285 @@
+//! Iteration and indexing performance benchmark.
+//!
+//! Measures iteration, indexing, and accessor performance in CPU cycles.
+//!
+//! Run with:
+//! ```bash
+//! cargo run --release --example perf_iteration
+//!
+//! # With perf stat for IPC/branch analysis:
+//! perf stat -r 10 ./target/release/examples/perf_iteration
+//! ```
+
+use nexus_ascii::AsciiString;
+use std::hint::black_box;
+
+const ITERATIONS: usize = 100_000;
+const WARMUP: usize = 10_000;
+
+#[cfg(target_arch = "x86_64")]
+fn rdtsc() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn rdtsc() -> u64 {
+    std::time::Instant::now().elapsed().as_nanos() as u64
+}
+
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    let idx = ((sorted.len() as f64) * p / 100.0) as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn bench<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
+    // Warmup
+    for _ in 0..WARMUP {
+        black_box(f());
+    }
+
+    // Collect samples
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let start = rdtsc();
+        black_box(f());
+        let end = rdtsc();
+        samples.push(end.wrapping_sub(start));
+    }
+
+    samples.sort_unstable();
+    let p50 = percentile(&samples, 50.0);
+    let p99 = percentile(&samples, 99.0);
+    let p999 = percentile(&samples, 99.9);
+
+    println!("{:<35} {:>8} {:>8} {:>8}", name, p50, p99, p999);
+    (p50, p99, p999)
+}
+
+fn main() {
+    println!("ITERATION & INDEXING BENCHMARK");
+    println!("==============================\n");
+    println!("Iterations: {}, Warmup: {}", ITERATIONS, WARMUP);
+    println!("All times in CPU cycles\n");
+
+    // =========================================================================
+    // Indexing
+    // =========================================================================
+    println!("=== INDEXING ===\n");
+    println!(
+        "{:<35} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(63));
+
+    let s8: AsciiString<32> = AsciiString::try_from("BTC-USD!").unwrap();
+    let s32: AsciiString<64> = AsciiString::try_from("ORDER-ID-1234567890123456789012").unwrap();
+
+    bench("Index s[0] (8B string)", || black_box(s8)[0].as_u8() as u64);
+
+    bench("Index s[7] (8B string, last)", || {
+        black_box(s8)[7].as_u8() as u64
+    });
+
+    bench("Index s[15] (32B string, middle)", || {
+        black_box(s32)[15].as_u8() as u64
+    });
+
+    bench("get(0) (8B string)", || {
+        black_box(&s8).get(0).map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("get(7) (8B string, last)", || {
+        black_box(&s8).get(7).map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("get(100) (out of bounds)", || {
+        black_box(&s8).get(100).map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("get_unchecked(0)", || unsafe {
+        black_box(&s8).get_unchecked(0).as_u8() as u64
+    });
+
+    // =========================================================================
+    // first() / last()
+    // =========================================================================
+    println!("\n=== FIRST / LAST ===\n");
+    println!(
+        "{:<35} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(63));
+
+    bench("first() (8B string)", || {
+        black_box(&s8).first().map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("last() (8B string)", || {
+        black_box(&s8).last().map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("first() (32B string)", || {
+        black_box(&s32).first().map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("last() (32B string)", || {
+        black_box(&s32).last().map_or(0, |c| c.as_u8() as u64)
+    });
+
+    let empty: AsciiString<32> = AsciiString::empty();
+    bench("first() (empty string)", || {
+        black_box(&empty).first().map_or(0, |c| c.as_u8() as u64)
+    });
+
+    bench("last() (empty string)", || {
+        black_box(&empty).last().map_or(0, |c| c.as_u8() as u64)
+    });
+
+    // =========================================================================
+    // Iteration
+    // =========================================================================
+    println!("\n=== ITERATION ===\n");
+    println!(
+        "{:<35} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(63));
+
+    bench("chars().count() (8B)", || {
+        black_box(&s8).chars().count() as u64
+    });
+
+    bench("chars().count() (32B)", || {
+        black_box(&s32).chars().count() as u64
+    });
+
+    bench("bytes().count() (8B)", || {
+        black_box(&s8).bytes().count() as u64
+    });
+
+    bench("bytes().count() (32B)", || {
+        black_box(&s32).bytes().count() as u64
+    });
+
+    // Sum all bytes (forces actual iteration)
+    bench("chars().map(as_u8).sum() (8B)", || {
+        black_box(&s8).chars().map(|c| c.as_u8() as u64).sum()
+    });
+
+    bench("chars().map(as_u8).sum() (32B)", || {
+        black_box(&s32).chars().map(|c| c.as_u8() as u64).sum()
+    });
+
+    bench("bytes().sum() (8B)", || {
+        black_box(&s8).bytes().map(|b| b as u64).sum()
+    });
+
+    bench("bytes().sum() (32B)", || {
+        black_box(&s32).bytes().map(|b| b as u64).sum()
+    });
+
+    // =========================================================================
+    // Manual indexing loop vs iterator
+    // =========================================================================
+    println!("\n=== MANUAL LOOP VS ITERATOR ===\n");
+    println!(
+        "{:<35} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(63));
+
+    bench("manual index loop sum (8B)", || {
+        let s = black_box(&s8);
+        let mut sum: u64 = 0;
+        for i in 0..s.len() {
+            sum += s[i].as_u8() as u64;
+        }
+        sum
+    });
+
+    bench("manual index loop sum (32B)", || {
+        let s = black_box(&s32);
+        let mut sum: u64 = 0;
+        for i in 0..s.len() {
+            sum += s[i].as_u8() as u64;
+        }
+        sum
+    });
+
+    bench("as_bytes() iter sum (8B)", || {
+        black_box(&s8).as_bytes().iter().map(|&b| b as u64).sum()
+    });
+
+    bench("as_bytes() iter sum (32B)", || {
+        black_box(&s32).as_bytes().iter().map(|&b| b as u64).sum()
+    });
+
+    // =========================================================================
+    // Baseline comparisons
+    // =========================================================================
+    println!("\n=== BASELINE COMPARISONS ===\n");
+    println!(
+        "{:<35} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(63));
+
+    let raw_bytes: [u8; 8] = *b"BTC-USD!";
+    bench("[u8; 8] index (baseline)", || {
+        black_box(raw_bytes)[0] as u64
+    });
+
+    bench("[u8; 8] iter sum (baseline)", || {
+        black_box(&raw_bytes).iter().map(|&b| b as u64).sum()
+    });
+
+    let std_str = "BTC-USD!";
+    bench("&str chars().count() (baseline)", || {
+        black_box(std_str).chars().count() as u64
+    });
+
+    bench("&str bytes().sum() (baseline)", || {
+        black_box(std_str).bytes().map(|b| b as u64).sum()
+    });
+
+    // =========================================================================
+    // Classification during iteration
+    // =========================================================================
+    println!("\n=== CLASSIFICATION DURING ITERATION ===\n");
+    println!(
+        "{:<35} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(63));
+
+    let mixed: AsciiString<32> = AsciiString::try_from("Hello123World").unwrap();
+
+    bench("count alphabetic (13B)", || {
+        black_box(&mixed)
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .count() as u64
+    });
+
+    bench("count digits (13B)", || {
+        black_box(&mixed).chars().filter(|c| c.is_digit()).count() as u64
+    });
+
+    bench("all uppercase check (8B)", || {
+        if black_box(&s8).chars().all(|c| c.is_uppercase()) {
+            1
+        } else {
+            0
+        }
+    });
+
+    bench("any digit check (13B)", || {
+        if black_box(&mixed).chars().any(|c| c.is_digit()) {
+            1
+        } else {
+            0
+        }
+    });
+
+    println!();
+}

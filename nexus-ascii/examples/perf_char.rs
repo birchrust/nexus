@@ -126,35 +126,66 @@ fn main() {
     let ctrl = AsciiChar::SOH;
 
     bench("is_uppercase (true)", || {
-        if black_box(upper).is_uppercase() { 1 } else { 0 }
+        if black_box(upper).is_uppercase() {
+            1
+        } else {
+            0
+        }
     });
 
     bench("is_uppercase (false)", || {
-        if black_box(lower).is_uppercase() { 1 } else { 0 }
+        if black_box(lower).is_uppercase() {
+            1
+        } else {
+            0
+        }
     });
 
     bench("is_lowercase", || {
-        if black_box(lower).is_lowercase() { 1 } else { 0 }
+        if black_box(lower).is_lowercase() {
+            1
+        } else {
+            0
+        }
     });
 
     bench("is_alphabetic", || {
-        if black_box(upper).is_alphabetic() { 1 } else { 0 }
+        if black_box(upper).is_alphabetic() {
+            1
+        } else {
+            0
+        }
     });
 
-    bench("is_digit", || {
-        if black_box(digit).is_digit() { 1 } else { 0 }
-    });
+    bench(
+        "is_digit",
+        || {
+            if black_box(digit).is_digit() { 1 } else { 0 }
+        },
+    );
 
     bench("is_alphanumeric", || {
-        if black_box(upper).is_alphanumeric() { 1 } else { 0 }
+        if black_box(upper).is_alphanumeric() {
+            1
+        } else {
+            0
+        }
     });
 
     bench("is_whitespace", || {
-        if black_box(space).is_whitespace() { 1 } else { 0 }
+        if black_box(space).is_whitespace() {
+            1
+        } else {
+            0
+        }
     });
 
     bench("is_printable", || {
-        if black_box(upper).is_printable() { 1 } else { 0 }
+        if black_box(upper).is_printable() {
+            1
+        } else {
+            0
+        }
     });
 
     bench("is_control", || {
@@ -162,7 +193,11 @@ fn main() {
     });
 
     bench("is_hex_digit", || {
-        if black_box(upper).is_hex_digit() { 1 } else { 0 }
+        if black_box(upper).is_hex_digit() {
+            1
+        } else {
+            0
+        }
     });
 
     // =========================================================================
@@ -192,11 +227,19 @@ fn main() {
     });
 
     bench("eq_ignore_case (same case)", || {
-        if black_box(upper).eq_ignore_case(black_box(upper)) { 1 } else { 0 }
+        if black_box(upper).eq_ignore_case(black_box(upper)) {
+            1
+        } else {
+            0
+        }
     });
 
     bench("eq_ignore_case (diff case)", || {
-        if black_box(upper).eq_ignore_case(black_box(lower)) { 1 } else { 0 }
+        if black_box(upper).eq_ignore_case(black_box(lower)) {
+            1
+        } else {
+            0
+        }
     });
 
     // =========================================================================
@@ -225,7 +268,11 @@ fn main() {
     // char.is_ascii_uppercase (std)
     let ch: char = 'A';
     bench("char.is_ascii_uppercase (std)", || {
-        if black_box(ch).is_ascii_uppercase() { 1 } else { 0 }
+        if black_box(ch).is_ascii_uppercase() {
+            1
+        } else {
+            0
+        }
     });
 
     // char.to_ascii_lowercase (std)

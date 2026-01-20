@@ -471,6 +471,65 @@ impl<const CAP: usize> AsciiString<CAP> {
             unsafe { AsciiChar::new_unchecked(b) }
         })
     }
+
+    /// Returns an iterator over the bytes in the string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("ABC")?;
+    /// let bytes: Vec<_> = s.bytes().collect();
+    /// assert_eq!(bytes, vec![b'A', b'B', b'C']);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn bytes(&self) -> impl Iterator<Item = u8> + '_ {
+        self.as_bytes().iter().copied()
+    }
+
+    /// Returns the first character, or `None` if the string is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// assert_eq!(s.first(), Some(AsciiChar::h));
+    ///
+    /// let empty: AsciiString<32> = AsciiString::empty();
+    /// assert_eq!(empty.first(), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn first(&self) -> Option<AsciiChar> {
+        self.get(0)
+    }
+
+    /// Returns the last character, or `None` if the string is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// assert_eq!(s.last(), Some(AsciiChar::o));
+    ///
+    /// let empty: AsciiString<32> = AsciiString::empty();
+    /// assert_eq!(empty.last(), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn last(&self) -> Option<AsciiChar> {
+        if self.is_empty() {
+            None
+        } else {
+            self.get(self.len() - 1)
+        }
+    }
 }
 
 // =============================================================================
@@ -534,6 +593,35 @@ impl<const CAP: usize> core::fmt::Debug for AsciiString<CAP> {
 impl<const CAP: usize> core::fmt::Display for AsciiString<CAP> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<usize> for AsciiString<CAP> {
+    type Output = AsciiChar;
+
+    /// Returns the character at the given index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= self.len()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// assert_eq!(s[0], AsciiChar::h);
+    /// assert_eq!(s[4], AsciiChar::o);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output {
+        assert!(index < self.len(), "index out of bounds");
+        // SAFETY: index is within bounds, data contains valid ASCII.
+        // We need to return a reference, so we transmute the byte reference.
+        // This is safe because AsciiChar is #[repr(transparent)] over u8.
+        unsafe { &*(self.data.get_unchecked(index) as *const u8 as *const AsciiChar) }
     }
 }
 
@@ -1077,5 +1165,112 @@ mod tests {
         let s: AsciiString<32> = AsciiString::try_from("ab12cd").unwrap();
         let alpha_count = s.chars().filter(|c| c.is_alphabetic()).count();
         assert_eq!(alpha_count, 4);
+    }
+
+    // =========================================================================
+    // bytes() iterator tests
+    // =========================================================================
+
+    #[test]
+    fn bytes_iterator() {
+        let s: AsciiString<32> = AsciiString::try_from("ABC").unwrap();
+        let bytes: Vec<_> = s.bytes().collect();
+        assert_eq!(bytes, vec![b'A', b'B', b'C']);
+    }
+
+    #[test]
+    fn bytes_empty() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert_eq!(s.bytes().count(), 0);
+    }
+
+    #[test]
+    fn bytes_matches_as_bytes() {
+        let s: AsciiString<32> = AsciiString::try_from("hello world").unwrap();
+        let from_iter: Vec<_> = s.bytes().collect();
+        let from_slice: Vec<_> = s.as_bytes().to_vec();
+        assert_eq!(from_iter, from_slice);
+    }
+
+    // =========================================================================
+    // first() and last() tests
+    // =========================================================================
+
+    #[test]
+    fn first_non_empty() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert_eq!(s.first(), Some(AsciiChar::h));
+    }
+
+    #[test]
+    fn first_empty() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert_eq!(s.first(), None);
+    }
+
+    #[test]
+    fn first_single_char() {
+        let s: AsciiString<32> = AsciiString::try_from("X").unwrap();
+        assert_eq!(s.first(), Some(AsciiChar::X));
+    }
+
+    #[test]
+    fn last_non_empty() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert_eq!(s.last(), Some(AsciiChar::o));
+    }
+
+    #[test]
+    fn last_empty() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert_eq!(s.last(), None);
+    }
+
+    #[test]
+    fn last_single_char() {
+        let s: AsciiString<32> = AsciiString::try_from("X").unwrap();
+        assert_eq!(s.last(), Some(AsciiChar::X));
+    }
+
+    #[test]
+    fn first_last_same_for_single() {
+        let s: AsciiString<32> = AsciiString::try_from("Z").unwrap();
+        assert_eq!(s.first(), s.last());
+    }
+
+    // =========================================================================
+    // Index<usize> tests
+    // =========================================================================
+
+    #[test]
+    fn index_valid() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert_eq!(s[0], AsciiChar::h);
+        assert_eq!(s[1], AsciiChar::e);
+        assert_eq!(s[2], AsciiChar::l);
+        assert_eq!(s[3], AsciiChar::l);
+        assert_eq!(s[4], AsciiChar::o);
+    }
+
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn index_out_of_bounds() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let _ = s[5];
+    }
+
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn index_empty_string() {
+        let s: AsciiString<32> = AsciiString::empty();
+        let _ = s[0];
+    }
+
+    #[test]
+    fn index_matches_get() {
+        let s: AsciiString<32> = AsciiString::try_from("test").unwrap();
+        for i in 0..s.len() {
+            assert_eq!(s[i], s.get(i).unwrap());
+        }
     }
 }
