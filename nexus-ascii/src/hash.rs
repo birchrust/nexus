@@ -84,6 +84,33 @@ pub fn hash_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
 }
 
 // =============================================================================
+// Const hash (for compile-time evaluation)
+// =============================================================================
+
+/// Const-compatible hash for compile-time evaluation.
+///
+/// This function can be used in const contexts (e.g., `const fn from_static`).
+/// It uses a scalar implementation that produces identical hashes to the
+/// runtime SIMD versions.
+///
+/// Only supports inputs up to 128 bytes, which covers all practical use cases
+/// for compile-time string literals.
+///
+/// # Panics
+///
+/// Panics at compile time if `CAP > 128`.
+#[inline]
+pub const fn hash_const<const CAP: usize>(data: &[u8]) -> u64 {
+    xxh3::hash_const::<CAP>(data, 0)
+}
+
+/// Const-compatible hash with seed.
+#[inline]
+pub const fn hash_const_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
+    xxh3::hash_const::<CAP>(data, seed)
+}
+
+// =============================================================================
 // Truncation helpers
 // =============================================================================
 
@@ -181,5 +208,27 @@ mod tests {
         assert_eq!(upper[5], 0xAA);
         assert_eq!(upper[4], 0xBB);
         assert_eq!(upper[3], 0xCC);
+    }
+
+    #[test]
+    fn hash_const_matches_runtime_dispatch() {
+        // Verify const hash matches the dispatched runtime hash
+        // (which may use SIMD on x86_64)
+        for len in 0..=128 {
+            let data: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let h_const = hash_const::<128>(&data);
+            let h_runtime = hash::<128>(&data);
+            assert_eq!(h_const, h_runtime, "mismatch at len={}", len);
+        }
+    }
+
+    #[test]
+    fn hash_const_usable_in_const_context() {
+        const H1: u64 = hash_const::<32>(b"hello");
+        const H2: u64 = hash_const::<32>(b"world");
+
+        assert_ne!(H1, H2);
+        assert_eq!(H1, hash::<32>(b"hello"));
+        assert_eq!(H2, hash::<32>(b"world"));
     }
 }

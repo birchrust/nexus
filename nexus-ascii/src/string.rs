@@ -24,8 +24,7 @@ const fn unpack_len(header: u64) -> usize {
     (header & 0xFFFF) as usize
 }
 
-/// Compute header for empty string.
-/// Note: Not const because hash::hash is not const (yet).
+/// Compute header for empty string (runtime).
 #[inline(always)]
 fn empty_header() -> u64 {
     pack_header(0, hash::hash::<0>(&[]))
@@ -89,6 +88,117 @@ impl<const CAP: usize> AsciiString<CAP> {
             header: empty_header(),
             data: [0u8; CAP],
         }
+    }
+
+    /// Creates an ASCII string from a static string literal at compile time.
+    ///
+    /// This is a `const fn` that validates the input and computes the hash
+    /// at compile time. Invalid input (non-ASCII or too long) causes a
+    /// compile-time panic.
+    ///
+    /// # Panics
+    ///
+    /// Panics at compile time if:
+    /// - The string contains non-ASCII bytes (> 127)
+    /// - The string is longer than `CAP`
+    /// - `CAP > 128` (const hash limitation)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // Compile-time construction
+    /// const BTC: AsciiString<16> = AsciiString::from_static("BTC-USD");
+    /// const ETH: AsciiString<16> = AsciiString::from_static("ETH-USD");
+    ///
+    /// assert_eq!(BTC.as_str(), "BTC-USD");
+    /// assert_eq!(ETH.len(), 7);
+    /// ```
+    #[inline]
+    pub const fn from_static(s: &'static str) -> Self {
+        assert!(CAP <= 128, "from_static only supports CAP <= 128");
+
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+
+        assert!(len <= CAP, "string exceeds capacity");
+
+        // Validate ASCII at compile time
+        let mut i = 0;
+        while i < len {
+            assert!(bytes[i] <= 127, "string contains non-ASCII byte");
+            i += 1;
+        }
+
+        // Compute hash at compile time
+        let h = hash::hash_const::<CAP>(bytes);
+        let header = pack_header(len as u16, h);
+
+        // Copy bytes into data array
+        let mut data = [0u8; CAP];
+        let mut j = 0;
+        while j < len {
+            data[j] = bytes[j];
+            j += 1;
+        }
+
+        Self { header, data }
+    }
+
+    /// Creates an ASCII string from a static byte slice at compile time.
+    ///
+    /// This is a `const fn` that validates the input and computes the hash
+    /// at compile time. Invalid input (non-ASCII or too long) causes a
+    /// compile-time panic.
+    ///
+    /// # Panics
+    ///
+    /// Panics at compile time if:
+    /// - Any byte is > 127 (non-ASCII)
+    /// - The slice is longer than `CAP`
+    /// - `CAP > 128` (const hash limitation)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // Compile-time construction from bytes
+    /// const SYMBOL: AsciiString<16> = AsciiString::from_static_bytes(b"BTC-USD");
+    /// const WITH_CTRL: AsciiString<16> = AsciiString::from_static_bytes(&[0x01, b'A', b'B']);
+    ///
+    /// assert_eq!(SYMBOL.as_str(), "BTC-USD");
+    /// assert_eq!(WITH_CTRL.len(), 3);
+    /// ```
+    #[inline]
+    pub const fn from_static_bytes(bytes: &'static [u8]) -> Self {
+        assert!(CAP <= 128, "from_static_bytes only supports CAP <= 128");
+
+        let len = bytes.len();
+
+        assert!(len <= CAP, "bytes exceed capacity");
+
+        // Validate ASCII at compile time
+        let mut i = 0;
+        while i < len {
+            assert!(bytes[i] <= 127, "bytes contain non-ASCII byte");
+            i += 1;
+        }
+
+        // Compute hash at compile time
+        let h = hash::hash_const::<CAP>(bytes);
+        let header = pack_header(len as u16, h);
+
+        // Copy bytes into data array
+        let mut data = [0u8; CAP];
+        let mut j = 0;
+        while j < len {
+            data[j] = bytes[j];
+            j += 1;
+        }
+
+        Self { header, data }
     }
 
     /// Creates an ASCII string from a byte slice without validation.
@@ -584,5 +694,233 @@ mod tests {
         // Full ASCII includes control characters
         let s: AsciiString<8> = AsciiString::try_from_bytes(&[0x01, 0x02, 0x03]).unwrap();
         assert_eq!(s.len(), 3);
+    }
+
+    // =========================================================================
+    // from_static tests
+    // =========================================================================
+
+    #[test]
+    fn from_static_basic() {
+        const S: AsciiString<32> = AsciiString::from_static("hello");
+        assert_eq!(S.len(), 5);
+        assert_eq!(S.as_str(), "hello");
+    }
+
+    #[test]
+    fn from_static_empty() {
+        const S: AsciiString<32> = AsciiString::from_static("");
+        assert!(S.is_empty());
+        assert_eq!(S.len(), 0);
+    }
+
+    #[test]
+    fn from_static_full_capacity() {
+        const S: AsciiString<8> = AsciiString::from_static("12345678");
+        assert_eq!(S.len(), 8);
+        assert_eq!(S.as_str(), "12345678");
+    }
+
+    #[test]
+    fn from_static_matches_runtime() {
+        // Verify const construction produces same result as runtime
+        const CONST_S: AsciiString<32> = AsciiString::from_static("BTC-USD");
+        let runtime_s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+
+        assert_eq!(CONST_S, runtime_s);
+        assert_eq!(CONST_S.header(), runtime_s.header());
+        assert_eq!(CONST_S.as_str(), runtime_s.as_str());
+    }
+
+    #[test]
+    fn from_static_hash_matches_runtime() {
+        // Critical: const hash must match runtime hash
+        const CONST_S: AsciiString<32> = AsciiString::from_static("ETH-USDT");
+        let runtime_s: AsciiString<32> = AsciiString::try_from("ETH-USDT").unwrap();
+
+        // Headers must be identical (same length + same hash)
+        assert_eq!(CONST_S.header(), runtime_s.header());
+    }
+
+    #[test]
+    fn from_static_various_lengths() {
+        // Test various lengths to cover different hash paths
+        const L1: AsciiString<128> = AsciiString::from_static("a");
+        const L3: AsciiString<128> = AsciiString::from_static("abc");
+        const L4: AsciiString<128> = AsciiString::from_static("abcd");
+        const L8: AsciiString<128> = AsciiString::from_static("abcdefgh");
+        const L9: AsciiString<128> = AsciiString::from_static("abcdefghi");
+        const L16: AsciiString<128> = AsciiString::from_static("abcdefghijklmnop");
+        const L17: AsciiString<128> = AsciiString::from_static("abcdefghijklmnopq");
+        const L32: AsciiString<128> = AsciiString::from_static("abcdefghijklmnopqrstuvwxyz012345");
+
+        // Verify they match runtime
+        assert_eq!(L1, AsciiString::try_from("a").unwrap());
+        assert_eq!(L3, AsciiString::try_from("abc").unwrap());
+        assert_eq!(L4, AsciiString::try_from("abcd").unwrap());
+        assert_eq!(L8, AsciiString::try_from("abcdefgh").unwrap());
+        assert_eq!(L9, AsciiString::try_from("abcdefghi").unwrap());
+        assert_eq!(L16, AsciiString::try_from("abcdefghijklmnop").unwrap());
+        assert_eq!(L17, AsciiString::try_from("abcdefghijklmnopq").unwrap());
+        assert_eq!(L32, AsciiString::try_from("abcdefghijklmnopqrstuvwxyz012345").unwrap());
+    }
+
+    #[test]
+    fn from_static_in_hashmap() {
+        use std::collections::HashMap;
+
+        const KEY: AsciiString<16> = AsciiString::from_static("BTC-USD");
+
+        let mut map: HashMap<AsciiString<16>, i32> = HashMap::new();
+        map.insert(KEY, 100);
+
+        // Lookup with runtime-constructed key
+        let lookup: AsciiString<16> = AsciiString::try_from("BTC-USD").unwrap();
+        assert_eq!(map.get(&lookup), Some(&100));
+
+        // Lookup with the const key itself
+        assert_eq!(map.get(&KEY), Some(&100));
+    }
+
+    #[test]
+    fn from_static_equality_with_runtime() {
+        const BTC: AsciiString<16> = AsciiString::from_static("BTC-USD");
+        const ETH: AsciiString<16> = AsciiString::from_static("ETH-USD");
+
+        let btc_runtime: AsciiString<16> = AsciiString::try_from("BTC-USD").unwrap();
+        let eth_runtime: AsciiString<16> = AsciiString::try_from("ETH-USD").unwrap();
+
+        // Const == Runtime
+        assert_eq!(BTC, btc_runtime);
+        assert_eq!(ETH, eth_runtime);
+
+        // Const != Different Runtime
+        assert_ne!(BTC, eth_runtime);
+        assert_ne!(ETH, btc_runtime);
+
+        // Const != Const
+        assert_ne!(BTC, ETH);
+    }
+
+    #[test]
+    fn from_static_with_symbols() {
+        const S: AsciiString<64> = AsciiString::from_static("!@#$%^&*()_+-=[]{}|;':\",./<>?");
+        assert_eq!(S.as_str(), "!@#$%^&*()_+-=[]{}|;':\",./<>?");
+    }
+
+    #[test]
+    fn from_static_with_digits() {
+        const S: AsciiString<32> = AsciiString::from_static("0123456789");
+        assert_eq!(S.as_str(), "0123456789");
+    }
+
+    #[test]
+    fn from_static_realistic_identifiers() {
+        const ORDER_ID: AsciiString<64> = AsciiString::from_static("ORD-2024-01-20-001-ABC123");
+        const SYMBOL: AsciiString<16> = AsciiString::from_static("BTCUSDT");
+        const EXCHANGE: AsciiString<16> = AsciiString::from_static("BINANCE");
+
+        assert_eq!(ORDER_ID.as_str(), "ORD-2024-01-20-001-ABC123");
+        assert_eq!(SYMBOL.as_str(), "BTCUSDT");
+        assert_eq!(EXCHANGE.as_str(), "BINANCE");
+
+        // Verify they work in lookups
+        let runtime_symbol: AsciiString<16> = AsciiString::try_from("BTCUSDT").unwrap();
+        assert_eq!(SYMBOL, runtime_symbol);
+    }
+
+    // =========================================================================
+    // from_static_bytes tests
+    // =========================================================================
+
+    #[test]
+    fn from_static_bytes_basic() {
+        const S: AsciiString<32> = AsciiString::from_static_bytes(b"hello");
+        assert_eq!(S.len(), 5);
+        assert_eq!(S.as_str(), "hello");
+    }
+
+    #[test]
+    fn from_static_bytes_empty() {
+        const S: AsciiString<32> = AsciiString::from_static_bytes(b"");
+        assert!(S.is_empty());
+        assert_eq!(S.len(), 0);
+    }
+
+    #[test]
+    fn from_static_bytes_with_control_chars() {
+        // This is a key use case - control characters that can't be in str literals easily
+        const S: AsciiString<16> = AsciiString::from_static_bytes(&[0x01, 0x02, b'A', b'B']);
+        assert_eq!(S.len(), 4);
+        assert_eq!(S.as_bytes(), &[0x01, 0x02, b'A', b'B']);
+    }
+
+    #[test]
+    fn from_static_bytes_fix_delimiter() {
+        // FIX protocol uses SOH (0x01) as delimiter
+        const FIX_FIELD: AsciiString<32> = AsciiString::from_static_bytes(b"8=FIX.4.4\x019=123\x01");
+        assert_eq!(FIX_FIELD.len(), 16);
+        assert_eq!(FIX_FIELD.as_bytes()[9], 0x01); // SOH delimiter
+    }
+
+    #[test]
+    fn from_static_bytes_matches_from_static_str() {
+        // When content is the same, both should produce identical results
+        const FROM_STR: AsciiString<32> = AsciiString::from_static("BTC-USD");
+        const FROM_BYTES: AsciiString<32> = AsciiString::from_static_bytes(b"BTC-USD");
+
+        assert_eq!(FROM_STR, FROM_BYTES);
+        assert_eq!(FROM_STR.header(), FROM_BYTES.header());
+    }
+
+    #[test]
+    fn from_static_bytes_matches_runtime() {
+        const CONST_S: AsciiString<32> = AsciiString::from_static_bytes(b"ETH-USDT");
+        let runtime_s: AsciiString<32> = AsciiString::try_from_bytes(b"ETH-USDT").unwrap();
+
+        assert_eq!(CONST_S, runtime_s);
+        assert_eq!(CONST_S.header(), runtime_s.header());
+    }
+
+    #[test]
+    fn from_static_bytes_various_lengths() {
+        const L1: AsciiString<128> = AsciiString::from_static_bytes(b"a");
+        const L8: AsciiString<128> = AsciiString::from_static_bytes(b"abcdefgh");
+        const L16: AsciiString<128> = AsciiString::from_static_bytes(b"abcdefghijklmnop");
+        const L32: AsciiString<128> = AsciiString::from_static_bytes(b"abcdefghijklmnopqrstuvwxyz012345");
+
+        assert_eq!(L1, AsciiString::try_from_bytes(b"a").unwrap());
+        assert_eq!(L8, AsciiString::try_from_bytes(b"abcdefgh").unwrap());
+        assert_eq!(L16, AsciiString::try_from_bytes(b"abcdefghijklmnop").unwrap());
+        assert_eq!(L32, AsciiString::try_from_bytes(b"abcdefghijklmnopqrstuvwxyz012345").unwrap());
+    }
+
+    #[test]
+    fn from_static_bytes_in_hashmap() {
+        use std::collections::HashMap;
+
+        const KEY: AsciiString<16> = AsciiString::from_static_bytes(b"BTC-USD");
+
+        let mut map: HashMap<AsciiString<16>, i32> = HashMap::new();
+        map.insert(KEY, 100);
+
+        // Lookup with runtime-constructed key
+        let lookup: AsciiString<16> = AsciiString::try_from_bytes(b"BTC-USD").unwrap();
+        assert_eq!(map.get(&lookup), Some(&100));
+
+        // Lookup with str-constructed key (should also match)
+        let lookup_str: AsciiString<16> = AsciiString::try_from("BTC-USD").unwrap();
+        assert_eq!(map.get(&lookup_str), Some(&100));
+    }
+
+    #[test]
+    fn from_static_bytes_all_ascii_values() {
+        // Test with bytes spanning the full ASCII range
+        const LOW: AsciiString<32> = AsciiString::from_static_bytes(&[0x00, 0x01, 0x02, 0x03]);
+        const HIGH: AsciiString<32> = AsciiString::from_static_bytes(&[0x7C, 0x7D, 0x7E, 0x7F]);
+
+        assert_eq!(LOW.len(), 4);
+        assert_eq!(HIGH.len(), 4);
+        assert_eq!(HIGH.as_bytes()[3], 0x7F); // DEL character
     }
 }
