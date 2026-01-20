@@ -2,8 +2,9 @@
 
 use core::hash::{Hash, Hasher};
 
-use crate::hash;
 use crate::AsciiError;
+use crate::char::AsciiChar;
+use crate::hash;
 
 // =============================================================================
 // Header Packing
@@ -225,10 +226,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     #[inline]
     pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() <= CAP, "bytes exceed capacity");
-        debug_assert!(
-            bytes.iter().all(|&b| b <= 127),
-            "bytes contain non-ASCII"
-        );
+        debug_assert!(bytes.iter().all(|&b| b <= 127), "bytes contain non-ASCII");
 
         let len = bytes.len();
         let hash = hash::hash::<CAP>(bytes);
@@ -405,6 +403,73 @@ impl<const CAP: usize> AsciiString<CAP> {
     #[inline(always)]
     pub const fn header(&self) -> u64 {
         self.header
+    }
+
+    /// Returns the character at the given index, or `None` if out of bounds.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// assert_eq!(s.get(0), Some(AsciiChar::h));
+    /// assert_eq!(s.get(4), Some(AsciiChar::o));
+    /// assert_eq!(s.get(5), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<AsciiChar> {
+        if index < self.len() {
+            // SAFETY: index is within bounds and data contains valid ASCII
+            Some(unsafe { AsciiChar::new_unchecked(self.data[index]) })
+        } else {
+            None
+        }
+    }
+
+    /// Returns the character at the given index without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// The index must be less than `self.len()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// // SAFETY: 0 < 5
+    /// let ch = unsafe { s.get_unchecked(0) };
+    /// assert_eq!(ch, AsciiChar::h);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub unsafe fn get_unchecked(&self, index: usize) -> AsciiChar {
+        debug_assert!(index < self.len());
+        // SAFETY: caller guarantees index < len, data contains valid ASCII
+        unsafe { AsciiChar::new_unchecked(*self.data.get_unchecked(index)) }
+    }
+
+    /// Returns an iterator over the characters in the string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("ABC")?;
+    /// let chars: Vec<_> = s.chars().collect();
+    /// assert_eq!(chars, vec![AsciiChar::A, AsciiChar::B, AsciiChar::C]);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn chars(&self) -> impl Iterator<Item = AsciiChar> + '_ {
+        self.as_bytes().iter().map(|&b| {
+            // SAFETY: all bytes in the string are valid ASCII
+            unsafe { AsciiChar::new_unchecked(b) }
+        })
     }
 }
 
@@ -762,7 +827,10 @@ mod tests {
         assert_eq!(L9, AsciiString::try_from("abcdefghi").unwrap());
         assert_eq!(L16, AsciiString::try_from("abcdefghijklmnop").unwrap());
         assert_eq!(L17, AsciiString::try_from("abcdefghijklmnopq").unwrap());
-        assert_eq!(L32, AsciiString::try_from("abcdefghijklmnopqrstuvwxyz012345").unwrap());
+        assert_eq!(
+            L32,
+            AsciiString::try_from("abcdefghijklmnopqrstuvwxyz012345").unwrap()
+        );
     }
 
     #[test]
@@ -858,7 +926,8 @@ mod tests {
     #[test]
     fn from_static_bytes_fix_delimiter() {
         // FIX protocol uses SOH (0x01) as delimiter
-        const FIX_FIELD: AsciiString<32> = AsciiString::from_static_bytes(b"8=FIX.4.4\x019=123\x01");
+        const FIX_FIELD: AsciiString<32> =
+            AsciiString::from_static_bytes(b"8=FIX.4.4\x019=123\x01");
         assert_eq!(FIX_FIELD.len(), 16);
         assert_eq!(FIX_FIELD.as_bytes()[9], 0x01); // SOH delimiter
     }
@@ -887,12 +956,19 @@ mod tests {
         const L1: AsciiString<128> = AsciiString::from_static_bytes(b"a");
         const L8: AsciiString<128> = AsciiString::from_static_bytes(b"abcdefgh");
         const L16: AsciiString<128> = AsciiString::from_static_bytes(b"abcdefghijklmnop");
-        const L32: AsciiString<128> = AsciiString::from_static_bytes(b"abcdefghijklmnopqrstuvwxyz012345");
+        const L32: AsciiString<128> =
+            AsciiString::from_static_bytes(b"abcdefghijklmnopqrstuvwxyz012345");
 
         assert_eq!(L1, AsciiString::try_from_bytes(b"a").unwrap());
         assert_eq!(L8, AsciiString::try_from_bytes(b"abcdefgh").unwrap());
-        assert_eq!(L16, AsciiString::try_from_bytes(b"abcdefghijklmnop").unwrap());
-        assert_eq!(L32, AsciiString::try_from_bytes(b"abcdefghijklmnopqrstuvwxyz012345").unwrap());
+        assert_eq!(
+            L16,
+            AsciiString::try_from_bytes(b"abcdefghijklmnop").unwrap()
+        );
+        assert_eq!(
+            L32,
+            AsciiString::try_from_bytes(b"abcdefghijklmnopqrstuvwxyz012345").unwrap()
+        );
     }
 
     #[test]
@@ -922,5 +998,84 @@ mod tests {
         assert_eq!(LOW.len(), 4);
         assert_eq!(HIGH.len(), 4);
         assert_eq!(HIGH.as_bytes()[3], 0x7F); // DEL character
+    }
+
+    // =========================================================================
+    // Character access tests
+    // =========================================================================
+
+    #[test]
+    fn get_valid_index() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert_eq!(s.get(0), Some(AsciiChar::h));
+        assert_eq!(s.get(1), Some(AsciiChar::e));
+        assert_eq!(s.get(2), Some(AsciiChar::l));
+        assert_eq!(s.get(3), Some(AsciiChar::l));
+        assert_eq!(s.get(4), Some(AsciiChar::o));
+    }
+
+    #[test]
+    fn get_out_of_bounds() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert_eq!(s.get(5), None);
+        assert_eq!(s.get(100), None);
+    }
+
+    #[test]
+    fn get_empty_string() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert_eq!(s.get(0), None);
+    }
+
+    #[test]
+    fn get_unchecked_valid() {
+        let s: AsciiString<32> = AsciiString::try_from("ABC").unwrap();
+        unsafe {
+            assert_eq!(s.get_unchecked(0), AsciiChar::A);
+            assert_eq!(s.get_unchecked(1), AsciiChar::B);
+            assert_eq!(s.get_unchecked(2), AsciiChar::C);
+        }
+    }
+
+    #[test]
+    fn chars_iterator() {
+        let s: AsciiString<32> = AsciiString::try_from("ABC").unwrap();
+        let chars: Vec<_> = s.chars().collect();
+        assert_eq!(chars, vec![AsciiChar::A, AsciiChar::B, AsciiChar::C]);
+    }
+
+    #[test]
+    fn chars_empty() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert_eq!(s.chars().count(), 0);
+    }
+
+    #[test]
+    fn chars_with_digits() {
+        let s: AsciiString<32> = AsciiString::try_from("a1b2").unwrap();
+        let chars: Vec<_> = s.chars().collect();
+        assert_eq!(
+            chars,
+            vec![
+                AsciiChar::a,
+                AsciiChar::DIGIT_1,
+                AsciiChar::b,
+                AsciiChar::DIGIT_2
+            ]
+        );
+    }
+
+    #[test]
+    fn chars_iterate_and_transform() {
+        let s: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        let upper: Vec<_> = s.chars().map(|c| c.to_uppercase()).collect();
+        assert_eq!(upper, vec![AsciiChar::A, AsciiChar::B, AsciiChar::C]);
+    }
+
+    #[test]
+    fn chars_count_alphabetic() {
+        let s: AsciiString<32> = AsciiString::try_from("ab12cd").unwrap();
+        let alpha_count = s.chars().filter(|c| c.is_alphabetic()).count();
+        assert_eq!(alpha_count, 4);
     }
 }

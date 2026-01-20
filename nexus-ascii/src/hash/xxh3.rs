@@ -588,22 +588,22 @@ mod tests {
     #[test]
     fn various_lengths() {
         // Test all length categories
-        let _ = hash(b"");                        // 0 bytes
-        let _ = hash(b"a");                       // 1 byte
-        let _ = hash(b"ab");                      // 2 bytes
-        let _ = hash(b"abc");                     // 3 bytes
-        let _ = hash(b"abcd");                    // 4 bytes
-        let _ = hash(b"abcdefgh");                // 8 bytes
-        let _ = hash(b"abcdefghi");               // 9 bytes
-        let _ = hash(b"abcdefghijklmnop");        // 16 bytes
-        let _ = hash(b"abcdefghijklmnopq");       // 17 bytes
-        let _ = hash(&[0u8; 64]);                 // 64 bytes
-        let _ = hash(&[0u8; 128]);                // 128 bytes
-        let _ = hash(&[0u8; 129]);                // 129 bytes
-        let _ = hash(&[0u8; 240]);                // 240 bytes
-        let _ = hash(&[0u8; 241]);                // 241 bytes
-        let _ = hash(&[0u8; 1024]);               // 1024 bytes
-        let _ = hash(&[0u8; 2048]);               // 2048 bytes
+        let _ = hash(b""); // 0 bytes
+        let _ = hash(b"a"); // 1 byte
+        let _ = hash(b"ab"); // 2 bytes
+        let _ = hash(b"abc"); // 3 bytes
+        let _ = hash(b"abcd"); // 4 bytes
+        let _ = hash(b"abcdefgh"); // 8 bytes
+        let _ = hash(b"abcdefghi"); // 9 bytes
+        let _ = hash(b"abcdefghijklmnop"); // 16 bytes
+        let _ = hash(b"abcdefghijklmnopq"); // 17 bytes
+        let _ = hash(&[0u8; 64]); // 64 bytes
+        let _ = hash(&[0u8; 128]); // 128 bytes
+        let _ = hash(&[0u8; 129]); // 129 bytes
+        let _ = hash(&[0u8; 240]); // 240 bytes
+        let _ = hash(&[0u8; 241]); // 241 bytes
+        let _ = hash(&[0u8; 1024]); // 1024 bytes
+        let _ = hash(&[0u8; 2048]); // 2048 bytes
     }
 
     #[test]
@@ -745,8 +745,14 @@ mod tests {
 
         // Test specific patterns
         assert_eq!(hash_const::<128>(b"123456789", 0), hash(b"123456789"));
-        assert_eq!(hash_const::<128>(b"order-id-1234", 0), hash(b"order-id-1234"));
-        assert_eq!(hash_const::<128>(b"1234567890123456", 0), hash(b"1234567890123456"));
+        assert_eq!(
+            hash_const::<128>(b"order-id-1234", 0),
+            hash(b"order-id-1234")
+        );
+        assert_eq!(
+            hash_const::<128>(b"1234567890123456", 0),
+            hash(b"1234567890123456")
+        );
     }
 
     #[test]
@@ -852,7 +858,8 @@ mod tests {
                 let h_const = hash_const::<128>(data, 0);
                 let h_runtime = hash(data);
                 assert_eq!(
-                    h_const, h_runtime,
+                    h_const,
+                    h_runtime,
                     "mismatch for {:?} (len={})",
                     String::from_utf8_lossy(data),
                     data.len()
@@ -881,7 +888,9 @@ mod tests {
 
         // Alternating bytes
         for len in [2, 4, 8, 16, 32, 64, 128] {
-            let data: Vec<u8> = (0..len).map(|i| if i % 2 == 0 { 0x55 } else { 0xAA }).collect();
+            let data: Vec<u8> = (0..len)
+                .map(|i| if i % 2 == 0 { 0x55 } else { 0xAA })
+                .collect();
             let h_const = hash_const::<128>(&data, 0);
             let h_runtime = hash(&data);
             assert_eq!(h_const, h_runtime, "alternating mismatch at len={}", len);
@@ -892,13 +901,13 @@ mod tests {
     fn const_matches_runtime_boundary_lengths() {
         // Test exact boundary lengths between hash functions
         let boundary_lengths = [
-            1, 2, 3,           // 1-3 range
-            4, 7, 8,           // 4-8 range
-            9, 15, 16,         // 9-16 range
-            17, 31, 32,        // 17-32 range (1 round)
-            33, 63, 64,        // 33-64 range (2 rounds)
-            65, 95, 96,        // 65-96 range (3 rounds)
-            97, 127, 128,      // 97-128 range (4 rounds)
+            1, 2, 3, // 1-3 range
+            4, 7, 8, // 4-8 range
+            9, 15, 16, // 9-16 range
+            17, 31, 32, // 17-32 range (1 round)
+            33, 63, 64, // 33-64 range (2 rounds)
+            65, 95, 96, // 65-96 range (3 rounds)
+            97, 127, 128, // 97-128 range (4 rounds)
         ];
 
         for len in boundary_lengths {
@@ -1001,14 +1010,14 @@ mod tests {
         let mut rng_state = 0xDEADBEEF_u64;
         for _ in 0..10000 {
             let r = lcg_next(&mut rng_state);
-            let data = [(r & 0xFF) as u8, ((r >> 8) & 0xFF) as u8, ((r >> 16) & 0xFF) as u8];
+            let data = [
+                (r & 0xFF) as u8,
+                ((r >> 8) & 0xFF) as u8,
+                ((r >> 16) & 0xFF) as u8,
+            ];
             let h_const = hash_const::<128>(&data, 0);
             let h_runtime = hash(&data);
-            assert_eq!(
-                h_const, h_runtime,
-                "mismatch for random bytes {:?}",
-                data
-            );
+            assert_eq!(h_const, h_runtime, "mismatch for random bytes {:?}", data);
         }
     }
 
@@ -1069,11 +1078,7 @@ mod tests {
 
                 let h_const = hash_const::<128>(&data, 0);
                 let h_runtime = hash(&data);
-                assert_eq!(
-                    h_const, h_runtime,
-                    "mismatch for len={}",
-                    len
-                );
+                assert_eq!(h_const, h_runtime, "mismatch for len={}", len);
             }
         }
     }
@@ -1091,11 +1096,7 @@ mod tests {
 
                 let h_const = hash_const::<128>(&data, 0);
                 let h_runtime = hash(&data);
-                assert_eq!(
-                    h_const, h_runtime,
-                    "mismatch for len={}",
-                    len
-                );
+                assert_eq!(h_const, h_runtime, "mismatch for len={}", len);
             }
         }
     }
@@ -1113,11 +1114,7 @@ mod tests {
 
                 let h_const = hash_const::<128>(&data, 0);
                 let h_runtime = hash(&data);
-                assert_eq!(
-                    h_const, h_runtime,
-                    "mismatch for len={}",
-                    len
-                );
+                assert_eq!(h_const, h_runtime, "mismatch for len={}", len);
             }
         }
     }
@@ -1137,11 +1134,7 @@ mod tests {
 
                     let h_const = hash_const::<128>(&data, seed);
                     let h_runtime = hash_with_seed(&data, seed);
-                    assert_eq!(
-                        h_const, h_runtime,
-                        "mismatch for len={} seed={}",
-                        len, seed
-                    );
+                    assert_eq!(h_const, h_runtime, "mismatch for len={} seed={}", len, seed);
                 }
             }
         }
@@ -1260,11 +1253,7 @@ mod tests {
 
             let h_const = hash_const::<128>(&modified, 0);
             let h_runtime = hash(&modified);
-            assert_eq!(
-                h_const, h_runtime,
-                "modified at pos={} mismatch",
-                pos
-            );
+            assert_eq!(h_const, h_runtime, "modified at pos={} mismatch", pos);
             // Also verify the hash actually changed
             assert_ne!(h_const, h_base_const, "hash didn't change at pos={}", pos);
         }

@@ -6,8 +6,8 @@
 use core::arch::x86_64::*;
 
 use super::xxh3::{
-    hash_bounded_with_seed as scalar_hash_bounded_with_seed, merge_accs, PRIME32_1, PRIME32_2,
-    PRIME64_1, PRIME64_2, SECRET,
+    PRIME32_1, PRIME32_2, PRIME64_1, PRIME64_2, SECRET,
+    hash_bounded_with_seed as scalar_hash_bounded_with_seed, merge_accs,
 };
 
 /// Hash with compile-time capacity bound using SSE2 for large inputs.
@@ -45,15 +45,9 @@ unsafe fn hash_long_sse2(data: &[u8], seed: u64) -> u64 {
 
         // Initialize accumulators (4 x 128-bit = 8 x 64-bit)
         let acc0_init = _mm_set_epi64x(PRIME64_1 as i64, PRIME32_1 as i64);
-        let acc1_init = _mm_set_epi64x(
-            (0_u64.wrapping_sub(PRIME64_1)) as i64,
-            PRIME64_2 as i64,
-        );
+        let acc1_init = _mm_set_epi64x((0_u64.wrapping_sub(PRIME64_1)) as i64, PRIME64_2 as i64);
         let acc2_init = _mm_set_epi64x(PRIME64_2 as i64, PRIME32_2 as i64);
-        let acc3_init = _mm_set_epi64x(
-            PRIME32_1 as i64,
-            (0_u64.wrapping_sub(PRIME64_2)) as i64,
-        );
+        let acc3_init = _mm_set_epi64x(PRIME32_1 as i64, (0_u64.wrapping_sub(PRIME64_2)) as i64);
 
         let seed_add = _mm_set_epi64x(-(seed as i64), seed as i64);
 
@@ -107,7 +101,14 @@ unsafe fn hash_long_sse2(data: &[u8], seed: u64) -> u64 {
 
         // Final stripe
         let final_stripe = data.as_ptr().add(len - 64);
-        accumulate_stripe_sse2(&mut acc0, &mut acc1, &mut acc2, &mut acc3, final_stripe, 121);
+        accumulate_stripe_sse2(
+            &mut acc0,
+            &mut acc1,
+            &mut acc2,
+            &mut acc3,
+            final_stripe,
+            121,
+        );
 
         // Extract and merge accumulators
         let mut acc = [0u64; 8];

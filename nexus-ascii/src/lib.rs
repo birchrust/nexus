@@ -28,10 +28,12 @@
 //! # Ok::<(), AsciiError>(())
 //! ```
 
+mod char;
 mod string;
 
 pub mod hash;
 
+pub use char::{AsciiChar, InvalidAsciiChar};
 pub use string::AsciiString;
 
 // =============================================================================

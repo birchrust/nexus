@@ -65,7 +65,11 @@ pub fn hash_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
     }
 
     // AVX2: great for large inputs
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
     {
         xxh3_avx2::hash_bounded_with_seed::<CAP>(data, seed)
     }

@@ -7,8 +7,8 @@
 use core::arch::x86_64::*;
 
 use super::xxh3::{
-    hash_bounded_with_seed as scalar_hash_bounded_with_seed, merge_accs, PRIME32_1, PRIME32_2,
-    PRIME64_1, PRIME64_2, SECRET,
+    PRIME32_1, PRIME32_2, PRIME64_1, PRIME64_2, SECRET,
+    hash_bounded_with_seed as scalar_hash_bounded_with_seed, merge_accs,
 };
 
 /// Hash with compile-time capacity bound using AVX2 for large inputs.
@@ -58,8 +58,7 @@ unsafe fn hash_long_avx2(data: &[u8], seed: u64) -> u64 {
             PRIME32_2 as i64,
         );
 
-        let seed_add =
-            _mm256_set_epi64x(-(seed as i64), seed as i64, -(seed as i64), seed as i64);
+        let seed_add = _mm256_set_epi64x(-(seed as i64), seed as i64, -(seed as i64), seed as i64);
 
         let mut acc0 = _mm256_add_epi64(init0, seed_add);
         let mut acc1 = _mm256_add_epi64(init1, seed_add);

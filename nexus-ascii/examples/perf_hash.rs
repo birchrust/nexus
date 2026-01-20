@@ -109,7 +109,11 @@ fn print_implementation_info() {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     println!("AVX-512");
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
     println!("AVX2");
 
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
@@ -135,10 +139,7 @@ fn main() {
     // - 512B+: SIMD path (for large inputs)
 
     println!("=== SMALL INPUTS (compile-time branch elimination) ===\n");
-    println!(
-        "{:<10} {:>8} {:>8} {:>8}",
-        "Size", "p50", "p99", "p999"
-    );
+    println!("{:<10} {:>8} {:>8} {:>8}", "Size", "p50", "p99", "p999");
     println!("{}", "-".repeat(40));
 
     // 8 bytes - CAP=8 eliminates all but smallest path

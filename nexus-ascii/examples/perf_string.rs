@@ -119,31 +119,19 @@ fn main() {
     let s1: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     let s2: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     bench("eq (equal, 7B)", || {
-        if black_box(s1) == black_box(s2) {
-            1
-        } else {
-            0
-        }
+        if black_box(s1) == black_box(s2) { 1 } else { 0 }
     });
 
     // Different strings - different hash (fast path reject)
     let s3: AsciiString<32> = AsciiString::try_from("ETH-USD").unwrap();
     bench("eq (different hash)", || {
-        if black_box(s1) == black_box(s3) {
-            1
-        } else {
-            0
-        }
+        if black_box(s1) == black_box(s3) { 1 } else { 0 }
     });
 
     // Different strings - different length (fast path reject via header)
     let s4: AsciiString<32> = AsciiString::try_from("BTC").unwrap();
     bench("eq (different length)", || {
-        if black_box(s1) == black_box(s4) {
-            1
-        } else {
-            0
-        }
+        if black_box(s1) == black_box(s4) { 1 } else { 0 }
     });
 
     // Longer equal strings
@@ -167,8 +155,8 @@ fn main() {
     );
     println!("{}", "-".repeat(58));
 
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     bench("Hash::hash (header extract)", || {
@@ -190,8 +178,16 @@ fn main() {
     // Prepare a HashMap with some entries
     let mut map: HashMap<AsciiString<16>, u64> = HashMap::new();
     let symbols = [
-        "BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "MATIC-USD",
-        "LINK-USD", "UNI-USD", "AAVE-USD", "DOGE-USD", "SHIB-USD",
+        "BTC-USD",
+        "ETH-USD",
+        "SOL-USD",
+        "AVAX-USD",
+        "MATIC-USD",
+        "LINK-USD",
+        "UNI-USD",
+        "AAVE-USD",
+        "DOGE-USD",
+        "SHIB-USD",
     ];
     for (i, sym) in symbols.iter().enumerate() {
         let key: AsciiString<16> = AsciiString::try_from(*sym).unwrap();
@@ -222,13 +218,12 @@ fn main() {
 
     bench("len()", || black_box(&s).len() as u64);
 
-    bench("is_empty()", || {
-        if black_box(&s).is_empty() {
-            1
-        } else {
-            0
-        }
-    });
+    bench(
+        "is_empty()",
+        || {
+            if black_box(&s).is_empty() { 1 } else { 0 }
+        },
+    );
 
     bench("as_str()", || black_box(&s).as_str().len() as u64);
 
@@ -248,11 +243,7 @@ fn main() {
     let a: u64 = 0x123456789ABCDEF0;
     let b: u64 = 0x123456789ABCDEF0;
     bench("u64 == u64 (baseline)", || {
-        if black_box(a) == black_box(b) {
-            1
-        } else {
-            0
-        }
+        if black_box(a) == black_box(b) { 1 } else { 0 }
     });
 
     // Raw byte slice comparison

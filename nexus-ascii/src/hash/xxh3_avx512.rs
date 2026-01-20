@@ -7,8 +7,8 @@
 use core::arch::x86_64::*;
 
 use super::xxh3::{
-    hash_bounded_with_seed as scalar_hash_bounded_with_seed, merge_accs, PRIME32_1, PRIME64_1,
-    PRIME64_2, SECRET,
+    PRIME32_1, PRIME64_1, PRIME64_2, SECRET,
+    hash_bounded_with_seed as scalar_hash_bounded_with_seed, merge_accs,
 };
 
 /// Hash with compile-time capacity bound using AVX-512 for large inputs.

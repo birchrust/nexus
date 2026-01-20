@@ -179,11 +179,7 @@ fn analyze_collisions_birthday() {
             (100_000_000, "100M"),
         ]
     } else {
-        vec![
-            (1_000_000, "1M"),
-            (10_000_000, "10M"),
-            (50_000_000, "50M"),
-        ]
+        vec![(1_000_000, "1M"), (10_000_000, "10M"), (50_000_000, "50M")]
     };
 
     println!("\n=== BIRTHDAY PARADOX COLLISION TEST ===\n");
@@ -253,10 +249,7 @@ fn analyze_collisions_birthday() {
 }
 
 /// Analyze bit distribution at a specific input size.
-fn analyze_bit_distribution_sized(
-    input_size: usize,
-    truncate: fn(u64) -> [u8; 6],
-) -> f64 {
+fn analyze_bit_distribution_sized(input_size: usize, truncate: fn(u64) -> [u8; 6]) -> f64 {
     let mut bit_counts = [0usize; 48];
     let samples = 100_000;
 
@@ -300,7 +293,11 @@ fn main() {
     print!("Implementation: XXH3 with ");
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     println!("AVX-512");
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
     println!("AVX2");
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     println!("SSE2");
@@ -318,17 +315,26 @@ fn main() {
     println!("\n=== BUCKET DISTRIBUTION (lower χ² = more uniform) ===\n");
     let lower_chi_1k = analyze_bucket_distribution(truncate_lower_48, 1024);
     let upper_chi_1k = analyze_bucket_distribution(truncate_upper_48, 1024);
-    println!("  1024 buckets:  lower_48 χ²={:>10.2}  upper_48 χ²={:>10.2}", lower_chi_1k, upper_chi_1k);
+    println!(
+        "  1024 buckets:  lower_48 χ²={:>10.2}  upper_48 χ²={:>10.2}",
+        lower_chi_1k, upper_chi_1k
+    );
 
     let lower_chi_64k = analyze_bucket_distribution(truncate_lower_48, 65536);
     let upper_chi_64k = analyze_bucket_distribution(truncate_upper_48, 65536);
-    println!("  65536 buckets: lower_48 χ²={:>10.2}  upper_48 χ²={:>10.2}", lower_chi_64k, upper_chi_64k);
+    println!(
+        "  65536 buckets: lower_48 χ²={:>10.2}  upper_48 χ²={:>10.2}",
+        lower_chi_64k, upper_chi_64k
+    );
 
     // Avalanche comparison
     println!("\n=== AVALANCHE (ideal = 24.00 bits flip per input bit) ===\n");
     let lower_aval = analyze_avalanche(32, truncate_lower_48);
     let upper_aval = analyze_avalanche(32, truncate_upper_48);
-    println!("  32B input: lower_48={:.2}/48  upper_48={:.2}/48", lower_aval, upper_aval);
+    println!(
+        "  32B input: lower_48={:.2}/48  upper_48={:.2}/48",
+        lower_aval, upper_aval
+    );
 
     // Collisions (quick sanity check)
     println!("\n=== COLLISIONS (expect ~0 for 1M samples) ===\n");
