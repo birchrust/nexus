@@ -5,6 +5,7 @@ use core::hash::{Hash, Hasher};
 use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::hash;
+use crate::str_ref::AsciiStr;
 
 // =============================================================================
 // Header Packing
@@ -396,6 +397,27 @@ impl<const CAP: usize> AsciiString<CAP> {
         unsafe { core::str::from_utf8_unchecked(self.as_bytes()) }
     }
 
+    /// Returns a borrowed `&AsciiStr` view of this string.
+    ///
+    /// This is a zero-cost conversion that provides access to the `AsciiStr`
+    /// API without copying.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiStr};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// let ascii_str: &AsciiStr = s.as_ascii_str();
+    /// assert_eq!(ascii_str.len(), 5);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline(always)]
+    pub fn as_ascii_str(&self) -> &AsciiStr {
+        // SAFETY: AsciiString data is valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(self.as_bytes()) }
+    }
+
     /// Returns the packed header (for advanced use).
     ///
     /// The header contains both length (bits 0-15) and hash (bits 16-63).
@@ -533,6 +555,123 @@ impl<const CAP: usize> AsciiString<CAP> {
 }
 
 // =============================================================================
+// Comparison Methods
+// =============================================================================
+
+impl<const CAP: usize> AsciiString<CAP> {
+    /// Compares two ASCII strings for equality, ignoring ASCII case.
+    ///
+    /// This performs a case-insensitive comparison where 'A'-'Z' are considered
+    /// equal to 'a'-'z'.
+    ///
+    /// # Fast Path
+    ///
+    /// If the lengths differ, returns `false` immediately without comparing bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s1: AsciiString<32> = AsciiString::try_from("Hello")?;
+    /// let s2: AsciiString<32> = AsciiString::try_from("HELLO")?;
+    /// let s3: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// let s4: AsciiString<32> = AsciiString::try_from("world")?;
+    ///
+    /// assert!(s1.eq_ignore_ascii_case(&s2));
+    /// assert!(s1.eq_ignore_ascii_case(&s3));
+    /// assert!(!s1.eq_ignore_ascii_case(&s4));
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn eq_ignore_ascii_case(&self, other: &Self) -> bool {
+        // Fast path: different lengths can't be equal
+        if self.len() != other.len() {
+            return false;
+        }
+
+        // Compare bytes case-insensitively
+        self.as_bytes()
+            .iter()
+            .zip(other.as_bytes().iter())
+            .all(|(&a, &b)| a.eq_ignore_ascii_case(&b))
+    }
+
+    /// Returns `true` if the string starts with the given prefix.
+    ///
+    /// Accepts `&[u8]`, `&str`, or anything that implements `AsRef<[u8]>`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+    ///
+    /// assert!(s.starts_with(b"BTC"));
+    /// assert!(s.starts_with("BTC-"));
+    /// assert!(!s.starts_with("ETH"));
+    /// assert!(s.starts_with("")); // Empty prefix always matches
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn starts_with<P: AsRef<[u8]>>(&self, prefix: P) -> bool {
+        self.as_bytes().starts_with(prefix.as_ref())
+    }
+
+    /// Returns `true` if the string ends with the given suffix.
+    ///
+    /// Accepts `&[u8]`, `&str`, or anything that implements `AsRef<[u8]>`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+    ///
+    /// assert!(s.ends_with(b"USD"));
+    /// assert!(s.ends_with("-USD"));
+    /// assert!(!s.ends_with("EUR"));
+    /// assert!(s.ends_with("")); // Empty suffix always matches
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn ends_with<S: AsRef<[u8]>>(&self, suffix: S) -> bool {
+        self.as_bytes().ends_with(suffix.as_ref())
+    }
+
+    /// Returns `true` if the string contains the given substring.
+    ///
+    /// Accepts `&[u8]`, `&str`, or anything that implements `AsRef<[u8]>`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+    ///
+    /// assert!(s.contains(b"-"));
+    /// assert!(s.contains("TC-US"));
+    /// assert!(!s.contains("ETH"));
+    /// assert!(s.contains("")); // Empty needle always found
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn contains<N: AsRef<[u8]>>(&self, needle: N) -> bool {
+        let needle = needle.as_ref();
+        if needle.is_empty() {
+            return true;
+        }
+        // Use the standard library's optimized substring search
+        self.as_bytes()
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+}
+
+// =============================================================================
 // Trait Implementations
 // =============================================================================
 
@@ -566,6 +705,62 @@ impl<const CAP: usize> PartialEq for AsciiString<CAP> {
 }
 
 impl<const CAP: usize> Eq for AsciiString<CAP> {}
+
+impl<const CAP: usize> core::ops::Deref for AsciiString<CAP> {
+    type Target = AsciiStr;
+
+    /// Dereferences to `&AsciiStr`, enabling method coercion.
+    ///
+    /// This allows `AsciiString` to be used anywhere `&AsciiStr` is expected,
+    /// and provides access to all `AsciiStr` methods.
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_ascii_str()
+    }
+}
+
+// Cross-type equality with AsciiStr
+impl<const CAP: usize> PartialEq<AsciiStr> for AsciiString<CAP> {
+    #[inline]
+    fn eq(&self, other: &AsciiStr) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl<const CAP: usize> PartialEq<AsciiString<CAP>> for AsciiStr {
+    #[inline]
+    fn eq(&self, other: &AsciiString<CAP>) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl<const CAP: usize> PartialEq<&AsciiStr> for AsciiString<CAP> {
+    #[inline]
+    fn eq(&self, other: &&AsciiStr) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl<const CAP: usize> PartialOrd for AsciiString<CAP> {
+    /// Lexicographic ordering based on byte values.
+    ///
+    /// ASCII ordering is the same as raw byte ordering:
+    /// `'0'-'9'` (48-57) < `'A'-'Z'` (65-90) < `'a'-'z'` (97-122)
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<const CAP: usize> Ord for AsciiString<CAP> {
+    /// Lexicographic ordering based on byte values.
+    ///
+    /// Delegates to the standard library's optimized slice comparison.
+    #[inline]
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.as_bytes().cmp(other.as_bytes())
+    }
+}
 
 impl<const CAP: usize> Hash for AsciiString<CAP> {
     /// Hashes the ASCII string.
@@ -1272,5 +1467,351 @@ mod tests {
         for i in 0..s.len() {
             assert_eq!(s[i], s.get(i).unwrap());
         }
+    }
+
+    // =========================================================================
+    // Ordering tests
+    // =========================================================================
+
+    #[test]
+    fn ord_equal_strings() {
+        let s1: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        assert_eq!(s1.cmp(&s2), core::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn ord_less_than() {
+        let s1: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("abd").unwrap();
+        assert_eq!(s1.cmp(&s2), core::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn ord_greater_than() {
+        let s1: AsciiString<32> = AsciiString::try_from("abd").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        assert_eq!(s1.cmp(&s2), core::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn ord_prefix_is_less() {
+        // Shorter string that's a prefix is less
+        let s1: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("abcd").unwrap();
+        assert_eq!(s1.cmp(&s2), core::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn ord_case_sensitive() {
+        // Uppercase comes before lowercase in ASCII
+        let upper: AsciiString<32> = AsciiString::try_from("ABC").unwrap();
+        let lower: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        assert_eq!(upper.cmp(&lower), core::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn ord_digits_before_letters() {
+        // Digits come before letters in ASCII
+        let digits: AsciiString<32> = AsciiString::try_from("123").unwrap();
+        let letters: AsciiString<32> = AsciiString::try_from("ABC").unwrap();
+        assert_eq!(digits.cmp(&letters), core::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn ord_sortable() {
+        let mut strings: Vec<AsciiString<32>> = vec![
+            AsciiString::try_from("zebra").unwrap(),
+            AsciiString::try_from("apple").unwrap(),
+            AsciiString::try_from("banana").unwrap(),
+        ];
+        strings.sort();
+        assert_eq!(strings[0].as_str(), "apple");
+        assert_eq!(strings[1].as_str(), "banana");
+        assert_eq!(strings[2].as_str(), "zebra");
+    }
+
+    #[test]
+    fn partial_ord_consistent() {
+        let s1: AsciiString<32> = AsciiString::try_from("abc").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("abd").unwrap();
+        assert_eq!(s1.partial_cmp(&s2), Some(core::cmp::Ordering::Less));
+    }
+
+    // =========================================================================
+    // eq_ignore_ascii_case tests
+    // =========================================================================
+
+    #[test]
+    fn eq_ignore_case_same_case() {
+        let s1: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s1.eq_ignore_ascii_case(&s2));
+    }
+
+    #[test]
+    fn eq_ignore_case_different_case() {
+        let s1: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("HELLO").unwrap();
+        let s3: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s1.eq_ignore_ascii_case(&s2));
+        assert!(s1.eq_ignore_ascii_case(&s3));
+        assert!(s2.eq_ignore_ascii_case(&s3));
+    }
+
+    #[test]
+    fn eq_ignore_case_different_strings() {
+        let s1: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("world").unwrap();
+        assert!(!s1.eq_ignore_ascii_case(&s2));
+    }
+
+    #[test]
+    fn eq_ignore_case_different_lengths() {
+        let s1: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("hell").unwrap();
+        assert!(!s1.eq_ignore_ascii_case(&s2));
+    }
+
+    #[test]
+    fn eq_ignore_case_empty() {
+        let s1: AsciiString<32> = AsciiString::empty();
+        let s2: AsciiString<32> = AsciiString::empty();
+        assert!(s1.eq_ignore_ascii_case(&s2));
+    }
+
+    #[test]
+    fn eq_ignore_case_with_digits() {
+        // Digits should match exactly (no case)
+        let s1: AsciiString<32> = AsciiString::try_from("ABC123").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("abc123").unwrap();
+        assert!(s1.eq_ignore_ascii_case(&s2));
+    }
+
+    #[test]
+    fn eq_ignore_case_with_symbols() {
+        // Symbols should match exactly
+        let s1: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        let s2: AsciiString<32> = AsciiString::try_from("btc-usd").unwrap();
+        assert!(s1.eq_ignore_ascii_case(&s2));
+    }
+
+    // =========================================================================
+    // starts_with tests
+    // =========================================================================
+
+    #[test]
+    fn starts_with_bytes() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        assert!(s.starts_with(b"BTC"));
+        assert!(s.starts_with(b"BTC-"));
+        assert!(s.starts_with(b"BTC-USD"));
+        assert!(!s.starts_with(b"ETH"));
+    }
+
+    #[test]
+    fn starts_with_str() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        assert!(s.starts_with("BTC"));
+        assert!(s.starts_with("BTC-"));
+        assert!(!s.starts_with("USD"));
+    }
+
+    #[test]
+    fn starts_with_empty() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.starts_with("")); // Empty prefix matches everything
+        assert!(s.starts_with(b""));
+    }
+
+    #[test]
+    fn starts_with_full_string() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.starts_with("hello"));
+    }
+
+    #[test]
+    fn starts_with_longer_prefix() {
+        let s: AsciiString<32> = AsciiString::try_from("hi").unwrap();
+        assert!(!s.starts_with("hello"));
+    }
+
+    #[test]
+    fn starts_with_empty_string() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert!(s.starts_with("")); // Empty matches empty
+        assert!(!s.starts_with("a")); // Non-empty doesn't match
+    }
+
+    // =========================================================================
+    // ends_with tests
+    // =========================================================================
+
+    #[test]
+    fn ends_with_bytes() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        assert!(s.ends_with(b"USD"));
+        assert!(s.ends_with(b"-USD"));
+        assert!(s.ends_with(b"BTC-USD"));
+        assert!(!s.ends_with(b"EUR"));
+    }
+
+    #[test]
+    fn ends_with_str() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        assert!(s.ends_with("USD"));
+        assert!(s.ends_with("-USD"));
+        assert!(!s.ends_with("BTC"));
+    }
+
+    #[test]
+    fn ends_with_empty() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.ends_with("")); // Empty suffix matches everything
+        assert!(s.ends_with(b""));
+    }
+
+    #[test]
+    fn ends_with_full_string() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.ends_with("hello"));
+    }
+
+    #[test]
+    fn ends_with_longer_suffix() {
+        let s: AsciiString<32> = AsciiString::try_from("lo").unwrap();
+        assert!(!s.ends_with("hello"));
+    }
+
+    #[test]
+    fn ends_with_empty_string() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert!(s.ends_with("")); // Empty matches empty
+        assert!(!s.ends_with("a")); // Non-empty doesn't match
+    }
+
+    // =========================================================================
+    // contains tests
+    // =========================================================================
+
+    #[test]
+    fn contains_bytes() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        assert!(s.contains(b"-"));
+        assert!(s.contains(b"TC-US"));
+        assert!(s.contains(b"BTC"));
+        assert!(s.contains(b"USD"));
+        assert!(!s.contains(b"ETH"));
+    }
+
+    #[test]
+    fn contains_str() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        assert!(s.contains("-"));
+        assert!(s.contains("TC-US"));
+        assert!(!s.contains("ETH"));
+    }
+
+    #[test]
+    fn contains_empty() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.contains("")); // Empty needle always found
+        assert!(s.contains(b""));
+    }
+
+    #[test]
+    fn contains_full_string() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.contains("hello"));
+    }
+
+    #[test]
+    fn contains_at_start() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.contains("hel"));
+    }
+
+    #[test]
+    fn contains_at_end() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.contains("llo"));
+    }
+
+    #[test]
+    fn contains_in_middle() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.contains("ell"));
+    }
+
+    #[test]
+    fn contains_longer_needle() {
+        let s: AsciiString<32> = AsciiString::try_from("hi").unwrap();
+        assert!(!s.contains("hello"));
+    }
+
+    #[test]
+    fn contains_empty_string() {
+        let s: AsciiString<32> = AsciiString::empty();
+        assert!(s.contains("")); // Empty contains empty
+        assert!(!s.contains("a")); // Empty doesn't contain non-empty
+    }
+
+    #[test]
+    fn contains_single_char() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        assert!(s.contains("h"));
+        assert!(s.contains("e"));
+        assert!(s.contains("l"));
+        assert!(s.contains("o"));
+        assert!(!s.contains("x"));
+    }
+
+    // =========================================================================
+    // AsciiStr integration tests
+    // =========================================================================
+
+    #[test]
+    fn as_ascii_str() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let ascii_str = s.as_ascii_str();
+        assert_eq!(ascii_str.len(), 5);
+        assert_eq!(ascii_str.as_str(), "hello");
+    }
+
+    #[test]
+    fn deref_to_ascii_str() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        // Deref coercion should work
+        let ascii_str: &AsciiStr = &s;
+        assert_eq!(ascii_str.len(), 5);
+    }
+
+    #[test]
+    fn deref_method_access() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        // Should be able to call AsciiStr methods directly via Deref
+        // (these are also on AsciiString, but this tests the coercion)
+        let first = s.first();
+        assert_eq!(first, Some(AsciiChar::h));
+    }
+
+    #[test]
+    fn cross_type_equality_ascii_str() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let ascii_str = AsciiStr::try_from_bytes(b"hello").unwrap();
+
+        assert!(s == *ascii_str);
+        assert!(*ascii_str == s);
+    }
+
+    #[test]
+    fn function_accepting_ascii_str() {
+        fn takes_ascii_str(s: &AsciiStr) -> usize {
+            s.len()
+        }
+
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        // Should work via Deref coercion
+        assert_eq!(takes_ascii_str(&s), 5);
     }
 }

@@ -29,11 +29,13 @@
 //! ```
 
 mod char;
+mod str_ref;
 mod string;
 
 pub mod hash;
 
 pub use char::{AsciiChar, InvalidAsciiChar};
+pub use str_ref::AsciiStr;
 pub use string::AsciiString;
 
 // =============================================================================
