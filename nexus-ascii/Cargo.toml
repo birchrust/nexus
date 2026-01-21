@@ -14,8 +14,9 @@ categories.workspace = true
 workspace = true
 
 [features]
-default = []
-nohash = ["dep:nohash-hasher"]
+default = ["std"]
+std = []
+nohash = ["dep:nohash-hasher", "std"]
 
 [dependencies]
 nohash-hasher = { version = "0.2.0", optional = true }

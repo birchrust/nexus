@@ -25,6 +25,7 @@ impl fmt::Display for InvalidAsciiChar {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for InvalidAsciiChar {}
 
 // =============================================================================

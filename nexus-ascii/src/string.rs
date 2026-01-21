@@ -1312,20 +1312,22 @@ impl<const CAP: usize> TryFrom<&[u8]> for AsciiString<CAP> {
     }
 }
 
-impl<const CAP: usize> TryFrom<String> for AsciiString<CAP> {
+#[cfg(feature = "std")]
+impl<const CAP: usize> TryFrom<std::string::String> for AsciiString<CAP> {
     type Error = AsciiError;
 
     #[inline]
-    fn try_from(s: String) -> Result<Self, Self::Error> {
+    fn try_from(s: std::string::String) -> Result<Self, Self::Error> {
         Self::try_from_str(&s)
     }
 }
 
-impl<const CAP: usize> TryFrom<&String> for AsciiString<CAP> {
+#[cfg(feature = "std")]
+impl<const CAP: usize> TryFrom<&std::string::String> for AsciiString<CAP> {
     type Error = AsciiError;
 
     #[inline]
-    fn try_from(s: &String) -> Result<Self, Self::Error> {
+    fn try_from(s: &std::string::String) -> Result<Self, Self::Error> {
         Self::try_from_str(s)
     }
 }

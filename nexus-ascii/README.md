@@ -127,8 +127,19 @@ For typical workloads (< 1M unique strings), collisions are effectively impossib
 
 | Feature | Description |
 |---------|-------------|
-| `default` | Core functionality |
-| `nohash` | Enable nohash-hasher support for identity hashing |
+| `std` (default) | Enable `std::error::Error` impls and `TryFrom<String>` |
+| `nohash` | Enable nohash-hasher support for identity hashing (implies `std`) |
+
+## `no_std` Support
+
+This crate is `no_std` compatible. Disable default features to use in `no_std` environments:
+
+```toml
+[dependencies]
+nexus-ascii = { version = "1.0", default-features = false }
+```
+
+Note: Without `std`, `Error` trait impls and `TryFrom<String>` conversions are unavailable.
 
 ## License
 

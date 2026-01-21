@@ -3,6 +3,11 @@
 //! This crate provides stack-allocated, fixed-capacity ASCII string types
 //! optimized for trading systems and other latency-sensitive applications.
 //!
+//! # `no_std` Support
+//!
+//! This crate is `no_std` compatible by default. Enable the `std` feature
+//! for `Error` trait implementations.
+//!
 //! # Design Principles
 //!
 //! - **Immutable**: Strings are immutable after creation. Hash is computed once.
@@ -27,6 +32,8 @@
 //! assert_eq!(s.len(), 7);
 //! # Ok::<(), AsciiError>(())
 //! ```
+
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
 
 mod builder;
 mod char;
@@ -192,4 +199,5 @@ impl core::fmt::Display for AsciiError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for AsciiError {}
