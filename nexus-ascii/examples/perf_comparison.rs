@@ -11,81 +11,35 @@
 //! perf stat -r 10 ./target/release/examples/perf_comparison
 //! ```
 
+#[path = "_bench_utils.rs"]
+mod bench_utils;
+
+use bench_utils::{bench_wide, print_header_wide, print_intro};
 use nexus_ascii::AsciiString;
 use std::hint::black_box;
 
-const ITERATIONS: usize = 100_000;
-const WARMUP: usize = 10_000;
-
-#[cfg(target_arch = "x86_64")]
-fn rdtsc() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn rdtsc() -> u64 {
-    std::time::Instant::now().elapsed().as_nanos() as u64
-}
-
-fn percentile(sorted: &[u64], p: f64) -> u64 {
-    let idx = ((sorted.len() as f64) * p / 100.0) as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn bench<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
-    // Warmup
-    for _ in 0..WARMUP {
-        black_box(f());
-    }
-
-    // Collect samples
-    let mut samples = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = rdtsc();
-        black_box(f());
-        let end = rdtsc();
-        samples.push(end.wrapping_sub(start));
-    }
-
-    samples.sort_unstable();
-    let p50 = percentile(&samples, 50.0);
-    let p99 = percentile(&samples, 99.0);
-    let p999 = percentile(&samples, 99.9);
-
-    println!("{:<40} {:>8} {:>8} {:>8}", name, p50, p99, p999);
-    (p50, p99, p999)
-}
-
 fn main() {
-    println!("COMPARISON & ORDERING BENCHMARK");
-    println!("================================\n");
-    println!("Iterations: {}, Warmup: {}", ITERATIONS, WARMUP);
-    println!("All times in CPU cycles\n");
+    print_intro("COMPARISON & ORDERING BENCHMARK");
 
     // =========================================================================
     // Ordering (Ord)
     // =========================================================================
-    println!("=== ORDERING (Ord) ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    print_header_wide("ORDERING (Ord)");
 
     let s1: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     let s2: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     let s3: AsciiString<32> = AsciiString::try_from("ETH-USD").unwrap();
     let s4: AsciiString<32> = AsciiString::try_from("BTC").unwrap();
 
-    bench("cmp() equal strings (7B)", || {
+    bench_wide("cmp() equal strings (7B)", || {
         black_box(s1.cmp(&s2)) as u64
     });
 
-    bench("cmp() different strings (7B)", || {
+    bench_wide("cmp() different strings (7B)", || {
         black_box(s1.cmp(&s3)) as u64
     });
 
-    bench("cmp() different lengths (7B vs 3B)", || {
+    bench_wide("cmp() different lengths (7B vs 3B)", || {
         black_box(s1.cmp(&s4)) as u64
     });
 
@@ -96,23 +50,19 @@ fn main() {
     let long3: AsciiString<64> =
         AsciiString::try_from("ORDER-ID-1234567890123456789012345679").unwrap();
 
-    bench("cmp() equal strings (37B)", || {
+    bench_wide("cmp() equal strings (37B)", || {
         black_box(long1.cmp(&long2)) as u64
     });
 
-    bench("cmp() differ at end (37B)", || {
+    bench_wide("cmp() differ at end (37B)", || {
         black_box(long1.cmp(&long3)) as u64
     });
 
     // =========================================================================
     // Case-insensitive equality
     // =========================================================================
-    println!("\n=== CASE-INSENSITIVE EQUALITY ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header_wide("CASE-INSENSITIVE EQUALITY");
 
     let upper: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     let lower: AsciiString<32> = AsciiString::try_from("btc-usd").unwrap();
@@ -120,7 +70,7 @@ fn main() {
     let diff: AsciiString<32> = AsciiString::try_from("ETH-USD").unwrap();
     let shorter: AsciiString<32> = AsciiString::try_from("BTC").unwrap();
 
-    bench("eq_ignore_ascii_case() same case (7B)", || {
+    bench_wide("eq_ignore_ascii_case() same case (7B)", || {
         if black_box(&upper).eq_ignore_ascii_case(black_box(&upper)) {
             1
         } else {
@@ -128,7 +78,7 @@ fn main() {
         }
     });
 
-    bench("eq_ignore_ascii_case() diff case (7B)", || {
+    bench_wide("eq_ignore_ascii_case() diff case (7B)", || {
         if black_box(&upper).eq_ignore_ascii_case(black_box(&lower)) {
             1
         } else {
@@ -136,7 +86,7 @@ fn main() {
         }
     });
 
-    bench("eq_ignore_ascii_case() mixed case (7B)", || {
+    bench_wide("eq_ignore_ascii_case() mixed case (7B)", || {
         if black_box(&upper).eq_ignore_ascii_case(black_box(&mixed)) {
             1
         } else {
@@ -144,7 +94,7 @@ fn main() {
         }
     });
 
-    bench("eq_ignore_ascii_case() different (7B)", || {
+    bench_wide("eq_ignore_ascii_case() different (7B)", || {
         if black_box(&upper).eq_ignore_ascii_case(black_box(&diff)) {
             1
         } else {
@@ -152,7 +102,7 @@ fn main() {
         }
     });
 
-    bench("eq_ignore_ascii_case() diff len (fast)", || {
+    bench_wide("eq_ignore_ascii_case() diff len (fast)", || {
         if black_box(&upper).eq_ignore_ascii_case(black_box(&shorter)) {
             1
         } else {
@@ -165,7 +115,7 @@ fn main() {
     let long_lower: AsciiString<64> =
         AsciiString::try_from("order-id-abcdefghijklmnopqrstuvwxyz12").unwrap();
 
-    bench("eq_ignore_ascii_case() same case (38B)", || {
+    bench_wide("eq_ignore_ascii_case() same case (38B)", || {
         if black_box(&long_upper).eq_ignore_ascii_case(black_box(&long_upper)) {
             1
         } else {
@@ -173,7 +123,7 @@ fn main() {
         }
     });
 
-    bench("eq_ignore_ascii_case() diff case (38B)", || {
+    bench_wide("eq_ignore_ascii_case() diff case (38B)", || {
         if black_box(&long_upper).eq_ignore_ascii_case(black_box(&long_lower)) {
             1
         } else {
@@ -184,16 +134,12 @@ fn main() {
     // =========================================================================
     // starts_with
     // =========================================================================
-    println!("\n=== STARTS_WITH ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header_wide("STARTS_WITH");
 
     let symbol: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
 
-    bench("starts_with() 3B prefix (match)", || {
+    bench_wide("starts_with() 3B prefix (match)", || {
         if black_box(&symbol).starts_with(black_box("BTC")) {
             1
         } else {
@@ -201,7 +147,7 @@ fn main() {
         }
     });
 
-    bench("starts_with() 3B prefix (no match)", || {
+    bench_wide("starts_with() 3B prefix (no match)", || {
         if black_box(&symbol).starts_with(black_box("ETH")) {
             1
         } else {
@@ -209,7 +155,7 @@ fn main() {
         }
     });
 
-    bench("starts_with() full string", || {
+    bench_wide("starts_with() full string", || {
         if black_box(&symbol).starts_with(black_box("BTC-USD")) {
             1
         } else {
@@ -217,7 +163,7 @@ fn main() {
         }
     });
 
-    bench("starts_with() empty prefix", || {
+    bench_wide("starts_with() empty prefix", || {
         if black_box(&symbol).starts_with(black_box("")) {
             1
         } else {
@@ -225,7 +171,7 @@ fn main() {
         }
     });
 
-    bench("starts_with() longer prefix (no match)", || {
+    bench_wide("starts_with() longer prefix (no match)", || {
         if black_box(&symbol).starts_with(black_box("BTC-USD-PERP")) {
             1
         } else {
@@ -236,7 +182,7 @@ fn main() {
     let long_str: AsciiString<64> =
         AsciiString::try_from("ORDER-ID-1234567890123456789012345678").unwrap();
 
-    bench("starts_with() 8B prefix (37B string)", || {
+    bench_wide("starts_with() 8B prefix (37B string)", || {
         if black_box(&long_str).starts_with(black_box("ORDER-ID")) {
             1
         } else {
@@ -247,14 +193,10 @@ fn main() {
     // =========================================================================
     // ends_with
     // =========================================================================
-    println!("\n=== ENDS_WITH ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header_wide("ENDS_WITH");
 
-    bench("ends_with() 3B suffix (match)", || {
+    bench_wide("ends_with() 3B suffix (match)", || {
         if black_box(&symbol).ends_with(black_box("USD")) {
             1
         } else {
@@ -262,7 +204,7 @@ fn main() {
         }
     });
 
-    bench("ends_with() 3B suffix (no match)", || {
+    bench_wide("ends_with() 3B suffix (no match)", || {
         if black_box(&symbol).ends_with(black_box("EUR")) {
             1
         } else {
@@ -270,7 +212,7 @@ fn main() {
         }
     });
 
-    bench("ends_with() full string", || {
+    bench_wide("ends_with() full string", || {
         if black_box(&symbol).ends_with(black_box("BTC-USD")) {
             1
         } else {
@@ -278,7 +220,7 @@ fn main() {
         }
     });
 
-    bench("ends_with() empty suffix", || {
+    bench_wide("ends_with() empty suffix", || {
         if black_box(&symbol).ends_with(black_box("")) {
             1
         } else {
@@ -286,7 +228,7 @@ fn main() {
         }
     });
 
-    bench("ends_with() 8B suffix (37B string)", || {
+    bench_wide("ends_with() 8B suffix (37B string)", || {
         if black_box(&long_str).ends_with(black_box("45678")) {
             1
         } else {
@@ -297,14 +239,10 @@ fn main() {
     // =========================================================================
     // contains
     // =========================================================================
-    println!("\n=== CONTAINS ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header_wide("CONTAINS");
 
-    bench("contains() 1B needle (match)", || {
+    bench_wide("contains() 1B needle (match)", || {
         if black_box(&symbol).contains(black_box("-")) {
             1
         } else {
@@ -312,7 +250,7 @@ fn main() {
         }
     });
 
-    bench("contains() 1B needle (no match)", || {
+    bench_wide("contains() 1B needle (no match)", || {
         if black_box(&symbol).contains(black_box("@")) {
             1
         } else {
@@ -320,7 +258,7 @@ fn main() {
         }
     });
 
-    bench("contains() 3B needle at start", || {
+    bench_wide("contains() 3B needle at start", || {
         if black_box(&symbol).contains(black_box("BTC")) {
             1
         } else {
@@ -328,7 +266,7 @@ fn main() {
         }
     });
 
-    bench("contains() 3B needle at end", || {
+    bench_wide("contains() 3B needle at end", || {
         if black_box(&symbol).contains(black_box("USD")) {
             1
         } else {
@@ -336,7 +274,7 @@ fn main() {
         }
     });
 
-    bench("contains() 3B needle in middle", || {
+    bench_wide("contains() 3B needle in middle", || {
         if black_box(&symbol).contains(black_box("C-U")) {
             1
         } else {
@@ -344,7 +282,7 @@ fn main() {
         }
     });
 
-    bench("contains() full string", || {
+    bench_wide("contains() full string", || {
         if black_box(&symbol).contains(black_box("BTC-USD")) {
             1
         } else {
@@ -352,7 +290,7 @@ fn main() {
         }
     });
 
-    bench("contains() empty needle", || {
+    bench_wide("contains() empty needle", || {
         if black_box(&symbol).contains(black_box("")) {
             1
         } else {
@@ -360,7 +298,7 @@ fn main() {
         }
     });
 
-    bench("contains() 5B needle (37B string, match)", || {
+    bench_wide("contains() 5B needle (37B string, match)", || {
         if black_box(&long_str).contains(black_box("12345")) {
             1
         } else {
@@ -368,7 +306,7 @@ fn main() {
         }
     });
 
-    bench("contains() 5B needle (37B string, no match)", || {
+    bench_wide("contains() 5B needle (37B string, no match)", || {
         if black_box(&long_str).contains(black_box("ZZZZZ")) {
             1
         } else {
@@ -379,29 +317,25 @@ fn main() {
     // =========================================================================
     // Baseline comparisons
     // =========================================================================
-    println!("\n=== BASELINE COMPARISONS ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header_wide("BASELINE COMPARISONS");
 
     let bytes1: &[u8] = b"BTC-USD";
     let bytes2: &[u8] = b"BTC-USD";
     let bytes3: &[u8] = b"ETH-USD";
 
-    bench("[u8] cmp() equal (baseline)", || {
+    bench_wide("[u8] cmp() equal (baseline)", || {
         black_box(bytes1.cmp(bytes2)) as u64
     });
 
-    bench("[u8] cmp() different (baseline)", || {
+    bench_wide("[u8] cmp() different (baseline)", || {
         black_box(bytes1.cmp(bytes3)) as u64
     });
 
     let str1: &str = "BTC-USD";
     let str2: &str = "btc-usd";
 
-    bench("&str eq_ignore_ascii_case (baseline)", || {
+    bench_wide("&str eq_ignore_ascii_case (baseline)", || {
         if black_box(str1).eq_ignore_ascii_case(black_box(str2)) {
             1
         } else {
@@ -409,7 +343,7 @@ fn main() {
         }
     });
 
-    bench("&str starts_with (baseline)", || {
+    bench_wide("&str starts_with (baseline)", || {
         if black_box(str1).starts_with(black_box("BTC")) {
             1
         } else {
@@ -417,7 +351,7 @@ fn main() {
         }
     });
 
-    bench("&str ends_with (baseline)", || {
+    bench_wide("&str ends_with (baseline)", || {
         if black_box(str1).ends_with(black_box("USD")) {
             1
         } else {
@@ -425,7 +359,7 @@ fn main() {
         }
     });
 
-    bench("&str contains (baseline)", || {
+    bench_wide("&str contains (baseline)", || {
         if black_box(str1).contains(black_box("-")) {
             1
         } else {

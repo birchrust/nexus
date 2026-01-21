@@ -10,66 +10,20 @@
 //! perf stat -r 10 ./target/release/examples/perf_ascii_str
 //! ```
 
+#[path = "_bench_utils.rs"]
+mod bench_utils;
+
+use bench_utils::{bench, print_header, print_intro};
 use nexus_ascii::{AsciiStr, AsciiString};
 use std::hint::black_box;
 
-const ITERATIONS: usize = 100_000;
-const WARMUP: usize = 10_000;
-
-#[cfg(target_arch = "x86_64")]
-fn rdtsc() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn rdtsc() -> u64 {
-    std::time::Instant::now().elapsed().as_nanos() as u64
-}
-
-fn percentile(sorted: &[u64], p: f64) -> u64 {
-    let idx = ((sorted.len() as f64) * p / 100.0) as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn bench<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
-    // Warmup
-    for _ in 0..WARMUP {
-        black_box(f());
-    }
-
-    // Collect samples
-    let mut samples = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = rdtsc();
-        black_box(f());
-        let end = rdtsc();
-        samples.push(end.wrapping_sub(start));
-    }
-
-    samples.sort_unstable();
-    let p50 = percentile(&samples, 50.0);
-    let p99 = percentile(&samples, 99.0);
-    let p999 = percentile(&samples, 99.9);
-
-    println!("{:<40} {:>8} {:>8} {:>8}", name, p50, p99, p999);
-    (p50, p99, p999)
-}
-
 fn main() {
-    println!("ASCIISTR BENCHMARK");
-    println!("==================\n");
-    println!("Iterations: {}, Warmup: {}", ITERATIONS, WARMUP);
-    println!("All times in CPU cycles\n");
+    print_intro("ASCIISTR BENCHMARK");
 
     // =========================================================================
     // Construction
     // =========================================================================
-    println!("=== CONSTRUCTION ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    print_header("CONSTRUCTION");
 
     let bytes_7 = b"BTC-USD";
     let bytes_32 = b"ORDER-ID-12345678901234567890123";
@@ -102,12 +56,8 @@ fn main() {
     // =========================================================================
     // Deref from AsciiString
     // =========================================================================
-    println!("\n=== DEREF FROM ASCIISTRING ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header("DEREF FROM ASCIISTRING");
 
     let ascii_string: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
 
@@ -134,12 +84,8 @@ fn main() {
     // =========================================================================
     // Accessors
     // =========================================================================
-    println!("\n=== ACCESSORS ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header("ACCESSORS");
 
     let ascii_str = AsciiStr::try_from_bytes(b"BTC-USD").unwrap();
 
@@ -168,12 +114,8 @@ fn main() {
     // =========================================================================
     // Cross-type equality
     // =========================================================================
-    println!("\n=== CROSS-TYPE EQUALITY ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header("CROSS-TYPE EQUALITY");
 
     let ascii_str = AsciiStr::try_from_bytes(b"BTC-USD").unwrap();
     let ascii_string: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
@@ -213,12 +155,8 @@ fn main() {
     // =========================================================================
     // Function accepting &AsciiStr
     // =========================================================================
-    println!("\n=== FUNCTION ACCEPTING &AsciiStr ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header("FUNCTION ACCEPTING &AsciiStr");
 
     #[inline(never)]
     fn process_ascii_str(s: &AsciiStr) -> u64 {
@@ -236,12 +174,8 @@ fn main() {
     // =========================================================================
     // Baseline comparisons
     // =========================================================================
-    println!("\n=== BASELINE COMPARISONS ===\n");
-    println!(
-        "{:<40} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(68));
+    println!();
+    print_header("BASELINE COMPARISONS");
 
     let str_ref: &str = "BTC-USD";
     let byte_slice: &[u8] = b"BTC-USD";

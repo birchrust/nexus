@@ -6,6 +6,7 @@
 use core::hash::{Hash, Hasher};
 
 use crate::char::AsciiChar;
+use crate::string::validate_ascii;
 use crate::AsciiError;
 
 // =============================================================================
@@ -67,12 +68,7 @@ impl AsciiStr {
     /// ```
     #[inline]
     pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, AsciiError> {
-        // Validate ASCII
-        for (pos, &byte) in bytes.iter().enumerate() {
-            if byte > 127 {
-                return Err(AsciiError::InvalidByte { byte, pos });
-            }
-        }
+        validate_ascii(bytes).map_err(|(byte, pos)| AsciiError::InvalidByte { byte, pos })?;
 
         // SAFETY: We just validated all bytes are ASCII
         Ok(unsafe { Self::from_bytes_unchecked(bytes) })

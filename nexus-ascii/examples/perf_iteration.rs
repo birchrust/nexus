@@ -10,66 +10,20 @@
 //! perf stat -r 10 ./target/release/examples/perf_iteration
 //! ```
 
+#[path = "_bench_utils.rs"]
+mod bench_utils;
+
+use bench_utils::{bench, print_header, print_intro};
 use nexus_ascii::AsciiString;
 use std::hint::black_box;
 
-const ITERATIONS: usize = 100_000;
-const WARMUP: usize = 10_000;
-
-#[cfg(target_arch = "x86_64")]
-fn rdtsc() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn rdtsc() -> u64 {
-    std::time::Instant::now().elapsed().as_nanos() as u64
-}
-
-fn percentile(sorted: &[u64], p: f64) -> u64 {
-    let idx = ((sorted.len() as f64) * p / 100.0) as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn bench<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
-    // Warmup
-    for _ in 0..WARMUP {
-        black_box(f());
-    }
-
-    // Collect samples
-    let mut samples = Vec::with_capacity(ITERATIONS);
-    for _ in 0..ITERATIONS {
-        let start = rdtsc();
-        black_box(f());
-        let end = rdtsc();
-        samples.push(end.wrapping_sub(start));
-    }
-
-    samples.sort_unstable();
-    let p50 = percentile(&samples, 50.0);
-    let p99 = percentile(&samples, 99.0);
-    let p999 = percentile(&samples, 99.9);
-
-    println!("{:<35} {:>8} {:>8} {:>8}", name, p50, p99, p999);
-    (p50, p99, p999)
-}
-
 fn main() {
-    println!("ITERATION & INDEXING BENCHMARK");
-    println!("==============================\n");
-    println!("Iterations: {}, Warmup: {}", ITERATIONS, WARMUP);
-    println!("All times in CPU cycles\n");
+    print_intro("ITERATION & INDEXING BENCHMARK");
 
     // =========================================================================
     // Indexing
     // =========================================================================
-    println!("=== INDEXING ===\n");
-    println!(
-        "{:<35} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(63));
+    print_header("INDEXING");
 
     let s8: AsciiString<32> = AsciiString::try_from("BTC-USD!").unwrap();
     let s32: AsciiString<64> = AsciiString::try_from("ORDER-ID-1234567890123456789012").unwrap();
@@ -103,12 +57,8 @@ fn main() {
     // =========================================================================
     // first() / last()
     // =========================================================================
-    println!("\n=== FIRST / LAST ===\n");
-    println!(
-        "{:<35} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(63));
+    println!();
+    print_header("FIRST / LAST");
 
     bench("first() (8B string)", || {
         black_box(&s8).first().map_or(0, |c| c.as_u8() as u64)
@@ -138,12 +88,8 @@ fn main() {
     // =========================================================================
     // Iteration
     // =========================================================================
-    println!("\n=== ITERATION ===\n");
-    println!(
-        "{:<35} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(63));
+    println!();
+    print_header("ITERATION");
 
     bench("chars().count() (8B)", || {
         black_box(&s8).chars().count() as u64
@@ -181,12 +127,8 @@ fn main() {
     // =========================================================================
     // Manual indexing loop vs iterator
     // =========================================================================
-    println!("\n=== MANUAL LOOP VS ITERATOR ===\n");
-    println!(
-        "{:<35} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(63));
+    println!();
+    print_header("MANUAL LOOP VS ITERATOR");
 
     bench("manual index loop sum (8B)", || {
         let s = black_box(&s8);
@@ -217,12 +159,8 @@ fn main() {
     // =========================================================================
     // Baseline comparisons
     // =========================================================================
-    println!("\n=== BASELINE COMPARISONS ===\n");
-    println!(
-        "{:<35} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(63));
+    println!();
+    print_header("BASELINE COMPARISONS");
 
     let raw_bytes: [u8; 8] = *b"BTC-USD!";
     bench("[u8; 8] index (baseline)", || {
@@ -245,12 +183,8 @@ fn main() {
     // =========================================================================
     // Classification during iteration
     // =========================================================================
-    println!("\n=== CLASSIFICATION DURING ITERATION ===\n");
-    println!(
-        "{:<35} {:>8} {:>8} {:>8}",
-        "Operation", "p50", "p99", "p999"
-    );
-    println!("{}", "-".repeat(63));
+    println!();
+    print_header("CLASSIFICATION DURING ITERATION");
 
     let mixed: AsciiString<32> = AsciiString::try_from("Hello123World").unwrap();
 
