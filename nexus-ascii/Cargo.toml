@@ -1,8 +1,8 @@
 [package]
 name = "nexus-ascii"
-version = "0.1.0"
-description = "Fixed capacity ascii strings for high performance systems"
-# readme = "README.md"
+version = "1.0.0"
+description = "Fixed-capacity ASCII strings for high-performance systems"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,3 +13,9 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+nohash = ["dep:nohash-hasher"]
+
+[dependencies]
+nohash-hasher = { version = "0.2.0", optional = true }

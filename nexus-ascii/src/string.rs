@@ -13,17 +13,18 @@ use crate::str_ref::AsciiStr;
 
 /// Pack length and hash into a single u64 header.
 ///
-/// Layout: bits 0-15 = length, bits 16-63 = upper 48 bits of hash.
+/// Layout: bits 0-47 = hash (lower 48 bits), bits 48-63 = length.
+/// This layout ensures hash bits are in lower positions for optimal HashMap bucket distribution.
 #[inline(always)]
 pub(crate) const fn pack_header(len: u16, hash: u64) -> u64 {
-    // Clear lower 16 bits of hash, insert length
-    (hash & 0xFFFF_FFFF_FFFF_0000) | (len as u64)
+    // Put length in upper 16 bits, hash in lower 48 bits
+    ((len as u64) << 48) | (hash & 0x0000_FFFF_FFFF_FFFF)
 }
 
-/// Extract length from header.
+/// Extract length from header (stored in upper 16 bits).
 #[inline(always)]
 const fn unpack_len(header: u64) -> usize {
-    (header & 0xFFFF) as usize
+    (header >> 48) as usize
 }
 
 // =============================================================================
@@ -156,7 +157,7 @@ fn empty_header() -> u64 {
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct AsciiString<const CAP: usize> {
-    /// Packed header: bits 0-15 = length, bits 16-63 = hash (upper 48 bits).
+    /// Packed header: bits 0-47 = hash (lower 48 bits), bits 48-63 = length.
     header: u64,
     /// Raw ASCII bytes. Only `len()` bytes are valid.
     data: [u8; CAP],
@@ -670,7 +671,7 @@ impl<const CAP: usize> AsciiString<CAP> {
 
     /// Returns the packed header (for advanced use).
     ///
-    /// The header contains both length (bits 0-15) and hash (bits 16-63).
+    /// The header contains both hash (bits 0-47) and length (bits 48-63).
     /// This is primarily useful for debugging or low-level operations.
     #[inline(always)]
     pub const fn header(&self) -> u64 {
@@ -1064,6 +1065,80 @@ impl<const CAP: usize> AsciiString<CAP> {
             data: self.data,
         })
     }
+
+    // =========================================================================
+    // Classification Helpers
+    // =========================================================================
+
+    /// Returns `true` if all characters in the string are printable ASCII.
+    ///
+    /// Printable ASCII is defined as bytes in the range 0x20 (space) to 0x7E (tilde),
+    /// inclusive. This excludes control characters (0x00-0x1F) and DEL (0x7F).
+    ///
+    /// An empty string returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let printable: AsciiString<32> = AsciiString::try_from("Hello, World!").unwrap();
+    /// assert!(printable.is_all_printable());
+    ///
+    /// let with_tab: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\tWorld").unwrap();
+    /// assert!(!with_tab.is_all_printable());
+    /// ```
+    #[inline]
+    pub fn is_all_printable(&self) -> bool {
+        self.as_bytes().iter().all(|&b| b >= 0x20 && b <= 0x7E)
+    }
+
+    /// Returns `true` if the string contains any control characters.
+    ///
+    /// Control characters are bytes in the ranges 0x00-0x1F and 0x7F (DEL).
+    /// This is the inverse of printable characters.
+    ///
+    /// An empty string returns `false`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let normal: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+    /// assert!(!normal.contains_control_chars());
+    ///
+    /// // FIX protocol uses SOH (0x01) as delimiter
+    /// let fix_msg: AsciiString<32> = AsciiString::try_from_bytes(b"8=FIX\x019=5").unwrap();
+    /// assert!(fix_msg.contains_control_chars());
+    /// ```
+    #[inline]
+    pub fn contains_control_chars(&self) -> bool {
+        self.as_bytes().iter().any(|&b| b < 0x20 || b == 0x7F)
+    }
+
+    /// Attempts to convert this string into an `AsciiText`.
+    ///
+    /// `AsciiText` only allows printable ASCII (0x20-0x7E). This method
+    /// validates the content and returns an error if any non-printable
+    /// characters are found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiText, AsciiError};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+    /// let text: AsciiText<32> = s.try_into_text().unwrap();
+    /// assert_eq!(text.as_str(), "Hello");
+    ///
+    /// let with_null: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x00").unwrap();
+    /// assert!(with_null.try_into_text().is_err());
+    /// ```
+    #[inline]
+    pub fn try_into_text(self) -> Result<crate::AsciiText<CAP>, crate::AsciiError> {
+        crate::AsciiText::try_from_ascii_string(self)
+    }
 }
 
 // =============================================================================
@@ -1160,12 +1235,12 @@ impl<const CAP: usize> Ord for AsciiString<CAP> {
 impl<const CAP: usize> Hash for AsciiString<CAP> {
     /// Hashes the ASCII string.
     ///
-    /// Uses the precomputed hash from the header, extracting the upper 48 bits
-    /// and passing them to the hasher.
+    /// Uses the precomputed hash from the header. The lower 48 bits contain
+    /// the XXH3 hash, making this ideal for HashMap bucket distribution.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // The header itself is a good hash - it contains length + 48-bit hash
-        // Using the whole header means equal strings hash equally
+        // The header has hash in lower 48 bits, length in upper 16 bits.
+        // Using the whole header means equal strings hash equally.
         self.header.hash(state);
     }
 }
@@ -2649,5 +2724,119 @@ mod tests {
         assert_eq!(upper.capacity(), 64);
         assert_eq!(lower.capacity(), 64);
         assert_eq!(truncated.capacity(), 64);
+    }
+
+    #[test]
+    #[cfg(feature = "nohash")]
+    fn nohash_hashmap_behavior() {
+        use nohash_hasher::BuildNoHashHasher;
+        use std::collections::HashMap;
+
+        // Verify that nohash HashMap works correctly with AsciiString
+        let mut map: HashMap<AsciiString<32>, i32, BuildNoHashHasher<u64>> = HashMap::default();
+
+        let btc = AsciiString::try_from("BTC-USD").unwrap();
+        let eth = AsciiString::try_from("ETH-USD").unwrap();
+        let btc_copy = AsciiString::try_from("BTC-USD").unwrap();
+
+        // Insert different keys
+        map.insert(btc, 100);
+        map.insert(eth, 200);
+
+        // Verify both are stored separately
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&btc), Some(&100));
+        assert_eq!(map.get(&eth), Some(&200));
+
+        // Verify same content key retrieves correct value
+        assert_eq!(map.get(&btc_copy), Some(&100));
+
+        // Verify update works correctly (same key overwrites)
+        map.insert(btc_copy, 300);
+        assert_eq!(map.len(), 2); // Still 2, not 3
+        assert_eq!(map.get(&btc), Some(&300)); // Updated value
+
+        // Verify different strings never overwrite each other
+        let sol = AsciiString::try_from("SOL-USD").unwrap();
+        map.insert(sol, 400);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(&btc), Some(&300));
+        assert_eq!(map.get(&eth), Some(&200));
+        assert_eq!(map.get(&sol), Some(&400));
+    }
+
+    #[test]
+    #[cfg(feature = "nohash")]
+    fn nohash_bucket_distribution_good() {
+        // Verify that strings of same length get different buckets (hash in lower bits)
+        let a = AsciiString::<32>::try_from("AAAA").unwrap();
+        let b = AsciiString::<32>::try_from("BBBB").unwrap();
+        let c = AsciiString::<32>::try_from("AAAAA").unwrap(); // different length
+
+        // New layout: lower 48 bits = hash, upper 16 bits = length
+        let hash_a = a.header & 0x0000_FFFF_FFFF_FFFF;
+        let hash_b = b.header & 0x0000_FFFF_FFFF_FFFF;
+        let len_a = a.header >> 48;
+        let len_b = b.header >> 48;
+
+        println!("Header A (AAAA):  0x{:016X}", a.header);
+        println!("Header B (BBBB):  0x{:016X}", b.header);
+        println!("Header C (AAAAA): 0x{:016X}", c.header);
+        println!();
+        println!("Upper 16 bits (length): A={}, B={}", len_a, len_b);
+        println!("Lower 48 bits (hash):   A=0x{:012X}, B=0x{:012X}", hash_a, hash_b);
+        println!();
+        println!("Bucket (& 1023): A={}, B={}, C={}", a.header & 1023, b.header & 1023, c.header & 1023);
+        println!();
+
+        // Now A and B should have different buckets despite same length
+        assert_ne!(
+            a.header & 1023,
+            b.header & 1023,
+            "Same-length strings should have different bucket assignments"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "nohash")]
+    fn nohash_same_header_different_content() {
+        use nohash_hasher::BuildNoHashHasher;
+        use std::collections::HashMap;
+
+        // Create two AsciiStrings with IDENTICAL headers but DIFFERENT content.
+        // This proves HashMap uses eq() for correctness, not just the hash.
+
+        let real = AsciiString::<8>::try_from("AAAA").unwrap();
+
+        // Construct a fake string with same header but different bytes
+        let fake: AsciiString<8> = {
+            let mut data = [0u8; 8];
+            data[0] = b'B';
+            data[1] = b'B';
+            data[2] = b'B';
+            data[3] = b'B';
+
+            // Use same header as `real` - same length, same hash bits
+            let header = real.header;
+
+            AsciiString { header, data }
+        };
+
+        // Sanity checks: same header, different content
+        assert_eq!(real.len(), fake.len());
+        assert_eq!(real.header, fake.header); // Headers are identical!
+        assert_ne!(real.as_bytes(), fake.as_bytes()); // Content differs
+        assert_ne!(real, fake); // eq() sees them as different
+
+        // Now use in HashMap - if it only checked headers, this would fail
+        let mut map: HashMap<AsciiString<8>, i32, BuildNoHashHasher<u64>> = HashMap::default();
+
+        map.insert(real, 1);
+        map.insert(fake, 2);
+
+        // Both must be present as separate entries
+        assert_eq!(map.len(), 2, "HashMap should have 2 entries, not 1");
+        assert_eq!(map.get(&real), Some(&1));
+        assert_eq!(map.get(&fake), Some(&2));
     }
 }

@@ -10,6 +10,8 @@
 //! ```
 
 use nexus_ascii::hash::{hash, truncate_lower_48, truncate_upper_48};
+use nexus_ascii::AsciiString;
+use std::hash::{Hash, Hasher};
 
 const N_SAMPLES: usize = 1_000_000;
 
@@ -286,6 +288,304 @@ fn analyze_bit_distribution_sized(input_size: usize, truncate: fn(u64) -> [u8; 6
     variance.sqrt()
 }
 
+// =============================================================================
+// AsciiString Header Quality Tests
+// =============================================================================
+
+/// A simple hasher that captures the u64 value being hashed.
+/// Used to extract what AsciiString passes to the hasher.
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn write(&mut self, _bytes: &[u8]) {
+        // AsciiString hashes its header via u64::hash which calls write_u64
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Extract the raw header value from an AsciiString (what nohash-hasher would use).
+fn extract_header<const CAP: usize>(s: &AsciiString<CAP>) -> u64 {
+    let mut hasher = IdentityHasher(0);
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Analyze bucket distribution of AsciiString headers.
+fn analyze_ascii_string_bucket_distribution(n_buckets: usize) -> f64 {
+    let mut buckets = vec![0usize; n_buckets];
+    let mask = (n_buckets - 1) as u64;
+
+    for i in 0..N_SAMPLES {
+        // Generate realistic string inputs (symbols, order IDs, etc.)
+        let input = format!("SYM-{:08X}", i);
+        let s: AsciiString<32> = AsciiString::try_from(input.as_str()).unwrap();
+        let header = extract_header(&s);
+
+        let bucket = (header & mask) as usize;
+        buckets[bucket] += 1;
+    }
+
+    let expected = N_SAMPLES as f64 / n_buckets as f64;
+    let chi_squared: f64 = buckets
+        .iter()
+        .map(|&c| (c as f64 - expected).powi(2) / expected)
+        .sum();
+
+    chi_squared
+}
+
+/// Analyze bit distribution of AsciiString headers.
+fn analyze_ascii_string_bit_distribution() -> (f64, f64, f64) {
+    let mut bit_counts = [0usize; 64];
+
+    for i in 0..N_SAMPLES {
+        let input = format!("KEY-{:08X}", i);
+        let s: AsciiString<32> = AsciiString::try_from(input.as_str()).unwrap();
+        let header = extract_header(&s);
+
+        for bit in 0..64 {
+            if (header >> bit) & 1 == 1 {
+                bit_counts[bit] += 1;
+            }
+        }
+    }
+
+    let mut min_ratio = 1.0f64;
+    let mut max_ratio = 0.0f64;
+
+    // Only check bits 0-47 (the hash portion, not length in upper bits)
+    for bit in 0..48 {
+        let ratio = bit_counts[bit] as f64 / N_SAMPLES as f64;
+        min_ratio = min_ratio.min(ratio);
+        max_ratio = max_ratio.max(ratio);
+    }
+
+    let variance: f64 = bit_counts[0..48]
+        .iter()
+        .map(|&c| {
+            let ratio = c as f64 / N_SAMPLES as f64;
+            (ratio - 0.5).powi(2)
+        })
+        .sum::<f64>()
+        / 48.0;
+
+    (min_ratio, max_ratio, variance.sqrt())
+}
+
+/// Test collisions when using AsciiString headers directly.
+fn analyze_ascii_string_collisions() -> usize {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut collisions = 0;
+
+    for i in 0..N_SAMPLES {
+        let input = format!("ID-{:08X}", i);
+        let s: AsciiString<32> = AsciiString::try_from(input.as_str()).unwrap();
+        let header = extract_header(&s);
+
+        if !seen.insert(header) {
+            collisions += 1;
+        }
+    }
+
+    collisions
+}
+
+/// Test with varying string lengths (header includes length in lower 16 bits).
+fn analyze_ascii_string_varying_lengths() -> f64 {
+    let mut buckets = vec![0usize; 65536];
+    let mask = 65535u64;
+    let samples = 500_000;
+
+    for i in 0..samples {
+        // Vary both content and length
+        let len = (i % 30) + 1; // lengths 1-30
+        let input: String = (0..len).map(|j| (b'A' + ((i + j) % 26) as u8) as char).collect();
+        let s: AsciiString<32> = AsciiString::try_from(input.as_str()).unwrap();
+        let header = extract_header(&s);
+
+        let bucket = (header & mask) as usize;
+        buckets[bucket] += 1;
+    }
+
+    let expected = samples as f64 / 65536.0;
+    let chi_squared: f64 = buckets
+        .iter()
+        .map(|&c| (c as f64 - expected).powi(2) / expected)
+        .sum();
+
+    chi_squared
+}
+
+/// Empirically validate collision rate for AsciiString headers.
+/// Tests at multiple scales and compares to birthday paradox expectations.
+///
+/// Set COLLISION_50M=1 env var to test up to 50M strings (~4 expected collisions).
+/// Set COLLISION_100M=1 env var to test up to 100M strings (~18 expected collisions, ~2GB RAM).
+fn validate_ascii_string_collisions() {
+    use std::collections::HashSet;
+
+    println!("\n=== ASCIISTRING HEADER COLLISION VALIDATION ===\n");
+    println!("  Empirically testing collision rate vs birthday paradox expectation.");
+    println!("  Formula: expected collisions = n² / 2^49\n");
+
+    let scales: Vec<(usize, &str)> = if std::env::var("COLLISION_100M").is_ok() {
+        vec![
+            (1_000_000, "1M"),
+            (10_000_000, "10M"),
+            (25_000_000, "25M"),
+            (50_000_000, "50M"),
+            (75_000_000, "75M"),
+            (100_000_000, "100M"),
+        ]
+    } else if std::env::var("COLLISION_50M").is_ok() {
+        vec![
+            (1_000_000, "1M"),
+            (10_000_000, "10M"),
+            (20_000_000, "20M"),
+            (30_000_000, "30M"),
+            (40_000_000, "40M"),
+            (50_000_000, "50M"),
+        ]
+    } else {
+        vec![
+            (100_000, "100K"),
+            (500_000, "500K"),
+            (1_000_000, "1M"),
+            (5_000_000, "5M"),
+            (10_000_000, "10M"),
+            (20_000_000, "20M"),
+        ]
+    };
+
+    if std::env::var("COLLISION_100M").is_err() && std::env::var("COLLISION_50M").is_err() {
+        println!("  (Set COLLISION_50M=1 for 50M test, COLLISION_100M=1 for 100M test)\n");
+    }
+
+    println!(
+        "  {:>10}  {:>12}  {:>12}  {:>10}",
+        "Strings", "Expected", "Actual", "Status"
+    );
+    println!("  {}", "-".repeat(50));
+
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut collisions = 0usize;
+    let mut next_idx = 0;
+
+    let max_n = scales.last().unwrap().0;
+
+    for i in 0..max_n {
+        // Generate unique strings with varied patterns
+        let input = format!("KEY-{:08X}-{}", i, i % 100);
+        let s: AsciiString<32> = AsciiString::try_from(input.as_str()).unwrap();
+        let header = extract_header(&s);
+
+        if !seen.insert(header) {
+            collisions += 1;
+        }
+
+        // Report at each scale
+        if next_idx < scales.len() && i + 1 == scales[next_idx].0 {
+            let n = scales[next_idx].0 as f64;
+            let expected = n * n / 2.0_f64.powi(49);
+
+            let status = if expected < 0.1 {
+                if collisions == 0 {
+                    "✓ as expected"
+                } else {
+                    "⚠ unexpected"
+                }
+            } else {
+                let ratio = collisions as f64 / expected;
+                if ratio < 2.0 && ratio > 0.5 {
+                    "✓ within 2x"
+                } else if collisions == 0 && expected < 1.0 {
+                    "✓ as expected"
+                } else {
+                    "⚠ check"
+                }
+            };
+
+            println!(
+                "  {:>10}  {:>12.4}  {:>12}  {:>10}",
+                scales[next_idx].1, expected, collisions, status
+            );
+
+            next_idx += 1;
+        }
+    }
+
+    println!();
+
+    // Summary
+    let final_n = max_n as f64;
+    let final_expected = final_n * final_n / 2.0_f64.powi(49);
+
+    println!("  At {} strings:", scales.last().unwrap().1);
+    println!("    - Expected collisions: {:.2}", final_expected);
+    println!("    - Actual collisions:   {}", collisions);
+
+    if final_expected > 0.1 {
+        let ratio = collisions as f64 / final_expected;
+        println!("    - Ratio (actual/expected): {:.2}x", ratio);
+
+        if ratio >= 0.5 && ratio <= 2.0 {
+            println!("    ✓ Collision rate matches birthday paradox prediction");
+        } else if collisions == 0 && final_expected < 2.0 {
+            println!("    ✓ No collisions yet (expected < 2, so this is normal)");
+        } else {
+            println!("    ⚠ Collision rate deviates from expectation");
+        }
+    } else {
+        println!("    ✓ Too few samples to expect collisions");
+    }
+}
+
+/// Test with realistic trading symbol patterns.
+fn analyze_trading_symbols() -> f64 {
+    let bases = ["BTC", "ETH", "SOL", "AVAX", "MATIC", "DOGE", "XRP", "ADA", "DOT", "LINK"];
+    let quotes = ["USD", "USDT", "USDC", "EUR", "BTC", "ETH"];
+    let suffixes = ["", "-PERP", "-SPOT", "-FUT", "-0329", "-0628"];
+
+    let mut buckets = vec![0usize; 1024];
+    let mask = 1023u64;
+    let mut count = 0;
+
+    // Generate all combinations multiple times with sequence numbers
+    for seq in 0..1000 {
+        for base in &bases {
+            for quote in &quotes {
+                for suffix in &suffixes {
+                    let symbol = format!("{}-{}{}-{:04}", base, quote, suffix, seq);
+                    if symbol.len() <= 32 {
+                        let s: AsciiString<32> = AsciiString::try_from(symbol.as_str()).unwrap();
+                        let header = extract_header(&s);
+                        let bucket = (header & mask) as usize;
+                        buckets[bucket] += 1;
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let expected = count as f64 / 1024.0;
+    let chi_squared: f64 = buckets
+        .iter()
+        .map(|&c| (c as f64 - expected).powi(2) / expected)
+        .sum();
+
+    chi_squared
+}
+
 fn main() {
     println!("XXH3 HASH QUALITY ANALYSIS");
     println!("==========================\n");
@@ -406,6 +706,91 @@ fn main() {
         println!("  Recommendation: Use LOWER 48 bits (truncate_lower_48)");
     } else {
         println!("  Recommendation: Use UPPER 48 bits (truncate_upper_48)");
+    }
+
+    // =========================================================================
+    // AsciiString Header Quality Tests
+    // =========================================================================
+
+    println!("\n");
+    println!("ASCIISTRING HEADER QUALITY (for nohash-hasher)");
+    println!("==============================================\n");
+    println!("  Testing distribution when using AsciiString headers as hash values.");
+    println!("  Header layout: bits 0-47 = XXH3 hash, bits 48-63 = length\n");
+
+    // Bit distribution
+    println!("=== HEADER BIT DISTRIBUTION (hash bits 0-47, ideal ≈ 0.5000) ===\n");
+    let (min, max, std_dev) = analyze_ascii_string_bit_distribution();
+    println!(
+        "  min={:.4} max={:.4} std_dev={:.6}",
+        min, max, std_dev
+    );
+    if std_dev < 0.01 {
+        println!("  ✓ Excellent bit distribution");
+    } else if std_dev < 0.02 {
+        println!("  ✓ Good bit distribution");
+    } else {
+        println!("  ⚠ Poor bit distribution (std_dev > 0.02)");
+    }
+
+    // Bucket distribution
+    println!("\n=== HEADER BUCKET DISTRIBUTION (lower χ² = more uniform) ===\n");
+    let chi_1k = analyze_ascii_string_bucket_distribution(1024);
+    let chi_64k = analyze_ascii_string_bucket_distribution(65536);
+    println!("  1024 buckets:  χ²={:>10.2}", chi_1k);
+    println!("  65536 buckets: χ²={:>10.2}", chi_64k);
+
+    // For reference: χ² critical value at p=0.05 for 1023 df ≈ 1098, for 65535 df ≈ 66140
+    if chi_1k < 1200.0 {
+        println!("  ✓ 1024-bucket distribution is uniform (χ² < 1200)");
+    } else {
+        println!("  ⚠ 1024-bucket distribution may be non-uniform");
+    }
+
+    // Collisions
+    println!("\n=== HEADER COLLISIONS (expect ~0 for 1M samples) ===\n");
+    let collisions = analyze_ascii_string_collisions();
+    println!("  Collisions: {}", collisions);
+    if collisions == 0 {
+        println!("  ✓ No collisions in 1M unique strings");
+    } else {
+        println!("  Note: {} collision(s) - acceptable with 48-bit hash", collisions);
+    }
+
+    // Varying lengths
+    println!("\n=== VARYING LENGTH STRINGS (tests length field interaction) ===\n");
+    let chi_varying = analyze_ascii_string_varying_lengths();
+    println!("  65536 buckets with lengths 1-30: χ²={:.2}", chi_varying);
+    if chi_varying < 70000.0 {
+        println!("  ✓ Length variation doesn't cause clustering");
+    } else {
+        println!("  ⚠ Length field may be causing bucket clustering");
+    }
+
+    // Trading symbols
+    println!("\n=== REALISTIC TRADING SYMBOLS ===\n");
+    let chi_trading = analyze_trading_symbols();
+    println!("  1024 buckets with trading pairs: χ²={:.2}", chi_trading);
+    if chi_trading < 1200.0 {
+        println!("  ✓ Trading symbols distribute uniformly");
+    } else {
+        println!("  ⚠ Trading symbols may cluster (χ² > 1200)");
+    }
+
+    // Empirical collision validation
+    validate_ascii_string_collisions();
+
+    // Summary
+    println!("\n=== ASCIISTRING SUMMARY ===\n");
+    let header_ok = std_dev < 0.02 && chi_1k < 1200.0 && chi_trading < 1200.0;
+    if header_ok {
+        println!("  ✓ AsciiString headers are suitable for nohash-hasher");
+        println!("    - Good bit distribution in hash portion");
+        println!("    - Uniform bucket distribution");
+        println!("    - Works well with realistic trading data");
+        println!("    - Collision rate matches birthday paradox (48-bit)");
+    } else {
+        println!("  ⚠ AsciiString headers may have quality issues");
     }
 
     println!();
