@@ -26,6 +26,100 @@ const fn unpack_len(header: u64) -> usize {
     (header & 0xFFFF) as usize
 }
 
+// =============================================================================
+// Null Byte Detection & ASCII Validation
+// =============================================================================
+
+/// Detect if any byte in a u64 is zero.
+/// Returns a mask with the high bit set in each byte position that contains zero.
+#[inline(always)]
+const fn has_null_byte(v: u64) -> u64 {
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    (v.wrapping_sub(LO)) & !v & HI
+}
+
+/// Check if any byte in a u64 has the high bit set (non-ASCII).
+#[inline(always)]
+const fn has_non_ascii(v: u64) -> bool {
+    const HI: u64 = 0x8080_8080_8080_8080;
+    (v & HI) != 0
+}
+
+/// Find the position of the first null byte in a slice.
+/// Returns the slice length if no null byte is found.
+#[inline]
+fn find_null_byte(bytes: &[u8]) -> usize {
+    let mut i = 0;
+
+    // Process 8 bytes at a time
+    while i + 8 <= bytes.len() {
+        // SAFETY: We just checked that i + 8 <= bytes.len()
+        let chunk: [u8; 8] = unsafe {
+            bytes
+                .as_ptr()
+                .add(i)
+                .cast::<[u8; 8]>()
+                .read_unaligned()
+        };
+        let word = u64::from_ne_bytes(chunk);
+        let mask = has_null_byte(word);
+        if mask != 0 {
+            return i + (mask.trailing_zeros() / 8) as usize;
+        }
+        i += 8;
+    }
+
+    // Handle remainder byte by byte
+    while i < bytes.len() {
+        if bytes[i] == 0 {
+            return i;
+        }
+        i += 1;
+    }
+
+    bytes.len()
+}
+
+/// Validate that all bytes are ASCII (0x00-0x7F) using fast word-at-a-time checking.
+/// Returns Ok(()) if valid, or Err((byte, pos)) for the first invalid byte.
+#[inline]
+fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
+    let mut i = 0;
+
+    // Process 8 bytes at a time - just check if any high bit is set
+    while i + 8 <= bytes.len() {
+        // SAFETY: We just checked that i + 8 <= bytes.len()
+        let chunk: [u8; 8] = unsafe {
+            bytes
+                .as_ptr()
+                .add(i)
+                .cast::<[u8; 8]>()
+                .read_unaligned()
+        };
+        let word = u64::from_ne_bytes(chunk);
+        if has_non_ascii(word) {
+            // Found non-ASCII in this chunk, find exactly which byte
+            for j in 0..8 {
+                if bytes[i + j] > 127 {
+                    return Err((bytes[i + j], i + j));
+                }
+            }
+        }
+        i += 8;
+    }
+
+    // Handle remainder byte by byte
+    while i < bytes.len() {
+        if bytes[i] > 127 {
+            return Err((bytes[i], i));
+        }
+        i += 1;
+    }
+
+    Ok(())
+}
+
 /// Compute header for empty string (runtime).
 #[inline(always)]
 fn empty_header() -> u64 {
@@ -274,11 +368,9 @@ impl<const CAP: usize> AsciiString<CAP> {
             });
         }
 
-        // Validate ASCII
-        for (pos, &byte) in bytes.iter().enumerate() {
-            if byte > 127 {
-                return Err(AsciiError::InvalidByte { byte, pos });
-            }
+        // Fast ASCII validation using word-at-a-time checking
+        if let Err((byte, pos)) = validate_ascii(bytes) {
+            return Err(AsciiError::InvalidByte { byte, pos });
         }
 
         // SAFETY: We just validated all bytes are ASCII and len <= CAP
@@ -301,6 +393,143 @@ impl<const CAP: usize> AsciiString<CAP> {
     #[inline]
     pub fn try_from_str(s: &str) -> Result<Self, AsciiError> {
         Self::try_from_bytes(s.as_bytes())
+    }
+
+    /// Creates an ASCII string from a fixed-size raw buffer.
+    ///
+    /// The string length is determined by the position of the first null byte
+    /// (0x00). If no null byte is found, the entire buffer is used.
+    ///
+    /// This is useful when reading from fixed-size fields in binary protocols
+    /// (e.g., SBE) where unused bytes are null-padded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::InvalidByte`] if any byte before the first null
+    /// is not valid ASCII (> 127).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // Null-terminated buffer (like from SBE or C strings)
+    /// let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+    /// let s: AsciiString<16> = AsciiString::try_from_raw(buffer)?;
+    /// assert_eq!(s.as_str(), "BTC-USD");
+    /// assert_eq!(s.len(), 7);
+    ///
+    /// // No null terminator - uses full buffer
+    /// let full: [u8; 8] = *b"BTCUSDT!";
+    /// let s: AsciiString<8> = AsciiString::try_from_raw(full)?;
+    /// assert_eq!(s.len(), 8);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn try_from_raw(buffer: [u8; CAP]) -> Result<Self, AsciiError> {
+        let len = find_null_byte(&buffer);
+
+        // Fast ASCII validation for bytes before the null terminator
+        if let Err((byte, pos)) = validate_ascii(&buffer[..len]) {
+            return Err(AsciiError::InvalidByte { byte, pos });
+        }
+
+        // Construct directly (avoid calling from_raw_unchecked which re-searches for null)
+        let hash = hash::hash::<CAP>(&buffer[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Ok(Self {
+            header,
+            data: buffer,
+        })
+    }
+
+    /// Creates an ASCII string from a fixed-size raw buffer without validation.
+    ///
+    /// The string length is determined by the position of the first null byte
+    /// (0x00). If no null byte is found, the entire buffer is used.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that all bytes before the first null byte are
+    /// valid ASCII (0x00-0x7F). Violating this causes undefined behavior in
+    /// code that assumes ASCII validity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+    /// // SAFETY: bytes before null are valid ASCII
+    /// let s: AsciiString<16> = unsafe { AsciiString::from_raw_unchecked(buffer) };
+    /// assert_eq!(s.as_str(), "BTC-USD");
+    /// ```
+    #[inline]
+    pub unsafe fn from_raw_unchecked(buffer: [u8; CAP]) -> Self {
+        let len = find_null_byte(&buffer);
+
+        debug_assert!(
+            buffer[..len].iter().all(|&b| b <= 127),
+            "buffer contains non-ASCII before null"
+        );
+
+        let hash = hash::hash::<CAP>(&buffer[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Self {
+            header,
+            data: buffer,
+        }
+    }
+
+    /// Creates an ASCII string from a right-padded fixed-size buffer.
+    ///
+    /// Strips trailing bytes that match the specified `pad` value to determine
+    /// the string length. Useful for space-padded fields common in some protocols.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::InvalidByte`] if any non-padding byte is not valid
+    /// ASCII (> 127).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // Space-padded buffer
+    /// let buffer: [u8; 16] = *b"BTC-USD         ";
+    /// let s: AsciiString<16> = AsciiString::try_from_right_padded(buffer, b' ')?;
+    /// assert_eq!(s.as_str(), "BTC-USD");
+    /// assert_eq!(s.len(), 7);
+    ///
+    /// // All padding - results in empty string
+    /// let empty: [u8; 8] = [b' '; 8];
+    /// let s: AsciiString<8> = AsciiString::try_from_right_padded(empty, b' ')?;
+    /// assert!(s.is_empty());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn try_from_right_padded(buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
+        // Find length by stripping trailing pad bytes
+        let len = buffer
+            .iter()
+            .rposition(|&b| b != pad)
+            .map_or(0, |i| i + 1);
+
+        // Fast ASCII validation
+        if let Err((byte, pos)) = validate_ascii(&buffer[..len]) {
+            return Err(AsciiError::InvalidByte { byte, pos });
+        }
+
+        let hash = hash::hash::<CAP>(&buffer[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Ok(Self {
+            header,
+            data: buffer,
+        })
     }
 }
 
@@ -1813,5 +2042,250 @@ mod tests {
         let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
         // Should work via Deref coercion
         assert_eq!(takes_ascii_str(&s), 5);
+    }
+
+    // =========================================================================
+    // try_from_raw tests
+    // =========================================================================
+
+    #[test]
+    fn try_from_raw_null_terminated() {
+        let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn try_from_raw_no_null() {
+        // No null terminator - uses full buffer
+        let buffer: [u8; 8] = *b"BTCUSDT!";
+        let s: AsciiString<8> = AsciiString::try_from_raw(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTCUSDT!");
+        assert_eq!(s.len(), 8);
+    }
+
+    #[test]
+    fn try_from_raw_immediate_null() {
+        // Null at start - empty string
+        let buffer: [u8; 8] = [0u8; 8];
+        let s: AsciiString<8> = AsciiString::try_from_raw(buffer).unwrap();
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn try_from_raw_null_in_middle() {
+        let buffer: [u8; 16] = *b"ABC\0DEF\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        assert_eq!(s.as_str(), "ABC");
+        assert_eq!(s.len(), 3);
+    }
+
+    #[test]
+    fn try_from_raw_invalid_ascii_before_null() {
+        let mut buffer: [u8; 16] = *b"BTC\0\0\0\0\0\0\0\0\0\0\0\0\0";
+        buffer[1] = 0xFF; // Invalid ASCII
+        let result = AsciiString::<16>::try_from_raw(buffer);
+        assert!(matches!(
+            result,
+            Err(AsciiError::InvalidByte { byte: 0xFF, pos: 1 })
+        ));
+    }
+
+    #[test]
+    fn try_from_raw_invalid_ascii_after_null_ok() {
+        // Invalid byte AFTER null should be fine (not read)
+        let mut buffer: [u8; 16] = *b"BTC\0\0\0\0\0\0\0\0\0\0\0\0\0";
+        buffer[10] = 0xFF; // After null - should not matter
+        let s: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTC");
+    }
+
+    #[test]
+    fn try_from_raw_matches_try_from_bytes() {
+        // Results should be equal
+        let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let from_raw: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        let from_bytes: AsciiString<16> = AsciiString::try_from_bytes(b"BTC-USD").unwrap();
+
+        assert_eq!(from_raw, from_bytes);
+        assert_eq!(from_raw.header(), from_bytes.header());
+    }
+
+    #[test]
+    fn try_from_raw_various_positions() {
+        // Test null at various positions to exercise the 8-byte chunking
+        for len in 0..=16 {
+            let mut buffer = [b'A'; 16];
+            if len < 16 {
+                buffer[len] = 0;
+            }
+            let s: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+            assert_eq!(s.len(), len);
+        }
+    }
+
+    #[test]
+    fn try_from_raw_32_bytes() {
+        // Test with larger buffer
+        let mut buffer = [b'X'; 32];
+        buffer[20] = 0;
+        let s: AsciiString<32> = AsciiString::try_from_raw(buffer).unwrap();
+        assert_eq!(s.len(), 20);
+        assert_eq!(s.as_bytes(), &[b'X'; 20]);
+    }
+
+    #[test]
+    fn try_from_raw_hashmap_lookup() {
+        use std::collections::HashMap;
+
+        let mut map: HashMap<AsciiString<16>, i32> = HashMap::new();
+
+        // Insert with try_from_bytes
+        let key: AsciiString<16> = AsciiString::try_from_bytes(b"BTC-USD").unwrap();
+        map.insert(key, 100);
+
+        // Lookup with try_from_raw
+        let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let lookup: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        assert_eq!(map.get(&lookup), Some(&100));
+    }
+
+    // =========================================================================
+    // from_raw_unchecked tests
+    // =========================================================================
+
+    #[test]
+    fn from_raw_unchecked_basic() {
+        let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = unsafe { AsciiString::from_raw_unchecked(buffer) };
+        assert_eq!(s.as_str(), "BTC-USD");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn from_raw_unchecked_no_null() {
+        let buffer: [u8; 8] = *b"BTCUSDT!";
+        let s: AsciiString<8> = unsafe { AsciiString::from_raw_unchecked(buffer) };
+        assert_eq!(s.len(), 8);
+    }
+
+    #[test]
+    fn from_raw_unchecked_empty() {
+        let buffer: [u8; 8] = [0u8; 8];
+        let s: AsciiString<8> = unsafe { AsciiString::from_raw_unchecked(buffer) };
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn from_raw_unchecked_matches_checked() {
+        let buffer: [u8; 16] = *b"ETH-USDT\0\0\0\0\0\0\0\0";
+        let checked: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        let unchecked: AsciiString<16> = unsafe { AsciiString::from_raw_unchecked(buffer) };
+
+        assert_eq!(checked, unchecked);
+        assert_eq!(checked.header(), unchecked.header());
+    }
+
+    // =========================================================================
+    // try_from_right_padded tests
+    // =========================================================================
+
+    #[test]
+    fn try_from_right_padded_space() {
+        let buffer: [u8; 16] = *b"BTC-USD         ";
+        let s: AsciiString<16> = AsciiString::try_from_right_padded(buffer, b' ').unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn try_from_right_padded_null() {
+        // Can also strip null padding (but note: stops at first non-null from right)
+        let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = AsciiString::try_from_right_padded(buffer, 0).unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn try_from_right_padded_all_padding() {
+        let buffer: [u8; 8] = [b' '; 8];
+        let s: AsciiString<8> = AsciiString::try_from_right_padded(buffer, b' ').unwrap();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn try_from_right_padded_no_padding() {
+        let buffer: [u8; 8] = *b"BTCUSDT!";
+        let s: AsciiString<8> = AsciiString::try_from_right_padded(buffer, b' ').unwrap();
+        assert_eq!(s.len(), 8);
+        assert_eq!(s.as_str(), "BTCUSDT!");
+    }
+
+    #[test]
+    fn try_from_right_padded_internal_padding_preserved() {
+        // Padding characters in the middle should be preserved
+        let buffer: [u8; 16] = *b"A B C           ";
+        let s: AsciiString<16> = AsciiString::try_from_right_padded(buffer, b' ').unwrap();
+        assert_eq!(s.as_str(), "A B C");
+        assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn try_from_right_padded_custom_pad() {
+        // Custom padding character
+        let buffer: [u8; 8] = *b"ABC#####";
+        let s: AsciiString<8> = AsciiString::try_from_right_padded(buffer, b'#').unwrap();
+        assert_eq!(s.as_str(), "ABC");
+    }
+
+    #[test]
+    fn try_from_right_padded_invalid_ascii() {
+        let mut buffer: [u8; 16] = *b"BTC-USD         ";
+        buffer[2] = 0xFF;
+        let result = AsciiString::<16>::try_from_right_padded(buffer, b' ');
+        assert!(matches!(
+            result,
+            Err(AsciiError::InvalidByte { byte: 0xFF, pos: 2 })
+        ));
+    }
+
+    #[test]
+    fn try_from_right_padded_matches_try_from_bytes() {
+        let buffer: [u8; 16] = *b"ETH-USD         ";
+        let from_padded: AsciiString<16> =
+            AsciiString::try_from_right_padded(buffer, b' ').unwrap();
+        let from_bytes: AsciiString<16> = AsciiString::try_from_bytes(b"ETH-USD").unwrap();
+
+        assert_eq!(from_padded, from_bytes);
+        assert_eq!(from_padded.header(), from_bytes.header());
+    }
+
+    // =========================================================================
+    // find_null_byte helper tests
+    // =========================================================================
+
+    #[test]
+    fn find_null_byte_unit_tests() {
+        // Test the helper function directly
+        assert_eq!(find_null_byte(b""), 0);
+        assert_eq!(find_null_byte(b"\0"), 0);
+        assert_eq!(find_null_byte(b"A"), 1);
+        assert_eq!(find_null_byte(b"A\0"), 1);
+        assert_eq!(find_null_byte(b"ABC\0DEF"), 3);
+        assert_eq!(find_null_byte(b"ABCDEFGH"), 8); // No null
+        assert_eq!(find_null_byte(b"ABCDEFGH\0"), 8);
+        assert_eq!(find_null_byte(b"ABCDEFGHI\0"), 9); // Past 8-byte boundary
+
+        // Test at 8-byte boundaries
+        assert_eq!(find_null_byte(b"12345678\0"), 8);
+        assert_eq!(find_null_byte(b"1234567\0X"), 7);
+        assert_eq!(find_null_byte(b"123456\0XX"), 6);
+
+        // Test larger buffers
+        let large = b"0123456789ABCDEF\0rest";
+        assert_eq!(find_null_byte(large), 16);
     }
 }
