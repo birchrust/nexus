@@ -584,6 +584,49 @@ impl<const CAP: usize> core::fmt::Display for AsciiStringBuilder<CAP> {
     }
 }
 
+impl<const CAP: usize> core::fmt::Write for AsciiStringBuilder<CAP> {
+    /// Writes a string slice into the builder.
+    ///
+    /// This enables using the `write!` macro to format directly into
+    /// an `AsciiStringBuilder`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`core::fmt::Error`] if the string contains non-ASCII bytes
+    /// or exceeds remaining capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use core::fmt::Write;
+    /// use nexus_ascii::AsciiStringBuilder;
+    ///
+    /// let mut builder: AsciiStringBuilder<32> = AsciiStringBuilder::new();
+    /// write!(builder, "order-{:08}", 12345)?;
+    /// assert_eq!(builder.as_str(), "order-00012345");
+    /// # Ok::<(), core::fmt::Error>(())
+    /// ```
+    #[inline]
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.push_str(s).map_err(|_| core::fmt::Error)
+    }
+
+    /// Writes a single character into the builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`core::fmt::Error`] if the character is non-ASCII
+    /// or exceeds remaining capacity.
+    #[inline]
+    fn write_char(&mut self, c: char) -> core::fmt::Result {
+        if c.is_ascii() {
+            self.push_byte(c as u8).map_err(|_| core::fmt::Error)
+        } else {
+            Err(core::fmt::Error)
+        }
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

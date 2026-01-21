@@ -920,6 +920,265 @@ impl<const CAP: usize> AsciiString<CAP> {
             .windows(needle.len())
             .any(|window| window == needle)
     }
+
+    // =========================================================================
+    // Find Methods
+    // =========================================================================
+
+    /// Returns the byte index of the first occurrence of a byte.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+    /// assert_eq!(s.find_byte(b'-'), Some(3));
+    /// assert_eq!(s.find_byte(b'X'), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn find_byte(&self, byte: u8) -> Option<usize> {
+        self.as_bytes().iter().position(|&b| b == byte)
+    }
+
+    /// Returns the byte index of the first occurrence of an ASCII character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+    /// assert_eq!(s.find_char(AsciiChar::MINUS), Some(3));
+    /// assert_eq!(s.find_char(AsciiChar::X), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn find_char(&self, ch: AsciiChar) -> Option<usize> {
+        self.find_byte(ch.as_u8())
+    }
+
+    /// Returns the byte index of the first occurrence of a byte pattern.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// assert_eq!(s.find(b"-USD"), Some(3));
+    /// assert_eq!(s.find(b"ETH"), None);
+    /// assert_eq!(s.find(b""), Some(0)); // Empty pattern always matches at start
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn find(&self, needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        self.as_bytes()
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    /// Returns the byte index of the last occurrence of a byte.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// assert_eq!(s.rfind_byte(b'-'), Some(7));
+    /// assert_eq!(s.rfind_byte(b'X'), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn rfind_byte(&self, byte: u8) -> Option<usize> {
+        self.as_bytes().iter().rposition(|&b| b == byte)
+    }
+
+    /// Returns the byte index of the last occurrence of an ASCII character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// assert_eq!(s.rfind_char(AsciiChar::MINUS), Some(7));
+    /// assert_eq!(s.rfind_char(AsciiChar::X), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn rfind_char(&self, ch: AsciiChar) -> Option<usize> {
+        self.rfind_byte(ch.as_u8())
+    }
+
+    /// Returns the byte index of the last occurrence of a byte pattern.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// assert_eq!(s.rfind(b"-"), Some(7));
+    /// assert_eq!(s.rfind(b"USD"), Some(4));
+    /// assert_eq!(s.rfind(b"ETH"), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn rfind(&self, needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(self.len());
+        }
+        if needle.len() > self.len() {
+            return None;
+        }
+        self.as_bytes()
+            .windows(needle.len())
+            .rposition(|window| window == needle)
+    }
+
+    // =========================================================================
+    // Trim Methods (return borrowed &AsciiStr)
+    // =========================================================================
+
+    /// Returns a string slice with leading and trailing ASCII whitespace removed.
+    ///
+    /// ASCII whitespace is defined as: space (0x20), tab (0x09), newline (0x0A),
+    /// carriage return (0x0D), form feed (0x0C), and vertical tab (0x0B).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("  hello  ")?;
+    /// assert_eq!(s.trim().as_str(), "hello");
+    ///
+    /// let tabs: AsciiString<32> = AsciiString::try_from("\t\nworld\r\n")?;
+    /// assert_eq!(tabs.trim().as_str(), "world");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trim(&self) -> &AsciiStr {
+        self.trim_start().trim_end()
+    }
+
+    /// Returns a string slice with leading ASCII whitespace removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("  hello  ")?;
+    /// assert_eq!(s.trim_start().as_str(), "hello  ");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trim_start(&self) -> &AsciiStr {
+        let bytes = self.as_bytes();
+        let start = bytes
+            .iter()
+            .position(|&b| !b.is_ascii_whitespace())
+            .unwrap_or(bytes.len());
+        // SAFETY: trimmed slice is still valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&bytes[start..]) }
+    }
+
+    /// Returns a string slice with trailing ASCII whitespace removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("  hello  ")?;
+    /// assert_eq!(s.trim_end().as_str(), "  hello");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trim_end(&self) -> &AsciiStr {
+        let bytes = self.as_bytes();
+        let end = bytes
+            .iter()
+            .rposition(|&b| !b.is_ascii_whitespace())
+            .map_or(0, |i| i + 1);
+        // SAFETY: trimmed slice is still valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&bytes[..end]) }
+    }
+
+    // =========================================================================
+    // Split Methods
+    // =========================================================================
+
+    /// Returns an iterator over substrings separated by the given delimiter.
+    ///
+    /// The iterator yields `&AsciiStr` slices that do not include the delimiter.
+    /// If the string starts or ends with the delimiter, or contains consecutive
+    /// delimiters, empty slices are yielded.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// let parts: Vec<_> = s.split(AsciiChar::MINUS).map(|s| s.as_str()).collect();
+    /// assert_eq!(parts, vec!["BTC", "USD", "PERP"]);
+    ///
+    /// // Empty parts from consecutive or edge delimiters
+    /// let s2: AsciiString<32> = AsciiString::try_from("-a--b-")?;
+    /// let parts2: Vec<_> = s2.split(AsciiChar::MINUS).map(|s| s.as_str()).collect();
+    /// assert_eq!(parts2, vec!["", "a", "", "b", ""]);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn split(&self, delimiter: AsciiChar) -> Split<'_> {
+        Split {
+            remainder: self.as_bytes(),
+            delimiter: delimiter.as_u8(),
+            finished: false,
+        }
+    }
+}
+
+/// An iterator over substrings of an ASCII string, separated by a delimiter.
+///
+/// Created by the [`AsciiString::split`] method.
+#[derive(Debug, Clone)]
+pub struct Split<'a> {
+    remainder: &'a [u8],
+    delimiter: u8,
+    finished: bool,
+}
+
+impl<'a> Iterator for Split<'a> {
+    type Item = &'a AsciiStr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        match self.remainder.iter().position(|&b| b == self.delimiter) {
+            Some(pos) => {
+                let part = &self.remainder[..pos];
+                self.remainder = &self.remainder[pos + 1..];
+                // SAFETY: part is a slice of valid ASCII bytes
+                Some(unsafe { AsciiStr::from_bytes_unchecked(part) })
+            }
+            None => {
+                self.finished = true;
+                // SAFETY: remainder is valid ASCII bytes
+                Some(unsafe { AsciiStr::from_bytes_unchecked(self.remainder) })
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -1063,6 +1322,308 @@ impl<const CAP: usize> AsciiString<CAP> {
         Some(Self {
             header,
             data: self.data,
+        })
+    }
+
+    // =========================================================================
+    // Trimmed Methods (return owned Self with recomputed hash)
+    // =========================================================================
+
+    /// Returns a new string with leading and trailing ASCII whitespace removed.
+    ///
+    /// This consumes `self` and returns a new `AsciiString` with the whitespace
+    /// removed. The hash is recomputed for the new content.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("  hello  ")?;
+    /// let trimmed = s.trimmed();
+    /// assert_eq!(trimmed.as_str(), "hello");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trimmed(self) -> Self {
+        let bytes = self.as_bytes();
+        let start = bytes
+            .iter()
+            .position(|&b| !b.is_ascii_whitespace())
+            .unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .rposition(|&b| !b.is_ascii_whitespace())
+            .map_or(0, |i| i + 1);
+
+        let new_len = if start >= end { 0 } else { end - start };
+        let mut data = [0u8; CAP];
+        data[..new_len].copy_from_slice(&bytes[start..end]);
+
+        let hash = hash::hash::<CAP>(&data[..new_len]);
+        let header = pack_header(new_len as u16, hash);
+
+        Self { header, data }
+    }
+
+    /// Returns a new string with leading ASCII whitespace removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("  hello  ")?;
+    /// let trimmed = s.trimmed_start();
+    /// assert_eq!(trimmed.as_str(), "hello  ");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trimmed_start(self) -> Self {
+        let bytes = self.as_bytes();
+        let start = bytes
+            .iter()
+            .position(|&b| !b.is_ascii_whitespace())
+            .unwrap_or(bytes.len());
+
+        let new_len = bytes.len() - start;
+        let mut data = [0u8; CAP];
+        data[..new_len].copy_from_slice(&bytes[start..]);
+
+        let hash = hash::hash::<CAP>(&data[..new_len]);
+        let header = pack_header(new_len as u16, hash);
+
+        Self { header, data }
+    }
+
+    /// Returns a new string with trailing ASCII whitespace removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("  hello  ")?;
+    /// let trimmed = s.trimmed_end();
+    /// assert_eq!(trimmed.as_str(), "  hello");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trimmed_end(self) -> Self {
+        let bytes = self.as_bytes();
+        let new_len = bytes
+            .iter()
+            .rposition(|&b| !b.is_ascii_whitespace())
+            .map_or(0, |i| i + 1);
+
+        let hash = hash::hash::<CAP>(&self.data[..new_len]);
+        let header = pack_header(new_len as u16, hash);
+
+        Self {
+            header,
+            data: self.data,
+        }
+    }
+
+    // =========================================================================
+    // Replace Methods
+    // =========================================================================
+
+    /// Returns a new string with all occurrences of a character replaced.
+    ///
+    /// Since this is a character-for-character replacement, the length remains
+    /// the same and this operation is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// let replaced = s.replaced_char(AsciiChar::MINUS, AsciiChar::UNDERSCORE);
+    /// assert_eq!(replaced.as_str(), "BTC_USD_PERP");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn replaced_char(self, from: AsciiChar, to: AsciiChar) -> Self {
+        let len = self.len();
+        let mut data = self.data;
+        let from_byte = from.as_u8();
+        let to_byte = to.as_u8();
+
+        for byte in &mut data[..len] {
+            if *byte == from_byte {
+                *byte = to_byte;
+            }
+        }
+
+        let hash = hash::hash::<CAP>(&data[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Self { header, data }
+    }
+
+    /// Returns a new string with the first occurrence of a character replaced.
+    ///
+    /// Since this is a character-for-character replacement, the length remains
+    /// the same and this operation is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiChar};
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD-PERP")?;
+    /// let replaced = s.replace_first_char(AsciiChar::MINUS, AsciiChar::UNDERSCORE);
+    /// assert_eq!(replaced.as_str(), "BTC_USD-PERP");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn replace_first_char(self, from: AsciiChar, to: AsciiChar) -> Self {
+        let len = self.len();
+        let mut data = self.data;
+        let from_byte = from.as_u8();
+        let to_byte = to.as_u8();
+
+        for byte in &mut data[..len] {
+            if *byte == from_byte {
+                *byte = to_byte;
+                break;
+            }
+        }
+
+        let hash = hash::hash::<CAP>(&data[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Self { header, data }
+    }
+
+    /// Returns a new string with all occurrences of a pattern replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::TooLong`] if the result exceeds capacity.
+    /// Returns [`AsciiError::InvalidByte`] if `to` contains non-ASCII bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("foo bar foo")?;
+    /// let replaced = s.replaced(b"foo", b"baz")?;
+    /// assert_eq!(replaced.as_str(), "baz bar baz");
+    ///
+    /// // Length change
+    /// let s2: AsciiString<32> = AsciiString::try_from("aaa")?;
+    /// let replaced2 = s2.replaced(b"a", b"bb")?;
+    /// assert_eq!(replaced2.as_str(), "bbbbbb");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    pub fn replaced(&self, from: &[u8], to: &[u8]) -> Result<Self, AsciiError> {
+        // Validate replacement is ASCII
+        if let Err((byte, pos)) = validate_ascii(to) {
+            return Err(AsciiError::InvalidByte { byte, pos });
+        }
+
+        // Empty pattern - nothing to replace
+        if from.is_empty() {
+            return Ok(*self);
+        }
+
+        let src = self.as_bytes();
+        let mut result = [0u8; CAP];
+        let mut result_len = 0;
+        let mut i = 0;
+
+        while i < src.len() {
+            if i + from.len() <= src.len() && &src[i..i + from.len()] == from {
+                // Found a match, insert replacement
+                if result_len + to.len() > CAP {
+                    return Err(AsciiError::TooLong {
+                        len: result_len + to.len(),
+                        cap: CAP,
+                    });
+                }
+                result[result_len..result_len + to.len()].copy_from_slice(to);
+                result_len += to.len();
+                i += from.len();
+            } else {
+                // No match, copy byte
+                if result_len >= CAP {
+                    return Err(AsciiError::TooLong {
+                        len: result_len + 1,
+                        cap: CAP,
+                    });
+                }
+                result[result_len] = src[i];
+                result_len += 1;
+                i += 1;
+            }
+        }
+
+        let hash = hash::hash::<CAP>(&result[..result_len]);
+        let header = pack_header(result_len as u16, hash);
+
+        Ok(Self {
+            header,
+            data: result,
+        })
+    }
+
+    /// Returns a new string with the first occurrence of a pattern replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::TooLong`] if the result exceeds capacity.
+    /// Returns [`AsciiError::InvalidByte`] if `to` contains non-ASCII bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("foo bar foo")?;
+    /// let replaced = s.replace_first(b"foo", b"baz")?;
+    /// assert_eq!(replaced.as_str(), "baz bar foo");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    pub fn replace_first(&self, from: &[u8], to: &[u8]) -> Result<Self, AsciiError> {
+        // Validate replacement is ASCII
+        if let Err((byte, pos)) = validate_ascii(to) {
+            return Err(AsciiError::InvalidByte { byte, pos });
+        }
+
+        // Empty pattern or no match - return copy
+        if from.is_empty() {
+            return Ok(*self);
+        }
+
+        let src = self.as_bytes();
+
+        // Find first occurrence
+        let pos = match src.windows(from.len()).position(|w| w == from) {
+            Some(p) => p,
+            None => return Ok(*self),
+        };
+
+        // Calculate new length
+        let new_len = src.len() - from.len() + to.len();
+        if new_len > CAP {
+            return Err(AsciiError::TooLong { len: new_len, cap: CAP });
+        }
+
+        let mut result = [0u8; CAP];
+        result[..pos].copy_from_slice(&src[..pos]);
+        result[pos..pos + to.len()].copy_from_slice(to);
+        result[pos + to.len()..new_len].copy_from_slice(&src[pos + from.len()..]);
+
+        let hash = hash::hash::<CAP>(&result[..new_len]);
+        let header = pack_header(new_len as u16, hash);
+
+        Ok(Self {
+            header,
+            data: result,
         })
     }
 

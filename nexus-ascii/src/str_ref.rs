@@ -446,6 +446,189 @@ impl AsciiStr {
         }
         self.0.windows(needle.len()).any(|window| window == needle)
     }
+
+    // =========================================================================
+    // Trim Methods
+    // =========================================================================
+
+    /// Returns a string slice with leading and trailing ASCII whitespace removed.
+    ///
+    /// ASCII whitespace is defined as: space (0x20), tab (0x09), newline (0x0A),
+    /// carriage return (0x0D), form feed (0x0C), and vertical tab (0x0B).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"  hello  ")?;
+    /// assert_eq!(s.trim().as_str(), "hello");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trim(&self) -> &Self {
+        self.trim_start().trim_end()
+    }
+
+    /// Returns a string slice with leading ASCII whitespace removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"  hello  ")?;
+    /// assert_eq!(s.trim_start().as_str(), "hello  ");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trim_start(&self) -> &Self {
+        let start = self
+            .0
+            .iter()
+            .position(|&b| !b.is_ascii_whitespace())
+            .unwrap_or(self.0.len());
+        // SAFETY: trimmed slice is still valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[start..]) }
+    }
+
+    /// Returns a string slice with trailing ASCII whitespace removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"  hello  ")?;
+    /// assert_eq!(s.trim_end().as_str(), "  hello");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn trim_end(&self) -> &Self {
+        let end = self
+            .0
+            .iter()
+            .rposition(|&b| !b.is_ascii_whitespace())
+            .map_or(0, |i| i + 1);
+        // SAFETY: trimmed slice is still valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[..end]) }
+    }
+
+    // =========================================================================
+    // Find Methods
+    // =========================================================================
+
+    /// Returns the byte index of the first occurrence of a byte.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"BTC-USD")?;
+    /// assert_eq!(s.find_byte(b'-'), Some(3));
+    /// assert_eq!(s.find_byte(b'X'), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn find_byte(&self, byte: u8) -> Option<usize> {
+        self.0.iter().position(|&b| b == byte)
+    }
+
+    /// Returns the byte index of the first occurrence of an ASCII character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiStr, AsciiChar};
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"BTC-USD")?;
+    /// assert_eq!(s.find_char(AsciiChar::MINUS), Some(3));
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn find_char(&self, ch: AsciiChar) -> Option<usize> {
+        self.find_byte(ch.as_u8())
+    }
+
+    /// Returns the byte index of the first occurrence of a byte pattern.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"BTC-USD-PERP")?;
+    /// assert_eq!(s.find(b"-USD"), Some(3));
+    /// assert_eq!(s.find(b"ETH"), None);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn find(&self, needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        self.0
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    /// Returns the byte index of the last occurrence of a byte.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"BTC-USD-PERP")?;
+    /// assert_eq!(s.rfind_byte(b'-'), Some(7));
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn rfind_byte(&self, byte: u8) -> Option<usize> {
+        self.0.iter().rposition(|&b| b == byte)
+    }
+
+    /// Returns the byte index of the last occurrence of an ASCII character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiStr, AsciiChar};
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"BTC-USD-PERP")?;
+    /// assert_eq!(s.rfind_char(AsciiChar::MINUS), Some(7));
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn rfind_char(&self, ch: AsciiChar) -> Option<usize> {
+        self.rfind_byte(ch.as_u8())
+    }
+
+    /// Returns the byte index of the last occurrence of a byte pattern.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_bytes(b"BTC-USD-PERP")?;
+    /// assert_eq!(s.rfind(b"-"), Some(7));
+    /// assert_eq!(s.rfind(b"USD"), Some(4));
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn rfind(&self, needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(self.len());
+        }
+        if needle.len() > self.len() {
+            return None;
+        }
+        self.0
+            .windows(needle.len())
+            .rposition(|window| window == needle)
+    }
 }
 
 // =============================================================================

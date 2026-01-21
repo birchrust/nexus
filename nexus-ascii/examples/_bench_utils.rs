@@ -3,6 +3,8 @@
 //! This module provides common functions for cycle-accurate benchmarking
 //! using rdtsc and percentile-based statistics.
 
+#![allow(dead_code)]
+
 use std::hint::black_box;
 
 /// Number of iterations for benchmark measurements.
