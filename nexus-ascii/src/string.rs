@@ -15,7 +15,7 @@ use crate::str_ref::AsciiStr;
 ///
 /// Layout: bits 0-15 = length, bits 16-63 = upper 48 bits of hash.
 #[inline(always)]
-const fn pack_header(len: u16, hash: u64) -> u64 {
+pub(crate) const fn pack_header(len: u16, hash: u64) -> u64 {
     // Clear lower 16 bits of hash, insert length
     (hash & 0xFFFF_FFFF_FFFF_0000) | (len as u64)
 }
@@ -49,7 +49,7 @@ const fn has_non_ascii(v: u64) -> bool {
 /// Find the position of the first null byte in a slice.
 /// Returns the slice length if no null byte is found.
 #[inline]
-fn find_null_byte(bytes: &[u8]) -> usize {
+pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
     let mut i = 0;
 
     // Process 8 bytes at a time
@@ -84,7 +84,7 @@ fn find_null_byte(bytes: &[u8]) -> usize {
 /// Validate that all bytes are ASCII (0x00-0x7F) using fast word-at-a-time checking.
 /// Returns Ok(()) if valid, or Err((byte, pos)) for the first invalid byte.
 #[inline]
-fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
+pub(crate) fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
     let mut i = 0;
 
     // Process 8 bytes at a time - just check if any high bit is set
@@ -333,6 +333,27 @@ impl<const CAP: usize> AsciiString<CAP> {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), data.as_mut_ptr(), len);
         }
 
+        Self { header, data }
+    }
+
+    /// Creates an ASCII string from pre-validated parts.
+    ///
+    /// This is an internal constructor used by `AsciiStringBuilder`. The caller
+    /// must guarantee that:
+    /// - `len <= CAP`
+    /// - `data[..len]` contains only valid ASCII bytes (0x00-0x7F)
+    ///
+    /// The hash is computed from `data[..len]`.
+    #[inline]
+    pub(crate) fn from_parts_unchecked(len: usize, data: [u8; CAP]) -> Self {
+        debug_assert!(len <= CAP, "len exceeds capacity");
+        debug_assert!(
+            data[..len].iter().all(|&b| b <= 127),
+            "data contains non-ASCII"
+        );
+
+        let hash = hash::hash::<CAP>(&data[..len]);
+        let header = pack_header(len as u16, hash);
         Self { header, data }
     }
 
