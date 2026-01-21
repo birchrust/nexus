@@ -901,6 +901,151 @@ impl<const CAP: usize> AsciiString<CAP> {
 }
 
 // =============================================================================
+// Transformations
+// =============================================================================
+
+impl<const CAP: usize> AsciiString<CAP> {
+    /// Returns a new string with all ASCII letters converted to uppercase.
+    ///
+    /// This consumes `self` and returns a new `AsciiString` with the
+    /// transformation applied. The hash is recomputed for the new content.
+    ///
+    /// Non-alphabetic characters are unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("Hello, World!")?;
+    /// let upper = s.to_ascii_uppercase();
+    /// assert_eq!(upper.as_str(), "HELLO, WORLD!");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn to_ascii_uppercase(self) -> Self {
+        let len = self.len();
+        let mut data = self.data;
+
+        // Convert lowercase to uppercase: a-z (97-122) -> A-Z (65-90)
+        // Branchless: if in range, subtract 32
+        for byte in &mut data[..len] {
+            // This is branchless on most architectures
+            *byte = byte.to_ascii_uppercase();
+        }
+
+        let hash = hash::hash::<CAP>(&data[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Self { header, data }
+    }
+
+    /// Returns a new string with all ASCII letters converted to lowercase.
+    ///
+    /// This consumes `self` and returns a new `AsciiString` with the
+    /// transformation applied. The hash is recomputed for the new content.
+    ///
+    /// Non-alphabetic characters are unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("Hello, World!")?;
+    /// let lower = s.to_ascii_lowercase();
+    /// assert_eq!(lower.as_str(), "hello, world!");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn to_ascii_lowercase(self) -> Self {
+        let len = self.len();
+        let mut data = self.data;
+
+        // Convert uppercase to lowercase: A-Z (65-90) -> a-z (97-122)
+        // Branchless: if in range, add 32
+        for byte in &mut data[..len] {
+            *byte = byte.to_ascii_lowercase();
+        }
+
+        let hash = hash::hash::<CAP>(&data[..len]);
+        let header = pack_header(len as u16, hash);
+
+        Self { header, data }
+    }
+
+    /// Returns a new string truncated to the specified length.
+    ///
+    /// This consumes `self` and returns a new `AsciiString` with at most
+    /// `new_len` bytes. The hash is recomputed for the new content.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `new_len > self.len()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("Hello, World!")?;
+    /// let truncated = s.truncated(5);
+    /// assert_eq!(truncated.as_str(), "Hello");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn truncated(self, new_len: usize) -> Self {
+        assert!(
+            new_len <= self.len(),
+            "new_len ({}) exceeds current length ({})",
+            new_len,
+            self.len()
+        );
+
+        // SAFETY: new_len <= self.len() <= CAP, and data[..new_len] is valid ASCII
+        let hash = hash::hash::<CAP>(&self.data[..new_len]);
+        let header = pack_header(new_len as u16, hash);
+
+        Self {
+            header,
+            data: self.data,
+        }
+    }
+
+    /// Returns a new string truncated to the specified length, or `None` if
+    /// `new_len` exceeds the current length.
+    ///
+    /// This is the non-panicking version of [`truncated`](Self::truncated).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("Hello")?;
+    ///
+    /// assert_eq!(s.try_truncated(3).map(|t| t.as_str().to_owned()), Some("Hel".to_owned()));
+    /// assert_eq!(s.try_truncated(5).map(|t| t.as_str().to_owned()), Some("Hello".to_owned()));
+    /// assert_eq!(s.try_truncated(10), None); // Exceeds length
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn try_truncated(self, new_len: usize) -> Option<Self> {
+        if new_len > self.len() {
+            return None;
+        }
+
+        let hash = hash::hash::<CAP>(&self.data[..new_len]);
+        let header = pack_header(new_len as u16, hash);
+
+        Some(Self {
+            header,
+            data: self.data,
+        })
+    }
+}
+
+// =============================================================================
 // Trait Implementations
 // =============================================================================
 
@@ -2287,5 +2432,201 @@ mod tests {
         // Test larger buffers
         let large = b"0123456789ABCDEF\0rest";
         assert_eq!(find_null_byte(large), 16);
+    }
+
+    // =========================================================================
+    // Transformation tests
+    // =========================================================================
+
+    #[test]
+    fn to_ascii_uppercase_basic() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello, World!").unwrap();
+        let upper = s.to_ascii_uppercase();
+        assert_eq!(upper.as_str(), "HELLO, WORLD!");
+    }
+
+    #[test]
+    fn to_ascii_uppercase_already_upper() {
+        let s: AsciiString<32> = AsciiString::try_from("HELLO").unwrap();
+        let upper = s.to_ascii_uppercase();
+        assert_eq!(upper.as_str(), "HELLO");
+    }
+
+    #[test]
+    fn to_ascii_uppercase_all_lower() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let upper = s.to_ascii_uppercase();
+        assert_eq!(upper.as_str(), "HELLO");
+    }
+
+    #[test]
+    fn to_ascii_uppercase_mixed() {
+        let s: AsciiString<32> = AsciiString::try_from("HeLLo WoRLd").unwrap();
+        let upper = s.to_ascii_uppercase();
+        assert_eq!(upper.as_str(), "HELLO WORLD");
+    }
+
+    #[test]
+    fn to_ascii_uppercase_with_numbers() {
+        let s: AsciiString<32> = AsciiString::try_from("abc123xyz").unwrap();
+        let upper = s.to_ascii_uppercase();
+        assert_eq!(upper.as_str(), "ABC123XYZ");
+    }
+
+    #[test]
+    fn to_ascii_uppercase_empty() {
+        let s: AsciiString<32> = AsciiString::empty();
+        let upper = s.to_ascii_uppercase();
+        assert!(upper.is_empty());
+    }
+
+    #[test]
+    fn to_ascii_uppercase_hash_changes() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let upper = s.to_ascii_uppercase();
+        // Hash should be different since content changed
+        assert_ne!(s.header(), upper.header());
+    }
+
+    #[test]
+    fn to_ascii_lowercase_basic() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello, World!").unwrap();
+        let lower = s.to_ascii_lowercase();
+        assert_eq!(lower.as_str(), "hello, world!");
+    }
+
+    #[test]
+    fn to_ascii_lowercase_already_lower() {
+        let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let lower = s.to_ascii_lowercase();
+        assert_eq!(lower.as_str(), "hello");
+    }
+
+    #[test]
+    fn to_ascii_lowercase_all_upper() {
+        let s: AsciiString<32> = AsciiString::try_from("HELLO").unwrap();
+        let lower = s.to_ascii_lowercase();
+        assert_eq!(lower.as_str(), "hello");
+    }
+
+    #[test]
+    fn to_ascii_lowercase_with_symbols() {
+        let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+        let lower = s.to_ascii_lowercase();
+        assert_eq!(lower.as_str(), "btc-usd");
+    }
+
+    #[test]
+    fn to_ascii_lowercase_empty() {
+        let s: AsciiString<32> = AsciiString::empty();
+        let lower = s.to_ascii_lowercase();
+        assert!(lower.is_empty());
+    }
+
+    #[test]
+    fn to_ascii_lowercase_hash_changes() {
+        let s: AsciiString<32> = AsciiString::try_from("HELLO").unwrap();
+        let lower = s.to_ascii_lowercase();
+        assert_ne!(s.header(), lower.header());
+    }
+
+    #[test]
+    fn case_roundtrip() {
+        // upper(lower(s)) should equal upper(s) for any ASCII string
+        let s: AsciiString<32> = AsciiString::try_from("HeLLo WoRLd 123!").unwrap();
+        let upper1 = s.to_ascii_uppercase();
+        let lower = s.to_ascii_lowercase();
+        let upper2 = lower.to_ascii_uppercase();
+        assert_eq!(upper1, upper2);
+    }
+
+    #[test]
+    fn truncated_basic() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello, World!").unwrap();
+        let t = s.truncated(5);
+        assert_eq!(t.as_str(), "Hello");
+        assert_eq!(t.len(), 5);
+    }
+
+    #[test]
+    fn truncated_to_zero() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.truncated(0);
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn truncated_to_same_length() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.truncated(5);
+        assert_eq!(t.as_str(), "Hello");
+    }
+
+    #[test]
+    fn truncated_hash_changes() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.truncated(3);
+        // Hash should be different since content changed
+        assert_ne!(s.header(), t.header());
+    }
+
+    #[test]
+    fn truncated_hash_matches_direct() {
+        // truncated result should have same hash as directly constructed
+        let s: AsciiString<32> = AsciiString::try_from("Hello, World!").unwrap();
+        let truncated = s.truncated(5);
+        let direct: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        assert_eq!(truncated, direct);
+        assert_eq!(truncated.header(), direct.header());
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds current length")]
+    fn truncated_panics_on_longer() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let _ = s.truncated(10);
+    }
+
+    #[test]
+    fn try_truncated_basic() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.try_truncated(3);
+        assert!(t.is_some());
+        assert_eq!(t.unwrap().as_str(), "Hel");
+    }
+
+    #[test]
+    fn try_truncated_exact_length() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.try_truncated(5);
+        assert!(t.is_some());
+        assert_eq!(t.unwrap().as_str(), "Hello");
+    }
+
+    #[test]
+    fn try_truncated_too_long() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.try_truncated(10);
+        assert!(t.is_none());
+    }
+
+    #[test]
+    fn try_truncated_to_zero() {
+        let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        let t = s.try_truncated(0);
+        assert!(t.is_some());
+        assert!(t.unwrap().is_empty());
+    }
+
+    #[test]
+    fn transformations_preserve_capacity() {
+        let s: AsciiString<64> = AsciiString::try_from("Hello").unwrap();
+        let upper = s.to_ascii_uppercase();
+        let lower = s.to_ascii_lowercase();
+        let truncated = s.truncated(3);
+
+        assert_eq!(upper.capacity(), 64);
+        assert_eq!(lower.capacity(), 64);
+        assert_eq!(truncated.capacity(), 64);
     }
 }
