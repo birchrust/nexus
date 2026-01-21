@@ -32,6 +32,7 @@ mod builder;
 mod char;
 mod str_ref;
 mod string;
+mod text;
 
 pub mod hash;
 
@@ -39,6 +40,7 @@ pub use builder::AsciiStringBuilder;
 pub use char::{AsciiChar, InvalidAsciiChar};
 pub use str_ref::AsciiStr;
 pub use string::AsciiString;
+pub use text::AsciiText;
 
 // =============================================================================
 // Error Types

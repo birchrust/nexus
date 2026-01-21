@@ -3,6 +3,7 @@
 use crate::char::AsciiChar;
 use crate::str_ref::AsciiStr;
 use crate::string::{find_null_byte, validate_ascii, AsciiString};
+use crate::text::AsciiText;
 use crate::AsciiError;
 
 // =============================================================================
@@ -533,6 +534,33 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     #[must_use]
     pub fn build(self) -> AsciiString<CAP> {
         AsciiString::from_parts_unchecked(self.len, self.data)
+    }
+
+    /// Consumes the builder and returns an immutable [`AsciiText`].
+    ///
+    /// This validates that all characters are printable (0x20-0x7E) and
+    /// computes the hash for the final string content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::NonPrintable`] if any byte is < 0x20 or > 0x7E.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiText, AsciiStringBuilder};
+    ///
+    /// let mut builder: AsciiStringBuilder<32> = AsciiStringBuilder::new();
+    /// builder.push_str("Hello, World!")?;
+    ///
+    /// let text: AsciiText<32> = builder.build_text()?;
+    /// assert_eq!(text.as_str(), "Hello, World!");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn build_text(self) -> Result<AsciiText<CAP>, AsciiError> {
+        let s = self.build();
+        AsciiText::try_from_ascii_string(s)
     }
 }
 
