@@ -791,13 +791,8 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn eq_ignore_ascii_case(&self, other: &Self) -> bool {
-        // Fast path: different lengths can't be equal
-        if self.len() != other.len() {
-            return false;
-        }
-
-        // Use stdlib's optimized slice comparison
-        self.as_bytes().eq_ignore_ascii_case(other.as_bytes())
+        // Use SWAR-optimized comparison (8 bytes at a time)
+        crate::simd::eq_ignore_ascii_case(self.as_bytes(), other.as_bytes())
     }
 
     /// Returns `true` if the string starts with the given prefix.
@@ -1157,12 +1152,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let len = self.len();
         let mut data = self.data;
 
-        // Convert lowercase to uppercase: a-z (97-122) -> A-Z (65-90)
-        // Branchless: if in range, subtract 32
-        for byte in &mut data[..len] {
-            // This is branchless on most architectures
-            *byte = byte.to_ascii_uppercase();
-        }
+        // Convert lowercase to uppercase using SWAR (8 bytes at a time)
+        crate::simd::make_uppercase(&mut data[..len]);
 
         let hash = hash::hash::<CAP>(&data[..len]);
         let header = pack_header(len as u16, hash);
@@ -1192,11 +1183,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let len = self.len();
         let mut data = self.data;
 
-        // Convert uppercase to lowercase: A-Z (65-90) -> a-z (97-122)
-        // Branchless: if in range, add 32
-        for byte in &mut data[..len] {
-            *byte = byte.to_ascii_lowercase();
-        }
+        // Convert uppercase to lowercase using SWAR (8 bytes at a time)
+        crate::simd::make_lowercase(&mut data[..len]);
 
         let hash = hash::hash::<CAP>(&data[..len]);
         let header = pack_header(len as u16, hash);

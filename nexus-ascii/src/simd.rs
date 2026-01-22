@@ -3,6 +3,7 @@
 //! Provides ASCII and printable validation with automatic dispatch to the best
 //! available implementation based on compile-time target features:
 //!
+//! - AVX-512 if `target_feature = "avx512bw"` is enabled (64 bytes at a time)
 //! - AVX2 if `target_feature = "avx2"` is enabled (32 bytes at a time)
 //! - SSE2 on x86_64 (16 bytes at a time, always available)
 //! - Scalar SWAR on other architectures (8 bytes at a time)
@@ -16,6 +17,9 @@
 //! # AVX2 (recommended for modern CPUs)
 //! RUSTFLAGS="-C target-feature=+avx2" cargo build --release
 //!
+//! # AVX-512 (server CPUs, requires avx512bw for byte operations)
+//! RUSTFLAGS="-C target-feature=+avx512bw" cargo build --release
+//!
 //! # Native (auto-detect CPU features)
 //! RUSTFLAGS="-C target-cpu=native" cargo build --release
 //! ```
@@ -26,11 +30,25 @@
 
 mod scalar;
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+// SSE2: baseline x86_64, used when no higher SIMD is available
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx2"),
+    not(target_feature = "avx512bw")
+))]
 mod sse2;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+// AVX2: 32 bytes/iteration, used when AVX2 available but not AVX-512
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512bw")
+))]
 mod avx2;
+
+// AVX-512: 64 bytes/iteration, highest priority when available
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+mod avx512;
 
 // =============================================================================
 // ASCII Validation
@@ -42,6 +60,7 @@ mod avx2;
 /// the first invalid byte and its position.
 ///
 /// Uses the best available SIMD implementation:
+/// - AVX-512: 64 bytes at a time
 /// - AVX2: 32 bytes at a time
 /// - SSE2: 16 bytes at a time (x86_64 baseline)
 /// - Scalar: 8 bytes at a time (SWAR)
@@ -56,14 +75,28 @@ mod avx2;
 /// ```
 #[inline]
 pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
+    // AVX-512: 64 bytes at a time (highest priority)
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    {
+        avx512::validate_ascii(bytes)
+    }
+
     // AVX2: 32 bytes at a time
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         avx2::validate_ascii(bytes)
     }
 
     // SSE2: 16 bytes at a time (x86_64 baseline)
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx2"),
+        not(target_feature = "avx512bw")
+    ))]
     {
         sse2::validate_ascii(bytes)
     }
@@ -79,8 +112,9 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
 ///
 /// Uses `CAP` to eliminate unreachable SIMD code paths at compile time:
 /// - `CAP < 16`: Scalar only (SSE2 loop would never run)
-/// - `CAP < 32`: SSE2 max (AVX2 loop would never run)
-/// - `CAP >= 32`: Full SIMD dispatch
+/// - `CAP < 32`: SSE2 max (AVX2/AVX-512 loops would never run)
+/// - `CAP < 64`: AVX2 max (AVX-512 loop would never run)
+/// - `CAP >= 64`: Full SIMD dispatch
 ///
 /// This is more efficient for fixed-capacity types like `AsciiString<7>` where
 /// the compiler can inline just the scalar path.
@@ -88,29 +122,51 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
 pub fn validate_ascii_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), (u8, usize)> {
     debug_assert!(bytes.len() <= CAP);
 
-    // CAP < 16: SSE2/AVX2 loops will never run, use scalar directly
+    // CAP < 16: SSE2/AVX2/AVX-512 loops will never run, use scalar directly
     // This eliminates SIMD setup overhead for small strings
     if CAP < 16 {
         return scalar::validate_ascii(bytes);
     }
 
-    // CAP < 32: AVX2 loop will never run
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // CAP < 32: AVX2/AVX-512 loops will never run
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(target_feature = "avx2", target_feature = "avx512bw")
+    ))]
     if CAP < 32 {
         // Fall back to scalar since we don't have SSE2 module compiled
-        // when AVX2 is enabled. The scalar handles up to 31 bytes efficiently.
+        // when AVX2/AVX-512 is enabled. Scalar handles up to 31 bytes efficiently.
+        return scalar::validate_ascii(bytes);
+    }
+
+    // CAP < 64: AVX-512 loop will never run
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    if CAP < 64 {
+        // Fall back to scalar for medium sizes when only AVX-512 is compiled
         return scalar::validate_ascii(bytes);
     }
 
     // Full dispatch for larger capacities
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    {
+        avx512::validate_ascii(bytes)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         avx2::validate_ascii(bytes)
     }
 
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx2"),
+        not(target_feature = "avx512bw")
+    ))]
     {
-        // CAP < 32 with SSE2: SSE2 is fine (handles 16+ bytes)
         sse2::validate_ascii(bytes)
     }
 
@@ -130,6 +186,7 @@ pub fn validate_ascii_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), (u8,
 /// the first non-printable byte and its position.
 ///
 /// Uses the best available SIMD implementation:
+/// - AVX-512: 64 bytes at a time
 /// - AVX2: 32 bytes at a time
 /// - SSE2: 16 bytes at a time (x86_64 baseline)
 /// - Scalar: 8 bytes at a time (SWAR)
@@ -145,14 +202,28 @@ pub fn validate_ascii_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), (u8,
 /// ```
 #[inline]
 pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
+    // AVX-512: 64 bytes at a time (highest priority)
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    {
+        avx512::validate_printable(bytes)
+    }
+
     // AVX2: 32 bytes at a time
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         avx2::validate_printable(bytes)
     }
 
     // SSE2: 16 bytes at a time (x86_64 baseline)
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx2"),
+        not(target_feature = "avx512bw")
+    ))]
     {
         sse2::validate_printable(bytes)
     }
@@ -168,8 +239,9 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 ///
 /// Uses `CAP` to eliminate unreachable SIMD code paths at compile time:
 /// - `CAP < 16`: Scalar only (SSE2 loop would never run)
-/// - `CAP < 32`: SSE2 max (AVX2 loop would never run)
-/// - `CAP >= 32`: Full SIMD dispatch
+/// - `CAP < 32`: SSE2 max (AVX2/AVX-512 loops would never run)
+/// - `CAP < 64`: AVX2 max (AVX-512 loop would never run)
+/// - `CAP >= 64`: Full SIMD dispatch
 ///
 /// This is more efficient for fixed-capacity types like `AsciiText<7>` where
 /// the compiler can inline just the scalar path.
@@ -177,24 +249,46 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), (u8, usize)> {
     debug_assert!(bytes.len() <= CAP);
 
-    // CAP < 16: SSE2/AVX2 loops will never run, use scalar directly
+    // CAP < 16: SSE2/AVX2/AVX-512 loops will never run, use scalar directly
     if CAP < 16 {
         return scalar::validate_printable(bytes);
     }
 
-    // CAP < 32: AVX2 loop will never run
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    // CAP < 32: AVX2/AVX-512 loops will never run
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(target_feature = "avx2", target_feature = "avx512bw")
+    ))]
     if CAP < 32 {
         return scalar::validate_printable(bytes);
     }
 
+    // CAP < 64: AVX-512 loop will never run
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    if CAP < 64 {
+        return scalar::validate_printable(bytes);
+    }
+
     // Full dispatch for larger capacities
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    {
+        avx512::validate_printable(bytes)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         avx2::validate_printable(bytes)
     }
 
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx2"),
+        not(target_feature = "avx512bw")
+    ))]
     {
         sse2::validate_printable(bytes)
     }
@@ -203,6 +297,69 @@ pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), 
     {
         scalar::validate_printable(bytes)
     }
+}
+
+// =============================================================================
+// Case-Insensitive Comparison
+// =============================================================================
+
+/// Compare two byte slices for case-insensitive ASCII equality using SWAR.
+///
+/// Processes 8 bytes at a time. For ASCII letters (A-Z, a-z), case is ignored.
+/// Non-letter ASCII characters must match exactly.
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// assert!(simd::eq_ignore_ascii_case(b"Hello", b"HELLO"));
+/// assert!(simd::eq_ignore_ascii_case(b"BTC-USD", b"btc-usd"));
+/// assert!(!simd::eq_ignore_ascii_case(b"Hello", b"World"));
+/// ```
+#[inline]
+pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
+    scalar::eq_ignore_ascii_case(a, b)
+}
+
+// =============================================================================
+// Case Conversion
+// =============================================================================
+
+/// Convert byte slice to lowercase in-place using SWAR.
+///
+/// Processes 8 bytes at a time. Only ASCII letters (A-Z) are affected.
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// let mut bytes = *b"Hello, World!";
+/// simd::make_lowercase(&mut bytes);
+/// assert_eq!(&bytes, b"hello, world!");
+/// ```
+#[inline]
+pub fn make_lowercase(bytes: &mut [u8]) {
+    scalar::make_lowercase(bytes)
+}
+
+/// Convert byte slice to uppercase in-place using SWAR.
+///
+/// Processes 8 bytes at a time. Only ASCII letters (a-z) are affected.
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// let mut bytes = *b"Hello, World!";
+/// simd::make_uppercase(&mut bytes);
+/// assert_eq!(&bytes, b"HELLO, WORLD!");
+/// ```
+#[inline]
+pub fn make_uppercase(bytes: &mut [u8]) {
+    scalar::make_uppercase(bytes)
 }
 
 // =============================================================================

@@ -104,7 +104,7 @@ unsafe fn hash_long_avx512(data: &[u8], seed: u64) -> u64 {
 
         // Extract accumulators
         let mut acc_arr = [0u64; 8];
-        _mm512_storeu_si512(acc_arr.as_mut_ptr() as *mut i32, acc);
+        _mm512_storeu_si512(acc_arr.as_mut_ptr().cast(), acc);
 
         merge_accs(&acc_arr, len as u64)
     }
@@ -122,10 +122,10 @@ unsafe fn accumulate_stripe_avx512(
         let secret_ptr = SECRET.as_ptr().add(secret_offset);
 
         // Load entire 64-byte stripe in one register
-        let data = _mm512_loadu_si512(stripe as *const i32);
+        let data = _mm512_loadu_si512(stripe.cast());
 
         // Load 64 bytes of secret
-        let secret = _mm512_loadu_si512(secret_ptr as *const i32);
+        let secret = _mm512_loadu_si512(secret_ptr.cast());
 
         // XOR data with secret
         let keyed = _mm512_xor_si512(data, secret);
@@ -152,7 +152,7 @@ unsafe fn scramble_acc_avx512(acc: __m512i) -> __m512i {
         let secret_ptr = SECRET.as_ptr().add(128);
 
         // Load scramble secret
-        let secret = _mm512_loadu_si512(secret_ptr as *const i32);
+        let secret = _mm512_loadu_si512(secret_ptr.cast());
 
         // acc ^= acc >> 47
         let shifted = _mm512_srli_epi64(acc, 47);

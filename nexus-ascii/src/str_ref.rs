@@ -385,13 +385,8 @@ impl AsciiStr {
     /// ```
     #[inline]
     pub fn eq_ignore_ascii_case(&self, other: &Self) -> bool {
-        if self.len() != other.len() {
-            return false;
-        }
-        self.0
-            .iter()
-            .zip(other.0.iter())
-            .all(|(&a, &b)| a.eq_ignore_ascii_case(&b))
+        // Use SWAR-optimized comparison (8 bytes at a time)
+        crate::simd::eq_ignore_ascii_case(&self.0, &other.0)
     }
 
     /// Returns `true` if the string starts with the given prefix.
