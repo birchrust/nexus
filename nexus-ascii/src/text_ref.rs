@@ -7,9 +7,9 @@ use core::hash::{Hash, Hasher};
 
 use crate::char::AsciiChar;
 use crate::hash;
+use crate::simd;
 use crate::str_ref::AsciiStr;
 use crate::string::pack_header;
-use crate::text::validate_printable;
 use crate::AsciiError;
 
 // =============================================================================
@@ -74,7 +74,8 @@ impl AsciiTextStr {
     /// ```
     #[inline]
     pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, AsciiError> {
-        validate_printable(bytes)?;
+        simd::validate_printable(bytes)
+            .map_err(|(byte, pos)| AsciiError::NonPrintable { byte, pos })?;
         // SAFETY: We just validated all bytes are printable ASCII
         Ok(unsafe { Self::from_bytes_unchecked(bytes) })
     }

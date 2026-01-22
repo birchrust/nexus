@@ -43,6 +43,7 @@ mod text;
 mod text_ref;
 
 pub mod hash;
+pub mod simd;
 
 pub use builder::AsciiStringBuilder;
 pub use char::{AsciiChar, InvalidAsciiChar};

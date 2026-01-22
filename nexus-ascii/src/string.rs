@@ -5,6 +5,7 @@ use core::hash::{Hash, Hasher};
 use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::hash;
+use crate::simd;
 use crate::str_ref::AsciiStr;
 
 // =============================================================================
@@ -38,13 +39,6 @@ const fn has_null_byte(v: u64) -> u64 {
     const LO: u64 = 0x0101_0101_0101_0101;
     const HI: u64 = 0x8080_8080_8080_8080;
     (v.wrapping_sub(LO)) & !v & HI
-}
-
-/// Check if any byte in a u64 has the high bit set (non-ASCII).
-#[inline(always)]
-const fn has_non_ascii(v: u64) -> bool {
-    const HI: u64 = 0x8080_8080_8080_8080;
-    (v & HI) != 0
 }
 
 /// Find the position of the first null byte in a slice.
@@ -82,50 +76,8 @@ pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
     bytes.len()
 }
 
-/// Validate that all bytes are ASCII (0x00-0x7F) using fast word-at-a-time checking.
-/// Returns Ok(()) if valid, or Err((byte, pos)) for the first invalid byte.
-#[inline]
-pub(crate) fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
-    let mut i = 0;
-
-    // Process 8 bytes at a time - just check if any high bit is set
-    while i + 8 <= bytes.len() {
-        // SAFETY: We just checked that i + 8 <= bytes.len()
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
-        let word = u64::from_ne_bytes(chunk);
-        if has_non_ascii(word) {
-            // Found non-ASCII in this chunk, find exactly which byte
-            for j in 0..8 {
-                if bytes[i + j] > 127 {
-                    return Err((bytes[i + j], i + j));
-                }
-            }
-        }
-        i += 8;
-    }
-
-    // Handle remainder byte by byte
-    while i < bytes.len() {
-        if bytes[i] > 127 {
-            return Err((bytes[i], i));
-        }
-        i += 1;
-    }
-
-    Ok(())
-}
-
-/// Compute header for empty string (runtime).
-#[inline(always)]
-fn empty_header() -> u64 {
-    pack_header(0, hash::hash::<0>(&[]))
-}
+/// Precomputed header for empty string (compile-time).
+const EMPTY_HEADER: u64 = pack_header(0, hash::hash_const::<0>(&[]));
 
 // =============================================================================
 // AsciiString
@@ -180,9 +132,9 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// assert_eq!(s.len(), 0);
     /// ```
     #[inline]
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
-            header: empty_header(),
+            header: EMPTY_HEADER,
             data: [0u8; CAP],
         }
     }
@@ -391,7 +343,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         }
 
         // Fast ASCII validation using word-at-a-time checking
-        if let Err((byte, pos)) = validate_ascii(bytes) {
+        // Use bounded version since we know len <= CAP
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(bytes) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
@@ -452,7 +405,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let len = find_null_byte(&buffer);
 
         // Fast ASCII validation for bytes before the null terminator
-        if let Err((byte, pos)) = validate_ascii(&buffer[..len]) {
+        // Use bounded version since len <= CAP
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(&buffer[..len]) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
@@ -541,7 +495,8 @@ impl<const CAP: usize> AsciiString<CAP> {
             .map_or(0, |i| i + 1);
 
         // Fast ASCII validation
-        if let Err((byte, pos)) = validate_ascii(&buffer[..len]) {
+        // Use bounded version since len <= CAP
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(&buffer[..len]) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
@@ -841,11 +796,8 @@ impl<const CAP: usize> AsciiString<CAP> {
             return false;
         }
 
-        // Compare bytes case-insensitively
-        self.as_bytes()
-            .iter()
-            .zip(other.as_bytes().iter())
-            .all(|(&a, &b)| a.eq_ignore_ascii_case(&b))
+        // Use stdlib's optimized slice comparison
+        self.as_bytes().eq_ignore_ascii_case(other.as_bytes())
     }
 
     /// Returns `true` if the string starts with the given prefix.
@@ -1519,7 +1471,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     pub fn replaced(&self, from: &[u8], to: &[u8]) -> Result<Self, AsciiError> {
         // Validate replacement is ASCII
-        if let Err((byte, pos)) = validate_ascii(to) {
+        if let Err((byte, pos)) = simd::validate_ascii(to) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
@@ -1587,7 +1539,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     pub fn replace_first(&self, from: &[u8], to: &[u8]) -> Result<Self, AsciiError> {
         // Validate replacement is ASCII
-        if let Err((byte, pos)) = validate_ascii(to) {
+        if let Err((byte, pos)) = simd::validate_ascii(to) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 

@@ -3,31 +3,20 @@
 use core::hash::{Hash, Hasher};
 
 use crate::char::AsciiChar;
+use crate::simd;
 use crate::str_ref::AsciiStr;
 use crate::string::AsciiString;
 use crate::text_ref::AsciiTextStr;
 use crate::AsciiError;
 
 // =============================================================================
-// Printable Validation
+// Printable Validation (const version for compile-time)
 // =============================================================================
 
 /// Check if a byte is printable ASCII (0x20-0x7E).
 #[inline(always)]
 const fn is_printable(b: u8) -> bool {
     b >= 0x20 && b <= 0x7E
-}
-
-/// Validate that all bytes are printable ASCII (0x20-0x7E).
-/// Returns Ok(()) if valid, or Err with the first non-printable byte.
-#[inline]
-pub(crate) fn validate_printable(bytes: &[u8]) -> Result<(), AsciiError> {
-    for (i, &b) in bytes.iter().enumerate() {
-        if !is_printable(b) {
-            return Err(AsciiError::NonPrintable { byte: b, pos: i });
-        }
-    }
-    Ok(())
 }
 
 /// Const version of printable validation for compile-time checking.
@@ -102,7 +91,7 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self(AsciiString::empty())
     }
 
@@ -178,7 +167,10 @@ impl<const CAP: usize> AsciiText<CAP> {
             });
         }
 
-        validate_printable(bytes)?;
+        // Use bounded version since we know len <= CAP
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(bytes) {
+            return Err(AsciiError::NonPrintable { byte, pos });
+        }
 
         // SAFETY: Printable ASCII is a subset of ASCII, so from_bytes_unchecked is safe
         Ok(Self(unsafe { AsciiString::from_bytes_unchecked(bytes) }))
@@ -252,7 +244,10 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// ```
     #[inline]
     pub fn try_from_ascii_string(s: AsciiString<CAP>) -> Result<Self, AsciiError> {
-        validate_printable(s.as_bytes())?;
+        // Use bounded version since AsciiString<CAP> is bounded by CAP
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
+            return Err(AsciiError::NonPrintable { byte, pos });
+        }
         Ok(Self(s))
     }
 }

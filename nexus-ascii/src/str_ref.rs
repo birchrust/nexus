@@ -7,7 +7,8 @@ use core::hash::{Hash, Hasher};
 
 use crate::char::AsciiChar;
 use crate::hash;
-use crate::string::{pack_header, validate_ascii};
+use crate::simd;
+use crate::string::pack_header;
 use crate::AsciiError;
 
 // =============================================================================
@@ -69,7 +70,7 @@ impl AsciiStr {
     /// ```
     #[inline]
     pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, AsciiError> {
-        validate_ascii(bytes).map_err(|(byte, pos)| AsciiError::InvalidByte { byte, pos })?;
+        simd::validate_ascii(bytes).map_err(|(byte, pos)| AsciiError::InvalidByte { byte, pos })?;
 
         // SAFETY: We just validated all bytes are ASCII
         Ok(unsafe { Self::from_bytes_unchecked(bytes) })

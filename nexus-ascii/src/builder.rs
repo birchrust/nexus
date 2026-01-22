@@ -1,8 +1,9 @@
 //! Mutable builder for constructing ASCII strings.
 
 use crate::char::AsciiChar;
+use crate::simd;
 use crate::str_ref::AsciiStr;
-use crate::string::{find_null_byte, validate_ascii, AsciiString};
+use crate::string::{find_null_byte, AsciiString};
 use crate::text::AsciiText;
 use crate::AsciiError;
 
@@ -262,7 +263,8 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
             });
         }
 
-        if let Err((byte, pos)) = validate_ascii(bytes) {
+        // Use bounded version since we know bytes.len() <= remaining() <= CAP
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(bytes) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
@@ -413,7 +415,8 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
             });
         }
 
-        if let Err((byte, pos)) = validate_ascii(content) {
+        // Use bounded version since content_len <= remaining() <= CAP
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(content) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
