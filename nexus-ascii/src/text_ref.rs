@@ -6,7 +6,9 @@
 use core::hash::{Hash, Hasher};
 
 use crate::char::AsciiChar;
+use crate::hash;
 use crate::str_ref::AsciiStr;
+use crate::string::pack_header;
 use crate::text::validate_printable;
 use crate::AsciiError;
 
@@ -430,9 +432,16 @@ impl Ord for AsciiTextStr {
 }
 
 impl Hash for AsciiTextStr {
+    /// Hashes the printable ASCII string slice.
+    ///
+    /// Computes the same hash as `AsciiText` would for the same content,
+    /// enabling `Borrow<AsciiTextStr>` to work correctly with HashMap lookups.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+        // Compute the same header value that AsciiText would have
+        let hash48 = hash::hash_unbounded(&self.0);
+        let header = pack_header(self.0.len() as u16, hash48);
+        header.hash(state);
     }
 }
 
@@ -460,6 +469,74 @@ impl core::ops::Index<usize> for AsciiTextStr {
         // SAFETY: index is within bounds, data contains valid ASCII.
         // AsciiChar is #[repr(transparent)] over u8.
         unsafe { &*(self.0.get_unchecked(index) as *const u8 as *const AsciiChar) }
+    }
+}
+
+impl core::ops::Index<core::ops::Range<usize>> for AsciiTextStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::Range<usize>) -> &Self::Output {
+        assert!(range.start <= range.end, "range start > end");
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid printable ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeFrom<usize>> for AsciiTextStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeFrom<usize>) -> &Self::Output {
+        assert!(range.start <= self.len(), "range start out of bounds");
+        // SAFETY: range is within bounds, data contains valid printable ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeTo<usize>> for AsciiTextStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeTo<usize>) -> &Self::Output {
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid printable ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeFull> for AsciiTextStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, _range: core::ops::RangeFull) -> &Self::Output {
+        self
+    }
+}
+
+impl core::ops::Index<core::ops::RangeInclusive<usize>> for AsciiTextStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeInclusive<usize>) -> &Self::Output {
+        let start = *range.start();
+        let end = *range.end();
+        assert!(start <= end, "range start > end");
+        assert!(end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid printable ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[start..=end]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeToInclusive<usize>> for AsciiTextStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeToInclusive<usize>) -> &Self::Output {
+        assert!(range.end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid printable ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
     }
 }
 

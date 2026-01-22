@@ -6,7 +6,8 @@
 use core::hash::{Hash, Hasher};
 
 use crate::char::AsciiChar;
-use crate::string::validate_ascii;
+use crate::hash;
+use crate::string::{pack_header, validate_ascii};
 use crate::AsciiError;
 
 // =============================================================================
@@ -659,9 +660,16 @@ impl Ord for AsciiStr {
 }
 
 impl Hash for AsciiStr {
+    /// Hashes the ASCII string slice.
+    ///
+    /// Computes the same hash as `AsciiString` would for the same content,
+    /// enabling `Borrow<AsciiStr>` to work correctly with HashMap lookups.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+        // Compute the same header value that AsciiString would have
+        let hash48 = hash::hash_unbounded(&self.0);
+        let header = pack_header(self.0.len() as u16, hash48);
+        header.hash(state);
     }
 }
 
@@ -689,6 +697,90 @@ impl core::ops::Index<usize> for AsciiStr {
         // SAFETY: index is within bounds, data contains valid ASCII.
         // AsciiChar is #[repr(transparent)] over u8.
         unsafe { &*(self.0.get_unchecked(index) as *const u8 as *const AsciiChar) }
+    }
+}
+
+impl core::ops::Index<core::ops::Range<usize>> for AsciiStr {
+    type Output = Self;
+
+    /// Returns a slice of the string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiStr;
+    ///
+    /// let s = AsciiStr::try_from_str("BTC-USD")?;
+    /// assert_eq!(&s[0..3], "BTC");
+    /// assert_eq!(&s[4..7], "USD");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    fn index(&self, range: core::ops::Range<usize>) -> &Self::Output {
+        assert!(range.start <= range.end, "range start > end");
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeFrom<usize>> for AsciiStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeFrom<usize>) -> &Self::Output {
+        assert!(range.start <= self.len(), "range start out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeTo<usize>> for AsciiStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeTo<usize>) -> &Self::Output {
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeFull> for AsciiStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, _range: core::ops::RangeFull) -> &Self::Output {
+        self
+    }
+}
+
+impl core::ops::Index<core::ops::RangeInclusive<usize>> for AsciiStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeInclusive<usize>) -> &Self::Output {
+        let start = *range.start();
+        let end = *range.end();
+        assert!(start <= end, "range start > end");
+        assert!(end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[start..=end]) }
+    }
+}
+
+impl core::ops::Index<core::ops::RangeToInclusive<usize>> for AsciiStr {
+    type Output = Self;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeToInclusive<usize>) -> &Self::Output {
+        assert!(range.end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { Self::from_bytes_unchecked(&self.0[range]) }
     }
 }
 

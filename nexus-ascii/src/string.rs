@@ -1847,6 +1847,90 @@ impl<const CAP: usize> core::ops::Index<usize> for AsciiString<CAP> {
     }
 }
 
+impl<const CAP: usize> core::ops::Index<core::ops::Range<usize>> for AsciiString<CAP> {
+    type Output = AsciiStr;
+
+    /// Returns a slice of the string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+    /// assert_eq!(&s[0..3], "BTC");
+    /// assert_eq!(&s[4..7], "USD");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    fn index(&self, range: core::ops::Range<usize>) -> &Self::Output {
+        assert!(range.start <= range.end, "range start > end");
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&self.data[range]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeFrom<usize>> for AsciiString<CAP> {
+    type Output = AsciiStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeFrom<usize>) -> &Self::Output {
+        assert!(range.start <= self.len(), "range start out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&self.data[range.start..self.len()]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeTo<usize>> for AsciiString<CAP> {
+    type Output = AsciiStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeTo<usize>) -> &Self::Output {
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&self.data[range]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeFull> for AsciiString<CAP> {
+    type Output = AsciiStr;
+
+    #[inline]
+    fn index(&self, _range: core::ops::RangeFull) -> &Self::Output {
+        self.as_ascii_str()
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeInclusive<usize>> for AsciiString<CAP> {
+    type Output = AsciiStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeInclusive<usize>) -> &Self::Output {
+        let start = *range.start();
+        let end = *range.end();
+        assert!(start <= end, "range start > end");
+        assert!(end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&self.data[start..=end]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeToInclusive<usize>> for AsciiString<CAP> {
+    type Output = AsciiStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeToInclusive<usize>) -> &Self::Output {
+        assert!(range.end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, data contains valid ASCII
+        unsafe { AsciiStr::from_bytes_unchecked(&self.data[range]) }
+    }
+}
+
 // =============================================================================
 // TryFrom Implementations
 // =============================================================================
@@ -1904,6 +1988,43 @@ impl<const CAP: usize> AsRef<[u8]> for AsciiString<CAP> {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
+    }
+}
+
+impl<const CAP: usize> AsRef<AsciiStr> for AsciiString<CAP> {
+    #[inline]
+    fn as_ref(&self) -> &AsciiStr {
+        self.as_ascii_str()
+    }
+}
+
+// =============================================================================
+// Borrow Implementation
+// =============================================================================
+
+impl<const CAP: usize> core::borrow::Borrow<AsciiStr> for AsciiString<CAP> {
+    /// Borrows the string as an `&AsciiStr`.
+    ///
+    /// This enables using `AsciiString` as a key in `HashMap`/`HashSet` while
+    /// looking up with `&AsciiStr`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use nexus_ascii::{AsciiString, AsciiStr};
+    ///
+    /// let mut map: HashMap<AsciiString<32>, i32> = HashMap::new();
+    /// let key: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+    /// map.insert(key, 42);
+    ///
+    /// // Look up with &AsciiStr
+    /// let lookup: &AsciiStr = AsciiStr::try_from_str("BTC-USD").unwrap();
+    /// assert_eq!(map.get(lookup), Some(&42));
+    /// ```
+    #[inline]
+    fn borrow(&self) -> &AsciiStr {
+        self.as_ascii_str()
     }
 }
 

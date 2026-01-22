@@ -88,6 +88,23 @@ pub fn hash_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
 }
 
 // =============================================================================
+// Unbounded hash (for DSTs like AsciiStr)
+// =============================================================================
+
+/// Hash bytes without a compile-time capacity bound.
+///
+/// This function handles inputs of any length. Unlike `hash<CAP>()`, it cannot
+/// eliminate code paths at compile time, so it may be slightly slower for
+/// small inputs. Use `hash::<CAP>()` when the maximum length is known.
+///
+/// This is primarily used for DSTs like `AsciiStr` where the length isn't
+/// known at compile time.
+#[inline]
+pub fn hash_unbounded(data: &[u8]) -> u64 {
+    xxh3::hash_with_seed(data, 0)
+}
+
+// =============================================================================
 // Const hash (for compile-time evaluation)
 // =============================================================================
 

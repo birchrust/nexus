@@ -2,6 +2,7 @@
 
 use core::hash::{Hash, Hasher};
 
+use crate::char::AsciiChar;
 use crate::str_ref::AsciiStr;
 use crate::string::AsciiString;
 use crate::text_ref::AsciiTextStr;
@@ -485,6 +486,109 @@ impl<const CAP: usize> AsRef<AsciiString<CAP>> for AsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &AsciiString<CAP> {
         &self.0
+    }
+}
+
+impl<const CAP: usize> AsRef<AsciiTextStr> for AsciiText<CAP> {
+    #[inline]
+    fn as_ref(&self) -> &AsciiTextStr {
+        self.as_ascii_text_str()
+    }
+}
+
+// =============================================================================
+// Borrow Implementation
+// =============================================================================
+
+impl<const CAP: usize> core::borrow::Borrow<AsciiTextStr> for AsciiText<CAP> {
+    /// Borrows the text as an `&AsciiTextStr`.
+    ///
+    /// This enables using `AsciiText` as a key in `HashMap`/`HashSet` while
+    /// looking up with `&AsciiTextStr`.
+    #[inline]
+    fn borrow(&self) -> &AsciiTextStr {
+        self.as_ascii_text_str()
+    }
+}
+
+// =============================================================================
+// Index Implementations
+// =============================================================================
+
+impl<const CAP: usize> core::ops::Index<usize> for AsciiText<CAP> {
+    type Output = AsciiChar;
+
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::Range<usize>> for AsciiText<CAP> {
+    type Output = AsciiTextStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::Range<usize>) -> &Self::Output {
+        assert!(range.start <= range.end, "range start > end");
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, AsciiText guarantees printable ASCII
+        unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[range]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeFrom<usize>> for AsciiText<CAP> {
+    type Output = AsciiTextStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeFrom<usize>) -> &Self::Output {
+        assert!(range.start <= self.len(), "range start out of bounds");
+        // SAFETY: range is within bounds, AsciiText guarantees printable ASCII
+        unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[range]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeTo<usize>> for AsciiText<CAP> {
+    type Output = AsciiTextStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeTo<usize>) -> &Self::Output {
+        assert!(range.end <= self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, AsciiText guarantees printable ASCII
+        unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[range]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeFull> for AsciiText<CAP> {
+    type Output = AsciiTextStr;
+
+    #[inline]
+    fn index(&self, _range: core::ops::RangeFull) -> &Self::Output {
+        self.as_ascii_text_str()
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeInclusive<usize>> for AsciiText<CAP> {
+    type Output = AsciiTextStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeInclusive<usize>) -> &Self::Output {
+        let start = *range.start();
+        let end = *range.end();
+        assert!(start <= end, "range start > end");
+        assert!(end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, AsciiText guarantees printable ASCII
+        unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[start..=end]) }
+    }
+}
+
+impl<const CAP: usize> core::ops::Index<core::ops::RangeToInclusive<usize>> for AsciiText<CAP> {
+    type Output = AsciiTextStr;
+
+    #[inline]
+    fn index(&self, range: core::ops::RangeToInclusive<usize>) -> &Self::Output {
+        assert!(range.end < self.len(), "range end out of bounds");
+        // SAFETY: range is within bounds, AsciiText guarantees printable ASCII
+        unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[range]) }
     }
 }
 
