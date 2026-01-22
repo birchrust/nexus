@@ -363,6 +363,54 @@ pub fn make_uppercase(bytes: &mut [u8]) {
 }
 
 // =============================================================================
+// Control Character Detection
+// =============================================================================
+
+/// Check if the byte slice contains any control characters using SWAR.
+///
+/// Control characters are bytes < 0x20 (space) or == 0x7F (DEL).
+/// Returns true if any control character is found, false otherwise.
+///
+/// Processes 8 bytes at a time with branchless remainder handling for
+/// consistent tail latency.
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// assert!(!simd::contains_control_chars(b"Hello, World!"));
+/// assert!(simd::contains_control_chars(b"Hello\nWorld")); // newline is control
+/// assert!(simd::contains_control_chars(b"Tab\there"));    // tab is control
+/// ```
+#[inline]
+pub fn contains_control_chars(bytes: &[u8]) -> bool {
+    scalar::contains_control_chars(bytes)
+}
+
+/// Check if all bytes are printable ASCII (0x20-0x7E) using SWAR.
+///
+/// Returns true if all bytes are printable, false otherwise.
+/// This is the inverse of checking for control characters and high bytes.
+///
+/// Processes 8 bytes at a time with branchless remainder handling for
+/// consistent tail latency.
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// assert!(simd::is_all_printable(b"Hello, World!"));
+/// assert!(!simd::is_all_printable(b"Hello\nWorld")); // newline not printable
+/// assert!(!simd::is_all_printable(b"\x80"));          // non-ASCII
+/// ```
+#[inline]
+pub fn is_all_printable(bytes: &[u8]) -> bool {
+    scalar::is_all_printable(bytes)
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

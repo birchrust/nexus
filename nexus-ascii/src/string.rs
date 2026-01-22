@@ -1587,7 +1587,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn is_all_printable(&self) -> bool {
-        self.as_bytes().iter().all(|&b| b >= 0x20 && b <= 0x7E)
+        crate::simd::is_all_printable(self.as_bytes())
     }
 
     /// Returns `true` if the string contains any control characters.
@@ -1611,7 +1611,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn contains_control_chars(&self) -> bool {
-        self.as_bytes().iter().any(|&b| b < 0x20 || b == 0x7F)
+        crate::simd::contains_control_chars(self.as_bytes())
     }
 
     /// Attempts to convert this string into an `AsciiText`.
