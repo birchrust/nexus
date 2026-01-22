@@ -16,19 +16,17 @@
 //! // Layout: 42 bits timestamp, 6 bits worker, 16 bits sequence (65k/ms)
 //! type ClOrdId = Snowflake64<42, 6, 16>;
 //!
-//! fn main() {
-//!     let epoch = Instant::now();
-//!     let mut id_gen = ClOrdId::new(5, epoch);
+//! let epoch = Instant::now();
+//! let mut id_gen = ClOrdId::new(5, epoch);
 //!
-//!     // In event loop - snap once per tick
-//!     let now = Instant::now();
-//!     let id: u64 = id_gen.next(now).unwrap();
+//! // In event loop - snap once per tick
+//! let now = Instant::now();
+//! let id: u64 = id_gen.next(now).unwrap();
 //!
-//!     // Unpack to inspect
-//!     let (ts, worker, seq) = ClOrdId::unpack(id);
-//!     assert_eq!(worker, 5);
-//!     assert_eq!(seq, 0);
-//! }
+//! // Unpack to inspect
+//! let (ts, worker, seq) = ClOrdId::unpack(id);
+//! assert_eq!(worker, 5);
+//! assert_eq!(seq, 0);
 //! ```
 //!
 //! # Bit Layout
@@ -169,13 +167,11 @@ impl std::error::Error for SequenceExhausted {}
 /// // 42 bits timestamp, 6 bits worker, 16 bits sequence
 /// type TradingId = Snowflake64<42, 6, 16>;
 ///
-/// fn main() {
-///     let epoch = Instant::now();
-///     let mut id_gen = TradingId::new(5, epoch);
+/// let epoch = Instant::now();
+/// let mut id_gen = TradingId::new(5, epoch);
 ///
-///     let now = Instant::now();
-///     let id: u64 = id_gen.next(now).unwrap();
-/// }
+/// let now = Instant::now();
+/// let id: u64 = id_gen.next(now).unwrap();
 /// ```
 pub struct Snowflake<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> {
     epoch: Instant,
@@ -228,10 +224,8 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     ///
     /// type MyId = Snowflake64<42, 6, 16>;
     ///
-    /// fn main() {
-    ///     // Worker 5, epoch is now
-    ///     let mut id_gen = MyId::new(5, Instant::now());
-    /// }
+    /// // Worker 5, epoch is now
+    /// let mut id_gen = MyId::new(5, Instant::now());
     /// ```
     pub fn new(worker: u64, epoch: Instant) -> Self {
         // Trigger compile-time validation
@@ -276,17 +270,15 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     ///
     /// type MyId = Snowflake64<42, 6, 16>;
     ///
-    /// fn main() {
-    ///     let epoch = Instant::now();
-    ///     let mut id_gen = MyId::new(5, epoch);
+    /// let epoch = Instant::now();
+    /// let mut id_gen = MyId::new(5, epoch);
     ///
-    ///     // Snap time once per event loop iteration
-    ///     let now = Instant::now();
+    /// // Snap time once per event loop iteration
+    /// let now = Instant::now();
     ///
-    ///     // Generate IDs using that instant
-    ///     let id1 = id_gen.next(now).unwrap();
-    ///     let id2 = id_gen.next(now).unwrap();
-    /// }
+    /// // Generate IDs using that instant
+    /// let id1 = id_gen.next(now).unwrap();
+    /// let id2 = id_gen.next(now).unwrap();
     /// ```
     pub fn next(&mut self, now: Instant) -> Result<T, SequenceExhausted> {
         // Note: We tested `(as_nanos() as u64) >> 20` to avoid division, but
@@ -337,20 +329,15 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     ///
     /// ```rust
     /// use std::time::Instant;
-    /// use nohash::IntMap;
     /// use nexus_id::Snowflake64;
     ///
     /// type OrderId = Snowflake64<42, 6, 16>;
     ///
     /// let epoch = Instant::now();
-    /// let mut gen = OrderId::new(0, epoch);
+    /// let mut id_gen = OrderId::new(0, epoch);
     ///
     /// // Generate mixed IDs - safe with identity hasher
-    /// let id = gen.mixed(Instant::now()).unwrap();
-    ///
-    /// // Can use with nohash for fast lookups
-    /// let mut orders: IntMap<u64, Order> = IntMap::default();
-    /// orders.insert(id, order);
+    /// let id = id_gen.mixed(Instant::now()).unwrap();
     /// ```
     pub fn mixed(&mut self, now: Instant) -> Result<T, SequenceExhausted> {
         let raw = self.next(now)?;
@@ -366,16 +353,14 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     ///
     /// type MyId = Snowflake64<42, 6, 16>;
     ///
-    /// fn main() {
-    ///     let epoch = Instant::now();
-    ///     let mut id_gen = MyId::new(5, epoch);
+    /// let epoch = Instant::now();
+    /// let mut id_gen = MyId::new(5, epoch);
     ///
-    ///     let id = id_gen.next(epoch).unwrap();
-    ///     let (ts, worker, seq) = MyId::unpack(id);
+    /// let id = id_gen.next(epoch).unwrap();
+    /// let (ts, worker, seq) = MyId::unpack(id);
     ///
-    ///     assert_eq!(worker, 5);
-    ///     assert_eq!(seq, 0);
-    /// }
+    /// assert_eq!(worker, 5);
+    /// assert_eq!(seq, 0);
     /// ```
     pub fn unpack(id: T) -> (u64, u64, u64) {
         let raw = id.to_raw();
@@ -432,7 +417,7 @@ pub type SnowflakeSigned64<const TS: u8, const WK: u8, const SQ: u8> = Snowflake
 #[inline(always)]
 const fn stafford_mix(mut x: u64) -> u64 {
     x ^= x >> 33;
-    x = x.wrapping_mul(0xFF51AFD7ED558CCD);
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
     x ^= x >> 33;
     x
 }
@@ -518,7 +503,7 @@ mod tests {
 
         // Check uniqueness
         let mut sorted = ids.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len());
     }

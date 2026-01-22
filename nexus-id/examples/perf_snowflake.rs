@@ -25,7 +25,7 @@ fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
+        std::arch::x86_64::__rdtscp(&raw mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -51,7 +51,7 @@ impl Stats {
 
     fn print(&self, name: &str) {
         println!("{}:", name);
-        if self.next_same_ts.len() > 0 {
+        if !self.next_same_ts.is_empty() {
             println!(
                 "  next (same ts): p50={:>4}  p99={:>4}  p999={:>5}  max={:>8}  (n={})",
                 self.next_same_ts.value_at_quantile(0.50),
@@ -61,7 +61,7 @@ impl Stats {
                 self.next_same_ts.len()
             );
         }
-        if self.next_new_ts.len() > 0 {
+        if !self.next_new_ts.is_empty() {
             println!(
                 "  next (new ts):  p50={:>4}  p99={:>4}  p999={:>5}  max={:>8}  (n={})",
                 self.next_new_ts.value_at_quantile(0.50),
@@ -71,7 +71,7 @@ impl Stats {
                 self.next_new_ts.len()
             );
         }
-        if self.unpack.len() > 0 {
+        if !self.unpack.is_empty() {
             println!(
                 "  unpack:         p50={:>4}  p99={:>4}  p999={:>5}  max={:>8}  (n={})",
                 self.unpack.value_at_quantile(0.50),
@@ -288,6 +288,7 @@ fn bench_snowflake32() -> Stats {
 fn bench_realistic_trading() -> Stats {
     type TradingId = Snowflake64<42, 6, 16>;
     const SEQ_MAX: u64 = TradingId::SEQUENCE_MAX;
+    const BURST_SIZE: u64 = 50; // Average orders per ms burst
 
     let epoch = Instant::now();
     let mut id_gen = TradingId::new(5, epoch);
@@ -297,7 +298,6 @@ fn bench_realistic_trading() -> Stats {
     // Track sequence to advance time before overflow
     let mut current_ms = 0u64;
     let mut seq_in_ms = 0u64;
-    const BURST_SIZE: u64 = 50; // Average orders per ms burst
 
     for i in 0..OPERATIONS {
         // Advance time if we'd overflow OR every BURST_SIZE to simulate time passing

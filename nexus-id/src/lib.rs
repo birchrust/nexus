@@ -2,18 +2,29 @@
 //!
 //! # Overview
 //!
-//! `nexus-id` provides time-ordered, extractable unique ID generation based on
-//! the Snowflake algorithm, optimized for trading systems and other latency-sensitive
-//! applications.
+//! `nexus-id` provides unique ID generation optimized for trading systems and
+//! other latency-sensitive applications. All generators avoid syscalls on the
+//! hot path and produce stack-allocated output.
 //!
-//! | Generator | Speed | Time-ordered | Extractable | Hash Quality |
-//! |-----------|-------|--------------|-------------|--------------|
-//! | [`Snowflake64`] | ~26-28 cycles | Yes | Yes | Poor* |
-//! | [`Snowflake32`] | ~26-28 cycles | Yes | Yes | Poor* |
+//! | Generator | Speed | Time-ordered | Output | Use Case |
+//! |-----------|-------|--------------|--------|----------|
+//! | [`Snowflake64`] | ~26 cycles | Yes | `u64` | Numeric IDs with extraction |
+//! | [`Snowflake32`] | ~26 cycles | Yes | `u32` | Compact numeric IDs |
+//! | [`UuidV4`] | ~35 cycles | No | [`Uuid`] | Random unique IDs |
+//! | [`UuidV7`] | ~45 cycles | Yes | [`Uuid`] | Time-ordered UUIDs |
+//! | [`UlidGenerator`] | ~45 cycles | Yes | [`Ulid`] | Sortable 26-char IDs |
 //!
-//! *Snowflake IDs have clustered bit patterns. Use [`FxHash`] or [`AHash`] for
-//! HashMap keys, not identity hashers. A future `mixed()` variant will provide
-//! good distribution for identity hasher compatibility.
+//! # ID Encoding Types
+//!
+//! These types encode integer values into various string formats:
+//!
+//! | Type | Method | Description |
+//! |------|--------|-------------|
+//! | [`HexId64`] | `HexId64::encode(u64)` | 16-char lowercase hex |
+//! | [`Base62Id`] | `Base62Id::encode(u64)` | 11-char alphanumeric (0-9, A-Z, a-z) |
+//! | [`Base36Id`] | `Base36Id::encode(u64)` | 13-char case-insensitive (0-9, a-z) |
+//!
+//! All types support `decode()` to recover the original value.
 //!
 //! # Why Snowflake?
 //!
@@ -36,16 +47,14 @@
 //! // Supports 65,536 IDs per millisecond per worker
 //! type ClOrdId = Snowflake64<42, 6, 16>;
 //!
-//! fn main() {
-//!     let epoch = Instant::now();
-//!     let mut generator = ClOrdId::new(5, epoch);  // worker 5
+//! let epoch = Instant::now();
+//! let mut generator = ClOrdId::new(5, epoch);  // worker 5
 //!
-//!     let id: u64 = generator.next(Instant::now()).unwrap();
+//! let id: u64 = generator.next(Instant::now()).unwrap();
 //!
-//!     // Can extract components
-//!     let (ts, worker, seq) = ClOrdId::unpack(id);
-//!     assert_eq!(worker, 5);
-//! }
+//! // Can extract components
+//! let (ts, worker, seq) = ClOrdId::unpack(id);
+//! assert_eq!(worker, 5);
 //! ```
 //!
 //! # Bit Layout Selection
@@ -97,9 +106,17 @@
 //! }
 //! ```
 
+pub(crate) mod encode;
+mod prng;
 mod snowflake;
+mod types;
+pub mod ulid;
+pub mod uuid;
 
 pub use snowflake::{
     IdInt, SequenceExhausted, Snowflake, Snowflake32, Snowflake64, SnowflakeSigned32,
     SnowflakeSigned64,
 };
+pub use types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
+pub use ulid::UlidGenerator;
+pub use uuid::{UuidV4, UuidV7};

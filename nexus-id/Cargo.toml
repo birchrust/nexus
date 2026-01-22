@@ -13,6 +13,10 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+nexus-ascii = "1.3"
+getrandom = "0.2"
+
 [dev-dependencies]
 hdrhistogram = "7.5"
 rustc-hash = "2"
@@ -24,5 +28,9 @@ harness = false
 
 [[example]]
 name = "perf_id_hashing"
+harness = false
+
+[[example]]
+name = "perf_uuid"
 harness = false
 
