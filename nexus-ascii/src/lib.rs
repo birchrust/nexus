@@ -40,6 +40,7 @@ mod char;
 mod str_ref;
 mod string;
 mod text;
+mod text_ref;
 
 pub mod hash;
 
@@ -48,6 +49,7 @@ pub use char::{AsciiChar, InvalidAsciiChar};
 pub use str_ref::AsciiStr;
 pub use string::AsciiString;
 pub use text::AsciiText;
+pub use text_ref::AsciiTextStr;
 
 // =============================================================================
 // Type Aliases

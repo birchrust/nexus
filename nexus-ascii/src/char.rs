@@ -597,6 +597,64 @@ impl TryFrom<char> for AsciiChar {
 }
 
 // =============================================================================
+// Serde Support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for AsciiChar {
+    /// Serializes the ASCII character as a single-character string.
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_char(self.as_char())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for AsciiChar {
+    /// Deserializes a character into an ASCII character.
+    ///
+    /// Returns an error if the character is not ASCII (> 127).
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AsciiCharVisitor;
+
+        impl serde::de::Visitor<'_> for AsciiCharVisitor {
+            type Value = AsciiChar;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                formatter.write_str("an ASCII character")
+            }
+
+            #[inline]
+            fn visit_char<E: serde::de::Error>(self, v: char) -> Result<Self::Value, E> {
+                AsciiChar::from_char(v)
+                    .map_err(|_| E::custom(format_args!("character '{}' is not ASCII", v)))
+            }
+
+            #[inline]
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                let mut chars = v.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => self.visit_char(c),
+                    _ => Err(E::custom("expected a single ASCII character")),
+                }
+            }
+
+            #[inline]
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                if v > 127 {
+                    Err(E::custom(format_args!("byte value {} is not ASCII", v)))
+                } else {
+                    // SAFETY: We just verified v <= 127
+                    Ok(unsafe { AsciiChar::new_unchecked(v as u8) })
+                }
+            }
+        }
+
+        deserializer.deserialize_char(AsciiCharVisitor)
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

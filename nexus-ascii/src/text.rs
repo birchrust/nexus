@@ -4,6 +4,7 @@ use core::hash::{Hash, Hasher};
 
 use crate::str_ref::AsciiStr;
 use crate::string::AsciiString;
+use crate::text_ref::AsciiTextStr;
 use crate::AsciiError;
 
 // =============================================================================
@@ -17,12 +18,12 @@ const fn is_printable(b: u8) -> bool {
 }
 
 /// Validate that all bytes are printable ASCII (0x20-0x7E).
-/// Returns Ok(()) if valid, or Err((byte, pos)) for the first non-printable byte.
+/// Returns Ok(()) if valid, or Err with the first non-printable byte.
 #[inline]
-fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
+pub(crate) fn validate_printable(bytes: &[u8]) -> Result<(), AsciiError> {
     for (i, &b) in bytes.iter().enumerate() {
         if !is_printable(b) {
-            return Err((b, i));
+            return Err(AsciiError::NonPrintable { byte: b, pos: i });
         }
     }
     Ok(())
@@ -176,9 +177,7 @@ impl<const CAP: usize> AsciiText<CAP> {
             });
         }
 
-        if let Err((byte, pos)) = validate_printable(bytes) {
-            return Err(AsciiError::NonPrintable { byte, pos });
-        }
+        validate_printable(bytes)?;
 
         // SAFETY: Printable ASCII is a subset of ASCII, so from_bytes_unchecked is safe
         Ok(Self(unsafe { AsciiString::from_bytes_unchecked(bytes) }))
@@ -252,9 +251,7 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// ```
     #[inline]
     pub fn try_from_ascii_string(s: AsciiString<CAP>) -> Result<Self, AsciiError> {
-        if let Err((byte, pos)) = validate_printable(s.as_bytes()) {
-            return Err(AsciiError::NonPrintable { byte, pos });
-        }
+        validate_printable(s.as_bytes())?;
         Ok(Self(s))
     }
 }
@@ -288,6 +285,28 @@ impl<const CAP: usize> AsciiText<CAP> {
     #[must_use]
     pub const fn as_ascii_string(&self) -> &AsciiString<CAP> {
         &self.0
+    }
+
+    /// Returns this text as a borrowed [`AsciiTextStr`].
+    ///
+    /// This is a zero-copy conversion that provides a DST view into the
+    /// validated printable ASCII data.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiText, AsciiTextStr};
+    ///
+    /// let text: AsciiText<32> = AsciiText::try_from("Hello")?;
+    /// let text_str: &AsciiTextStr = text.as_ascii_text_str();
+    /// assert_eq!(text_str.len(), 5);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn as_ascii_text_str(&self) -> &AsciiTextStr {
+        // SAFETY: AsciiText guarantees all bytes are printable ASCII
+        unsafe { AsciiTextStr::from_bytes_unchecked(self.0.as_bytes()) }
     }
 }
 
@@ -466,6 +485,129 @@ impl<const CAP: usize> AsRef<AsciiString<CAP>> for AsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &AsciiString<CAP> {
         &self.0
+    }
+}
+
+// =============================================================================
+// Serde Support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "serde")]
+impl<const CAP: usize> serde::Serialize for AsciiText<CAP> {
+    /// Serializes the ASCII text as a string.
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, const CAP: usize> serde::Deserialize<'de> for AsciiText<CAP> {
+    /// Deserializes a string into an ASCII text.
+    ///
+    /// Returns an error if:
+    /// - The string is longer than `CAP`
+    /// - The string contains non-printable ASCII (< 0x20 or > 0x7E)
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AsciiTextVisitor<const CAP: usize>;
+
+        impl<const CAP: usize> serde::de::Visitor<'_> for AsciiTextVisitor<CAP> {
+            type Value = AsciiText<CAP>;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                write!(
+                    formatter,
+                    "a printable ASCII string with at most {} bytes",
+                    CAP
+                )
+            }
+
+            #[inline]
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                AsciiText::try_from_str(v).map_err(|e| match e {
+                    crate::AsciiError::TooLong { len, cap } => E::custom(format_args!(
+                        "string length {} exceeds capacity {}",
+                        len, cap
+                    )),
+                    crate::AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
+                        "invalid ASCII byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                    crate::AsciiError::NonPrintable { byte, pos } => E::custom(format_args!(
+                        "non-printable byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                })
+            }
+
+            #[inline]
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                AsciiText::try_from_bytes(v).map_err(|e| match e {
+                    crate::AsciiError::TooLong { len, cap } => E::custom(format_args!(
+                        "byte slice length {} exceeds capacity {}",
+                        len, cap
+                    )),
+                    crate::AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
+                        "invalid ASCII byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                    crate::AsciiError::NonPrintable { byte, pos } => E::custom(format_args!(
+                        "non-printable byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                })
+            }
+        }
+
+        deserializer.deserialize_str(AsciiTextVisitor)
+    }
+}
+
+// =============================================================================
+// Bytes Crate Support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> From<AsciiText<CAP>> for bytes::Bytes {
+    /// Converts an ASCII text into `Bytes`.
+    #[inline]
+    fn from(s: AsciiText<CAP>) -> Self {
+        bytes::Bytes::copy_from_slice(s.as_bytes())
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> From<&AsciiText<CAP>> for bytes::Bytes {
+    /// Converts a reference to an ASCII text into `Bytes`.
+    #[inline]
+    fn from(s: &AsciiText<CAP>) -> Self {
+        bytes::Bytes::copy_from_slice(s.as_bytes())
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> TryFrom<bytes::Bytes> for AsciiText<CAP> {
+    type Error = crate::AsciiError;
+
+    /// Attempts to create an ASCII text from `Bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes exceed capacity or contain non-printable characters.
+    #[inline]
+    fn try_from(bytes: bytes::Bytes) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(&bytes)
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> TryFrom<&bytes::Bytes> for AsciiText<CAP> {
+    type Error = crate::AsciiError;
+
+    /// Attempts to create an ASCII text from a `Bytes` reference.
+    #[inline]
+    fn try_from(bytes: &bytes::Bytes) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(bytes.as_ref())
     }
 }
 

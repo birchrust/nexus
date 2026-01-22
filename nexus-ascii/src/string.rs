@@ -1165,18 +1165,15 @@ impl<'a> Iterator for Split<'a> {
             return None;
         }
 
-        match self.remainder.iter().position(|&b| b == self.delimiter) {
-            Some(pos) => {
-                let part = &self.remainder[..pos];
-                self.remainder = &self.remainder[pos + 1..];
-                // SAFETY: part is a slice of valid ASCII bytes
-                Some(unsafe { AsciiStr::from_bytes_unchecked(part) })
-            }
-            None => {
-                self.finished = true;
-                // SAFETY: remainder is valid ASCII bytes
-                Some(unsafe { AsciiStr::from_bytes_unchecked(self.remainder) })
-            }
+        if let Some(pos) = self.remainder.iter().position(|&b| b == self.delimiter) {
+            let part = &self.remainder[..pos];
+            self.remainder = &self.remainder[pos + 1..];
+            // SAFETY: part is a slice of valid ASCII bytes
+            Some(unsafe { AsciiStr::from_bytes_unchecked(part) })
+        } else {
+            self.finished = true;
+            // SAFETY: remainder is valid ASCII bytes
+            Some(unsafe { AsciiStr::from_bytes_unchecked(self.remainder) })
         }
     }
 }
@@ -1356,7 +1353,7 @@ impl<const CAP: usize> AsciiString<CAP> {
             .rposition(|&b| !b.is_ascii_whitespace())
             .map_or(0, |i| i + 1);
 
-        let new_len = if start >= end { 0 } else { end - start };
+        let new_len = end.saturating_sub(start);
         let mut data = [0u8; CAP];
         data[..new_len].copy_from_slice(&bytes[start..end]);
 
@@ -1602,9 +1599,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let src = self.as_bytes();
 
         // Find first occurrence
-        let pos = match src.windows(from.len()).position(|w| w == from) {
-            Some(p) => p,
-            None => return Ok(*self),
+        let Some(pos) = src.windows(from.len()).position(|w| w == from) else {
+            return Ok(*self);
         };
 
         // Calculate new length
@@ -1908,6 +1904,137 @@ impl<const CAP: usize> AsRef<[u8]> for AsciiString<CAP> {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
+    }
+}
+
+// =============================================================================
+// Serde Support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "serde")]
+impl<const CAP: usize> serde::Serialize for AsciiString<CAP> {
+    /// Serializes the ASCII string as a string.
+    ///
+    /// This is a zero-cost serialization since ASCII is valid UTF-8.
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, const CAP: usize> serde::Deserialize<'de> for AsciiString<CAP> {
+    /// Deserializes a string into an ASCII string.
+    ///
+    /// Returns an error if:
+    /// - The string is longer than `CAP`
+    /// - The string contains non-ASCII bytes
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AsciiStringVisitor<const CAP: usize>;
+
+        impl<const CAP: usize> serde::de::Visitor<'_> for AsciiStringVisitor<CAP> {
+            type Value = AsciiString<CAP>;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                write!(formatter, "an ASCII string with at most {} bytes", CAP)
+            }
+
+            #[inline]
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                AsciiString::try_from_str(v).map_err(|e| match e {
+                    AsciiError::TooLong { len, cap } => E::custom(format_args!(
+                        "string length {} exceeds capacity {}",
+                        len, cap
+                    )),
+                    AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
+                        "invalid ASCII byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                    AsciiError::NonPrintable { byte, pos } => E::custom(format_args!(
+                        "non-printable byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                })
+            }
+
+            #[inline]
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                AsciiString::try_from_bytes(v).map_err(|e| match e {
+                    AsciiError::TooLong { len, cap } => E::custom(format_args!(
+                        "byte slice length {} exceeds capacity {}",
+                        len, cap
+                    )),
+                    AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
+                        "invalid ASCII byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                    AsciiError::NonPrintable { byte, pos } => E::custom(format_args!(
+                        "non-printable byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                })
+            }
+        }
+
+        deserializer.deserialize_str(AsciiStringVisitor)
+    }
+}
+
+// =============================================================================
+// Bytes Crate Support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> From<AsciiString<CAP>> for bytes::Bytes {
+    /// Converts an ASCII string into `Bytes`.
+    ///
+    /// This copies the string data into a new `Bytes` buffer.
+    #[inline]
+    fn from(s: AsciiString<CAP>) -> Self {
+        bytes::Bytes::copy_from_slice(s.as_bytes())
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> From<&AsciiString<CAP>> for bytes::Bytes {
+    /// Converts a reference to an ASCII string into `Bytes`.
+    ///
+    /// This copies the string data into a new `Bytes` buffer.
+    #[inline]
+    fn from(s: &AsciiString<CAP>) -> Self {
+        bytes::Bytes::copy_from_slice(s.as_bytes())
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> TryFrom<bytes::Bytes> for AsciiString<CAP> {
+    type Error = AsciiError;
+
+    /// Attempts to create an ASCII string from `Bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::TooLong`] if the bytes exceed capacity.
+    /// Returns [`AsciiError::InvalidByte`] if any byte is > 127.
+    #[inline]
+    fn try_from(bytes: bytes::Bytes) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(&bytes)
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl<const CAP: usize> TryFrom<&bytes::Bytes> for AsciiString<CAP> {
+    type Error = AsciiError;
+
+    /// Attempts to create an ASCII string from a `Bytes` reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::TooLong`] if the bytes exceed capacity.
+    /// Returns [`AsciiError::InvalidByte`] if any byte is > 127.
+    #[inline]
+    fn try_from(bytes: &bytes::Bytes) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(bytes.as_ref())
     }
 }
 
@@ -3401,5 +3528,109 @@ mod tests {
         assert_eq!(map.len(), 2, "HashMap should have 2 entries, not 1");
         assert_eq!(map.get(&real), Some(&1));
         assert_eq!(map.get(&fake), Some(&2));
+    }
+
+    // =========================================================================
+    // Serde tests
+    // =========================================================================
+
+    #[cfg(feature = "serde")]
+    mod serde_tests {
+        use super::*;
+
+        #[test]
+        fn serialize_json() {
+            let s: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
+            let json = serde_json::to_string(&s).unwrap();
+            assert_eq!(json, "\"BTC-USD\"");
+        }
+
+        #[test]
+        fn deserialize_json() {
+            let s: AsciiString<32> = serde_json::from_str("\"BTC-USD\"").unwrap();
+            assert_eq!(s.as_str(), "BTC-USD");
+        }
+
+        #[test]
+        fn deserialize_json_empty() {
+            let s: AsciiString<32> = serde_json::from_str("\"\"").unwrap();
+            assert!(s.is_empty());
+        }
+
+        #[test]
+        fn deserialize_json_too_long() {
+            let result: Result<AsciiString<4>, _> = serde_json::from_str("\"hello\"");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("exceeds capacity"));
+        }
+
+        #[test]
+        fn deserialize_json_non_ascii() {
+            let result: Result<AsciiString<32>, _> = serde_json::from_str("\"héllo\"");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("invalid ASCII"));
+        }
+
+        #[test]
+        fn roundtrip_json() {
+            let original: AsciiString<32> = AsciiString::try_from("test-123").unwrap();
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: AsciiString<32> = serde_json::from_str(&json).unwrap();
+            assert_eq!(original, restored);
+        }
+    }
+
+    // =========================================================================
+    // Bytes crate tests
+    // =========================================================================
+
+    #[cfg(feature = "bytes")]
+    mod bytes_tests {
+        use super::*;
+        use bytes::Bytes;
+
+        #[test]
+        fn into_bytes() {
+            let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+            let b: Bytes = s.into();
+            assert_eq!(&b[..], b"hello");
+        }
+
+        #[test]
+        fn ref_into_bytes() {
+            let s: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+            let b: Bytes = (&s).into();
+            assert_eq!(&b[..], b"hello");
+        }
+
+        #[test]
+        fn try_from_bytes() {
+            let b = Bytes::from_static(b"hello");
+            let s: AsciiString<32> = AsciiString::try_from(b).unwrap();
+            assert_eq!(s.as_str(), "hello");
+        }
+
+        #[test]
+        fn try_from_bytes_ref() {
+            let b = Bytes::from_static(b"hello");
+            let s: AsciiString<32> = AsciiString::try_from(&b).unwrap();
+            assert_eq!(s.as_str(), "hello");
+        }
+
+        #[test]
+        fn try_from_bytes_too_long() {
+            let b = Bytes::from_static(b"hello world");
+            let result: Result<AsciiString<4>, _> = AsciiString::try_from(b);
+            assert!(matches!(result, Err(AsciiError::TooLong { .. })));
+        }
+
+        #[test]
+        fn try_from_bytes_non_ascii() {
+            let b = Bytes::from_static(&[0xFF, 0x80]);
+            let result: Result<AsciiString<32>, _> = AsciiString::try_from(b);
+            assert!(matches!(result, Err(AsciiError::InvalidByte { .. })));
+        }
     }
 }

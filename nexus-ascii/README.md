@@ -129,6 +129,56 @@ For typical workloads (< 1M unique strings), collisions are effectively impossib
 |---------|-------------|
 | `std` (default) | Enable `std::error::Error` impls and `TryFrom<String>` |
 | `nohash` | Enable nohash-hasher support for identity hashing (implies `std`) |
+| `serde` | Enable `Serialize`/`Deserialize` for all types |
+| `bytes` | Enable conversion to/from `bytes::Bytes` (implies `std`) |
+
+## Serde Support
+
+Enable the `serde` feature for serialization:
+
+```toml
+[dependencies]
+nexus-ascii = { version = "1.2", features = ["serde"] }
+```
+
+```rust
+use nexus_ascii::AsciiString;
+
+let symbol: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+
+// Serialize as string
+let json = serde_json::to_string(&symbol)?; // "\"BTC-USD\""
+
+// Deserialize with validation
+let restored: AsciiString<32> = serde_json::from_str(&json)?;
+```
+
+Deserialization returns an error (not panic) if:
+- The string exceeds capacity
+- The string contains non-ASCII bytes
+- For `AsciiText`, the string contains non-printable characters
+
+## Bytes Crate Integration
+
+Enable the `bytes` feature for async I/O integration:
+
+```toml
+[dependencies]
+nexus-ascii = { version = "1.2", features = ["bytes"] }
+```
+
+```rust
+use nexus_ascii::AsciiString;
+use bytes::Bytes;
+
+let symbol: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+
+// Convert to Bytes
+let b: Bytes = symbol.into();
+
+// Convert from Bytes (with validation)
+let restored: AsciiString<32> = AsciiString::try_from(b)?;
+```
 
 ## `no_std` Support
 

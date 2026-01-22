@@ -758,6 +758,83 @@ impl AsRef<str> for AsciiStr {
 }
 
 // =============================================================================
+// Serde Support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for AsciiStr {
+    /// Serializes the ASCII string slice as a string.
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// Zero-copy deserialization for borrowed ASCII strings.
+///
+/// This implementation allows deserializing `&'de AsciiStr` directly from the
+/// input data without copying, when the deserializer supports borrowing
+/// (e.g., `serde_json` with `&str` input).
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::AsciiStr;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Message<'a> {
+///     #[serde(borrow)]
+///     symbol: &'a AsciiStr,
+/// }
+///
+/// let json = r#"{"symbol": "BTC-USD"}"#;
+/// let msg: Message = serde_json::from_str(json).unwrap();
+/// assert_eq!(msg.symbol.as_str(), "BTC-USD");
+/// ```
+#[cfg(feature = "serde")]
+impl<'de: 'a, 'a> serde::Deserialize<'de> for &'a AsciiStr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AsciiStrVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for AsciiStrVisitor {
+            type Value = &'de AsciiStr;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                formatter.write_str("a borrowed ASCII string")
+            }
+
+            #[inline]
+            fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+                AsciiStr::try_from_str(v).map_err(|e| match e {
+                    AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
+                        "invalid ASCII byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                    _ => E::custom("invalid ASCII"),
+                })
+            }
+
+            #[inline]
+            fn visit_borrowed_bytes<E: serde::de::Error>(
+                self,
+                v: &'de [u8],
+            ) -> Result<Self::Value, E> {
+                AsciiStr::try_from_bytes(v).map_err(|e| match e {
+                    AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
+                        "invalid ASCII byte 0x{:02X} at position {}",
+                        byte, pos
+                    )),
+                    _ => E::custom("invalid ASCII"),
+                })
+            }
+        }
+
+        deserializer.deserialize_str(AsciiStrVisitor)
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -983,5 +1060,47 @@ mod tests {
         s2.hash(&mut h2);
 
         assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[cfg(feature = "serde")]
+    mod serde_tests {
+        use super::*;
+        use serde::Deserialize;
+
+        #[test]
+        fn serialize() {
+            let s = AsciiStr::try_from_bytes(b"BTC-USD").unwrap();
+            let json = serde_json::to_string(&s).unwrap();
+            assert_eq!(json, "\"BTC-USD\"");
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct BorrowedMessage<'a> {
+            #[serde(borrow)]
+            symbol: &'a AsciiStr,
+        }
+
+        #[test]
+        fn deserialize_borrowed() {
+            let json = r#"{"symbol": "BTC-USD"}"#;
+            let msg: BorrowedMessage = serde_json::from_str(json).unwrap();
+            assert_eq!(msg.symbol.as_str(), "BTC-USD");
+        }
+
+        #[test]
+        fn deserialize_borrowed_empty() {
+            let json = r#"{"symbol": ""}"#;
+            let msg: BorrowedMessage = serde_json::from_str(json).unwrap();
+            assert!(msg.symbol.is_empty());
+        }
+
+        #[test]
+        fn deserialize_borrowed_non_ascii() {
+            let json = r#"{"symbol": "héllo"}"#;
+            let result: Result<BorrowedMessage, _> = serde_json::from_str(json);
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("invalid ASCII"));
+        }
     }
 }
