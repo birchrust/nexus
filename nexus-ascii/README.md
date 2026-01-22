@@ -56,13 +56,33 @@ let short: AsciiString8 = AsciiString8::try_from("BTC")?;
 let symbol: AsciiString32 = AsciiString32::try_from("BTC-USD-PERP")?;
 ```
 
+## String Operations
+
+```rust
+use nexus_ascii::AsciiString;
+
+let symbol: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
+
+// Case-insensitive comparison
+let other: AsciiString<32> = AsciiString::try_from("btc-usd")?;
+assert!(symbol.eq_ignore_ascii_case(&other));
+
+// Case conversion (returns new string)
+let upper = symbol.to_ascii_uppercase();
+let lower = symbol.to_ascii_lowercase();
+
+// Validation helpers
+assert!(!symbol.contains_control_chars());
+assert!(symbol.is_all_printable());
+```
+
 ## nohash-hasher Support
 
 Enable the `nohash` feature for optimal HashMap performance:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.0", features = ["nohash"] }
+nexus-ascii = { version = "1.3", features = ["nohash"] }
 ```
 
 ```rust
@@ -138,7 +158,7 @@ Enable the `serde` feature for serialization:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.2", features = ["serde"] }
+nexus-ascii = { version = "1.3", features = ["serde"] }
 ```
 
 ```rust
@@ -164,7 +184,7 @@ Enable the `bytes` feature for async I/O integration:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.2", features = ["bytes"] }
+nexus-ascii = { version = "1.3", features = ["bytes"] }
 ```
 
 ```rust
@@ -186,7 +206,7 @@ This crate is `no_std` compatible. Disable default features to use in `no_std` e
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.0", default-features = false }
+nexus-ascii = { version = "1.3", default-features = false }
 ```
 
 Note: Without `std`, `Error` trait impls and `TryFrom<String>` conversions are unavailable.
