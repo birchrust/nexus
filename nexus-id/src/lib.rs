@@ -8,115 +8,109 @@
 //!
 //! | Generator | Speed | Time-ordered | Output | Use Case |
 //! |-----------|-------|--------------|--------|----------|
-//! | [`Snowflake64`] | ~26 cycles | Yes | `u64` | Numeric IDs with extraction |
-//! | [`Snowflake32`] | ~26 cycles | Yes | `u32` | Compact numeric IDs |
+//! | [`Snowflake64`] | ~26 cycles | Yes | [`SnowflakeId64`] | Numeric IDs with extraction |
+//! | [`Snowflake32`] | ~26 cycles | Yes | [`SnowflakeId32`] | Compact numeric IDs |
 //! | [`UuidV4`] | ~35 cycles | No | [`Uuid`] | Random unique IDs |
 //! | [`UuidV7`] | ~45 cycles | Yes | [`Uuid`] | Time-ordered UUIDs |
 //! | [`UlidGenerator`] | ~45 cycles | Yes | [`Ulid`] | Sortable 26-char IDs |
 //!
-//! # ID Encoding Types
+//! # ID Types
 //!
-//! These types encode integer values into various string formats:
+//! | Type | Format | Use Case |
+//! |------|--------|----------|
+//! | [`SnowflakeId64`] | Packed u64 | Numeric IDs with field extraction |
+//! | [`MixedId64`] | Fibonacci-mixed u64 | Identity hasher-safe keys |
+//! | [`Uuid`] | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` | Standard UUIDs |
+//! | [`UuidCompact`] | 32-char hex | Compact UUIDs |
+//! | [`Ulid`] | 26-char Crockford Base32 | Sortable string IDs |
+//! | [`HexId64`] | 16-char hex | Hex-encoded u64 |
+//! | [`Base62Id`] | 11-char alphanumeric | Short encoded u64 |
+//! | [`Base36Id`] | 13-char alphanumeric | Case-insensitive u64 |
+//! | [`TypeId`] | `prefix_suffix` | Domain-typed sortable IDs |
 //!
-//! | Type | Method | Description |
-//! |------|--------|-------------|
-//! | [`HexId64`] | `HexId64::encode(u64)` | 16-char lowercase hex |
-//! | [`Base62Id`] | `Base62Id::encode(u64)` | 11-char alphanumeric (0-9, A-Z, a-z) |
-//! | [`Base36Id`] | `Base36Id::encode(u64)` | 13-char case-insensitive (0-9, a-z) |
+//! # Parsing
 //!
-//! All types support `decode()` to recover the original value.
-//!
-//! # Why Snowflake?
-//!
-//! Snowflake embeds a timestamp in every ID, which provides critical guarantees:
-//!
-//! - **Burst safety:** Sequence exhaustion returns an error rather than silent collision
-//! - **Restart safety:** New run = new timestamp = no collision with previous IDs
-//! - **Flow control:** Natural backpressure when generating too fast
-//!
-//! These properties are load-bearing for trading systems where a duplicate ClOrdID
-//! means rejected orders and potential position errors.
-//!
-//! # Usage
+//! All string types support parsing from strings:
 //!
 //! ```rust
-//! use std::time::Instant;
-//! use nexus_id::Snowflake64;
+//! use nexus_id::{Uuid, Ulid, HexId64};
 //!
-//! // Layout: 42 bits timestamp, 6 bits worker, 16 bits sequence
-//! // Supports 65,536 IDs per millisecond per worker
-//! type ClOrdId = Snowflake64<42, 6, 16>;
-//!
-//! let epoch = Instant::now();
-//! let mut generator = ClOrdId::new(5, epoch);  // worker 5
-//!
-//! let id: u64 = generator.next(Instant::now()).unwrap();
-//!
-//! // Can extract components
-//! let (ts, worker, seq) = ClOrdId::unpack(id);
-//! assert_eq!(worker, 5);
+//! let uuid: Uuid = "01234567-89ab-cdef-fedc-ba9876543210".parse().unwrap();
+//! let hex: HexId64 = "deadbeefcafebabe".parse().unwrap();
 //! ```
 //!
-//! # Bit Layout Selection
+//! # Snowflake ID Newtypes
 //!
-//! Choose your `<TS, W, S>` parameters based on your requirements:
+//! ```rust
+//! use nexus_id::{Snowflake64, SnowflakeId64, MixedId64};
 //!
-//! | Layout | Timestamp | Workers | Seq/ms | Use Case |
-//! |--------|-----------|---------|--------|----------|
-//! | `<42, 6, 16>` | 139 years | 64 | 65,536 | High-throughput trading |
-//! | `<41, 10, 12>` | 69 years | 1,024 | 4,096 | Twitter-style (many workers) |
-//! | `<42, 10, 12>` | 139 years | 1,024 | 4,096 | Balanced |
+//! let mut generator: Snowflake64<42, 6, 16> = Snowflake64::new(5);
+//!
+//! // Typed ID with field extraction
+//! let id: SnowflakeId64<42, 6, 16> = generator.next_id(0).unwrap();
+//! assert_eq!(id.worker(), 5);
+//! assert_eq!(id.sequence(), 0);
+//!
+//! // Mixed for identity hashers (Fibonacci multiply, ~1 cycle)
+//! let mixed: MixedId64<42, 6, 16> = id.mixed();
+//! let recovered = mixed.unmix();
+//! assert_eq!(recovered, id);
+//! ```
 //!
 //! # HashMap Usage
 //!
 //! Snowflake IDs have poor bit distribution for power-of-2 hash tables.
-//! Always use a real hasher:
+//! Use either a real hasher or the mixed ID type:
 //!
 //! ```rust, ignore
-//! use std::collections::HashMap;
-//! use rustc_hash::FxHashMap;  // or ahash::AHashMap
+//! use rustc_hash::FxHashMap;
 //!
-//! // ✗ Bad: identity hasher will have pathological collisions
-//! // let map: HashMap<u64, Order, nohash::BuildNoHashHasher<u64>> = ...;
+//! // Option 1: Use a real hasher with raw IDs
+//! let map: FxHashMap<SnowflakeId64<42, 6, 16>, Order> = FxHashMap::default();
 //!
-//! // ✓ Good: FxHash mixes the bits properly
-//! let map: FxHashMap<u64, Order> = FxHashMap::default();
+//! // Option 2: Use mixed IDs with identity hasher (fastest)
+//! let map: HashMap<MixedId64<42, 6, 16>, Order, nohash::BuildNoHashHasher<u64>> = ...;
 //! ```
 //!
-//! # Error Handling
+//! # Features
 //!
-//! [`Snowflake64::next`] returns `Err(SequenceExhausted)` if you exceed the
-//! per-millisecond sequence limit. This is intentional flow control - it
-//! prevents generating IDs faster than the timestamp can distinguish them.
-//!
-//! ```rust
-//! use nexus_id::{Snowflake64, SequenceExhausted};
-//! # use std::time::Instant;
-//!
-//! type Id = Snowflake64<42, 6, 16>;
-//!
-//! fn generate_id(generator: &mut Id, now: Instant) -> u64 {
-//!     match generator.next(now) {
-//!         Ok(id) => id,
-//!         Err(SequenceExhausted { .. }) => {
-//!             // Options: wait for next ms, use different worker, or propagate
-//!             panic!("ID generation rate exceeded");
-//!         }
-//!     }
-//! }
-//! ```
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `std` (default) | UUID/ULID generators, `Error` impls, `from_entropy()` |
+//! | `serde` | `Serialize`/`Deserialize` for all types |
+
+#![cfg_attr(not(feature = "std"), no_std)]
 
 pub(crate) mod encode;
-mod prng;
-mod snowflake;
+mod parse;
+mod snowflake_id;
 mod types;
+mod typeid;
+
+mod snowflake;
+
+#[cfg(feature = "std")]
+mod prng;
+#[cfg(feature = "std")]
 pub mod ulid;
+#[cfg(feature = "std")]
 pub mod uuid;
 
 pub use snowflake::{
     IdInt, SequenceExhausted, Snowflake, Snowflake32, Snowflake64, SnowflakeSigned32,
     SnowflakeSigned64,
 };
+
+pub use parse::ParseError;
+pub use snowflake_id::{MixedId32, MixedId64, SnowflakeId32, SnowflakeId64};
 pub use types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
+pub use typeid::TypeId;
+
+#[cfg(feature = "std")]
 pub use ulid::UlidGenerator;
+#[cfg(feature = "std")]
 pub use uuid::{UuidV4, UuidV7};
+
+// Re-export serde traits when feature is enabled
+#[cfg(feature = "serde")]
+mod serde_impl;

@@ -13,7 +13,6 @@ use nexus_id::Snowflake64;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::hint::black_box;
-use std::time::{Duration, Instant};
 
 const N_IDS: usize = 100_000;
 const LOOKUP_OPS: usize = 1_000_000;
@@ -59,14 +58,13 @@ impl Hasher for IdentityHasher {
 
 fn generate_snowflake_ids(n: usize) -> Vec<u64> {
     type Id = Snowflake64<42, 6, 16>;
-    let epoch = Instant::now();
-    let mut id_gen = Id::new(0, epoch);
+    let mut id_gen = Id::new(0);
 
     (0..n)
         .map(|i| {
-            // Advance time every 1000 IDs to avoid sequence exhaustion
-            let now = epoch + Duration::from_micros((i / 1000) as u64 * 1000);
-            id_gen.next(now).unwrap()
+            // Advance timestamp every 1000 IDs to avoid sequence exhaustion
+            let ts = (i / 1000) as u64;
+            id_gen.next(ts).unwrap()
         })
         .collect()
 }

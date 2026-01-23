@@ -15,7 +15,6 @@
 use hdrhistogram::Histogram;
 use nexus_id::{Snowflake32, Snowflake64};
 use std::hint::black_box;
-use std::time::{Duration, Instant};
 
 const OPERATIONS: usize = 1_000_000;
 const WARMUP: usize = 10_000;
@@ -89,31 +88,28 @@ fn bench_snowflake64_trading() -> Stats {
     type TradingId = Snowflake64<42, 6, 16>;
     const SEQ_MAX: usize = TradingId::SEQUENCE_MAX as usize;
 
-    let epoch = Instant::now();
-    let mut id_gen = TradingId::new(5, epoch);
+    let mut id_gen = TradingId::new(5);
     let mut stats = Stats::new();
 
-    // Warmup - advance time to avoid sequence exhaustion
+    // Warmup - advance timestamp to avoid sequence exhaustion
     for i in 0..WARMUP {
-        let ms = (i / SEQ_MAX) as u64;
-        let now = epoch + Duration::from_millis(ms);
-        let _ = black_box(id_gen.next(now));
+        let ts = (i / SEQ_MAX) as u64;
+        let _ = black_box(id_gen.next(ts));
     }
 
     // Reset generator
-    id_gen = TradingId::new(5, epoch);
+    id_gen = TradingId::new(5);
 
     // Benchmark same-timestamp path (sequence increment)
-    // Stay within sequence limit per ms
-    let ops_per_ms = SEQ_MAX.min(OPERATIONS);
-    let base_ms = 1000u64; // Start at 1 second to avoid overlap with warmup
+    // Stay within sequence limit per ts
+    let ops_per_ts = SEQ_MAX.min(OPERATIONS);
+    let base_ts = 1000u64;
 
-    for i in 0..ops_per_ms {
-        let ms = base_ms + (i / SEQ_MAX) as u64;
-        let now = epoch + Duration::from_millis(ms);
+    for i in 0..ops_per_ts {
+        let ts = base_ts + (i / SEQ_MAX) as u64;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -121,15 +117,15 @@ fn bench_snowflake64_trading() -> Stats {
     }
 
     // Reset generator
-    id_gen = TradingId::new(5, epoch);
+    id_gen = TradingId::new(5);
 
     // Benchmark new-timestamp path (sequence reset)
     // Each iteration uses a different timestamp
     for i in 0..OPERATIONS {
-        let now = epoch + Duration::from_millis(2000 + i as u64);
+        let ts = 2000 + i as u64;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -137,9 +133,7 @@ fn bench_snowflake64_trading() -> Stats {
     }
 
     // Benchmark unpack
-    let sample_id = id_gen
-        .next(epoch + Duration::from_millis(OPERATIONS as u64 + 3000))
-        .unwrap();
+    let sample_id = id_gen.next(OPERATIONS as u64 + 3000).unwrap();
     for _ in 0..OPERATIONS {
         let start = rdtscp();
         let parts = TradingId::unpack(sample_id);
@@ -157,30 +151,27 @@ fn bench_snowflake64_twitter() -> Stats {
     type TwitterId = Snowflake64<41, 10, 12>;
     const SEQ_MAX: usize = TwitterId::SEQUENCE_MAX as usize;
 
-    let epoch = Instant::now();
-    let mut id_gen = TwitterId::new(5, epoch);
+    let mut id_gen = TwitterId::new(5);
     let mut stats = Stats::new();
 
     // Warmup
     for i in 0..WARMUP {
-        let ms = (i / SEQ_MAX) as u64;
-        let now = epoch + Duration::from_millis(ms);
-        let _ = black_box(id_gen.next(now));
+        let ts = (i / SEQ_MAX) as u64;
+        let _ = black_box(id_gen.next(ts));
     }
 
     // Reset generator
-    id_gen = TwitterId::new(5, epoch);
+    id_gen = TwitterId::new(5);
 
     // Same-timestamp path - stay within sequence limit
-    let ops_per_ms = SEQ_MAX.min(OPERATIONS);
-    let base_ms = 1000u64;
+    let ops_per_ts = SEQ_MAX.min(OPERATIONS);
+    let base_ts = 1000u64;
 
-    for i in 0..ops_per_ms {
-        let ms = base_ms + (i / SEQ_MAX) as u64;
-        let now = epoch + Duration::from_millis(ms);
+    for i in 0..ops_per_ts {
+        let ts = base_ts + (i / SEQ_MAX) as u64;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -188,14 +179,14 @@ fn bench_snowflake64_twitter() -> Stats {
     }
 
     // Reset
-    id_gen = TwitterId::new(5, epoch);
+    id_gen = TwitterId::new(5);
 
     // New-timestamp path
     for i in 0..OPERATIONS {
-        let now = epoch + Duration::from_millis(2000 + i as u64);
+        let ts = 2000 + i as u64;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -203,9 +194,7 @@ fn bench_snowflake64_twitter() -> Stats {
     }
 
     // Unpack
-    let sample_id = id_gen
-        .next(epoch + Duration::from_millis(OPERATIONS as u64 + 3000))
-        .unwrap();
+    let sample_id = id_gen.next(OPERATIONS as u64 + 3000).unwrap();
     for _ in 0..OPERATIONS {
         let start = rdtscp();
         let parts = TwitterId::unpack(sample_id);
@@ -223,30 +212,27 @@ fn bench_snowflake32() -> Stats {
     type CompactId = Snowflake32<20, 4, 8>;
     const SEQ_MAX: usize = CompactId::SEQUENCE_MAX as usize;
 
-    let epoch = Instant::now();
-    let mut id_gen = CompactId::new(5, epoch);
+    let mut id_gen = CompactId::new(5);
     let mut stats = Stats::new();
 
     // Warmup
     for i in 0..WARMUP {
-        let ms = (i / SEQ_MAX) as u64;
-        let now = epoch + Duration::from_millis(ms);
-        let _ = black_box(id_gen.next(now));
+        let ts = (i / SEQ_MAX) as u64;
+        let _ = black_box(id_gen.next(ts));
     }
 
     // Reset
-    id_gen = CompactId::new(5, epoch);
+    id_gen = CompactId::new(5);
 
     // Same-timestamp path - stay within sequence limit
-    let ops_per_ms = SEQ_MAX.min(OPERATIONS);
-    let base_ms = 1000u64;
+    let ops_per_ts = SEQ_MAX.min(OPERATIONS);
+    let base_ts = 1000u64;
 
-    for i in 0..ops_per_ms {
-        let ms = base_ms + (i / SEQ_MAX) as u64;
-        let now = epoch + Duration::from_millis(ms);
+    for i in 0..ops_per_ts {
+        let ts = base_ts + (i / SEQ_MAX) as u64;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -254,14 +240,14 @@ fn bench_snowflake32() -> Stats {
     }
 
     // Reset
-    id_gen = CompactId::new(5, epoch);
+    id_gen = CompactId::new(5);
 
     // New-timestamp path
     for i in 0..OPERATIONS {
-        let now = epoch + Duration::from_millis(2000 + i as u64);
+        let ts = 2000 + i as u64;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -269,9 +255,7 @@ fn bench_snowflake32() -> Stats {
     }
 
     // Unpack
-    let sample_id = id_gen
-        .next(epoch + Duration::from_millis(OPERATIONS as u64 + 3000))
-        .unwrap();
+    let sample_id = id_gen.next(OPERATIONS as u64 + 3000).unwrap();
     for _ in 0..OPERATIONS {
         let start = rdtscp();
         let parts = CompactId::unpack(sample_id);
@@ -290,31 +274,29 @@ fn bench_realistic_trading() -> Stats {
     const SEQ_MAX: u64 = TradingId::SEQUENCE_MAX;
     const BURST_SIZE: u64 = 50; // Average orders per ms burst
 
-    let epoch = Instant::now();
-    let mut id_gen = TradingId::new(5, epoch);
+    let mut id_gen = TradingId::new(5);
     let mut stats = Stats::new();
 
     // Simulate: burst of orders, then time passes, another burst, etc.
     // Track sequence to advance time before overflow
-    let mut current_ms = 0u64;
-    let mut seq_in_ms = 0u64;
+    let mut current_ts = 0u64;
+    let mut seq_in_ts = 0u64;
 
     for i in 0..OPERATIONS {
-        // Advance time if we'd overflow OR every BURST_SIZE to simulate time passing
-        if seq_in_ms >= SEQ_MAX || (i as u64 % BURST_SIZE == 0 && i > 0) {
-            current_ms += 1;
-            seq_in_ms = 0;
+        // Advance timestamp if we'd overflow OR every BURST_SIZE to simulate time passing
+        if seq_in_ts >= SEQ_MAX || (i as u64 % BURST_SIZE == 0 && i > 0) {
+            current_ts += 1;
+            seq_in_ts = 0;
         }
 
-        let now = epoch + Duration::from_millis(current_ms);
-        let is_new_ts = id_gen.last_timestamp() != current_ms;
+        let is_new_ts = id_gen.last_tick() != current_ts;
 
         let start = rdtscp();
-        let id = id_gen.next(now).unwrap();
+        let id = id_gen.next(current_ts).unwrap();
         let end = rdtscp();
 
         black_box(id);
-        seq_in_ms += 1;
+        seq_in_ts += 1;
 
         if is_new_ts {
             let _ = stats.next_new_ts.record(end.wrapping_sub(start));
@@ -324,9 +306,7 @@ fn bench_realistic_trading() -> Stats {
     }
 
     // Unpack samples
-    let sample_id = id_gen
-        .next(epoch + Duration::from_millis(current_ms + 1))
-        .unwrap();
+    let sample_id = id_gen.next(current_ts + 1).unwrap();
     for _ in 0..OPERATIONS {
         let start = rdtscp();
         let parts = TradingId::unpack(sample_id);

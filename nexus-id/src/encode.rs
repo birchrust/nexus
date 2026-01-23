@@ -97,7 +97,7 @@ pub(crate) fn hex_u128(hi: u64, lo: u64) -> AsciiString<32> {
 /// Base62 uses: 0-9, A-Z, a-z (62 characters).
 /// Produces fixed-length output with leading zeros.
 #[inline]
-pub(crate) fn base62_u64(mut value: u64) -> AsciiString<11> {
+pub(crate) fn base62_u64(mut value: u64) -> AsciiString<16> {
     let mut buf = [b'0'; 11]; // Initialize with '0' for leading zeros
     let mut i = 10;
 
@@ -121,7 +121,7 @@ pub(crate) fn base62_u64(mut value: u64) -> AsciiString<11> {
 /// Base36 uses: 0-9, a-z (36 characters, case-insensitive).
 /// Produces fixed-length output with leading zeros.
 #[inline]
-pub(crate) fn base36_u64(mut value: u64) -> AsciiString<13> {
+pub(crate) fn base36_u64(mut value: u64) -> AsciiString<16> {
     let mut buf = [b'0'; 13]; // Initialize with '0' for leading zeros
     let mut i = 12;
 
@@ -141,7 +141,7 @@ pub(crate) fn base36_u64(mut value: u64) -> AsciiString<13> {
 
 /// Format 128-bit value as UUID with dashes.
 #[inline]
-pub(crate) fn uuid_dashed(hi: u64, lo: u64) -> AsciiString<36> {
+pub(crate) fn uuid_dashed(hi: u64, lo: u64) -> AsciiString<40> {
     let hi_bytes = hi.to_be_bytes();
     let lo_bytes = lo.to_be_bytes();
     let mut buf = [0u8; 36];
@@ -197,7 +197,7 @@ pub(crate) fn uuid_dashed(hi: u64, lo: u64) -> AsciiString<36> {
 ///
 /// Input: timestamp_ms (48 bits used), rand_hi (16 bits), rand_lo (64 bits)
 #[inline]
-pub(crate) fn ulid_encode(timestamp_ms: u64, rand_hi: u16, rand_lo: u64) -> AsciiString<26> {
+pub(crate) fn ulid_encode(timestamp_ms: u64, rand_hi: u16, rand_lo: u64) -> AsciiString<32> {
     let mut buf = [0u8; 26];
 
     // Encode timestamp (48 bits → 10 chars)

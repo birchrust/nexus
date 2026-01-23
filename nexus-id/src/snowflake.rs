@@ -7,24 +7,27 @@
 //! no dependencies, optimized for trading systems where ID generation
 //! is on the critical path.
 //!
+//! The generator is tick-agnostic: callers provide a raw `u64` tick value
+//! (milliseconds, block numbers, logical clocks—whatever fits your domain).
+//!
 //! # Example
 //!
 //! ```rust
 //! use std::time::Instant;
 //! use nexus_id::Snowflake64;
 //!
-//! // Layout: 42 bits timestamp, 6 bits worker, 16 bits sequence (65k/ms)
+//! // Layout: 42 bits tick, 6 bits worker, 16 bits sequence (65k/tick)
 //! type ClOrdId = Snowflake64<42, 6, 16>;
 //!
 //! let epoch = Instant::now();
-//! let mut id_gen = ClOrdId::new(5, epoch);
+//! let mut id_gen = ClOrdId::new(5);
 //!
-//! // In event loop - snap once per tick
-//! let now = Instant::now();
-//! let id: u64 = id_gen.next(now).unwrap();
+//! // In event loop - snap once per iteration
+//! let tick = (Instant::now() - epoch).as_millis() as u64;
+//! let id: u64 = id_gen.next(tick).unwrap();
 //!
 //! // Unpack to inspect
-//! let (ts, worker, seq) = ClOrdId::unpack(id);
+//! let (tick, worker, seq) = ClOrdId::unpack(id);
 //! assert_eq!(worker, 5);
 //! assert_eq!(seq, 0);
 //! ```
@@ -48,15 +51,15 @@
 //! # Performance
 //!
 //! The `next()` method is designed for hot-path usage:
-//! - No syscalls (caller provides instant)
+//! - No syscalls (caller provides tick)
 //! - No allocation
-//! - Predictable branches (same-ms case is common)
+//! - Predictable branches (same-tick case is common)
 //! - ~24-26 cycles p50 (~6ns at 4GHz)
 
-use core::marker::PhantomData;
-use std::time::Instant;
-
 use core::fmt;
+use core::marker::PhantomData;
+
+use crate::snowflake_id::{MixedId32, MixedId64, SnowflakeId32, SnowflakeId64};
 
 /// Integer types usable as snowflake IDs.
 ///
@@ -109,21 +112,21 @@ impl_id_int!(
     i64 => 64,
 );
 
-/// Sequence exhausted within current millisecond.
+/// Sequence exhausted within the current tick.
 ///
 /// This is a backpressure signal — the caller generated more IDs
-/// in a single millisecond than the sequence bits allow.
+/// within a single tick value than the sequence bits allow.
 ///
 /// # Handling
 ///
 /// When this error occurs, the caller should either:
 /// - Reject the request (backpressure)
-/// - Wait for the next millisecond
+/// - Wait for the next tick (next millisecond, next block, etc.)
 /// - Log and investigate (misconfigured sequence bits?)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceExhausted {
-    /// Timestamp (ms since epoch) when exhaustion occurred.
-    pub timestamp_ms: u64,
+    /// Tick value when exhaustion occurred.
+    pub tick: u64,
     /// Maximum sequence value for this generator's layout.
     pub max_sequence: u64,
 }
@@ -132,26 +135,27 @@ impl fmt::Display for SequenceExhausted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sequence exhausted at timestamp {}: generated {} IDs in 1ms",
-            self.timestamp_ms,
+            "sequence exhausted at tick {}: generated {} IDs in one tick",
+            self.tick,
             self.max_sequence + 1
         )
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for SequenceExhausted {}
 
 /// Snowflake ID generator.
 ///
 /// # Type Parameters
 /// - `T`: Output integer type (`u32`, `i32`, `u64`, `i64`)
-/// - `TS`: Timestamp bits
+/// - `TS`: Tick bits (ordering field)
 /// - `WK`: Worker bits (0 for single-worker systems)
 /// - `SQ`: Sequence bits
 ///
 /// # Layout (MSB to LSB)
 /// ```text
-/// [timestamp: TS bits][worker: WK bits][sequence: SQ bits]
+/// [tick: TS bits][worker: WK bits][sequence: SQ bits]
 /// ```
 ///
 /// # Compile-Time Validation
@@ -159,24 +163,33 @@ impl std::error::Error for SequenceExhausted {}
 /// - `TS > 0`
 /// - `SQ > 0`
 ///
+/// # Tick
+///
+/// The generator is tick-agnostic. The caller provides a raw `u64` value
+/// to `next()` which becomes the ordering field in the ID. Common choices:
+/// - Milliseconds since an application epoch (`(now - epoch).as_millis() as u64`)
+/// - Block number (blockchain)
+/// - Logical clock / Lamport counter
+///
+/// The only requirement is that the value is monotonically non-decreasing.
+///
 /// # Example
 /// ```rust
 /// use std::time::Instant;
 /// use nexus_id::Snowflake64;
 ///
-/// // 42 bits timestamp, 6 bits worker, 16 bits sequence
+/// // 42 bits tick, 6 bits worker, 16 bits sequence
 /// type TradingId = Snowflake64<42, 6, 16>;
 ///
 /// let epoch = Instant::now();
-/// let mut id_gen = TradingId::new(5, epoch);
+/// let mut id_gen = TradingId::new(5);
 ///
-/// let now = Instant::now();
-/// let id: u64 = id_gen.next(now).unwrap();
+/// let tick = (Instant::now() - epoch).as_millis() as u64;
+/// let id: u64 = id_gen.next(tick).unwrap();
 /// ```
 pub struct Snowflake<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> {
-    epoch: Instant,
     worker_shifted: u64,
-    last_ts: u64,
+    last_tick: u64,
     sequence: u64,
     _marker: PhantomData<T>,
 }
@@ -211,23 +224,19 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     ///
     /// # Arguments
     /// * `worker` - Worker ID, must fit in WK bits
-    /// * `epoch` - Base instant for timestamp calculation. Timestamps in
-    ///   generated IDs are milliseconds since this instant.
     ///
     /// # Panics
     /// Panics if `worker > WORKER_MAX`.
     ///
     /// # Example
     /// ```rust
-    /// use std::time::Instant;
     /// use nexus_id::Snowflake64;
     ///
     /// type MyId = Snowflake64<42, 6, 16>;
     ///
-    /// // Worker 5, epoch is now
-    /// let mut id_gen = MyId::new(5, Instant::now());
+    /// let mut id_gen = MyId::new(5);
     /// ```
-    pub fn new(worker: u64, epoch: Instant) -> Self {
+    pub fn new(worker: u64) -> Self {
         // Trigger compile-time validation
         let () = Self::_VALIDATE;
 
@@ -239,9 +248,8 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
         );
 
         Self {
-            epoch,
             worker_shifted: worker << Self::WK_SHIFT,
-            last_ts: u64::MAX, // Ensures first call takes "new timestamp" branch
+            last_tick: u64::MAX, // Ensures first call takes "new tick" branch
             sequence: 0,
             _marker: PhantomData,
         }
@@ -250,16 +258,17 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     /// Generate the next ID.
     ///
     /// # Arguments
-    /// * `now` - Current instant, snapped by caller. The generator computes
-    ///   `now.duration_since(epoch).as_millis()` for the timestamp.
+    /// * `tick` - Monotonically non-decreasing value for the ordering field.
+    ///   Typically `(now - epoch).as_millis() as u64` for time-based IDs, but can
+    ///   be any u64 sequence (block numbers, logical clocks, etc.).
     ///
     /// # Errors
     /// Returns [`SequenceExhausted`] if more than `SEQUENCE_MAX` IDs are
-    /// generated within the same millisecond. This is a backpressure signal.
+    /// generated with the same tick value. This is a backpressure signal.
     ///
     /// # Performance
     /// This method is designed for hot-path usage:
-    /// - No syscalls (caller provides instant)
+    /// - No syscalls (caller provides tick)
     /// - No allocation
     /// - Single predictable branch in the common case
     ///
@@ -271,94 +280,74 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     /// type MyId = Snowflake64<42, 6, 16>;
     ///
     /// let epoch = Instant::now();
-    /// let mut id_gen = MyId::new(5, epoch);
+    /// let mut id_gen = MyId::new(5);
     ///
     /// // Snap time once per event loop iteration
-    /// let now = Instant::now();
+    /// let tick = (Instant::now() - epoch).as_millis() as u64;
     ///
-    /// // Generate IDs using that instant
-    /// let id1 = id_gen.next(now).unwrap();
-    /// let id2 = id_gen.next(now).unwrap();
+    /// // Generate IDs using that tick
+    /// let id1 = id_gen.next(tick).unwrap();
+    /// let id2 = id_gen.next(tick).unwrap();
     /// ```
-    pub fn next(&mut self, now: Instant) -> Result<T, SequenceExhausted> {
-        // Note: We tested `(as_nanos() as u64) >> 20` to avoid division, but
-        // as_millis() is already well-optimized (multiply-shift) and performed
-        // identically at ~24-26 cycles. Keeping as_millis() for clarity.
-        let ts = now.duration_since(self.epoch).as_millis() as u64;
-
-        if ts == self.last_ts {
+    pub fn next(&mut self, tick: u64) -> Result<T, SequenceExhausted> {
+        if tick == self.last_tick {
             self.sequence += 1;
             if self.sequence > Self::SEQUENCE_MAX {
                 return Err(SequenceExhausted {
-                    timestamp_ms: ts,
+                    tick,
                     max_sequence: Self::SEQUENCE_MAX,
                 });
             }
         } else {
-            self.last_ts = ts;
+            self.last_tick = tick;
             self.sequence = 0;
         }
 
         Ok(T::from_raw(
-            (ts << Self::TS_SHIFT) | self.worker_shifted | self.sequence,
+            (tick << Self::TS_SHIFT) | self.worker_shifted | self.sequence,
         ))
     }
 
-    /// Generate a new ID with good hash distribution.
+    /// Generate a raw ID with Fibonacci-mixed bits for identity hashers.
     ///
-    /// This applies a Stafford mix (bijective permutation) to the raw Snowflake ID,
-    /// producing output suitable for use with identity hashers. The mixing preserves
-    /// uniqueness guarantees while providing uniform bit distribution.
+    /// Applies a Fibonacci multiply (bijective, ~1 cycle) to the raw ID,
+    /// producing output with uniform bit distribution. Use with identity
+    /// hashers (e.g., `nohash-hasher`) for optimal HashMap performance.
     ///
-    /// # When to Use
-    ///
-    /// Use `mixed()` instead of `next()` when:
-    /// - You want to use identity hashers (e.g., `nohash`) for maximum HashMap performance
-    /// - You don't need to extract timestamp/worker/sequence from the ID
-    ///
-    /// Use `next()` instead when:
-    /// - You need to call `unpack()` on the ID later
-    /// - You're using FxHash/AHash anyway (mixing would be redundant)
-    ///
-    /// # Performance
-    ///
-    /// Adds ~7 cycles to ID generation (~33-35 total), but saves ~20+ cycles per
-    /// HashMap operation by enabling identity hashers.
+    /// The mixing is NOT reversible from this raw integer — use
+    /// [`next_id()`](Snowflake::next_id) + [`SnowflakeId64::mixed()`] if you
+    /// need to unmix later.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use std::time::Instant;
     /// use nexus_id::Snowflake64;
     ///
     /// type OrderId = Snowflake64<42, 6, 16>;
     ///
-    /// let epoch = Instant::now();
-    /// let mut id_gen = OrderId::new(0, epoch);
+    /// let mut id_gen = OrderId::new(0);
     ///
-    /// // Generate mixed IDs - safe with identity hasher
-    /// let id = id_gen.mixed(Instant::now()).unwrap();
+    /// let id = id_gen.mixed(42).unwrap();
     /// ```
-    pub fn mixed(&mut self, now: Instant) -> Result<T, SequenceExhausted> {
-        let raw = self.next(now)?;
-        Ok(T::from_raw(stafford_mix(raw.to_raw())))
+    pub fn mixed(&mut self, tick: u64) -> Result<T, SequenceExhausted> {
+        let raw = self.next(tick)?;
+        Ok(T::from_raw(fibonacci_mix_64(raw.to_raw())))
     }
 
     /// Unpack an ID into (timestamp, worker, sequence).
     ///
     /// # Example
     /// ```rust
-    /// use std::time::Instant;
     /// use nexus_id::Snowflake64;
     ///
     /// type MyId = Snowflake64<42, 6, 16>;
     ///
-    /// let epoch = Instant::now();
-    /// let mut id_gen = MyId::new(5, epoch);
+    /// let mut id_gen = MyId::new(5);
     ///
-    /// let id = id_gen.next(epoch).unwrap();
+    /// let id = id_gen.next(0).unwrap();
     /// let (ts, worker, seq) = MyId::unpack(id);
     ///
+    /// assert_eq!(ts, 0);
     /// assert_eq!(worker, 5);
     /// assert_eq!(seq, 0);
     /// ```
@@ -369,12 +358,6 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
             (raw >> Self::WK_SHIFT) & Self::WORKER_MAX,
             raw & Self::SEQUENCE_MAX,
         )
-    }
-
-    /// Epoch instant for this generator.
-    #[inline]
-    pub fn epoch(&self) -> Instant {
-        self.epoch
     }
 
     /// Worker ID for this generator.
@@ -389,10 +372,10 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
         self.sequence
     }
 
-    /// Last timestamp used (ms since epoch).
+    /// Last tick value used.
     #[inline]
-    pub const fn last_timestamp(&self) -> u64 {
-        self.last_ts
+    pub const fn last_tick(&self) -> u64 {
+        self.last_tick
     }
 }
 
@@ -410,31 +393,67 @@ pub type SnowflakeSigned32<const TS: u8, const WK: u8, const SQ: u8> = Snowflake
 /// Signed 64-bit snowflake generator.
 pub type SnowflakeSigned64<const TS: u8, const WK: u8, const SQ: u8> = Snowflake<i64, TS, WK, SQ>;
 
-/// Stafford mix function - bijective permutation with good avalanche.
+/// Fibonacci multiply for 64-bit hash mixing.
 ///
-/// This is a 1-round variant of the Murmur3 finalizer. It's fast (~7 cycles)
-/// and provides sufficient bit mixing for hash table distribution.
+/// Bijective permutation (~1 cycle). Spreads structured snowflake bits
+/// uniformly across all positions for identity hasher compatibility.
 #[inline(always)]
-const fn stafford_mix(mut x: u64) -> u64 {
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
-    x ^= x >> 33;
-    x
+const fn fibonacci_mix_64(x: u64) -> u64 {
+    x.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+// =============================================================================
+// Typed ID generation (u64)
+// =============================================================================
+
+impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u64, TS, WK, SQ> {
+    /// Generate the next ID as a typed [`SnowflakeId64`].
+    ///
+    /// Same as [`next()`](Self::next) but returns the newtype wrapper with
+    /// field extraction and mixing methods.
+    #[inline]
+    pub fn next_id(&mut self, tick: u64) -> Result<SnowflakeId64<TS, WK, SQ>, SequenceExhausted> {
+        self.next(tick).map(SnowflakeId64::from_raw)
+    }
+
+    /// Generate a Fibonacci-mixed ID as a typed [`MixedId64`].
+    ///
+    /// The mixed ID can be unmixed back to the original via [`MixedId64::unmix()`].
+    #[inline]
+    pub fn next_mixed(&mut self, tick: u64) -> Result<MixedId64<TS, WK, SQ>, SequenceExhausted> {
+        self.next_id(tick).map(|id| id.mixed())
+    }
+}
+
+// =============================================================================
+// Typed ID generation (u32)
+// =============================================================================
+
+impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u32, TS, WK, SQ> {
+    /// Generate the next ID as a typed [`SnowflakeId32`].
+    #[inline]
+    pub fn next_id(&mut self, tick: u64) -> Result<SnowflakeId32<TS, WK, SQ>, SequenceExhausted> {
+        self.next(tick).map(SnowflakeId32::from_raw)
+    }
+
+    /// Generate a Fibonacci-mixed ID as a typed [`MixedId32`].
+    #[inline]
+    pub fn next_mixed(&mut self, tick: u64) -> Result<MixedId32<TS, WK, SQ>, SequenceExhausted> {
+        self.next_id(tick).map(|id| id.mixed())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
     type TestId = Snowflake64<42, 6, 16>;
 
     #[test]
     fn basic_generation() {
-        let epoch = Instant::now();
-        let mut id_gen = TestId::new(5, epoch);
+        let mut id_gen = TestId::new(5);
 
-        let id = id_gen.next(epoch).unwrap();
+        let id = id_gen.next(0).unwrap();
         let (ts, worker, seq) = TestId::unpack(id);
 
         assert_eq!(ts, 0);
@@ -443,13 +462,12 @@ mod tests {
     }
 
     #[test]
-    fn sequence_increments_same_ms() {
-        let epoch = Instant::now();
-        let mut id_gen = TestId::new(5, epoch);
+    fn sequence_increments_same_ts() {
+        let mut id_gen = TestId::new(5);
 
-        let id1 = id_gen.next(epoch).unwrap();
-        let id2 = id_gen.next(epoch).unwrap();
-        let id3 = id_gen.next(epoch).unwrap();
+        let id1 = id_gen.next(0).unwrap();
+        let id2 = id_gen.next(0).unwrap();
+        let id3 = id_gen.next(0).unwrap();
 
         let (_, _, seq1) = TestId::unpack(id1);
         let (_, _, seq2) = TestId::unpack(id2);
@@ -461,17 +479,15 @@ mod tests {
     }
 
     #[test]
-    fn sequence_resets_new_ms() {
-        let epoch = Instant::now();
-        let mut id_gen = TestId::new(5, epoch);
+    fn sequence_resets_new_ts() {
+        let mut id_gen = TestId::new(5);
 
-        // Generate at epoch
-        let _ = id_gen.next(epoch).unwrap();
-        let _ = id_gen.next(epoch).unwrap();
+        // Generate at timestamp 0
+        let _ = id_gen.next(0).unwrap();
+        let _ = id_gen.next(0).unwrap();
 
-        // Jump forward 1ms
-        let later = epoch + Duration::from_millis(1);
-        let id = id_gen.next(later).unwrap();
+        // Jump to timestamp 1
+        let id = id_gen.next(1).unwrap();
 
         let (ts, _, seq) = TestId::unpack(id);
         assert_eq!(ts, 1);
@@ -480,11 +496,9 @@ mod tests {
 
     #[test]
     fn worker_encoded_correctly() {
-        let epoch = Instant::now();
-
         for worker in [0, 1, 31, 63] {
-            let mut id_gen = TestId::new(worker, epoch);
-            let id = id_gen.next(epoch).unwrap();
+            let mut id_gen = TestId::new(worker);
+            let id = id_gen.next(0).unwrap();
             let (_, w, _) = TestId::unpack(id);
             assert_eq!(w, worker);
         }
@@ -492,13 +506,13 @@ mod tests {
 
     #[test]
     fn ids_are_unique() {
-        let epoch = Instant::now();
-        let mut id_gen = TestId::new(5, epoch);
+        let mut id_gen = TestId::new(5);
 
         let mut ids = Vec::new();
-        for i in 0..1000 {
-            let now = epoch + Duration::from_micros(i * 100);
-            ids.push(id_gen.next(now).unwrap());
+        for i in 0..1000u64 {
+            // Advance timestamp every 100 IDs
+            let ts = i / 100;
+            ids.push(id_gen.next(ts).unwrap());
         }
 
         // Check uniqueness
@@ -513,16 +527,15 @@ mod tests {
         // Tiny sequence: 4 bits = max 15
         type TinySeq = Snowflake64<42, 6, 4>;
 
-        let epoch = Instant::now();
-        let mut id_gen = TinySeq::new(5, epoch);
+        let mut id_gen = TinySeq::new(5);
 
         // Generate 16 IDs (0-15)
         for _ in 0..16 {
-            id_gen.next(epoch).unwrap();
+            id_gen.next(0).unwrap();
         }
 
         // 17th should fail
-        let result = id_gen.next(epoch);
+        let result = id_gen.next(0);
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -532,18 +545,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "worker 100 exceeds max 63")]
     fn worker_overflow_panics() {
-        let epoch = Instant::now();
-        let _id_gen = TestId::new(100, epoch); // 6 bits = max 63
+        let _id_gen = TestId::new(100); // 6 bits = max 63
     }
 
     #[test]
     fn signed_output() {
         type SignedId = SnowflakeSigned64<42, 6, 16>;
 
-        let epoch = Instant::now();
-        let mut id_gen = SignedId::new(5, epoch);
+        let mut id_gen = SignedId::new(5);
 
-        let id: i64 = id_gen.next(epoch).unwrap();
+        let id: i64 = id_gen.next(0).unwrap();
         let (ts, worker, seq) = SignedId::unpack(id);
 
         assert_eq!(ts, 0);
@@ -556,10 +567,9 @@ mod tests {
         // 20 bits timestamp, 4 bits worker, 8 bits sequence
         type SmallId = Snowflake32<20, 4, 8>;
 
-        let epoch = Instant::now();
-        let mut id_gen = SmallId::new(7, epoch);
+        let mut id_gen = SmallId::new(7);
 
-        let id: u32 = id_gen.next(epoch).unwrap();
+        let id: u32 = id_gen.next(0).unwrap();
         let (ts, worker, seq) = SmallId::unpack(id);
 
         assert_eq!(ts, 0);
@@ -572,14 +582,36 @@ mod tests {
         // Single-worker system: no worker bits
         type SingleWorker = Snowflake64<48, 0, 16>;
 
-        let epoch = Instant::now();
-        let mut id_gen = SingleWorker::new(0, epoch);
+        let mut id_gen = SingleWorker::new(0);
 
-        let id = id_gen.next(epoch).unwrap();
+        let id = id_gen.next(0).unwrap();
         let (ts, worker, seq) = SingleWorker::unpack(id);
 
         assert_eq!(ts, 0);
         assert_eq!(worker, 0);
         assert_eq!(seq, 0);
+    }
+
+    #[test]
+    fn non_time_timestamp() {
+        // Use block numbers as timestamp
+        type BlockId = Snowflake64<32, 8, 24>;
+
+        let mut id_gen = BlockId::new(1);
+
+        let id1 = id_gen.next(1000).unwrap(); // block 1000
+        let id2 = id_gen.next(1000).unwrap(); // same block
+        let id3 = id_gen.next(1001).unwrap(); // next block
+
+        let (ts1, _, seq1) = BlockId::unpack(id1);
+        let (ts2, _, seq2) = BlockId::unpack(id2);
+        let (ts3, _, seq3) = BlockId::unpack(id3);
+
+        assert_eq!(ts1, 1000);
+        assert_eq!(seq1, 0);
+        assert_eq!(ts2, 1000);
+        assert_eq!(seq2, 1);
+        assert_eq!(ts3, 1001);
+        assert_eq!(seq3, 0);
     }
 }

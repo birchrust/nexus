@@ -134,7 +134,7 @@ impl UuidV7 {
             self.sequence = self.sequence.wrapping_add(1);
             if self.sequence > SEQUENCE_MAX {
                 return Err(SequenceExhausted {
-                    timestamp_ms: ts_ms,
+                    tick: ts_ms,
                     max_sequence: SEQUENCE_MAX as u64,
                 });
             }

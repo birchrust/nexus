@@ -4,11 +4,17 @@
 //! Each type wraps an internal representation and provides methods for
 //! conversion, parsing, and access to the underlying data.
 
+use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::ops::Deref;
+use core::str::FromStr;
 
 use nexus_ascii::AsciiString;
+
+use crate::parse::{
+    self, ParseError,
+};
 
 // ============================================================================
 // UUID Types
@@ -37,7 +43,7 @@ use nexus_ascii::AsciiString;
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Uuid(pub(crate) AsciiString<36>);
+pub struct Uuid(pub(crate) AsciiString<40>);
 
 impl Uuid {
     /// Create a new Uuid from raw (hi, lo) bytes.
@@ -101,6 +107,104 @@ impl Uuid {
         // Version is char at position 14
         hex_digit(self.0.as_bytes()[14])
     }
+
+    /// Parse a UUID from a dashed string.
+    ///
+    /// Accepts format: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (36 chars).
+    /// Case-insensitive for hex digits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the input has wrong length, invalid hex
+    /// characters, or missing/misplaced dashes.
+    pub fn parse(s: &str) -> Result<Self, ParseError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 36 {
+            return Err(ParseError::invalid_length(36, bytes.len()));
+        }
+
+        // Validate dashes at positions 8, 13, 18, 23
+        if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
+            return Err(ParseError::invalid_format());
+        }
+
+        // Validate and decode hex digits
+        let mut hi: u64 = 0;
+        let mut lo: u64 = 0;
+
+        // Bytes 0-7 → hi bits 32-63
+        let mut i = 0;
+        while i < 8 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            hi = (hi << 4) | d as u64;
+            i += 1;
+        }
+        // Bytes 9-12 → hi bits 16-31
+        i = 9;
+        while i < 13 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            hi = (hi << 4) | d as u64;
+            i += 1;
+        }
+        // Bytes 14-17 → hi bits 0-15
+        i = 14;
+        while i < 18 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            hi = (hi << 4) | d as u64;
+            i += 1;
+        }
+        // Bytes 19-22 → lo bits 48-63
+        i = 19;
+        while i < 23 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            lo = (lo << 4) | d as u64;
+            i += 1;
+        }
+        // Bytes 24-35 → lo bits 0-47
+        i = 24;
+        while i < 36 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            lo = (lo << 4) | d as u64;
+            i += 1;
+        }
+
+        Ok(Self::from_raw(hi, lo))
+    }
+
+    /// Convert to compact format (no dashes).
+    #[inline]
+    pub fn to_compact(&self) -> UuidCompact {
+        let (hi, lo) = self.decode();
+        UuidCompact::from_raw(hi, lo)
+    }
+
+    /// Check if this is the nil UUID (all zeros).
+    #[inline]
+    pub fn is_nil(&self) -> bool {
+        let (hi, lo) = self.decode();
+        hi == 0 && lo == 0
+    }
+
+    /// Extract the timestamp for UUID v7 (milliseconds since Unix epoch).
+    ///
+    /// Returns `None` if this is not a v7 UUID.
+    #[inline]
+    pub fn timestamp_ms(&self) -> Option<u64> {
+        if self.version() != 7 {
+            return None;
+        }
+        let (hi, _) = self.decode();
+        Some(hi >> 16)
+    }
+
+    /// Get the raw 128-bit value as big-endian bytes.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let (hi, lo) = self.decode();
+        let mut out = [0u8; 16];
+        out[..8].copy_from_slice(&hi.to_be_bytes());
+        out[8..].copy_from_slice(&lo.to_be_bytes());
+        out
+    }
 }
 
 impl Deref for Uuid {
@@ -134,8 +238,31 @@ impl fmt::Debug for Uuid {
 impl Hash for Uuid {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use the precomputed hash from AsciiString
         self.0.hash(state);
+    }
+}
+
+impl Ord for Uuid {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Lexicographic order = time order for v7 UUIDs
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for Uuid {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl FromStr for Uuid {
+    type Err = ParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -181,6 +308,56 @@ impl UuidCompact {
 
         (hi, lo)
     }
+
+    /// Parse a compact UUID from a hex string (no dashes).
+    ///
+    /// Accepts format: 32 hex characters. Case-insensitive.
+    pub fn parse(s: &str) -> Result<Self, ParseError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 32 {
+            return Err(ParseError::invalid_length(32, bytes.len()));
+        }
+
+        let mut hi: u64 = 0;
+        let mut lo: u64 = 0;
+
+        let mut i = 0;
+        while i < 16 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            hi = (hi << 4) | d as u64;
+            i += 1;
+        }
+        while i < 32 {
+            let d = parse::validate_hex(bytes[i], i)?;
+            lo = (lo << 4) | d as u64;
+            i += 1;
+        }
+
+        Ok(Self::from_raw(hi, lo))
+    }
+
+    /// Convert to dashed format.
+    #[inline]
+    pub fn to_dashed(&self) -> Uuid {
+        let (hi, lo) = self.decode();
+        Uuid::from_raw(hi, lo)
+    }
+
+    /// Check if this is the nil UUID.
+    #[inline]
+    pub fn is_nil(&self) -> bool {
+        let (hi, lo) = self.decode();
+        hi == 0 && lo == 0
+    }
+
+    /// Get the raw 128-bit value as big-endian bytes.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let (hi, lo) = self.decode();
+        let mut out = [0u8; 16];
+        out[..8].copy_from_slice(&hi.to_be_bytes());
+        out[8..].copy_from_slice(&lo.to_be_bytes());
+        out
+    }
 }
 
 impl Deref for UuidCompact {
@@ -215,6 +392,29 @@ impl Hash for UuidCompact {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
+    }
+}
+
+impl Ord for UuidCompact {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for UuidCompact {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl FromStr for UuidCompact {
+    type Err = ParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -255,6 +455,23 @@ impl HexId64 {
         }
         value
     }
+
+    /// Parse a hex ID from a 16-character hex string. Case-insensitive.
+    pub fn parse(s: &str) -> Result<Self, ParseError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 16 {
+            return Err(ParseError::invalid_length(16, bytes.len()));
+        }
+
+        // Validate all chars are hex
+        let mut i = 0;
+        while i < 16 {
+            parse::validate_hex(bytes[i], i)?;
+            i += 1;
+        }
+
+        Ok(Self::encode(decode_hex_u64(bytes)))
+    }
 }
 
 impl Deref for HexId64 {
@@ -292,6 +509,15 @@ impl Hash for HexId64 {
     }
 }
 
+impl FromStr for HexId64 {
+    type Err = ParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // Base62Id - Base62-encoded u64
 // ============================================================================
@@ -301,7 +527,7 @@ impl Hash for HexId64 {
 /// Format: 11 alphanumeric characters (0-9, A-Z, a-z).
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Base62Id(pub(crate) AsciiString<11>);
+pub struct Base62Id(pub(crate) AsciiString<16>);
 
 impl Base62Id {
     /// Encode a u64 as base62.
@@ -328,6 +554,28 @@ impl Base62Id {
             value = value * 62 + base62_digit(b) as u64;
         }
         value
+    }
+
+    /// Parse a base62 ID from an 11-character string.
+    pub fn parse(s: &str) -> Result<Self, ParseError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 11 {
+            return Err(ParseError::invalid_length(11, bytes.len()));
+        }
+
+        let mut value: u64 = 0;
+        let mut i = 0;
+        while i < 11 {
+            let d = parse::validate_base62(bytes[i], i)?;
+            // Check for overflow
+            value = value
+                .checked_mul(62)
+                .and_then(|v| v.checked_add(d as u64))
+                .ok_or(ParseError::overflow())?;
+            i += 1;
+        }
+
+        Ok(Self::encode(value))
     }
 }
 
@@ -366,6 +614,15 @@ impl Hash for Base62Id {
     }
 }
 
+impl FromStr for Base62Id {
+    type Err = ParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // Base36Id - Base36-encoded u64
 // ============================================================================
@@ -375,7 +632,7 @@ impl Hash for Base62Id {
 /// Format: 13 alphanumeric characters (0-9, a-z), case-insensitive.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Base36Id(pub(crate) AsciiString<13>);
+pub struct Base36Id(pub(crate) AsciiString<16>);
 
 impl Base36Id {
     /// Encode a u64 as base36.
@@ -402,6 +659,27 @@ impl Base36Id {
             value = value * 36 + base36_digit(b) as u64;
         }
         value
+    }
+
+    /// Parse a base36 ID from a 13-character string. Case-insensitive.
+    pub fn parse(s: &str) -> Result<Self, ParseError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 13 {
+            return Err(ParseError::invalid_length(13, bytes.len()));
+        }
+
+        let mut value: u64 = 0;
+        let mut i = 0;
+        while i < 13 {
+            let d = parse::validate_base36(bytes[i], i)?;
+            value = value
+                .checked_mul(36)
+                .and_then(|v| v.checked_add(d as u64))
+                .ok_or(ParseError::overflow())?;
+            i += 1;
+        }
+
+        Ok(Self::encode(value))
     }
 }
 
@@ -440,6 +718,15 @@ impl Hash for Base36Id {
     }
 }
 
+impl FromStr for Base36Id {
+    type Err = ParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // ULID
 // ============================================================================
@@ -470,7 +757,7 @@ impl Hash for Base36Id {
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Ulid(pub(crate) AsciiString<26>);
+pub struct Ulid(pub(crate) AsciiString<32>);
 
 impl Ulid {
     #[inline]
@@ -501,6 +788,94 @@ impl Ulid {
         }
 
         ts
+    }
+
+    /// Parse a ULID from a 26-character Crockford Base32 string.
+    ///
+    /// Case-insensitive. Accepts Crockford aliases (I/L → 1, O → 0).
+    pub fn parse(s: &str) -> Result<Self, ParseError> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 26 {
+            return Err(ParseError::invalid_length(26, bytes.len()));
+        }
+
+        // Validate all characters are valid Crockford base32
+        let mut i = 0;
+        while i < 26 {
+            parse::validate_crockford32(bytes[i], i)?;
+            i += 1;
+        }
+
+        // Decode timestamp (chars 0-9)
+        let mut ts: u64 = 0;
+        ts = (ts << 3) | crockford32_digit(bytes[0]) as u64;
+        i = 1;
+        while i < 10 {
+            ts = (ts << 5) | crockford32_digit(bytes[i]) as u64;
+            i += 1;
+        }
+
+        // Decode random (chars 10-25)
+        let c10 = crockford32_digit(bytes[10]) as u16;
+        let c11 = crockford32_digit(bytes[11]) as u16;
+        let c12 = crockford32_digit(bytes[12]) as u16;
+        let c13 = crockford32_digit(bytes[13]) as u64;
+
+        let rand_hi = (c10 << 11) | (c11 << 6) | (c12 << 1) | ((c13 >> 4) as u16);
+
+        let mut rand_lo: u64 = c13 & 0x0F;
+        i = 14;
+        while i < 26 {
+            rand_lo = (rand_lo << 5) | crockford32_digit(bytes[i]) as u64;
+            i += 1;
+        }
+
+        Ok(Self::from_raw(ts, rand_hi, rand_lo))
+    }
+
+    /// Check if this is a nil ULID (all zeros).
+    #[inline]
+    pub fn is_nil(&self) -> bool {
+        self.timestamp_ms() == 0 && {
+            let (hi, lo) = self.random();
+            hi == 0 && lo == 0
+        }
+    }
+
+    /// Convert to a UUID v7-compatible format.
+    ///
+    /// Maps the ULID's 128-bit value into UUID v7 layout (setting version and variant bits).
+    pub fn to_uuid(&self) -> Uuid {
+        let ts = self.timestamp_ms();
+        let (rand_hi, rand_lo) = self.random();
+
+        // Pack into UUID v7 layout
+        // hi: [timestamp: 48][version=7: 4][rand_a: 12]
+        let rand_a = (rand_hi >> 4) as u64; // top 12 bits of rand_hi
+        let hi = (ts << 16) | (0x7 << 12) | (rand_a & 0xFFF);
+
+        // lo: [variant=10: 2][rand_b: 62]
+        // Use remaining bits from rand_hi (4 bits) + rand_lo (64 bits) → take 62 bits
+        let remaining = ((rand_hi as u64 & 0x0F) << 58) | (rand_lo >> 6);
+        let lo = (0b10u64 << 62) | (remaining & 0x3FFF_FFFF_FFFF_FFFF);
+
+        Uuid::from_raw(hi, lo)
+    }
+
+    /// Get the raw 128-bit value as big-endian bytes.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let ts = self.timestamp_ms();
+        let (rand_hi, rand_lo) = self.random();
+
+        let mut out = [0u8; 16];
+        // Timestamp in bytes 0-5 (48 bits, big-endian)
+        let ts_bytes = ts.to_be_bytes();
+        out[0..6].copy_from_slice(&ts_bytes[2..8]);
+        // Random hi in bytes 6-7 (16 bits)
+        out[6..8].copy_from_slice(&rand_hi.to_be_bytes());
+        // Random lo in bytes 8-15 (64 bits)
+        out[8..16].copy_from_slice(&rand_lo.to_be_bytes());
+        out
     }
 
     /// Decode the random portion as (hi: u16, lo: u64).
@@ -563,6 +938,30 @@ impl Hash for Ulid {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
+    }
+}
+
+impl Ord for Ulid {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Lexicographic order = time order (timestamp in MSB chars)
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for Ulid {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl FromStr for Ulid {
+    type Err = ParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -644,6 +1043,16 @@ const fn base36_digit(b: u8) -> u8 {
         b'A'..=b'Z' => b - b'A' + 10, // Case insensitive
         _ => 0,
     }
+}
+
+/// Decode 16 hex chars to u64.
+#[inline]
+fn decode_hex_u64(bytes: &[u8]) -> u64 {
+    let mut value: u64 = 0;
+    for &b in &bytes[..16] {
+        value = (value << 4) | hex_digit(b) as u64;
+    }
+    value
 }
 
 #[cfg(test)]
