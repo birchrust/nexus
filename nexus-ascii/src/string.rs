@@ -34,6 +34,7 @@ const fn unpack_len(header: u64) -> usize {
 
 /// Detect if any byte in a u64 is zero.
 /// Returns a mask with the high bit set in each byte position that contains zero.
+#[allow(dead_code)]
 #[inline(always)]
 const fn has_null_byte(v: u64) -> u64 {
     const LO: u64 = 0x0101_0101_0101_0101;
@@ -41,10 +42,10 @@ const fn has_null_byte(v: u64) -> u64 {
     (v.wrapping_sub(LO)) & !v & HI
 }
 
-/// Find the position of the first null byte in a slice.
-/// Returns the slice length if no null byte is found.
+/// Find the position of the first null byte using SWAR (8 bytes at a time).
+#[allow(dead_code)]
 #[inline]
-pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
+fn find_null_byte_scalar(bytes: &[u8]) -> usize {
     let mut i = 0;
 
     // Process 8 bytes at a time
@@ -74,6 +75,59 @@ pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
     }
 
     bytes.len()
+}
+
+/// Find the position of the first null byte using SSE2 (16 bytes at a time).
+/// Falls back to scalar for remainder.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn find_null_byte_sse2(bytes: &[u8]) -> usize {
+    use core::arch::x86_64::*;
+
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Process 16 bytes at a time
+    // SAFETY: SSE2 is baseline for x86_64
+    unsafe {
+        let zero = _mm_setzero_si128();
+
+        while i + 16 <= len {
+            let chunk = _mm_loadu_si128(bytes.as_ptr().add(i).cast());
+            let cmp = _mm_cmpeq_epi8(chunk, zero);
+            let mask = _mm_movemask_epi8(cmp);
+            if mask != 0 {
+                return i + mask.trailing_zeros() as usize;
+            }
+            i += 16;
+        }
+    }
+
+    // Handle remainder with scalar
+    while i < len {
+        if bytes[i] == 0 {
+            return i;
+        }
+        i += 1;
+    }
+
+    len
+}
+
+/// Find the position of the first null byte in a slice.
+/// Returns the slice length if no null byte is found.
+///
+/// Dispatches to SSE2 on x86_64 (16 bytes/iter), scalar SWAR elsewhere (8 bytes/iter).
+#[inline]
+pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        find_null_byte_sse2(bytes)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        find_null_byte_scalar(bytes)
+    }
 }
 
 /// Precomputed header for empty string (compile-time).

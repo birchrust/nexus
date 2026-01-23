@@ -53,7 +53,8 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
 
 /// Validate that all bytes are printable ASCII (0x20-0x7E) using AVX-512.
 ///
-/// Uses mask registers for efficient range checking.
+/// Uses signed comparisons directly (no bias trick needed) since the printable
+/// range [0x20, 0x7E] is entirely within the signed-positive byte space [0x00, 0x7F].
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
@@ -70,16 +71,15 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
         while i + 64 <= len {
             let chunk = _mm512_loadu_si512(bytes.as_ptr().add(i).cast());
 
-            // AVX-512 has direct unsigned comparison with mask output
-            // cmpgt returns mask where chunk[i] > lo (i.e., chunk[i] >= 0x20)
-            // cmple returns mask where chunk[i] <= hi (i.e., chunk[i] <= 0x7E)
+            // Signed comparison works correctly here because the printable range
+            // [0x20, 0x7E] lies entirely within [0x00, 0x7F] — the signed-positive
+            // half of the byte space. Bytes in [0x80, 0xFF] are interpreted as
+            // negative (-128 to -1), which always fail the `chunk > 0x1F` check
+            // (since -128..-1 < 31), so they're correctly flagged as invalid.
             //
-            // We want to find bytes OUTSIDE the range, so:
-            // - below_range: chunk <= 0x1F (not > 0x1F)
-            // - above_range: chunk > 0x7E
-            //
-            // Using unsigned comparison (_mm512_cmpgt_epu8_mask) for correct results
-            let ge_low = _mm512_cmpgt_epi8_mask(chunk, lo); // chunk > 0x1F (signed, works for 0x00-0x7F)
+            // This is simpler than the SSE2/AVX2 bias trick (XOR 0x80) but relies
+            // on the target range being within the signed-positive half.
+            let ge_low = _mm512_cmpgt_epi8_mask(chunk, lo); // chunk > 0x1F (signed)
             let le_high = _mm512_cmple_epi8_mask(chunk, hi); // chunk <= 0x7E (signed)
 
             // Valid if in range [0x20, 0x7E]: both conditions must be true
