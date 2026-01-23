@@ -131,6 +131,30 @@ fn main() {
         }
     });
 
+    // 72B strings: above the 64B SIMD crossover threshold
+    let xl_upper: AsciiString<128> =
+        AsciiString::try_from("ORDER-ID-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-12345")
+            .unwrap();
+    let xl_lower: AsciiString<128> =
+        AsciiString::try_from("order-id-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-12345")
+            .unwrap();
+
+    bench_wide("eq_ignore_ascii_case() same case (69B)", || {
+        if black_box(&xl_upper).eq_ignore_ascii_case(black_box(&xl_upper)) {
+            1
+        } else {
+            0
+        }
+    });
+
+    bench_wide("eq_ignore_ascii_case() diff case (69B)", || {
+        if black_box(&xl_upper).eq_ignore_ascii_case(black_box(&xl_lower)) {
+            1
+        } else {
+            0
+        }
+    });
+
     // =========================================================================
     // starts_with
     // =========================================================================

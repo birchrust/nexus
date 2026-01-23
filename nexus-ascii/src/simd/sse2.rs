@@ -229,8 +229,12 @@ pub fn make_uppercase(bytes: &mut [u8]) {
 
 /// Compare two byte slices for case-insensitive ASCII equality using SSE2.
 ///
-/// Processes 16 bytes at a time. For ASCII letters, case is ignored.
-/// Non-letter bytes must match exactly.
+/// Processes 16 bytes at a time with a single movemask per chunk.
+/// For ASCII letters, case is ignored. Non-letter bytes must match exactly.
+///
+/// Uses single-movemask approach: for each byte pair, compute whether it's
+/// "ok" (identical OR valid case flip), then check all bytes in one operation.
+/// This avoids the 3× movemask domain-crossing overhead of the naive approach.
 #[inline]
 pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -257,30 +261,35 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 
             let xor = _mm_xor_si128(chunk_a, chunk_b);
 
-            // Fast path: chunks are identical
-            let eq_mask = _mm_movemask_epi8(_mm_cmpeq_epi8(xor, zero));
-            if eq_mask == 0xFFFF {
+            // Fast path: if chunks are identical, skip letter check entirely.
+            // cmpeq+movemask is needed here (SSE2 has no PTEST), but this
+            // avoids the more expensive letter-checking path below.
+            if _mm_movemask_epi8(_mm_cmpeq_epi8(xor, zero)) == 0xFFFF {
                 i += 16;
                 continue;
             }
 
-            // Check: all differences must be only in bit 5 (0x20)
-            let non_case_diff = _mm_andnot_si128(case_bit, xor);
-            let has_other = _mm_movemask_epi8(_mm_cmpeq_epi8(non_case_diff, zero));
-            if has_other != 0xFFFF {
-                return false;
-            }
+            // A byte pair is "ok" if:
+            //   1. identical (xor == 0), OR
+            //   2. differs by exactly 0x20 AND the byte is an ASCII letter
 
-            // For bytes that differ by 0x20, verify they're ASCII letters
-            let differs = _mm_cmpeq_epi8(xor, case_bit);
+            let identical = _mm_cmpeq_epi8(xor, zero);
+            let is_case_flip = _mm_cmpeq_epi8(xor, case_bit);
+
+            // Letter check: (chunk_a | 0x20) in ['a', 'z']
             let lower_a = _mm_or_si128(chunk_a, case_bit);
             let ge_a = _mm_cmpgt_epi8(lower_a, lo_bound);
             let lt_z1 = _mm_cmpgt_epi8(hi_bound, lower_a);
             let is_letter = _mm_and_si128(ge_a, lt_z1);
 
-            // Any byte that differs but isn't a letter → not equal
-            let not_letter_but_differs = _mm_andnot_si128(is_letter, differs);
-            if _mm_movemask_epi8(not_letter_but_differs) != 0 {
+            // Valid case flip = differs by 0x20 AND is a letter
+            let valid_flip = _mm_and_si128(is_case_flip, is_letter);
+
+            // Byte is ok = identical OR valid case flip
+            let ok = _mm_or_si128(identical, valid_flip);
+
+            // Single movemask: if any byte is not ok (0x00 lane), fail
+            if _mm_movemask_epi8(ok) != 0xFFFF {
                 return false;
             }
 

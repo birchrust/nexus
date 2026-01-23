@@ -252,10 +252,34 @@ pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), 
 /// For ASCII letters (A-Z, a-z), case is ignored.
 /// Non-letter ASCII characters must match exactly.
 ///
-/// Dispatches to the best available implementation at compile time:
-/// - AVX2: 32 bytes/iter
-/// - SSE2: 16 bytes/iter (x86_64 baseline)
-/// - Scalar SWAR: 8 bytes/iter
+/// # Dispatch strategy
+///
+/// Unlike [`make_lowercase`]/[`make_uppercase`] (which always benefit from SIMD),
+/// this function uses a **64-byte crossover threshold** before dispatching to
+/// SSE2/AVX2. Below 64 bytes, the scalar SWAR implementation is used.
+///
+/// **Why the crossover exists:**
+///
+/// Comparison operations require a per-chunk *decision* (equal or not?), which
+/// means extracting a result from SIMD registers into integer registers via
+/// `movemask`. This "domain crossing" costs ~3 cycles on modern x86 — a fixed
+/// tax per chunk regardless of chunk width.
+///
+/// - **SWAR** (8B/iter): operates entirely in integer registers. No domain
+///   crossing. Branch decisions are free integer compares.
+/// - **SSE2** (16B/iter): 1 movemask per 16B = 0.19 cycles/byte overhead.
+/// - **AVX2** (32B/iter): 1 movemask per 32B = 0.09 cycles/byte overhead.
+///
+/// For strings < 64B (the common case for symbols, order IDs, protocol fields),
+/// SWAR's zero-overhead branching matches or beats SIMD despite processing
+/// fewer bytes per iteration. At >= 64B, the iteration count reduction of SIMD
+/// outweighs the per-chunk domain-crossing cost.
+///
+/// **Why transforms don't need a crossover:**
+///
+/// [`make_lowercase`] and [`make_uppercase`] keep results in SIMD registers and
+/// store directly back to memory — no `movemask`, no domain crossing. SIMD wins
+/// at any length >= 16B (SSE2) or >= 32B (AVX2).
 ///
 /// # Example
 ///
@@ -268,14 +292,26 @@ pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), 
 /// ```
 #[inline]
 pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
+    // Domain-crossing crossover: SWAR is competitive below 64B because
+    // movemask (~3 cycles) isn't amortized over enough bytes.
+    const SIMD_CROSSOVER: usize = 64;
+
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
-        avx2::eq_ignore_ascii_case(a, b)
+        if a.len() >= SIMD_CROSSOVER {
+            avx2::eq_ignore_ascii_case(a, b)
+        } else {
+            scalar::eq_ignore_ascii_case(a, b)
+        }
     }
 
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     {
-        sse2::eq_ignore_ascii_case(a, b)
+        if a.len() >= SIMD_CROSSOVER {
+            sse2::eq_ignore_ascii_case(a, b)
+        } else {
+            scalar::eq_ignore_ascii_case(a, b)
+        }
     }
 
     #[cfg(not(target_arch = "x86_64"))]

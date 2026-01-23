@@ -199,8 +199,12 @@ pub fn make_uppercase(bytes: &mut [u8]) {
 
 /// Compare two byte slices for case-insensitive ASCII equality using AVX2.
 ///
-/// Processes 32 bytes at a time. For ASCII letters, case is ignored.
-/// Non-letter bytes must match exactly. Cascades to SSE2 for remainder.
+/// Processes 32 bytes at a time with a single movemask per chunk.
+/// For ASCII letters, case is ignored. Non-letter bytes must match exactly.
+/// Cascades to SSE2 for remainder.
+///
+/// Uses single-movemask approach: for each byte pair, compute whether it's
+/// "ok" (identical OR valid case flip), then check all bytes in one operation.
 #[inline]
 pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -227,29 +231,34 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 
             let xor = _mm256_xor_si256(chunk_a, chunk_b);
 
-            // Fast path: chunks are identical
-            let eq_mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(xor, zero));
-            if eq_mask == -1i32 {
+            // Fast path: if chunks are identical, skip letter check entirely.
+            // VPTEST writes directly to FLAGS — no movemask domain crossing.
+            if _mm256_testz_si256(xor, xor) != 0 {
                 i += 32;
                 continue;
             }
 
-            // All differences must be only in bit 5
-            let non_case_diff = _mm256_andnot_si256(case_bit, xor);
-            let has_other = _mm256_movemask_epi8(_mm256_cmpeq_epi8(non_case_diff, zero));
-            if has_other != -1i32 {
-                return false;
-            }
+            // A byte pair is "ok" if:
+            //   1. identical (xor == 0), OR
+            //   2. differs by exactly 0x20 AND the byte is an ASCII letter
 
-            // For bytes differing by 0x20, verify they're letters
-            let differs = _mm256_cmpeq_epi8(xor, case_bit);
+            let identical = _mm256_cmpeq_epi8(xor, zero);
+            let is_case_flip = _mm256_cmpeq_epi8(xor, case_bit);
+
+            // Letter check: (chunk_a | 0x20) in ['a', 'z']
             let lower_a = _mm256_or_si256(chunk_a, case_bit);
             let ge_a = _mm256_cmpgt_epi8(lower_a, lo_bound);
             let lt_z1 = _mm256_cmpgt_epi8(hi_bound, lower_a);
             let is_letter = _mm256_and_si256(ge_a, lt_z1);
 
-            let not_letter_but_differs = _mm256_andnot_si256(is_letter, differs);
-            if _mm256_movemask_epi8(not_letter_but_differs) != 0 {
+            // Valid case flip = differs by 0x20 AND is a letter
+            let valid_flip = _mm256_and_si256(is_case_flip, is_letter);
+
+            // Byte is ok = identical OR valid case flip
+            let ok = _mm256_or_si256(identical, valid_flip);
+
+            // Single movemask: if any byte is not ok (0x00 lane), fail
+            if _mm256_movemask_epi8(ok) != -1i32 {
                 return false;
             }
 
