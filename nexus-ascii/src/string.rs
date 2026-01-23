@@ -864,8 +864,13 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn eq_ignore_ascii_case(&self, other: &Self) -> bool {
-        // Use SWAR-optimized comparison (8 bytes at a time)
-        crate::simd::eq_ignore_ascii_case(self.as_bytes(), other.as_bytes())
+        if self.len() != other.len() {
+            return false;
+        }
+        // Full-buffer processing: with same-length strings, padding regions
+        // are identical (both zero). The compiler sees CAP as the length,
+        // enabling full unrolling with no remainder loops.
+        crate::simd::eq_ignore_ascii_case(&self.data, &other.data)
     }
 
     /// Returns `true` if the string starts with the given prefix.
@@ -1225,8 +1230,10 @@ impl<const CAP: usize> AsciiString<CAP> {
         let len = self.len();
         let mut data = self.data;
 
-        // Convert lowercase to uppercase using SWAR (8 bytes at a time)
-        crate::simd::make_uppercase(&mut data[..len]);
+        // Full-buffer processing: zeros are not letters, so case conversion
+        // leaves them unchanged. The compiler sees CAP as the length, enabling
+        // full unrolling with no remainder loops.
+        crate::simd::make_uppercase(&mut data);
 
         let hash = hash::hash::<CAP>(&data[..len]);
         let header = pack_header(len as u16, hash);
@@ -1256,8 +1263,10 @@ impl<const CAP: usize> AsciiString<CAP> {
         let len = self.len();
         let mut data = self.data;
 
-        // Convert uppercase to lowercase using SWAR (8 bytes at a time)
-        crate::simd::make_lowercase(&mut data[..len]);
+        // Full-buffer processing: zeros are not letters, so case conversion
+        // leaves them unchanged. The compiler sees CAP as the length, enabling
+        // full unrolling with no remainder loops.
+        crate::simd::make_lowercase(&mut data);
 
         let hash = hash::hash::<CAP>(&data[..len]);
         let header = pack_header(len as u16, hash);
@@ -1293,14 +1302,13 @@ impl<const CAP: usize> AsciiString<CAP> {
             self.len()
         );
 
-        // SAFETY: new_len <= self.len() <= CAP, and data[..new_len] is valid ASCII
-        let hash = hash::hash::<CAP>(&self.data[..new_len]);
+        let mut data = self.data;
+        data[new_len..].fill(0);
+
+        let hash = hash::hash::<CAP>(&data[..new_len]);
         let header = pack_header(new_len as u16, hash);
 
-        Self {
-            header,
-            data: self.data,
-        }
+        Self { header, data }
     }
 
     /// Returns a new string truncated to the specified length, or `None` if
@@ -1326,13 +1334,13 @@ impl<const CAP: usize> AsciiString<CAP> {
             return None;
         }
 
-        let hash = hash::hash::<CAP>(&self.data[..new_len]);
+        let mut data = self.data;
+        data[new_len..].fill(0);
+
+        let hash = hash::hash::<CAP>(&data[..new_len]);
         let header = pack_header(new_len as u16, hash);
 
-        Some(Self {
-            header,
-            data: self.data,
-        })
+        Some(Self { header, data })
     }
 
     // =========================================================================
@@ -1426,13 +1434,13 @@ impl<const CAP: usize> AsciiString<CAP> {
             .rposition(|&b| !b.is_ascii_whitespace())
             .map_or(0, |i| i + 1);
 
-        let hash = hash::hash::<CAP>(&self.data[..new_len]);
+        let mut data = self.data;
+        data[new_len..].fill(0);
+
+        let hash = hash::hash::<CAP>(&data[..new_len]);
         let header = pack_header(new_len as u16, hash);
 
-        Self {
-            header,
-            data: self.data,
-        }
+        Self { header, data }
     }
 
     // =========================================================================
@@ -1793,12 +1801,33 @@ impl<const CAP: usize> PartialOrd for AsciiString<CAP> {
 }
 
 impl<const CAP: usize> Ord for AsciiString<CAP> {
-    /// Lexicographic ordering based on byte values.
+    /// Lexicographic ordering using word-at-a-time comparison.
     ///
-    /// Delegates to the standard library's optimized slice comparison.
+    /// Compares all CAP bytes as u64 words using `from_be_bytes` for correct
+    /// lexicographic ordering (compiles to `bswap` on little-endian x86).
+    /// Zero-padding means shorter content naturally sorts before longer content
+    /// (0x00 < any ASCII byte). The loop is fully unrolled by the compiler
+    /// since CAP is a const generic.
     #[inline]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.as_bytes().cmp(other.as_bytes())
+        let mut i = 0;
+        while i < CAP {
+            // SAFETY: CAP % 8 == 0 guarantees i + 8 <= CAP
+            let a = u64::from_be_bytes(unsafe {
+                self.data.as_ptr().add(i).cast::<[u8; 8]>().read()
+            });
+            let b = u64::from_be_bytes(unsafe {
+                other.data.as_ptr().add(i).cast::<[u8; 8]>().read()
+            });
+            match a.cmp(&b) {
+                core::cmp::Ordering::Equal => {}
+                ord => return ord,
+            }
+            i += 8;
+        }
+        // Tiebreaker: handles edge case where content contains 0x00
+        // and two strings with different lengths have identical data.
+        self.len().cmp(&other.len())
     }
 }
 
