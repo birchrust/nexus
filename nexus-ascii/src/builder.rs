@@ -840,8 +840,8 @@ mod tests {
 
     #[test]
     fn test_capacity_exhausted() {
-        let mut builder: AsciiStringBuilder<5> = AsciiStringBuilder::new();
-        builder.push_str("Hello").unwrap();
+        let mut builder: AsciiStringBuilder<8> = AsciiStringBuilder::new();
+        builder.push_str("HelloYo!").unwrap();
         assert_eq!(builder.remaining(), 0);
 
         let err = builder.push_byte(b'!').unwrap_err();

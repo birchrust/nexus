@@ -91,7 +91,7 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
 /// Validate ASCII with compile-time capacity bound.
 ///
 /// Uses `CAP` to eliminate unreachable SIMD loops at compile time.
-/// For fixed-capacity types like `AsciiString<7>`, the compiler inlines
+/// For fixed-capacity types like `AsciiString<8>`, the compiler inlines
 /// only the scalar path, eliminating SIMD setup overhead entirely.
 ///
 /// Dispatch per configuration:
@@ -192,7 +192,7 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 /// Validate printable ASCII with compile-time capacity bound.
 ///
 /// Uses `CAP` to eliminate unreachable SIMD loops at compile time.
-/// For fixed-capacity types like `AsciiText<7>`, the compiler inlines
+/// For fixed-capacity types like `AsciiText<8>`, the compiler inlines
 /// only the scalar path, eliminating SIMD setup overhead entirely.
 ///
 /// Dispatch per configuration:

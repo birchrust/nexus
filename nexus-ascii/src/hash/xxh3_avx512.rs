@@ -2,6 +2,11 @@
 //!
 //! Uses AVX-512 SIMD for large inputs (>240 bytes), scalar for smaller inputs.
 //! Compile with `RUSTFLAGS="-C target-feature=+avx512f"`.
+//!
+//! AVX-512 intrinsics were stabilized in Rust 1.89.0. Since this module only
+//! compiles when explicitly opted in via target features, the MSRV lint is
+//! suppressed — users enabling AVX-512 are on a sufficiently recent toolchain.
+#![allow(clippy::incompatible_msrv)]
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -131,7 +136,7 @@ unsafe fn accumulate_stripe_avx512(
         let keyed = _mm512_xor_si512(data, secret);
 
         // Extract low and high 32-bit parts for multiplication
-        let lo32 = _mm512_and_si512(keyed, _mm512_set1_epi64(0xFFFFFFFF));
+        let lo32 = _mm512_and_si512(keyed, _mm512_set1_epi64(0xFFFF_FFFF));
         let hi32 = _mm512_srli_epi64(keyed, 32);
 
         // Multiply lo32 * hi32 (32-bit multiply, 64-bit result)

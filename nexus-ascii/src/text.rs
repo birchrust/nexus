@@ -797,8 +797,8 @@ mod tests {
 
     #[test]
     fn test_try_from_bytes_too_long() {
-        let err = AsciiText::<4>::try_from_bytes(b"Hello").unwrap_err();
-        assert!(matches!(err, AsciiError::TooLong { len: 5, cap: 4 }));
+        let err = AsciiText::<8>::try_from_bytes(b"Hello Wor").unwrap_err();
+        assert!(matches!(err, AsciiError::TooLong { len: 9, cap: 8 }));
     }
 
     #[test]

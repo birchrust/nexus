@@ -187,6 +187,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub const fn empty() -> Self {
+        assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
         Self {
             header: EMPTY_HEADER,
             data: [0u8; CAP],
@@ -220,6 +221,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub const fn from_static(s: &'static str) -> Self {
+        assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
         assert!(CAP <= 128, "from_static only supports CAP <= 128");
 
         let bytes = s.as_bytes();
@@ -276,6 +278,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub const fn from_static_bytes(bytes: &'static [u8]) -> Self {
+        assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
         assert!(CAP <= 128, "from_static_bytes only supports CAP <= 128");
 
         let len = bytes.len();
@@ -327,6 +330,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
+        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
         debug_assert!(bytes.len() <= CAP, "bytes exceed capacity");
         debug_assert!(bytes.iter().all(|&b| b <= 127), "bytes contain non-ASCII");
 
@@ -352,12 +356,16 @@ impl<const CAP: usize> AsciiString<CAP> {
     ///
     /// The hash is computed from `data[..len]`.
     #[inline]
-    pub(crate) fn from_parts_unchecked(len: usize, data: [u8; CAP]) -> Self {
+    pub(crate) fn from_parts_unchecked(len: usize, mut data: [u8; CAP]) -> Self {
+        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
         debug_assert!(len <= CAP, "len exceeds capacity");
         debug_assert!(
             data[..len].iter().all(|&b| b <= 127),
             "data contains non-ASCII"
         );
+
+        // Zero-pad beyond content for word-aligned processing invariant
+        data[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&data[..len]);
         let header = pack_header(len as u16, hash);
@@ -379,7 +387,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// assert_eq!(s.as_str(), "hello");
     ///
     /// // Too long
-    /// let err = AsciiString::<4>::try_from_bytes(b"hello").unwrap_err();
+    /// let err = AsciiString::<8>::try_from_bytes(b"hello world").unwrap_err();
     /// assert!(matches!(err, AsciiError::TooLong { .. }));
     ///
     /// // Invalid ASCII
@@ -455,7 +463,8 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Ok::<(), nexus_ascii::AsciiError>(())
     /// ```
     #[inline]
-    pub fn try_from_raw(buffer: [u8; CAP]) -> Result<Self, AsciiError> {
+    pub fn try_from_raw(mut buffer: [u8; CAP]) -> Result<Self, AsciiError> {
+        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
         let len = find_null_byte(&buffer);
 
         // Fast ASCII validation for bytes before the null terminator
@@ -464,7 +473,9 @@ impl<const CAP: usize> AsciiString<CAP> {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
-        // Construct directly (avoid calling from_raw_unchecked which re-searches for null)
+        // Zero-pad beyond content for word-aligned processing invariant
+        buffer[len..].fill(0);
+
         let hash = hash::hash::<CAP>(&buffer[..len]);
         let header = pack_header(len as u16, hash);
 
@@ -496,13 +507,17 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// assert_eq!(s.as_str(), "BTC-USD");
     /// ```
     #[inline]
-    pub unsafe fn from_raw_unchecked(buffer: [u8; CAP]) -> Self {
+    pub unsafe fn from_raw_unchecked(mut buffer: [u8; CAP]) -> Self {
+        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
         let len = find_null_byte(&buffer);
 
         debug_assert!(
             buffer[..len].iter().all(|&b| b <= 127),
             "buffer contains non-ASCII before null"
         );
+
+        // Zero-pad beyond content for word-aligned processing invariant
+        buffer[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&buffer[..len]);
         let header = pack_header(len as u16, hash);
@@ -541,7 +556,8 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Ok::<(), nexus_ascii::AsciiError>(())
     /// ```
     #[inline]
-    pub fn try_from_right_padded(buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
+    pub fn try_from_right_padded(mut buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
+        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
         // Find length by stripping trailing pad bytes
         let len = buffer
             .iter()
@@ -553,6 +569,9 @@ impl<const CAP: usize> AsciiString<CAP> {
         if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(&buffer[..len]) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
+
+        // Zero-pad beyond content for word-aligned processing invariant
+        buffer[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&buffer[..len]);
         let header = pack_header(len as u16, hash);
@@ -2186,10 +2205,10 @@ mod tests {
 
     #[test]
     fn too_long() {
-        let result = AsciiString::<4>::try_from("hello");
+        let result = AsciiString::<8>::try_from("hello world");
         assert!(matches!(
             result,
-            Err(AsciiError::TooLong { len: 5, cap: 4 })
+            Err(AsciiError::TooLong { len: 11, cap: 8 })
         ));
     }
 
@@ -3674,7 +3693,7 @@ mod tests {
 
         #[test]
         fn deserialize_json_too_long() {
-            let result: Result<AsciiString<4>, _> = serde_json::from_str("\"hello\"");
+            let result: Result<AsciiString<8>, _> = serde_json::from_str("\"hello world\"");
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("exceeds capacity"));
@@ -3737,7 +3756,7 @@ mod tests {
         #[test]
         fn try_from_bytes_too_long() {
             let b = Bytes::from_static(b"hello world");
-            let result: Result<AsciiString<4>, _> = AsciiString::try_from(b);
+            let result: Result<AsciiString<8>, _> = AsciiString::try_from(b);
             assert!(matches!(result, Err(AsciiError::TooLong { .. })));
         }
 
