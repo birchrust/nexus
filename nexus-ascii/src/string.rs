@@ -8,20 +8,6 @@ use crate::hash;
 use crate::simd;
 use crate::str_ref::AsciiStr;
 
-// =============================================================================
-// Header Packing
-// =============================================================================
-
-/// Pack length and hash into a single u64 header.
-///
-/// Layout: bits 0-47 = hash (lower 48 bits), bits 48-63 = length.
-/// This layout ensures hash bits are in lower positions for optimal HashMap bucket distribution.
-#[inline(always)]
-pub(crate) const fn pack_header(len: u16, hash: u64) -> u64 {
-    // Put length in upper 16 bits, hash in lower 48 bits
-    ((len as u64) << 48) | (hash & 0x0000_FFFF_FFFF_FFFF)
-}
-
 /// Extract length from header (stored in upper 16 bits).
 #[inline(always)]
 const fn unpack_len(header: u64) -> usize {
@@ -131,7 +117,7 @@ pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
 }
 
 /// Precomputed header for empty string (compile-time).
-const EMPTY_HEADER: u64 = pack_header(0, hash::hash_const::<0>(&[]));
+const EMPTY_HEADER: u64 = hash::pack_header(0, hash::hash_const::<0>(&[]));
 
 // =============================================================================
 // AsciiString
@@ -238,7 +224,7 @@ impl<const CAP: usize> AsciiString<CAP> {
 
         // Compute hash at compile time
         let h = hash::hash_const::<CAP>(bytes);
-        let header = pack_header(len as u16, h);
+        let header = hash::pack_header(len as u16, h);
 
         // Copy bytes into data array
         let mut data = [0u8; CAP];
@@ -294,7 +280,7 @@ impl<const CAP: usize> AsciiString<CAP> {
 
         // Compute hash at compile time
         let h = hash::hash_const::<CAP>(bytes);
-        let header = pack_header(len as u16, h);
+        let header = hash::pack_header(len as u16, h);
 
         // Copy bytes into data array
         let mut data = [0u8; CAP];
@@ -336,7 +322,7 @@ impl<const CAP: usize> AsciiString<CAP> {
 
         let len = bytes.len();
         let hash = hash::hash::<CAP>(bytes);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         let mut data = [0u8; CAP];
         // SAFETY: len <= CAP guaranteed by caller
@@ -368,7 +354,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         data[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&data[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
         Self { header, data }
     }
 
@@ -477,7 +463,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         buffer[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&buffer[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Ok(Self {
             header,
@@ -520,7 +506,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         buffer[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&buffer[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Self {
             header,
@@ -574,7 +560,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         buffer[len..].fill(0);
 
         let hash = hash::hash::<CAP>(&buffer[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Ok(Self {
             header,
@@ -1236,7 +1222,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         crate::simd::make_uppercase(&mut data);
 
         let hash = hash::hash::<CAP>(&data[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Self { header, data }
     }
@@ -1269,7 +1255,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         crate::simd::make_lowercase(&mut data);
 
         let hash = hash::hash::<CAP>(&data[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Self { header, data }
     }
@@ -1306,7 +1292,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         data[new_len..].fill(0);
 
         let hash = hash::hash::<CAP>(&data[..new_len]);
-        let header = pack_header(new_len as u16, hash);
+        let header = hash::pack_header(new_len as u16, hash);
 
         Self { header, data }
     }
@@ -1338,7 +1324,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         data[new_len..].fill(0);
 
         let hash = hash::hash::<CAP>(&data[..new_len]);
-        let header = pack_header(new_len as u16, hash);
+        let header = hash::pack_header(new_len as u16, hash);
 
         Some(Self { header, data })
     }
@@ -1379,7 +1365,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         data[..new_len].copy_from_slice(&bytes[start..end]);
 
         let hash = hash::hash::<CAP>(&data[..new_len]);
-        let header = pack_header(new_len as u16, hash);
+        let header = hash::pack_header(new_len as u16, hash);
 
         Self { header, data }
     }
@@ -1409,7 +1395,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         data[..new_len].copy_from_slice(&bytes[start..]);
 
         let hash = hash::hash::<CAP>(&data[..new_len]);
-        let header = pack_header(new_len as u16, hash);
+        let header = hash::pack_header(new_len as u16, hash);
 
         Self { header, data }
     }
@@ -1438,7 +1424,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         data[new_len..].fill(0);
 
         let hash = hash::hash::<CAP>(&data[..new_len]);
-        let header = pack_header(new_len as u16, hash);
+        let header = hash::pack_header(new_len as u16, hash);
 
         Self { header, data }
     }
@@ -1476,7 +1462,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         }
 
         let hash = hash::hash::<CAP>(&data[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Self { header, data }
     }
@@ -1511,7 +1497,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         }
 
         let hash = hash::hash::<CAP>(&data[..len]);
-        let header = pack_header(len as u16, hash);
+        let header = hash::pack_header(len as u16, hash);
 
         Self { header, data }
     }
@@ -1581,7 +1567,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         }
 
         let hash = hash::hash::<CAP>(&result[..result_len]);
-        let header = pack_header(result_len as u16, hash);
+        let header = hash::pack_header(result_len as u16, hash);
 
         Ok(Self {
             header,
@@ -1636,7 +1622,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         result[pos + to.len()..new_len].copy_from_slice(&src[pos + from.len()..]);
 
         let hash = hash::hash::<CAP>(&result[..new_len]);
-        let header = pack_header(new_len as u16, hash);
+        let header = hash::pack_header(new_len as u16, hash);
 
         Ok(Self {
             header,
@@ -1832,15 +1818,9 @@ impl<const CAP: usize> Ord for AsciiString<CAP> {
 }
 
 impl<const CAP: usize> Hash for AsciiString<CAP> {
-    /// Hashes the ASCII string.
-    ///
-    /// Uses the precomputed hash from the header. The lower 48 bits contain
-    /// the XXH3 hash, making this ideal for HashMap bucket distribution.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // The header has hash in lower 48 bits, length in upper 16 bits.
-        // Using the whole header means equal strings hash equally.
-        self.header.hash(state);
+        state.write_u64(hash::spread_h2(self.header));
     }
 }
 

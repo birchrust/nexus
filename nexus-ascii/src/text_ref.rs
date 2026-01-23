@@ -9,7 +9,6 @@ use crate::char::AsciiChar;
 use crate::hash;
 use crate::simd;
 use crate::str_ref::AsciiStr;
-use crate::string::pack_header;
 use crate::AsciiError;
 
 // =============================================================================
@@ -428,16 +427,10 @@ impl Ord for AsciiTextStr {
 }
 
 impl Hash for AsciiTextStr {
-    /// Hashes the printable ASCII string slice.
-    ///
-    /// Computes the same hash as `AsciiText` would for the same content,
-    /// enabling `Borrow<AsciiTextStr>` to work correctly with HashMap lookups.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Compute the same header value that AsciiText would have
-        let hash48 = hash::hash_unbounded(&self.0);
-        let header = pack_header(self.0.len() as u16, hash48);
-        header.hash(state);
+        let header = hash::pack_header(self.0.len() as u16, hash::hash_unbounded(&self.0));
+        state.write_u64(hash::spread_h2(header));
     }
 }
 

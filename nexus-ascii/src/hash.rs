@@ -177,6 +177,30 @@ pub const fn expand_48_to_64(h: [u8; 6]) -> u64 {
 }
 
 // =============================================================================
+// Header packing
+// =============================================================================
+
+/// Pack length and hash into a single u64 header.
+///
+/// Layout: bits 0-47 = hash (lower 48 bits), bits 48-63 = length.
+/// This layout ensures hash bits are in lower positions for optimal HashMap bucket distribution.
+#[inline(always)]
+pub(crate) const fn pack_header(len: u16, hash: u64) -> u64 {
+    ((len as u64) << 48) | (hash & 0x0000_FFFF_FFFF_FFFF)
+}
+
+/// Spread hash entropy into the upper bits of a packed header for hashbrown h2 distribution.
+///
+/// hashbrown uses bits 57..63 (h2) for SIMD group filtering. With our header layout
+/// `(len_16 << 48) | hash_48`, h2 = `len >> 9` = 0 for all strings ≤ 512 bytes.
+/// XORing the lower hash bits into the upper portion gives h2 = `(len ^ hash[0:15]) >> 9`,
+/// which varies per key while preserving h1 (bucket selection) unchanged.
+#[inline(always)]
+pub(crate) const fn spread_h2(header: u64) -> u64 {
+    header ^ (header << 48)
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

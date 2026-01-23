@@ -8,7 +8,6 @@ use core::hash::{Hash, Hasher};
 use crate::char::AsciiChar;
 use crate::hash;
 use crate::simd;
-use crate::string::pack_header;
 use crate::AsciiError;
 
 // =============================================================================
@@ -656,16 +655,10 @@ impl Ord for AsciiStr {
 }
 
 impl Hash for AsciiStr {
-    /// Hashes the ASCII string slice.
-    ///
-    /// Computes the same hash as `AsciiString` would for the same content,
-    /// enabling `Borrow<AsciiStr>` to work correctly with HashMap lookups.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Compute the same header value that AsciiString would have
-        let hash48 = hash::hash_unbounded(&self.0);
-        let header = pack_header(self.0.len() as u16, hash48);
-        header.hash(state);
+        let header = hash::pack_header(self.0.len() as u16, hash::hash_unbounded(&self.0));
+        state.write_u64(hash::spread_h2(header));
     }
 }
 
