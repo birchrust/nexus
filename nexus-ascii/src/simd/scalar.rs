@@ -178,6 +178,7 @@ const fn eq_ignore_ascii_case_word(a: u64, b: u64) -> bool {
 /// assert!(!eq_ignore_ascii_case(b"Hello", b"World"));
 /// ```
 #[inline]
+#[allow(clippy::many_single_char_names)]
 pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
