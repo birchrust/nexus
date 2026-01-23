@@ -23,15 +23,15 @@ taskset -c 0 cargo run --release --features nohash --example perf_hashmap
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `empty()` | 16 | 18 | 32 |
-| `try_from` (7B "BTC-USD") | 16 | 24 | 56 |
-| `try_from` (20B) | 22 | 26 | 42 |
-| `try_from` (32B, full cap) | 20 | 28 | 62 |
-| `from_bytes_unchecked` (7B) | 18 | 20 | 24 |
+| `empty()` | 16 | 28 | 32 |
+| `try_from` (7B "BTC-USD") | 18 | 38 | 102 |
+| `try_from` (20B) | 24 | 50 | 66 |
+| `try_from` (32B, full cap) | 24 | 56 | 100 |
+| `from_bytes_unchecked` (7B) | 18 | 20 | 26 |
 
 Construction includes: ASCII validation (SIMD) + XXH3 hash computation + inline copy +
-zero-padding. At 7B (typical symbol), construction is **16 cycles** — same cost as a
-single L1 cache miss.
+zero-padding. The copy uses an overlap-trick inline implementation (no memcpy call) for
+inputs <= 32 bytes. At 7B (typical symbol), construction is **18 cycles**.
 
 ---
 
@@ -39,10 +39,10 @@ single L1 cache miss.
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `eq` (same content) | 16 | 20 | 20 |
-| `eq` (different content) | 16 | 18 | 20 |
-| `eq` (different length) | 16 | 18 | 18 |
-| Baseline: `u64 == u64` | 16 | 18 | 18 |
+| `eq` (same content) | 18 | 20 | 24 |
+| `eq` (different content) | 18 | 20 | 20 |
+| `eq` (different length) | 16 | 18 | 26 |
+| Baseline: `u64 == u64` | 16 | 20 | 20 |
 
 Equality is a single `u64` comparison (packed hash+length header). Matches
 the cost of a raw integer compare — **most non-equal strings are rejected
@@ -54,11 +54,11 @@ without touching the byte buffer.**
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `HashMap::get` (100 entries) | 22 | 26 | 30 |
-| `HashMap::insert` (new key) | 188 | 326 | 510 |
+| `HashMap::get` (100 entries) | 20 | 24 | 42 |
+| `HashMap::insert` (new key) | 190 | 368 | 502 |
 
 Lookups are fast because `Hash` returns the precomputed hash finalized with a
-single Fibonacci multiply (~1 cycle). The 22-cycle p50 is dominated by the
+single Fibonacci multiply (~1 cycle). The 20-cycle p50 is dominated by the
 HashMap probe, not hashing.
 
 ---
@@ -67,39 +67,39 @@ HashMap probe, not hashing.
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `cmp()` equal (7B) | 18 | 20 | 34 |
+| `cmp()` equal (7B) | 16 | 20 | 34 |
 | `cmp()` different (7B) | 16 | 20 | 34 |
-| `cmp()` different lengths (7B vs 3B) | 18 | 18 | 20 |
-| `cmp()` equal (37B) | 16 | 18 | 18 |
-| `cmp()` differ at end (37B) | 16 | 18 | 20 |
-| `eq_ignore_ascii_case()` same case (7B) | 16 | 18 | 20 |
-| `eq_ignore_ascii_case()` diff case (7B) | 16 | 18 | 18 |
-| `eq_ignore_ascii_case()` same case (38B) | 16 | 18 | 20 |
-| `eq_ignore_ascii_case()` diff case (38B) | 18 | 20 | 26 |
-| `eq_ignore_ascii_case()` same case (69B) | 18 | 20 | 48 |
-| `eq_ignore_ascii_case()` diff case (69B) | 22 | 26 | 28 |
-| `starts_with()` 3B prefix (7B string) | 18 | 20 | 20 |
-| `ends_with()` 3B suffix (7B string) | 16 | 18 | 22 |
-| `contains()` 1B needle (7B string) | 16 | 20 | 36 |
+| `cmp()` different lengths (7B vs 3B) | 16 | 18 | 20 |
+| `cmp()` equal (37B) | 16 | 18 | 20 |
+| `cmp()` differ at end (37B) | 18 | 20 | 20 |
+| `eq_ignore_ascii_case()` same case (7B) | 18 | 20 | 20 |
+| `eq_ignore_ascii_case()` diff case (7B) | 18 | 20 | 20 |
+| `eq_ignore_ascii_case()` same case (38B) | 18 | 20 | 22 |
+| `eq_ignore_ascii_case()` diff case (38B) | 18 | 22 | 32 |
+| `eq_ignore_ascii_case()` same case (69B) | 20 | 22 | 30 |
+| `eq_ignore_ascii_case()` diff case (69B) | 22 | 28 | 52 |
+| `starts_with()` 3B prefix (7B string) | 20 | 22 | 24 |
+| `ends_with()` 3B suffix (7B string) | 18 | 20 | 22 |
+| `contains()` 1B needle (7B string) | 18 | 20 | 32 |
 
 **Baselines (std `&str`):**
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `[u8] cmp()` equal (baseline) | 20 | 22 | 24 |
-| `[u8] cmp()` different (baseline) | 18 | 22 | 22 |
-| `&str eq_ignore_ascii_case` (7B) | 22 | 26 | 56 |
-| `&str eq_ignore_ascii_case` (38B) | 114 | 122 | 212 |
-| `&str starts_with` | 18 | 20 | 22 |
-| `&str ends_with` | 18 | 20 | 20 |
-| `&str contains` | 16 | 18 | 22 |
+| `[u8] cmp()` equal (baseline) | 22 | 32 | 66 |
+| `[u8] cmp()` different (baseline) | 20 | 24 | 26 |
+| `&str eq_ignore_ascii_case` (7B) | 24 | 30 | 58 |
+| `&str eq_ignore_ascii_case` (38B) | 124 | 204 | 356 |
+| `&str starts_with` | 18 | 22 | 24 |
+| `&str ends_with` | 18 | 22 | 24 |
+| `&str contains` | 18 | 20 | 22 |
 
 `cmp()` uses word-at-a-time comparison (u64 loads with `bswap` for
 lexicographic ordering). Full-buffer processing means no remainder loops.
 
 `eq_ignore_ascii_case` uses full-buffer SWAR for < 64B (zero domain-crossing
-overhead) and SSE2/AVX2 for >= 64B. At 38B, nexus-ascii is **6-7x faster**
-than std at p50 (18 vs 114 cycles).
+overhead) and SSE2/AVX2 for >= 64B. At 38B, nexus-ascii is **~7x faster**
+than std at p50 (18 vs 124 cycles).
 
 ---
 
@@ -108,18 +108,18 @@ than std at p50 (18 vs 114 cycles).
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
 | `to_ascii_uppercase` (7B) | 18 | 20 | 34 |
-| `to_ascii_lowercase` (7B) | 18 | 18 | 34 |
-| `to_ascii_uppercase` (20B) | 16 | 48 | 94 |
-| `to_ascii_lowercase` (20B) | 16 | 20 | 44 |
-| `to_ascii_uppercase` (32B) | 16 | 18 | 44 |
-| `to_ascii_lowercase` (32B) | 18 | 20 | 40 |
+| `to_ascii_lowercase` (7B) | 18 | 20 | 36 |
+| `to_ascii_uppercase` (20B) | 18 | 20 | 20 |
+| `to_ascii_lowercase` (20B) | 18 | 20 | 30 |
+| `to_ascii_uppercase` (32B) | 18 | 20 | 22 |
+| `to_ascii_lowercase` (32B) | 18 | 20 | 24 |
 
 **Baselines (std in-place):**
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `std make_ascii_uppercase` (20B) | 16 | 18 | 18 |
-| `std make_ascii_lowercase` (20B) | 16 | 18 | 20 |
+| `std make_ascii_uppercase` (20B) | 18 | 20 | 20 |
+| `std make_ascii_lowercase` (20B) | 18 | 20 | 20 |
 
 Case conversion uses full-buffer SSE2 (16B/iter) with no domain crossing —
 results stay in SIMD registers and are stored directly. The slightly higher
@@ -150,11 +150,11 @@ the hash and applies zero-padding.
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `truncated` (54B -> 5B) | 16 | 18 | 20 |
-| `truncated` (54B -> 30B) | 16 | 28 | 32 |
-| `truncated` (53B -> 53B, no change) | 20 | 46 | 92 |
-| `try_truncated` (54B -> 5B) | 18 | 20 | 20 |
-| `try_truncated` (fails) | 18 | 20 | 28 |
+| `truncated` (54B -> 5B) | 18 | 20 | 22 |
+| `truncated` (54B -> 30B) | 18 | 26 | 34 |
+| `truncated` (53B -> 53B, no change) | 18 | 20 | 22 |
+| `try_truncated` (54B -> 5B) | 18 | 20 | 22 |
+| `try_truncated` (fails) | 18 | 20 | 22 |
 
 Truncation includes zeroing the tail and recomputing the hash.
 
@@ -180,25 +180,25 @@ copy.
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
 | **7B (trading symbols)** |
-| `AsciiString<32>` from JSON | 50 | 68 | 126 |
-| `String` from JSON | 50 | 122 | 138 |
-| `&str` from JSON (borrowed) | 30 | 98 | 100 |
-| `try_from_str` (no JSON) | 20 | 50 | 94 |
+| `AsciiString<32>` from JSON | 50 | 114 | 176 |
+| `String` from JSON | 54 | 104 | 156 |
+| `&str` from JSON (borrowed) | 34 | 36 | 76 |
+| `try_from_str` (no JSON) | 22 | 24 | 40 |
 | **20B (order IDs)** |
-| `AsciiString<32>` from JSON | 50 | 104 | 160 |
-| `String` from JSON | 50 | 120 | 210 |
-| `&str` from JSON (borrowed) | 28 | 32 | 66 |
-| `try_from_str` (no JSON) | 22 | 24 | 30 |
+| `AsciiString<32>` from JSON | 56 | 112 | 166 |
+| `String` from JSON | 52 | 126 | 176 |
+| `&str` from JSON (borrowed) | 30 | 56 | 124 |
+| `try_from_str` (no JSON) | 24 | 26 | 76 |
 | **38B (long identifiers)** |
-| `AsciiString<64>` from JSON | 70 | 144 | 148 |
-| `String` from JSON | 62 | 130 | 260 |
-| `&str` from JSON (borrowed) | 48 | 54 | 98 |
-| `try_from_str` (no JSON) | 22 | 24 | 38 |
+| `AsciiString<64>` from JSON | 76 | 128 | 154 |
+| `String` from JSON | 62 | 128 | 152 |
+| `&str` from JSON (borrowed) | 50 | 98 | 170 |
+| `try_from_str` (no JSON) | 22 | 26 | 44 |
 | **64B (large protocol fields)** |
-| `AsciiString<128>` from JSON | 84 | 174 | 306 |
-| `String` from JSON | 68 | 144 | 264 |
-| `&str` from JSON (borrowed) | 56 | 66 | 104 |
-| `try_from_str` (no JSON) | 18 | 22 | 32 |
+| `AsciiString<128>` from JSON | 86 | 174 | 284 |
+| `String` from JSON | 70 | 134 | 212 |
+| `&str` from JSON (borrowed) | 56 | 60 | 100 |
+| `try_from_str` (no JSON) | 20 | 22 | 52 |
 
 **Key takeaways:**
 
@@ -225,12 +225,12 @@ copy.
 |-----------|-----|-----|------|-------------|
 | 8B | 22 | 24 | 26 | 2.75 |
 | 16B | 20 | 22 | 26 | 1.25 |
-| 32B | 28 | 32 | 42 | 0.88 |
-| 64B | 34 | 38 | 56 | 0.53 |
-| 128B | 46 | 48 | 82 | 0.36 |
-| 256B (SIMD) | 60 | 66 | 94 | 0.23 |
-| 1KB (SIMD) | 120 | 134 | 216 | 0.12 |
-| 4KB (SIMD) | 364 | 386 | 694 | 0.09 |
+| 32B | 30 | 34 | 50 | 0.94 |
+| 64B | 36 | 40 | 52 | 0.56 |
+| 128B | 50 | 52 | 90 | 0.39 |
+| 256B (SIMD) | 66 | 72 | 100 | 0.26 |
+| 1KB (SIMD) | 128 | 136 | 210 | 0.13 |
+| 4KB (SIMD) | 414 | 424 | 764 | 0.10 |
 
 For AsciiString (CAP <= 128), hashing is always scalar XXH3. The SIMD paths
 (SSE2/AVX2/AVX-512) only activate for inputs > 240B, which matters for
@@ -306,10 +306,10 @@ the extra zero-byte processing.
 
 | Input | nexus p50 | nexus p999 | std p50 | std p999 |
 |-------|-----------|------------|---------|----------|
-| 7B | 16 | 34 | 22 | 56 |
-| 38B | 18 | 30 | 114 | 212 |
+| 7B | 18 | 20 | 24 | 58 |
+| 38B | 18 | 32 | 124 | 356 |
 
-At 38B, nexus-ascii is **6.3x faster at p50** and **7x better at p999**
+At 38B, nexus-ascii is **6.9x faster at p50** and **11x better at p999**
 compared to std's `eq_ignore_ascii_case`. The gap widens with length because
 std processes byte-by-byte while nexus uses SWAR (8B/iter).
 
@@ -395,9 +395,9 @@ taskset -c 0 cargo run --release --example perf_vs_ascii_crate
 
 | Size | nexus p50 | ascii p50 | std String p50 | nexus vs ascii |
 |------|-----------|-----------|----------------|----------------|
-| 7B | 18 | 30 | 20 | 1.7x faster |
-| 20B | 18 | 34 | 20 | 1.9x faster |
-| 38B | 20 | 32 | 18 | 1.6x faster |
+| 7B | 18 | 32 | 20 | 1.8x faster |
+| 20B | 20 | 36 | 22 | 1.8x faster |
+| 38B | 22 | 36 | 20 | 1.6x faster |
 
 nexus-ascii avoids heap allocation entirely. The `ascii` crate allocates on
 every construction, adding malloc overhead (~12-14 cycles) on top of validation.
@@ -406,9 +406,9 @@ every construction, adding malloc overhead (~12-14 cycles) on top of validation.
 
 | Size | nexus p50 | ascii p50 | std p50 | nexus vs ascii |
 |------|-----------|-----------|---------|----------------|
-| 7B | 18 | 32 | 18 | 1.8x faster |
-| 20B | 18 | 40 | 18 | 2.2x faster |
-| 38B | 28 | 62 | 18 | 2.2x faster |
+| 7B | 18 | 34 | 20 | 1.9x faster |
+| 20B | 18 | 44 | 20 | 2.4x faster |
+| 38B | 24 | 68 | 20 | 2.8x faster |
 
 nexus uses full-buffer SIMD (SSE2 16B/iter, no domain crossing). The `ascii`
 crate clones + modifies in-place (malloc + byte-by-byte conversion). std wins
@@ -419,8 +419,8 @@ new value (includes hash recomputation).
 
 | Size | nexus p50 | ascii p50 | std p50 | nexus vs ascii |
 |------|-----------|-----------|---------|----------------|
-| 7B | 18 | 22 | 20 | 1.2x faster |
-| 38B | 18 | 84 | 112 | 4.7x faster |
+| 7B | 20 | 26 | 22 | 1.3x faster |
+| 38B | 20 | 94 | 124 | 4.7x faster |
 
 At 38B, nexus-ascii is **4.7x faster** than `ascii` crate and **6.2x faster**
 than std. nexus uses full-buffer SWAR (8B/iter, zero domain crossing). Both
@@ -430,9 +430,9 @@ than std. nexus uses full-buffer SWAR (8B/iter, zero domain crossing). Both
 
 | Impl | p50 | p99 | p999 |
 |------|-----|-----|------|
-| nexus (default hasher) | 30 | 54 | 94 |
-| ascii (default hasher) | 46 | 52 | 108 |
-| std String (default hasher) | 34 | 40 | 78 |
+| nexus (default hasher) | 32 | 36 | 38 |
+| ascii (default hasher) | 48 | 54 | 92 |
+| std String (default hasher) | 36 | 38 | 62 |
 
 nexus wins due to precomputed hash (Hash trait returns the stored header
 finalized with a single multiply). The `ascii` crate and String must rehash
@@ -455,10 +455,10 @@ taskset -c 0 cargo run --release --features nohash --example perf_hashmap
 
 | Map size | nohash p50 | ahash p50 | fxhash p50 | default p50 | String p50 |
 |----------|-----------|-----------|-----------|-------------|------------|
-| 10 | 18 | 18 | 18 | 32 | 36 |
-| 100 | 20 | 20 | 18 | 34 | 36 |
-| 1,000 | 20 | 20 | 18 | 34 | 36 |
-| 10,000 | 20 | 20 | 20 | 34 | 38 |
+| 10 | 16 | 20 | 20 | 32 | 38 |
+| 100 | 20 | 20 | 20 | 32 | 38 |
+| 1,000 | 20 | 20 | 20 | 32 | 36 |
+| 10,000 | 20 | 20 | 18 | 34 | 38 |
 
 nohash/ahash/fxhash are **tied at 18-20 cycles** — all benefit from our
 precomputed hash (the Hash impl writes a single u64, so external hashers
@@ -469,12 +469,12 @@ dominated by the bucket probe, not hashing.
 
 | Map size | nohash p50 | ahash p50 | fxhash p50 | default p50 | String p50 |
 |----------|-----------|-----------|-----------|-------------|------------|
-| 10 | 20 | 20 | 20 | 28 | 36 |
-| 100 | 20 | 20 | 20 | 28 | 36 |
-| 1,000 | 20 | 20 | 18 | 28 | 36 |
-| 10,000 | 20 | 20 | 20 | 28 | 36 |
+| 10 | 20 | 20 | 20 | 34 | 36 |
+| 100 | 20 | 20 | 18 | 28 | 36 |
+| 1,000 | 18 | 20 | 18 | 30 | 34 |
+| 10,000 | 20 | 20 | 20 | 28 | 38 |
 
-Miss performance is **constant 20 cycles** for nohash/ahash/fxhash. The
+Miss performance is **constant 18-20 cycles** for nohash/ahash/fxhash. The
 Fibonacci finalizer gives proper h2 control byte distribution, so SIMD group
 filtering rejects non-matching slots without equality checks.
 
@@ -482,10 +482,10 @@ filtering rejects non-matching slots without equality checks.
 
 | Map size | nohash p50 | ahash p50 | fxhash p50 | default p50 | String p50 |
 |----------|-----------|-----------|-----------|-------------|------------|
-| 10 | 286 | 340 | 270 | 446 | 904 |
-| 100 | 2,142 | 2,614 | 2,220 | 4,292 | 14,740 |
-| 1,000 | 18,302 | 20,860 | 18,808 | 42,862 | 143,768 |
-| 10,000 | 184,842 | 267,020 | 221,894 | 420,944 | 1,789,316 |
+| 10 | 284 | 316 | 292 | 420 | 992 |
+| 100 | 2,120 | 2,622 | 2,212 | 4,368 | 14,700 |
+| 1,000 | 18,938 | 22,040 | 19,340 | 43,012 | 143,756 |
+| 10,000 | 196,502 | 229,276 | 198,604 | 458,342 | 1,384,858 |
 
 nohash dominates at all sizes: **2.3x faster than default** at n=10000.
 The Fibonacci multiply gives equivalent bucket distribution to ahash/fxhash
@@ -495,10 +495,10 @@ The Fibonacci multiply gives equivalent bucket distribution to ahash/fxhash
 
 | CAP | nohash p50 | ahash p50 | fxhash p50 | default p50 |
 |-----|-----------|-----------|-----------|-------------|
-| 16 | 20 | 20 | 20 | 34 |
-| 32 | 20 | 20 | 20 | 34 |
-| 64 | 20 | 20 | 20 | 32 |
-| 128 | 20 | 18 | 20 | 32 |
+| 16 | 24 | 26 | 26 | 42 |
+| 32 | 26 | 26 | 24 | 44 |
+| 64 | 26 | 26 | 26 | 42 |
+| 128 | 24 | 26 | 26 | 42 |
 
 nohash cost is **independent of CAP** — the hash is in the header, never
 touches the data buffer. All fast hashers match because our Hash impl writes

@@ -119,6 +119,47 @@ pub(crate) fn find_null_byte(bytes: &[u8]) -> usize {
 /// Precomputed header for empty string (compile-time).
 const EMPTY_HEADER: u64 = hash::pack_header(0, hash::hash_const::<0>(&[]));
 
+/// Inline copy for bounded lengths. Avoids glibc memcpy call overhead for short copies.
+///
+/// Uses the overlap trick: reads two chunks whose combined span covers all bytes,
+/// even if they overlap. Safe because destination is a freshly zeroed buffer.
+///
+/// For len > 32, falls through to memcpy where call overhead is negligible
+/// relative to data volume.
+///
+/// # Safety
+///
+/// - `dst` must be writable for at least `len` bytes
+/// - `src` must be readable for `len` bytes
+/// - `dst` and `src` must not overlap
+#[inline(always)]
+unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
+    unsafe {
+        if len > 32 {
+            core::ptr::copy_nonoverlapping(src, dst, len);
+        } else if len >= 16 {
+            let a = src.cast::<u128>().read_unaligned();
+            let b = src.add(len - 16).cast::<u128>().read_unaligned();
+            dst.cast::<u128>().write_unaligned(a);
+            dst.add(len - 16).cast::<u128>().write_unaligned(b);
+        } else if len >= 8 {
+            let a = src.cast::<u64>().read_unaligned();
+            let b = src.add(len - 8).cast::<u64>().read_unaligned();
+            dst.cast::<u64>().write_unaligned(a);
+            dst.add(len - 8).cast::<u64>().write_unaligned(b);
+        } else if len >= 4 {
+            let a = src.cast::<u32>().read_unaligned();
+            let b = src.add(len - 4).cast::<u32>().read_unaligned();
+            dst.cast::<u32>().write_unaligned(a);
+            dst.add(len - 4).cast::<u32>().write_unaligned(b);
+        } else if len > 0 {
+            *dst = *src;
+            *dst.add(len / 2) = *src.add(len / 2);
+            *dst.add(len - 1) = *src.add(len - 1);
+        }
+    }
+}
+
 // =============================================================================
 // AsciiString
 // =============================================================================
@@ -325,10 +366,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let header = hash::pack_header(len as u16, hash);
 
         let mut data = [0u8; CAP];
-        // SAFETY: len <= CAP guaranteed by caller
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), data.as_mut_ptr(), len);
-        }
+        // SAFETY: len <= CAP guaranteed by caller, buffers don't overlap
+        unsafe { copy_short(data.as_mut_ptr(), bytes.as_ptr(), len) };
 
         Self { header, data }
     }

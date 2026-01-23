@@ -22,6 +22,7 @@ Fixed-capacity ASCII strings for high-performance systems.
 | `AsciiString<N>` | Fixed-capacity ASCII string (bytes 0x00-0x7F) |
 | `AsciiText<N>` | Printable ASCII only (bytes 0x20-0x7E) |
 | `AsciiStr` | Borrowed reference to ASCII data (DST) |
+| `AsciiTextStr` | Borrowed reference to printable ASCII data (DST) |
 | `AsciiChar` | Single ASCII character with classification methods |
 | `AsciiStringBuilder<N>` | Mutable builder for constructing strings |
 
@@ -93,7 +94,10 @@ let key: AsciiString<32> = AsciiString::try_from("BTC-USD")?;
 map.insert(key, 42);
 ```
 
-Since `AsciiString` stores a precomputed 48-bit XXH3 hash in its header, using `nohash-hasher` avoids redundant hash computation during HashMap lookups.
+Since `AsciiString` stores a precomputed 48-bit XXH3 hash in its header, using
+`nohash-hasher` avoids redundant hash computation during HashMap lookups. The
+`Hash` impl applies a Fibonacci multiply finalizer for optimal bucket distribution
+and SIMD group filtering — matching ahash/fxhash performance at all table sizes.
 
 ## Header Layout
 
@@ -102,21 +106,29 @@ Each `AsciiString` has an 8-byte header:
 - **Bits 48-63**: String length
 
 This layout ensures:
-- Hash bits are in lower positions for optimal HashMap bucket distribution
 - Single 64-bit comparison for fast equality rejection
 - Length accessible without touching the data buffer
+- A Fibonacci multiply finalizer (`header * 0x9E3779B97F4A7C15`) provides uniform
+  bucket distribution and proper h2 control byte entropy for hashbrown's SIMD filtering
 
 ## Performance
 
-All operations are designed for predictable, low-latency performance:
+All operations are designed for predictable, low-latency performance.
+Measured in CPU cycles via `rdtsc`, pinned to a single core:
 
-| Operation | Typical Latency |
-|-----------|-----------------|
-| Construction (8 bytes) | ~25 cycles |
-| Construction (32 bytes) | ~35 cycles |
-| Equality check (equal) | ~15 cycles |
-| Equality check (different) | ~5 cycles (header mismatch) |
-| HashMap lookup (nohash) | ~20 cycles |
+| Operation | p50 | p99 |
+|-----------|-----|-----|
+| Construction (7B symbol) | 18 | 38 |
+| Construction (32B, full cap) | 24 | 56 |
+| Equality (same content) | 18 | 20 |
+| Equality (different, header rejects) | 18 | 20 |
+| HashMap get (nohash, n=1000) | 20 | 22 |
+| HashMap insert (nohash, n=1000) | 18,938 | 28,910 |
+| `cmp()` (7B) | 16 | 20 |
+| `eq_ignore_ascii_case()` (38B) | 18 | 22 |
+| `to_ascii_uppercase()` (20B) | 18 | 20 |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for the full benchmark suite.
 
 ## Collision Rate
 
