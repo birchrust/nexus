@@ -112,6 +112,11 @@ impl UlidGenerator {
     /// Within the same millisecond, the random component is incremented
     /// to ensure lexicographic ordering. This means ULIDs generated in
     /// the same millisecond will sort correctly.
+    ///
+    /// In the theoretical case where the 80-bit random component overflows
+    /// (requires ~2^80 generations in one millisecond — physically impossible),
+    /// the value wraps and monotonicity is violated. Use [`try_next()`](Self::try_next)
+    /// if you need overflow detection.
     #[inline]
     pub fn next(&mut self, now: Instant) -> Ulid {
         let offset_ms = now.duration_since(self.epoch).as_millis() as u64;

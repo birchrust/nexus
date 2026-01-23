@@ -924,7 +924,12 @@ impl Ulid {
 
         // Single-pass: validate and decode simultaneously via lookup table.
         // Decode timestamp (chars 0-9): 3 + 9×5 = 48 bits
-        let mut ts: u64 = parse::validate_crockford32(bytes[0], 0)? as u64;
+        // First char encodes only 3 bits — values > 7 overflow the 48-bit timestamp.
+        let first = parse::validate_crockford32(bytes[0], 0)?;
+        if first > 7 {
+            return Err(ParseError::InvalidChar { position: 0, byte: bytes[0] });
+        }
+        let mut ts: u64 = first as u64;
         let mut i = 1;
         while i < 10 {
             let d = parse::validate_crockford32(bytes[i], i)? as u64;
@@ -962,7 +967,14 @@ impl Ulid {
 
     /// Convert to a UUID v7-compatible format.
     ///
-    /// Maps the ULID's 128-bit value into UUID v7 layout (setting version and variant bits).
+    /// Maps the ULID's 128-bit value into UUID v7 layout, setting version (7) and
+    /// variant (RFC) bits.
+    ///
+    /// # Data Loss
+    ///
+    /// This conversion is **lossy**. ULID has 80 random bits, but UUID v7 reserves
+    /// 6 bits for version+variant, leaving only 74 bits for randomness. The bottom
+    /// 6 bits of `rand_lo` are discarded. The conversion is not reversible.
     pub fn to_uuid(&self) -> Uuid {
         let ts = self.timestamp_ms();
         let (rand_hi, rand_lo) = self.random();
@@ -1105,6 +1117,8 @@ impl From<UuidCompact> for Uuid {
 
 impl From<Ulid> for Uuid {
     /// Convert ULID to UUID v7 format (sets version and variant bits).
+    ///
+    /// **Lossy**: 6 bits of randomness are discarded. See [`Ulid::to_uuid()`].
     #[inline]
     fn from(u: Ulid) -> Self {
         u.to_uuid()
@@ -1304,5 +1318,21 @@ mod tests {
         let bytes = original.to_bytes();
         let recovered = unsafe { Ulid::from_bytes_unchecked(&bytes) };
         assert_eq!(original, recovered);
+    }
+
+    #[test]
+    fn ulid_parse_rejects_overflow_first_char() {
+        // First char value > 7 overflows the 48-bit timestamp.
+        // '8' decodes to value 8 in Crockford Base32.
+        let overflow = "80000000000000000000000000";
+        assert!(Ulid::parse(overflow).is_err());
+
+        // 'Z' decodes to value 31 — also invalid.
+        let z_first = "Z0000000000000000000000000";
+        assert!(Ulid::parse(z_first).is_err());
+
+        // '7' (value 7) is the max valid first char.
+        let max_valid = "70000000000000000000000000";
+        assert!(Ulid::parse(max_valid).is_ok());
     }
 }

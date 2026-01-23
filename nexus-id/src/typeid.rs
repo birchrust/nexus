@@ -22,7 +22,7 @@ use core::str::FromStr;
 
 use nexus_ascii::AsciiString;
 
-use crate::parse::TypeIdParseError;
+use crate::parse::{TypeIdParseError, CROCKFORD32_DECODE};
 use crate::types::Ulid;
 
 /// Type-prefixed sortable identifier.
@@ -166,10 +166,15 @@ impl<const CAP: usize> TypeId<CAP> {
     }
 
     /// Extract the ULID suffix.
+    ///
+    /// Constructs the `Ulid` directly from the validated suffix bytes
+    /// without re-parsing.
     #[inline]
     pub fn suffix(&self) -> Ulid {
-        // We validated at construction, so this is safe
-        Ulid::parse(self.suffix_str()).unwrap()
+        let suffix_bytes = self.suffix_str().as_bytes();
+        // SAFETY: suffix was validated as 26-char Crockford Base32 at construction.
+        let inner = unsafe { AsciiString::from_bytes_unchecked(suffix_bytes) };
+        Ulid(inner)
     }
 
     /// The full string representation.
@@ -185,9 +190,19 @@ impl<const CAP: usize> TypeId<CAP> {
     }
 
     /// Extract the timestamp from the ULID suffix.
+    ///
+    /// Decodes the first 10 Crockford Base32 characters directly without
+    /// constructing an intermediate `Ulid`.
     #[inline]
     pub fn timestamp_ms(&self) -> u64 {
-        self.suffix().timestamp_ms()
+        let bytes = self.suffix_str().as_bytes();
+        let mut ts: u64 = CROCKFORD32_DECODE[bytes[0] as usize] as u64;
+        let mut i = 1;
+        while i < 10 {
+            ts = (ts << 5) | CROCKFORD32_DECODE[bytes[i] as usize] as u64;
+            i += 1;
+        }
+        ts
     }
 }
 
