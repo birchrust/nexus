@@ -430,7 +430,7 @@ impl Hash for AsciiTextStr {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         let header = hash::pack_header(self.0.len() as u16, hash::hash_unbounded(&self.0));
-        state.write_u64(hash::spread_h2(header));
+        state.write_u64(hash::finalize(header));
     }
 }
 

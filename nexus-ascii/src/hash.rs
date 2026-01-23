@@ -189,15 +189,24 @@ pub(crate) const fn pack_header(len: u16, hash: u64) -> u64 {
     ((len as u64) << 48) | (hash & 0x0000_FFFF_FFFF_FFFF)
 }
 
-/// Spread hash entropy into the upper bits of a packed header for hashbrown h2 distribution.
+/// Finalize a packed header for use as a HashMap hash value.
 ///
-/// hashbrown uses bits 57..63 (h2) for SIMD group filtering. With our header layout
-/// `(len_16 << 48) | hash_48`, h2 = `len >> 9` = 0 for all strings ≤ 512 bytes.
-/// XORing the lower hash bits into the upper portion gives h2 = `(len ^ hash[0:15]) >> 9`,
-/// which varies per key while preserving h1 (bucket selection) unchanged.
+/// Multiplies by the golden ratio constant (Fibonacci hashing) to ensure uniform
+/// distribution across power-of-2 bucket tables. This single operation solves both:
+///
+/// - **h1 (bucket selection):** raw XXH3 lower bits distribute well for small tables,
+///   but at 14+ bit masks (capacity >= 16384) the truncated 48-bit value can cluster.
+///   The multiply provides full avalanche across all output bit positions.
+///
+/// - **h2 (SIMD group filtering):** hashbrown uses bits 57-63 as a control byte.
+///   With our header layout `(len_16 << 48) | hash_48`, those bits are just `len >> 9`
+///   which is 0 for all strings <= 512 bytes. The multiply's carry propagation mixes
+///   the lower hash bits into the upper positions, giving h2 per-key entropy.
+///
+/// Cost: 1 multiply (~1 cycle). Bijective (odd constant, no information loss).
 #[inline(always)]
-pub(crate) const fn spread_h2(header: u64) -> u64 {
-    header ^ (header << 48)
+pub(crate) const fn finalize(header: u64) -> u64 {
+    header.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 // =============================================================================

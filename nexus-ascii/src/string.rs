@@ -1820,7 +1820,7 @@ impl<const CAP: usize> Ord for AsciiString<CAP> {
 impl<const CAP: usize> Hash for AsciiString<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(hash::spread_h2(self.header));
+        state.write_u64(hash::finalize(self.header));
     }
 }
 
