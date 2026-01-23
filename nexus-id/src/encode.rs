@@ -30,6 +30,12 @@ const BASE36_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 /// See: https://www.crockford.com/base32.html
 const CROCKFORD32_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+/// 62² — used for digit-pair decomposition in base62 encoding.
+const BASE62_SQ: u64 = 62 * 62;
+
+/// 36² — used for digit-pair decomposition in base36 encoding.
+const BASE36_SQ: u64 = 36 * 36;
+
 /// Encode a u64 as 16-character lowercase hex.
 #[inline]
 pub(crate) fn hex_u64(value: u64) -> AsciiString<16> {
@@ -96,21 +102,44 @@ pub(crate) fn hex_u128(hi: u64, lo: u64) -> AsciiString<32> {
 ///
 /// Base62 uses: 0-9, A-Z, a-z (62 characters).
 /// Produces fixed-length output with leading zeros.
+///
+/// Uses digit-pair decomposition: divmod by 62² (3844) per iteration,
+/// halving the serial dependency chain from 11 to 6 divisions.
 #[inline]
 pub(crate) fn base62_u64(mut value: u64) -> AsciiString<16> {
-    let mut buf = [b'0'; 11]; // Initialize with '0' for leading zeros
-    let mut i = 10;
+    let mut buf = [b'0'; 11];
 
-    // Extract digits from least significant
-    if value == 0 {
-        // Already filled with '0's
-    } else {
-        while value > 0 {
-            buf[i] = BASE62_ALPHABET[(value % 62) as usize];
-            value /= 62;
-            i = i.saturating_sub(1);
-        }
-    }
+    // 11 digits = 5 pairs + 1 single.
+    // Each pair: value % 3844 gives a 2-digit remainder,
+    // decomposed into (r / 62, r % 62). The remainder decomposition
+    // is independent of the next value /= 3844.
+
+    let r = (value % BASE62_SQ) as usize;
+    value /= BASE62_SQ;
+    buf[9] = BASE62_ALPHABET[r / 62];
+    buf[10] = BASE62_ALPHABET[r % 62];
+
+    let r = (value % BASE62_SQ) as usize;
+    value /= BASE62_SQ;
+    buf[7] = BASE62_ALPHABET[r / 62];
+    buf[8] = BASE62_ALPHABET[r % 62];
+
+    let r = (value % BASE62_SQ) as usize;
+    value /= BASE62_SQ;
+    buf[5] = BASE62_ALPHABET[r / 62];
+    buf[6] = BASE62_ALPHABET[r % 62];
+
+    let r = (value % BASE62_SQ) as usize;
+    value /= BASE62_SQ;
+    buf[3] = BASE62_ALPHABET[r / 62];
+    buf[4] = BASE62_ALPHABET[r % 62];
+
+    let r = (value % BASE62_SQ) as usize;
+    value /= BASE62_SQ;
+    buf[1] = BASE62_ALPHABET[r / 62];
+    buf[2] = BASE62_ALPHABET[r % 62];
+
+    buf[0] = BASE62_ALPHABET[value as usize];
 
     // SAFETY: All bytes are valid ASCII alphanumeric
     unsafe { AsciiString::from_bytes_unchecked(&buf) }
@@ -120,20 +149,46 @@ pub(crate) fn base62_u64(mut value: u64) -> AsciiString<16> {
 ///
 /// Base36 uses: 0-9, a-z (36 characters, case-insensitive).
 /// Produces fixed-length output with leading zeros.
+///
+/// Uses digit-pair decomposition: divmod by 36² (1296) per iteration,
+/// halving the serial dependency chain from 13 to 7 divisions.
 #[inline]
 pub(crate) fn base36_u64(mut value: u64) -> AsciiString<16> {
-    let mut buf = [b'0'; 13]; // Initialize with '0' for leading zeros
-    let mut i = 12;
+    let mut buf = [b'0'; 13];
 
-    if value == 0 {
-        // Already filled with '0's
-    } else {
-        while value > 0 {
-            buf[i] = BASE36_ALPHABET[(value % 36) as usize];
-            value /= 36;
-            i = i.saturating_sub(1);
-        }
-    }
+    // 13 digits = 6 pairs + 1 single.
+
+    let r = (value % BASE36_SQ) as usize;
+    value /= BASE36_SQ;
+    buf[11] = BASE36_ALPHABET[r / 36];
+    buf[12] = BASE36_ALPHABET[r % 36];
+
+    let r = (value % BASE36_SQ) as usize;
+    value /= BASE36_SQ;
+    buf[9] = BASE36_ALPHABET[r / 36];
+    buf[10] = BASE36_ALPHABET[r % 36];
+
+    let r = (value % BASE36_SQ) as usize;
+    value /= BASE36_SQ;
+    buf[7] = BASE36_ALPHABET[r / 36];
+    buf[8] = BASE36_ALPHABET[r % 36];
+
+    let r = (value % BASE36_SQ) as usize;
+    value /= BASE36_SQ;
+    buf[5] = BASE36_ALPHABET[r / 36];
+    buf[6] = BASE36_ALPHABET[r % 36];
+
+    let r = (value % BASE36_SQ) as usize;
+    value /= BASE36_SQ;
+    buf[3] = BASE36_ALPHABET[r / 36];
+    buf[4] = BASE36_ALPHABET[r % 36];
+
+    let r = (value % BASE36_SQ) as usize;
+    value /= BASE36_SQ;
+    buf[1] = BASE36_ALPHABET[r / 36];
+    buf[2] = BASE36_ALPHABET[r % 36];
+
+    buf[0] = BASE36_ALPHABET[value as usize];
 
     // SAFETY: All bytes are valid ASCII alphanumeric
     unsafe { AsciiString::from_bytes_unchecked(&buf) }

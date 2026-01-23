@@ -50,16 +50,15 @@ without touching the byte buffer.**
 
 ---
 
-## HashMap
+## HashMap (default hasher)
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `HashMap::get` (100 entries) | 20 | 24 | 42 |
-| `HashMap::insert` (new key) | 190 | 368 | 502 |
+| `HashMap::get` (100 entries) | 30 | 38 | 68 |
+| `HashMap::insert` (new key, 100 entries) | 62 | 112 | 146 |
 
-Lookups are fast because `Hash` returns the precomputed hash finalized with a
-single Fibonacci multiply (~1 cycle). The 20-cycle p50 is dominated by the
-HashMap probe, not hashing.
+These use the default SipHash hasher. With nohash (identity hashing), GET drops
+to 18-20 cycles — see the AsciiHashMap section below for full comparisons.
 
 ---
 
@@ -478,18 +477,29 @@ Miss performance is **constant 18-20 cycles** for nohash/ahash/fxhash. The
 Fibonacci finalizer gives proper h2 control byte distribution, so SIMD group
 filtering rejects non-matching slots without equality checks.
 
-**INSERT — batch of N keys (pre-sized HashMap):**
+**INSERT (overwrite existing key) — varying map size:**
 
 | Map size | nohash p50 | ahash p50 | fxhash p50 | default p50 | String p50 |
 |----------|-----------|-----------|-----------|-------------|------------|
-| 10 | 284 | 316 | 292 | 420 | 992 |
-| 100 | 2,120 | 2,622 | 2,212 | 4,368 | 14,700 |
-| 1,000 | 18,938 | 22,040 | 19,340 | 43,012 | 143,756 |
-| 10,000 | 196,502 | 229,276 | 198,604 | 458,342 | 1,384,858 |
+| 100 | 20 | 20 | 20 | 38 | 56 |
+| 1,000 | 20 | 20 | 20 | 38 | 56 |
+| 10,000 | 18 | 18 | 18 | 34 | 58 |
 
-nohash dominates at all sizes: **2.3x faster than default** at n=10000.
-The Fibonacci multiply gives equivalent bucket distribution to ahash/fxhash
-(all three match within noise), while avoiding any external hasher overhead.
+Overwrite cost matches GET — same probe, just writes the new value. nohash/ahash/fxhash
+are identical at 18-20 cycles. String pays ~56 cycles due to clone + rehash on every insert.
+
+**INSERT (new key) — varying fill level (capacity=10000):**
+
+| Fill level | nohash p50 | ahash p50 | fxhash p50 | default p50 | String p50 |
+|------------|-----------|-----------|-----------|-------------|------------|
+| 25% | 38 | 44 | 36 | 54 | 64 |
+| 50% | 36 | 40 | 36 | 58 | 60 |
+| 75% | 36 | 38 | 38 | 52 | 66 |
+
+New key insert is 36-44 cycles for the fast hashers — dominated by the write
+cost (32B key + 8B value). Fill level has minimal impact on p50 (hashbrown's
+SIMD group probing handles moderate fill well) but shows up at p99/p999 at
+higher fill. String pays ~60-66 cycles due to clone allocation per insert.
 
 **GET (hit) — varying CAP (map=1000):**
 
@@ -505,9 +515,10 @@ touches the data buffer. All fast hashers match because our Hash impl writes
 a single u64 regardless of string size.
 
 **When to use AsciiHashMap (nohash):**
-- Any workload. nohash now matches or beats ahash/fxhash at all sizes.
+- Any workload. nohash matches or beats ahash/fxhash at all sizes.
 - Lookup-heavy: 1.7x faster than default (20 vs 34 cycles)
-- Insert-heavy: 2.3x faster than default at n=10000
+- Insert (overwrite): 1.9x faster than default (18 vs 34 cycles)
+- Insert (new key): ~1.5x faster than default (36 vs 54 cycles)
 - Zero external hasher overhead — the precomputed hash + finalize is all you need
 
 **When to use default hasher:**

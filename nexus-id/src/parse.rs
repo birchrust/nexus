@@ -103,43 +103,93 @@ pub(crate) const fn validate_hex(b: u8, position: usize) -> Result<u8, ParseErro
     }
 }
 
-/// Validate and decode a Crockford Base32 character.
+/// Sentinel value for invalid Crockford Base32 characters.
+const CROCKFORD32_INVALID: u8 = 0xFF;
+
+/// Lookup table: ASCII byte → Crockford Base32 value (0-31), or 0xFF if invalid.
+/// 256 bytes = 4 cache lines. Stays warm after first use.
+pub(crate) static CROCKFORD32_DECODE: [u8; 256] = {
+    let mut table = [CROCKFORD32_INVALID; 256];
+
+    // Digits 0-9
+    table[b'0' as usize] = 0;
+    table[b'1' as usize] = 1;
+    table[b'2' as usize] = 2;
+    table[b'3' as usize] = 3;
+    table[b'4' as usize] = 4;
+    table[b'5' as usize] = 5;
+    table[b'6' as usize] = 6;
+    table[b'7' as usize] = 7;
+    table[b'8' as usize] = 8;
+    table[b'9' as usize] = 9;
+
+    // Letters (uppercase) — Crockford excludes I, L, O, U
+    table[b'A' as usize] = 10;
+    table[b'B' as usize] = 11;
+    table[b'C' as usize] = 12;
+    table[b'D' as usize] = 13;
+    table[b'E' as usize] = 14;
+    table[b'F' as usize] = 15;
+    table[b'G' as usize] = 16;
+    table[b'H' as usize] = 17;
+    table[b'J' as usize] = 18;
+    table[b'K' as usize] = 19;
+    table[b'M' as usize] = 20;
+    table[b'N' as usize] = 21;
+    table[b'P' as usize] = 22;
+    table[b'Q' as usize] = 23;
+    table[b'R' as usize] = 24;
+    table[b'S' as usize] = 25;
+    table[b'T' as usize] = 26;
+    table[b'V' as usize] = 27;
+    table[b'W' as usize] = 28;
+    table[b'X' as usize] = 29;
+    table[b'Y' as usize] = 30;
+    table[b'Z' as usize] = 31;
+
+    // Letters (lowercase)
+    table[b'a' as usize] = 10;
+    table[b'b' as usize] = 11;
+    table[b'c' as usize] = 12;
+    table[b'd' as usize] = 13;
+    table[b'e' as usize] = 14;
+    table[b'f' as usize] = 15;
+    table[b'g' as usize] = 16;
+    table[b'h' as usize] = 17;
+    table[b'j' as usize] = 18;
+    table[b'k' as usize] = 19;
+    table[b'm' as usize] = 20;
+    table[b'n' as usize] = 21;
+    table[b'p' as usize] = 22;
+    table[b'q' as usize] = 23;
+    table[b'r' as usize] = 24;
+    table[b's' as usize] = 25;
+    table[b't' as usize] = 26;
+    table[b'v' as usize] = 27;
+    table[b'w' as usize] = 28;
+    table[b'x' as usize] = 29;
+    table[b'y' as usize] = 30;
+    table[b'z' as usize] = 31;
+
+    // Crockford aliases
+    table[b'O' as usize] = 0; // O → 0
+    table[b'o' as usize] = 0;
+    table[b'I' as usize] = 1; // I → 1
+    table[b'i' as usize] = 1;
+    table[b'L' as usize] = 1; // L → 1
+    table[b'l' as usize] = 1;
+
+    table
+};
+
+/// Validate and decode a Crockford Base32 character via lookup table.
 #[inline]
-pub(crate) const fn validate_crockford32(b: u8, position: usize) -> Result<u8, ParseError> {
-    match b {
-        b'0' | b'O' | b'o' => Ok(0),
-        b'1' | b'I' | b'i' | b'L' | b'l' => Ok(1),
-        b'2' => Ok(2),
-        b'3' => Ok(3),
-        b'4' => Ok(4),
-        b'5' => Ok(5),
-        b'6' => Ok(6),
-        b'7' => Ok(7),
-        b'8' => Ok(8),
-        b'9' => Ok(9),
-        b'A' | b'a' => Ok(10),
-        b'B' | b'b' => Ok(11),
-        b'C' | b'c' => Ok(12),
-        b'D' | b'd' => Ok(13),
-        b'E' | b'e' => Ok(14),
-        b'F' | b'f' => Ok(15),
-        b'G' | b'g' => Ok(16),
-        b'H' | b'h' => Ok(17),
-        b'J' | b'j' => Ok(18),
-        b'K' | b'k' => Ok(19),
-        b'M' | b'm' => Ok(20),
-        b'N' | b'n' => Ok(21),
-        b'P' | b'p' => Ok(22),
-        b'Q' | b'q' => Ok(23),
-        b'R' | b'r' => Ok(24),
-        b'S' | b's' => Ok(25),
-        b'T' | b't' => Ok(26),
-        b'V' | b'v' => Ok(27),
-        b'W' | b'w' => Ok(28),
-        b'X' | b'x' => Ok(29),
-        b'Y' | b'y' => Ok(30),
-        b'Z' | b'z' => Ok(31),
-        _ => Err(ParseError::invalid_char(position, b)),
+pub(crate) fn validate_crockford32(b: u8, position: usize) -> Result<u8, ParseError> {
+    let val = CROCKFORD32_DECODE[b as usize];
+    if val == CROCKFORD32_INVALID {
+        Err(ParseError::invalid_char(position, b))
+    } else {
+        Ok(val)
     }
 }
 

@@ -130,6 +130,58 @@ pub fn print_intro(title: &str) {
     println!("All times in CPU cycles\n");
 }
 
+/// Run a benchmark where the closure handles its own timing.
+///
+/// The closure is responsible for calling `rdtsc()` around the operation
+/// under test and returning the elapsed cycle count. This allows
+/// setup/teardown code to live outside the timing window.
+pub fn bench_raw<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
+    // Warmup
+    for _ in 0..WARMUP {
+        f();
+    }
+
+    // Collect samples
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        samples.push(f());
+    }
+
+    samples.sort_unstable();
+    let p50 = percentile(&samples, 50.0);
+    let p99 = percentile(&samples, 99.0);
+    let p999 = percentile(&samples, 99.9);
+
+    println!("{:<40} {:>8} {:>8} {:>8}", name, p50, p99, p999);
+    (p50, p99, p999)
+}
+
+/// Run a benchmark where the closure handles its own timing (wide name column).
+///
+/// The closure is responsible for calling `rdtsc()` around the operation
+/// under test and returning the elapsed cycle count. This allows
+/// setup/teardown code to live outside the timing window.
+pub fn bench_raw_wide<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
+    // Warmup
+    for _ in 0..WARMUP {
+        f();
+    }
+
+    // Collect samples
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        samples.push(f());
+    }
+
+    samples.sort_unstable();
+    let p50 = percentile(&samples, 50.0);
+    let p99 = percentile(&samples, 99.0);
+    let p999 = percentile(&samples, 99.9);
+
+    println!("{:<45} {:>8} {:>8} {:>8}", name, p50, p99, p999);
+    (p50, p99, p999)
+}
+
 // Cargo requires a main function for files in the examples directory.
 // This module is included via #[path] in the actual benchmark examples.
 #[allow(dead_code)]

@@ -11,7 +11,7 @@
 #[path = "_bench_utils.rs"]
 mod bench_utils;
 
-use bench_utils::{bench_wide, print_header_wide, print_intro};
+use bench_utils::{bench_raw_wide, bench_wide, print_header_wide, print_intro, rdtsc};
 use nexus_ascii::AsciiString;
 use nohash_hasher::BuildNoHashHasher;
 use rustc_hash::FxBuildHasher;
@@ -50,14 +50,24 @@ fn main() {
     }
 
     // =========================================================================
-    // INSERT
+    // INSERT (overwrite existing key)
     // =========================================================================
-    print_header_wide("INSERT — varying map size");
+    print_header_wide("INSERT (overwrite) — varying map size");
 
-    for &size in &[10, 100, 1_000, 10_000] {
-        run_insert(size);
+    for &size in &[100, 1_000, 10_000] {
+        run_insert_overwrite(size);
         println!();
     }
+
+    // =========================================================================
+    // INSERT (new key at varying fill levels)
+    // =========================================================================
+    print_header_wide("INSERT (new key) — varying fill level (capacity=1000)");
+    run_insert_new(1_000);
+
+    println!();
+    print_header_wide("INSERT (new key) — varying fill level (capacity=10000)");
+    run_insert_new(10_000);
 
     // =========================================================================
     // Varying string sizes (CAP) at fixed map size
@@ -198,73 +208,180 @@ fn run_get_miss(size: usize) {
     );
 }
 
-fn run_insert(size: usize) {
-    // Pre-generate keys
+fn run_insert_overwrite(size: usize) {
     let keys: Vec<AsciiString<32>> = (0..size).map(make_key).collect();
+    let overwrite_key = keys[size / 2];
     let string_keys: Vec<String> = (0..size).map(|i| format!("key-{:06}", i)).collect();
+    let string_overwrite = string_keys[size / 2].clone();
 
-    // nohash insert
-    bench_wide(
-        &format!("nohash: insert (n={})", size),
+    // nohash
+    let mut nohash_map: NoHashMap<32, u64> =
+        HashMap::with_capacity_and_hasher(size, BuildNoHashHasher::default());
+    for (i, k) in keys.iter().enumerate() {
+        nohash_map.insert(*k, i as u64);
+    }
+    bench_raw_wide(
+        &format!("nohash: overwrite (n={})", size),
         || {
-            let mut map: NoHashMap<32, u64> =
-                HashMap::with_capacity_and_hasher(size, BuildNoHashHasher::default());
-            for (i, k) in keys.iter().enumerate() {
-                map.insert(*k, i as u64);
-            }
-            black_box(map.len() as u64)
+            let start = rdtsc();
+            black_box(nohash_map.insert(overwrite_key, black_box(42u64)));
+            rdtsc().wrapping_sub(start)
         },
     );
 
-    // default hasher insert
-    bench_wide(
-        &format!("default: insert (n={})", size),
+    // default hasher
+    let mut default_map: HashMap<AsciiString<32>, u64> = HashMap::with_capacity(size);
+    for (i, k) in keys.iter().enumerate() {
+        default_map.insert(*k, i as u64);
+    }
+    bench_raw_wide(
+        &format!("default: overwrite (n={})", size),
         || {
-            let mut map: HashMap<AsciiString<32>, u64> = HashMap::with_capacity(size);
-            for (i, k) in keys.iter().enumerate() {
-                map.insert(*k, i as u64);
-            }
-            black_box(map.len() as u64)
+            let start = rdtsc();
+            black_box(default_map.insert(overwrite_key, black_box(42u64)));
+            rdtsc().wrapping_sub(start)
         },
     );
 
-    // ahash insert
-    bench_wide(
-        &format!("ahash: insert (n={})", size),
+    // ahash
+    let mut ahash_map: AHashMap<32, u64> =
+        HashMap::with_capacity_and_hasher(size, ahash::RandomState::new());
+    for (i, k) in keys.iter().enumerate() {
+        ahash_map.insert(*k, i as u64);
+    }
+    bench_raw_wide(
+        &format!("ahash: overwrite (n={})", size),
         || {
-            let mut map: AHashMap<32, u64> =
-                HashMap::with_capacity_and_hasher(size, ahash::RandomState::new());
-            for (i, k) in keys.iter().enumerate() {
-                map.insert(*k, i as u64);
-            }
-            black_box(map.len() as u64)
+            let start = rdtsc();
+            black_box(ahash_map.insert(overwrite_key, black_box(42u64)));
+            rdtsc().wrapping_sub(start)
         },
     );
 
-    // fxhash insert
-    bench_wide(
-        &format!("fxhash: insert (n={})", size),
+    // fxhash
+    let mut fx_map: FxHashMap<32, u64> =
+        HashMap::with_capacity_and_hasher(size, FxBuildHasher);
+    for (i, k) in keys.iter().enumerate() {
+        fx_map.insert(*k, i as u64);
+    }
+    bench_raw_wide(
+        &format!("fxhash: overwrite (n={})", size),
         || {
-            let mut map: FxHashMap<32, u64> =
-                HashMap::with_capacity_and_hasher(size, FxBuildHasher);
-            for (i, k) in keys.iter().enumerate() {
-                map.insert(*k, i as u64);
-            }
-            black_box(map.len() as u64)
+            let start = rdtsc();
+            black_box(fx_map.insert(overwrite_key, black_box(42u64)));
+            rdtsc().wrapping_sub(start)
         },
     );
 
-    // String insert
-    bench_wide(
-        &format!("String: insert (n={})", size),
+    // String
+    let mut string_map: HashMap<String, u64> = HashMap::with_capacity(size);
+    for (i, k) in string_keys.iter().enumerate() {
+        string_map.insert(k.clone(), i as u64);
+    }
+    bench_raw_wide(
+        &format!("String: overwrite (n={})", size),
         || {
-            let mut map: HashMap<String, u64> = HashMap::with_capacity(size);
-            for (i, k) in string_keys.iter().enumerate() {
-                map.insert(k.clone(), i as u64);
-            }
-            black_box(map.len() as u64)
+            let start = rdtsc();
+            black_box(string_map.insert(string_overwrite.clone(), black_box(42u64)));
+            rdtsc().wrapping_sub(start)
         },
     );
+}
+
+fn run_insert_new(capacity: usize) {
+    let new_key: AsciiString<32> = make_key(capacity + 1);
+    let string_new_key = format!("key-{:06}", capacity + 1);
+
+    for &fill_pct in &[25, 50, 75] {
+        let fill = capacity * fill_pct / 100;
+        let keys: Vec<AsciiString<32>> = (0..fill).map(make_key).collect();
+
+        // nohash
+        let mut nohash_map: NoHashMap<32, u64> =
+            HashMap::with_capacity_and_hasher(capacity, BuildNoHashHasher::default());
+        for (i, k) in keys.iter().enumerate() {
+            nohash_map.insert(*k, i as u64);
+        }
+        bench_raw_wide(
+            &format!("nohash: new key (cap={}, fill={}%)", capacity, fill_pct),
+            || {
+                let start = rdtsc();
+                black_box(nohash_map.insert(new_key, black_box(42u64)));
+                let elapsed = rdtsc().wrapping_sub(start);
+                nohash_map.remove(&new_key);
+                elapsed
+            },
+        );
+
+        // default hasher
+        let mut default_map: HashMap<AsciiString<32>, u64> =
+            HashMap::with_capacity(capacity);
+        for (i, k) in keys.iter().enumerate() {
+            default_map.insert(*k, i as u64);
+        }
+        bench_raw_wide(
+            &format!("default: new key (cap={}, fill={}%)", capacity, fill_pct),
+            || {
+                let start = rdtsc();
+                black_box(default_map.insert(new_key, black_box(42u64)));
+                let elapsed = rdtsc().wrapping_sub(start);
+                default_map.remove(&new_key);
+                elapsed
+            },
+        );
+
+        // ahash
+        let mut ahash_map: AHashMap<32, u64> =
+            HashMap::with_capacity_and_hasher(capacity, ahash::RandomState::new());
+        for (i, k) in keys.iter().enumerate() {
+            ahash_map.insert(*k, i as u64);
+        }
+        bench_raw_wide(
+            &format!("ahash: new key (cap={}, fill={}%)", capacity, fill_pct),
+            || {
+                let start = rdtsc();
+                black_box(ahash_map.insert(new_key, black_box(42u64)));
+                let elapsed = rdtsc().wrapping_sub(start);
+                ahash_map.remove(&new_key);
+                elapsed
+            },
+        );
+
+        // fxhash
+        let mut fx_map: FxHashMap<32, u64> =
+            HashMap::with_capacity_and_hasher(capacity, FxBuildHasher);
+        for (i, k) in keys.iter().enumerate() {
+            fx_map.insert(*k, i as u64);
+        }
+        bench_raw_wide(
+            &format!("fxhash: new key (cap={}, fill={}%)", capacity, fill_pct),
+            || {
+                let start = rdtsc();
+                black_box(fx_map.insert(new_key, black_box(42u64)));
+                let elapsed = rdtsc().wrapping_sub(start);
+                fx_map.remove(&new_key);
+                elapsed
+            },
+        );
+
+        // String
+        let mut string_map: HashMap<String, u64> = HashMap::with_capacity(capacity);
+        for (i, k) in keys.iter().enumerate() {
+            string_map.insert(format!("key-{:06}", i), k.len() as u64);
+        }
+        bench_raw_wide(
+            &format!("String: new key (cap={}, fill={}%)", capacity, fill_pct),
+            || {
+                let start = rdtsc();
+                black_box(string_map.insert(string_new_key.clone(), black_box(42u64)));
+                let elapsed = rdtsc().wrapping_sub(start);
+                string_map.remove(&string_new_key);
+                elapsed
+            },
+        );
+
+        println!();
+    }
 }
 
 fn run_get_hit_by_cap<const CAP: usize>(size: usize, key_len: usize) {

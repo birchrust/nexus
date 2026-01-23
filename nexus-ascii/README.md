@@ -123,7 +123,7 @@ Measured in CPU cycles via `rdtsc`, pinned to a single core:
 | Equality (same content) | 18 | 20 |
 | Equality (different, header rejects) | 18 | 20 |
 | HashMap get (nohash, n=1000) | 20 | 22 |
-| HashMap insert (nohash, n=1000) | 18,938 | 28,910 |
+| HashMap insert new key (nohash, n=1000) | 38 | 46 |
 | `cmp()` (7B) | 16 | 20 |
 | `eq_ignore_ascii_case()` (38B) | 18 | 22 |
 | `to_ascii_uppercase()` (20B) | 18 | 20 |

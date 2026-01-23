@@ -13,7 +13,7 @@
 #[path = "_bench_utils.rs"]
 mod bench_utils;
 
-use bench_utils::{bench, print_header, print_intro};
+use bench_utils::{bench, bench_raw, print_header, print_intro, rdtsc};
 use nexus_ascii::AsciiString;
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -120,11 +120,13 @@ fn main() {
         map.get(black_box(&lookup_key)).copied().unwrap_or(0)
     });
 
-    bench("HashMap::insert (new key)", || {
-        let mut m = map.clone();
-        let key: AsciiString<32> = AsciiString::try_from("NEW-KEY").unwrap();
-        m.insert(black_box(key), 999);
-        m.len() as u64
+    let insert_key: AsciiString<32> = AsciiString::try_from("NEW-KEY").unwrap();
+    bench_raw("HashMap::insert (new key)", || {
+        let start = rdtsc();
+        black_box(map.insert(insert_key, black_box(999u64)));
+        let elapsed = rdtsc().wrapping_sub(start);
+        map.remove(&insert_key);
+        elapsed
     });
 
     // =========================================================================

@@ -799,34 +799,29 @@ impl Ulid {
             return Err(ParseError::invalid_length(26, bytes.len()));
         }
 
-        // Validate all characters are valid Crockford base32
-        let mut i = 0;
-        while i < 26 {
-            parse::validate_crockford32(bytes[i], i)?;
-            i += 1;
-        }
-
-        // Decode timestamp (chars 0-9)
-        let mut ts: u64 = 0;
-        ts = (ts << 3) | crockford32_digit(bytes[0]) as u64;
-        i = 1;
+        // Single-pass: validate and decode simultaneously via lookup table.
+        // Decode timestamp (chars 0-9): 3 + 9×5 = 48 bits
+        let mut ts: u64 = parse::validate_crockford32(bytes[0], 0)? as u64;
+        let mut i = 1;
         while i < 10 {
-            ts = (ts << 5) | crockford32_digit(bytes[i]) as u64;
+            let d = parse::validate_crockford32(bytes[i], i)? as u64;
+            ts = (ts << 5) | d;
             i += 1;
         }
 
-        // Decode random (chars 10-25)
-        let c10 = crockford32_digit(bytes[10]) as u16;
-        let c11 = crockford32_digit(bytes[11]) as u16;
-        let c12 = crockford32_digit(bytes[12]) as u16;
-        let c13 = crockford32_digit(bytes[13]) as u64;
+        // Decode random (chars 10-25): 80 bits
+        let c10 = parse::validate_crockford32(bytes[10], 10)? as u16;
+        let c11 = parse::validate_crockford32(bytes[11], 11)? as u16;
+        let c12 = parse::validate_crockford32(bytes[12], 12)? as u16;
+        let c13 = parse::validate_crockford32(bytes[13], 13)? as u64;
 
         let rand_hi = (c10 << 11) | (c11 << 6) | (c12 << 1) | ((c13 >> 4) as u16);
 
         let mut rand_lo: u64 = c13 & 0x0F;
         i = 14;
         while i < 26 {
-            rand_lo = (rand_lo << 5) | crockford32_digit(bytes[i]) as u64;
+            let d = parse::validate_crockford32(bytes[i], i)? as u64;
+            rand_lo = (rand_lo << 5) | d;
             i += 1;
         }
 
@@ -969,47 +964,11 @@ impl FromStr for Ulid {
 // Helper functions
 // ============================================================================
 
-/// Convert Crockford Base32 character to value (0-31).
+/// Convert Crockford Base32 character to value (0-31) via lookup table.
+/// For already-validated data (from our own encode output).
 #[inline]
-#[allow(clippy::match_same_arms)] // Intentional: 0/O/o map to 0, _ is invalid fallback
-const fn crockford32_digit(b: u8) -> u8 {
-    // Crockford Base32: 0123456789ABCDEFGHJKMNPQRSTVWXYZ
-    // Also accepts lowercase
-    match b {
-        b'0' | b'O' | b'o' => 0,
-        b'1' | b'I' | b'i' | b'L' | b'l' => 1,
-        b'2' => 2,
-        b'3' => 3,
-        b'4' => 4,
-        b'5' => 5,
-        b'6' => 6,
-        b'7' => 7,
-        b'8' => 8,
-        b'9' => 9,
-        b'A' | b'a' => 10,
-        b'B' | b'b' => 11,
-        b'C' | b'c' => 12,
-        b'D' | b'd' => 13,
-        b'E' | b'e' => 14,
-        b'F' | b'f' => 15,
-        b'G' | b'g' => 16,
-        b'H' | b'h' => 17,
-        b'J' | b'j' => 18,
-        b'K' | b'k' => 19,
-        b'M' | b'm' => 20,
-        b'N' | b'n' => 21,
-        b'P' | b'p' => 22,
-        b'Q' | b'q' => 23,
-        b'R' | b'r' => 24,
-        b'S' | b's' => 25,
-        b'T' | b't' => 26,
-        b'V' | b'v' => 27,
-        b'W' | b'w' => 28,
-        b'X' | b'x' => 29,
-        b'Y' | b'y' => 30,
-        b'Z' | b'z' => 31,
-        _ => 0,
-    }
+fn crockford32_digit(b: u8) -> u8 {
+    parse::CROCKFORD32_DECODE[b as usize]
 }
 
 /// Convert hex character to value (0-15).
