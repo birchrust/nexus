@@ -247,10 +247,15 @@ pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), 
 // Case-Insensitive Comparison
 // =============================================================================
 
-/// Compare two byte slices for case-insensitive ASCII equality using SWAR.
+/// Compare two byte slices for case-insensitive ASCII equality.
 ///
-/// Processes 8 bytes at a time. For ASCII letters (A-Z, a-z), case is ignored.
+/// For ASCII letters (A-Z, a-z), case is ignored.
 /// Non-letter ASCII characters must match exactly.
+///
+/// Dispatches to the best available implementation at compile time:
+/// - AVX2: 32 bytes/iter
+/// - SSE2: 16 bytes/iter (x86_64 baseline)
+/// - Scalar SWAR: 8 bytes/iter
 ///
 /// # Example
 ///
@@ -263,16 +268,34 @@ pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), 
 /// ```
 #[inline]
 pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
-    scalar::eq_ignore_ascii_case(a, b)
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        avx2::eq_ignore_ascii_case(a, b)
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    {
+        sse2::eq_ignore_ascii_case(a, b)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        scalar::eq_ignore_ascii_case(a, b)
+    }
 }
 
 // =============================================================================
 // Case Conversion
 // =============================================================================
 
-/// Convert byte slice to lowercase in-place using SWAR.
+/// Convert byte slice to lowercase in-place.
 ///
-/// Processes 8 bytes at a time. Only ASCII letters (A-Z) are affected.
+/// Only ASCII letters (A-Z) are affected.
+///
+/// Dispatches to the best available implementation at compile time:
+/// - AVX2: 32 bytes/iter
+/// - SSE2: 16 bytes/iter (x86_64 baseline)
+/// - Scalar SWAR: 8 bytes/iter
 ///
 /// # Example
 ///
@@ -285,12 +308,30 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 /// ```
 #[inline]
 pub fn make_lowercase(bytes: &mut [u8]) {
-    scalar::make_lowercase(bytes);
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        avx2::make_lowercase(bytes);
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    {
+        sse2::make_lowercase(bytes);
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        scalar::make_lowercase(bytes);
+    }
 }
 
-/// Convert byte slice to uppercase in-place using SWAR.
+/// Convert byte slice to uppercase in-place.
 ///
-/// Processes 8 bytes at a time. Only ASCII letters (a-z) are affected.
+/// Only ASCII letters (a-z) are affected.
+///
+/// Dispatches to the best available implementation at compile time:
+/// - AVX2: 32 bytes/iter
+/// - SSE2: 16 bytes/iter (x86_64 baseline)
+/// - Scalar SWAR: 8 bytes/iter
 ///
 /// # Example
 ///
@@ -303,20 +344,34 @@ pub fn make_lowercase(bytes: &mut [u8]) {
 /// ```
 #[inline]
 pub fn make_uppercase(bytes: &mut [u8]) {
-    scalar::make_uppercase(bytes);
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        avx2::make_uppercase(bytes);
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    {
+        sse2::make_uppercase(bytes);
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        scalar::make_uppercase(bytes);
+    }
 }
 
 // =============================================================================
 // Control Character Detection
 // =============================================================================
 
-/// Check if the byte slice contains any control characters using SWAR.
+/// Check if the byte slice contains any control characters.
 ///
 /// Control characters are bytes < 0x20 (space) or == 0x7F (DEL).
 /// Returns true if any control character is found, false otherwise.
 ///
-/// Processes 8 bytes at a time with branchless remainder handling for
-/// consistent tail latency.
+/// For ASCII-validated input (all bytes in 0x00-0x7F), this is equivalent
+/// to checking for non-printable bytes, so we delegate to `validate_printable`
+/// which has full SIMD dispatch.
 ///
 /// # Example
 ///
@@ -329,16 +384,15 @@ pub fn make_uppercase(bytes: &mut [u8]) {
 /// ```
 #[inline]
 pub fn contains_control_chars(bytes: &[u8]) -> bool {
-    scalar::contains_control_chars(bytes)
+    validate_printable(bytes).is_err()
 }
 
-/// Check if all bytes are printable ASCII (0x20-0x7E) using SWAR.
+/// Check if all bytes are printable ASCII (0x20-0x7E).
 ///
 /// Returns true if all bytes are printable, false otherwise.
-/// This is the inverse of checking for control characters and high bytes.
 ///
-/// Processes 8 bytes at a time with branchless remainder handling for
-/// consistent tail latency.
+/// Delegates to `validate_printable` which has full SIMD dispatch
+/// (AVX-512/AVX2/SSE2/scalar).
 ///
 /// # Example
 ///
@@ -351,7 +405,7 @@ pub fn contains_control_chars(bytes: &[u8]) -> bool {
 /// ```
 #[inline]
 pub fn is_all_printable(bytes: &[u8]) -> bool {
-    scalar::is_all_printable(bytes)
+    validate_printable(bytes).is_ok()
 }
 
 // =============================================================================

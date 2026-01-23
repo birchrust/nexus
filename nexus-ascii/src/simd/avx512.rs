@@ -6,7 +6,7 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use super::scalar;
+use super::avx2;
 
 // =============================================================================
 // ASCII Validation
@@ -39,9 +39,9 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
         }
     }
 
-    // Handle remainder with scalar (up to 63 bytes)
+    // Handle remainder with AVX2 (which cascades to SSE2, then scalar)
     if i < len {
-        scalar::validate_ascii(&bytes[i..]).map_err(|(b, p)| (b, i + p))?;
+        avx2::validate_ascii(&bytes[i..]).map_err(|(b, p)| (b, i + p))?;
     }
 
     Ok(())
@@ -97,9 +97,9 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
         }
     }
 
-    // Handle remainder with scalar
+    // Handle remainder with AVX2 (which cascades to SSE2, then scalar)
     if i < len {
-        scalar::validate_printable(&bytes[i..]).map_err(|(b, p)| (b, i + p))?;
+        avx2::validate_printable(&bytes[i..]).map_err(|(b, p)| (b, i + p))?;
     }
 
     Ok(())
@@ -112,6 +112,7 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::scalar;
 
     // -------------------------------------------------------------------------
     // ASCII validation

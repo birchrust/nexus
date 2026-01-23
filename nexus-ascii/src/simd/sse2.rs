@@ -108,6 +108,195 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 }
 
 // =============================================================================
+// Case Conversion
+// =============================================================================
+
+/// Convert byte slice to lowercase in-place using SSE2 (16 bytes at a time).
+///
+/// Only ASCII uppercase letters (A-Z) are affected.
+/// Cascades to scalar for inputs shorter than 16 bytes.
+#[inline]
+pub fn make_lowercase(bytes: &mut [u8]) {
+    let len = bytes.len();
+    if len < 16 {
+        scalar::make_lowercase(bytes);
+        return;
+    }
+
+    let mut i = 0;
+
+    // SAFETY: SSE2 is baseline for x86_64
+    unsafe {
+        let case_bit = _mm_set1_epi8(0x20);
+        let lo_bound = _mm_set1_epi8(0x40); // 'A' - 1
+        let hi_bound = _mm_set1_epi8(0x5B); // 'Z' + 1
+
+        // Process 16 bytes at a time
+        while i + 16 <= len {
+            let ptr = bytes.as_ptr().add(i).cast();
+            let chunk = _mm_loadu_si128(ptr);
+
+            // Identify uppercase letters: byte > 0x40 AND byte < 0x5B
+            let ge_a = _mm_cmpgt_epi8(chunk, lo_bound);
+            let lt_z1 = _mm_cmpgt_epi8(hi_bound, chunk);
+            let is_upper = _mm_and_si128(ge_a, lt_z1);
+
+            // Create mask: 0x20 where uppercase, 0x00 elsewhere
+            let mask = _mm_and_si128(is_upper, case_bit);
+
+            // Apply: OR sets bit 5 for uppercase letters
+            let result = _mm_or_si128(chunk, mask);
+            _mm_storeu_si128(bytes.as_mut_ptr().add(i).cast(), result);
+
+            i += 16;
+        }
+
+        // Handle remainder with overlapping last-16 (idempotent)
+        if i < len {
+            let offset = len - 16;
+            let ptr = bytes.as_ptr().add(offset).cast();
+            let chunk = _mm_loadu_si128(ptr);
+
+            let ge_a = _mm_cmpgt_epi8(chunk, lo_bound);
+            let lt_z1 = _mm_cmpgt_epi8(hi_bound, chunk);
+            let is_upper = _mm_and_si128(ge_a, lt_z1);
+            let mask = _mm_and_si128(is_upper, case_bit);
+            let result = _mm_or_si128(chunk, mask);
+            _mm_storeu_si128(bytes.as_mut_ptr().add(offset).cast(), result);
+        }
+    }
+}
+
+/// Convert byte slice to uppercase in-place using SSE2 (16 bytes at a time).
+///
+/// Only ASCII lowercase letters (a-z) are affected.
+/// Cascades to scalar for inputs shorter than 16 bytes.
+#[inline]
+pub fn make_uppercase(bytes: &mut [u8]) {
+    let len = bytes.len();
+    if len < 16 {
+        scalar::make_uppercase(bytes);
+        return;
+    }
+
+    let mut i = 0;
+
+    // SAFETY: SSE2 is baseline for x86_64
+    unsafe {
+        let case_bit = _mm_set1_epi8(0x20);
+        let lo_bound = _mm_set1_epi8(0x60); // 'a' - 1
+        let hi_bound = _mm_set1_epi8(0x7B); // 'z' + 1
+
+        // Process 16 bytes at a time
+        while i + 16 <= len {
+            let ptr = bytes.as_ptr().add(i).cast();
+            let chunk = _mm_loadu_si128(ptr);
+
+            // Identify lowercase letters: byte > 0x60 AND byte < 0x7B
+            let ge_a = _mm_cmpgt_epi8(chunk, lo_bound);
+            let lt_z1 = _mm_cmpgt_epi8(hi_bound, chunk);
+            let is_lower = _mm_and_si128(ge_a, lt_z1);
+
+            // Create mask: 0x20 where lowercase, 0x00 elsewhere
+            let mask = _mm_and_si128(is_lower, case_bit);
+
+            // Apply: ANDNOT clears bit 5 for lowercase letters
+            let result = _mm_andnot_si128(mask, chunk);
+            _mm_storeu_si128(bytes.as_mut_ptr().add(i).cast(), result);
+
+            i += 16;
+        }
+
+        // Handle remainder with overlapping last-16 (idempotent)
+        if i < len {
+            let offset = len - 16;
+            let ptr = bytes.as_ptr().add(offset).cast();
+            let chunk = _mm_loadu_si128(ptr);
+
+            let ge_a = _mm_cmpgt_epi8(chunk, lo_bound);
+            let lt_z1 = _mm_cmpgt_epi8(hi_bound, chunk);
+            let is_lower = _mm_and_si128(ge_a, lt_z1);
+            let mask = _mm_and_si128(is_lower, case_bit);
+            let result = _mm_andnot_si128(mask, chunk);
+            _mm_storeu_si128(bytes.as_mut_ptr().add(offset).cast(), result);
+        }
+    }
+}
+
+// =============================================================================
+// Case-Insensitive Comparison
+// =============================================================================
+
+/// Compare two byte slices for case-insensitive ASCII equality using SSE2.
+///
+/// Processes 16 bytes at a time. For ASCII letters, case is ignored.
+/// Non-letter bytes must match exactly.
+#[inline]
+pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let len = a.len();
+    if len < 16 {
+        return scalar::eq_ignore_ascii_case(a, b);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: SSE2 is baseline for x86_64
+    unsafe {
+        let case_bit = _mm_set1_epi8(0x20);
+        let lo_bound = _mm_set1_epi8(0x60); // 'a' - 1
+        let hi_bound = _mm_set1_epi8(0x7B); // 'z' + 1
+        let zero = _mm_setzero_si128();
+
+        while i + 16 <= len {
+            let chunk_a = _mm_loadu_si128(a.as_ptr().add(i).cast());
+            let chunk_b = _mm_loadu_si128(b.as_ptr().add(i).cast());
+
+            let xor = _mm_xor_si128(chunk_a, chunk_b);
+
+            // Fast path: chunks are identical
+            let eq_mask = _mm_movemask_epi8(_mm_cmpeq_epi8(xor, zero));
+            if eq_mask == 0xFFFF {
+                i += 16;
+                continue;
+            }
+
+            // Check: all differences must be only in bit 5 (0x20)
+            let non_case_diff = _mm_andnot_si128(case_bit, xor);
+            let has_other = _mm_movemask_epi8(_mm_cmpeq_epi8(non_case_diff, zero));
+            if has_other != 0xFFFF {
+                return false;
+            }
+
+            // For bytes that differ by 0x20, verify they're ASCII letters
+            let differs = _mm_cmpeq_epi8(xor, case_bit);
+            let lower_a = _mm_or_si128(chunk_a, case_bit);
+            let ge_a = _mm_cmpgt_epi8(lower_a, lo_bound);
+            let lt_z1 = _mm_cmpgt_epi8(hi_bound, lower_a);
+            let is_letter = _mm_and_si128(ge_a, lt_z1);
+
+            // Any byte that differs but isn't a letter → not equal
+            let not_letter_but_differs = _mm_andnot_si128(is_letter, differs);
+            if _mm_movemask_epi8(not_letter_but_differs) != 0 {
+                return false;
+            }
+
+            i += 16;
+        }
+    }
+
+    // Handle remainder with scalar
+    if i < len {
+        return scalar::eq_ignore_ascii_case(&a[i..], &b[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -277,6 +466,100 @@ mod tests {
                     len,
                     pos
                 );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Case conversion
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_make_lowercase_matches_scalar() {
+        for len in 0..=64 {
+            let bytes: Vec<u8> = (0..len).map(|i| (0x20 + (i % 95)) as u8).collect();
+            let mut simd_result = bytes.clone();
+            let mut scalar_result = bytes.clone();
+            make_lowercase(&mut simd_result);
+            scalar::make_lowercase(&mut scalar_result);
+            assert_eq!(simd_result, scalar_result, "len={}", len);
+        }
+    }
+
+    #[test]
+    fn test_make_uppercase_matches_scalar() {
+        for len in 0..=64 {
+            let bytes: Vec<u8> = (0..len).map(|i| (0x20 + (i % 95)) as u8).collect();
+            let mut simd_result = bytes.clone();
+            let mut scalar_result = bytes.clone();
+            make_uppercase(&mut simd_result);
+            scalar::make_uppercase(&mut scalar_result);
+            assert_eq!(simd_result, scalar_result, "len={}", len);
+        }
+    }
+
+    #[test]
+    fn test_make_lowercase_all_bytes() {
+        // Test every ASCII byte value
+        let mut bytes: Vec<u8> = (0..128).collect();
+        let mut expected = bytes.clone();
+        scalar::make_lowercase(&mut expected);
+        make_lowercase(&mut bytes);
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn test_make_uppercase_all_bytes() {
+        let mut bytes: Vec<u8> = (0..128).collect();
+        let mut expected = bytes.clone();
+        scalar::make_uppercase(&mut expected);
+        make_uppercase(&mut bytes);
+        assert_eq!(bytes, expected);
+    }
+
+    // -------------------------------------------------------------------------
+    // Case-insensitive comparison
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_eq_ignore_case_matches_scalar() {
+        for len in 0..=64 {
+            let a: Vec<u8> = (0..len).map(|i| (0x41 + (i % 26)) as u8).collect(); // A-Z repeating
+            let b: Vec<u8> = a.iter().map(|&c| c | 0x20).collect(); // a-z repeating
+            assert_eq!(
+                eq_ignore_ascii_case(&a, &b),
+                scalar::eq_ignore_ascii_case(&a, &b),
+                "len={}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_eq_ignore_case_not_equal() {
+        for len in 1..=48 {
+            for pos in 0..len {
+                let a: Vec<u8> = vec![b'A'; len];
+                let mut b: Vec<u8> = vec![b'a'; len];
+                b[pos] = b'0'; // Non-letter difference
+                assert_eq!(
+                    eq_ignore_ascii_case(&a, &b),
+                    scalar::eq_ignore_ascii_case(&a, &b),
+                    "len={}, pos={}",
+                    len,
+                    pos
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_eq_ignore_case_exhaustive_single_byte() {
+        for a in 0..128u8 {
+            for b in 0..128u8 {
+                let expected = scalar::eq_ignore_ascii_case(&[a], &[b]);
+                let actual = eq_ignore_ascii_case(&[a], &[b]);
+                assert_eq!(actual, expected, "a=0x{:02X}, b=0x{:02X}", a, b);
             }
         }
     }

@@ -455,6 +455,7 @@ pub fn make_uppercase(bytes: &mut [u8]) {
 /// Check if a u64 word contains any control characters (< 0x20 or == 0x7F).
 ///
 /// Returns non-zero if any byte is a control character.
+#[allow(dead_code)]
 #[inline(always)]
 const fn has_control_chars_word(word: u64) -> u64 {
     const MASK: u64 = 0x8080_8080_8080_8080;
@@ -479,6 +480,7 @@ const fn has_control_chars_word(word: u64) -> u64 {
 ///
 /// Control characters are bytes < 0x20 or == 0x7F.
 /// Returns true if any control character is found.
+#[allow(dead_code)]
 #[inline]
 pub fn contains_control_chars(bytes: &[u8]) -> bool {
     let len = bytes.len();
@@ -536,6 +538,7 @@ pub fn contains_control_chars(bytes: &[u8]) -> bool {
 /// Check if all bytes are printable ASCII (0x20-0x7E) using SWAR.
 ///
 /// Returns true if all bytes are printable, false otherwise.
+#[allow(dead_code)]
 #[inline]
 pub fn is_all_printable(bytes: &[u8]) -> bool {
     let len = bytes.len();
