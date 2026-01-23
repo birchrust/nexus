@@ -101,7 +101,7 @@ pub use snowflake::{
     SnowflakeSigned64,
 };
 
-pub use parse::ParseError;
+pub use parse::{DecodeError, ParseError, TypeIdParseError, UuidParseError};
 pub use snowflake_id::{MixedId32, MixedId64, SnowflakeId32, SnowflakeId64};
 pub use types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
 pub use typeid::TypeId;
@@ -114,3 +114,9 @@ pub use uuid::{UuidV4, UuidV7};
 // Re-export serde traits when feature is enabled
 #[cfg(feature = "serde")]
 mod serde_impl;
+
+#[cfg(feature = "uuid")]
+mod uuid_impl;
+
+#[cfg(feature = "bytes")]
+mod bytes_impl;

@@ -443,7 +443,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u32, TS, WK, SQ> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 

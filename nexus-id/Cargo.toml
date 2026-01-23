@@ -17,11 +17,15 @@ workspace = true
 default = ["std"]
 std = ["dep:getrandom"]
 serde = ["dep:serde"]
+uuid = ["dep:uuid"]
+bytes = ["dep:bytes"]
 
 [dependencies]
 nexus-ascii = { path = "../nexus-ascii", default-features = false }
 getrandom = { version = "0.2", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+uuid = { version = "1", default-features = false, optional = true }
+bytes = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
 hdrhistogram = "7.5"

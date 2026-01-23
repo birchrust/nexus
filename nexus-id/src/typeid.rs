@@ -22,7 +22,7 @@ use core::str::FromStr;
 
 use nexus_ascii::AsciiString;
 
-use crate::parse::ParseError;
+use crate::parse::TypeIdParseError;
 use crate::types::Ulid;
 
 /// Type-prefixed sortable identifier.
@@ -64,26 +64,26 @@ impl<const CAP: usize> TypeId<CAP> {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError`] if:
+    /// Returns [`TypeIdParseError`] if:
     /// - Prefix contains non-lowercase-ASCII characters
     /// - Prefix + separator + suffix exceeds `CAP`
     /// - Prefix is empty (use ULID directly instead)
-    pub fn new(prefix: &str, suffix: Ulid) -> Result<Self, ParseError> {
+    pub fn new(prefix: &str, suffix: Ulid) -> Result<Self, TypeIdParseError> {
         let prefix_bytes = prefix.as_bytes();
         let total_len = prefix_bytes.len() + 1 + 26; // prefix + '_' + suffix
 
         if prefix_bytes.is_empty() {
-            return Err(ParseError::invalid_prefix());
+            return Err(TypeIdParseError::InvalidPrefix);
         }
 
         if total_len > CAP {
-            return Err(ParseError::invalid_length(CAP, total_len));
+            return Err(TypeIdParseError::InvalidLength { expected: CAP, got: total_len });
         }
 
         // Validate prefix: lowercase ASCII only [a-z]
         for (i, &b) in prefix_bytes.iter().enumerate() {
             if !b.is_ascii_lowercase() {
-                return Err(ParseError::invalid_char(i, b));
+                return Err(TypeIdParseError::InvalidChar { position: i, byte: b });
             }
         }
 
@@ -106,21 +106,21 @@ impl<const CAP: usize> TypeId<CAP> {
     ///
     /// Expects format: `{prefix}_{suffix}` where prefix is lowercase ASCII
     /// and suffix is 26 Crockford Base32 characters.
-    pub fn parse(s: &str) -> Result<Self, ParseError> {
+    pub fn parse(s: &str) -> Result<Self, TypeIdParseError> {
         let bytes = s.as_bytes();
 
         if bytes.len() > CAP {
-            return Err(ParseError::invalid_length(CAP, bytes.len()));
+            return Err(TypeIdParseError::InvalidLength { expected: CAP, got: bytes.len() });
         }
 
         if bytes.len() < Self::MIN_SUFFIX_LEN {
-            return Err(ParseError::invalid_format());
+            return Err(TypeIdParseError::InvalidFormat);
         }
 
         // Find the underscore separator (must be at len - 27)
         let sep_pos = bytes.len() - 27;
         if bytes[sep_pos] != b'_' {
-            return Err(ParseError::invalid_format());
+            return Err(TypeIdParseError::InvalidFormat);
         }
 
         let prefix_bytes = &bytes[..sep_pos];
@@ -128,19 +128,19 @@ impl<const CAP: usize> TypeId<CAP> {
 
         // Validate prefix
         if prefix_bytes.is_empty() {
-            return Err(ParseError::invalid_prefix());
+            return Err(TypeIdParseError::InvalidPrefix);
         }
         for (i, &b) in prefix_bytes.iter().enumerate() {
             if !b.is_ascii_lowercase() {
-                return Err(ParseError::invalid_char(i, b));
+                return Err(TypeIdParseError::InvalidChar { position: i, byte: b });
             }
         }
 
         // Validate suffix (26 Crockford base32 chars)
         if suffix_bytes.len() != 26 {
-            return Err(ParseError::invalid_format());
+            return Err(TypeIdParseError::InvalidFormat);
         }
-        let suffix_str = core::str::from_utf8(suffix_bytes).map_err(|_| ParseError::invalid_format())?;
+        let suffix_str = core::str::from_utf8(suffix_bytes).map_err(|_| TypeIdParseError::InvalidFormat)?;
         let _ulid = Ulid::parse(suffix_str)?;
 
         // Build from validated input
@@ -241,7 +241,7 @@ impl<const CAP: usize> fmt::Debug for TypeId<CAP> {
 }
 
 impl<const CAP: usize> FromStr for TypeId<CAP> {
-    type Err = ParseError;
+    type Err = TypeIdParseError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {

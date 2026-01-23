@@ -1,85 +1,41 @@
-//! Parse error type for ID string parsing.
+//! Error types for ID string parsing.
+//!
+//! Each error type contains only the variants reachable by the parse methods
+//! that return it. Users never need unreachable match arms.
+//!
+//! | Error Type | Used By |
+//! |---|---|
+//! | [`ParseError`] | [`HexId64`], [`UuidCompact`], [`Ulid`] |
+//! | [`UuidParseError`] | [`Uuid`] |
+//! | [`DecodeError`] | [`Base62Id`], [`Base36Id`] |
+//! | [`TypeIdParseError`] | [`TypeId`] |
 
 use core::fmt;
 
-/// Error returned when parsing an ID string fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    pub(crate) kind: ParseErrorKind,
-}
+// =============================================================================
+// ParseError — InvalidLength + InvalidChar
+// =============================================================================
 
+/// Error parsing a fixed-format ID string.
+///
+/// Returned by [`HexId64`](crate::HexId64), [`UuidCompact`](crate::UuidCompact),
+/// and [`Ulid`](crate::Ulid).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ParseErrorKind {
+pub enum ParseError {
     /// Input length doesn't match expected format length.
     InvalidLength { expected: usize, got: usize },
     /// Invalid character at the given position.
     InvalidChar { position: usize, byte: u8 },
-    /// Structural format error (e.g., missing dashes in UUID).
-    InvalidFormat,
-    /// Prefix validation failed (TypeID).
-    InvalidPrefix,
-    /// Value would overflow the target type.
-    Overflow,
-}
-
-impl ParseError {
-    #[inline]
-    pub(crate) const fn invalid_length(expected: usize, got: usize) -> Self {
-        Self {
-            kind: ParseErrorKind::InvalidLength { expected, got },
-        }
-    }
-
-    #[inline]
-    pub(crate) const fn invalid_char(position: usize, byte: u8) -> Self {
-        Self {
-            kind: ParseErrorKind::InvalidChar { position, byte },
-        }
-    }
-
-    #[inline]
-    pub(crate) const fn invalid_format() -> Self {
-        Self {
-            kind: ParseErrorKind::InvalidFormat,
-        }
-    }
-
-    #[inline]
-    pub(crate) const fn invalid_prefix() -> Self {
-        Self {
-            kind: ParseErrorKind::InvalidPrefix,
-        }
-    }
-
-    #[inline]
-    pub(crate) const fn overflow() -> Self {
-        Self {
-            kind: ParseErrorKind::Overflow,
-        }
-    }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            ParseErrorKind::InvalidLength { expected, got } => {
+        match self {
+            Self::InvalidLength { expected, got } => {
                 write!(f, "invalid length: expected {}, got {}", expected, got)
             }
-            ParseErrorKind::InvalidChar { position, byte } => {
-                write!(
-                    f,
-                    "invalid character 0x{:02x} at position {}",
-                    byte, position
-                )
-            }
-            ParseErrorKind::InvalidFormat => {
-                write!(f, "invalid format")
-            }
-            ParseErrorKind::InvalidPrefix => {
-                write!(f, "invalid prefix: must be lowercase ASCII [a-z]")
-            }
-            ParseErrorKind::Overflow => {
-                write!(f, "value overflows target type")
+            Self::InvalidChar { position, byte } => {
+                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
             }
         }
     }
@@ -87,6 +43,157 @@ impl fmt::Display for ParseError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for ParseError {}
+
+// =============================================================================
+// UuidParseError — InvalidLength + InvalidChar + InvalidFormat
+// =============================================================================
+
+/// Error parsing a UUID string.
+///
+/// Returned by [`Uuid`](crate::Uuid).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UuidParseError {
+    /// Input length doesn't match expected format length.
+    InvalidLength { expected: usize, got: usize },
+    /// Invalid character at the given position.
+    InvalidChar { position: usize, byte: u8 },
+    /// Structural format error (missing or misplaced dashes).
+    InvalidFormat,
+}
+
+impl fmt::Display for UuidParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength { expected, got } => {
+                write!(f, "invalid length: expected {}, got {}", expected, got)
+            }
+            Self::InvalidChar { position, byte } => {
+                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+            }
+            Self::InvalidFormat => write!(f, "invalid UUID format (expected dashes at 8-13-18-23)"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for UuidParseError {}
+
+impl From<ParseError> for UuidParseError {
+    #[inline]
+    fn from(e: ParseError) -> Self {
+        match e {
+            ParseError::InvalidLength { expected, got } => {
+                Self::InvalidLength { expected, got }
+            }
+            ParseError::InvalidChar { position, byte } => {
+                Self::InvalidChar { position, byte }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// DecodeError — InvalidLength + InvalidChar + Overflow
+// =============================================================================
+
+/// Error parsing a base-N encoded ID string.
+///
+/// Returned by [`Base62Id`](crate::Base62Id) and [`Base36Id`](crate::Base36Id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    /// Input length doesn't match expected format length.
+    InvalidLength { expected: usize, got: usize },
+    /// Invalid character at the given position.
+    InvalidChar { position: usize, byte: u8 },
+    /// Value overflows the target integer type.
+    Overflow,
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength { expected, got } => {
+                write!(f, "invalid length: expected {}, got {}", expected, got)
+            }
+            Self::InvalidChar { position, byte } => {
+                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+            }
+            Self::Overflow => write!(f, "value overflows target type"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for DecodeError {}
+
+impl From<ParseError> for DecodeError {
+    #[inline]
+    fn from(e: ParseError) -> Self {
+        match e {
+            ParseError::InvalidLength { expected, got } => {
+                Self::InvalidLength { expected, got }
+            }
+            ParseError::InvalidChar { position, byte } => {
+                Self::InvalidChar { position, byte }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// TypeIdParseError — InvalidLength + InvalidChar + InvalidFormat + InvalidPrefix
+// =============================================================================
+
+/// Error parsing or constructing a TypeId.
+///
+/// Returned by [`TypeId`](crate::TypeId).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeIdParseError {
+    /// Input length doesn't match expected capacity or format.
+    InvalidLength { expected: usize, got: usize },
+    /// Invalid character at the given position.
+    InvalidChar { position: usize, byte: u8 },
+    /// Structural format error (missing underscore separator).
+    InvalidFormat,
+    /// Prefix is empty or contains non-lowercase-ASCII characters.
+    InvalidPrefix,
+}
+
+impl fmt::Display for TypeIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength { expected, got } => {
+                write!(f, "invalid length: expected max {}, got {}", expected, got)
+            }
+            Self::InvalidChar { position, byte } => {
+                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+            }
+            Self::InvalidFormat => {
+                write!(f, "invalid TypeId format (expected prefix_suffix)")
+            }
+            Self::InvalidPrefix => {
+                write!(f, "invalid prefix: must be non-empty lowercase ASCII [a-z]")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for TypeIdParseError {}
+
+impl From<ParseError> for TypeIdParseError {
+    #[inline]
+    fn from(e: ParseError) -> Self {
+        match e {
+            ParseError::InvalidLength { expected, got } => {
+                Self::InvalidLength { expected, got }
+            }
+            ParseError::InvalidChar { position, byte } => {
+                Self::InvalidChar { position, byte }
+            }
+        }
+    }
+}
 
 // =============================================================================
 // Validation helpers
@@ -99,7 +206,7 @@ pub(crate) const fn validate_hex(b: u8, position: usize) -> Result<u8, ParseErro
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(ParseError::invalid_char(position, b)),
+        _ => Err(ParseError::InvalidChar { position, byte: b }),
     }
 }
 
@@ -187,7 +294,7 @@ pub(crate) static CROCKFORD32_DECODE: [u8; 256] = {
 pub(crate) fn validate_crockford32(b: u8, position: usize) -> Result<u8, ParseError> {
     let val = CROCKFORD32_DECODE[b as usize];
     if val == CROCKFORD32_INVALID {
-        Err(ParseError::invalid_char(position, b))
+        Err(ParseError::InvalidChar { position, byte: b })
     } else {
         Ok(val)
     }
@@ -200,7 +307,7 @@ pub(crate) const fn validate_base62(b: u8, position: usize) -> Result<u8, ParseE
         b'0'..=b'9' => Ok(b - b'0'),
         b'A'..=b'Z' => Ok(b - b'A' + 10),
         b'a'..=b'z' => Ok(b - b'a' + 36),
-        _ => Err(ParseError::invalid_char(position, b)),
+        _ => Err(ParseError::InvalidChar { position, byte: b }),
     }
 }
 
@@ -211,6 +318,6 @@ pub(crate) const fn validate_base36(b: u8, position: usize) -> Result<u8, ParseE
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'z' => Ok(b - b'a' + 10),
         b'A'..=b'Z' => Ok(b - b'A' + 10),
-        _ => Err(ParseError::invalid_char(position, b)),
+        _ => Err(ParseError::InvalidChar { position, byte: b }),
     }
 }

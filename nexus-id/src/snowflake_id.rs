@@ -281,6 +281,24 @@ impl<const TS: u8, const WK: u8, const SQ: u8> SnowflakeId32<TS, WK, SQ> {
     pub const fn mixed(&self) -> MixedId32<TS, WK, SQ> {
         MixedId32(self.0.wrapping_mul(GOLDEN_32))
     }
+
+    /// Encode as 16-char lowercase hex (zero-padded u64).
+    #[inline]
+    pub fn to_hex(&self) -> HexId64 {
+        HexId64::encode(self.0 as u64)
+    }
+
+    /// Encode as 11-char base62 (zero-padded u64).
+    #[inline]
+    pub fn to_base62(&self) -> Base62Id {
+        Base62Id::encode(self.0 as u64)
+    }
+
+    /// Encode as 13-char base36 (zero-padded u64).
+    #[inline]
+    pub fn to_base36(&self) -> Base36Id {
+        Base36Id::encode(self.0 as u64)
+    }
 }
 
 impl<const TS: u8, const WK: u8, const SQ: u8> Ord for SnowflakeId32<TS, WK, SQ> {
@@ -372,10 +390,42 @@ impl<const TS: u8, const WK: u8, const SQ: u8> fmt::Display for MixedId32<TS, WK
 }
 
 // =============================================================================
+// From impls — transparent newtype extraction
+// =============================================================================
+
+impl<const TS: u8, const WK: u8, const SQ: u8> From<SnowflakeId64<TS, WK, SQ>> for u64 {
+    #[inline]
+    fn from(id: SnowflakeId64<TS, WK, SQ>) -> Self {
+        id.0
+    }
+}
+
+impl<const TS: u8, const WK: u8, const SQ: u8> From<MixedId64<TS, WK, SQ>> for u64 {
+    #[inline]
+    fn from(id: MixedId64<TS, WK, SQ>) -> Self {
+        id.0
+    }
+}
+
+impl<const TS: u8, const WK: u8, const SQ: u8> From<SnowflakeId32<TS, WK, SQ>> for u32 {
+    #[inline]
+    fn from(id: SnowflakeId32<TS, WK, SQ>) -> Self {
+        id.0
+    }
+}
+
+impl<const TS: u8, const WK: u8, const SQ: u8> From<MixedId32<TS, WK, SQ>> for u32 {
+    #[inline]
+    fn from(id: MixedId32<TS, WK, SQ>) -> Self {
+        id.0
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
@@ -473,6 +523,27 @@ mod tests {
         let id = Id64::from_raw(12345678);
         let b36 = id.to_base36();
         assert_eq!(b36.decode(), id.raw());
+    }
+
+    #[test]
+    fn snowflake32_to_hex_roundtrip() {
+        let id = Id32::from_raw(0xDEAD_BEEF);
+        let hex = id.to_hex();
+        assert_eq!(hex.decode(), 0xDEAD_BEEF_u64);
+    }
+
+    #[test]
+    fn snowflake32_to_base62_roundtrip() {
+        let id = Id32::from_raw(12345678);
+        let b62 = id.to_base62();
+        assert_eq!(b62.decode(), 12345678_u64);
+    }
+
+    #[test]
+    fn snowflake32_to_base36_roundtrip() {
+        let id = Id32::from_raw(12345678);
+        let b36 = id.to_base36();
+        assert_eq!(b36.decode(), 12345678_u64);
     }
 
     #[test]
