@@ -21,7 +21,7 @@ uuid = ["dep:uuid"]
 bytes = ["dep:bytes"]
 
 [dependencies]
-nexus-ascii = { path = "../nexus-ascii", default-features = false }
+nexus-ascii = { version = "1.3", default-features = false }
 getrandom = { version = "0.2", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 uuid = { version = "1", default-features = false, optional = true }

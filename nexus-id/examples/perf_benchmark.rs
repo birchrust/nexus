@@ -1,3 +1,4 @@
+#![allow(unused_must_use)]
 //! Comprehensive benchmark for nexus-id newtypes, parsing, encoding, and TypeId.
 //!
 //! Measures cycle-accurate latency for:
