@@ -21,27 +21,39 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 ### Communication
 
+| Crate | Description | p50 |
+|-------|-------------|-----|
+| [**nexus-queue**](./nexus-queue) | Lock-free SPSC ring buffer with per-slot lap counters. Two implementations: index-based (NUMA-friendly) and slot-based (shared-L3 friendly). | ~370 cycles |
+| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. | ~665 cycles |
+| [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. | ~159 cycles |
+
+### Storage & Allocation
+
+| Crate | Description | p50 |
+|-------|-------------|-----|
+| [**nexus-slab**](./nexus-slab) | Pre-allocated slab allocator. Fixed-capacity `BoundedSlab` for deterministic latency, growable `Slab` via independent chunks (no copy on growth). | ~20-24 cycles |
+| [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` (~26 cycles) and thread-safe `sync::Pool` (~42-68 cycles, one acquirer, any returner). | ~26 cycles |
+
+### Collections
+
 | Crate | Description |
 |-------|-------------|
-| [**nexus-queue**](./nexus-queue) | Lock-free SPSC ring buffer with per-slot lap counters. Sub-microsecond latency for bounded message passing. |
-| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Adds backpressure with optimized parking that minimizes syscalls. |
-| [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
+| [**nexus-collections**](./nexus-collections) | Index-linked data structures with external storage. O(1) linked lists, O(log n) heaps, skip lists. Storage is separate from structure — move elements between collections without deallocation. |
 
-### Storage
+### Identity & Strings
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-slab**](./nexus-slab) | Pre-allocated slab with page-aligned memory, prefaulting, and optional mlock. O(1) insert/remove with stable keys. |
+| [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake (~22 cycles), UUID v4/v7 (~48-62 cycles), ULID (~80 cycles). SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
+| [**nexus-ascii**](./nexus-ascii) | Fixed-capacity ASCII strings. Stack-allocated, immutable, with precomputed 48-bit XXH3 hash. Identity-hashable via `nohash` feature for zero-cost lookups. |
+| [**nexus-bits**](./nexus-bits) | Bit-packed integer newtypes via derive macros. Structs, tagged enums, `IntEnum` for discriminants. Zero-cost `#[repr(transparent)]` with compile-time validation. |
 
-### Planned
+## Planned
 
-| Crate | Description | Status |
-|-------|-------------|--------|
-| **nexus-hash** | Integer-optimized hashers for structured keys (packed IDs, snowflakes). Better distribution than identity hashing without full cryptographic overhead. | Planned |
-| **nexus-pool** | Object pool with borrow/return semantics over nexus-slab. Acquire returns a guard, drop returns to pool. | Planned |
-| **nexus-id** | Snowflake-style ID generator with const generic bit layout. Lock-free, monotonic, embeds timestamp and worker ID. | Planned |
-| **nexus-ascii** | Fixed-capacity ASCII strings. Zero UTF-8 overhead for symbols, order IDs, and protocol fields that are always ASCII. | Planned |
-| **nexus-collections** | Index-linked data structures: list, skip list, heap. Base types take external storage (slab-backed, composable). `Owned*` variants for self-contained use. | Planned |
+| Crate | Description |
+|-------|-------------|
+| **nexus-journal** | Non-blocking overwrite SPSC ring buffer for variable-length byte slices. Producer never blocks, never syscalls — overwrites oldest entries if consumer falls behind. Sequence-based gap detection. For archival, logging transports, and event sourcing. |
+| **MPSC queue** | Bounded multi-producer, single-consumer lock-free queue. CAS-based tail claiming, wait-free consumer. For buffer return paths and aggregation where producers are not on the hot path. |
 
 ## Design Principles
 
