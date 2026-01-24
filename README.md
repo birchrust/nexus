@@ -21,18 +21,18 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 ### Communication
 
-| Crate | Description | p50 |
-|-------|-------------|-----|
-| [**nexus-queue**](./nexus-queue) | Lock-free SPSC ring buffer with per-slot lap counters. Two implementations: index-based (NUMA-friendly) and slot-based (shared-L3 friendly). | ~370 cycles |
-| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. | ~665 cycles |
-| [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. | ~159 cycles |
+| Crate | Description |
+|-------|-------------|
+| [**nexus-queue**](./nexus-queue) | Lock-free SPSC ring buffer with per-slot lap counters. Two implementations: index-based (NUMA-friendly) and slot-based (shared-L3 friendly). |
+| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. |
+| [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
 
 ### Storage & Allocation
 
-| Crate | Description | p50 |
-|-------|-------------|-----|
-| [**nexus-slab**](./nexus-slab) | Pre-allocated slab allocator. Fixed-capacity `BoundedSlab` for deterministic latency, growable `Slab` via independent chunks (no copy on growth). | ~20-24 cycles |
-| [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` (~26 cycles) and thread-safe `sync::Pool` (~42-68 cycles, one acquirer, any returner). | ~26 cycles |
+| Crate | Description |
+|-------|-------------|
+| [**nexus-slab**](./nexus-slab) | Pre-allocated slab allocator. Fixed-capacity `BoundedSlab` for deterministic latency, growable `Slab` via independent chunks (no copy on growth). |
+| [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` and thread-safe `sync::Pool` (one acquirer, any returner). |
 
 ### Collections
 
@@ -44,7 +44,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake (~22 cycles), UUID v4/v7 (~48-62 cycles), ULID (~80 cycles). SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
+| [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake, UUID v4/v7, ULID. SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
 | [**nexus-ascii**](./nexus-ascii) | Fixed-capacity ASCII strings. Stack-allocated, immutable, with precomputed 48-bit XXH3 hash. Identity-hashable via `nohash` feature for zero-cost lookups. |
 | [**nexus-bits**](./nexus-bits) | Bit-packed integer newtypes via derive macros. Structs, tagged enums, `IntEnum` for discriminants. Zero-cost `#[repr(transparent)]` with compile-time validation. |
 
