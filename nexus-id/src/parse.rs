@@ -35,7 +35,11 @@ impl fmt::Display for ParseError {
                 write!(f, "invalid length: expected {}, got {}", expected, got)
             }
             Self::InvalidChar { position, byte } => {
-                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+                write!(
+                    f,
+                    "invalid character 0x{:02x} at position {}",
+                    byte, position
+                )
             }
         }
     }
@@ -68,7 +72,11 @@ impl fmt::Display for UuidParseError {
                 write!(f, "invalid length: expected {}, got {}", expected, got)
             }
             Self::InvalidChar { position, byte } => {
-                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+                write!(
+                    f,
+                    "invalid character 0x{:02x} at position {}",
+                    byte, position
+                )
             }
             Self::InvalidFormat => write!(f, "invalid UUID format (expected dashes at 8-13-18-23)"),
         }
@@ -82,12 +90,8 @@ impl From<ParseError> for UuidParseError {
     #[inline]
     fn from(e: ParseError) -> Self {
         match e {
-            ParseError::InvalidLength { expected, got } => {
-                Self::InvalidLength { expected, got }
-            }
-            ParseError::InvalidChar { position, byte } => {
-                Self::InvalidChar { position, byte }
-            }
+            ParseError::InvalidLength { expected, got } => Self::InvalidLength { expected, got },
+            ParseError::InvalidChar { position, byte } => Self::InvalidChar { position, byte },
         }
     }
 }
@@ -116,7 +120,11 @@ impl fmt::Display for DecodeError {
                 write!(f, "invalid length: expected {}, got {}", expected, got)
             }
             Self::InvalidChar { position, byte } => {
-                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+                write!(
+                    f,
+                    "invalid character 0x{:02x} at position {}",
+                    byte, position
+                )
             }
             Self::Overflow => write!(f, "value overflows target type"),
         }
@@ -130,12 +138,8 @@ impl From<ParseError> for DecodeError {
     #[inline]
     fn from(e: ParseError) -> Self {
         match e {
-            ParseError::InvalidLength { expected, got } => {
-                Self::InvalidLength { expected, got }
-            }
-            ParseError::InvalidChar { position, byte } => {
-                Self::InvalidChar { position, byte }
-            }
+            ParseError::InvalidLength { expected, got } => Self::InvalidLength { expected, got },
+            ParseError::InvalidChar { position, byte } => Self::InvalidChar { position, byte },
         }
     }
 }
@@ -166,7 +170,11 @@ impl fmt::Display for TypeIdParseError {
                 write!(f, "invalid length: expected max {}, got {}", expected, got)
             }
             Self::InvalidChar { position, byte } => {
-                write!(f, "invalid character 0x{:02x} at position {}", byte, position)
+                write!(
+                    f,
+                    "invalid character 0x{:02x} at position {}",
+                    byte, position
+                )
             }
             Self::InvalidFormat => {
                 write!(f, "invalid TypeId format (expected prefix_suffix)")
@@ -185,12 +193,8 @@ impl From<ParseError> for TypeIdParseError {
     #[inline]
     fn from(e: ParseError) -> Self {
         match e {
-            ParseError::InvalidLength { expected, got } => {
-                Self::InvalidLength { expected, got }
-            }
-            ParseError::InvalidChar { position, byte } => {
-                Self::InvalidChar { position, byte }
-            }
+            ParseError::InvalidLength { expected, got } => Self::InvalidLength { expected, got },
+            ParseError::InvalidChar { position, byte } => Self::InvalidChar { position, byte },
         }
     }
 }
@@ -200,6 +204,7 @@ impl From<ParseError> for TypeIdParseError {
 // =============================================================================
 
 /// Validate and decode a hex character, returning value or error.
+#[allow(dead_code)] // Utility available for future parse implementations
 #[inline]
 pub(crate) const fn validate_hex(b: u8, position: usize) -> Result<u8, ParseError> {
     match b {

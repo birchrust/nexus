@@ -22,7 +22,7 @@ use core::str::FromStr;
 
 use nexus_ascii::AsciiString;
 
-use crate::parse::{TypeIdParseError, CROCKFORD32_DECODE};
+use crate::parse::{CROCKFORD32_DECODE, TypeIdParseError};
 use crate::types::Ulid;
 
 /// Type-prefixed sortable identifier.
@@ -77,13 +77,19 @@ impl<const CAP: usize> TypeId<CAP> {
         }
 
         if total_len > CAP {
-            return Err(TypeIdParseError::InvalidLength { expected: CAP, got: total_len });
+            return Err(TypeIdParseError::InvalidLength {
+                expected: CAP,
+                got: total_len,
+            });
         }
 
         // Validate prefix: lowercase ASCII only [a-z]
         for (i, &b) in prefix_bytes.iter().enumerate() {
             if !b.is_ascii_lowercase() {
-                return Err(TypeIdParseError::InvalidChar { position: i, byte: b });
+                return Err(TypeIdParseError::InvalidChar {
+                    position: i,
+                    byte: b,
+                });
             }
         }
 
@@ -110,7 +116,10 @@ impl<const CAP: usize> TypeId<CAP> {
         let bytes = s.as_bytes();
 
         if bytes.len() > CAP {
-            return Err(TypeIdParseError::InvalidLength { expected: CAP, got: bytes.len() });
+            return Err(TypeIdParseError::InvalidLength {
+                expected: CAP,
+                got: bytes.len(),
+            });
         }
 
         if bytes.len() < Self::MIN_SUFFIX_LEN {
@@ -132,7 +141,10 @@ impl<const CAP: usize> TypeId<CAP> {
         }
         for (i, &b) in prefix_bytes.iter().enumerate() {
             if !b.is_ascii_lowercase() {
-                return Err(TypeIdParseError::InvalidChar { position: i, byte: b });
+                return Err(TypeIdParseError::InvalidChar {
+                    position: i,
+                    byte: b,
+                });
             }
         }
 
@@ -140,7 +152,8 @@ impl<const CAP: usize> TypeId<CAP> {
         if suffix_bytes.len() != 26 {
             return Err(TypeIdParseError::InvalidFormat);
         }
-        let suffix_str = core::str::from_utf8(suffix_bytes).map_err(|_| TypeIdParseError::InvalidFormat)?;
+        let suffix_str =
+            core::str::from_utf8(suffix_bytes).map_err(|_| TypeIdParseError::InvalidFormat)?;
         let _ulid = Ulid::parse(suffix_str)?;
 
         // Build from validated input

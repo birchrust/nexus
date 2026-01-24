@@ -3,25 +3,15 @@
 //! Provides hex, base36, and base62 encoding optimized for fixed-size
 //! integer values. All functions write directly to `AsciiString` buffers
 //! with no allocation.
+//!
+//! Hex encoding dispatches to SIMD (SSSE3 pshufb) when available,
+//! falling back to scalar lookup table on other architectures.
 
 use nexus_ascii::AsciiString;
 
-/// Lookup table for byte-to-hex conversion.
-/// Each entry is the 2-char lowercase hex representation of that byte.
-const HEX_TABLE: [[u8; 2]; 256] = {
-    let mut table = [[0u8; 2]; 256];
-    let hex_chars = b"0123456789abcdef";
-    let mut i = 0;
-    while i < 256 {
-        table[i][0] = hex_chars[i >> 4];
-        table[i][1] = hex_chars[i & 0xF];
-        i += 1;
-    }
-    table
-};
-
 /// Base62 alphabet: 0-9, A-Z, a-z
-const BASE62_ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const BASE62_ALPHABET: &[u8; 62] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /// Base36 alphabet: 0-9, a-z (lowercase for consistency)
 const BASE36_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
@@ -39,62 +29,16 @@ const BASE36_SQ: u64 = 36 * 36;
 /// Encode a u64 as 16-character lowercase hex.
 #[inline]
 pub(crate) fn hex_u64(value: u64) -> AsciiString<16> {
-    let bytes = value.to_be_bytes();
-    let mut buf = [0u8; 16];
-
-    // Unrolled for performance
-    let h0 = HEX_TABLE[bytes[0] as usize];
-    let h1 = HEX_TABLE[bytes[1] as usize];
-    let h2 = HEX_TABLE[bytes[2] as usize];
-    let h3 = HEX_TABLE[bytes[3] as usize];
-    let h4 = HEX_TABLE[bytes[4] as usize];
-    let h5 = HEX_TABLE[bytes[5] as usize];
-    let h6 = HEX_TABLE[bytes[6] as usize];
-    let h7 = HEX_TABLE[bytes[7] as usize];
-
-    buf[0] = h0[0];
-    buf[1] = h0[1];
-    buf[2] = h1[0];
-    buf[3] = h1[1];
-    buf[4] = h2[0];
-    buf[5] = h2[1];
-    buf[6] = h3[0];
-    buf[7] = h3[1];
-    buf[8] = h4[0];
-    buf[9] = h4[1];
-    buf[10] = h5[0];
-    buf[11] = h5[1];
-    buf[12] = h6[0];
-    buf[13] = h6[1];
-    buf[14] = h7[0];
-    buf[15] = h7[1];
-
-    // SAFETY: All bytes are valid ASCII hex digits
+    let buf = crate::simd::hex_encode_u64(value);
+    // SAFETY: All bytes are valid ASCII hex digits (produced by hex encoder)
     unsafe { AsciiString::from_bytes_unchecked(&buf) }
 }
 
 /// Encode two u64s as 32-character lowercase hex.
 #[inline]
 pub(crate) fn hex_u128(hi: u64, lo: u64) -> AsciiString<32> {
-    let hi_bytes = hi.to_be_bytes();
-    let lo_bytes = lo.to_be_bytes();
-    let mut buf = [0u8; 32];
-
-    // High 64 bits
-    for i in 0..8 {
-        let h = HEX_TABLE[hi_bytes[i] as usize];
-        buf[i * 2] = h[0];
-        buf[i * 2 + 1] = h[1];
-    }
-
-    // Low 64 bits
-    for i in 0..8 {
-        let h = HEX_TABLE[lo_bytes[i] as usize];
-        buf[16 + i * 2] = h[0];
-        buf[16 + i * 2 + 1] = h[1];
-    }
-
-    // SAFETY: All bytes are valid ASCII hex digits
+    let buf = crate::simd::hex_encode_u128(hi, lo);
+    // SAFETY: All bytes are valid ASCII hex digits (produced by hex encoder)
     unsafe { AsciiString::from_bytes_unchecked(&buf) }
 }
 
@@ -195,50 +139,25 @@ pub(crate) fn base36_u64(mut value: u64) -> AsciiString<16> {
 }
 
 /// Format 128-bit value as UUID with dashes.
+///
+/// Encodes hi and lo as hex, then scatters into dashed format:
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 #[inline]
 pub(crate) fn uuid_dashed(hi: u64, lo: u64) -> AsciiString<40> {
-    let hi_bytes = hi.to_be_bytes();
-    let lo_bytes = lo.to_be_bytes();
+    let hi_hex = crate::simd::hex_encode_u64(hi);
+    let lo_hex = crate::simd::hex_encode_u64(lo);
     let mut buf = [0u8; 36];
 
-    // xxxxxxxx- (bytes 0-3 of hi)
-    for i in 0..4 {
-        let h = HEX_TABLE[hi_bytes[i] as usize];
-        buf[i * 2] = h[0];
-        buf[i * 2 + 1] = h[1];
-    }
+    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    buf[0..8].copy_from_slice(&hi_hex[0..8]);
     buf[8] = b'-';
-
-    // xxxx- (bytes 4-5 of hi)
-    for i in 0..2 {
-        let h = HEX_TABLE[hi_bytes[4 + i] as usize];
-        buf[9 + i * 2] = h[0];
-        buf[9 + i * 2 + 1] = h[1];
-    }
+    buf[9..13].copy_from_slice(&hi_hex[8..12]);
     buf[13] = b'-';
-
-    // xxxx- (bytes 6-7 of hi)
-    for i in 0..2 {
-        let h = HEX_TABLE[hi_bytes[6 + i] as usize];
-        buf[14 + i * 2] = h[0];
-        buf[14 + i * 2 + 1] = h[1];
-    }
+    buf[14..18].copy_from_slice(&hi_hex[12..16]);
     buf[18] = b'-';
-
-    // xxxx- (bytes 0-1 of lo)
-    for i in 0..2 {
-        let h = HEX_TABLE[lo_bytes[i] as usize];
-        buf[19 + i * 2] = h[0];
-        buf[19 + i * 2 + 1] = h[1];
-    }
+    buf[19..23].copy_from_slice(&lo_hex[0..4]);
     buf[23] = b'-';
-
-    // xxxxxxxxxxxx (bytes 2-7 of lo)
-    for i in 0..6 {
-        let h = HEX_TABLE[lo_bytes[2 + i] as usize];
-        buf[24 + i * 2] = h[0];
-        buf[24 + i * 2 + 1] = h[1];
-    }
+    buf[24..36].copy_from_slice(&lo_hex[4..16]);
 
     // SAFETY: All bytes are valid ASCII (hex digits and dashes)
     unsafe { AsciiString::from_bytes_unchecked(&buf) }
@@ -256,9 +175,7 @@ pub(crate) fn ulid_encode(timestamp_ms: u64, rand_hi: u16, rand_lo: u64) -> Asci
     let mut buf = [0u8; 26];
 
     // Encode timestamp (48 bits → 10 chars)
-    // We encode from the least significant 5 bits first, then reverse
-    // Char 0 uses only 2 bits from timestamp (bits 46-47)
-    // Chars 1-9 use 5 bits each
+    // Char 0 uses only 3 bits (48 - 9×5 = 3), chars 1-9 use 5 bits each
     buf[0] = CROCKFORD32_ALPHABET[((timestamp_ms >> 45) & 0x07) as usize]; // top 3 bits
     buf[1] = CROCKFORD32_ALPHABET[((timestamp_ms >> 40) & 0x1F) as usize];
     buf[2] = CROCKFORD32_ALPHABET[((timestamp_ms >> 35) & 0x1F) as usize];
@@ -337,7 +254,10 @@ mod tests {
     fn hex_u128_known_value() {
         let hi = 0x0123_4567_89AB_CDEF;
         let lo = 0xFEDC_BA98_7654_3210;
-        assert_eq!(hex_u128(hi, lo).as_str(), "0123456789abcdeffedcba9876543210");
+        assert_eq!(
+            hex_u128(hi, lo).as_str(),
+            "0123456789abcdeffedcba9876543210"
+        );
     }
 
     #[test]

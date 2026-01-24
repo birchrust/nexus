@@ -7,9 +7,9 @@
 
 use std::time::Instant;
 
+use crate::SequenceExhausted;
 use crate::prng::WyRand;
 use crate::types::{Uuid, UuidCompact};
-use crate::SequenceExhausted;
 
 /// Maximum sequence value (12 bits = 4096 per millisecond).
 const SEQUENCE_MAX: u16 = 0xFFF;

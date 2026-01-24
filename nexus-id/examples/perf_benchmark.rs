@@ -619,7 +619,10 @@ fn main() {
     println!("COMBINED OPERATIONS (generate + encode):");
     println!("----------------------------------------------------------------");
     print_stats("next_id() + to_hex()", &bench_generate_and_encode_hex());
-    print_stats("next_id() + to_base62()", &bench_generate_and_encode_base62());
+    print_stats(
+        "next_id() + to_base62()",
+        &bench_generate_and_encode_base62(),
+    );
     print_stats("next_id() + mixed()", &bench_mix_for_hashmap());
 
     println!();
@@ -636,9 +639,18 @@ fn main() {
 
     println!("SUMMARY (p50 cycles):");
     println!("----------------------------------------------------------------");
-    println!("  mix():            {:>4}   (Fibonacci multiply)", mix_h.value_at_quantile(0.50));
-    println!("  unmix():          {:>4}   (inverse multiply)", unmix_h.value_at_quantile(0.50));
-    println!("  unpack():         {:>4}   (3 shifts + masks)", unpack_h.value_at_quantile(0.50));
+    println!(
+        "  mix():            {:>4}   (Fibonacci multiply)",
+        mix_h.value_at_quantile(0.50)
+    );
+    println!(
+        "  unmix():          {:>4}   (inverse multiply)",
+        unmix_h.value_at_quantile(0.50)
+    );
+    println!(
+        "  unpack():         {:>4}   (3 shifts + masks)",
+        unpack_h.value_at_quantile(0.50)
+    );
     println!(
         "  hex encode:       {:>4}   (table lookup)",
         hex_enc.value_at_quantile(0.50)

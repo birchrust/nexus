@@ -6,13 +6,13 @@
 //! other latency-sensitive applications. All generators avoid syscalls on the
 //! hot path and produce stack-allocated output.
 //!
-//! | Generator | Speed | Time-ordered | Output | Use Case |
-//! |-----------|-------|--------------|--------|----------|
-//! | [`Snowflake64`] | ~26 cycles | Yes | [`SnowflakeId64`] | Numeric IDs with extraction |
-//! | [`Snowflake32`] | ~26 cycles | Yes | [`SnowflakeId32`] | Compact numeric IDs |
-//! | [`UuidV4`] | ~35 cycles | No | [`Uuid`] | Random unique IDs |
-//! | [`UuidV7`] | ~45 cycles | Yes | [`Uuid`] | Time-ordered UUIDs |
-//! | [`UlidGenerator`] | ~45 cycles | Yes | [`Ulid`] | Sortable 26-char IDs |
+//! | Generator | Speed (p50) | Time-ordered | Output | Use Case |
+//! |-----------|-------------|--------------|--------|----------|
+//! | [`Snowflake64`] | ~22 cycles | Yes | [`SnowflakeId64`] | Numeric IDs with extraction |
+//! | [`Snowflake32`] | ~22 cycles | Yes | [`SnowflakeId32`] | Compact numeric IDs |
+//! | [`UuidV4`] | ~48 cycles | No | [`Uuid`] | Random unique IDs |
+//! | [`UuidV7`] | ~62 cycles | Yes | [`Uuid`] | Time-ordered UUIDs |
+//! | [`UlidGenerator`] | ~80 cycles | Yes | [`Ulid`] | Sortable 26-char IDs |
 //!
 //! # ID Types
 //!
@@ -78,14 +78,17 @@
 //! |---------|-------------|
 //! | `std` (default) | UUID/ULID generators, `Error` impls, `from_entropy()` |
 //! | `serde` | `Serialize`/`Deserialize` for all types |
+//! | `uuid` | Interop with the [`uuid`](https://docs.rs/uuid) crate |
+//! | `bytes` | `BufMut` writing via the [`bytes`](https://docs.rs/bytes) crate |
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub(crate) mod encode;
 mod parse;
+mod simd;
 mod snowflake_id;
-mod types;
 mod typeid;
+mod types;
 
 mod snowflake;
 
@@ -103,8 +106,8 @@ pub use snowflake::{
 
 pub use parse::{DecodeError, ParseError, TypeIdParseError, UuidParseError};
 pub use snowflake_id::{MixedId32, MixedId64, SnowflakeId32, SnowflakeId64};
-pub use types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
 pub use typeid::TypeId;
+pub use types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
 
 #[cfg(feature = "std")]
 pub use ulid::UlidGenerator;

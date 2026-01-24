@@ -3,16 +3,20 @@
 CPU cycles measured via `rdtscp` on x86_64. Pinned to a single core via
 `taskset -c 0` for stable measurements.
 
-**System:** AMD Ryzen 9 7950X. 1M iterations, 10k warmup.
+**System:** Intel Core Ultra 7 165U (Meteor Lake). 1M iterations, 10k warmup.
 
 Run benchmarks yourself:
 ```bash
-cargo build --release -p nexus-id --examples
+RUSTFLAGS="-C target-cpu=native" cargo build --release -p nexus-id --examples
 taskset -c 0 ./target/release/examples/perf_benchmark
 taskset -c 0 ./target/release/examples/perf_snowflake
 taskset -c 0 ./target/release/examples/perf_uuid
 taskset -c 0 ./target/release/examples/perf_id_hashing
 ```
+
+Numbers below reflect SSSE3-enabled builds (`target-cpu=native` or
+`target-feature=+ssse3`). Without SSSE3, hex encode falls back to scalar;
+SSE2 decode is always available on x86_64.
 
 ---
 
@@ -22,9 +26,8 @@ taskset -c 0 ./target/release/examples/perf_id_hashing
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `next()` new timestamp | 20 | 24 | 26 | Sequence reset path |
+| `next()` new timestamp | 22 | 48 | 256 | Sequence reset path |
 | `next()` same timestamp | 22 | 24 | 28 | Sequence increment (burst) |
-| `next()` realistic trading | 22-28 | 24-34 | 28-44 | Bursts of 50, mixed ts |
 
 All layouts (`<42,6,16>`, `<41,10,12>`, `<20,4,8>`) perform identically at p50.
 
@@ -32,22 +35,22 @@ All layouts (`<42,6,16>`, `<41,10,12>`, `<20,4,8>`) perform identically at p50.
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `UuidV4::next_raw()` | 22 | 24 | 66 | Returns `(u64, u64)` |
-| `UuidV4::next()` | 58 | 96 | 138 | Returns `Uuid` (36-char) |
-| `UuidV4::next_compact()` | 48 | 74 | 136 | Returns `UuidCompact` (32-char) |
-| `UuidV7::next_raw()` same ts | 30 | 36 | 68 | Monotonic sequence path |
-| `UuidV7::next()` same ts | 68 | 164 | 170 | Returns `Uuid` |
-| `UuidV7::next()` new ts | 70 | 94 | 134 | Timestamp advanced |
+| `UuidV4::next_raw()` | 22 | 38 | 54 | Returns `(u64, u64)` |
+| `UuidV4::next()` | 48 | 106 | 304 | Returns `Uuid` (36-char, SSSE3 encode) |
+| `UuidV4::next_compact()` | 32 | 72 | 94 | Returns `UuidCompact` (32-char) |
+| `UuidV7::next_raw()` same ts | 30 | 34 | 34 | Monotonic sequence path |
+| `UuidV7::next()` same ts | 60 | 68 | 94 | Returns `Uuid` |
+| `UuidV7::next()` new ts | 62 | 74 | 144 | Timestamp advanced |
 
 ### ULID
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `next()` same timestamp | 82 | 114 | 146 | Monotonic increment |
-| `next()` new timestamp | 82 | 168 | 176 | Timestamp advanced |
+| `next()` same timestamp | 80 | 102 | 138 | Monotonic increment |
+| `next()` new timestamp | 80 | 112 | 144 | Timestamp advanced |
 
 ULID is slower than UUID due to Crockford Base32 encoding (26 chars, 5-bit
-groups) vs hex encoding (32/36 chars, 4-bit groups with lookup table).
+groups) vs hex encoding (32/36 chars, SIMD-accelerated).
 
 ---
 
@@ -55,9 +58,9 @@ groups) vs hex encoding (32/36 chars, 4-bit groups with lookup table).
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `mixed()` | 20 | 22 | 24 | Fibonacci multiply (~1 cycle, measurement floor) |
-| `unmix()` | 20 | 24 | 28 | Inverse multiply |
-| `unpack()` | 20 | 36 | 40 | 3 shifts + masks |
+| `mixed()` | 22 | 46 | 220 | Fibonacci multiply (~1 cycle, measurement floor) |
+| `unmix()` | 20 | 28 | 40 | Inverse multiply |
+| `unpack()` | 20 | 24 | 36 | 3 shifts + masks |
 
 These are at the `rdtscp` measurement floor (~20 cycles). The actual operation
 cost is 1-3 cycles; the rest is measurement overhead.
@@ -68,15 +71,15 @@ cost is 1-3 cycles; the rest is measurement overhead.
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `HexId64::encode(u64)` | 34 | 40 | 80 | Lookup table, 16 chars |
-| `SnowflakeId64::to_hex()` | 20 | 40 | 48 | Same as above (inlined) |
-| `Base62Id::encode(u64)` | 64 | 82 | 146 | Digit-pair decomposition |
-| `SnowflakeId64::to_base62()` | 44 | 76 | 106 | Same as above (inlined) |
-| `Base36Id::encode(u64)` | 68 | 82 | 158 | Digit-pair decomposition |
+| `HexId64::encode(u64)` | 26 | 34 | 72 | SSSE3 pshufb, 16 chars |
+| `SnowflakeId64::to_hex()` | 20 | 28 | 32 | Same (at measurement floor) |
+| `Base62Id::encode(u64)` | 62 | 70 | 92 | Digit-pair decomposition |
+| `SnowflakeId64::to_base62()` | 42 | 66 | 72 | Same as above (inlined) |
+| `Base36Id::encode(u64)` | 66 | 70 | 88 | Digit-pair decomposition |
 
-Hex encoding uses a 256-byte lookup table (byte → 2 hex chars). Base62/36 use
-a digit-pair decomposition that reduces division count (5 divmod ops for base62,
-6 for base36).
+Hex encoding uses SSSE3 `pshufb` as a 16-entry LUT in an XMM register (falls
+back to scalar lookup table on non-SSSE3 targets). Base62/36 use digit-pair
+decomposition that reduces division count (5 divmod ops for base62, 6 for base36).
 
 ---
 
@@ -84,15 +87,17 @@ a digit-pair decomposition that reduces division count (5 divmod ops for base62,
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `HexId64::parse()` | 92 | 134 | 282 | 16-char hex validation |
-| `Base62Id::parse()` | 86 | 106 | 178 | 11-char with multiply-accumulate |
-| `Base36Id::parse()` | 104 | 310 | 328 | 13-char |
-| `UuidCompact::parse()` | 86 | 142 | 270 | 32-char hex |
-| `Ulid::parse()` | 90 | 208 | 242 | 26-char Crockford (256-byte LUT) |
-| `Uuid::parse()` | 102 | 170 | 266 | 36-char with dash validation |
-| `TypeId::parse()` | 138 | 168 | 342 | Prefix + ULID suffix |
+| `HexId64::parse()` | 42 | 46 | 58 | SSE2 parallel range classify |
+| `UuidCompact::parse()` | 48 | 58 | 142 | SSE2 (2x 16-char decode) |
+| `Uuid::parse()` | 70 | 76 | 108 | SSSE3 dash compaction + SSE2 decode |
+| `Ulid::parse()` | 90 | 110 | 212 | 26-char Crockford (256-byte LUT) |
+| `Base62Id::parse()` | 86 | 106 | 246 | 11-char with multiply-accumulate |
+| `Base36Id::parse()` | 108 | 120 | 296 | 13-char |
+| `TypeId::parse()` | 136 | 198 | 316 | Prefix + ULID suffix |
 
-All parsing is single-pass: validate and decode simultaneously. No allocation.
+Hex-based parsing uses SSE2 parallel range classification (x86_64 baseline).
+UUID dashed parsing uses SSSE3 `pshufb` to compact dashes in-register before
+SSE2 decode. All parsing is single-pass with no allocation.
 
 ---
 
@@ -100,9 +105,9 @@ All parsing is single-pass: validate and decode simultaneously. No allocation.
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `TypeId::new("user", ulid)` | 54 | 70 | 424 | Construct from prefix + ULID |
-| `TypeId::parse("user_...")` | 138 | 168 | 342 | Full string parse |
-| `TypeId::prefix()` | 22 | 24 | 28 | Slice into stored string |
+| `TypeId::new("user", ulid)` | 56 | 78 | 88 | Construct from prefix + ULID |
+| `TypeId::parse("user_...")` | 136 | 198 | 316 | Full string parse |
+| `TypeId::prefix()` | 22 | 26 | 40 | Slice into stored string |
 
 ---
 
@@ -110,10 +115,9 @@ All parsing is single-pass: validate and decode simultaneously. No allocation.
 
 | Operation | p50 | p99 | p999 | Notes |
 |-----------|-----|-----|------|-------|
-| `next_id() + to_hex()` | 34 | 38 | 48 | Generate + hex format |
-| `next_id() + to_base62()` | 66 | 134 | 144 | Generate + base62 format |
-| `next_id() + mixed()` | 22 | 32 | 36 | Generate + hash-ready |
-| `TypeId::new()` | 54 | 70 | 424 | Generate + TypeId format |
+| `next_id() + to_hex()` | 28 | 34 | 54 | Generate + SSSE3 hex format |
+| `next_id() + to_base62()` | 64 | 130 | 140 | Generate + base62 format |
+| `next_id() + mixed()` | 22 | 24 | 34 | Generate + hash-ready |
 
 The common hot-path pattern — generate a snowflake and mix it for HashMap
 lookup — costs 22 cycles (p50). This is the cost of two multiplies.
@@ -151,14 +155,16 @@ due to clustering in power-of-2 bucket tables. Use either:
 
 | What you're doing | p50 cycles | Recommendation |
 |-------------------|-----------|----------------|
-| Generate a numeric ID | 20-22 | `Snowflake64::next_id()` |
+| Generate a numeric ID | 22 | `Snowflake64::next_id()` |
 | Generate + hash-ready | 22 | `next_id() + mixed()` |
-| Generate + hex string | 34 | `next_id() + to_hex()` |
-| Generate a UUID v4 | 58 | `UuidV4::next()` |
-| Generate a UUID v7 | 68-70 | `UuidV7::next()` |
-| Generate a ULID | 82 | `UlidGenerator::next()` |
-| Parse a UUID string | 102 | `Uuid::parse()` |
+| Generate + hex string | 28 | `next_id() + to_hex()` |
+| Generate a UUID v4 | 48 | `UuidV4::next()` |
+| Generate a UUID v7 | 62 | `UuidV7::next()` |
+| Generate a ULID | 80 | `UlidGenerator::next()` |
+| Parse a hex ID | 42 | `HexId64::parse()` |
+| Parse a UUID string | 70 | `Uuid::parse()` |
 | Parse a ULID string | 90 | `Ulid::parse()` |
 | Mix/unmix for hashing | 20 | At measurement floor |
 
 All operations are allocation-free, stack-only, and syscall-free.
+SIMD acceleration (SSE2 decode, SSSE3 encode) is compile-time dispatched on x86_64.

@@ -21,9 +21,9 @@
 
 use std::time::Instant;
 
+use crate::SequenceExhausted;
 use crate::prng::WyRand;
 use crate::types::Ulid;
-use crate::SequenceExhausted;
 
 /// ULID generator.
 ///

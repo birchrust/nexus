@@ -8,8 +8,8 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::snowflake_id::{MixedId32, MixedId64, SnowflakeId32, SnowflakeId64};
-use crate::types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
 use crate::typeid::TypeId;
+use crate::types::{Base36Id, Base62Id, HexId64, Ulid, Uuid, UuidCompact};
 
 // =============================================================================
 // String types: serialize as strings
@@ -95,9 +95,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Serialize for SnowflakeId64<TS, W
     }
 }
 
-impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de>
-    for SnowflakeId64<TS, WK, SQ>
-{
+impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de> for SnowflakeId64<TS, WK, SQ> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct IdVisitor<const T: u8, const W: u8, const S: u8>;
 
@@ -124,9 +122,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Serialize for SnowflakeId32<TS, W
     }
 }
 
-impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de>
-    for SnowflakeId32<TS, WK, SQ>
-{
+impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de> for SnowflakeId32<TS, WK, SQ> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct IdVisitor<const T: u8, const W: u8, const S: u8>;
 
@@ -153,9 +149,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Serialize for MixedId64<TS, WK, S
     }
 }
 
-impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de>
-    for MixedId64<TS, WK, SQ>
-{
+impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de> for MixedId64<TS, WK, SQ> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct IdVisitor<const T: u8, const W: u8, const S: u8>;
 
@@ -182,9 +176,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Serialize for MixedId32<TS, WK, S
     }
 }
 
-impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de>
-    for MixedId32<TS, WK, SQ>
-{
+impl<'de, const TS: u8, const WK: u8, const SQ: u8> Deserialize<'de> for MixedId32<TS, WK, SQ> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct IdVisitor<const T: u8, const W: u8, const S: u8>;
 

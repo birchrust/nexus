@@ -12,9 +12,7 @@ use core::str::FromStr;
 
 use nexus_ascii::AsciiString;
 
-use crate::parse::{
-    self, DecodeError, ParseError, UuidParseError,
-};
+use crate::parse::{self, DecodeError, ParseError, UuidParseError};
 
 // ============================================================================
 // UUID Types
@@ -66,7 +64,10 @@ impl Uuid {
     /// Returns [`ParseError::InvalidLength`] if `bytes.len() != 16`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
         if bytes.len() != 16 {
-            return Err(ParseError::InvalidLength { expected: 16, got: bytes.len() });
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
         }
         let hi = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
         let lo = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
@@ -154,7 +155,10 @@ impl Uuid {
     pub fn parse(s: &str) -> Result<Self, UuidParseError> {
         let bytes = s.as_bytes();
         if bytes.len() != 36 {
-            return Err(UuidParseError::InvalidLength { expected: 36, got: bytes.len() });
+            return Err(UuidParseError::InvalidLength {
+                expected: 36,
+                got: bytes.len(),
+            });
         }
 
         // Validate dashes at positions 8, 13, 18, 23
@@ -162,45 +166,24 @@ impl Uuid {
             return Err(UuidParseError::InvalidFormat);
         }
 
-        // Validate and decode hex digits
-        let mut hi: u64 = 0;
-        let mut lo: u64 = 0;
+        // SAFETY: We verified bytes.len() == 36.
+        let input: &[u8; 36] = unsafe { &*(bytes.as_ptr().cast::<[u8; 36]>()) };
 
-        // Bytes 0-7 → hi bits 32-63
-        let mut i = 0;
-        while i < 8 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            hi = (hi << 4) | d as u64;
-            i += 1;
-        }
-        // Bytes 9-12 → hi bits 16-31
-        i = 9;
-        while i < 13 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            hi = (hi << 4) | d as u64;
-            i += 1;
-        }
-        // Bytes 14-17 → hi bits 0-15
-        i = 14;
-        while i < 18 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            hi = (hi << 4) | d as u64;
-            i += 1;
-        }
-        // Bytes 19-22 → lo bits 48-63
-        i = 19;
-        while i < 23 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            lo = (lo << 4) | d as u64;
-            i += 1;
-        }
-        // Bytes 24-35 → lo bits 0-47
-        i = 24;
-        while i < 36 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            lo = (lo << 4) | d as u64;
-            i += 1;
-        }
+        // Decode via SIMD path: compacts dashes out, decodes 32 hex chars in parallel.
+        let (hi, lo) = crate::simd::uuid_parse_dashed(input).map_err(|pos| {
+            // Map compacted 32-byte position back to 36-byte input position.
+            let input_pos = match pos {
+                0..=7 => pos,       // segment 1: no offset
+                8..=11 => pos + 1,  // segment 2: skip dash at 8
+                12..=15 => pos + 2, // segment 3: skip dashes at 8, 13
+                16..=19 => pos + 3, // segment 4: skip dashes at 8, 13, 18
+                _ => pos + 4,       // segment 5: skip all 4 dashes
+            };
+            UuidParseError::InvalidChar {
+                position: input_pos,
+                byte: bytes[input_pos],
+            }
+        })?;
 
         Ok(Self::from_raw(hi, lo))
     }
@@ -330,7 +313,10 @@ impl UuidCompact {
     /// Returns [`ParseError::InvalidLength`] if `bytes.len() != 16`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
         if bytes.len() != 16 {
-            return Err(ParseError::InvalidLength { expected: 16, got: bytes.len() });
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
         }
         let hi = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
         let lo = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
@@ -365,18 +351,9 @@ impl UuidCompact {
 
     /// Decode back to raw (hi, lo) bytes.
     pub fn decode(&self) -> (u64, u64) {
-        let bytes = self.0.as_bytes();
-        let mut hi: u64 = 0;
-        let mut lo: u64 = 0;
-
-        for &b in &bytes[0..16] {
-            hi = (hi << 4) | hex_digit(b) as u64;
-        }
-        for &b in &bytes[16..32] {
-            lo = (lo << 4) | hex_digit(b) as u64;
-        }
-
-        (hi, lo)
+        let bytes: &[u8; 32] = self.0.as_bytes().try_into().unwrap();
+        // SAFETY: Data was validated at construction; decode cannot fail.
+        unsafe { crate::simd::hex_decode_32(bytes).unwrap_unchecked() }
     }
 
     /// Parse a compact UUID from a hex string (no dashes).
@@ -385,23 +362,19 @@ impl UuidCompact {
     pub fn parse(s: &str) -> Result<Self, ParseError> {
         let bytes = s.as_bytes();
         if bytes.len() != 32 {
-            return Err(ParseError::InvalidLength { expected: 32, got: bytes.len() });
+            return Err(ParseError::InvalidLength {
+                expected: 32,
+                got: bytes.len(),
+            });
         }
 
-        let mut hi: u64 = 0;
-        let mut lo: u64 = 0;
-
-        let mut i = 0;
-        while i < 16 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            hi = (hi << 4) | d as u64;
-            i += 1;
-        }
-        while i < 32 {
-            let d = parse::validate_hex(bytes[i], i)?;
-            lo = (lo << 4) | d as u64;
-            i += 1;
-        }
+        // SIMD path: validates and decodes in a single pass
+        let hex_bytes: &[u8; 32] = bytes.try_into().unwrap();
+        let (hi, lo) =
+            crate::simd::hex_decode_32(hex_bytes).map_err(|pos| ParseError::InvalidChar {
+                position: pos,
+                byte: bytes[pos],
+            })?;
 
         Ok(Self::from_raw(hi, lo))
     }
@@ -518,29 +491,30 @@ impl HexId64 {
 
     /// Decode back to u64.
     pub fn decode(&self) -> u64 {
-        let bytes = self.0.as_bytes();
-        let mut value: u64 = 0;
-        for &b in bytes {
-            value = (value << 4) | hex_digit(b) as u64;
-        }
-        value
+        let bytes: &[u8; 16] = self.0.as_bytes().try_into().unwrap();
+        // SAFETY: Data was validated at construction; decode cannot fail.
+        unsafe { crate::simd::hex_decode_16(bytes).unwrap_unchecked() }
     }
 
     /// Parse a hex ID from a 16-character hex string. Case-insensitive.
     pub fn parse(s: &str) -> Result<Self, ParseError> {
         let bytes = s.as_bytes();
         if bytes.len() != 16 {
-            return Err(ParseError::InvalidLength { expected: 16, got: bytes.len() });
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
         }
 
-        // Validate all chars are hex
-        let mut i = 0;
-        while i < 16 {
-            parse::validate_hex(bytes[i], i)?;
-            i += 1;
-        }
+        // SIMD path: validates and decodes in a single pass
+        let hex_bytes: &[u8; 16] = bytes.try_into().unwrap();
+        let value =
+            crate::simd::hex_decode_16(hex_bytes).map_err(|pos| ParseError::InvalidChar {
+                position: pos,
+                byte: bytes[pos],
+            })?;
 
-        Ok(Self::encode(decode_hex_u64(bytes)))
+        Ok(Self::encode(value))
     }
 }
 
@@ -630,7 +604,10 @@ impl Base62Id {
     pub fn parse(s: &str) -> Result<Self, DecodeError> {
         let bytes = s.as_bytes();
         if bytes.len() != 11 {
-            return Err(DecodeError::InvalidLength { expected: 11, got: bytes.len() });
+            return Err(DecodeError::InvalidLength {
+                expected: 11,
+                got: bytes.len(),
+            });
         }
 
         let mut value: u64 = 0;
@@ -734,7 +711,10 @@ impl Base36Id {
     pub fn parse(s: &str) -> Result<Self, DecodeError> {
         let bytes = s.as_bytes();
         if bytes.len() != 13 {
-            return Err(DecodeError::InvalidLength { expected: 13, got: bytes.len() });
+            return Err(DecodeError::InvalidLength {
+                expected: 13,
+                got: bytes.len(),
+            });
         }
 
         let mut value: u64 = 0;
@@ -850,7 +830,10 @@ impl Ulid {
     /// Returns [`ParseError::InvalidLength`] if `bytes.len() != 16`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
         if bytes.len() != 16 {
-            return Err(ParseError::InvalidLength { expected: 16, got: bytes.len() });
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
         }
         // Timestamp: bytes 0-5 (48 bits, big-endian)
         let mut ts_buf = [0u8; 8];
@@ -877,12 +860,10 @@ impl Ulid {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), ts_buf.as_mut_ptr().add(2), 6);
             let timestamp_ms = u64::from_be_bytes(ts_buf);
 
-            let rand_hi = u16::from_be_bytes(
-                bytes.get_unchecked(6..8).try_into().unwrap_unchecked()
-            );
-            let rand_lo = u64::from_be_bytes(
-                bytes.get_unchecked(8..16).try_into().unwrap_unchecked()
-            );
+            let rand_hi =
+                u16::from_be_bytes(bytes.get_unchecked(6..8).try_into().unwrap_unchecked());
+            let rand_lo =
+                u64::from_be_bytes(bytes.get_unchecked(8..16).try_into().unwrap_unchecked());
 
             Self::from_raw(timestamp_ms, rand_hi, rand_lo)
         }
@@ -919,7 +900,10 @@ impl Ulid {
     pub fn parse(s: &str) -> Result<Self, ParseError> {
         let bytes = s.as_bytes();
         if bytes.len() != 26 {
-            return Err(ParseError::InvalidLength { expected: 26, got: bytes.len() });
+            return Err(ParseError::InvalidLength {
+                expected: 26,
+                got: bytes.len(),
+            });
         }
 
         // Single-pass: validate and decode simultaneously via lookup table.
@@ -927,7 +911,10 @@ impl Ulid {
         // First char encodes only 3 bits — values > 7 overflow the 48-bit timestamp.
         let first = parse::validate_crockford32(bytes[0], 0)?;
         if first > 7 {
-            return Err(ParseError::InvalidChar { position: 0, byte: bytes[0] });
+            return Err(ParseError::InvalidChar {
+                position: 0,
+                byte: bytes[0],
+            });
         }
         let mut ts: u64 = first as u64;
         let mut i = 1;
@@ -1169,16 +1156,6 @@ const fn base36_digit(b: u8) -> u8 {
     }
 }
 
-/// Decode 16 hex chars to u64.
-#[inline]
-fn decode_hex_u64(bytes: &[u8]) -> u64 {
-    let mut value: u64 = 0;
-    for &b in &bytes[..16] {
-        value = (value << 4) | hex_digit(b) as u64;
-    }
-    value
-}
-
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
@@ -1334,5 +1311,216 @@ mod tests {
         // '7' (value 7) is the max valid first char.
         let max_valid = "70000000000000000000000000";
         assert!(Ulid::parse(max_valid).is_ok());
+    }
+
+    // ====================================================================
+    // Overflow detection
+    // ====================================================================
+
+    #[test]
+    fn base62_parse_overflow() {
+        use crate::parse::DecodeError;
+
+        // "zzzzzzzzzzz" (11 z's) = 61*(62^10 + 62^9 + ... + 1) > u64::MAX
+        let result = Base62Id::parse("zzzzzzzzzzz");
+        assert_eq!(result, Err(DecodeError::Overflow));
+
+        // u64::MAX encodes to "LygHa16AHYF" — should round-trip
+        let max_id = Base62Id::encode(u64::MAX);
+        let parsed = Base62Id::parse(max_id.as_str()).unwrap();
+        assert_eq!(parsed.decode(), u64::MAX);
+    }
+
+    #[test]
+    fn base36_parse_overflow() {
+        use crate::parse::DecodeError;
+
+        // "zzzzzzzzzzzzz" (13 z's) = 35*(36^12 + ...) > u64::MAX
+        let result = Base36Id::parse("zzzzzzzzzzzzz");
+        assert_eq!(result, Err(DecodeError::Overflow));
+
+        // u64::MAX should round-trip
+        let max_id = Base36Id::encode(u64::MAX);
+        let parsed = Base36Id::parse(max_id.as_str()).unwrap();
+        assert_eq!(parsed.decode(), u64::MAX);
+    }
+
+    // ====================================================================
+    // Uuid::parse negative cases
+    // ====================================================================
+
+    #[test]
+    fn uuid_parse_wrong_length() {
+        use crate::parse::UuidParseError;
+
+        let result = Uuid::parse("01234567-89ab-cdef-fedc-ba987654321"); // 35 chars
+        assert!(matches!(result, Err(UuidParseError::InvalidLength { .. })));
+
+        let result = Uuid::parse("01234567-89ab-cdef-fedc-ba98765432100"); // 37 chars
+        assert!(matches!(result, Err(UuidParseError::InvalidLength { .. })));
+
+        let result = Uuid::parse("");
+        assert!(matches!(result, Err(UuidParseError::InvalidLength { .. })));
+    }
+
+    #[test]
+    fn uuid_parse_bad_dashes() {
+        use crate::parse::UuidParseError;
+
+        // Missing dash at position 8
+        let result = Uuid::parse("01234567089ab-cdef-fedc-ba9876543210");
+        assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
+
+        // Missing dash at position 13
+        let result = Uuid::parse("01234567-89ab0cdef-fedc-ba9876543210");
+        assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
+
+        // Missing dash at position 18
+        let result = Uuid::parse("01234567-89ab-cdef0fedc-ba9876543210");
+        assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
+
+        // Missing dash at position 23
+        let result = Uuid::parse("01234567-89ab-cdef-fedc0ba9876543210");
+        assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
+    }
+
+    #[test]
+    fn uuid_parse_invalid_hex_char() {
+        use crate::parse::UuidParseError;
+
+        // 'g' is not a valid hex character
+        let result = Uuid::parse("g1234567-89ab-cdef-fedc-ba9876543210");
+        assert!(matches!(
+            result,
+            Err(UuidParseError::InvalidChar { position: 0, .. })
+        ));
+
+        // Invalid in the middle segment
+        let result = Uuid::parse("01234567-89xb-cdef-fedc-ba9876543210");
+        assert!(matches!(
+            result,
+            Err(UuidParseError::InvalidChar { position: 11, .. })
+        ));
+    }
+
+    // ====================================================================
+    // is_nil() tests
+    // ====================================================================
+
+    #[test]
+    fn uuid_is_nil() {
+        let nil = Uuid::from_raw(0, 0);
+        assert!(nil.is_nil());
+
+        let not_nil = Uuid::from_raw(0, 1);
+        assert!(!not_nil.is_nil());
+
+        let not_nil = Uuid::from_raw(1, 0);
+        assert!(!not_nil.is_nil());
+    }
+
+    #[test]
+    fn uuid_compact_is_nil() {
+        let nil = UuidCompact::from_raw(0, 0);
+        assert!(nil.is_nil());
+
+        let not_nil = UuidCompact::from_raw(0, 1);
+        assert!(!not_nil.is_nil());
+    }
+
+    #[test]
+    fn ulid_is_nil() {
+        let nil = Ulid::from_raw(0, 0, 0);
+        assert!(nil.is_nil());
+
+        // Non-zero timestamp
+        let not_nil = Ulid::from_raw(1, 0, 0);
+        assert!(!not_nil.is_nil());
+
+        // Non-zero rand_hi
+        let not_nil = Ulid::from_raw(0, 1, 0);
+        assert!(!not_nil.is_nil());
+
+        // Non-zero rand_lo
+        let not_nil = Ulid::from_raw(0, 0, 1);
+        assert!(!not_nil.is_nil());
+    }
+
+    // ====================================================================
+    // Crockford Base32 alias handling
+    // ====================================================================
+
+    #[test]
+    fn ulid_parse_crockford_aliases() {
+        // Crockford spec: I/i/L/l → 1, O/o → 0
+        // "01" prefix with aliases should parse the same as canonical "01"
+        let canonical = Ulid::parse("01000000000000000000000000").unwrap();
+
+        // 'O' → 0 (alias for zero)
+        let with_o = Ulid::parse("O1000000000000000000000000").unwrap();
+        assert_eq!(canonical, with_o);
+
+        // 'I' → 1
+        let with_i = Ulid::parse("0I000000000000000000000000").unwrap();
+        assert_eq!(canonical, with_i);
+
+        // 'L' → 1
+        let with_l = Ulid::parse("0L000000000000000000000000").unwrap();
+        assert_eq!(canonical, with_l);
+
+        // 'i' → 1 (lowercase)
+        let with_i_lower = Ulid::parse("0i000000000000000000000000").unwrap();
+        assert_eq!(canonical, with_i_lower);
+
+        // 'o' → 0 (lowercase)
+        let with_o_lower = Ulid::parse("o1000000000000000000000000").unwrap();
+        assert_eq!(canonical, with_o_lower);
+
+        // 'l' → 1 (lowercase)
+        let with_l_lower = Ulid::parse("0l000000000000000000000000").unwrap();
+        assert_eq!(canonical, with_l_lower);
+    }
+
+    // ====================================================================
+    // Ulid::to_uuid() lossy conversion
+    // ====================================================================
+
+    #[test]
+    fn ulid_to_uuid_preserves_timestamp() {
+        let ts = 1_700_000_000_000u64;
+        let ulid = Ulid::from_raw(ts, 0x1234, 0xDEAD_BEEF_CAFE_BABE);
+        let uuid = ulid.to_uuid();
+
+        // Version should be 7
+        assert_eq!(uuid.version(), 7);
+
+        // Timestamp should survive the conversion (top 48 bits of hi)
+        let (hi, _) = uuid.decode();
+        let extracted_ts = hi >> 16;
+        assert_eq!(extracted_ts, ts);
+    }
+
+    #[test]
+    fn ulid_to_uuid_is_lossy() {
+        // Two ULIDs that differ only in the bottom 6 bits of rand_lo
+        // should map to the same UUID (those bits are discarded).
+        let ulid_a = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF_CAFE_BA00);
+        let ulid_b = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF_CAFE_BA3F);
+
+        // Different ULIDs
+        assert_ne!(ulid_a, ulid_b);
+
+        // Same UUID (bottom 6 bits lost)
+        assert_eq!(ulid_a.to_uuid(), ulid_b.to_uuid());
+    }
+
+    #[test]
+    fn ulid_to_uuid_sets_variant_bits() {
+        let ulid = Ulid::from_raw(1_700_000_000_000, 0xFFFF, u64::MAX);
+        let uuid = ulid.to_uuid();
+        let (_, lo) = uuid.decode();
+
+        // Top 2 bits of lo must be 0b10 (RFC variant)
+        assert_eq!(lo >> 62, 0b10);
     }
 }

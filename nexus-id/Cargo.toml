@@ -1,8 +1,8 @@
 [package]
 name = "nexus-id"
-version = "0.1.0"
-description = "High-performance id generators for low latency systems"
-# readme = "README.md"
+version = "1.0.0"
+description = "High-performance ID generators for low-latency systems"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
