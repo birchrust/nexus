@@ -254,7 +254,7 @@ pub struct WriteClaim<'a> {
     committed: bool,
 }
 
-impl<'a> WriteClaim<'a> {
+impl WriteClaim<'_> {
     /// Commits the record, making it visible to the consumer.
     #[inline]
     pub fn commit(mut self) {

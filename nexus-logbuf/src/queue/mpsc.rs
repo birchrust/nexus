@@ -189,61 +189,52 @@ impl Producer {
 
                 // Try to claim the padding + record space
                 let new_tail = tail.wrapping_add(total_needed);
-                match self.shared.tail.compare_exchange_weak(
-                    tail,
-                    new_tail,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        // We claimed the space. Write padding skip marker.
-                        let buffer = self.shared.buffer;
-                        let padding_ptr = unsafe { buffer.add(offset) };
-                        let skip_len = space_to_end as u32 | SKIP_BIT;
+                if self
+                    .shared
+                    .tail
+                    .compare_exchange_weak(tail, new_tail, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    // We claimed the space. Write padding skip marker.
+                    let buffer = self.shared.buffer;
+                    let padding_ptr = unsafe { buffer.add(offset) };
+                    let skip_len = space_to_end as u32 | SKIP_BIT;
 
-                        // Release fence before writing skip marker
-                        fence(Ordering::Release);
-                        unsafe {
-                            ptr::write(padding_ptr as *mut u32, skip_len);
-                        }
+                    // Release fence before writing skip marker
+                    fence(Ordering::Release);
+                    unsafe {
+                        ptr::write(padding_ptr as *mut u32, skip_len);
+                    }
 
-                        return Ok(WriteClaim {
-                            shared: &self.shared,
-                            offset: 0, // Record starts at beginning after wrap
-                            len,
-                            record_size,
-                            committed: false,
-                        });
-                    }
-                    Err(_) => {
-                        // CAS failed, retry
-                        continue;
-                    }
+                    return Ok(WriteClaim {
+                        shared: &self.shared,
+                        offset: 0, // Record starts at beginning after wrap
+                        len,
+                        record_size,
+                        committed: false,
+                    });
                 }
-            } else {
-                // Fits without wrapping
-                let new_tail = tail.wrapping_add(record_size);
-                match self.shared.tail.compare_exchange_weak(
-                    tail,
-                    new_tail,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        return Ok(WriteClaim {
-                            shared: &self.shared,
-                            offset,
-                            len,
-                            record_size,
-                            committed: false,
-                        });
-                    }
-                    Err(_) => {
-                        // CAS failed, retry
-                        continue;
-                    }
-                }
+                // CAS failed, retry
+                continue;
             }
+
+            // Fits without wrapping
+            let new_tail = tail.wrapping_add(record_size);
+            if self
+                .shared
+                .tail
+                .compare_exchange_weak(tail, new_tail, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(WriteClaim {
+                    shared: &self.shared,
+                    offset,
+                    len,
+                    record_size,
+                    committed: false,
+                });
+            }
+            // CAS failed, retry
         }
     }
 

@@ -1,14 +1,17 @@
 [package]
 name = "nexus-logbuf"
-version = "0.1.0"
-description = "High-performance lock-free SPSC ring buffer for low-latency systems"
+version = "1.0.0"
+description = "Lock-free SPSC and MPSC byte ring buffers for logging and archival"
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 keywords = ["spsc", "mpsc", "ring-buffer", "queue", "lock-free"]
-categories = ["concurrency", "data-structures", "no-std"]
+categories = ["concurrency", "data-structures"]
+
+[lints]
+workspace = true
 
 [dependencies]
 crossbeam-utils.workspace = true
