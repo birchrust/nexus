@@ -1,6 +1,6 @@
 //! High-performance lock-free queues for latency-critical applications.
 //!
-//! `nexus-queue` provides bounded SPSC (single-producer, single-consumer) queues
+//! `nexus-queue` provides a bounded SPSC (single-producer, single-consumer) queue
 //! optimized for trading systems and other low-latency workloads.
 //!
 //! # Quick Start
@@ -14,29 +14,15 @@
 //! assert_eq!(rx.pop(), Some(42));
 //! ```
 //!
-//! # Implementations
+//! # Design
 //!
-//! Two SPSC implementations are available with different performance
-//! characteristics depending on hardware topology:
+//! The SPSC implementation uses cached head/tail indices with separate cache lines
+//! to avoid false sharing. Producer and consumer each maintain a local copy of
+//! the other's index, only refreshing from the atomic when their cache indicates
+//! the queue is full (producer) or empty (consumer).
 //!
-//! - **index** (default): Cached head/tail indices on separate cache lines
-//! - **slot**: Per-slot lap counters on the same cache line as data
-//!
-//! The key difference is cache line ownership. The index-based design has
-//! producer and consumer writing to separate cache lines, while slot-based
-//! has both writing to the same cache line. Which performs better depends
-//! on your NUMA configuration and cache hierarchy.
-//!
-//! **Benchmark both on your target hardware.**
-//!
-//! ```toml
-//! # Use slot-based implementation
-//! nexus-queue = { version = "...", features = ["slot-based"] }
-//! ```
-//!
-//! # Feature Flags
-//!
-//! - `spsc-slot`: Use slot-based implementation for top-level re-exports
+//! This design performs well on multi-socket NUMA systems where cache line
+//! ownership is important for latency.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs, missing_debug_implementations)]

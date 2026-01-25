@@ -1,6 +1,12 @@
-//! Latency and throughput benchmark for rtrb SPSC
+//! Latency and throughput benchmark for nexus SPSC
 //!
-//! For comparison against nexus-queue
+//! Measures:
+//! - One-way latency distribution (ping-pong RTT/2)
+//! - Throughput (messages/second)
+//!
+//! For best results, disable turbo boost and pin to physical cores:
+//!   echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+//!   sudo taskset -c 0,2 ./target/release/deps/perf_latency-*
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,7 +23,7 @@ const THROUGHPUT_COUNT: u64 = 1_000_000;
 fn rdtscp() -> u64 {
     unsafe {
         let mut aux: u32 = 0;
-        core::arch::x86_64::__rdtscp(&mut aux)
+        core::arch::x86_64::__rdtscp(&raw mut aux)
     }
 }
 
@@ -34,14 +40,15 @@ fn latency_benchmark() {
     println!("Capacity: {:>8}", CAPACITY);
     println!();
 
-    let (mut prod_a, mut cons_a) = rtrb::RingBuffer::<u64>::new(CAPACITY);
-    let (mut prod_b, mut cons_b) = rtrb::RingBuffer::<u64>::new(CAPACITY);
+    let (mut prod_a, mut cons_a) = nexus_queue::spsc::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_b, mut cons_b) = nexus_queue::spsc::ring_buffer::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 
+    // Worker: receive on A, immediately send back on B
     let handle = thread::spawn(move || {
         for _ in 0..total {
-            while cons_a.pop().is_err() {
+            while cons_a.pop().is_none() {
                 std::hint::spin_loop();
             }
             while prod_b.push(0).is_err() {
@@ -55,11 +62,13 @@ fn latency_benchmark() {
         while prod_a.push(0).is_err() {
             std::hint::spin_loop();
         }
-        while cons_b.pop().is_err() {
+        while cons_b.pop().is_none() {
             std::hint::spin_loop();
         }
     }
 
+    // Measured samples
+    // Max value 1M cycles should cover any reasonable latency + outliers
     let mut hist = Histogram::<u64>::new_with_max(1_000_000, 3).unwrap();
 
     for _ in 0..SAMPLES {
@@ -68,12 +77,13 @@ fn latency_benchmark() {
         while prod_a.push(0).is_err() {
             std::hint::spin_loop();
         }
-        while cons_b.pop().is_err() {
+        while cons_b.pop().is_none() {
             std::hint::spin_loop();
         }
 
         let end = rdtscp();
         let latency = end.wrapping_sub(start) / 2;
+        // Saturate to max if somehow exceeded (shouldn't happen)
         let _ = hist.record(latency.min(1_000_000));
     }
 
@@ -127,7 +137,7 @@ fn throughput_benchmark() {
     println!("Capacity: {:>10}", CAPACITY);
     println!();
 
-    let (mut producer, mut consumer) = rtrb::RingBuffer::<u64>::new(CAPACITY);
+    let (mut producer, mut consumer) = nexus_queue::spsc::ring_buffer::<u64>(CAPACITY);
 
     let start = Instant::now();
 
@@ -143,7 +153,7 @@ fn throughput_benchmark() {
         let mut received = 0u64;
         let mut sum = 0u64;
         while received < THROUGHPUT_COUNT {
-            if let Ok(val) = consumer.pop() {
+            if let Some(val) = consumer.pop() {
                 sum = sum.wrapping_add(val);
                 received += 1;
             } else {
@@ -187,8 +197,8 @@ fn estimate_cpu_freq_ghz() -> f64 {
 }
 
 fn main() {
-    println!("rtrb SPSC Benchmark");
-    println!("===================");
+    println!("nexus-queue SPSC Benchmark");
+    println!("==========================");
     println!();
 
     latency_benchmark();

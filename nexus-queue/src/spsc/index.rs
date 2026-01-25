@@ -1,12 +1,10 @@
 //! Single-producer single-consumer queue using cached indices.
 //!
-//! This is the default implementation.
-//!
 //! # Design
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │ Shared:                                                     │
+//! │ Shared (Arc):                                               │
 //! │   tail: CachePadded<AtomicUsize>   ← Producer writes        │
 //! │   head: CachePadded<AtomicUsize>   ← Consumer writes        │
 //! │   buffer: *mut T                                            │
@@ -16,32 +14,18 @@
 //! │ Producer:           │     │ Consumer:           │
 //! │   local_tail        │     │   local_head        │
 //! │   cached_head       │     │   cached_tail       │
+//! │   buffer (cached)   │     │   buffer (cached)   │
+//! │   mask (cached)     │     │   mask (cached)     │
 //! └─────────────────────┘     └─────────────────────┘
 //! ```
 //!
-//! Producer and consumer each maintain a cached copy of the other's index,
-//! only refreshing from the atomic when the cache indicates the queue is
-//! full (producer) or empty (consumer). Head and tail are on separate cache
-//! lines to avoid false sharing.
+//! Producer and consumer each cache the buffer pointer and mask locally to
+//! avoid Arc dereference on every operation. They also maintain a cached copy
+//! of the other's index, only refreshing from the atomic when the cache
+//! indicates the queue is full (producer) or empty (consumer).
 //!
-//! # Performance Characteristics
-//!
-//! This implementation has different performance characteristics than the
-//! [`slot`](super::slot) implementation. The key difference is cache line
-//! ownership:
-//!
-//! - **index**: Producer and consumer write to separate cache lines (head/tail)
-//! - **slot**: Producer and consumer write to the same cache line (the slot's lap counter)
-//!
-//! Which performs better depends on your hardware topology, particularly NUMA
-//! configuration and cache hierarchy. **Benchmark both on your target hardware.**
-//!
-//! Enable the alternative with:
-//!
-//! ```toml
-//! [dependencies]
-//! nexus-queue = { version = "...", features = ["slot-based"] }
-//! ```
+//! Head and tail are on separate cache lines (128-byte padding) to avoid false
+//! sharing between producer and consumer threads.
 //!
 //! # Example
 //!
@@ -104,6 +88,8 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     )
 }
 
+// repr(C): Guarantees field order. CachePadded<tail> and CachePadded<head>
+// must be at known offsets for cache line isolation to work correctly.
 #[repr(C)]
 struct Shared<T> {
     tail: CachePadded<AtomicUsize>,
@@ -112,6 +98,9 @@ struct Shared<T> {
     mask: usize,
 }
 
+// SAFETY: Shared only contains atomics and a raw pointer. The buffer is only
+// accessed through Producer (write) and Consumer (read), which are !Sync.
+// T: Send ensures the data can be transferred between threads.
 unsafe impl<T: Send> Send for Shared<T> {}
 unsafe impl<T: Send> Sync for Shared<T> {}
 
@@ -122,10 +111,14 @@ impl<T> Drop for Shared<T> {
 
         let mut i = head;
         while i != tail {
+            // SAFETY: Slots in [head, tail) contain initialized values. We have
+            // exclusive access (drop requires &mut self, both endpoints dropped).
             unsafe { self.buffer.add(i & self.mask).drop_in_place() };
             i = i.wrapping_add(1);
         }
 
+        // SAFETY: buffer was allocated by Vec::with_capacity(capacity) in ring_buffer().
+        // We pass len=0 because we already dropped all elements above.
         unsafe {
             let capacity = self.mask + 1;
             let _ = Vec::from_raw_parts(self.buffer, 0, capacity);
@@ -136,6 +129,8 @@ impl<T> Drop for Shared<T> {
 /// The producer endpoint of an SPSC queue.
 ///
 /// This endpoint can only push values into the queue.
+// repr(C): Hot fields (local_tail, cached_head) at struct base share cache line
+// with struct pointer. Cold field (shared Arc) pushed to end.
 #[repr(C)]
 pub struct Producer<T> {
     local_tail: usize,
@@ -145,6 +140,9 @@ pub struct Producer<T> {
     shared: Arc<Shared<T>>,
 }
 
+// SAFETY: Producer can be sent to another thread. It has exclusive write access
+// to the buffer slots and maintains the tail index. T: Send ensures the data
+// can be transferred.
 unsafe impl<T: Send> Send for Producer<T> {}
 
 impl<T> Producer<T> {
@@ -166,6 +164,8 @@ impl<T> Producer<T> {
             }
         }
 
+        // SAFETY: We verified tail - cached_head <= mask, so the slot is not occupied
+        // by unconsumed data. tail & mask gives a valid index within the buffer.
         unsafe { self.buffer.add(tail & self.mask).write(value) };
         let new_tail = tail.wrapping_add(1);
         std::sync::atomic::fence(Ordering::Release);
@@ -200,6 +200,8 @@ impl<T> fmt::Debug for Producer<T> {
 /// The consumer endpoint of an SPSC queue.
 ///
 /// This endpoint can only pop values from the queue.
+// repr(C): Hot fields (local_head, cached_tail) at struct base share cache line
+// with struct pointer. Cold field (shared Arc) pushed to end.
 #[repr(C)]
 pub struct Consumer<T> {
     local_head: usize,
@@ -209,6 +211,9 @@ pub struct Consumer<T> {
     shared: Arc<Shared<T>>,
 }
 
+// SAFETY: Consumer can be sent to another thread. It has exclusive read access
+// to buffer slots and maintains the head index. T: Send ensures the data can
+// be transferred.
 unsafe impl<T: Send> Send for Consumer<T> {}
 
 impl<T> Consumer<T> {
@@ -228,6 +233,8 @@ impl<T> Consumer<T> {
             }
         }
 
+        // SAFETY: We verified head != cached_tail, so the slot contains valid data
+        // written by the producer. head & mask gives a valid index within the buffer.
         let value = unsafe { self.buffer.add(head & self.mask).read() };
         let new_head = head.wrapping_add(1);
         std::sync::atomic::fence(Ordering::Release);

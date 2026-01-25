@@ -14,50 +14,18 @@ categories = ["concurrency", "data-structures", "no-std"]
 crossbeam-utils.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
 crossbeam-queue = "0.3"
 hdrhistogram = "7.5"
 rtrb = "0.3"
 
-[features]
-default = []
-spsc-slot = []
-
 [lints]
 workspace = true
 
-[[bench]]
-name = "perf_spsc_bounded"
-harness = false
+[[example]]
+name = "bench_spsc"
 
-[[bench]]
-name = "perf_spsc_bounded_latency"
-harness = false
+[[example]]
+name = "bench_rtrb"
 
-[[bench]]
-name = "perf_rtrb"
-harness = false
-
-[[bench]]
-name = "perf_rtrb_latency"
-harness = false
-
-[[bench]]
-name = "perf_crossbeam"
-harness = false
-
-[[bench]]
-name = "perf_crossbeam_latency"
-harness = false
-
-[[bench]]
-name = "profile_spsc"
-harness = false
-
-[[bench]]
-name = "profile_rtrb"
-harness = false
-
-[[bench]]
-name = "profile_crossbeam"
-harness = false
+[[example]]
+name = "bench_crossbeam"

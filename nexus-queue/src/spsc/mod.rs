@@ -1,26 +1,20 @@
 //! Single-producer single-consumer bounded queue.
 //!
-//! Two implementations are available:
+//! A lock-free ring buffer optimized for exactly one producer thread and one
+//! consumer thread. Uses cached indices to minimize atomic operations on the
+//! hot path.
 //!
-//! - **index** (default): Cached head/tail indices on separate cache lines
-//! - **slot**: Per-slot lap counters
+//! # Example
 //!
-//! Both are exposed as submodules for benchmarking. The top-level re-exports
-//! use the implementation selected by feature flag.
+//! ```
+//! use nexus_queue::spsc;
 //!
-//! ```toml
-//! # Use slot-based implementation
-//! nexus-queue = { version = "...", features = ["slot-based"] }
+//! let (mut tx, mut rx) = spsc::ring_buffer::<u64>(1024);
+//!
+//! tx.push(42).unwrap();
+//! assert_eq!(rx.pop(), Some(42));
 //! ```
 
-#[cfg(not(feature = "spsc-slot"))]
 mod index;
 
-#[cfg(not(feature = "spsc-slot"))]
-pub use index::{ring_buffer, Producer, Consumer};
-
-#[cfg(feature = "spsc-slot")]
-mod slot;
-
-#[cfg(feature = "spsc-slot")]
-pub use slot::{ring_buffer, Producer, Consumer};
+pub use index::{Consumer, Producer, ring_buffer};

@@ -4,27 +4,18 @@ A high-performance SPSC (Single-Producer Single-Consumer) ring buffer for Rust, 
 
 ## Performance
 
-Benchmarked against [`rtrb`](https://crates.io/crates/rtrb) on dual-socket Intel Xeon 8124M @ 3.00GHz, pinned to physical cores with turbo boost disabled:
+Benchmarked on AMD Ryzen (single-socket), 2.69 GHz base clock, pinned to physical cores:
 
-### Latency (ping-pong, 25 runs)
+| Metric | nexus-queue | rtrb | crossbeam (MPMC) |
+|--------|-------------|------|------------------|
+| **p50 latency** | 68 cycles (25 ns) | 67 cycles (25 ns) | 83 cycles (31 ns) |
+| **p99 latency** | 130 cycles | 123 cycles | 160 cycles |
+| **Throughput** | 640 M msgs/sec | 485 M msgs/sec | 92 M msgs/sec |
 
-| Metric | nexus-queue | rtrb | Δ |
-|--------|-------------|------|---|
-| **p50 best** | 346 cycles | 375 cycles | -8% |
-| **p50 median** | ~370 cycles | ~430 cycles | -14% |
-| **p99 typical** | ~600 cycles | ~700 cycles | -14% |
-
-**25/25 wins on p50 latency.**
-
-### Throughput
-
-| Metric | nexus-queue | rtrb |
-|--------|-------------|------|
-| **Throughput** | 294 M msgs/sec | 127 M msgs/sec |
-
-**2.3x throughput advantage.**
+See [BENCHMARKS.md](./BENCHMARKS.md) for detailed methodology and results.
 
 ## Usage
+
 ```rust
 use nexus_queue::spsc;
 
@@ -33,11 +24,12 @@ let (mut tx, mut rx) = spsc::ring_buffer::<u64>(1024);
 // Producer thread
 tx.push(42).unwrap();
 
-// Consumer thread  
+// Consumer thread
 assert_eq!(rx.pop(), Some(42));
 ```
 
 ### Handling backpressure
+
 ```rust
 use nexus_queue::Full;
 
@@ -54,6 +46,7 @@ match tx.push(msg) {
 ```
 
 ### Disconnection detection
+
 ```rust
 // Check if the other end has been dropped
 if rx.is_disconnected() {
@@ -67,64 +60,40 @@ if tx.is_disconnected() {
 
 ## Design
 
-Two implementations are available with different cache line ownership patterns:
-
-### Index-based (default)
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Shared:                                                     │
+│ Shared (Arc):                                               │
 │   tail: CachePadded<AtomicUsize>   ← Producer writes        │
 │   head: CachePadded<AtomicUsize>   ← Consumer writes        │
 │   buffer: *mut T                                            │
 └─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────┐     ┌─────────────────────┐
+│ Producer:           │     │ Consumer:           │
+│   local_tail        │     │   local_head        │
+│   cached_head       │     │   cached_tail       │
+│   buffer (cached)   │     │   buffer (cached)   │
+└─────────────────────┘     └─────────────────────┘
 ```
 
-Producer and consumer write to **separate cache lines**. Each endpoint caches the other's index, only refreshing when the cache indicates full/empty.
+Producer and consumer write to **separate cache lines** (128-byte padding). Each endpoint caches the buffer pointer, mask, and the other's index locally, only refreshing from atomics when the cache indicates full/empty.
 
-### Slot-based
-```
-┌──────────────────────────────────────────────────────────────┐
-│ buffer[0]: { lap: AtomicUsize, data: T }                     │
-│ buffer[1]: { lap: AtomicUsize, data: T }                     │
-│ ...                                                          │
-└──────────────────────────────────────────────────────────────┘
-```
-
-Producer and consumer write to the **same cache line** (the slot's lap counter). The synchronization word and data share a cache line for locality.
-
-### Trade-offs
-
-| | index (default) | slot |
-|-------------------|-----------------|------|
-| Cache line writes | Unidirectional | Bidirectional |
-| Multi-socket/NUMA | ✓ Better | Worse |
-| Shared L3 (single socket) | Good | ✓ Better |
-
-Which performs better depends on your hardware topology. **Benchmark both on your target hardware.**
-```toml
-# Use slot-based implementation
-nexus-queue = { version = "0.3", features = ["slot-based"] }
-```
-
-Both implementations are always available as submodules for benchmarking:
-```rust
-use nexus_queue::spsc::{index, slot};
-
-let (mut tx_index, mut rx_index) = index::ring_buffer::<u64>(1024);
-let (mut tx_slot, mut rx_slot) = slot::ring_buffer::<u64>(1024);
-```
+This design performs well on multi-socket NUMA systems where cache line ownership is important for latency.
 
 ## Benchmarking
 
 For accurate results, disable turbo boost and pin to physical cores:
+
 ```bash
-# Disable turbo boost (Intel)
+# Build
+cargo build -p nexus-queue --examples --release
+
+# Run pinned to two cores
+taskset -c 0,1 ./target/release/examples/bench_spsc
+
+# For more stable results, disable turbo boost:
 echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
-
-# Run benchmark pinned to cores 0 and 2
-sudo taskset -c 0,2 ./target/release/deps/your_benchmark-*
-
-# Re-enable turbo boost
+# Re-enable after:
 echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
 ```
 
@@ -132,10 +101,10 @@ Verify your core topology with `lscpu -e` — you want cores with different CORE
 
 ## Memory Ordering
 
-Both implementations use manual fencing for clarity and portability:
+Uses manual fencing for clarity and portability:
 
-- **Producer**: `fence(Release)` before publishing
-- **Consumer**: `fence(Acquire)` after reading, `fence(Release)` before advancing
+- **Producer**: `fence(Release)` before publishing tail
+- **Consumer**: `fence(Acquire)` after reading tail, `fence(Release)` before advancing head
 
 On x86 these compile to no instructions (strong memory model), but they're required for correctness on ARM and other weakly-ordered architectures.
 
