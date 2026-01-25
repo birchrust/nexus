@@ -1217,12 +1217,8 @@ fn enum_field_valid_values() {
 
 #[test]
 fn enum_field_overflow() {
-    // Big = 255, should NOT fit in 4 bits (max 15)
-    // This test documents the expected behavior: should return error
+    // Big = 255 does NOT fit in 4 bits (max 15) - builder returns error
     let result = WithLargeEnum::builder().val(LargeEnum::Big).build();
-
-    // BUG: Currently this passes but silently truncates!
-    // After fix, this should be an error:
     let err = result.unwrap_err();
     assert_eq!(err.field, "val");
 }
