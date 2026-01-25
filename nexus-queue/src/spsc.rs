@@ -1,4 +1,8 @@
-//! Single-producer single-consumer queue using cached indices.
+//! Single-producer single-consumer bounded queue.
+//!
+//! A lock-free ring buffer optimized for exactly one producer thread and one
+//! consumer thread. Uses cached indices to minimize atomic operations on the
+//! hot path.
 //!
 //! # Design
 //!
@@ -40,8 +44,8 @@
 
 use std::fmt;
 use std::mem::ManuallyDrop;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crossbeam_utils::CachePadded;
 
@@ -322,6 +326,7 @@ mod tests {
         let err = prod.push(5).unwrap_err();
         assert_eq!(err.into_inner(), 5);
     }
+
     // ============================================================================
     // Interleaved Operations
     // ============================================================================
