@@ -9,7 +9,7 @@
 use std::hint::black_box;
 
 use hdrhistogram::Histogram;
-use nexus_logbuf::spsc;
+use nexus_logbuf::queue::spsc;
 
 const WARMUP: usize = 10_000;
 const SAMPLES: usize = 100_000;

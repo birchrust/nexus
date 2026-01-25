@@ -4,6 +4,11 @@
 //! getting data off the hot path without disturbing it. No allocation, no
 //! formatting, no syscalls on the producer side.
 //!
+//! # Modules
+//!
+//! - [`queue`]: Low-level ring buffer primitives. No blocking, maximum control.
+//! - [`channel`]: Ergonomic channel API with backoff and parking for receivers.
+//!
 //! # Design
 //!
 //! - **Flat byte buffer** with free-running offsets, power-of-2 capacity
@@ -12,15 +17,18 @@
 //! - **Consumer zeroing**: Consumer zeros records before releasing space
 //! - **Claim-based API**: `WriteClaim`/`ReadClaim` with RAII semantics
 //!
-//! # Variants
+//! # Channel Philosophy
 //!
-//! - [`spsc`]: Single-producer, single-consumer. No CAS on hot path.
-//! - `mpsc`: Multi-producer, single-consumer. CAS on tail for claiming. (TODO)
+//! **Senders are never slowed down.** They use brief backoff (spin + yield) but
+//! never syscall. If the buffer is full, they return an error immediately.
 //!
-//! # Example
+//! **Receivers can block.** They use `park_timeout` to wait for messages without
+//! burning CPU, but always with a timeout to check for disconnection.
+//!
+//! # Example (Queue API)
 //!
 //! ```
-//! use nexus_logbuf::spsc;
+//! use nexus_logbuf::queue::spsc;
 //!
 //! let (mut producer, mut consumer) = spsc::new(4096);
 //!
@@ -38,10 +46,14 @@
 //! }
 //! ```
 
-pub mod mpsc;
-pub mod spsc;
+pub mod channel;
+pub mod queue;
 
-/// Error returned from [`spsc::Producer::try_claim`].
+// Re-export for convenience (queue is the primitive layer)
+pub use queue::mpsc;
+pub use queue::spsc;
+
+/// Error returned from queue `try_claim` operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TryClaimError {
     /// The buffer is full.
@@ -63,7 +75,7 @@ impl std::error::Error for TryClaimError {}
 
 /// Align a value up to the next multiple of 8.
 #[inline]
-const fn align8(n: usize) -> usize {
+pub(crate) const fn align8(n: usize) -> usize {
     (n + 7) & !7
 }
 
@@ -73,8 +85,8 @@ const fn align8(n: usize) -> usize {
 /// - `len == 0`: Not committed, consumer waits
 /// - `len > 0, high bit clear`: Committed record, payload is `len` bytes
 /// - `len high bit set`: Skip marker, advance by `len & LEN_MASK` bytes
-const SKIP_BIT: u32 = 0x8000_0000;
-const LEN_MASK: u32 = 0x7FFF_FFFF;
+pub(crate) const SKIP_BIT: u32 = 0x8000_0000;
+pub(crate) const LEN_MASK: u32 = 0x7FFF_FFFF;
 
 #[cfg(test)]
 mod tests {

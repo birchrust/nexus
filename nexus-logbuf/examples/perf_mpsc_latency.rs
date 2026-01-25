@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use hdrhistogram::Histogram;
-use nexus_logbuf::mpsc;
+use nexus_logbuf::queue::mpsc;
 
 const WARMUP: usize = 10_000;
 const SAMPLES: usize = 100_000;

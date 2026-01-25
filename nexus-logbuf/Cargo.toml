@@ -2,7 +2,7 @@
 name = "nexus-logbuf"
 version = "0.1.0"
 description = "High-performance lock-free SPSC ring buffer for low-latency systems"
-# readme = "README.md"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,10 +15,14 @@ crossbeam-utils.workspace = true
 
 [dev-dependencies]
 hdrhistogram = "7.5"
+rand = "0.8"
 
 [[example]]
 name = "perf_spsc_latency"
 
 [[example]]
 name = "perf_mpsc_latency"
+
+[[example]]
+name = "throughput_bench"
 
