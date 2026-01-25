@@ -4,8 +4,10 @@ High-performance lock-free ring buffers for variable-length messages.
 
 ## Purpose
 
-Get data off the hot path without disturbing it. Channels allocate, tracing
-formats, logging syscalls. This crate does none of these on the producer side.
+A bytes-in, bytes-out ring buffer primitive for archival and logging. Producer
+writes raw bytes into a pre-allocated buffer; consumer reads them out on a
+background thread. No policy decisions—you define the framing, serialization,
+and I/O strategy on top.
 
 **Target use cases:**
 - WebSocket message archival
