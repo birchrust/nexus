@@ -52,7 +52,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| **nexus-journal** | Non-blocking overwrite SPSC ring buffer for variable-length byte slices. Producer never blocks, never syscalls — overwrites oldest entries if consumer falls behind. Sequence-based gap detection. For archival, logging transports, and event sourcing. |
+| **nexus-logbuf** | Bounded SPSC and MPSC byte ring buffer for variable-length messages. Offset-based claiming, 8-byte aligned records, claim-based API (`WriteClaim`/`ReadClaim`). Returns `Err(Full)` on exhaustion — caller decides policy. The hot-path primitive for getting data off the trading loop. |
 | **MPSC queue** | Bounded multi-producer, single-consumer lock-free queue. CAS-based tail claiming, wait-free consumer. For buffer return paths and aggregation where producers are not on the hot path. |
 
 ## Design Principles
