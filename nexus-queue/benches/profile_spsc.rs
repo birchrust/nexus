@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use hdrhistogram::Histogram;
 
-const WARMUP: usize = 1_000_000;
-const SAMPLES: usize = 100_000_000;
+const WARMUP: usize = 10_000;
+const SAMPLES: usize = 100_000;
 const CAPACITY: usize = 1024;
-const THROUGHPUT_COUNT: u64 = 10_000_000;
+const THROUGHPUT_COUNT: u64 = 1_000_000;
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
@@ -40,8 +40,8 @@ fn latency_benchmark() {
     println!("Capacity: {:>8}", CAPACITY);
     println!();
 
-    let (mut prod_a, mut cons_a) = nexus_queue::spsc::slot::ring_buffer::<u64>(CAPACITY);
-    let (mut prod_b, mut cons_b) = nexus_queue::spsc::slot::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_a, mut cons_a) = nexus_queue::spsc::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_b, mut cons_b) = nexus_queue::spsc::ring_buffer::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 
