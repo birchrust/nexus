@@ -44,8 +44,8 @@
 
 use std::fmt;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 

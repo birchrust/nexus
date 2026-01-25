@@ -1,13 +1,13 @@
 [package]
 name = "nexus-queue"
 version = "0.3.1"
-description = "High-performance lock-free SPSC ring buffer for low-latency systems"
+description = "High-performance lock-free SPSC and MPSC queues for low-latency systems"
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["spsc", "ring-buffer", "queue", "lock-free"]
+keywords = ["spsc", "mpsc", "ring-buffer", "queue", "lock-free"]
 categories = ["concurrency", "data-structures", "no-std"]
 
 [dependencies]
@@ -29,3 +29,9 @@ name = "bench_rtrb"
 
 [[example]]
 name = "bench_crossbeam"
+
+[[example]]
+name = "bench_mpsc"
+
+[[example]]
+name = "bench_mpsc_pingpong"
