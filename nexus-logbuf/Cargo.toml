@@ -19,3 +19,6 @@ hdrhistogram = "7.5"
 [[example]]
 name = "perf_spsc_latency"
 
+[[example]]
+name = "perf_mpsc_latency"
+

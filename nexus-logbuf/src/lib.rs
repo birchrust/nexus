@@ -38,8 +38,8 @@
 //! }
 //! ```
 
+pub mod mpsc;
 pub mod spsc;
-// pub mod mpsc; // TODO
 
 /// Error returned from [`spsc::Producer::try_claim`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
