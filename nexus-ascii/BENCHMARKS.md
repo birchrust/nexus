@@ -163,14 +163,23 @@ Truncation includes zeroing the tail and recomputing the hash.
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| `try_from_bytes` (7B slice) | 16 | 26 | 48 |
-| `try_from_raw` (7B in 16B buffer) | 16 | 32 | 66 |
-| `from_raw_unchecked` (7B in 16B buffer) | 16 | 18 | 24 |
-| `try_from_right_padded` (7B, space pad) | 18 | 22 | 44 |
+| `try_from_bytes` (7B slice) | 16 | 18 | 34 |
+| `try_from_raw` (7B in 16B buffer) | 16 | 30 | 68 |
+| `try_from_raw` (20B in 32B buffer) | 16 | 36 | 70 |
+| `from_raw_unchecked` (7B in 16B buffer) | 18 | 20 | 20 |
+| `try_from_null_terminated` (7B in &[u8;16]) | 18 | 24 | 34 |
+| `try_from_null_terminated` (20B in &[u8;32]) | 18 | 20 | 26 |
+| `try_from_raw_ref` (7B in &[u8;16]) | 18 | 20 | 24 |
+| `try_from_raw_ref` (20B in &[u8;32]) | 18 | 20 | 26 |
+| `try_from_right_padded` (7B, space pad) | 18 | 20 | 34 |
+| `try_from_right_padded` (20B, space pad) | 18 | 22 | 28 |
 
 Null-byte scanning uses SSE2 on x86_64 (16B/iter), SWAR elsewhere (8B/iter).
-The `try_from_raw` cost is dominated by the null search + validation, not the
-copy.
+
+**`try_from_raw_ref(&[u8; CAP])` vs `try_from_null_terminated(&[u8])`:**
+When the buffer size is known at compile time, prefer `try_from_raw_ref`. It
+has better tail latency (p999: 24-26 vs 34-54 cycles) because the compiler can
+eliminate bounds checks. Both have identical p50 performance.
 
 ---
 
@@ -336,13 +345,20 @@ equality works through Deref and trait impls with no additional overhead.
 |-----------|-----|-----|------|
 | `try_from_str` (7B) | 18 | 28 | 72 |
 | `try_from_str` (20B) | 18 | 22 | 70 |
+| `try_from_raw` (7B in 16B buffer) | 16 | 20 | 30 |
+| `try_from_null_terminated` (7B) | 18 | 20 | 22 |
+| `try_from_null_terminated` (20B) | 18 | 22 | 34 |
+| `try_from_right_padded` (7B) | 18 | 22 | 54 |
 | `into_ascii_string()` | 18 | 20 | 22 |
 | `AsciiText == AsciiText` | 16 | 20 | 20 |
 | `AsciiText == AsciiString` | 18 | 20 | 20 |
 
-AsciiText adds printable validation (0x20-0x7E) on top of ASCII validation.
-The additional range check is essentially free at the SIMD level (1 extra
-comparison per chunk).
+AsciiText uses **single-pass printable validation** (0x20-0x7E). Since the
+printable range check (>= 0x20 && <= 0x7E) implicitly rejects non-ASCII bytes
+(they fail the <= 0x7E bound), there's no separate ASCII validation pass.
+Wire format methods (`try_from_raw`, `try_from_null_terminated`, etc.) match
+AsciiString performance — the printable check is essentially free at the
+SIMD level (same instruction count, different constants).
 
 ---
 

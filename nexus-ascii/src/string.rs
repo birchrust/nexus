@@ -562,13 +562,13 @@ impl<const CAP: usize> AsciiString<CAP> {
     ///
     /// // Reference to a fixed-size buffer (zero-copy from wire format)
     /// let buffer: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
-    /// let s: AsciiString<16> = AsciiString::try_from_ref(buffer)?;
+    /// let s: AsciiString<16> = AsciiString::try_from_raw_ref(buffer)?;
     /// assert_eq!(s.as_str(), "BTC-USD");
     /// assert_eq!(s.len(), 7);
     /// # Ok::<(), nexus_ascii::AsciiError>(())
     /// ```
     #[inline]
-    pub fn try_from_ref(buffer: &[u8; CAP]) -> Result<Self, AsciiError> {
+    pub fn try_from_raw_ref(buffer: &[u8; CAP]) -> Result<Self, AsciiError> {
         let () = Self::_CAP_ASSERT;
 
         // Find null terminator - buffer is exactly CAP bytes
@@ -4233,36 +4233,36 @@ mod tests {
     }
 
     // =========================================================================
-    // try_from_ref tests
+    // try_from_raw_ref tests
     // =========================================================================
 
     #[test]
-    fn try_from_ref_basic() {
+    fn try_from_raw_ref_basic() {
         let buffer: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
-        let s: AsciiString<16> = AsciiString::try_from_ref(buffer).unwrap();
+        let s: AsciiString<16> = AsciiString::try_from_raw_ref(buffer).unwrap();
         assert_eq!(s.as_str(), "BTC-USD");
         assert_eq!(s.len(), 7);
     }
 
     #[test]
-    fn try_from_ref_no_null() {
+    fn try_from_raw_ref_no_null() {
         let buffer: &[u8; 8] = b"BTCUSDT!";
-        let s: AsciiString<8> = AsciiString::try_from_ref(buffer).unwrap();
+        let s: AsciiString<8> = AsciiString::try_from_raw_ref(buffer).unwrap();
         assert_eq!(s.as_str(), "BTCUSDT!");
         assert_eq!(s.len(), 8);
     }
 
     #[test]
-    fn try_from_ref_empty() {
+    fn try_from_raw_ref_empty() {
         let buffer: &[u8; 16] = b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-        let s: AsciiString<16> = AsciiString::try_from_ref(buffer).unwrap();
+        let s: AsciiString<16> = AsciiString::try_from_raw_ref(buffer).unwrap();
         assert!(s.is_empty());
     }
 
     #[test]
-    fn try_from_ref_invalid_ascii() {
+    fn try_from_raw_ref_invalid_ascii() {
         let buffer: &[u8; 16] = b"hello\xFF\0\0\0\0\0\0\0\0\0\0";
-        let result = AsciiString::<16>::try_from_ref(buffer);
+        let result = AsciiString::<16>::try_from_raw_ref(buffer);
         assert!(matches!(
             result,
             Err(AsciiError::InvalidByte { byte: 0xFF, .. })
@@ -4270,19 +4270,19 @@ mod tests {
     }
 
     #[test]
-    fn try_from_ref_matches_try_from_null_terminated() {
+    fn try_from_raw_ref_matches_try_from_null_terminated() {
         let buffer: &[u8; 16] = b"test123\0\0\0\0\0\0\0\0\0";
-        let from_ref: AsciiString<16> = AsciiString::try_from_ref(buffer).unwrap();
+        let from_ref: AsciiString<16> = AsciiString::try_from_raw_ref(buffer).unwrap();
         let from_slice: AsciiString<16> = AsciiString::try_from_null_terminated(buffer).unwrap();
         assert_eq!(from_ref, from_slice);
         assert_eq!(from_ref.header(), from_slice.header());
     }
 
     #[test]
-    fn try_from_ref_roundtrip() {
+    fn try_from_raw_ref_roundtrip() {
         let original: AsciiString<16> = AsciiString::try_from("test").unwrap();
         let raw = original.into_raw();
-        let recovered: AsciiString<16> = AsciiString::try_from_ref(&raw).unwrap();
+        let recovered: AsciiString<16> = AsciiString::try_from_raw_ref(&raw).unwrap();
         assert_eq!(original, recovered);
     }
 

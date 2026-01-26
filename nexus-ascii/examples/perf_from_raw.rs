@@ -106,18 +106,18 @@ fn main() {
     });
 
     // =========================================================================
-    // try_from_ref (typed array reference)
+    // try_from_raw_ref (typed array reference)
     // =========================================================================
     println!();
-    print_header_wide("try_from_ref (&[u8; CAP])");
+    print_header_wide("try_from_raw_ref (&[u8; CAP])");
 
-    bench_wide("try_from_ref (7B in &[u8;16])", || {
-        let s: AsciiString<16> = AsciiString::try_from_ref(black_box(slice_7)).unwrap();
+    bench_wide("try_from_raw_ref (7B in &[u8;16])", || {
+        let s: AsciiString<16> = AsciiString::try_from_raw_ref(black_box(slice_7)).unwrap();
         s.len() as u64
     });
 
-    bench_wide("try_from_ref (20B in &[u8;32])", || {
-        let s: AsciiString<32> = AsciiString::try_from_ref(black_box(slice_20)).unwrap();
+    bench_wide("try_from_raw_ref (20B in &[u8;32])", || {
+        let s: AsciiString<32> = AsciiString::try_from_raw_ref(black_box(slice_20)).unwrap();
         s.len() as u64
     });
 

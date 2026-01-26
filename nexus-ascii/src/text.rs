@@ -6,7 +6,7 @@ use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::simd;
 use crate::str_ref::AsciiStr;
-use crate::string::AsciiString;
+use crate::string::{AsciiString, find_null_byte};
 use crate::text_ref::AsciiTextStr;
 
 // =============================================================================
@@ -357,12 +357,16 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// ```
     #[inline]
     pub fn try_from_raw(buffer: [u8; CAP]) -> Result<Self, AsciiError> {
-        let s = AsciiString::try_from_raw(buffer)?;
-        // Validate printable (AsciiString only validates ASCII, not printable)
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
+        let len = find_null_byte(&buffer);
+
+        // Single-pass printable validation (also rejects non-ASCII)
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&buffer[..len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
-        Ok(Self(s))
+
+        // SAFETY: We validated printable, which is a subset of ASCII
+        // from_parts_unchecked handles zero-padding and hash computation
+        Ok(Self(AsciiString::from_parts_unchecked(len, buffer)))
     }
 
     /// Creates a printable ASCII text from a fixed-size raw buffer without validation.
@@ -425,12 +429,24 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// ```
     #[inline]
     pub fn try_from_null_terminated(bytes: &[u8]) -> Result<Self, AsciiError> {
-        let s = AsciiString::try_from_null_terminated(bytes)?;
-        // Validate printable (AsciiString only validates ASCII, not printable)
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
+        // Find null terminator
+        let len = find_null_byte(bytes);
+
+        if len > CAP {
+            return Err(AsciiError::TooLong { len, cap: CAP });
+        }
+
+        // Single-pass printable validation (also rejects non-ASCII)
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&bytes[..len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
-        Ok(Self(s))
+
+        // Copy to internal buffer
+        let mut data = [0u8; CAP];
+        data[..len].copy_from_slice(&bytes[..len]);
+
+        // SAFETY: We validated printable, which is a subset of ASCII
+        Ok(Self(AsciiString::from_parts_unchecked(len, data)))
     }
 
     /// Creates a printable ASCII text from a reference to a fixed-size buffer.
@@ -449,18 +465,26 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// use nexus_ascii::AsciiText;
     ///
     /// let buffer: &[u8; 16] = b"Hello\0\0\0\0\0\0\0\0\0\0\0";
-    /// let text: AsciiText<16> = AsciiText::try_from_ref(buffer)?;
+    /// let text: AsciiText<16> = AsciiText::try_from_raw_ref(buffer)?;
     /// assert_eq!(text.as_str(), "Hello");
     /// # Ok::<(), nexus_ascii::AsciiError>(())
     /// ```
     #[inline]
-    pub fn try_from_ref(buffer: &[u8; CAP]) -> Result<Self, AsciiError> {
-        let s = AsciiString::try_from_ref(buffer)?;
-        // Validate printable (AsciiString only validates ASCII, not printable)
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
+    pub fn try_from_raw_ref(buffer: &[u8; CAP]) -> Result<Self, AsciiError> {
+        // Find null terminator - buffer is exactly CAP bytes
+        let len = find_null_byte(buffer);
+
+        // Single-pass printable validation (also rejects non-ASCII)
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&buffer[..len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
-        Ok(Self(s))
+
+        // Copy to internal buffer
+        let mut data = [0u8; CAP];
+        data[..len].copy_from_slice(&buffer[..len]);
+
+        // SAFETY: We validated printable, which is a subset of ASCII
+        Ok(Self(AsciiString::from_parts_unchecked(len, data)))
     }
 
     /// Creates a printable ASCII text from a right-padded buffer.
@@ -492,12 +516,17 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// ```
     #[inline]
     pub fn try_from_right_padded(buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
-        let s = AsciiString::try_from_right_padded(buffer, pad)?;
-        // Validate printable (AsciiString only validates ASCII, not printable)
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
+        // Find length by stripping trailing pad bytes
+        let len = buffer.iter().rposition(|&b| b != pad).map_or(0, |i| i + 1);
+
+        // Single-pass printable validation (also rejects non-ASCII since printable ⊂ ASCII)
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&buffer[..len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
-        Ok(Self(s))
+
+        // SAFETY: We validated printable, which is a subset of ASCII
+        // from_parts_unchecked handles zero-padding and hash computation
+        Ok(Self(AsciiString::from_parts_unchecked(len, buffer)))
     }
 }
 
@@ -1598,53 +1627,53 @@ mod tests {
     }
 
     // =========================================================================
-    // try_from_ref tests
+    // try_from_raw_ref tests
     // =========================================================================
 
     #[test]
-    fn try_from_ref_basic() {
+    fn try_from_raw_ref_basic() {
         let buffer: &[u8; 16] = b"Hello\0\0\0\0\0\0\0\0\0\0\0";
-        let text: AsciiText<16> = AsciiText::try_from_ref(buffer).unwrap();
+        let text: AsciiText<16> = AsciiText::try_from_raw_ref(buffer).unwrap();
         assert_eq!(text.as_str(), "Hello");
         assert_eq!(text.len(), 5);
     }
 
     #[test]
-    fn try_from_ref_no_null() {
+    fn try_from_raw_ref_no_null() {
         let buffer: &[u8; 8] = b"FullText";
-        let text: AsciiText<8> = AsciiText::try_from_ref(buffer).unwrap();
+        let text: AsciiText<8> = AsciiText::try_from_raw_ref(buffer).unwrap();
         assert_eq!(text.as_str(), "FullText");
         assert_eq!(text.len(), 8);
     }
 
     #[test]
-    fn try_from_ref_empty() {
+    fn try_from_raw_ref_empty() {
         let buffer: &[u8; 16] = b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-        let text: AsciiText<16> = AsciiText::try_from_ref(buffer).unwrap();
+        let text: AsciiText<16> = AsciiText::try_from_raw_ref(buffer).unwrap();
         assert!(text.is_empty());
     }
 
     #[test]
-    fn try_from_ref_non_printable() {
+    fn try_from_raw_ref_non_printable() {
         let buffer: &[u8; 16] = b"hello\x01\0\0\0\0\0\0\0\0\0\0";
-        let result = AsciiText::<16>::try_from_ref(buffer);
+        let result = AsciiText::<16>::try_from_raw_ref(buffer);
         assert!(matches!(result, Err(AsciiError::NonPrintable { .. })));
     }
 
     #[test]
-    fn try_from_ref_matches_try_from_null_terminated() {
+    fn try_from_raw_ref_matches_try_from_null_terminated() {
         let buffer: &[u8; 16] = b"Test123\0\0\0\0\0\0\0\0\0";
-        let from_ref: AsciiText<16> = AsciiText::try_from_ref(buffer).unwrap();
+        let from_ref: AsciiText<16> = AsciiText::try_from_raw_ref(buffer).unwrap();
         let from_slice: AsciiText<16> = AsciiText::try_from_null_terminated(buffer).unwrap();
         assert_eq!(from_ref, from_slice);
         assert_eq!(from_ref.header(), from_slice.header());
     }
 
     #[test]
-    fn try_from_ref_roundtrip() {
+    fn try_from_raw_ref_roundtrip() {
         let original: AsciiText<16> = AsciiText::try_from("test").unwrap();
         let raw = original.into_raw();
-        let recovered: AsciiText<16> = AsciiText::try_from_ref(&raw).unwrap();
+        let recovered: AsciiText<16> = AsciiText::try_from_raw_ref(&raw).unwrap();
         assert_eq!(original, recovered);
     }
 
