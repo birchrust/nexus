@@ -1,6 +1,6 @@
 [package]
 name = "nexus-ascii"
-version = "1.3.6"
+version = "1.3.7"
 description = "Fixed-capacity ASCII strings for high-performance systems"
 readme = "README.md"
 edition.workspace = true

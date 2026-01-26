@@ -250,6 +250,66 @@ impl<const CAP: usize> AsciiText<CAP> {
         }
         Ok(Self(s))
     }
+
+    /// Creates a printable ASCII text from a fixed-size raw buffer.
+    ///
+    /// The string length is determined by the position of the first null byte
+    /// (0x00). If no null byte is found, the entire buffer is used.
+    ///
+    /// # Errors
+    ///
+    /// - [`AsciiError::NonPrintable`] if any byte before the first null is not
+    ///   printable ASCII (< 0x20 or > 0x7E)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// // Null-terminated buffer
+    /// let buffer: [u8; 16] = *b"Hello\0\0\0\0\0\0\0\0\0\0\0";
+    /// let text: AsciiText<16> = AsciiText::try_from_raw(buffer)?;
+    /// assert_eq!(text.as_str(), "Hello");
+    /// assert_eq!(text.len(), 5);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn try_from_raw(buffer: [u8; CAP]) -> Result<Self, AsciiError> {
+        let s = AsciiString::try_from_raw(buffer)?;
+        // Validate printable (AsciiString only validates ASCII, not printable)
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
+            return Err(AsciiError::NonPrintable { byte, pos });
+        }
+        Ok(Self(s))
+    }
+
+    /// Creates a printable ASCII text from a fixed-size raw buffer without validation.
+    ///
+    /// The string length is determined by the position of the first null byte
+    /// (0x00). If no null byte is found, the entire buffer is used.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that all bytes before the first null byte are
+    /// printable ASCII (0x20-0x7E). Violating this causes undefined behavior
+    /// in code that assumes the printable guarantee.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let buffer: [u8; 16] = *b"Hello\0\0\0\0\0\0\0\0\0\0\0";
+    /// // SAFETY: "Hello" contains only printable characters
+    /// let text: AsciiText<16> = unsafe { AsciiText::from_raw_unchecked(buffer) };
+    /// assert_eq!(text.as_str(), "Hello");
+    /// ```
+    #[inline]
+    #[must_use]
+    pub unsafe fn from_raw_unchecked(buffer: [u8; CAP]) -> Self {
+        // SAFETY: Caller guarantees printable ASCII
+        unsafe { Self(AsciiString::from_raw_unchecked(buffer)) }
+    }
 }
 
 // =============================================================================
@@ -303,6 +363,29 @@ impl<const CAP: usize> AsciiText<CAP> {
     pub fn as_ascii_text_str(&self) -> &AsciiTextStr {
         // SAFETY: AsciiText guarantees all bytes are printable ASCII
         unsafe { AsciiTextStr::from_bytes_unchecked(self.0.as_bytes()) }
+    }
+
+    /// Returns the full fixed-size buffer.
+    ///
+    /// The first `self.len()` bytes contain the string content.
+    /// Remaining bytes are zero-padded. Useful for wire formats that
+    /// require fixed-size fields.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let text: AsciiText<16> = AsciiText::try_from("Hello")?;
+    /// let raw: [u8; 16] = text.into_raw();
+    /// assert_eq!(&raw[..5], b"Hello");
+    /// assert_eq!(&raw[5..], &[0u8; 11]); // zero-padded
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn into_raw(self) -> [u8; CAP] {
+        self.0.into_raw()
     }
 }
 
@@ -1095,6 +1178,65 @@ mod tests {
     }
 
     // =========================================================================
+    // Raw buffer tests
+    // =========================================================================
+
+    #[test]
+    fn try_from_raw_basic() {
+        let buffer: [u8; 16] = *b"Hello\0\0\0\0\0\0\0\0\0\0\0";
+        let text: AsciiText<16> = AsciiText::try_from_raw(buffer).unwrap();
+        assert_eq!(text.as_str(), "Hello");
+        assert_eq!(text.len(), 5);
+    }
+
+    #[test]
+    fn try_from_raw_full_buffer() {
+        let buffer: [u8; 8] = *b"ABCDEFGH";
+        let text: AsciiText<8> = AsciiText::try_from_raw(buffer).unwrap();
+        assert_eq!(text.as_str(), "ABCDEFGH");
+        assert_eq!(text.len(), 8);
+    }
+
+    #[test]
+    fn try_from_raw_rejects_non_printable() {
+        // Control character before null
+        let buffer: [u8; 16] = *b"Hello\x01\0\0\0\0\0\0\0\0\0\0";
+        let result = AsciiText::<16>::try_from_raw(buffer);
+        assert!(matches!(result, Err(AsciiError::NonPrintable { .. })));
+    }
+
+    #[test]
+    fn from_raw_unchecked_basic() {
+        let buffer: [u8; 16] = *b"Hello\0\0\0\0\0\0\0\0\0\0\0";
+        // SAFETY: "Hello" is printable ASCII
+        let text: AsciiText<16> = unsafe { AsciiText::from_raw_unchecked(buffer) };
+        assert_eq!(text.as_str(), "Hello");
+    }
+
+    #[test]
+    fn into_raw_basic() {
+        let text: AsciiText<16> = AsciiText::try_from("Hello").unwrap();
+        let raw: [u8; 16] = text.into_raw();
+        assert_eq!(&raw[..5], b"Hello");
+        assert_eq!(&raw[5..], &[0u8; 11]);
+    }
+
+    #[test]
+    fn into_raw_empty() {
+        let text: AsciiText<16> = AsciiText::empty();
+        let raw: [u8; 16] = text.into_raw();
+        assert_eq!(raw, [0u8; 16]);
+    }
+
+    #[test]
+    fn into_raw_roundtrip() {
+        let original: AsciiText<16> = AsciiText::try_from("Test").unwrap();
+        let raw: [u8; 16] = original.into_raw();
+        let recovered: AsciiText<16> = AsciiText::try_from_raw(raw).unwrap();
+        assert_eq!(original, recovered);
+    }
+
+    // =========================================================================
     // Capacity conversion tests
     // =========================================================================
 
@@ -1150,7 +1292,10 @@ mod tests {
     fn tighten_too_long() {
         let large: AsciiText<32> = AsciiText::try_from("this is too long").unwrap();
         let result = large.tighten::<8>();
-        assert!(matches!(result, Err(AsciiError::TooLong { len: 16, cap: 8 })));
+        assert!(matches!(
+            result,
+            Err(AsciiError::TooLong { len: 16, cap: 8 })
+        ));
     }
 
     #[test]

@@ -722,6 +722,29 @@ impl<const CAP: usize> AsciiString<CAP> {
         self.header
     }
 
+    /// Returns the full fixed-size buffer.
+    ///
+    /// The first `self.len()` bytes contain the string content.
+    /// Remaining bytes are zero-padded. Useful for wire formats that
+    /// require fixed-size fields.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let s: AsciiString<16> = AsciiString::try_from("hello")?;
+    /// let raw: [u8; 16] = s.into_raw();
+    /// assert_eq!(&raw[..5], b"hello");
+    /// assert_eq!(&raw[5..], &[0u8; 11]); // zero-padded
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn into_raw(self) -> [u8; CAP] {
+        self.data
+    }
+
     /// Returns the character at the given index, or `None` if out of bounds.
     ///
     /// # Example
@@ -877,7 +900,12 @@ impl<const CAP: usize> AsciiString<CAP> {
     #[inline]
     pub fn widen<const NEW_CAP: usize>(self) -> AsciiString<NEW_CAP> {
         const { assert!(NEW_CAP % 8 == 0, "NEW_CAP must be a multiple of 8") }
-        const { assert!(NEW_CAP >= CAP, "widen requires NEW_CAP >= CAP; use tighten for smaller") }
+        const {
+            assert!(
+                NEW_CAP >= CAP,
+                "widen requires NEW_CAP >= CAP; use tighten for smaller"
+            );
+        }
 
         let mut data = [0u8; NEW_CAP];
         // Copy content bytes (rest is already zeroed)
@@ -916,7 +944,12 @@ impl<const CAP: usize> AsciiString<CAP> {
     #[inline]
     pub fn tighten<const NEW_CAP: usize>(self) -> Result<AsciiString<NEW_CAP>, crate::AsciiError> {
         const { assert!(NEW_CAP % 8 == 0, "NEW_CAP must be a multiple of 8") }
-        const { assert!(NEW_CAP <= CAP, "tighten requires NEW_CAP <= CAP; use widen for larger") }
+        const {
+            assert!(
+                NEW_CAP <= CAP,
+                "tighten requires NEW_CAP <= CAP; use widen for larger"
+            );
+        }
 
         if self.len() > NEW_CAP {
             return Err(crate::AsciiError::TooLong {
@@ -3920,7 +3953,10 @@ mod tests {
     fn tighten_too_long() {
         let large: AsciiString<32> = AsciiString::try_from("this is too long").unwrap();
         let result = large.tighten::<8>();
-        assert!(matches!(result, Err(AsciiError::TooLong { len: 16, cap: 8 })));
+        assert!(matches!(
+            result,
+            Err(AsciiError::TooLong { len: 16, cap: 8 })
+        ));
     }
 
     #[test]
@@ -3938,6 +3974,40 @@ mod tests {
         let tightened: AsciiString<16> = widened.tighten().unwrap();
         assert_eq!(original, tightened);
         assert_eq!(original.header(), tightened.header());
+    }
+
+    // =========================================================================
+    // into_raw tests
+    // =========================================================================
+
+    #[test]
+    fn into_raw_basic() {
+        let s: AsciiString<16> = AsciiString::try_from("hello").unwrap();
+        let raw: [u8; 16] = s.into_raw();
+        assert_eq!(&raw[..5], b"hello");
+        assert_eq!(&raw[5..], &[0u8; 11]);
+    }
+
+    #[test]
+    fn into_raw_empty() {
+        let s: AsciiString<16> = AsciiString::empty();
+        let raw: [u8; 16] = s.into_raw();
+        assert_eq!(raw, [0u8; 16]);
+    }
+
+    #[test]
+    fn into_raw_full_capacity() {
+        let s: AsciiString<8> = AsciiString::try_from("12345678").unwrap();
+        let raw: [u8; 8] = s.into_raw();
+        assert_eq!(&raw, b"12345678");
+    }
+
+    #[test]
+    fn into_raw_roundtrip() {
+        let original: AsciiString<16> = AsciiString::try_from("test").unwrap();
+        let raw: [u8; 16] = original.into_raw();
+        let recovered: AsciiString<16> = AsciiString::try_from_raw(raw).unwrap();
+        assert_eq!(original, recovered);
     }
 
     // =========================================================================
