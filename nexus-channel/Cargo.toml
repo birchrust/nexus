@@ -11,7 +11,7 @@ keywords = ["spsc", "mpsc", "channel", "lock-free"]
 categories = ["concurrency", "data-structures"]
 
 [dependencies]
-nexus-queue = { path = "../nexus-queue" }
+nexus-queue = { version = "1.0" }
 crossbeam-utils.workspace = true
 
 [dev-dependencies]
