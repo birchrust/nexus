@@ -5,11 +5,11 @@
 
 use core::hash::{Hash, Hasher};
 
+use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::hash;
 use crate::simd;
 use crate::str_ref::AsciiStr;
-use crate::AsciiError;
 
 // =============================================================================
 // AsciiTextStr
@@ -336,11 +336,7 @@ impl AsciiTextStr {
     /// Returns a string slice with trailing ASCII whitespace removed.
     #[inline]
     pub fn trim_end(&self) -> &Self {
-        let end = self
-            .0
-            .iter()
-            .rposition(|&b| b != b' ')
-            .map_or(0, |i| i + 1);
+        let end = self.0.iter().rposition(|&b| b != b' ').map_or(0, |i| i + 1);
         // SAFETY: trimmed slice is still valid printable ASCII
         unsafe { Self::from_bytes_unchecked(&self.0[..end]) }
     }
@@ -647,7 +643,10 @@ impl<'de: 'a, 'a> serde::Deserialize<'de> for &'a AsciiTextStr {
             }
 
             #[inline]
-            fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                v: &'de str,
+            ) -> Result<Self::Value, E> {
                 AsciiTextStr::try_from_str(v).map_err(|e| match e {
                     AsciiError::NonPrintable { byte, pos } => E::custom(format_args!(
                         "non-printable ASCII byte 0x{:02X} at position {}",

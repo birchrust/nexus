@@ -19,13 +19,7 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
     // Process 8 bytes at a time - just check if any high bit is set
     while i + 8 <= bytes.len() {
         // SAFETY: We just checked that i + 8 <= bytes.len()
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         let mask = word & HI;
         if mask != 0 {
@@ -89,13 +83,7 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
     // Process 8 bytes at a time
     while i + 8 <= bytes.len() {
         // SAFETY: We just checked that i + 8 <= bytes.len()
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         let mask = has_non_printable(word);
         if mask != 0 {
@@ -190,18 +178,8 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     // Process 8 bytes at a time
     while i + 8 <= len {
         // SAFETY: We just checked that i + 8 <= len
-        let word_a = unsafe {
-            a.as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
-        let word_b = unsafe {
-            b.as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let word_a = unsafe { a.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
+        let word_b = unsafe { b.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
 
         if !eq_ignore_ascii_case_word(u64::from_ne_bytes(word_a), u64::from_ne_bytes(word_b)) {
             return false;
@@ -335,13 +313,7 @@ pub fn make_lowercase(bytes: &mut [u8]) {
     let mut i = 0;
     while i + 8 <= len {
         // SAFETY: We just checked that i + 8 <= len
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         let lower = to_lowercase_word(word);
 
@@ -402,13 +374,7 @@ pub fn make_uppercase(bytes: &mut [u8]) {
     let mut i = 0;
     while i + 8 <= len {
         // SAFETY: We just checked that i + 8 <= len
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         let upper = to_uppercase_word(word);
 
@@ -502,13 +468,7 @@ pub fn contains_control_chars(bytes: &[u8]) -> bool {
     let mut i = 0;
     while i + 8 <= len {
         // SAFETY: We just checked that i + 8 <= len
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         if has_control_chars_word(word) != 0 {
             return true;
@@ -560,13 +520,7 @@ pub fn is_all_printable(bytes: &[u8]) -> bool {
     let mut i = 0;
     while i + 8 <= len {
         // SAFETY: We just checked that i + 8 <= len
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         if has_non_printable(word) != 0 {
             return false;
@@ -827,7 +781,9 @@ mod tests {
     #[test]
     fn test_contains_control_chars_long() {
         // Test SWAR path (> 8 bytes)
-        assert!(!contains_control_chars(b"This is a long string without control chars"));
+        assert!(!contains_control_chars(
+            b"This is a long string without control chars"
+        ));
         assert!(contains_control_chars(b"This has a\x00null in the middle"));
         // DEL at position > 8
         assert!(contains_control_chars(b"12345678\x7F"));
@@ -878,7 +834,9 @@ mod tests {
     #[test]
     fn test_is_all_printable_long() {
         // Test SWAR path (> 8 bytes)
-        assert!(is_all_printable(b"This is a long string of printable chars"));
+        assert!(is_all_printable(
+            b"This is a long string of printable chars"
+        ));
         assert!(!is_all_printable(b"This has a\x00null in the middle"));
         // Non-printable at position > 8
         assert!(!is_all_printable(b"12345678\x7F"));
@@ -934,7 +892,11 @@ mod tests {
             // Also test same case
             let expected_same = eq_ignore_ascii_case_naive(&a, &a);
             let actual_same = eq_ignore_ascii_case(&a, &a);
-            assert_eq!(actual_same, expected_same, "same-case mismatch at len={}", len);
+            assert_eq!(
+                actual_same, expected_same,
+                "same-case mismatch at len={}",
+                len
+            );
         }
     }
 
@@ -943,14 +905,14 @@ mod tests {
         // Critical edge case: non-letters that differ by exactly 0x20
         // These should NOT be considered equal
         let pairs: &[(u8, u8)] = &[
-            (b'@', b'`'),   // 0x40 vs 0x60
-            (b'[', b'{'),   // 0x5B vs 0x7B
-            (b'\\', b'|'),  // 0x5C vs 0x7C
-            (b']', b'}'),   // 0x5D vs 0x7D
-            (b'^', b'~'),   // 0x5E vs 0x7E
-            (b'!', b'A'),   // 0x21 vs 0x41 - but 'A' IS a letter
-            (b'1', b'Q'),   // 0x31 vs 0x51 - 'Q' is letter, '1' is not
-            (b' ', b'@'),   // 0x20 vs 0x40
+            (b'@', b'`'),  // 0x40 vs 0x60
+            (b'[', b'{'),  // 0x5B vs 0x7B
+            (b'\\', b'|'), // 0x5C vs 0x7C
+            (b']', b'}'),  // 0x5D vs 0x7D
+            (b'^', b'~'),  // 0x5E vs 0x7E
+            (b'!', b'A'),  // 0x21 vs 0x41 - but 'A' IS a letter
+            (b'1', b'Q'),  // 0x31 vs 0x51 - 'Q' is letter, '1' is not
+            (b' ', b'@'),  // 0x20 vs 0x40
         ];
 
         for &(a, b) in pairs {
@@ -970,11 +932,7 @@ mod tests {
         for b in 0u8..=255 {
             let expected = contains_control_chars_naive(&[b]);
             let actual = contains_control_chars(&[b]);
-            assert_eq!(
-                actual, expected,
-                "mismatch for byte {:02x}",
-                b
-            );
+            assert_eq!(actual, expected, "mismatch for byte {:02x}", b);
         }
     }
 
@@ -1005,11 +963,7 @@ mod tests {
         for b in 0u8..=255 {
             let expected = is_all_printable_naive(&[b]);
             let actual = is_all_printable(&[b]);
-            assert_eq!(
-                actual, expected,
-                "mismatch for byte {:02x}",
-                b
-            );
+            assert_eq!(actual, expected, "mismatch for byte {:02x}", b);
         }
     }
 
@@ -1038,8 +992,8 @@ mod tests {
     fn test_is_all_printable_boundary_bytes() {
         // Test exact boundaries
         assert!(!is_all_printable(&[0x1F])); // Just below printable
-        assert!(is_all_printable(&[0x20]));  // First printable (space)
-        assert!(is_all_printable(&[0x7E]));  // Last printable (tilde)
+        assert!(is_all_printable(&[0x20])); // First printable (space)
+        assert!(is_all_printable(&[0x7E])); // Last printable (tilde)
         assert!(!is_all_printable(&[0x7F])); // DEL - not printable
         assert!(!is_all_printable(&[0x80])); // First non-ASCII
 
@@ -1057,10 +1011,10 @@ mod tests {
     #[test]
     fn test_contains_control_chars_boundary_bytes() {
         // Test exact boundaries
-        assert!(contains_control_chars(&[0x1F]));  // Last control char before space
+        assert!(contains_control_chars(&[0x1F])); // Last control char before space
         assert!(!contains_control_chars(&[0x20])); // Space - not control
         assert!(!contains_control_chars(&[0x7E])); // Tilde - not control
-        assert!(contains_control_chars(&[0x7F]));  // DEL - is control
+        assert!(contains_control_chars(&[0x7F])); // DEL - is control
         assert!(!contains_control_chars(&[0x80])); // Non-ASCII, but not "control" by our def
 
         // Verify against naive

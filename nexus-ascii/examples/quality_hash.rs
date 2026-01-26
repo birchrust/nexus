@@ -9,8 +9,8 @@
 //! cargo run --release --example quality_hash
 //! ```
 
-use nexus_ascii::hash::{hash, truncate_lower_48, truncate_upper_48};
 use nexus_ascii::AsciiString;
+use nexus_ascii::hash::{hash, truncate_lower_48, truncate_upper_48};
 use std::hash::{Hash, Hasher};
 
 const N_SAMPLES: usize = 1_000_000;
@@ -408,7 +408,9 @@ fn analyze_ascii_string_varying_lengths() -> f64 {
     for i in 0..samples {
         // Vary both content and length
         let len = (i % 30) + 1; // lengths 1-30
-        let input: String = (0..len).map(|j| (b'A' + ((i + j) % 26) as u8) as char).collect();
+        let input: String = (0..len)
+            .map(|j| (b'A' + ((i + j) % 26) as u8) as char)
+            .collect();
         let s: AsciiString<32> = AsciiString::try_from(input.as_str()).unwrap();
         let header = extract_header(&s);
 
@@ -551,7 +553,9 @@ fn validate_ascii_string_collisions() {
 
 /// Test with realistic trading symbol patterns.
 fn analyze_trading_symbols() -> f64 {
-    let bases = ["BTC", "ETH", "SOL", "AVAX", "MATIC", "DOGE", "XRP", "ADA", "DOT", "LINK"];
+    let bases = [
+        "BTC", "ETH", "SOL", "AVAX", "MATIC", "DOGE", "XRP", "ADA", "DOT", "LINK",
+    ];
     let quotes = ["USD", "USDT", "USDC", "EUR", "BTC", "ETH"];
     let suffixes = ["", "-PERP", "-SPOT", "-FUT", "-0329", "-0628"];
 
@@ -721,10 +725,7 @@ fn main() {
     // Bit distribution
     println!("=== HEADER BIT DISTRIBUTION (hash bits 0-47, ideal ≈ 0.5000) ===\n");
     let (min, max, std_dev) = analyze_ascii_string_bit_distribution();
-    println!(
-        "  min={:.4} max={:.4} std_dev={:.6}",
-        min, max, std_dev
-    );
+    println!("  min={:.4} max={:.4} std_dev={:.6}", min, max, std_dev);
     if std_dev < 0.01 {
         println!("  ✓ Excellent bit distribution");
     } else if std_dev < 0.02 {
@@ -754,7 +755,10 @@ fn main() {
     if collisions == 0 {
         println!("  ✓ No collisions in 1M unique strings");
     } else {
-        println!("  Note: {} collision(s) - acceptable with 48-bit hash", collisions);
+        println!(
+            "  Note: {} collision(s) - acceptable with 48-bit hash",
+            collisions
+        );
     }
 
     // Varying lengths

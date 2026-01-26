@@ -86,14 +86,16 @@ fn main() {
     let padded_7: [u8; 16] = *b"BTC-USD         ";
 
     bench_wide("try_from_right_padded (7B, space pad)", || {
-        let s: AsciiString<16> = AsciiString::try_from_right_padded(black_box(padded_7), b' ').unwrap();
+        let s: AsciiString<16> =
+            AsciiString::try_from_right_padded(black_box(padded_7), b' ').unwrap();
         s.len() as u64
     });
 
     let padded_20: [u8; 32] = *b"ORDER-ID-1234567890             ";
 
     bench_wide("try_from_right_padded (20B, space pad)", || {
-        let s: AsciiString<32> = AsciiString::try_from_right_padded(black_box(padded_20), b' ').unwrap();
+        let s: AsciiString<32> =
+            AsciiString::try_from_right_padded(black_box(padded_20), b' ').unwrap();
         s.len() as u64
     });
 

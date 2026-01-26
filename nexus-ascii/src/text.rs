@@ -2,12 +2,12 @@
 
 use core::hash::{Hash, Hasher};
 
+use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::simd;
 use crate::str_ref::AsciiStr;
 use crate::string::AsciiString;
 use crate::text_ref::AsciiTextStr;
-use crate::AsciiError;
 
 // =============================================================================
 // Printable Validation (const version for compile-time)

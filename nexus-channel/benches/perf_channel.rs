@@ -6,14 +6,14 @@
 
 use std::thread;
 
-use nexus_channel::channel;
+use nexus_channel::spsc::channel;
 
 const COUNT: u64 = 10_000_000;
 const CAPACITY: usize = 1024;
 const EXPECTED_SUM: u64 = COUNT * (COUNT - 1) / 2;
 
 /// 256-byte message for realistic trading system simulation
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C, align(64))]
 struct Message {
     sequence: u64,

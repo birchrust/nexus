@@ -46,7 +46,8 @@ fn main() {
     });
 
     bench_wide("AsciiText::try_from_bytes (20B)", || {
-        let t: AsciiText<32> = AsciiText::try_from_bytes(black_box(b"ORDER-ID-1234567890")).unwrap();
+        let t: AsciiText<32> =
+            AsciiText::try_from_bytes(black_box(b"ORDER-ID-1234567890")).unwrap();
         t.len() as u64
     });
 
@@ -138,11 +139,7 @@ fn main() {
     });
 
     bench_wide("AsciiText == AsciiString", || {
-        if black_box(t1) == black_box(s1) {
-            1
-        } else {
-            0
-        }
+        if black_box(t1) == black_box(s1) { 1 } else { 0 }
     });
 
     bench_wide("AsciiText == &str", || {

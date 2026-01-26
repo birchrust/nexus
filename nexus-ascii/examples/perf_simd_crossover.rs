@@ -12,7 +12,7 @@
 #[path = "_bench_utils.rs"]
 mod _bench_utils;
 
-use _bench_utils::{print_intro, rdtsc, percentile, ITERATIONS, WARMUP};
+use _bench_utils::{ITERATIONS, WARMUP, percentile, print_intro, rdtsc};
 use nexus_ascii::simd;
 use std::hint::black_box;
 
@@ -51,8 +51,8 @@ fn main() {
 
     // Test various lengths to find crossover
     let lengths = [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 20, 24, 28, 31, 32, 33,
-        40, 48, 56, 63, 64, 65, 80, 96, 112, 128,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 20, 24, 28, 31, 32, 33, 40, 48, 56,
+        63, 64, 65, 80, 96, 112, 128,
     ];
 
     println!("=== ASCII VALIDATION (simd::validate_ascii) ===\n");

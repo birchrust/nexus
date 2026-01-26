@@ -33,7 +33,11 @@ mod xxh3;
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
 mod xxh3_sse2;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
 mod xxh3_avx2;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]

@@ -31,9 +31,7 @@ fn main() {
     let s3: AsciiString<32> = AsciiString::try_from("ETH-USD").unwrap();
     let s4: AsciiString<32> = AsciiString::try_from("BTC").unwrap();
 
-    bench_wide("cmp() equal strings (7B)", || {
-        black_box(s1.cmp(&s2)) as u64
-    });
+    bench_wide("cmp() equal strings (7B)", || black_box(s1.cmp(&s2)) as u64);
 
     bench_wide("cmp() different strings (7B)", || {
         black_box(s1.cmp(&s3)) as u64
@@ -132,12 +130,14 @@ fn main() {
     });
 
     // 72B strings: above the 64B SIMD crossover threshold
-    let xl_upper: AsciiString<128> =
-        AsciiString::try_from("ORDER-ID-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-12345")
-            .unwrap();
-    let xl_lower: AsciiString<128> =
-        AsciiString::try_from("order-id-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-12345")
-            .unwrap();
+    let xl_upper: AsciiString<128> = AsciiString::try_from(
+        "ORDER-ID-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-12345",
+    )
+    .unwrap();
+    let xl_lower: AsciiString<128> = AsciiString::try_from(
+        "order-id-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-12345",
+    )
+    .unwrap();
 
     bench_wide("eq_ignore_ascii_case() same case (69B)", || {
         if black_box(&xl_upper).eq_ignore_ascii_case(black_box(&xl_upper)) {

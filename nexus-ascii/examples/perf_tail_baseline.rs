@@ -150,7 +150,9 @@ fn main() {
     });
 
     bench_wide("[u8].iter().any() control check 7B", || {
-        black_box(bytes_clean).iter().any(|&b| b < 0x20 || b == 0x7F) as u64
+        black_box(bytes_clean)
+            .iter()
+            .any(|&b| b < 0x20 || b == 0x7F) as u64
     });
 
     bench_wide("[u8].iter().any() control check (has ctrl)", || {

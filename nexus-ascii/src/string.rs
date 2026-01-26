@@ -37,13 +37,7 @@ fn find_null_byte_scalar(bytes: &[u8]) -> usize {
     // Process 8 bytes at a time
     while i + 8 <= bytes.len() {
         // SAFETY: We just checked that i + 8 <= bytes.len()
-        let chunk: [u8; 8] = unsafe {
-            bytes
-                .as_ptr()
-                .add(i)
-                .cast::<[u8; 8]>()
-                .read_unaligned()
-        };
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
         let mask = has_null_byte(word);
         if mask != 0 {
@@ -584,10 +578,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     pub fn try_from_right_padded(mut buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
         const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
         // Find length by stripping trailing pad bytes
-        let len = buffer
-            .iter()
-            .rposition(|&b| b != pad)
-            .map_or(0, |i| i + 1);
+        let len = buffer.iter().rposition(|&b| b != pad).map_or(0, |i| i + 1);
 
         // Fast ASCII validation
         // Use bounded version since len <= CAP
@@ -1652,7 +1643,10 @@ impl<const CAP: usize> AsciiString<CAP> {
         // Calculate new length
         let new_len = src.len() - from.len() + to.len();
         if new_len > CAP {
-            return Err(AsciiError::TooLong { len: new_len, cap: CAP });
+            return Err(AsciiError::TooLong {
+                len: new_len,
+                cap: CAP,
+            });
         }
 
         let mut result = [0u8; CAP];
@@ -1838,12 +1832,10 @@ impl<const CAP: usize> Ord for AsciiString<CAP> {
         let mut i = 0;
         while i < CAP {
             // SAFETY: CAP % 8 == 0 guarantees i + 8 <= CAP
-            let a = u64::from_be_bytes(unsafe {
-                self.data.as_ptr().add(i).cast::<[u8; 8]>().read()
-            });
-            let b = u64::from_be_bytes(unsafe {
-                other.data.as_ptr().add(i).cast::<[u8; 8]>().read()
-            });
+            let a =
+                u64::from_be_bytes(unsafe { self.data.as_ptr().add(i).cast::<[u8; 8]>().read() });
+            let b =
+                u64::from_be_bytes(unsafe { other.data.as_ptr().add(i).cast::<[u8; 8]>().read() });
             match a.cmp(&b) {
                 core::cmp::Ordering::Equal => {}
                 ord => return ord,
@@ -3656,9 +3648,17 @@ mod tests {
         println!("Header C (AAAAA): 0x{:016X}", c.header);
         println!();
         println!("Upper 16 bits (length): A={}, B={}", len_a, len_b);
-        println!("Lower 48 bits (hash):   A=0x{:012X}, B=0x{:012X}", hash_a, hash_b);
+        println!(
+            "Lower 48 bits (hash):   A=0x{:012X}, B=0x{:012X}",
+            hash_a, hash_b
+        );
         println!();
-        println!("Bucket (& 1023): A={}, B={}, C={}", a.header & 1023, b.header & 1023, c.header & 1023);
+        println!(
+            "Bucket (& 1023): A={}, B={}, C={}",
+            a.header & 1023,
+            b.header & 1023,
+            c.header & 1023
+        );
         println!();
 
         // Now A and B should have different buckets despite same length

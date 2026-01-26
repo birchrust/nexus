@@ -7,7 +7,7 @@
 
 use std::thread;
 
-use nexus_channel::channel;
+use nexus_channel::spsc::channel;
 
 const WARMUP: u64 = 10_000;
 const SAMPLES: u64 = 100_000;

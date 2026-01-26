@@ -280,8 +280,8 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::scalar;
+    use super::*;
 
     // -------------------------------------------------------------------------
     // ASCII validation

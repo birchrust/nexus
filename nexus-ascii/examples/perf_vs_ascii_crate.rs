@@ -26,8 +26,7 @@ fn main() {
 
     // 7B - typical trading symbol
     bench_wide("nexus: AsciiString<16>::try_from (7B)", || {
-        let s =
-            nexus_ascii::AsciiString::<16>::try_from(black_box("BTC-USD")).unwrap();
+        let s = nexus_ascii::AsciiString::<16>::try_from(black_box("BTC-USD")).unwrap();
         s.len() as u64
     });
     bench_wide("ascii: AsciiString::from_ascii (7B)", || {
@@ -43,13 +42,11 @@ fn main() {
 
     // 20B - order ID
     bench_wide("nexus: AsciiString<32>::try_from (20B)", || {
-        let s = nexus_ascii::AsciiString::<32>::try_from(black_box("order-id-1234567890"))
-            .unwrap();
+        let s = nexus_ascii::AsciiString::<32>::try_from(black_box("order-id-1234567890")).unwrap();
         s.len() as u64
     });
     bench_wide("ascii: AsciiString::from_ascii (20B)", || {
-        let s =
-            ascii::AsciiString::from_ascii(black_box("order-id-1234567890")).unwrap();
+        let s = ascii::AsciiString::from_ascii(black_box("order-id-1234567890")).unwrap();
         s.len() as u64
     });
     bench_wide("std: String::from (20B)", || {
@@ -181,8 +178,7 @@ fn main() {
         black_box(black_box(&ns38).to_ascii_uppercase()).len() as u64
     });
 
-    let as38 =
-        ascii::AsciiString::from_ascii("abcdefghijklmnopqrstuvwxyz-0123456789a").unwrap();
+    let as38 = ascii::AsciiString::from_ascii("abcdefghijklmnopqrstuvwxyz-0123456789a").unwrap();
     bench_wide("ascii: to_ascii_uppercase (38B)", || {
         let mut s = black_box(&as38).clone();
         s.make_ascii_uppercase();
@@ -224,9 +220,7 @@ fn main() {
     });
 
     bench_wide("std: eq_ignore_ascii_case (7B)", || {
-        black_box(
-            black_box("BTC-USD").eq_ignore_ascii_case(black_box("btc-usd")),
-        ) as u64
+        black_box(black_box("BTC-USD").eq_ignore_ascii_case(black_box("btc-usd"))) as u64
     });
 
     println!();
@@ -253,9 +247,7 @@ fn main() {
     });
 
     bench_wide("std: eq_ignore_ascii_case (38B)", || {
-        black_box(
-            black_box(long_upper).eq_ignore_ascii_case(black_box(long_lower)),
-        ) as u64
+        black_box(black_box(long_upper).eq_ignore_ascii_case(black_box(long_lower))) as u64
     });
 
     // =========================================================================
@@ -294,10 +286,8 @@ fn main() {
     let mut nmap: std::collections::HashMap<nexus_ascii::AsciiString<32>, u64> =
         std::collections::HashMap::new();
     for i in 0..100u64 {
-        let key = nexus_ascii::AsciiString::<32>::try_from(
-            format!("key-{:04}", i).as_str(),
-        )
-        .unwrap();
+        let key =
+            nexus_ascii::AsciiString::<32>::try_from(format!("key-{:04}", i).as_str()).unwrap();
         nmap.insert(key, i);
     }
     let nkey = nexus_ascii::AsciiString::<32>::try_from("key-0050").unwrap();

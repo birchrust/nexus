@@ -72,7 +72,11 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
         avx512::validate_ascii(bytes)
     }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512bw")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         avx2::validate_ascii(bytes)
     }
@@ -116,7 +120,11 @@ pub fn validate_ascii_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), (u8,
         }
     }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512bw")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         if CAP < 16 {
             scalar::validate_ascii(bytes)
@@ -173,7 +181,11 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
         avx512::validate_printable(bytes)
     }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512bw")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         avx2::validate_printable(bytes)
     }
@@ -217,7 +229,11 @@ pub fn validate_printable_bounded<const CAP: usize>(bytes: &[u8]) -> Result<(), 
         }
     }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512bw")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
     {
         if CAP < 16 {
             scalar::validate_printable(bytes)

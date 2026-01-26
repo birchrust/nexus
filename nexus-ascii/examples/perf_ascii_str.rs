@@ -91,7 +91,9 @@ fn main() {
 
     bench("len()", || black_box(ascii_str).len() as u64);
 
-    bench("as_bytes()", || black_box(ascii_str).as_bytes().len() as u64);
+    bench("as_bytes()", || {
+        black_box(ascii_str).as_bytes().len() as u64
+    });
 
     bench("as_str()", || black_box(ascii_str).as_str().len() as u64);
 
@@ -100,15 +102,11 @@ fn main() {
     });
 
     bench("first()", || {
-        black_box(ascii_str)
-            .first()
-            .map_or(0, |c| c.as_u8() as u64)
+        black_box(ascii_str).first().map_or(0, |c| c.as_u8() as u64)
     });
 
     bench("last()", || {
-        black_box(ascii_str)
-            .last()
-            .map_or(0, |c| c.as_u8() as u64)
+        black_box(ascii_str).last().map_or(0, |c| c.as_u8() as u64)
     });
 
     // =========================================================================
@@ -180,9 +178,7 @@ fn main() {
     let str_ref: &str = "BTC-USD";
     let byte_slice: &[u8] = b"BTC-USD";
 
-    bench("&str.len() (baseline)", || {
-        black_box(str_ref).len() as u64
-    });
+    bench("&str.len() (baseline)", || black_box(str_ref).len() as u64);
 
     bench("&[u8].len() (baseline)", || {
         black_box(byte_slice).len() as u64

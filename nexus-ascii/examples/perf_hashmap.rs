@@ -18,12 +18,9 @@ use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
 use std::hint::black_box;
 
-type NoHashMap<const CAP: usize, V> =
-    HashMap<AsciiString<CAP>, V, BuildNoHashHasher<u64>>;
-type AHashMap<const CAP: usize, V> =
-    HashMap<AsciiString<CAP>, V, ahash::RandomState>;
-type FxHashMap<const CAP: usize, V> =
-    HashMap<AsciiString<CAP>, V, FxBuildHasher>;
+type NoHashMap<const CAP: usize, V> = HashMap<AsciiString<CAP>, V, BuildNoHashHasher<u64>>;
+type AHashMap<const CAP: usize, V> = HashMap<AsciiString<CAP>, V, ahash::RandomState>;
+type FxHashMap<const CAP: usize, V> = HashMap<AsciiString<CAP>, V, FxBuildHasher>;
 
 fn main() {
     print_intro("HASHMAP IDENTITY HASHING BENCHMARK");
@@ -95,10 +92,9 @@ fn run_get_hit(size: usize) {
     }
     let lookup_key: AsciiString<32> = make_key(size / 2);
 
-    bench_wide(
-        &format!("nohash: get (n={})", size),
-        || black_box(*black_box(&nohash_map).get(black_box(&lookup_key)).unwrap()),
-    );
+    bench_wide(&format!("nohash: get (n={})", size), || {
+        black_box(*black_box(&nohash_map).get(black_box(&lookup_key)).unwrap())
+    });
 
     // Default hasher (SipHash)
     let mut default_map: HashMap<AsciiString<32>, u64> = HashMap::with_capacity(size);
@@ -106,10 +102,9 @@ fn run_get_hit(size: usize) {
         default_map.insert(make_key(i), i as u64);
     }
 
-    bench_wide(
-        &format!("default: get (n={})", size),
-        || black_box(*black_box(&default_map).get(black_box(&lookup_key)).unwrap()),
-    );
+    bench_wide(&format!("default: get (n={})", size), || {
+        black_box(*black_box(&default_map).get(black_box(&lookup_key)).unwrap())
+    });
 
     // ahash
     let mut ahash_map: AHashMap<32, u64> =
@@ -118,22 +113,19 @@ fn run_get_hit(size: usize) {
         ahash_map.insert(make_key(i), i as u64);
     }
 
-    bench_wide(
-        &format!("ahash: get (n={})", size),
-        || black_box(*black_box(&ahash_map).get(black_box(&lookup_key)).unwrap()),
-    );
+    bench_wide(&format!("ahash: get (n={})", size), || {
+        black_box(*black_box(&ahash_map).get(black_box(&lookup_key)).unwrap())
+    });
 
     // fxhash
-    let mut fx_map: FxHashMap<32, u64> =
-        HashMap::with_capacity_and_hasher(size, FxBuildHasher);
+    let mut fx_map: FxHashMap<32, u64> = HashMap::with_capacity_and_hasher(size, FxBuildHasher);
     for i in 0..size {
         fx_map.insert(make_key(i), i as u64);
     }
 
-    bench_wide(
-        &format!("fxhash: get (n={})", size),
-        || black_box(*black_box(&fx_map).get(black_box(&lookup_key)).unwrap()),
-    );
+    bench_wide(&format!("fxhash: get (n={})", size), || {
+        black_box(*black_box(&fx_map).get(black_box(&lookup_key)).unwrap())
+    });
 
     // std String with default hasher
     let mut string_map: HashMap<String, u64> = HashMap::with_capacity(size);
@@ -142,10 +134,9 @@ fn run_get_hit(size: usize) {
     }
     let string_key = format!("key-{:06}", size / 2);
 
-    bench_wide(
-        &format!("String: get (n={})", size),
-        || black_box(*black_box(&string_map).get(black_box(&string_key)).unwrap()),
-    );
+    bench_wide(&format!("String: get (n={})", size), || {
+        black_box(*black_box(&string_map).get(black_box(&string_key)).unwrap())
+    });
 }
 
 fn run_get_miss(size: usize) {
@@ -156,20 +147,18 @@ fn run_get_miss(size: usize) {
     }
     let miss_key: AsciiString<32> = AsciiString::try_from("nonexistent-key!").unwrap();
 
-    bench_wide(
-        &format!("nohash: get miss (n={})", size),
-        || black_box(black_box(&nohash_map).get(black_box(&miss_key))).is_some() as u64,
-    );
+    bench_wide(&format!("nohash: get miss (n={})", size), || {
+        black_box(black_box(&nohash_map).get(black_box(&miss_key))).is_some() as u64
+    });
 
     let mut default_map: HashMap<AsciiString<32>, u64> = HashMap::with_capacity(size);
     for i in 0..size {
         default_map.insert(make_key(i), i as u64);
     }
 
-    bench_wide(
-        &format!("default: get miss (n={})", size),
-        || black_box(black_box(&default_map).get(black_box(&miss_key))).is_some() as u64,
-    );
+    bench_wide(&format!("default: get miss (n={})", size), || {
+        black_box(black_box(&default_map).get(black_box(&miss_key))).is_some() as u64
+    });
 
     // ahash
     let mut ahash_map: AHashMap<32, u64> =
@@ -178,22 +167,19 @@ fn run_get_miss(size: usize) {
         ahash_map.insert(make_key(i), i as u64);
     }
 
-    bench_wide(
-        &format!("ahash: get miss (n={})", size),
-        || black_box(black_box(&ahash_map).get(black_box(&miss_key))).is_some() as u64,
-    );
+    bench_wide(&format!("ahash: get miss (n={})", size), || {
+        black_box(black_box(&ahash_map).get(black_box(&miss_key))).is_some() as u64
+    });
 
     // fxhash
-    let mut fx_map: FxHashMap<32, u64> =
-        HashMap::with_capacity_and_hasher(size, FxBuildHasher);
+    let mut fx_map: FxHashMap<32, u64> = HashMap::with_capacity_and_hasher(size, FxBuildHasher);
     for i in 0..size {
         fx_map.insert(make_key(i), i as u64);
     }
 
-    bench_wide(
-        &format!("fxhash: get miss (n={})", size),
-        || black_box(black_box(&fx_map).get(black_box(&miss_key))).is_some() as u64,
-    );
+    bench_wide(&format!("fxhash: get miss (n={})", size), || {
+        black_box(black_box(&fx_map).get(black_box(&miss_key))).is_some() as u64
+    });
 
     // std String
     let mut string_map: HashMap<String, u64> = HashMap::with_capacity(size);
@@ -202,10 +188,9 @@ fn run_get_miss(size: usize) {
     }
     let string_miss = String::from("nonexistent-key!");
 
-    bench_wide(
-        &format!("String: get miss (n={})", size),
-        || black_box(black_box(&string_map).get(black_box(&string_miss))).is_some() as u64,
-    );
+    bench_wide(&format!("String: get miss (n={})", size), || {
+        black_box(black_box(&string_map).get(black_box(&string_miss))).is_some() as u64
+    });
 }
 
 fn run_insert_overwrite(size: usize) {
@@ -220,28 +205,22 @@ fn run_insert_overwrite(size: usize) {
     for (i, k) in keys.iter().enumerate() {
         nohash_map.insert(*k, i as u64);
     }
-    bench_raw_wide(
-        &format!("nohash: overwrite (n={})", size),
-        || {
-            let start = rdtsc();
-            black_box(nohash_map.insert(overwrite_key, black_box(42u64)));
-            rdtsc().wrapping_sub(start)
-        },
-    );
+    bench_raw_wide(&format!("nohash: overwrite (n={})", size), || {
+        let start = rdtsc();
+        black_box(nohash_map.insert(overwrite_key, black_box(42u64)));
+        rdtsc().wrapping_sub(start)
+    });
 
     // default hasher
     let mut default_map: HashMap<AsciiString<32>, u64> = HashMap::with_capacity(size);
     for (i, k) in keys.iter().enumerate() {
         default_map.insert(*k, i as u64);
     }
-    bench_raw_wide(
-        &format!("default: overwrite (n={})", size),
-        || {
-            let start = rdtsc();
-            black_box(default_map.insert(overwrite_key, black_box(42u64)));
-            rdtsc().wrapping_sub(start)
-        },
-    );
+    bench_raw_wide(&format!("default: overwrite (n={})", size), || {
+        let start = rdtsc();
+        black_box(default_map.insert(overwrite_key, black_box(42u64)));
+        rdtsc().wrapping_sub(start)
+    });
 
     // ahash
     let mut ahash_map: AHashMap<32, u64> =
@@ -249,43 +228,33 @@ fn run_insert_overwrite(size: usize) {
     for (i, k) in keys.iter().enumerate() {
         ahash_map.insert(*k, i as u64);
     }
-    bench_raw_wide(
-        &format!("ahash: overwrite (n={})", size),
-        || {
-            let start = rdtsc();
-            black_box(ahash_map.insert(overwrite_key, black_box(42u64)));
-            rdtsc().wrapping_sub(start)
-        },
-    );
+    bench_raw_wide(&format!("ahash: overwrite (n={})", size), || {
+        let start = rdtsc();
+        black_box(ahash_map.insert(overwrite_key, black_box(42u64)));
+        rdtsc().wrapping_sub(start)
+    });
 
     // fxhash
-    let mut fx_map: FxHashMap<32, u64> =
-        HashMap::with_capacity_and_hasher(size, FxBuildHasher);
+    let mut fx_map: FxHashMap<32, u64> = HashMap::with_capacity_and_hasher(size, FxBuildHasher);
     for (i, k) in keys.iter().enumerate() {
         fx_map.insert(*k, i as u64);
     }
-    bench_raw_wide(
-        &format!("fxhash: overwrite (n={})", size),
-        || {
-            let start = rdtsc();
-            black_box(fx_map.insert(overwrite_key, black_box(42u64)));
-            rdtsc().wrapping_sub(start)
-        },
-    );
+    bench_raw_wide(&format!("fxhash: overwrite (n={})", size), || {
+        let start = rdtsc();
+        black_box(fx_map.insert(overwrite_key, black_box(42u64)));
+        rdtsc().wrapping_sub(start)
+    });
 
     // String
     let mut string_map: HashMap<String, u64> = HashMap::with_capacity(size);
     for (i, k) in string_keys.iter().enumerate() {
         string_map.insert(k.clone(), i as u64);
     }
-    bench_raw_wide(
-        &format!("String: overwrite (n={})", size),
-        || {
-            let start = rdtsc();
-            black_box(string_map.insert(string_overwrite.clone(), black_box(42u64)));
-            rdtsc().wrapping_sub(start)
-        },
-    );
+    bench_raw_wide(&format!("String: overwrite (n={})", size), || {
+        let start = rdtsc();
+        black_box(string_map.insert(string_overwrite.clone(), black_box(42u64)));
+        rdtsc().wrapping_sub(start)
+    });
 }
 
 fn run_insert_new(capacity: usize) {
@@ -314,8 +283,7 @@ fn run_insert_new(capacity: usize) {
         );
 
         // default hasher
-        let mut default_map: HashMap<AsciiString<32>, u64> =
-            HashMap::with_capacity(capacity);
+        let mut default_map: HashMap<AsciiString<32>, u64> = HashMap::with_capacity(capacity);
         for (i, k) in keys.iter().enumerate() {
             default_map.insert(*k, i as u64);
         }
@@ -425,8 +393,7 @@ fn run_get_hit_by_cap<const CAP: usize>(size: usize, key_len: usize) {
         || black_box(*black_box(&ahash_map).get(black_box(&lookup)).unwrap()),
     );
 
-    let mut fx_map: FxHashMap<CAP, u64> =
-        HashMap::with_capacity_and_hasher(size, FxBuildHasher);
+    let mut fx_map: FxHashMap<CAP, u64> = HashMap::with_capacity_and_hasher(size, FxBuildHasher);
     for i in 0..size {
         let key: AsciiString<CAP> =
             AsciiString::try_from(format!("key-{:06}", i).as_str()).unwrap();

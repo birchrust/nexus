@@ -81,7 +81,8 @@ fn main() {
     println!();
     print_header("TRUNCATION");
 
-    let long: AsciiString<64> = AsciiString::try_from("Hello, World! This is a longer string for truncation.").unwrap();
+    let long: AsciiString<64> =
+        AsciiString::try_from("Hello, World! This is a longer string for truncation.").unwrap();
     let long_len = long.len(); // 54
 
     bench("truncated (54B -> 5B)", || {
@@ -94,10 +95,13 @@ fn main() {
         t.len() as u64
     });
 
-    bench(&format!("truncated ({}B -> {}B, no change)", long_len, long_len), || {
-        let t = black_box(long).truncated(long_len);
-        t.len() as u64
-    });
+    bench(
+        &format!("truncated ({}B -> {}B, no change)", long_len, long_len),
+        || {
+            let t = black_box(long).truncated(long_len);
+            t.len() as u64
+        },
+    );
 
     bench("try_truncated (54B -> 5B)", || {
         let t = black_box(long).try_truncated(5);

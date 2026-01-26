@@ -1,11 +1,11 @@
 //! Mutable builder for constructing ASCII strings.
 
+use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::simd;
 use crate::str_ref::AsciiStr;
-use crate::string::{find_null_byte, AsciiString};
+use crate::string::{AsciiString, find_null_byte};
 use crate::text::AsciiText;
-use crate::AsciiError;
 
 // =============================================================================
 // AsciiStringBuilder
@@ -293,7 +293,10 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     /// ```
     #[inline]
     pub unsafe fn push_bytes_unchecked(&mut self, bytes: &[u8]) {
-        debug_assert!(bytes.len() <= self.remaining(), "bytes exceed remaining capacity");
+        debug_assert!(
+            bytes.len() <= self.remaining(),
+            "bytes exceed remaining capacity"
+        );
         debug_assert!(bytes.iter().all(|&b| b <= 127), "bytes contain non-ASCII");
 
         // SAFETY: Caller guarantees bytes fit
@@ -452,7 +455,10 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     #[inline]
     pub unsafe fn push_raw_unchecked<const N: usize>(&mut self, buffer: [u8; N]) {
         let content_len = find_null_byte(&buffer);
-        debug_assert!(content_len <= self.remaining(), "content exceeds remaining capacity");
+        debug_assert!(
+            content_len <= self.remaining(),
+            "content exceeds remaining capacity"
+        );
         debug_assert!(
             buffer[..content_len].iter().all(|&b| b <= 127),
             "buffer contains non-ASCII"
@@ -681,7 +687,10 @@ mod tests {
     fn test_push_byte_invalid() {
         let mut builder: AsciiStringBuilder<8> = AsciiStringBuilder::new();
         let err = builder.push_byte(0xFF).unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidByte { byte: 0xFF, pos: 0 }));
+        assert!(matches!(
+            err,
+            AsciiError::InvalidByte { byte: 0xFF, pos: 0 }
+        ));
     }
 
     #[test]

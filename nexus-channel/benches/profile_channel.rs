@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hdrhistogram::Histogram;
-use nexus_channel::channel;
+use nexus_channel::spsc::channel;
 
 const WARMUP: usize = 1_000_000;
 const SAMPLES: usize = 100_000_000;

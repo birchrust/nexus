@@ -10,10 +10,8 @@ use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
 use std::hint::black_box;
 
-type NoHashMap<const CAP: usize, V> =
-    HashMap<AsciiString<CAP>, V, BuildNoHashHasher<u64>>;
-type FxHashMap<const CAP: usize, V> =
-    HashMap<AsciiString<CAP>, V, FxBuildHasher>;
+type NoHashMap<const CAP: usize, V> = HashMap<AsciiString<CAP>, V, BuildNoHashHasher<u64>>;
+type FxHashMap<const CAP: usize, V> = HashMap<AsciiString<CAP>, V, FxBuildHasher>;
 
 fn make_key<const CAP: usize>(i: usize) -> AsciiString<CAP> {
     AsciiString::try_from(format!("key-{:06}", i).as_str()).unwrap()
@@ -34,28 +32,21 @@ fn main() {
         for (i, k) in keys.iter().enumerate() {
             nohash_map.insert(*k, i as u64);
         }
-        bench_raw_wide(
-            &format!("nohash: overwrite (n={})", size),
-            || {
-                let start = rdtsc();
-                black_box(nohash_map.insert(overwrite_key, black_box(42u64)));
-                rdtsc().wrapping_sub(start)
-            },
-        );
+        bench_raw_wide(&format!("nohash: overwrite (n={})", size), || {
+            let start = rdtsc();
+            black_box(nohash_map.insert(overwrite_key, black_box(42u64)));
+            rdtsc().wrapping_sub(start)
+        });
 
-        let mut fx_map: FxHashMap<32, u64> =
-            HashMap::with_capacity_and_hasher(size, FxBuildHasher);
+        let mut fx_map: FxHashMap<32, u64> = HashMap::with_capacity_and_hasher(size, FxBuildHasher);
         for (i, k) in keys.iter().enumerate() {
             fx_map.insert(*k, i as u64);
         }
-        bench_raw_wide(
-            &format!("fxhash: overwrite (n={})", size),
-            || {
-                let start = rdtsc();
-                black_box(fx_map.insert(overwrite_key, black_box(42u64)));
-                rdtsc().wrapping_sub(start)
-            },
-        );
+        bench_raw_wide(&format!("fxhash: overwrite (n={})", size), || {
+            let start = rdtsc();
+            black_box(fx_map.insert(overwrite_key, black_box(42u64)));
+            rdtsc().wrapping_sub(start)
+        });
 
         println!();
     }

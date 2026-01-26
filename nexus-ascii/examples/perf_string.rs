@@ -39,8 +39,7 @@ fn main() {
     });
 
     bench("try_from (20B)", || {
-        let s: AsciiString<32> =
-            AsciiString::try_from(black_box("ABCDEFGHIJ1234567890")).unwrap();
+        let s: AsciiString<32> = AsciiString::try_from(black_box("ABCDEFGHIJ1234567890")).unwrap();
         s.header()
     });
 
@@ -52,7 +51,8 @@ fn main() {
 
     // from_bytes_unchecked
     bench("from_bytes_unchecked (7B)", || {
-        let s: AsciiString<32> = unsafe { AsciiString::from_bytes_unchecked(black_box(b"BTC-USD")) };
+        let s: AsciiString<32> =
+            unsafe { AsciiString::from_bytes_unchecked(black_box(b"BTC-USD")) };
         s.header()
     });
 
@@ -68,38 +68,22 @@ fn main() {
     let s4: AsciiString<32> = AsciiString::try_from("BTC").unwrap();
 
     bench("eq (same content)", || {
-        if black_box(s1) == black_box(s2) {
-            1
-        } else {
-            0
-        }
+        if black_box(s1) == black_box(s2) { 1 } else { 0 }
     });
 
     bench("eq (different content)", || {
-        if black_box(s1) == black_box(s3) {
-            1
-        } else {
-            0
-        }
+        if black_box(s1) == black_box(s3) { 1 } else { 0 }
     });
 
     bench("eq (different length)", || {
-        if black_box(s1) == black_box(s4) {
-            1
-        } else {
-            0
-        }
+        if black_box(s1) == black_box(s4) { 1 } else { 0 }
     });
 
     // Baseline: raw u64 comparison (what our header compare should match)
     let h1 = s1.header();
     let h2 = s2.header();
     bench("baseline: u64 == u64", || {
-        if black_box(h1) == black_box(h2) {
-            1
-        } else {
-            0
-        }
+        if black_box(h1) == black_box(h2) { 1 } else { 0 }
     });
 
     // =========================================================================

@@ -5,10 +5,10 @@
 
 use core::hash::{Hash, Hasher};
 
+use crate::AsciiError;
 use crate::char::AsciiChar;
 use crate::hash;
 use crate::simd;
-use crate::AsciiError;
 
 // =============================================================================
 // AsciiStr
@@ -886,7 +886,10 @@ impl<'de: 'a, 'a> serde::Deserialize<'de> for &'a AsciiStr {
             }
 
             #[inline]
-            fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                v: &'de str,
+            ) -> Result<Self::Value, E> {
                 AsciiStr::try_from_str(v).map_err(|e| match e {
                     AsciiError::InvalidByte { byte, pos } => E::custom(format_args!(
                         "invalid ASCII byte 0x{:02X} at position {}",

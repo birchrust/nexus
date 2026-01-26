@@ -111,8 +111,8 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::scalar;
+    use super::*;
 
     // -------------------------------------------------------------------------
     // ASCII validation
