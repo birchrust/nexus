@@ -218,58 +218,66 @@ impl<T> Producer<T> {
     ///
     /// Returns `Err(Full(value))` if the queue is full, returning ownership
     /// of the value to the caller for backpressure handling.
+    ///
+    /// This method spins internally on CAS contention but returns immediately
+    /// when the queue is actually full.
     #[inline]
     #[must_use = "push returns Err if full, which should be handled"]
     pub fn push(&mut self, value: T) -> Result<(), Full<T>> {
-        let mut backoff = Backoff::new();
+        let mut spin_count = 0u32;
 
         loop {
             let tail = self.shared.tail.load(Ordering::Relaxed);
 
-            // Fast path: check against cached head (avoids atomic load most of the time)
+            // Check against cached head (avoids atomic load most of the time)
             if tail.wrapping_sub(self.cached_head) >= self.capacity {
                 // Cache miss: refresh from shared head
                 self.cached_head = self.shared.head.load(Ordering::Acquire);
 
-                // Re-check with fresh head
+                // Re-check with fresh head - if still full, return error
                 if tail.wrapping_sub(self.cached_head) >= self.capacity {
                     return Err(Full(value));
                 }
             }
 
-            // Try to claim this slot via CAS
-            if self
-                .shared
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                // SAFETY: slots pointer is valid for the lifetime of shared.
-                let slot = unsafe { &*self.slots.add(tail & self.mask) };
-                let turn = tail / self.capacity;
+            // SAFETY: slots pointer is valid for the lifetime of shared.
+            let slot = unsafe { &*self.slots.add(tail & self.mask) };
+            let turn = tail / self.capacity;
+            let expected_stamp = turn * 2;
 
-                // Wait for slot to be ready (should be immediate if capacity check passed)
-                // This spin is rare - only happens if consumer hasn't caught up
-                while slot.turn.load(Ordering::Acquire) != turn * 2 {
-                    std::hint::spin_loop();
+            // Check if slot is ready BEFORE attempting CAS (Vyukov optimization)
+            let stamp = slot.turn.load(Ordering::Acquire);
+
+            if stamp == expected_stamp {
+                // Slot is ready - try to claim it
+                if self
+                    .shared
+                    .tail
+                    .compare_exchange_weak(
+                        tail,
+                        tail.wrapping_add(1),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    // SAFETY: We own this slot via successful CAS.
+                    unsafe { (*slot.data.get()).write(value) };
+
+                    // Signal ready for consumer: turn * 2 + 1
+                    slot.turn.store(turn * 2 + 1, Ordering::Release);
+
+                    return Ok(());
                 }
-
-                // SAFETY: We own this slot via successful CAS and turn check.
-                unsafe { (*slot.data.get()).write(value) };
-
-                // Signal ready for consumer: turn * 2 + 1
-                slot.turn.store(turn * 2 + 1, Ordering::Release);
-
-                return Ok(());
             }
 
-            // CAS failed, another producer won - back off and retry
-            backoff.spin();
+            // CAS failed or slot not ready - exponential backoff
+            // Cap at 6 to avoid excessive spinning (1, 2, 4, 8, 16, 32, 64 iterations)
+            let spins = 1 << spin_count.min(6);
+            for _ in 0..spins {
+                std::hint::spin_loop();
+            }
+            spin_count += 1;
         }
     }
 
@@ -361,25 +369,6 @@ impl<T> fmt::Debug for Consumer<T> {
     }
 }
 
-/// Simple exponential backoff for CAS retry loops.
-struct Backoff {
-    step: u32,
-}
-
-impl Backoff {
-    #[inline]
-    fn new() -> Self {
-        Self { step: 0 }
-    }
-
-    #[inline]
-    fn spin(&mut self) {
-        for _ in 0..(1 << self.step.min(6)) {
-            std::hint::spin_loop();
-        }
-        self.step += 1;
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -1,13 +1,13 @@
 [package]
 name = "nexus-channel"
-version = "1.0.0"
-description = "High-performance lock-free SPSC and MPSC channels for low-latency systems"
+version = "1.1.0"
+description = "High-performance lock-free SPSC channel for low-latency systems"
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["spsc", "mpsc", "channel", "lock-free"]
+keywords = ["spsc", "channel", "lock-free", "low-latency"]
 categories = ["concurrency", "data-structures"]
 
 [dependencies]
