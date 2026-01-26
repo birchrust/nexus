@@ -195,6 +195,10 @@ pub struct AsciiString<const CAP: usize> {
 // =============================================================================
 
 impl<const CAP: usize> AsciiString<CAP> {
+    /// Compile-time assertion that CAP is a multiple of 8.
+    /// Required for word-aligned SIMD operations.
+    const _CAP_ASSERT: () = assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
+
     /// Creates an empty ASCII string.
     ///
     /// # Example
@@ -208,7 +212,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub const fn empty() -> Self {
-        assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
+        let () = Self::_CAP_ASSERT; // Force compile-time check
         Self {
             header: EMPTY_HEADER,
             data: [0u8; CAP],
@@ -242,7 +246,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub const fn from_static(s: &'static str) -> Self {
-        assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
+        let () = Self::_CAP_ASSERT;
         assert!(CAP <= 128, "from_static only supports CAP <= 128");
 
         let bytes = s.as_bytes();
@@ -299,7 +303,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub const fn from_static_bytes(bytes: &'static [u8]) -> Self {
-        assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8");
+        let () = Self::_CAP_ASSERT;
         assert!(CAP <= 128, "from_static_bytes only supports CAP <= 128");
 
         let len = bytes.len();
@@ -351,7 +355,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
-        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
+        let () = Self::_CAP_ASSERT;
         debug_assert!(bytes.len() <= CAP, "bytes exceed capacity");
         debug_assert!(bytes.iter().all(|&b| b <= 127), "bytes contain non-ASCII");
 
@@ -376,7 +380,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// The hash is computed from `data[..len]`.
     #[inline]
     pub(crate) fn from_parts_unchecked(len: usize, mut data: [u8; CAP]) -> Self {
-        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
+        let () = Self::_CAP_ASSERT;
         debug_assert!(len <= CAP, "len exceeds capacity");
         debug_assert!(
             data[..len].iter().all(|&b| b <= 127),
@@ -451,6 +455,140 @@ impl<const CAP: usize> AsciiString<CAP> {
         Self::try_from_bytes(s.as_bytes())
     }
 
+    /// Creates an ASCII string from a `&str` without validation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    /// - All bytes are valid ASCII (0x00-0x7F)
+    /// - The string length does not exceed `CAP`
+    ///
+    /// Violating these invariants causes undefined behavior.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // SAFETY: "hello" is valid ASCII and fits in capacity
+    /// let s: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("hello") };
+    /// assert_eq!(s.as_str(), "hello");
+    /// ```
+    #[inline]
+    #[must_use]
+    pub unsafe fn from_str_unchecked(s: &str) -> Self {
+        // SAFETY: Caller guarantees valid ASCII and length
+        unsafe { Self::from_bytes_unchecked(s.as_bytes()) }
+    }
+
+    /// Creates an ASCII string from a null-terminated byte slice.
+    ///
+    /// Finds the first null byte (0x00) and uses content before it.
+    /// If no null byte is found, uses the entire slice (up to `CAP`).
+    ///
+    /// This is useful when you have a reference to a fixed-size buffer
+    /// (e.g., `&[u8; 40]`) and don't want to copy to an owned array.
+    ///
+    /// # Errors
+    ///
+    /// - [`AsciiError::InvalidByte`] if any byte before the null is not ASCII
+    /// - [`AsciiError::TooLong`] if content length exceeds `CAP`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // Reference to a fixed-size buffer (like from a wire format)
+    /// let buffer: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
+    /// let s: AsciiString<16> = AsciiString::try_from_null_terminated(buffer)?;
+    /// assert_eq!(s.as_str(), "BTC-USD");
+    /// assert_eq!(s.len(), 7);
+    ///
+    /// // Also works with regular slices
+    /// let slice: &[u8] = b"ETH-USD\0padding";
+    /// let s: AsciiString<16> = AsciiString::try_from_null_terminated(slice)?;
+    /// assert_eq!(s.as_str(), "ETH-USD");
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn try_from_null_terminated(bytes: &[u8]) -> Result<Self, AsciiError> {
+        let () = Self::_CAP_ASSERT;
+
+        // Find null terminator using SIMD-optimized search
+        let null_pos = find_null_byte(bytes);
+        let content = &bytes[..null_pos];
+
+        if content.len() > CAP {
+            return Err(AsciiError::TooLong {
+                len: content.len(),
+                cap: CAP,
+            });
+        }
+
+        // Validate ASCII
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(content) {
+            return Err(AsciiError::InvalidByte { byte, pos });
+        }
+
+        // Build the string
+        let mut data = [0u8; CAP];
+        data[..content.len()].copy_from_slice(content);
+
+        let hash = hash::hash::<CAP>(content);
+        let header = hash::pack_header(content.len() as u16, hash);
+
+        Ok(Self { header, data })
+    }
+
+    /// Creates an ASCII string from a reference to a fixed-size buffer.
+    ///
+    /// Similar to [`try_from_null_terminated`](Self::try_from_null_terminated),
+    /// but takes `&[u8; CAP]` instead of `&[u8]`. This allows the compiler to
+    /// skip bounds checking since the buffer size matches the capacity.
+    ///
+    /// The string length is determined by the position of the first null byte
+    /// (0x00). If no null byte is found, the entire buffer is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AsciiError::InvalidByte`] if any byte before the first null
+    /// is not valid ASCII (> 127).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// // Reference to a fixed-size buffer (zero-copy from wire format)
+    /// let buffer: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
+    /// let s: AsciiString<16> = AsciiString::try_from_ref(buffer)?;
+    /// assert_eq!(s.as_str(), "BTC-USD");
+    /// assert_eq!(s.len(), 7);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn try_from_ref(buffer: &[u8; CAP]) -> Result<Self, AsciiError> {
+        let () = Self::_CAP_ASSERT;
+
+        // Find null terminator - buffer is exactly CAP bytes
+        let len = find_null_byte(buffer);
+
+        // Validate ASCII (no bounds check needed - len <= CAP guaranteed)
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(&buffer[..len]) {
+            return Err(AsciiError::InvalidByte { byte, pos });
+        }
+
+        // Copy to internal buffer
+        let mut data = [0u8; CAP];
+        data[..len].copy_from_slice(&buffer[..len]);
+
+        let hash = hash::hash::<CAP>(&buffer[..len]);
+        let header = hash::pack_header(len as u16, hash);
+
+        Ok(Self { header, data })
+    }
+
     /// Creates an ASCII string from a fixed-size raw buffer.
     ///
     /// The string length is determined by the position of the first null byte
@@ -483,7 +621,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn try_from_raw(mut buffer: [u8; CAP]) -> Result<Self, AsciiError> {
-        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
+        let () = Self::_CAP_ASSERT;
         let len = find_null_byte(&buffer);
 
         // Fast ASCII validation for bytes before the null terminator
@@ -527,7 +665,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub unsafe fn from_raw_unchecked(mut buffer: [u8; CAP]) -> Self {
-        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
+        let () = Self::_CAP_ASSERT;
         let len = find_null_byte(&buffer);
 
         debug_assert!(
@@ -576,7 +714,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn try_from_right_padded(mut buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
-        const { assert!(CAP % 8 == 0, "AsciiString CAP must be a multiple of 8") }
+        let () = Self::_CAP_ASSERT;
         // Find length by stripping trailing pad bytes
         let len = buffer.iter().rposition(|&b| b != pad).map_or(0, |i| i + 1);
 
@@ -4007,6 +4145,144 @@ mod tests {
         let original: AsciiString<16> = AsciiString::try_from("test").unwrap();
         let raw: [u8; 16] = original.into_raw();
         let recovered: AsciiString<16> = AsciiString::try_from_raw(raw).unwrap();
+        assert_eq!(original, recovered);
+    }
+
+    // =========================================================================
+    // from_str_unchecked tests
+    // =========================================================================
+
+    #[test]
+    fn from_str_unchecked_basic() {
+        let s: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("hello") };
+        assert_eq!(s.as_str(), "hello");
+        assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn from_str_unchecked_empty() {
+        let s: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("") };
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn from_str_unchecked_matches_checked() {
+        let unchecked: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("test123") };
+        let checked: AsciiString<16> = AsciiString::try_from_str("test123").unwrap();
+        assert_eq!(unchecked, checked);
+        assert_eq!(unchecked.header(), checked.header());
+    }
+
+    // =========================================================================
+    // try_from_null_terminated tests
+    // =========================================================================
+
+    #[test]
+    fn try_from_null_terminated_basic() {
+        let buffer: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = AsciiString::try_from_null_terminated(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn try_from_null_terminated_slice() {
+        let slice: &[u8] = b"ETH-USD\0garbage";
+        let s: AsciiString<16> = AsciiString::try_from_null_terminated(slice).unwrap();
+        assert_eq!(s.as_str(), "ETH-USD");
+    }
+
+    #[test]
+    fn try_from_null_terminated_no_null() {
+        let buffer: &[u8] = b"BTCUSDT";
+        let s: AsciiString<16> = AsciiString::try_from_null_terminated(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTCUSDT");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn try_from_null_terminated_empty() {
+        let buffer: &[u8] = b"\0garbage";
+        let s: AsciiString<16> = AsciiString::try_from_null_terminated(buffer).unwrap();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn try_from_null_terminated_too_long() {
+        let buffer: &[u8] = b"this is way too long for the capacity";
+        let result = AsciiString::<8>::try_from_null_terminated(buffer);
+        assert!(matches!(result, Err(AsciiError::TooLong { .. })));
+    }
+
+    #[test]
+    fn try_from_null_terminated_invalid_ascii() {
+        let buffer: &[u8] = b"hello\xFF\0";
+        let result = AsciiString::<16>::try_from_null_terminated(buffer);
+        assert!(matches!(
+            result,
+            Err(AsciiError::InvalidByte { byte: 0xFF, .. })
+        ));
+    }
+
+    #[test]
+    fn try_from_null_terminated_roundtrip() {
+        let original: AsciiString<16> = AsciiString::try_from("test").unwrap();
+        let raw = original.into_raw();
+        let recovered: AsciiString<16> = AsciiString::try_from_null_terminated(&raw).unwrap();
+        assert_eq!(original, recovered);
+    }
+
+    // =========================================================================
+    // try_from_ref tests
+    // =========================================================================
+
+    #[test]
+    fn try_from_ref_basic() {
+        let buffer: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = AsciiString::try_from_ref(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+        assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn try_from_ref_no_null() {
+        let buffer: &[u8; 8] = b"BTCUSDT!";
+        let s: AsciiString<8> = AsciiString::try_from_ref(buffer).unwrap();
+        assert_eq!(s.as_str(), "BTCUSDT!");
+        assert_eq!(s.len(), 8);
+    }
+
+    #[test]
+    fn try_from_ref_empty() {
+        let buffer: &[u8; 16] = b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+        let s: AsciiString<16> = AsciiString::try_from_ref(buffer).unwrap();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn try_from_ref_invalid_ascii() {
+        let buffer: &[u8; 16] = b"hello\xFF\0\0\0\0\0\0\0\0\0\0";
+        let result = AsciiString::<16>::try_from_ref(buffer);
+        assert!(matches!(
+            result,
+            Err(AsciiError::InvalidByte { byte: 0xFF, .. })
+        ));
+    }
+
+    #[test]
+    fn try_from_ref_matches_try_from_null_terminated() {
+        let buffer: &[u8; 16] = b"test123\0\0\0\0\0\0\0\0\0";
+        let from_ref: AsciiString<16> = AsciiString::try_from_ref(buffer).unwrap();
+        let from_slice: AsciiString<16> = AsciiString::try_from_null_terminated(buffer).unwrap();
+        assert_eq!(from_ref, from_slice);
+        assert_eq!(from_ref.header(), from_slice.header());
+    }
+
+    #[test]
+    fn try_from_ref_roundtrip() {
+        let original: AsciiString<16> = AsciiString::try_from("test").unwrap();
+        let raw = original.into_raw();
+        let recovered: AsciiString<16> = AsciiString::try_from_ref(&raw).unwrap();
         assert_eq!(original, recovered);
     }
 

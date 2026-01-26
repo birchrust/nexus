@@ -14,7 +14,7 @@
 mod bench_utils;
 
 use bench_utils::{bench_wide, print_header_wide, print_intro};
-use nexus_ascii::AsciiString;
+use nexus_ascii::{AsciiString, AsciiText};
 use std::hint::black_box;
 
 fn main() {
@@ -75,6 +75,85 @@ fn main() {
     bench_wide("from_raw_unchecked (20B in 32B buffer)", || {
         let s: AsciiString<32> = unsafe { AsciiString::from_raw_unchecked(black_box(buffer_20)) };
         s.len() as u64
+    });
+
+    // =========================================================================
+    // try_from_null_terminated (slice-based)
+    // =========================================================================
+    println!();
+    print_header_wide("try_from_null_terminated (slice)");
+
+    // Reference to fixed buffer (common wire format pattern)
+    let slice_7: &[u8; 16] = b"BTC-USD\0\0\0\0\0\0\0\0\0";
+    bench_wide("try_from_null_terminated (7B in &[u8;16])", || {
+        let s: AsciiString<16> = AsciiString::try_from_null_terminated(black_box(slice_7)).unwrap();
+        s.len() as u64
+    });
+
+    let slice_20: &[u8; 32] = b"ORDER-ID-12345678901\0\0\0\0\0\0\0\0\0\0\0\0";
+    bench_wide("try_from_null_terminated (20B in &[u8;32])", || {
+        let s: AsciiString<32> =
+            AsciiString::try_from_null_terminated(black_box(slice_20)).unwrap();
+        s.len() as u64
+    });
+
+    // Slice without fixed size
+    let dyn_slice: &[u8] = b"ETH-USD\0garbage_after_null";
+    bench_wide("try_from_null_terminated (7B in &[u8])", || {
+        let s: AsciiString<16> =
+            AsciiString::try_from_null_terminated(black_box(dyn_slice)).unwrap();
+        s.len() as u64
+    });
+
+    // =========================================================================
+    // try_from_ref (typed array reference)
+    // =========================================================================
+    println!();
+    print_header_wide("try_from_ref (&[u8; CAP])");
+
+    bench_wide("try_from_ref (7B in &[u8;16])", || {
+        let s: AsciiString<16> = AsciiString::try_from_ref(black_box(slice_7)).unwrap();
+        s.len() as u64
+    });
+
+    bench_wide("try_from_ref (20B in &[u8;32])", || {
+        let s: AsciiString<32> = AsciiString::try_from_ref(black_box(slice_20)).unwrap();
+        s.len() as u64
+    });
+
+    // Compare with try_from_null_terminated on same data
+    bench_wide("try_from_null_terminated (same 7B)", || {
+        let s: AsciiString<16> = AsciiString::try_from_null_terminated(black_box(slice_7)).unwrap();
+        s.len() as u64
+    });
+
+    // =========================================================================
+    // AsciiText (double validation overhead)
+    // =========================================================================
+    println!();
+    print_header_wide("AsciiText (ASCII + printable validation)");
+
+    bench_wide("AsciiText::try_from_null_terminated (7B)", || {
+        let t: AsciiText<16> = AsciiText::try_from_null_terminated(black_box(slice_7)).unwrap();
+        t.len() as u64
+    });
+
+    bench_wide("AsciiText::try_from_null_terminated (20B)", || {
+        let t: AsciiText<32> = AsciiText::try_from_null_terminated(black_box(slice_20)).unwrap();
+        t.len() as u64
+    });
+
+    let text_buffer_7: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+    bench_wide("AsciiText::try_from_raw (7B)", || {
+        let t: AsciiText<16> = AsciiText::try_from_raw(black_box(text_buffer_7)).unwrap();
+        t.len() as u64
+    });
+
+    let text_padded_7: [u8; 16] = *b"BTC-USD         ";
+    bench_wide("AsciiText::try_from_right_padded (7B)", || {
+        let t: AsciiText<16> =
+            AsciiText::try_from_right_padded(black_box(text_padded_7), b' ').unwrap();
+        t.len() as u64
     });
 
     // =========================================================================
