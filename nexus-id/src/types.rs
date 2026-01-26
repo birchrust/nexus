@@ -3,6 +3,21 @@
 //! These types provide type safety and encapsulation for generated IDs.
 //! Each type wraps an internal representation and provides methods for
 //! conversion, parsing, and access to the underlying data.
+//!
+//! All types support configurable capacity via const generic `CAP` for
+//! fixed-size wire formats. The default capacity is the minimum required.
+//!
+//! # Example
+//!
+//! ```rust
+//! use nexus_id::Base62Id;
+//!
+//! // Default capacity (16 bytes)
+//! let id: Base62Id = Base62Id::encode(12345);
+//!
+//! // Custom capacity for 32-byte wire format
+//! let id: Base62Id<32> = Base62Id::encode(12345);
+//! ```
 
 use core::cmp::Ordering;
 use core::fmt;
@@ -25,6 +40,11 @@ use crate::parse::{self, DecodeError, ParseError, UuidParseError};
 /// This type wraps the string representation of a UUID. It implements
 /// `Copy`, `Hash`, `Eq`, and `Deref<Target = str>` for ergonomic usage.
 ///
+/// # Capacity
+///
+/// The default capacity is 40 bytes (minimum required). Use a larger capacity
+/// for fixed-size wire formats: `Uuid<64>`.
+///
 /// # Example
 ///
 /// ```rust
@@ -41,9 +61,9 @@ use crate::parse::{self, DecodeError, ParseError, UuidParseError};
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Uuid(pub(crate) AsciiString<40>);
+pub struct Uuid<const CAP: usize = 40>(pub(crate) AsciiString<CAP>);
 
-impl Uuid {
+impl<const CAP: usize> Uuid<CAP> {
     /// Create a Uuid from raw (hi, lo) 64-bit components.
     ///
     /// The `hi` value contains the upper 64 bits and `lo` the lower 64 bits
@@ -189,6 +209,8 @@ impl Uuid {
     }
 
     /// Convert to compact format (no dashes).
+    ///
+    /// Returns a `UuidCompact` with default capacity.
     #[inline]
     pub fn to_compact(&self) -> UuidCompact {
         let (hi, lo) = self.decode();
@@ -224,7 +246,7 @@ impl Uuid {
     }
 }
 
-impl Deref for Uuid {
+impl<const CAP: usize> Deref for Uuid<CAP> {
     type Target = str;
 
     #[inline]
@@ -233,33 +255,33 @@ impl Deref for Uuid {
     }
 }
 
-impl AsRef<str> for Uuid {
+impl<const CAP: usize> AsRef<str> for Uuid<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for Uuid {
+impl<const CAP: usize> fmt::Display for Uuid<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
     }
 }
 
-impl fmt::Debug for Uuid {
+impl<const CAP: usize> fmt::Debug for Uuid<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Uuid({})", self.0.as_str())
     }
 }
 
-impl Hash for Uuid {
+impl<const CAP: usize> Hash for Uuid<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl Ord for Uuid {
+impl<const CAP: usize> Ord for Uuid<CAP> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         // Lexicographic order = time order for v7 UUIDs
@@ -267,14 +289,14 @@ impl Ord for Uuid {
     }
 }
 
-impl PartialOrd for Uuid {
+impl<const CAP: usize> PartialOrd for Uuid<CAP> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl FromStr for Uuid {
+impl<const CAP: usize> FromStr for Uuid<CAP> {
     type Err = UuidParseError;
 
     #[inline]
@@ -290,11 +312,16 @@ impl FromStr for Uuid {
 /// UUID in compact format (no dashes).
 ///
 /// Format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` (32 characters)
+///
+/// # Capacity
+///
+/// The default capacity is 32 bytes (minimum required). Use a larger capacity
+/// for fixed-size wire formats: `UuidCompact<64>`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct UuidCompact(pub(crate) AsciiString<32>);
+pub struct UuidCompact<const CAP: usize = 32>(pub(crate) AsciiString<CAP>);
 
-impl UuidCompact {
+impl<const CAP: usize> UuidCompact<CAP> {
     /// Create a UuidCompact from raw (hi, lo) 64-bit components.
     ///
     /// The `hi` value contains the upper 64 bits and `lo` the lower 64 bits
@@ -380,6 +407,8 @@ impl UuidCompact {
     }
 
     /// Convert to dashed format.
+    ///
+    /// Returns a `Uuid` with default capacity.
     #[inline]
     pub fn to_dashed(&self) -> Uuid {
         let (hi, lo) = self.decode();
@@ -403,7 +432,7 @@ impl UuidCompact {
     }
 }
 
-impl Deref for UuidCompact {
+impl<const CAP: usize> Deref for UuidCompact<CAP> {
     type Target = str;
 
     #[inline]
@@ -412,47 +441,47 @@ impl Deref for UuidCompact {
     }
 }
 
-impl AsRef<str> for UuidCompact {
+impl<const CAP: usize> AsRef<str> for UuidCompact<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for UuidCompact {
+impl<const CAP: usize> fmt::Display for UuidCompact<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
     }
 }
 
-impl fmt::Debug for UuidCompact {
+impl<const CAP: usize> fmt::Debug for UuidCompact<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "UuidCompact({})", self.0.as_str())
     }
 }
 
-impl Hash for UuidCompact {
+impl<const CAP: usize> Hash for UuidCompact<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl Ord for UuidCompact {
+impl<const CAP: usize> Ord for UuidCompact<CAP> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.0.cmp(&other.0)
     }
 }
 
-impl PartialOrd for UuidCompact {
+impl<const CAP: usize> PartialOrd for UuidCompact<CAP> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl FromStr for UuidCompact {
+impl<const CAP: usize> FromStr for UuidCompact<CAP> {
     type Err = ParseError;
 
     #[inline]
@@ -468,11 +497,16 @@ impl FromStr for UuidCompact {
 /// Hex-encoded 64-bit ID.
 ///
 /// Format: 16 lowercase hex characters.
+///
+/// # Capacity
+///
+/// The default capacity is 16 bytes (minimum required). Use a larger capacity
+/// for fixed-size wire formats: `HexId64<32>`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct HexId64(pub(crate) AsciiString<16>);
+pub struct HexId64<const CAP: usize = 16>(pub(crate) AsciiString<CAP>);
 
-impl HexId64 {
+impl<const CAP: usize> HexId64<CAP> {
     /// Encode a u64 as hex.
     #[inline]
     pub fn encode(value: u64) -> Self {
@@ -518,7 +552,7 @@ impl HexId64 {
     }
 }
 
-impl Deref for HexId64 {
+impl<const CAP: usize> Deref for HexId64<CAP> {
     type Target = str;
 
     #[inline]
@@ -527,33 +561,33 @@ impl Deref for HexId64 {
     }
 }
 
-impl AsRef<str> for HexId64 {
+impl<const CAP: usize> AsRef<str> for HexId64<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for HexId64 {
+impl<const CAP: usize> fmt::Display for HexId64<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
     }
 }
 
-impl fmt::Debug for HexId64 {
+impl<const CAP: usize> fmt::Debug for HexId64<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "HexId64({})", self.0.as_str())
     }
 }
 
-impl Hash for HexId64 {
+impl<const CAP: usize> Hash for HexId64<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl FromStr for HexId64 {
+impl<const CAP: usize> FromStr for HexId64<CAP> {
     type Err = ParseError;
 
     #[inline]
@@ -569,11 +603,16 @@ impl FromStr for HexId64 {
 /// Base62-encoded 64-bit ID.
 ///
 /// Format: 11 alphanumeric characters (0-9, A-Z, a-z).
+///
+/// # Capacity
+///
+/// The default capacity is 16 bytes (minimum required). Use a larger capacity
+/// for fixed-size wire formats: `Base62Id<32>`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Base62Id(pub(crate) AsciiString<16>);
+pub struct Base62Id<const CAP: usize = 16>(pub(crate) AsciiString<CAP>);
 
-impl Base62Id {
+impl<const CAP: usize> Base62Id<CAP> {
     /// Encode a u64 as base62.
     #[inline]
     pub fn encode(value: u64) -> Self {
@@ -625,7 +664,7 @@ impl Base62Id {
     }
 }
 
-impl Deref for Base62Id {
+impl<const CAP: usize> Deref for Base62Id<CAP> {
     type Target = str;
 
     #[inline]
@@ -634,33 +673,33 @@ impl Deref for Base62Id {
     }
 }
 
-impl AsRef<str> for Base62Id {
+impl<const CAP: usize> AsRef<str> for Base62Id<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for Base62Id {
+impl<const CAP: usize> fmt::Display for Base62Id<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
     }
 }
 
-impl fmt::Debug for Base62Id {
+impl<const CAP: usize> fmt::Debug for Base62Id<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Base62Id({})", self.0.as_str())
     }
 }
 
-impl Hash for Base62Id {
+impl<const CAP: usize> Hash for Base62Id<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl FromStr for Base62Id {
+impl<const CAP: usize> FromStr for Base62Id<CAP> {
     type Err = DecodeError;
 
     #[inline]
@@ -676,11 +715,16 @@ impl FromStr for Base62Id {
 /// Base36-encoded 64-bit ID.
 ///
 /// Format: 13 alphanumeric characters (0-9, a-z), case-insensitive.
+///
+/// # Capacity
+///
+/// The default capacity is 16 bytes (minimum required). Use a larger capacity
+/// for fixed-size wire formats: `Base36Id<32>`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Base36Id(pub(crate) AsciiString<16>);
+pub struct Base36Id<const CAP: usize = 16>(pub(crate) AsciiString<CAP>);
 
-impl Base36Id {
+impl<const CAP: usize> Base36Id<CAP> {
     /// Encode a u64 as base36.
     #[inline]
     pub fn encode(value: u64) -> Self {
@@ -732,7 +776,7 @@ impl Base36Id {
     }
 }
 
-impl Deref for Base36Id {
+impl<const CAP: usize> Deref for Base36Id<CAP> {
     type Target = str;
 
     #[inline]
@@ -741,33 +785,33 @@ impl Deref for Base36Id {
     }
 }
 
-impl AsRef<str> for Base36Id {
+impl<const CAP: usize> AsRef<str> for Base36Id<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for Base36Id {
+impl<const CAP: usize> fmt::Display for Base36Id<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
     }
 }
 
-impl fmt::Debug for Base36Id {
+impl<const CAP: usize> fmt::Debug for Base36Id<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Base36Id({})", self.0.as_str())
     }
 }
 
-impl Hash for Base36Id {
+impl<const CAP: usize> Hash for Base36Id<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl FromStr for Base36Id {
+impl<const CAP: usize> FromStr for Base36Id<CAP> {
     type Err = DecodeError;
 
     #[inline]
@@ -788,6 +832,11 @@ impl FromStr for Base36Id {
 ///
 /// ULIDs are lexicographically sortable and monotonically increasing.
 ///
+/// # Capacity
+///
+/// The default capacity is 32 bytes (minimum required). Use a larger capacity
+/// for fixed-size wire formats: `Ulid<64>`.
+///
 /// # Example
 ///
 /// ```rust
@@ -806,9 +855,9 @@ impl FromStr for Base36Id {
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Ulid(pub(crate) AsciiString<32>);
+pub struct Ulid<const CAP: usize = 32>(pub(crate) AsciiString<CAP>);
 
-impl Ulid {
+impl<const CAP: usize> Ulid<CAP> {
     /// Create a ULID from raw components.
     ///
     /// - `timestamp_ms`: 48-bit millisecond timestamp (upper bits ignored)
@@ -957,6 +1006,8 @@ impl Ulid {
     /// Maps the ULID's 128-bit value into UUID v7 layout, setting version (7) and
     /// variant (RFC) bits.
     ///
+    /// Returns a `Uuid` with default capacity.
+    ///
     /// # Data Loss
     ///
     /// This conversion is **lossy**. ULID has 80 random bits, but UUID v7 reserves
@@ -1023,7 +1074,7 @@ impl Ulid {
     }
 }
 
-impl Deref for Ulid {
+impl<const CAP: usize> Deref for Ulid<CAP> {
     type Target = str;
 
     #[inline]
@@ -1032,33 +1083,33 @@ impl Deref for Ulid {
     }
 }
 
-impl AsRef<str> for Ulid {
+impl<const CAP: usize> AsRef<str> for Ulid<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for Ulid {
+impl<const CAP: usize> fmt::Display for Ulid<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
     }
 }
 
-impl fmt::Debug for Ulid {
+impl<const CAP: usize> fmt::Debug for Ulid<CAP> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Ulid({})", self.0.as_str())
     }
 }
 
-impl Hash for Ulid {
+impl<const CAP: usize> Hash for Ulid<CAP> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
 
-impl Ord for Ulid {
+impl<const CAP: usize> Ord for Ulid<CAP> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         // Lexicographic order = time order (timestamp in MSB chars)
@@ -1066,14 +1117,14 @@ impl Ord for Ulid {
     }
 }
 
-impl PartialOrd for Ulid {
+impl<const CAP: usize> PartialOrd for Ulid<CAP> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl FromStr for Ulid {
+impl<const CAP: usize> FromStr for Ulid<CAP> {
     type Err = ParseError;
 
     #[inline]
@@ -1086,28 +1137,28 @@ impl FromStr for Ulid {
 // Cross-type From impls
 // ============================================================================
 
-impl From<Uuid> for UuidCompact {
+impl<const CAP: usize> From<Uuid<CAP>> for UuidCompact {
     /// Lossless conversion: strip dashes.
     #[inline]
-    fn from(u: Uuid) -> Self {
+    fn from(u: Uuid<CAP>) -> Self {
         u.to_compact()
     }
 }
 
-impl From<UuidCompact> for Uuid {
+impl<const CAP: usize> From<UuidCompact<CAP>> for Uuid {
     /// Lossless conversion: add dashes.
     #[inline]
-    fn from(u: UuidCompact) -> Self {
+    fn from(u: UuidCompact<CAP>) -> Self {
         u.to_dashed()
     }
 }
 
-impl From<Ulid> for Uuid {
+impl<const CAP: usize> From<Ulid<CAP>> for Uuid {
     /// Convert ULID to UUID v7 format (sets version and variant bits).
     ///
     /// **Lossy**: 6 bits of randomness are discarded. See [`Ulid::to_uuid()`].
     #[inline]
-    fn from(u: Ulid) -> Self {
+    fn from(u: Ulid<CAP>) -> Self {
         u.to_uuid()
     }
 }
@@ -1165,7 +1216,7 @@ mod tests {
         let hi = 0x0123_4567_89AB_CDEF_u64;
         let lo = 0xFEDC_BA98_7654_3210_u64;
 
-        let uuid = Uuid::from_raw(hi, lo);
+        let uuid: Uuid = Uuid::from_raw(hi, lo);
         let (decoded_hi, decoded_lo) = uuid.decode();
 
         assert_eq!(hi, decoded_hi);
@@ -1173,11 +1224,23 @@ mod tests {
     }
 
     #[test]
+    fn uuid_larger_cap() {
+        let hi = 0x0123_4567_89AB_CDEF_u64;
+        let lo = 0xFEDC_BA98_7654_3210_u64;
+
+        let small: Uuid<40> = Uuid::from_raw(hi, lo);
+        let large: Uuid<64> = Uuid::from_raw(hi, lo);
+
+        assert_eq!(small.as_str(), large.as_str());
+        assert_eq!(small.decode(), large.decode());
+    }
+
+    #[test]
     fn uuid_compact_decode_roundtrip() {
         let hi = 0x0123_4567_89AB_CDEF_u64;
         let lo = 0xFEDC_BA98_7654_3210_u64;
 
-        let uuid = UuidCompact::from_raw(hi, lo);
+        let uuid: UuidCompact = UuidCompact::from_raw(hi, lo);
         let (decoded_hi, decoded_lo) = uuid.decode();
 
         assert_eq!(hi, decoded_hi);
@@ -1187,25 +1250,54 @@ mod tests {
     #[test]
     fn hex_id64_decode_roundtrip() {
         for value in [0, 1, 12345, u64::MAX, 0xDEAD_BEEF_CAFE_BABE] {
-            let id = HexId64::encode(value);
+            let id: HexId64 = HexId64::encode(value);
             assert_eq!(id.decode(), value);
         }
+    }
+
+    #[test]
+    fn hex_id64_larger_cap() {
+        let id_small: HexId64<16> = HexId64::encode(12345);
+        let id_large: HexId64<32> = HexId64::encode(12345);
+        assert_eq!(id_small.as_str(), id_large.as_str());
     }
 
     #[test]
     fn base62_id_decode_roundtrip() {
         for value in [0, 1, 12345, u64::MAX] {
-            let id = Base62Id::encode(value);
+            let id: Base62Id = Base62Id::encode(value);
             assert_eq!(id.decode(), value);
         }
     }
 
     #[test]
+    fn base62_id_larger_cap() {
+        let id_small: Base62Id<16> = Base62Id::encode(12345);
+        let id_large: Base62Id<32> = Base62Id::encode(12345);
+        assert_eq!(id_small.as_str(), id_large.as_str());
+    }
+
+    #[test]
     fn base36_id_decode_roundtrip() {
         for value in [0, 1, 12345, u64::MAX] {
-            let id = Base36Id::encode(value);
+            let id: Base36Id = Base36Id::encode(value);
             assert_eq!(id.decode(), value);
         }
+    }
+
+    #[test]
+    fn base36_id_larger_cap() {
+        let id_small: Base36Id<16> = Base36Id::encode(12345);
+        let id_large: Base36Id<32> = Base36Id::encode(12345);
+        assert_eq!(id_small.as_str(), id_large.as_str());
+    }
+
+    #[test]
+    fn ulid_larger_cap() {
+        let small: Ulid<32> = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF);
+        let large: Ulid<64> = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF);
+        assert_eq!(small.as_str(), large.as_str());
+        assert_eq!(small.timestamp_ms(), large.timestamp_ms());
     }
 
     #[test]
@@ -1213,71 +1305,71 @@ mod tests {
         // V4 UUID
         let hi = 0x0123_4567_89AB_4DEF_u64; // version 4 at position
         let lo = 0x8EDC_BA98_7654_3210_u64;
-        let uuid = Uuid::from_raw(hi, lo);
+        let uuid: Uuid = Uuid::from_raw(hi, lo);
         assert_eq!(uuid.version(), 4);
 
         // V7 UUID
         let hi = 0x0123_4567_89AB_7DEF_u64; // version 7 at position
-        let uuid = Uuid::from_raw(hi, lo);
+        let uuid: Uuid = Uuid::from_raw(hi, lo);
         assert_eq!(uuid.version(), 7);
     }
 
     #[test]
     fn display_works() {
-        let uuid = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
+        let uuid: Uuid = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
         let s = format!("{}", uuid);
         assert_eq!(s, "01234567-89ab-cdef-fedc-ba9876543210");
     }
 
     #[test]
     fn deref_works() {
-        let uuid = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
+        let uuid: Uuid = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
         let s: &str = &uuid;
         assert_eq!(s, "01234567-89ab-cdef-fedc-ba9876543210");
     }
 
     #[test]
     fn uuid_from_bytes_roundtrip() {
-        let original = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
+        let original: Uuid = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
         let bytes = original.to_bytes();
-        let recovered = Uuid::from_bytes(&bytes).unwrap();
+        let recovered: Uuid = Uuid::from_bytes(&bytes).unwrap();
         assert_eq!(original, recovered);
     }
 
     #[test]
     fn uuid_from_bytes_wrong_length() {
-        assert!(Uuid::from_bytes(&[0u8; 15]).is_err());
-        assert!(Uuid::from_bytes(&[0u8; 17]).is_err());
-        assert!(Uuid::from_bytes(&[]).is_err());
+        assert!(Uuid::<40>::from_bytes(&[0u8; 15]).is_err());
+        assert!(Uuid::<40>::from_bytes(&[0u8; 17]).is_err());
+        assert!(Uuid::<40>::from_bytes(&[]).is_err());
     }
 
     #[test]
     fn uuid_from_bytes_unchecked_roundtrip() {
-        let original = Uuid::from_raw(0xDEAD_BEEF_CAFE_BABE, 0x0123_4567_89AB_CDEF);
+        let original: Uuid = Uuid::from_raw(0xDEAD_BEEF_CAFE_BABE, 0x0123_4567_89AB_CDEF);
         let bytes = original.to_bytes();
-        let recovered = unsafe { Uuid::from_bytes_unchecked(&bytes) };
+        let recovered: Uuid = unsafe { Uuid::from_bytes_unchecked(&bytes) };
         assert_eq!(original, recovered);
     }
 
     #[test]
     fn uuid_compact_from_bytes_roundtrip() {
-        let original = UuidCompact::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
+        let original: UuidCompact = UuidCompact::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
         let bytes = original.to_bytes();
-        let recovered = UuidCompact::from_bytes(&bytes).unwrap();
+        let recovered: UuidCompact = UuidCompact::from_bytes(&bytes).unwrap();
         assert_eq!(original, recovered);
     }
 
     #[test]
     fn uuid_compact_from_bytes_wrong_length() {
-        assert!(UuidCompact::from_bytes(&[0u8; 15]).is_err());
-        assert!(UuidCompact::from_bytes(&[0u8; 17]).is_err());
+        assert!(UuidCompact::<32>::from_bytes(&[0u8; 15]).is_err());
+        assert!(UuidCompact::<32>::from_bytes(&[0u8; 17]).is_err());
     }
 
     #[test]
     fn ulid_from_bytes_roundtrip() {
-        let original = Ulid::from_raw(1_700_000_000_000, 0xABCD, 0xDEAD_BEEF_CAFE_BABE);
+        let original: Ulid = Ulid::from_raw(1_700_000_000_000, 0xABCD, 0xDEAD_BEEF_CAFE_BABE);
         let bytes = original.to_bytes();
-        let recovered = Ulid::from_bytes(&bytes).unwrap();
+        let recovered: Ulid = Ulid::from_bytes(&bytes).unwrap();
         assert_eq!(original.timestamp_ms(), recovered.timestamp_ms());
         assert_eq!(original.random(), recovered.random());
         assert_eq!(original, recovered);
@@ -1285,15 +1377,15 @@ mod tests {
 
     #[test]
     fn ulid_from_bytes_wrong_length() {
-        assert!(Ulid::from_bytes(&[0u8; 15]).is_err());
-        assert!(Ulid::from_bytes(&[0u8; 17]).is_err());
+        assert!(Ulid::<32>::from_bytes(&[0u8; 15]).is_err());
+        assert!(Ulid::<32>::from_bytes(&[0u8; 17]).is_err());
     }
 
     #[test]
     fn ulid_from_bytes_unchecked_roundtrip() {
-        let original = Ulid::from_raw(1_700_000_000_000, 0x1234, 0x0123_4567_89AB_CDEF);
+        let original: Ulid = Ulid::from_raw(1_700_000_000_000, 0x1234, 0x0123_4567_89AB_CDEF);
         let bytes = original.to_bytes();
-        let recovered = unsafe { Ulid::from_bytes_unchecked(&bytes) };
+        let recovered: Ulid = unsafe { Ulid::from_bytes_unchecked(&bytes) };
         assert_eq!(original, recovered);
     }
 
@@ -1302,15 +1394,15 @@ mod tests {
         // First char value > 7 overflows the 48-bit timestamp.
         // '8' decodes to value 8 in Crockford Base32.
         let overflow = "80000000000000000000000000";
-        assert!(Ulid::parse(overflow).is_err());
+        assert!(Ulid::<32>::parse(overflow).is_err());
 
         // 'Z' decodes to value 31 — also invalid.
         let z_first = "Z0000000000000000000000000";
-        assert!(Ulid::parse(z_first).is_err());
+        assert!(Ulid::<32>::parse(z_first).is_err());
 
         // '7' (value 7) is the max valid first char.
         let max_valid = "70000000000000000000000000";
-        assert!(Ulid::parse(max_valid).is_ok());
+        assert!(Ulid::<32>::parse(max_valid).is_ok());
     }
 
     // ====================================================================
@@ -1322,12 +1414,12 @@ mod tests {
         use crate::parse::DecodeError;
 
         // "zzzzzzzzzzz" (11 z's) = 61*(62^10 + 62^9 + ... + 1) > u64::MAX
-        let result = Base62Id::parse("zzzzzzzzzzz");
+        let result = Base62Id::<16>::parse("zzzzzzzzzzz");
         assert_eq!(result, Err(DecodeError::Overflow));
 
         // u64::MAX encodes to "LygHa16AHYF" — should round-trip
-        let max_id = Base62Id::encode(u64::MAX);
-        let parsed = Base62Id::parse(max_id.as_str()).unwrap();
+        let max_id: Base62Id = Base62Id::encode(u64::MAX);
+        let parsed = Base62Id::<16>::parse(max_id.as_str()).unwrap();
         assert_eq!(parsed.decode(), u64::MAX);
     }
 
@@ -1336,12 +1428,12 @@ mod tests {
         use crate::parse::DecodeError;
 
         // "zzzzzzzzzzzzz" (13 z's) = 35*(36^12 + ...) > u64::MAX
-        let result = Base36Id::parse("zzzzzzzzzzzzz");
+        let result = Base36Id::<16>::parse("zzzzzzzzzzzzz");
         assert_eq!(result, Err(DecodeError::Overflow));
 
         // u64::MAX should round-trip
-        let max_id = Base36Id::encode(u64::MAX);
-        let parsed = Base36Id::parse(max_id.as_str()).unwrap();
+        let max_id: Base36Id = Base36Id::encode(u64::MAX);
+        let parsed = Base36Id::<16>::parse(max_id.as_str()).unwrap();
         assert_eq!(parsed.decode(), u64::MAX);
     }
 
@@ -1353,13 +1445,13 @@ mod tests {
     fn uuid_parse_wrong_length() {
         use crate::parse::UuidParseError;
 
-        let result = Uuid::parse("01234567-89ab-cdef-fedc-ba987654321"); // 35 chars
+        let result = Uuid::<40>::parse("01234567-89ab-cdef-fedc-ba987654321"); // 35 chars
         assert!(matches!(result, Err(UuidParseError::InvalidLength { .. })));
 
-        let result = Uuid::parse("01234567-89ab-cdef-fedc-ba98765432100"); // 37 chars
+        let result = Uuid::<40>::parse("01234567-89ab-cdef-fedc-ba98765432100"); // 37 chars
         assert!(matches!(result, Err(UuidParseError::InvalidLength { .. })));
 
-        let result = Uuid::parse("");
+        let result = Uuid::<40>::parse("");
         assert!(matches!(result, Err(UuidParseError::InvalidLength { .. })));
     }
 
@@ -1368,19 +1460,19 @@ mod tests {
         use crate::parse::UuidParseError;
 
         // Missing dash at position 8
-        let result = Uuid::parse("01234567089ab-cdef-fedc-ba9876543210");
+        let result = Uuid::<40>::parse("01234567089ab-cdef-fedc-ba9876543210");
         assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
 
         // Missing dash at position 13
-        let result = Uuid::parse("01234567-89ab0cdef-fedc-ba9876543210");
+        let result = Uuid::<40>::parse("01234567-89ab0cdef-fedc-ba9876543210");
         assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
 
         // Missing dash at position 18
-        let result = Uuid::parse("01234567-89ab-cdef0fedc-ba9876543210");
+        let result = Uuid::<40>::parse("01234567-89ab-cdef0fedc-ba9876543210");
         assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
 
         // Missing dash at position 23
-        let result = Uuid::parse("01234567-89ab-cdef-fedc0ba9876543210");
+        let result = Uuid::<40>::parse("01234567-89ab-cdef-fedc0ba9876543210");
         assert!(matches!(result, Err(UuidParseError::InvalidFormat)));
     }
 
@@ -1389,14 +1481,14 @@ mod tests {
         use crate::parse::UuidParseError;
 
         // 'g' is not a valid hex character
-        let result = Uuid::parse("g1234567-89ab-cdef-fedc-ba9876543210");
+        let result = Uuid::<40>::parse("g1234567-89ab-cdef-fedc-ba9876543210");
         assert!(matches!(
             result,
             Err(UuidParseError::InvalidChar { position: 0, .. })
         ));
 
         // Invalid in the middle segment
-        let result = Uuid::parse("01234567-89xb-cdef-fedc-ba9876543210");
+        let result = Uuid::<40>::parse("01234567-89xb-cdef-fedc-ba9876543210");
         assert!(matches!(
             result,
             Err(UuidParseError::InvalidChar { position: 11, .. })
@@ -1409,40 +1501,40 @@ mod tests {
 
     #[test]
     fn uuid_is_nil() {
-        let nil = Uuid::from_raw(0, 0);
+        let nil: Uuid = Uuid::from_raw(0, 0);
         assert!(nil.is_nil());
 
-        let not_nil = Uuid::from_raw(0, 1);
+        let not_nil: Uuid = Uuid::from_raw(0, 1);
         assert!(!not_nil.is_nil());
 
-        let not_nil = Uuid::from_raw(1, 0);
+        let not_nil: Uuid = Uuid::from_raw(1, 0);
         assert!(!not_nil.is_nil());
     }
 
     #[test]
     fn uuid_compact_is_nil() {
-        let nil = UuidCompact::from_raw(0, 0);
+        let nil: UuidCompact = UuidCompact::from_raw(0, 0);
         assert!(nil.is_nil());
 
-        let not_nil = UuidCompact::from_raw(0, 1);
+        let not_nil: UuidCompact = UuidCompact::from_raw(0, 1);
         assert!(!not_nil.is_nil());
     }
 
     #[test]
     fn ulid_is_nil() {
-        let nil = Ulid::from_raw(0, 0, 0);
+        let nil: Ulid = Ulid::from_raw(0, 0, 0);
         assert!(nil.is_nil());
 
         // Non-zero timestamp
-        let not_nil = Ulid::from_raw(1, 0, 0);
+        let not_nil: Ulid = Ulid::from_raw(1, 0, 0);
         assert!(!not_nil.is_nil());
 
         // Non-zero rand_hi
-        let not_nil = Ulid::from_raw(0, 1, 0);
+        let not_nil: Ulid = Ulid::from_raw(0, 1, 0);
         assert!(!not_nil.is_nil());
 
         // Non-zero rand_lo
-        let not_nil = Ulid::from_raw(0, 0, 1);
+        let not_nil: Ulid = Ulid::from_raw(0, 0, 1);
         assert!(!not_nil.is_nil());
     }
 
@@ -1454,30 +1546,30 @@ mod tests {
     fn ulid_parse_crockford_aliases() {
         // Crockford spec: I/i/L/l → 1, O/o → 0
         // "01" prefix with aliases should parse the same as canonical "01"
-        let canonical = Ulid::parse("01000000000000000000000000").unwrap();
+        let canonical: Ulid = Ulid::parse("01000000000000000000000000").unwrap();
 
         // 'O' → 0 (alias for zero)
-        let with_o = Ulid::parse("O1000000000000000000000000").unwrap();
+        let with_o: Ulid = Ulid::parse("O1000000000000000000000000").unwrap();
         assert_eq!(canonical, with_o);
 
         // 'I' → 1
-        let with_i = Ulid::parse("0I000000000000000000000000").unwrap();
+        let with_i: Ulid = Ulid::parse("0I000000000000000000000000").unwrap();
         assert_eq!(canonical, with_i);
 
         // 'L' → 1
-        let with_l = Ulid::parse("0L000000000000000000000000").unwrap();
+        let with_l: Ulid = Ulid::parse("0L000000000000000000000000").unwrap();
         assert_eq!(canonical, with_l);
 
         // 'i' → 1 (lowercase)
-        let with_i_lower = Ulid::parse("0i000000000000000000000000").unwrap();
+        let with_i_lower: Ulid = Ulid::parse("0i000000000000000000000000").unwrap();
         assert_eq!(canonical, with_i_lower);
 
         // 'o' → 0 (lowercase)
-        let with_o_lower = Ulid::parse("o1000000000000000000000000").unwrap();
+        let with_o_lower: Ulid = Ulid::parse("o1000000000000000000000000").unwrap();
         assert_eq!(canonical, with_o_lower);
 
         // 'l' → 1 (lowercase)
-        let with_l_lower = Ulid::parse("0l000000000000000000000000").unwrap();
+        let with_l_lower: Ulid = Ulid::parse("0l000000000000000000000000").unwrap();
         assert_eq!(canonical, with_l_lower);
     }
 
@@ -1488,7 +1580,7 @@ mod tests {
     #[test]
     fn ulid_to_uuid_preserves_timestamp() {
         let ts = 1_700_000_000_000u64;
-        let ulid = Ulid::from_raw(ts, 0x1234, 0xDEAD_BEEF_CAFE_BABE);
+        let ulid: Ulid = Ulid::from_raw(ts, 0x1234, 0xDEAD_BEEF_CAFE_BABE);
         let uuid = ulid.to_uuid();
 
         // Version should be 7
@@ -1504,8 +1596,8 @@ mod tests {
     fn ulid_to_uuid_is_lossy() {
         // Two ULIDs that differ only in the bottom 6 bits of rand_lo
         // should map to the same UUID (those bits are discarded).
-        let ulid_a = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF_CAFE_BA00);
-        let ulid_b = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF_CAFE_BA3F);
+        let ulid_a: Ulid = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF_CAFE_BA00);
+        let ulid_b: Ulid = Ulid::from_raw(1_700_000_000_000, 0x1234, 0xDEAD_BEEF_CAFE_BA3F);
 
         // Different ULIDs
         assert_ne!(ulid_a, ulid_b);
@@ -1516,7 +1608,7 @@ mod tests {
 
     #[test]
     fn ulid_to_uuid_sets_variant_bits() {
-        let ulid = Ulid::from_raw(1_700_000_000_000, 0xFFFF, u64::MAX);
+        let ulid: Ulid = Ulid::from_raw(1_700_000_000_000, 0xFFFF, u64::MAX);
         let uuid = ulid.to_uuid();
         let (_, lo) = uuid.decode();
 

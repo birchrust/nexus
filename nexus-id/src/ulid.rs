@@ -280,7 +280,7 @@ mod tests {
         let (rand_hi, rand_lo) = ulid.random();
 
         // Verify we can reconstruct
-        let reconstructed = Ulid::from_raw(unix_base, rand_hi, rand_lo);
+        let reconstructed: Ulid = Ulid::from_raw(unix_base, rand_hi, rand_lo);
         assert_eq!(ulid.as_str(), reconstructed.as_str());
     }
 

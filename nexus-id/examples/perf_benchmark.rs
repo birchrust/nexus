@@ -178,12 +178,12 @@ fn bench_parse_uuid() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(Uuid::parse(input));
+        black_box(Uuid::<40>::parse(input));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = Uuid::parse(black_box(input));
+        let id = Uuid::<40>::parse(black_box(input));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -197,12 +197,12 @@ fn bench_parse_uuid_compact() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(UuidCompact::parse(input));
+        black_box(UuidCompact::<32>::parse(input));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = UuidCompact::parse(black_box(input));
+        let id = UuidCompact::<32>::parse(black_box(input));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -216,12 +216,12 @@ fn bench_parse_ulid() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(Ulid::parse(input));
+        black_box(Ulid::<32>::parse(input));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = Ulid::parse(black_box(input));
+        let id = Ulid::<32>::parse(black_box(input));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -235,12 +235,12 @@ fn bench_parse_hex64() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(HexId64::parse(input));
+        black_box(HexId64::<16>::parse(input));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = HexId64::parse(black_box(input));
+        let id = HexId64::<16>::parse(black_box(input));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -254,12 +254,12 @@ fn bench_parse_base62() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(Base62Id::parse(input));
+        black_box(Base62Id::<16>::parse(input));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = Base62Id::parse(black_box(input));
+        let id = Base62Id::<16>::parse(black_box(input));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -273,12 +273,12 @@ fn bench_parse_base36() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(Base36Id::parse(input));
+        black_box(Base36Id::<16>::parse(input));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = Base36Id::parse(black_box(input));
+        let id = Base36Id::<16>::parse(black_box(input));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -296,12 +296,12 @@ fn bench_encode_hex() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(HexId64::encode(val));
+        black_box(HexId64::<16>::encode(val));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = HexId64::encode(black_box(val));
+        let id = HexId64::<16>::encode(black_box(val));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -315,12 +315,12 @@ fn bench_encode_base62() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(Base62Id::encode(val));
+        black_box(Base62Id::<16>::encode(val));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = Base62Id::encode(black_box(val));
+        let id = Base62Id::<16>::encode(black_box(val));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));
@@ -334,12 +334,12 @@ fn bench_encode_base36() -> Histogram<u64> {
     let mut hist = Histogram::new(3).unwrap();
 
     for _ in 0..WARMUP {
-        black_box(Base36Id::encode(val));
+        black_box(Base36Id::<16>::encode(val));
     }
 
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = Base36Id::encode(black_box(val));
+        let id = Base36Id::<16>::encode(black_box(val));
         let end = rdtscp();
         black_box(id);
         let _ = hist.record(end.wrapping_sub(start));

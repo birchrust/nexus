@@ -262,7 +262,7 @@ fn hex_id64_lifecycle() {
     let value: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
     // Encode
-    let id = HexId64::encode(value);
+    let id: HexId64 = HexId64::encode(value);
     assert_eq!(id.as_str(), "deadbeefcafebabe");
     assert_eq!(id.as_bytes(), b"deadbeefcafebabe");
 
@@ -294,7 +294,7 @@ fn hex_id64_lifecycle() {
 fn base62_lifecycle() {
     let value: u64 = 123_456_789_012;
 
-    let id = Base62Id::encode(value);
+    let id: Base62Id = Base62Id::encode(value);
     assert_eq!(id.as_str().len(), 11);
 
     // Decode round-trip
@@ -305,10 +305,10 @@ fn base62_lifecycle() {
     assert_eq!(parsed, id);
 
     // Edge cases
-    let zero = Base62Id::encode(0);
+    let zero: Base62Id = Base62Id::encode(0);
     assert_eq!(zero.decode(), 0);
 
-    let max = Base62Id::encode(u64::MAX);
+    let max: Base62Id = Base62Id::encode(u64::MAX);
     assert_eq!(max.decode(), u64::MAX);
     let max_parsed: Base62Id = max.as_str().parse().unwrap();
     assert_eq!(max_parsed.decode(), u64::MAX);
@@ -322,7 +322,7 @@ fn base62_lifecycle() {
 fn base36_lifecycle() {
     let value: u64 = 123_456_789_012;
 
-    let id = Base36Id::encode(value);
+    let id: Base36Id = Base36Id::encode(value);
     assert_eq!(id.as_str().len(), 13);
 
     // Decode round-trip

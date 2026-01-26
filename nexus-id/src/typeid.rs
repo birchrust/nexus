@@ -154,7 +154,7 @@ impl<const CAP: usize> TypeId<CAP> {
         }
         let suffix_str =
             core::str::from_utf8(suffix_bytes).map_err(|_| TypeIdParseError::InvalidFormat)?;
-        let _ulid = Ulid::parse(suffix_str)?;
+        let _: Ulid = Ulid::parse(suffix_str)?;
 
         // Build from validated input
         // SAFETY: all bytes validated as ASCII
