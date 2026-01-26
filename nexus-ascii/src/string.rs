@@ -850,6 +850,92 @@ impl<const CAP: usize> AsciiString<CAP> {
 }
 
 // =============================================================================
+// Capacity Conversion
+// =============================================================================
+
+impl<const CAP: usize> AsciiString<CAP> {
+    /// Converts to a larger capacity `AsciiString`.
+    ///
+    /// The hash is preserved since it's computed from content, not capacity.
+    /// This is a data copy, not a reference.
+    ///
+    /// # Compile-time Checks
+    ///
+    /// - `NEW_CAP >= CAP` (must be widening, not narrowing)
+    /// - `NEW_CAP % 8 == 0` (alignment requirement)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiString;
+    ///
+    /// let small: AsciiString<16> = AsciiString::try_from("hello")?;
+    /// let large: AsciiString<32> = small.widen();
+    /// assert_eq!(small.as_str(), large.as_str());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn widen<const NEW_CAP: usize>(self) -> AsciiString<NEW_CAP> {
+        const { assert!(NEW_CAP % 8 == 0, "NEW_CAP must be a multiple of 8") }
+        const { assert!(NEW_CAP >= CAP, "widen requires NEW_CAP >= CAP; use tighten for smaller") }
+
+        let mut data = [0u8; NEW_CAP];
+        // Copy content bytes (rest is already zeroed)
+        data[..CAP].copy_from_slice(&self.data);
+
+        AsciiString {
+            header: self.header, // hash + len unchanged
+            data,
+        }
+    }
+
+    /// Converts to a smaller capacity `AsciiString`.
+    ///
+    /// Returns `Err(AsciiError::TooLong)` if the content doesn't fit.
+    /// The hash is preserved since it's computed from content.
+    ///
+    /// # Compile-time Checks
+    ///
+    /// - `NEW_CAP <= CAP` (must be tightening, not widening)
+    /// - `NEW_CAP % 8 == 0` (alignment requirement)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiString, AsciiError};
+    ///
+    /// let large: AsciiString<32> = AsciiString::try_from("hello")?;
+    /// let small: AsciiString<16> = large.tighten()?;
+    /// assert_eq!(large.as_str(), small.as_str());
+    ///
+    /// // Content too long for target capacity
+    /// let long: AsciiString<32> = AsciiString::try_from("this is a longer string")?;
+    /// assert!(matches!(long.tighten::<16>(), Err(AsciiError::TooLong { .. })));
+    /// # Ok::<(), AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn tighten<const NEW_CAP: usize>(self) -> Result<AsciiString<NEW_CAP>, crate::AsciiError> {
+        const { assert!(NEW_CAP % 8 == 0, "NEW_CAP must be a multiple of 8") }
+        const { assert!(NEW_CAP <= CAP, "tighten requires NEW_CAP <= CAP; use widen for larger") }
+
+        if self.len() > NEW_CAP {
+            return Err(crate::AsciiError::TooLong {
+                len: self.len(),
+                cap: NEW_CAP,
+            });
+        }
+
+        let mut data = [0u8; NEW_CAP];
+        data.copy_from_slice(&self.data[..NEW_CAP]);
+
+        Ok(AsciiString {
+            header: self.header, // hash + len unchanged
+            data,
+        })
+    }
+}
+
+// =============================================================================
 // Comparison Methods
 // =============================================================================
 
@@ -3762,6 +3848,96 @@ mod tests {
             let restored: AsciiString<32> = serde_json::from_str(&json).unwrap();
             assert_eq!(original, restored);
         }
+    }
+
+    // =========================================================================
+    // Capacity conversion tests
+    // =========================================================================
+
+    #[test]
+    fn widen_basic() {
+        let small: AsciiString<16> = AsciiString::try_from("hello").unwrap();
+        let large: AsciiString<32> = small.widen();
+        assert_eq!(small.as_str(), large.as_str());
+        assert_eq!(small.len(), large.len());
+    }
+
+    #[test]
+    fn widen_preserves_hash() {
+        let small: AsciiString<16> = AsciiString::try_from("BTC-USD").unwrap();
+        let large: AsciiString<64> = small.widen();
+        // Header contains hash + len, both should be identical
+        assert_eq!(small.header(), large.header());
+    }
+
+    #[test]
+    fn widen_empty() {
+        let small: AsciiString<8> = AsciiString::empty();
+        let large: AsciiString<32> = small.widen();
+        assert!(large.is_empty());
+        assert_eq!(small.header(), large.header());
+    }
+
+    #[test]
+    fn widen_same_size() {
+        let s: AsciiString<16> = AsciiString::try_from("test").unwrap();
+        let same: AsciiString<16> = s.widen();
+        assert_eq!(s, same);
+    }
+
+    #[test]
+    fn tighten_basic() {
+        let large: AsciiString<32> = AsciiString::try_from("hello").unwrap();
+        let small: AsciiString<16> = large.tighten().unwrap();
+        assert_eq!(large.as_str(), small.as_str());
+        assert_eq!(large.len(), small.len());
+    }
+
+    #[test]
+    fn tighten_preserves_hash() {
+        let large: AsciiString<64> = AsciiString::try_from("BTC-USD").unwrap();
+        let small: AsciiString<16> = large.tighten().unwrap();
+        // Header contains hash + len, both should be identical
+        assert_eq!(large.header(), small.header());
+    }
+
+    #[test]
+    fn tighten_empty() {
+        let large: AsciiString<32> = AsciiString::empty();
+        let small: AsciiString<8> = large.tighten().unwrap();
+        assert!(small.is_empty());
+        assert_eq!(large.header(), small.header());
+    }
+
+    #[test]
+    fn tighten_same_size() {
+        let s: AsciiString<16> = AsciiString::try_from("test").unwrap();
+        let same: AsciiString<16> = s.tighten().unwrap();
+        assert_eq!(s, same);
+    }
+
+    #[test]
+    fn tighten_too_long() {
+        let large: AsciiString<32> = AsciiString::try_from("this is too long").unwrap();
+        let result = large.tighten::<8>();
+        assert!(matches!(result, Err(AsciiError::TooLong { len: 16, cap: 8 })));
+    }
+
+    #[test]
+    fn tighten_exact_fit() {
+        // Content is exactly 8 bytes, should fit in AsciiString<8>
+        let large: AsciiString<32> = AsciiString::try_from("12345678").unwrap();
+        let small: AsciiString<8> = large.tighten().unwrap();
+        assert_eq!(small.as_str(), "12345678");
+    }
+
+    #[test]
+    fn widen_tighten_roundtrip() {
+        let original: AsciiString<16> = AsciiString::try_from("roundtrip").unwrap();
+        let widened: AsciiString<64> = original.widen();
+        let tightened: AsciiString<16> = widened.tighten().unwrap();
+        assert_eq!(original, tightened);
+        assert_eq!(original.header(), tightened.header());
     }
 
     // =========================================================================
