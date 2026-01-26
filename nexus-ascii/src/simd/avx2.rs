@@ -275,6 +275,129 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 }
 
 // =============================================================================
+// Numeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII digits ('0'-'9') using AVX2 (32 bytes at a time).
+///
+/// Cascades to SSE2 for inputs shorter than 32 bytes.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn is_all_numeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 32 {
+        return sse2::is_all_numeric(bytes);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: AVX2 availability is guaranteed by target_feature cfg
+    unsafe {
+        // Range check: byte in ['0', '9'] means byte > '/' AND byte < ':'
+        let lo_bound = _mm256_set1_epi8(0x2F); // '0' - 1 = 0x2F
+        let hi_bound = _mm256_set1_epi8(0x3A); // '9' + 1 = 0x3A
+
+        // Process 32 bytes at a time
+        while i + 32 <= len {
+            let chunk = _mm256_loadu_si256(bytes.as_ptr().add(i).cast());
+
+            // Check if each byte is in range ['0', '9']
+            // is_digit = (byte > 0x2F) AND (byte < 0x3A)
+            let gt_lo = _mm256_cmpgt_epi8(chunk, lo_bound);
+            let lt_hi = _mm256_cmpgt_epi8(hi_bound, chunk);
+            let is_digit = _mm256_and_si256(gt_lo, lt_hi);
+
+            // All bytes must be digits (mask = -1 = 0xFFFFFFFF as i32)
+            if _mm256_movemask_epi8(is_digit) != -1i32 {
+                return false;
+            }
+
+            i += 32;
+        }
+    }
+
+    // Handle remainder with SSE2 (which cascades to scalar)
+    if i < len {
+        return sse2::is_all_numeric(&bytes[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
+// Alphanumeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII alphanumeric (0-9, A-Z, a-z) using AVX2.
+///
+/// Cascades to SSE2 for inputs shorter than 32 bytes.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 32 {
+        return sse2::is_all_alphanumeric(bytes);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: AVX2 availability is guaranteed by target_feature cfg
+    unsafe {
+        // Digit range: ['0', '9'] = [0x30, 0x39]
+        let digit_lo = _mm256_set1_epi8(0x2F); // '0' - 1
+        let digit_hi = _mm256_set1_epi8(0x3A); // '9' + 1
+
+        // Uppercase range: ['A', 'Z'] = [0x41, 0x5A]
+        let upper_lo = _mm256_set1_epi8(0x40); // 'A' - 1
+        let upper_hi = _mm256_set1_epi8(0x5B); // 'Z' + 1
+
+        // Lowercase range: ['a', 'z'] = [0x61, 0x7A]
+        let lower_lo = _mm256_set1_epi8(0x60); // 'a' - 1
+        let lower_hi = _mm256_set1_epi8(0x7B); // 'z' + 1
+
+        // Process 32 bytes at a time
+        while i + 32 <= len {
+            let chunk = _mm256_loadu_si256(bytes.as_ptr().add(i).cast());
+
+            // Check digit: byte > 0x2F AND byte < 0x3A
+            let is_digit = _mm256_and_si256(
+                _mm256_cmpgt_epi8(chunk, digit_lo),
+                _mm256_cmpgt_epi8(digit_hi, chunk),
+            );
+
+            // Check uppercase: byte > 0x40 AND byte < 0x5B
+            let is_upper = _mm256_and_si256(
+                _mm256_cmpgt_epi8(chunk, upper_lo),
+                _mm256_cmpgt_epi8(upper_hi, chunk),
+            );
+
+            // Check lowercase: byte > 0x60 AND byte < 0x7B
+            let is_lower = _mm256_and_si256(
+                _mm256_cmpgt_epi8(chunk, lower_lo),
+                _mm256_cmpgt_epi8(lower_hi, chunk),
+            );
+
+            // Alphanumeric = digit OR upper OR lower
+            let is_alnum = _mm256_or_si256(_mm256_or_si256(is_digit, is_upper), is_lower);
+
+            // All bytes must be alphanumeric (mask = -1 = 0xFFFFFFFF as i32)
+            if _mm256_movemask_epi8(is_alnum) != -1i32 {
+                return false;
+            }
+
+            i += 32;
+        }
+    }
+
+    // Handle remainder with SSE2 (which cascades to scalar)
+    if i < len {
+        return sse2::is_all_alphanumeric(&bytes[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -535,6 +658,119 @@ mod tests {
                 let expected = scalar::eq_ignore_ascii_case(&[a], &[b]);
                 let actual = eq_ignore_ascii_case(&[a], &[b]);
                 assert_eq!(actual, expected, "a=0x{:02X}, b=0x{:02X}", a, b);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Numeric validation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_all_numeric_empty() {
+        assert!(is_all_numeric(b""));
+    }
+
+    #[test]
+    fn test_is_all_numeric_short() {
+        assert!(is_all_numeric(b"12345"));
+        assert!(!is_all_numeric(b"123a5"));
+    }
+
+    #[test]
+    fn test_is_all_numeric_exact_32() {
+        assert!(is_all_numeric(b"01234567890123456789012345678901"));
+        let mut bytes = *b"01234567890123456789012345678901";
+        bytes[15] = b'a';
+        assert!(!is_all_numeric(&bytes));
+    }
+
+    #[test]
+    fn test_is_all_numeric_matches_scalar() {
+        for len in 0..=96 {
+            let bytes: Vec<u8> = (0..len).map(|i| b'0' + (i % 10) as u8).collect();
+            assert_eq!(
+                is_all_numeric(&bytes),
+                scalar::is_all_numeric(&bytes),
+                "len={}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_all_numeric_invalid_matches_scalar() {
+        for len in 1..=64 {
+            for pos in (0..len).step_by(5) {
+                let mut bytes = vec![b'5'; len];
+                bytes[pos] = b'x';
+                assert_eq!(
+                    is_all_numeric(&bytes),
+                    scalar::is_all_numeric(&bytes),
+                    "len={}, pos={}",
+                    len,
+                    pos
+                );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Alphanumeric validation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_all_alphanumeric_empty() {
+        assert!(is_all_alphanumeric(b""));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_short() {
+        assert!(is_all_alphanumeric(b"ABC123xyz"));
+        assert!(!is_all_alphanumeric(b"ABC-123"));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_exact_32() {
+        assert!(is_all_alphanumeric(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"));
+        let mut bytes = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
+        bytes[15] = b'-';
+        assert!(!is_all_alphanumeric(&bytes));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_matches_scalar() {
+        for len in 0..=96 {
+            // Mix of digits, uppercase, lowercase
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| match i % 3 {
+                    0 => b'0' + (i % 10) as u8,
+                    1 => b'A' + (i % 26) as u8,
+                    _ => b'a' + (i % 26) as u8,
+                })
+                .collect();
+            assert_eq!(
+                is_all_alphanumeric(&bytes),
+                scalar::is_all_alphanumeric(&bytes),
+                "len={}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_invalid_matches_scalar() {
+        for len in 1..=64 {
+            for pos in (0..len).step_by(5) {
+                let mut bytes = vec![b'A'; len];
+                bytes[pos] = b'-';
+                assert_eq!(
+                    is_all_alphanumeric(&bytes),
+                    scalar::is_all_alphanumeric(&bytes),
+                    "len={}, pos={}",
+                    len,
+                    pos
+                );
             }
         }
     }

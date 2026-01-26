@@ -548,6 +548,174 @@ pub fn is_all_printable(bytes: &[u8]) -> bool {
 }
 
 // =============================================================================
+// Numeric Validation
+// =============================================================================
+
+/// Check if any byte in a u64 is outside digit range ('0'-'9' / 0x30-0x39).
+/// Returns a non-zero mask if any byte is non-digit.
+///
+/// Uses SWAR technique similar to has_non_printable:
+/// - Set high bit to prevent cross-byte borrows
+/// - Check if byte < '0' or byte > '9'
+#[inline(always)]
+const fn has_non_digit(word: u64) -> u64 {
+    const MASK: u64 = 0x8080_8080_8080_8080;
+    const ZERO: u64 = 0x3030_3030_3030_3030; // '0'
+    const NINE_PLUS_1: u64 = 0x3A3A_3A3A_3A3A_3A3A; // '9' + 1 = ':'
+
+    // Check byte < '0': Set high bit, subtract '0'.
+    // If result's high bit is clear, byte was < '0'.
+    let tmp_lo = (word | MASK).wrapping_sub(ZERO);
+    let too_low = !tmp_lo & MASK;
+
+    // Check byte >= ':' (i.e., byte > '9'): Set high bit, subtract ':'.
+    // If result's high bit is set, byte was >= ':'.
+    let tmp_hi = (word | MASK).wrapping_sub(NINE_PLUS_1);
+    let too_high = tmp_hi & MASK;
+
+    too_low | too_high
+}
+
+/// Check if all bytes are ASCII digits ('0'-'9') using SWAR.
+///
+/// Returns true if all bytes are digits, false otherwise.
+/// An empty slice returns true.
+#[inline]
+pub fn is_all_numeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len == 0 {
+        return true;
+    }
+
+    // Short strings: byte-by-byte with branchless accumulation
+    if len < 8 {
+        let mut valid_acc: u8 = 1;
+        for &b in bytes {
+            let is_digit = (b.wrapping_sub(b'0') < 10) as u8;
+            valid_acc &= is_digit;
+        }
+        return valid_acc != 0;
+    }
+
+    // Process 8 bytes at a time
+    let mut i = 0;
+    while i + 8 <= len {
+        // SAFETY: We just checked that i + 8 <= len
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
+        let word = u64::from_ne_bytes(chunk);
+        if has_non_digit(word) != 0 {
+            return false;
+        }
+        i += 8;
+    }
+
+    // Handle remainder by checking last 8 bytes (overlapping)
+    if i < len {
+        let chunk: [u8; 8] = unsafe {
+            bytes
+                .as_ptr()
+                .add(len - 8)
+                .cast::<[u8; 8]>()
+                .read_unaligned()
+        };
+        let word = u64::from_ne_bytes(chunk);
+        return has_non_digit(word) == 0;
+    }
+
+    true
+}
+
+// =============================================================================
+// Alphanumeric Validation
+// =============================================================================
+
+/// Check if any byte in a u64 is outside alphanumeric range.
+/// Returns a non-zero mask if any byte is non-alphanumeric.
+///
+/// Alphanumeric = digits ('0'-'9') OR uppercase ('A'-'Z') OR lowercase ('a'-'z').
+/// Uses SWAR range checking for each range, then combines.
+#[inline(always)]
+const fn has_non_alphanumeric(word: u64) -> u64 {
+    const MASK: u64 = 0x8080_8080_8080_8080;
+
+    // For each range [L, H], a byte is in range if NOT(byte < L) AND NOT(byte > H)
+    // Using the standard SWAR technique with high bit set to prevent borrows.
+
+    // Digit range ['0', '9'] = [0x30, 0x39]
+    let d_lo = (word | MASK).wrapping_sub(0x3030_3030_3030_3030);
+    let d_hi = (word | MASK).wrapping_sub(0x3A3A_3A3A_3A3A_3A3A);
+    // is_digit: NOT(below '0') AND NOT(above '9')
+    // below '0' = high bit clear in d_lo, above '9' = high bit set in d_hi
+    let is_digit = d_lo & !d_hi & MASK;
+
+    // Uppercase range ['A', 'Z'] = [0x41, 0x5A]
+    let u_lo = (word | MASK).wrapping_sub(0x4141_4141_4141_4141);
+    let u_hi = (word | MASK).wrapping_sub(0x5B5B_5B5B_5B5B_5B5B);
+    let is_upper = u_lo & !u_hi & MASK;
+
+    // Lowercase range ['a', 'z'] = [0x61, 0x7A]
+    let l_lo = (word | MASK).wrapping_sub(0x6161_6161_6161_6161);
+    let l_hi = (word | MASK).wrapping_sub(0x7B7B_7B7B_7B7B_7B7B);
+    let is_lower = l_lo & !l_hi & MASK;
+
+    // Byte is alphanumeric if any of the three ranges match
+    // is_alnum has high bit SET for alphanumeric bytes
+    let is_alnum = is_digit | is_upper | is_lower;
+
+    // Return mask with high bit SET for NON-alphanumeric bytes
+    !is_alnum & MASK
+}
+
+/// Check if all bytes are ASCII alphanumeric (0-9, A-Z, a-z) using SWAR.
+///
+/// Returns true if all bytes are alphanumeric, false otherwise.
+/// An empty slice returns true.
+#[inline]
+pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len == 0 {
+        return true;
+    }
+
+    // Short strings: byte-by-byte with branchless accumulation
+    if len < 8 {
+        let mut valid_acc: u8 = 1;
+        for &b in bytes {
+            let is_alnum = b.is_ascii_alphanumeric() as u8;
+            valid_acc &= is_alnum;
+        }
+        return valid_acc != 0;
+    }
+
+    // Process 8 bytes at a time
+    let mut i = 0;
+    while i + 8 <= len {
+        // SAFETY: We just checked that i + 8 <= len
+        let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
+        let word = u64::from_ne_bytes(chunk);
+        if has_non_alphanumeric(word) != 0 {
+            return false;
+        }
+        i += 8;
+    }
+
+    // Handle remainder by checking last 8 bytes (overlapping)
+    if i < len {
+        let chunk: [u8; 8] = unsafe {
+            bytes
+                .as_ptr()
+                .add(len - 8)
+                .cast::<[u8; 8]>()
+                .read_unaligned()
+        };
+        let word = u64::from_ne_bytes(chunk);
+        return has_non_alphanumeric(word) == 0;
+    }
+
+    true
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1025,6 +1193,163 @@ mod tests {
                 "boundary mismatch at {:02x}",
                 b
             );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // is_all_numeric tests
+    // -------------------------------------------------------------------------
+
+    fn is_all_numeric_naive(bytes: &[u8]) -> bool {
+        bytes.iter().all(|&b| b.is_ascii_digit())
+    }
+
+    #[test]
+    fn test_is_all_numeric_valid() {
+        assert!(is_all_numeric(b""));
+        assert!(is_all_numeric(b"0"));
+        assert!(is_all_numeric(b"9"));
+        assert!(is_all_numeric(b"0123456789"));
+        assert!(is_all_numeric(b"12345678901234567890")); // > 8 bytes
+    }
+
+    #[test]
+    fn test_is_all_numeric_invalid() {
+        assert!(!is_all_numeric(b"a"));
+        assert!(!is_all_numeric(b"12a45"));
+        assert!(!is_all_numeric(b"123456789a")); // > 8 bytes with invalid
+        assert!(!is_all_numeric(b" ")); // space
+        assert!(!is_all_numeric(b"12 34"));
+    }
+
+    #[test]
+    fn test_is_all_numeric_boundaries() {
+        // Test boundaries around digits
+        assert!(!is_all_numeric(&[b'/' as u8])); // Just below '0'
+        assert!(is_all_numeric(&[b'0']));
+        assert!(is_all_numeric(&[b'9']));
+        assert!(!is_all_numeric(&[b':'])); // Just above '9'
+    }
+
+    #[test]
+    fn test_is_all_numeric_exhaustive_single_byte() {
+        for b in 0u8..=255 {
+            let expected = is_all_numeric_naive(&[b]);
+            let actual = is_all_numeric(&[b]);
+            assert_eq!(actual, expected, "mismatch for byte {:02x}", b);
+        }
+    }
+
+    #[test]
+    fn test_is_all_numeric_exhaustive_lengths() {
+        for len in 0..=40 {
+            let bytes: Vec<u8> = (0..len).map(|i| b'0' + (i % 10) as u8).collect();
+            let expected = is_all_numeric_naive(&bytes);
+            let actual = is_all_numeric(&bytes);
+            assert_eq!(actual, expected, "mismatch at len={}", len);
+        }
+    }
+
+    #[test]
+    fn test_is_all_numeric_with_invalid_at_positions() {
+        for len in 1..=20 {
+            for pos in 0..len {
+                let mut bytes: Vec<u8> = vec![b'5'; len];
+                bytes[pos] = b'x';
+                let expected = is_all_numeric_naive(&bytes);
+                let actual = is_all_numeric(&bytes);
+                assert_eq!(actual, expected, "len={}, pos={}", len, pos);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // is_all_alphanumeric tests
+    // -------------------------------------------------------------------------
+
+    fn is_all_alphanumeric_naive(bytes: &[u8]) -> bool {
+        bytes.iter().all(|&b| b.is_ascii_alphanumeric())
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_valid() {
+        assert!(is_all_alphanumeric(b""));
+        assert!(is_all_alphanumeric(b"0"));
+        assert!(is_all_alphanumeric(b"a"));
+        assert!(is_all_alphanumeric(b"Z"));
+        assert!(is_all_alphanumeric(b"ABC123xyz"));
+        assert!(is_all_alphanumeric(b"abcdefghijklmnopqrstuvwxyz")); // > 8 bytes
+        assert!(is_all_alphanumeric(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+        assert!(is_all_alphanumeric(b"0123456789"));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_invalid() {
+        assert!(!is_all_alphanumeric(b"-"));
+        assert!(!is_all_alphanumeric(b"BTC-USD"));
+        assert!(!is_all_alphanumeric(b"hello world")); // space
+        assert!(!is_all_alphanumeric(b"test@example"));
+        assert!(!is_all_alphanumeric(b"abcdefghijklmnop!")); // > 8 bytes with invalid
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_boundaries() {
+        // Test boundaries around each range
+        // Digits: '/' < '0' <= digit <= '9' < ':'
+        assert!(!is_all_alphanumeric(&[b'/']));
+        assert!(is_all_alphanumeric(&[b'0']));
+        assert!(is_all_alphanumeric(&[b'9']));
+        assert!(!is_all_alphanumeric(&[b':']));
+
+        // Uppercase: '@' < 'A' <= upper <= 'Z' < '['
+        assert!(!is_all_alphanumeric(&[b'@']));
+        assert!(is_all_alphanumeric(&[b'A']));
+        assert!(is_all_alphanumeric(&[b'Z']));
+        assert!(!is_all_alphanumeric(&[b'[']));
+
+        // Lowercase: '`' < 'a' <= lower <= 'z' < '{'
+        assert!(!is_all_alphanumeric(&[b'`']));
+        assert!(is_all_alphanumeric(&[b'a']));
+        assert!(is_all_alphanumeric(&[b'z']));
+        assert!(!is_all_alphanumeric(&[b'{']));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_exhaustive_single_byte() {
+        for b in 0u8..=255 {
+            let expected = is_all_alphanumeric_naive(&[b]);
+            let actual = is_all_alphanumeric(&[b]);
+            assert_eq!(actual, expected, "mismatch for byte {:02x}", b);
+        }
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_exhaustive_lengths() {
+        for len in 0..=40 {
+            // Mix of digits and letters
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| match i % 3 {
+                    0 => b'0' + (i % 10) as u8,
+                    1 => b'A' + (i % 26) as u8,
+                    _ => b'a' + (i % 26) as u8,
+                })
+                .collect();
+            let expected = is_all_alphanumeric_naive(&bytes);
+            let actual = is_all_alphanumeric(&bytes);
+            assert_eq!(actual, expected, "mismatch at len={}", len);
+        }
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_with_invalid_at_positions() {
+        for len in 1..=20 {
+            for pos in 0..len {
+                let mut bytes: Vec<u8> = vec![b'A'; len];
+                bytes[pos] = b'-';
+                let expected = is_all_alphanumeric_naive(&bytes);
+                let actual = is_all_alphanumeric(&bytes);
+                assert_eq!(actual, expected, "len={}, pos={}", len, pos);
+            }
         }
     }
 }

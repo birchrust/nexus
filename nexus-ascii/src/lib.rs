@@ -37,6 +37,8 @@
 
 mod builder;
 mod char;
+mod format;
+mod parse;
 mod str_ref;
 mod string;
 mod text;
@@ -47,6 +49,7 @@ pub mod simd;
 
 pub use builder::AsciiStringBuilder;
 pub use char::{AsciiChar, InvalidAsciiChar};
+pub use format::IntegerTooLarge;
 pub use str_ref::AsciiStr;
 pub use string::AsciiString;
 pub use text::AsciiText;

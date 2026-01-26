@@ -15,6 +15,7 @@ taskset -c 0 cargo run --release --features serde --example perf_serde
 taskset -c 0 cargo run --release --example perf_simd_crossover
 taskset -c 0 cargo run --release --example perf_vs_ascii_crate
 taskset -c 0 cargo run --release --features nohash --example perf_hashmap
+taskset -c 0 cargo run --release --example perf_string_ops
 ```
 
 ---
@@ -124,6 +125,56 @@ Case conversion uses full-buffer SSE2 (16B/iter) with no domain crossing —
 results stay in SIMD registers and are stored directly. The slightly higher
 p99/p999 for AsciiString includes the cost of constructing a new string
 (hash of the result). At p50, matches std.
+
+---
+
+## String Operations
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| `split_once` (found, 7B "BTC-USD") | 24 | 26 | 56 |
+| `split_once` (not found, 6B) | 14 | 18 | 30 |
+| `split_once` (multi delim, 9B) | 16 | 18 | 18 |
+| `strip_prefix` (found, 6B prefix) | 14 | 18 | 18 |
+| `strip_prefix` (not found) | 14 | 16 | 18 |
+| `strip_suffix` (found, 5B suffix) | 16 | 18 | 18 |
+| `strip_suffix` (not found) | 14 | 16 | 20 |
+
+`split_once` scans for a delimiter and returns both halves. Cost is dominated
+by the memchr-style scan. `strip_prefix`/`strip_suffix` delegate to optimized
+`starts_with`/`ends_with` + slice operations.
+
+---
+
+## Integer Parsing
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| `parse_u8` (3 digits) | 16 | 18 | 18 |
+| `parse_u32` (10 digits) | 16 | 18 | 36 |
+| `parse_u64` (20 digits) | 38 | 42 | 64 |
+| `parse_i64` (negative, 20 chars) | 32 | 36 | 44 |
+| Baseline: `str.parse::<u64>()` | 38 | 42 | 58 |
+
+Custom parsing matches std at p50 for max-length integers. For shorter inputs
+(u8, u32), we're faster due to simpler overflow checking.
+
+---
+
+## Integer Formatting
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| `from_u8` (255) | 16 | 18 | 18 |
+| `from_u32` (max) | 16 | 18 | 18 |
+| `from_u64` (max) | 112 | 182 | 192 |
+| `from_i64` (min) | 110 | 290 | 310 |
+| Baseline: `format!("{}", u64)` | 60 | 138 | 256 |
+
+For small integers (u8, u32), formatting is very fast (16 cycles). For u64 max
+(20 digits), we're slower than `format!` at p50 but comparable at tail latency.
+The difference is our method returns a stack-allocated AsciiString with hash,
+while `format!` returns a heap-allocated String.
 
 ---
 
@@ -539,6 +590,42 @@ a single u64 regardless of string size.
 
 **When to use default hasher:**
 - When you need HashDoS resistance (SipHash is keyed, our hash is not)
+
+---
+
+## Character Class Predicates (is_numeric, is_alphanumeric)
+
+`is_numeric()` and `is_alphanumeric()` use SIMD-accelerated validation with
+automatic dispatch: AVX-512 (64B/iter) → AVX2 (32B/iter) → SSE2 (16B/iter) →
+Scalar SWAR (8B/iter).
+
+**Comparison: Scalar (iterator) vs SIMD:**
+
+| Length | is_numeric Scalar | is_numeric SIMD | Speedup | is_alphanumeric Scalar | is_alphanumeric SIMD | Speedup |
+|--------|-------------------|-----------------|---------|------------------------|----------------------|---------|
+| 8B | 16 | 16 | 1.0x | 16 | 18 | 0.9x |
+| 16B | 20 | 18 | 1.1x | 22 | 18 | 1.2x |
+| 32B | 60 | 18 | **3.3x** | 72 | 18 | **4.0x** |
+| 64B | 88 | 18 | **4.9x** | 104 | 20 | **5.2x** |
+| 128B | 128 | 18 | **7.1x** | 174 | 26 | **6.7x** |
+
+**Key observations:**
+
+- At **8B**: SWAR and scalar are equivalent (both process ~8 bytes efficiently)
+- At **16B+**: SSE2 kicks in, SIMD starts winning
+- At **32B+**: Major gains as SIMD processes 16-32 bytes per iteration
+- At **128B**: SIMD is **7x faster** for `is_numeric`, **6.7x faster** for `is_alphanumeric`
+- SIMD cost is **nearly constant** (18-26 cycles) regardless of length
+- Scalar cost grows **linearly** with length
+
+**Current implementation (p50 cycles):**
+
+| Operation | 8B | 16B | 32B | 64B | 128B |
+|-----------|-----|-----|-----|-----|------|
+| `is_numeric` | 16 | 18 | 18 | 18 | 18 |
+| `is_alphanumeric` | 18 | 18 | 18 | 20 | 26 |
+
+AVX-512 verified via Intel SDE (Sapphire Rapids emulation) for lengths 0-160.
 
 ---
 

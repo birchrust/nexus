@@ -298,6 +298,63 @@ impl AsciiTextStr {
         self.0.ends_with(suffix.as_ref())
     }
 
+    /// Returns the string with the given prefix removed.
+    ///
+    /// Returns `Some(stripped)` if the string starts with the prefix,
+    /// or `None` if it doesn't.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiTextStr;
+    ///
+    /// let s = AsciiTextStr::try_from_bytes(b"USD-BTC")?;
+    /// let stripped = s.strip_prefix("USD-").unwrap();
+    /// assert_eq!(stripped.as_str(), "BTC");
+    ///
+    /// assert!(s.strip_prefix("EUR-").is_none());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn strip_prefix<P: AsRef<[u8]>>(&self, prefix: P) -> Option<&AsciiTextStr> {
+        let prefix = prefix.as_ref();
+        if self.0.starts_with(prefix) {
+            // SAFETY: Prefix is within bounds, remaining bytes are printable ASCII
+            Some(unsafe { AsciiTextStr::from_bytes_unchecked(&self.0[prefix.len()..]) })
+        } else {
+            None
+        }
+    }
+
+    /// Returns the string with the given suffix removed.
+    ///
+    /// Returns `Some(stripped)` if the string ends with the suffix,
+    /// or `None` if it doesn't.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiTextStr;
+    ///
+    /// let s = AsciiTextStr::try_from_bytes(b"BTC-USD")?;
+    /// let stripped = s.strip_suffix("-USD").unwrap();
+    /// assert_eq!(stripped.as_str(), "BTC");
+    ///
+    /// assert!(s.strip_suffix("-EUR").is_none());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn strip_suffix<S: AsRef<[u8]>>(&self, suffix: S) -> Option<&AsciiTextStr> {
+        let suffix = suffix.as_ref();
+        if self.0.ends_with(suffix) {
+            let new_len = self.len() - suffix.len();
+            // SAFETY: new_len is within bounds, bytes are printable ASCII
+            Some(unsafe { AsciiTextStr::from_bytes_unchecked(&self.0[..new_len]) })
+        } else {
+            None
+        }
+    }
+
     /// Returns `true` if the string contains the given substring.
     #[inline]
     pub fn contains<N: AsRef<[u8]>>(&self, needle: N) -> bool {
@@ -393,7 +450,87 @@ impl AsciiTextStr {
             .windows(needle.len())
             .rposition(|window| window == needle)
     }
+
+    /// Splits the text on the first occurrence of the delimiter.
+    ///
+    /// Returns `Some((before, after))` if the delimiter is found, where
+    /// `before` is the substring before the delimiter and `after` is the
+    /// substring after it. The delimiter itself is not included in either part.
+    ///
+    /// Returns `None` if the delimiter is not found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiTextStr, AsciiChar};
+    ///
+    /// let s = AsciiTextStr::try_from_bytes(b"BTC-USD")?;
+    /// let (base, quote) = s.split_once(AsciiChar::MINUS).unwrap();
+    /// assert_eq!(base.as_str(), "BTC");
+    /// assert_eq!(quote.as_str(), "USD");
+    ///
+    /// // No delimiter found
+    /// let s2 = AsciiTextStr::try_from_bytes(b"BTCUSD")?;
+    /// assert!(s2.split_once(AsciiChar::MINUS).is_none());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn split_once(&self, delimiter: AsciiChar) -> Option<(&AsciiTextStr, &AsciiTextStr)> {
+        let pos = self.find_byte(delimiter.as_u8())?;
+        // SAFETY: pos is within bounds, AsciiTextStr guarantees printable ASCII
+        let before = unsafe { AsciiTextStr::from_bytes_unchecked(&self.0[..pos]) };
+        let after = unsafe { AsciiTextStr::from_bytes_unchecked(&self.0[pos + 1..]) };
+        Some((before, after))
+    }
+
+    /// Returns `true` if all characters are ASCII digits (0-9).
+    ///
+    /// An empty string returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiTextStr;
+    ///
+    /// let digits = AsciiTextStr::try_from_bytes(b"12345")?;
+    /// assert!(digits.is_numeric());
+    ///
+    /// let mixed = AsciiTextStr::try_from_bytes(b"123abc")?;
+    /// assert!(!mixed.is_numeric());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn is_numeric(&self) -> bool {
+        crate::simd::is_all_numeric(&self.0)
+    }
+
+    /// Returns `true` if all characters are ASCII alphanumeric (A-Z, a-z, 0-9).
+    ///
+    /// An empty string returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiTextStr;
+    ///
+    /// let alphanum = AsciiTextStr::try_from_bytes(b"ABC123")?;
+    /// assert!(alphanum.is_alphanumeric());
+    ///
+    /// let with_dash = AsciiTextStr::try_from_bytes(b"BTC-USD")?;
+    /// assert!(!with_dash.is_alphanumeric());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn is_alphanumeric(&self) -> bool {
+        crate::simd::is_all_alphanumeric(&self.0)
+    }
 }
+
+// =============================================================================
+// Integer Parsing
+// =============================================================================
+
+crate::parse::impl_parse_int!(AsciiTextStr, as_str);
 
 // =============================================================================
 // Trait Implementations

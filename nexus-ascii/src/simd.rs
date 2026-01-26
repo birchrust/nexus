@@ -461,6 +461,108 @@ pub fn is_all_printable(bytes: &[u8]) -> bool {
 }
 
 // =============================================================================
+// Numeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII digits ('0'-'9').
+///
+/// Returns true if all bytes are digits, false otherwise.
+/// An empty slice returns true.
+///
+/// Dispatches to the best available implementation at compile time:
+/// - AVX-512: 64 bytes/iter
+/// - AVX2: 32 bytes/iter
+/// - SSE2: 16 bytes/iter (x86_64 baseline)
+/// - Scalar SWAR: 8 bytes/iter
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// assert!(simd::is_all_numeric(b"12345678"));
+/// assert!(!simd::is_all_numeric(b"123a5678"));
+/// assert!(simd::is_all_numeric(b"")); // empty is true
+/// ```
+#[inline]
+pub fn is_all_numeric(bytes: &[u8]) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    {
+        avx512::is_all_numeric(bytes)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
+    {
+        avx2::is_all_numeric(bytes)
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    {
+        sse2::is_all_numeric(bytes)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        scalar::is_all_numeric(bytes)
+    }
+}
+
+// =============================================================================
+// Alphanumeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII alphanumeric (0-9, A-Z, a-z).
+///
+/// Returns true if all bytes are alphanumeric, false otherwise.
+/// An empty slice returns true.
+///
+/// Dispatches to the best available implementation at compile time:
+/// - AVX-512: 64 bytes/iter
+/// - AVX2: 32 bytes/iter
+/// - SSE2: 16 bytes/iter (x86_64 baseline)
+/// - Scalar SWAR: 8 bytes/iter
+///
+/// # Example
+///
+/// ```
+/// use nexus_ascii::simd;
+///
+/// assert!(simd::is_all_alphanumeric(b"ABC123xyz"));
+/// assert!(!simd::is_all_alphanumeric(b"BTC-USD")); // hyphen not alphanumeric
+/// assert!(simd::is_all_alphanumeric(b"")); // empty is true
+/// ```
+#[inline]
+pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+    {
+        avx512::is_all_alphanumeric(bytes)
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512bw")
+    ))]
+    {
+        avx2::is_all_alphanumeric(bytes)
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    {
+        sse2::is_all_alphanumeric(bytes)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        scalar::is_all_alphanumeric(bytes)
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

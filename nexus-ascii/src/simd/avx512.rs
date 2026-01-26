@@ -106,6 +106,124 @@ pub fn validate_printable(bytes: &[u8]) -> Result<(), (u8, usize)> {
 }
 
 // =============================================================================
+// Numeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII digits ('0'-'9') using AVX-512 (64 bytes at a time).
+///
+/// Cascades to AVX2 for inputs shorter than 64 bytes.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn is_all_numeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 64 {
+        return avx2::is_all_numeric(bytes);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: AVX-512BW availability is guaranteed by target_feature cfg
+    unsafe {
+        // Range check: byte in ['0', '9']
+        // Using signed comparison: byte > 0x2F AND byte <= 0x39
+        let lo = _mm512_set1_epi8(0x2F_i8); // '0' - 1
+        let hi = _mm512_set1_epi8(0x39_i8); // '9'
+
+        // Process 64 bytes at a time
+        while i + 64 <= len {
+            let chunk = _mm512_loadu_si512(bytes.as_ptr().add(i).cast());
+
+            // Check if each byte is in range ['0', '9']
+            // is_digit = (byte > 0x2F) AND (byte <= 0x39)
+            let gt_lo = _mm512_cmpgt_epi8_mask(chunk, lo);
+            let le_hi = _mm512_cmple_epi8_mask(chunk, hi);
+            let is_digit = gt_lo & le_hi;
+
+            // All bytes must be digits (mask = all 1s = u64::MAX)
+            if is_digit != u64::MAX {
+                return false;
+            }
+
+            i += 64;
+        }
+    }
+
+    // Handle remainder with AVX2 (which cascades to SSE2, then scalar)
+    if i < len {
+        return avx2::is_all_numeric(&bytes[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
+// Alphanumeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII alphanumeric (0-9, A-Z, a-z) using AVX-512.
+///
+/// Cascades to AVX2 for inputs shorter than 64 bytes.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 64 {
+        return avx2::is_all_alphanumeric(bytes);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: AVX-512BW availability is guaranteed by target_feature cfg
+    unsafe {
+        // Digit range: ['0', '9'] = [0x30, 0x39]
+        let digit_lo = _mm512_set1_epi8(0x2F_i8); // '0' - 1
+        let digit_hi = _mm512_set1_epi8(0x39_i8); // '9'
+
+        // Uppercase range: ['A', 'Z'] = [0x41, 0x5A]
+        let upper_lo = _mm512_set1_epi8(0x40_i8); // 'A' - 1
+        let upper_hi = _mm512_set1_epi8(0x5A_i8); // 'Z'
+
+        // Lowercase range: ['a', 'z'] = [0x61, 0x7A]
+        let lower_lo = _mm512_set1_epi8(0x60_i8); // 'a' - 1
+        let lower_hi = _mm512_set1_epi8(0x7A_i8); // 'z'
+
+        // Process 64 bytes at a time
+        while i + 64 <= len {
+            let chunk = _mm512_loadu_si512(bytes.as_ptr().add(i).cast());
+
+            // Check digit: byte > 0x2F AND byte <= 0x39
+            let is_digit = _mm512_cmpgt_epi8_mask(chunk, digit_lo)
+                & _mm512_cmple_epi8_mask(chunk, digit_hi);
+
+            // Check uppercase: byte > 0x40 AND byte <= 0x5A
+            let is_upper = _mm512_cmpgt_epi8_mask(chunk, upper_lo)
+                & _mm512_cmple_epi8_mask(chunk, upper_hi);
+
+            // Check lowercase: byte > 0x60 AND byte <= 0x7A
+            let is_lower = _mm512_cmpgt_epi8_mask(chunk, lower_lo)
+                & _mm512_cmple_epi8_mask(chunk, lower_hi);
+
+            // Alphanumeric = digit OR upper OR lower
+            let is_alnum = is_digit | is_upper | is_lower;
+
+            // All bytes must be alphanumeric (mask = all 1s = u64::MAX)
+            if is_alnum != u64::MAX {
+                return false;
+            }
+
+            i += 64;
+        }
+    }
+
+    // Handle remainder with AVX2 (which cascades to SSE2, then scalar)
+    if i < len {
+        return avx2::is_all_alphanumeric(&bytes[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -274,6 +392,125 @@ mod tests {
                 assert_eq!(
                     validate_printable(&bytes),
                     scalar::validate_printable(&bytes),
+                    "len={}, pos={}",
+                    len,
+                    pos
+                );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Numeric validation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_all_numeric_empty() {
+        assert!(is_all_numeric(b""));
+    }
+
+    #[test]
+    fn test_is_all_numeric_short() {
+        assert!(is_all_numeric(b"12345"));
+        assert!(!is_all_numeric(b"123a5"));
+    }
+
+    #[test]
+    fn test_is_all_numeric_exact_64() {
+        let bytes = b"0123456789012345678901234567890123456789012345678901234567890123";
+        assert_eq!(bytes.len(), 64);
+        assert!(is_all_numeric(bytes));
+
+        let mut bytes = *b"0123456789012345678901234567890123456789012345678901234567890123";
+        bytes[31] = b'a';
+        assert!(!is_all_numeric(&bytes));
+    }
+
+    #[test]
+    fn test_is_all_numeric_matches_scalar() {
+        for len in 0..=160 {
+            let bytes: Vec<u8> = (0..len).map(|i| b'0' + (i % 10) as u8).collect();
+            assert_eq!(
+                is_all_numeric(&bytes),
+                scalar::is_all_numeric(&bytes),
+                "len={}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_all_numeric_invalid_matches_scalar() {
+        for len in 1..=128 {
+            for pos in (0..len).step_by(7) {
+                let mut bytes = vec![b'5'; len];
+                bytes[pos] = b'x';
+                assert_eq!(
+                    is_all_numeric(&bytes),
+                    scalar::is_all_numeric(&bytes),
+                    "len={}, pos={}",
+                    len,
+                    pos
+                );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Alphanumeric validation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_all_alphanumeric_empty() {
+        assert!(is_all_alphanumeric(b""));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_short() {
+        assert!(is_all_alphanumeric(b"ABC123xyz"));
+        assert!(!is_all_alphanumeric(b"ABC-123"));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_exact_64() {
+        let bytes = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB";
+        assert_eq!(bytes.len(), 64);
+        assert!(is_all_alphanumeric(bytes));
+
+        let mut bytes = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB";
+        bytes[31] = b'-';
+        assert!(!is_all_alphanumeric(&bytes));
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_matches_scalar() {
+        for len in 0..=160 {
+            // Mix of digits, uppercase, lowercase
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| match i % 3 {
+                    0 => b'0' + (i % 10) as u8,
+                    1 => b'A' + (i % 26) as u8,
+                    _ => b'a' + (i % 26) as u8,
+                })
+                .collect();
+            assert_eq!(
+                is_all_alphanumeric(&bytes),
+                scalar::is_all_alphanumeric(&bytes),
+                "len={}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_all_alphanumeric_invalid_matches_scalar() {
+        for len in 1..=128 {
+            for pos in (0..len).step_by(7) {
+                let mut bytes = vec![b'A'; len];
+                bytes[pos] = b'-';
+                assert_eq!(
+                    is_all_alphanumeric(&bytes),
+                    scalar::is_all_alphanumeric(&bytes),
                     "len={}, pos={}",
                     len,
                     pos

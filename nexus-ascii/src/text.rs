@@ -605,6 +605,32 @@ impl<const CAP: usize> AsciiText<CAP> {
     pub const fn into_raw(self) -> [u8; CAP] {
         self.0.into_raw()
     }
+
+    /// Returns a reference to the full fixed-size buffer.
+    ///
+    /// This provides direct access to the underlying `[u8; CAP]` array,
+    /// which is useful for wire formats (like SBE) that expect fixed-size
+    /// byte arrays.
+    ///
+    /// The first `self.len()` bytes contain the string content.
+    /// Remaining bytes are zero-padded.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let text: AsciiText<16> = AsciiText::try_from("Hello")?;
+    /// let raw: &[u8; 16] = text.as_raw();
+    /// assert_eq!(&raw[..5], b"Hello");
+    /// assert_eq!(&raw[5..], &[0u8; 11]);
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn as_raw(&self) -> &[u8; CAP] {
+        self.0.as_raw()
+    }
 }
 
 // =============================================================================
@@ -668,6 +694,156 @@ impl<const CAP: usize> AsciiText<CAP> {
         Ok(AsciiText(self.0.tighten()?))
     }
 }
+
+// =============================================================================
+// String Operations
+// =============================================================================
+
+impl<const CAP: usize> AsciiText<CAP> {
+    /// Splits the text on the first occurrence of the delimiter.
+    ///
+    /// Returns `Some((before, after))` if the delimiter is found, where
+    /// `before` is the substring before the delimiter and `after` is the
+    /// substring after it. The delimiter itself is not included in either part.
+    ///
+    /// Returns `None` if the delimiter is not found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::{AsciiText, AsciiChar};
+    ///
+    /// let s: AsciiText<32> = AsciiText::try_from("BTC-USD")?;
+    /// let (base, quote) = s.split_once(AsciiChar::MINUS).unwrap();
+    /// assert_eq!(base.as_str(), "BTC");
+    /// assert_eq!(quote.as_str(), "USD");
+    ///
+    /// // No delimiter found
+    /// let s2: AsciiText<32> = AsciiText::try_from("BTCUSD")?;
+    /// assert!(s2.split_once(AsciiChar::MINUS).is_none());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn split_once(&self, delimiter: AsciiChar) -> Option<(&AsciiTextStr, &AsciiTextStr)> {
+        let bytes = self.as_bytes();
+        let pos = bytes.iter().position(|&b| b == delimiter.as_u8())?;
+        // SAFETY: pos is within bounds, AsciiText guarantees printable ASCII
+        let before = unsafe { AsciiTextStr::from_bytes_unchecked(&bytes[..pos]) };
+        let after = unsafe { AsciiTextStr::from_bytes_unchecked(&bytes[pos + 1..]) };
+        Some((before, after))
+    }
+
+    /// Returns the text with the given prefix removed.
+    ///
+    /// Returns `Some(stripped)` if the text starts with the prefix,
+    /// or `None` if it doesn't.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let s: AsciiText<32> = AsciiText::try_from("USD-BTC")?;
+    /// let stripped = s.strip_prefix("USD-").unwrap();
+    /// assert_eq!(stripped.as_str(), "BTC");
+    ///
+    /// assert!(s.strip_prefix("EUR-").is_none());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn strip_prefix<P: AsRef<[u8]>>(&self, prefix: P) -> Option<&AsciiTextStr> {
+        let prefix = prefix.as_ref();
+        if self.as_bytes().starts_with(prefix) {
+            // SAFETY: Prefix is within bounds, remaining bytes are printable ASCII
+            Some(unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[prefix.len()..]) })
+        } else {
+            None
+        }
+    }
+
+    /// Returns the text with the given suffix removed.
+    ///
+    /// Returns `Some(stripped)` if the text ends with the suffix,
+    /// or `None` if it doesn't.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let s: AsciiText<32> = AsciiText::try_from("BTC-USD")?;
+    /// let stripped = s.strip_suffix("-USD").unwrap();
+    /// assert_eq!(stripped.as_str(), "BTC");
+    ///
+    /// assert!(s.strip_suffix("-EUR").is_none());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn strip_suffix<S: AsRef<[u8]>>(&self, suffix: S) -> Option<&AsciiTextStr> {
+        let suffix = suffix.as_ref();
+        if self.as_bytes().ends_with(suffix) {
+            let new_len = self.len() - suffix.len();
+            // SAFETY: new_len is within bounds, bytes are printable ASCII
+            Some(unsafe { AsciiTextStr::from_bytes_unchecked(&self.as_bytes()[..new_len]) })
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if all characters are ASCII digits (0-9).
+    ///
+    /// An empty string returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let digits: AsciiText<32> = AsciiText::try_from("12345")?;
+    /// assert!(digits.is_numeric());
+    ///
+    /// let mixed: AsciiText<32> = AsciiText::try_from("123abc")?;
+    /// assert!(!mixed.is_numeric());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn is_numeric(&self) -> bool {
+        crate::simd::is_all_numeric(self.as_bytes())
+    }
+
+    /// Returns `true` if all characters are ASCII alphanumeric (A-Z, a-z, 0-9).
+    ///
+    /// An empty string returns `true`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_ascii::AsciiText;
+    ///
+    /// let alphanum: AsciiText<32> = AsciiText::try_from("ABC123")?;
+    /// assert!(alphanum.is_alphanumeric());
+    ///
+    /// let with_dash: AsciiText<32> = AsciiText::try_from("BTC-USD")?;
+    /// assert!(!with_dash.is_alphanumeric());
+    /// # Ok::<(), nexus_ascii::AsciiError>(())
+    /// ```
+    #[inline]
+    pub fn is_alphanumeric(&self) -> bool {
+        crate::simd::is_all_alphanumeric(self.as_bytes())
+    }
+}
+
+// =============================================================================
+// Integer Parsing
+// =============================================================================
+
+crate::parse::impl_parse_int_generic!(AsciiText, as_str);
+
+// =============================================================================
+// Integer Formatting
+// =============================================================================
+
+crate::format::impl_format_int_generic!(AsciiText, from_bytes_unchecked);
 
 // =============================================================================
 // Deref to AsciiString
@@ -851,6 +1027,13 @@ impl<const CAP: usize> AsRef<AsciiTextStr> for AsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &AsciiTextStr {
         self.as_ascii_text_str()
+    }
+}
+
+impl<const CAP: usize> AsRef<[u8; CAP]> for AsciiText<CAP> {
+    #[inline]
+    fn as_ref(&self) -> &[u8; CAP] {
+        self.as_raw()
     }
 }
 
@@ -1716,5 +1899,160 @@ mod tests {
         let buffer: [u8; 16] = *b"hello\x01          ";
         let result = AsciiText::<16>::try_from_right_padded(buffer, b' ');
         assert!(matches!(result, Err(AsciiError::NonPrintable { .. })));
+    }
+
+    // =========================================================================
+    // as_raw tests
+    // =========================================================================
+
+    #[test]
+    fn as_raw_returns_full_buffer() {
+        let s: AsciiText<8> = AsciiText::try_from("hello").unwrap();
+        let raw: &[u8; 8] = s.as_raw();
+        assert_eq!(&raw[..5], b"hello");
+        assert_eq!(&raw[5..], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn as_ref_array() {
+        let s: AsciiText<8> = AsciiText::try_from("test").unwrap();
+        let arr: &[u8; 8] = s.as_ref();
+        assert_eq!(&arr[..4], b"test");
+    }
+
+    // =========================================================================
+    // split_once tests
+    // =========================================================================
+
+    #[test]
+    fn split_once_found() {
+        let s: AsciiText<32> = AsciiText::try_from("BTC-USD").unwrap();
+        let (before, after) = s.split_once(AsciiChar::MINUS).unwrap();
+        assert_eq!(before.as_str(), "BTC");
+        assert_eq!(after.as_str(), "USD");
+    }
+
+    #[test]
+    fn split_once_not_found() {
+        let s: AsciiText<32> = AsciiText::try_from("BTCUSD").unwrap();
+        assert!(s.split_once(AsciiChar::MINUS).is_none());
+    }
+
+    #[test]
+    fn split_once_multiple_delimiters() {
+        let s: AsciiText<32> = AsciiText::try_from("A-B-C").unwrap();
+        let (before, after) = s.split_once(AsciiChar::MINUS).unwrap();
+        assert_eq!(before.as_str(), "A");
+        assert_eq!(after.as_str(), "B-C");
+    }
+
+    // =========================================================================
+    // strip_prefix and strip_suffix tests
+    // =========================================================================
+
+    #[test]
+    fn strip_prefix_found() {
+        let s: AsciiText<32> = AsciiText::try_from("hello world").unwrap();
+        let stripped = s.strip_prefix("hello ").unwrap();
+        assert_eq!(stripped.as_str(), "world");
+    }
+
+    #[test]
+    fn strip_prefix_not_found() {
+        let s: AsciiText<32> = AsciiText::try_from("hello world").unwrap();
+        assert!(s.strip_prefix("goodbye").is_none());
+    }
+
+    #[test]
+    fn strip_suffix_found() {
+        let s: AsciiText<32> = AsciiText::try_from("hello world").unwrap();
+        let stripped = s.strip_suffix(" world").unwrap();
+        assert_eq!(stripped.as_str(), "hello");
+    }
+
+    #[test]
+    fn strip_suffix_not_found() {
+        let s: AsciiText<32> = AsciiText::try_from("hello world").unwrap();
+        assert!(s.strip_suffix("universe").is_none());
+    }
+
+    // =========================================================================
+    // is_numeric and is_alphanumeric tests
+    // =========================================================================
+
+    #[test]
+    fn is_numeric_true() {
+        let s: AsciiText<32> = AsciiText::try_from("12345").unwrap();
+        assert!(s.is_numeric());
+    }
+
+    #[test]
+    fn is_numeric_false() {
+        let s: AsciiText<32> = AsciiText::try_from("123a5").unwrap();
+        assert!(!s.is_numeric());
+    }
+
+    #[test]
+    fn is_alphanumeric_true() {
+        let s: AsciiText<32> = AsciiText::try_from("Hello123").unwrap();
+        assert!(s.is_alphanumeric());
+    }
+
+    #[test]
+    fn is_alphanumeric_false() {
+        let s: AsciiText<32> = AsciiText::try_from("Hello-123").unwrap();
+        assert!(!s.is_alphanumeric());
+    }
+
+    // =========================================================================
+    // Integer parsing tests
+    // =========================================================================
+
+    #[test]
+    fn parse_u8_valid() {
+        let s: AsciiText<8> = AsciiText::try_from("255").unwrap();
+        assert_eq!(s.parse_u8().unwrap(), 255);
+    }
+
+    #[test]
+    fn parse_u64_valid() {
+        let s: AsciiText<32> = AsciiText::try_from("18446744073709551615").unwrap();
+        assert_eq!(s.parse_u64().unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn parse_i64_negative() {
+        let s: AsciiText<32> = AsciiText::try_from("-9223372036854775808").unwrap();
+        assert_eq!(s.parse_i64().unwrap(), i64::MIN);
+    }
+
+    // =========================================================================
+    // Integer formatting tests
+    // =========================================================================
+
+    #[test]
+    fn from_u8_basic() {
+        let s: AsciiText<8> = AsciiText::from_u8(255).unwrap();
+        assert_eq!(s.as_str(), "255");
+    }
+
+    #[test]
+    fn from_u64_large() {
+        let s: AsciiText<32> = AsciiText::from_u64(u64::MAX).unwrap();
+        assert_eq!(s.as_str(), "18446744073709551615");
+    }
+
+    #[test]
+    fn from_i64_min() {
+        let s: AsciiText<32> = AsciiText::from_i64(i64::MIN).unwrap();
+        assert_eq!(s.as_str(), "-9223372036854775808");
+    }
+
+    #[test]
+    fn format_then_parse_roundtrip() {
+        let original: u64 = 12345678901234;
+        let s: AsciiText<32> = AsciiText::from_u64(original).unwrap();
+        let parsed = s.parse_u64().unwrap();
+        assert_eq!(original, parsed);
     }
 }

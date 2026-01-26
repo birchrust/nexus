@@ -306,6 +306,129 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 }
 
 // =============================================================================
+// Numeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII digits ('0'-'9') using SSE2 (16 bytes at a time).
+///
+/// Cascades to scalar for inputs shorter than 16 bytes.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn is_all_numeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 16 {
+        return scalar::is_all_numeric(bytes);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: SSE2 is baseline for x86_64
+    unsafe {
+        // Range check: byte in ['0', '9'] means byte > '/' AND byte < ':'
+        let lo_bound = _mm_set1_epi8(0x2F); // '0' - 1 = 0x2F
+        let hi_bound = _mm_set1_epi8(0x3A); // '9' + 1 = 0x3A
+
+        // Process 16 bytes at a time
+        while i + 16 <= len {
+            let chunk = _mm_loadu_si128(bytes.as_ptr().add(i).cast());
+
+            // Check if each byte is in range ['0', '9']
+            // is_digit = (byte > 0x2F) AND (byte < 0x3A)
+            let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
+            let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
+            let is_digit = _mm_and_si128(gt_lo, lt_hi);
+
+            // All bytes must be digits (mask = 0xFFFF)
+            if _mm_movemask_epi8(is_digit) != 0xFFFF {
+                return false;
+            }
+
+            i += 16;
+        }
+    }
+
+    // Handle remainder with scalar
+    if i < len {
+        return scalar::is_all_numeric(&bytes[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
+// Alphanumeric Validation
+// =============================================================================
+
+/// Check if all bytes are ASCII alphanumeric (0-9, A-Z, a-z) using SSE2.
+///
+/// Cascades to scalar for inputs shorter than 16 bytes.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 16 {
+        return scalar::is_all_alphanumeric(bytes);
+    }
+
+    let mut i = 0;
+
+    // SAFETY: SSE2 is baseline for x86_64
+    unsafe {
+        // Digit range: ['0', '9'] = [0x30, 0x39]
+        let digit_lo = _mm_set1_epi8(0x2F); // '0' - 1
+        let digit_hi = _mm_set1_epi8(0x3A); // '9' + 1
+
+        // Uppercase range: ['A', 'Z'] = [0x41, 0x5A]
+        let upper_lo = _mm_set1_epi8(0x40); // 'A' - 1
+        let upper_hi = _mm_set1_epi8(0x5B); // 'Z' + 1
+
+        // Lowercase range: ['a', 'z'] = [0x61, 0x7A]
+        let lower_lo = _mm_set1_epi8(0x60); // 'a' - 1
+        let lower_hi = _mm_set1_epi8(0x7B); // 'z' + 1
+
+        // Process 16 bytes at a time
+        while i + 16 <= len {
+            let chunk = _mm_loadu_si128(bytes.as_ptr().add(i).cast());
+
+            // Check digit: byte > 0x2F AND byte < 0x3A
+            let is_digit = _mm_and_si128(
+                _mm_cmpgt_epi8(chunk, digit_lo),
+                _mm_cmpgt_epi8(digit_hi, chunk),
+            );
+
+            // Check uppercase: byte > 0x40 AND byte < 0x5B
+            let is_upper = _mm_and_si128(
+                _mm_cmpgt_epi8(chunk, upper_lo),
+                _mm_cmpgt_epi8(upper_hi, chunk),
+            );
+
+            // Check lowercase: byte > 0x60 AND byte < 0x7B
+            let is_lower = _mm_and_si128(
+                _mm_cmpgt_epi8(chunk, lower_lo),
+                _mm_cmpgt_epi8(lower_hi, chunk),
+            );
+
+            // Alphanumeric = digit OR upper OR lower
+            let is_alnum = _mm_or_si128(_mm_or_si128(is_digit, is_upper), is_lower);
+
+            // All bytes must be alphanumeric (mask = 0xFFFF)
+            if _mm_movemask_epi8(is_alnum) != 0xFFFF {
+                return false;
+            }
+
+            i += 16;
+        }
+    }
+
+    // Handle remainder with scalar
+    if i < len {
+        return scalar::is_all_alphanumeric(&bytes[i..]);
+    }
+
+    true
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
