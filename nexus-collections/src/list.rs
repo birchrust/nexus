@@ -111,41 +111,17 @@
 
 use std::marker::PhantomData;
 
+use crate::storage::ListNode;
 use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
 
 /// Type alias for bounded list storage backed by a boxed allocation.
 pub type BoxedListStorage<T> = BoxedStorage<ListNode<T, usize>>;
 
 /// Type alias for bounded list storage backed by `nexus_slab::BoundedSlab`.
-#[cfg(feature = "nexus-slab")]
 pub type BoundedNexusListStorage<T> = nexus_slab::BoundedSlab<ListNode<T, nexus_slab::Key>>;
 
 /// Type alias for unbounded list storage backed by `nexus_slab::Slab`.
-#[cfg(feature = "nexus-slab")]
 pub type UnboundedNexusListStorage<T> = nexus_slab::Slab<ListNode<T, nexus_slab::Key>>;
-
-/// A node in the linked list.
-///
-/// This wraps user data with prev/next links. Users interact with `&T` and `&mut T`
-/// through the list's accessor methods; the node structure is an implementation detail.
-#[derive(Debug)]
-pub struct ListNode<T, K> {
-    pub(crate) data: T,
-    pub(crate) prev: K,
-    pub(crate) next: K,
-}
-
-impl<T, K: Key> ListNode<T, K> {
-    /// Creates a new unlinked node.
-    #[inline]
-    fn new(data: T) -> Self {
-        Self {
-            data,
-            prev: K::NONE,
-            next: K::NONE,
-        }
-    }
-}
 
 /// A doubly-linked list over external storage.
 ///
@@ -2364,7 +2340,7 @@ mod bench_boxed_storage {
     }
 }
 
-#[cfg(all(test, feature = "nexus-slab"))]
+#[cfg(test)]
 mod bench_nexus_slab_storage {
     use super::*;
     use hdrhistogram::Histogram;
@@ -2562,7 +2538,7 @@ mod bench_nexus_slab_storage {
         for _ in 0..WARMUP {
             let key = list.push_back(&mut storage, 1);
             list.unlink(&mut storage, key);
-            storage.remove(key);
+            storage.try_remove_by_key(key);
         }
 
         for _ in 0..ITERATIONS {
@@ -2573,7 +2549,7 @@ mod bench_nexus_slab_storage {
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
-            storage.remove(key);
+            storage.try_remove_by_key(key);
         }
 
         print_histogram("unlink", &hist);

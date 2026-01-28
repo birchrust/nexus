@@ -43,11 +43,9 @@ use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
 pub type BoxedHeapStorage<T> = BoxedStorage<HeapNode<T>>;
 
 /// Type alias for bounded heap storage backed by `nexus_slab::BoundedSlab`.
-#[cfg(feature = "nexus-slab")]
 pub type BoundedNexusHeapStorage<T> = nexus_slab::BoundedSlab<HeapNode<T>>;
 
 /// Type alias for unbounded heap storage backed by `nexus_slab::Slab`.
-#[cfg(feature = "nexus-slab")]
 pub type UnboundedNexusHeapStorage<T> = nexus_slab::Slab<HeapNode<T>>;
 
 const HEAP_POS_NONE: usize = usize::MAX;
@@ -1863,7 +1861,7 @@ mod bench_boxed_storage {
 }
 
 
-#[cfg(all(test, feature = "nexus-slab"))]
+#[cfg(test)]
 mod bench_nexus_slab_storage {
     use super::*;
     use hdrhistogram::Histogram;

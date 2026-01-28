@@ -73,7 +73,6 @@ macro_rules! impl_key_for_uint {
 
 impl_key_for_uint!(u8, u16, u32, u64, usize);
 
-#[cfg(feature = "nexus-slab")]
 impl Key for nexus_slab::Key {
     const NONE: Self = nexus_slab::Key::NONE;
 

@@ -1231,13 +1231,11 @@ where
 pub type BoxedSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
     crate::BoxedStorage<SkipNode<K, V, usize, MAX_LEVEL>>;
 
-/// Type alias for bounded skip list storage backed by `nexus_slab::FixedSlab`.
-#[cfg(feature = "nexus-slab")]
+/// Type alias for bounded skip list storage backed by `nexus_slab::BoundedSlab`.
 pub type BoundedNexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
     nexus_slab::BoundedSlab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
 
-/// Type alias for unbounded skip list storage backed by `nexus_slab::DynamicSlab`.
-#[cfg(feature = "nexus-slab")]
+/// Type alias for unbounded skip list storage backed by `nexus_slab::Slab`.
 pub type UnboundedNexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
     nexus_slab::Slab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
 

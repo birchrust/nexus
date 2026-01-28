@@ -88,6 +88,14 @@
 //!
 //! # Storage Options
 //!
+//! ## Specialized Storage (Recommended)
+//!
+//! | Collection | Bounded | Growable |
+//! |------------|---------|----------|
+//! | [`List`] | [`ListStorage<T>`] | [`GrowableListStorage<T>`] |
+//!
+//! ## Legacy Storage (Deprecated)
+//!
 //! | Storage | Capacity | Allocation | Use Case |
 //! |---------|----------|------------|----------|
 //! | [`BoxedStorage`] | Fixed (runtime) | Single heap alloc | Default choice |
@@ -117,6 +125,8 @@
 
 #![warn(missing_docs)]
 
+mod internal;
+
 pub mod heap;
 pub mod key;
 pub mod list;
@@ -127,4 +137,7 @@ pub use heap::{BoxedHeapStorage, Heap};
 pub use key::Key;
 pub use list::{BoxedListStorage, List};
 pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, VacantEntry};
-pub use storage::{BoundedStorage, BoxedStorage, Full, Storage, UnboundedStorage};
+pub use storage::{
+    BoundedStorage, BoxedStorage, Full, GrowableListStorage, ListNode, ListStorage, Storage,
+    UnboundedStorage,
+};
