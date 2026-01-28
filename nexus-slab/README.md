@@ -46,7 +46,7 @@ use nexus_slab::BoundedSlab;
 // All memory allocated upfront
 let slab = BoundedSlab::with_capacity(100_000);
 
-// Insert returns an Entry handle
+// Insert returns Result<Entry, Full<T>>
 let entry = slab.insert(42).unwrap();
 assert_eq!(*entry.get(), 42);
 
@@ -57,8 +57,9 @@ assert_eq!(*entry.get(), 42);
 let value = entry.remove();
 assert_eq!(value, 100);
 
-// Returns None when full—no surprise allocations
-if slab.insert(123).is_none() {
+// Returns Err(Full(value)) when full—recover the rejected value
+if let Err(full) = slab.insert(123) {
+    let rejected_value = full.into_inner();
     // handle backpressure
 }
 ```
@@ -105,9 +106,13 @@ let slab = BoundedSlab::with_capacity(1024);
 let entry = slab.insert(42).unwrap();
 let key = entry.key();  // Extract the key
 
-// Key-based access
-assert_eq!(slab[key], 42);
-assert_eq!(slab.get(key), Some(&42));
+// Key-based access (returns Ref<T> guard with borrow tracking)
+assert_eq!(*slab.get(key).unwrap(), 42);
+
+// Unchecked index access via UntrackedAccessor (unsafe, fastest)
+// SAFETY: No Entry operations while accessor is in use
+let accessor = unsafe { slab.untracked() };
+assert_eq!(accessor[key], 42);
 
 // Key-based removal
 let value = slab.remove_by_key(key);
@@ -223,13 +228,15 @@ Decoding is two instructions: shift and mask.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `insert(value)` | `Option<Entry<T>>` | Insert, returns `None` if full |
-| `insert_with(f)` | `Option<Entry<T>>` | Insert with access to Entry (self-ref) |
-| `get(key)` | `Option<&T>` | Get by key |
-| `get_mut(key)` | `Option<&mut T>` | Get mutable by key |
+| `insert(value)` | `Result<Entry, Full<T>>` | Insert, returns `Err(Full(value))` if full |
+| `insert_with(f)` | `Result<Entry, CapacityError>` | Insert with access to Entry (self-ref) |
+| `vacant_entry()` | `Result<VacantEntry, CapacityError>` | Reserve slot, fill later |
+| `get(key)` | `Option<Ref<T>>` | Get by key (tracked borrow) |
+| `get_mut(key)` | `Option<RefMut<T>>` | Get mutable by key (tracked borrow) |
 | `remove(entry)` | `T` | Remove via Entry (fast path) |
 | `remove_by_key(key)` | `T` | Remove via key |
-| `slab[key]` | `&T` / `&mut T` | Index access (panics if invalid) |
+| `contains_key(key)` | `bool` | Check if key is valid |
+| `untracked()` | `UntrackedAccessor` | Index access (unsafe) |
 | `len()` / `capacity()` | `usize` | Slot counts |
 | `clear()` | `()` | Remove all elements |
 
@@ -239,11 +246,13 @@ Decoding is two instructions: shift and mask.
 |--------|---------|-------------|
 | `insert(value)` | `Entry<T>` | Insert, grows if needed |
 | `insert_with(f)` | `Entry<T>` | Insert with access to Entry |
-| `get(key)` | `Option<&T>` | Get by key |
-| `get_mut(key)` | `Option<&mut T>` | Get mutable by key |
+| `vacant_entry()` | `SlabVacantEntry<T>` | Reserve slot, fill later |
+| `get(key)` | `Option<Ref<T>>` | Get by key (tracked borrow) |
+| `get_mut(key)` | `Option<RefMut<T>>` | Get mutable by key (tracked borrow) |
 | `remove(entry)` | `T` | Remove via Entry (fast path) |
 | `remove_by_key(key)` | `T` | Remove via key |
-| `slab[key]` | `&T` / `&mut T` | Index access (panics if invalid) |
+| `contains_key(key)` | `bool` | Check if key is valid |
+| `untracked()` | `SlabUntrackedAccessor` | Index access (unsafe) |
 | `len()` / `capacity()` | `usize` | Slot counts |
 | `clear()` | `()` | Remove all (keeps allocated chunks) |
 
@@ -256,10 +265,13 @@ Decoding is two instructions: shift and mask.
 | `get_mut()` | `RefMut<T>` | Mutable borrow with safety checks |
 | `try_get_mut()` | `Option<RefMut<T>>` | Mutable borrow, returns None if invalid |
 | `get_unchecked()` | `&T` | Direct access (unsafe) |
-| `get_mut_unchecked()` | `&mut T` | Direct mutable access (unsafe) |
+| `get_unchecked_mut()` | `&mut T` | Direct mutable access (unsafe) |
+| `replace(value)` | `T` | Swap value, return old |
+| `and_modify(f)` | `&Self` | Modify in place (chainable) |
+| `take()` | `(T, VacantEntry)` | Extract value, keep slot reserved |
 | `remove()` | `T` | Remove and return value |
 | `key()` | `Key` | Get the key for this entry |
-| `is_alive()` | `bool` | Check if slab still exists |
+| `is_valid()` | `bool` | Check if entry is valid (slab alive, slot occupied) |
 
 ## When to Use This
 

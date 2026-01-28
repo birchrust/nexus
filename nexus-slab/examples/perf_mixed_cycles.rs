@@ -110,6 +110,8 @@ impl GrowthStats {
 fn bench_nexus() -> GrowthStats {
     // Start with initial capacity, let it grow
     let slab = Slab::with_capacity(INITIAL_CAPACITY);
+    // SAFETY: No Entry operations during benchmark - untracked access is safe
+    let accessor = unsafe { slab.untracked() };
     let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
     let mut keys: Vec<Key> = Vec::with_capacity(FINAL_SIZE);
@@ -139,7 +141,7 @@ fn bench_nexus() -> GrowthStats {
             let idx = rng.next_usize(keys.len());
             let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[key]);
+            black_box(accessor[key]);
             let end = rdtscp();
             let _ = stats.pre_growth.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {
@@ -165,7 +167,7 @@ fn bench_nexus() -> GrowthStats {
             let idx = rng.next_usize(keys.len());
             let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[key]);
+            black_box(accessor[key]);
             let end = rdtscp();
             let _ = stats.during_growth.get.record(end.wrapping_sub(start));
         }
@@ -184,7 +186,7 @@ fn bench_nexus() -> GrowthStats {
             let idx = rng.next_usize(keys.len());
             let key = keys[idx];
             let start = rdtscp();
-            black_box(slab[key]);
+            black_box(accessor[key]);
             let end = rdtscp();
             let _ = stats.post_growth.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {

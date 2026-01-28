@@ -73,16 +73,19 @@ fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
     // Fill the slab - store the keys
     let keys: Vec<Key> = (0..CAPACITY as u64).map(|i| slab.insert(i).key()).collect();
 
+    // SAFETY: No Entry operations during benchmark - untracked access is safe
+    let accessor = unsafe { slab.untracked() };
+
     // Warmup - random access using stored keys
     for &idx in indices.iter().take(10_000) {
-        black_box(slab[keys[idx]]);
+        black_box(accessor[keys[idx]]);
     }
 
     // Measured random gets
     for &idx in indices {
         let key = keys[idx];
         let start = rdtscp();
-        black_box(slab[key]);
+        black_box(accessor[key]);
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }

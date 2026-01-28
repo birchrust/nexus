@@ -130,16 +130,17 @@
 //! // Key-based API (for collections)
 //! let entry = slab.insert(100);
 //! let key = entry.key();
-//! assert_eq!(slab[key], 100);
+//! assert_eq!(*slab.get(key).unwrap(), 100);
 //! let value = slab.remove_by_key(key);
 //! assert_eq!(value, 100);
 //! ```
 //!
 //! # Choosing Between BoundedSlab and Slab
 //!
-//! - **[`BoundedSlab`]**: Fixed capacity, pre-allocated. Returns `None` when
-//!   exhausted. Use when capacity is known and you want zero allocation after init.
-//!   This is the production choice for latency-critical systems.
+//! - **[`BoundedSlab`]**: Fixed capacity, pre-allocated. Returns `Err(Full(value))`
+//!   when exhausted, allowing recovery of the rejected value. Use when capacity
+//!   is known and you want zero allocation after init. This is the production
+//!   choice for latency-critical systems.
 //!
 //! - **[`Slab`]**: Grows by adding new chunks. Use when capacity is unbounded
 //!   or as an overflow safety net. Growth allocates one chunk at a time—no
@@ -148,11 +149,12 @@
 #![warn(missing_docs)]
 
 pub mod bounded;
+mod shared;
 pub mod unbounded;
 
 // Re-export primary types at root
-pub use bounded::{BoundedSlab, Entry, Ref, RefMut};
-pub use unbounded::{Slab, SlabBuilder};
+pub use bounded::{BoundedSlab, Entry, Ref, RefMut, UntrackedAccessor, VacantEntry};
+pub use unbounded::{Slab, SlabBuilder, SlabUntrackedAccessor, SlabVacantEntry};
 
 // =============================================================================
 // Constants
@@ -171,8 +173,34 @@ pub const SLOT_NONE: u32 = INDEX_MASK; // 0x7FFF_FFFF
 // =============================================================================
 
 /// Returned when inserting into a full fixed-capacity slab.
+///
+/// Contains the rejected value so it can be recovered.
 #[derive(Debug)]
 pub struct Full<T>(pub T);
+
+impl<T> Full<T> {
+    /// Returns the value that could not be inserted.
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+/// Returned when a slab operation fails due to capacity.
+///
+/// Unlike [`Full<T>`], this error does not contain a value. Used when
+/// the operation doesn't have a value to return (e.g., `insert_with`
+/// where the closure was never called).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapacityError;
+
+impl std::fmt::Display for CapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("slab is at capacity")
+    }
+}
+
+impl std::error::Error for CapacityError {}
 
 // =============================================================================
 // Key

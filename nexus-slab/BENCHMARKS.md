@@ -6,19 +6,24 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core, turbo boost d
 
 ### BoundedSlab (fixed capacity)
 
-| Operation | nexus-slab | slab crate | Difference |
-|-----------|------------|------------|------------|
-| INSERT p50 | ~20 cycles | ~22 cycles | 9% faster |
-| GET p50 | ~24 cycles | ~26 cycles | 8% faster |
-| REMOVE p50 | ~24 cycles | ~30 cycles | 20% faster |
+| Operation | unchecked | tracked | slab crate | Notes |
+|-----------|-----------|---------|------------|-------|
+| INSERT p50 | ~26 cycles | ~26 cycles | ~22 cycles | Comparable |
+| GET p50 | **~22 cycles** | ~32 cycles | ~28 cycles | Unchecked 21% faster |
+| REMOVE p50 | ~32 cycles | ~32 cycles | ~32 cycles | Comparable |
+
+**unchecked** = `get_unchecked()` or `UntrackedAccessor` (no runtime checks)
+**tracked** = `get()` returning `Ref<T>` guard (borrow tracking)
 
 ### Slab (growable, steady-state)
 
-| Operation | nexus-slab | slab crate | Notes |
-|-----------|------------|------------|-------|
-| INSERT p50 | ~22 cycles | ~22 cycles | Comparable |
-| GET p50 | ~26 cycles | ~26 cycles | Comparable |
-| REMOVE p50 | ~28 cycles | ~30 cycles | ~7% faster |
+| Operation | unchecked | tracked | slab crate | Notes |
+|-----------|-----------|---------|------------|-------|
+| GET p50 | ~38 cycles | ~44 cycles | ~26 cycles | Chunk decode overhead |
+
+The unbounded `Slab` has inherent overhead from chunk-based storage (decode
+chunk index, indirect through chunk pointer). Use `BoundedSlab` when capacity
+is known for best performance.
 
 ### Slab (growable, during growth)
 
@@ -28,24 +33,45 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core, turbo boost d
 | Growth max | ~70K cycles | ~1.5M cycles | **20x better** |
 
 The `slab` crate uses `Vec`, which copies all existing data on reallocation.
-`nexus-slab` adds independent chunks - no copying.
+`nexus-slab` adds independent chunks - no copying. This is the primary value
+proposition of the unbounded `Slab`.
 
-### Entry-based API
+### Access Method Comparison (BoundedSlab)
 
-The Entry-based API provides handle-based access with optional safety checks.
+| Method | p50 | p99 | Notes |
+|--------|-----|-----|-------|
+| `get_unchecked()` | ~20 | ~22 | No checks, fastest |
+| `UntrackedAccessor[key]` | ~28 | ~68 | Index syntax, uses get_unchecked |
+| `get_untracked()` | ~30 | ~430 | Validity check, no borrow tracking |
+| `get()` → `Ref<T>` | ~32 | ~86 | Validity + borrow tracking |
+| `contains_key()` | ~30 | ~62 | Validity check only |
+| `Entry::get_unchecked()` | ~24 | ~48 | Direct pointer, no checks |
+| `Entry::get()` | ~36 | ~90 | Weak upgrade + borrow |
 
-| Operation | Entry (safe) | Entry (unchecked) | Key-based | Notes |
-|-----------|-------------|-------------------|-----------|-------|
-| GET p50 | ~36 cycles | ~24 cycles | ~24 cycles | Safe adds liveness + borrow check |
-| GET_MUT p50 | ~34 cycles | ~24 cycles | ~24 cycles | Same overhead pattern |
-| INSERT p50 | ~22 cycles | - | ~26 cycles | Entry slightly faster |
-| REMOVE p50 | ~42 cycles | - | ~26 cycles | Weak::upgrade overhead |
+### API Safety vs Performance
 
-**Key insight:** Unchecked Entry access matches key-based performance exactly.
-The safe API adds ~10-16 cycles for `Weak::upgrade()` (liveness check) and
-borrow flag operations.
+```
+                        ┌─────────────────────────────────────────────┐
+                        │           SAFETY CHECKS                     │
+                        ├─────────────┬─────────────┬─────────────────┤
+                        │  Validity   │   Borrow    │   Liveness      │
+                        │  (occupied) │  (runtime)  │   (Weak)        │
+┌───────────────────────┼─────────────┼─────────────┼─────────────────┤
+│ get_unchecked()       │      -      │      -      │       -         │ ~20 cycles
+│ UntrackedAccessor[key]│      -      │      -      │       -         │ ~28 cycles
+│ get_untracked()       │      ✓      │      -      │       -         │ ~30 cycles
+│ get() → Ref<T>        │      ✓      │      ✓      │       -         │ ~32 cycles
+│ contains_key()        │      ✓      │      -      │       -         │ ~30 cycles
+│ Entry::get_unchecked()│      -      │      -      │       -         │ ~24 cycles
+│ Entry::get_untracked()│      ✓      │      -      │       -         │ ~26 cycles
+│ Entry::get() → Ref<T> │      ✓      │      ✓      │       ✓         │ ~36 cycles
+└───────────────────────┴─────────────┴─────────────┴─────────────────┘
+```
 
-For hot paths, use `get_unchecked()` / `get_mut_unchecked()` for zero overhead.
+**Recommendations:**
+- **Hot paths:** Use `get_unchecked()` (~20 cycles) or `UntrackedAccessor` (~28 cycles)
+- **Normal paths:** Use `get()` for safe tracked access (~32 cycles)
+- **With Entry handles:** Use `Entry::get_unchecked()` when Entry validity is known
 
 ---
 
@@ -69,7 +95,7 @@ Individual operation benchmarks with rdtscp timing:
 # Build all examples
 cargo build --release --examples
 
-# Run pinned to a physical core
+# Run pinned to a physical core (adjust path for workspace)
 taskset -c 0 ./target/release/examples/perf_insert_cycles
 taskset -c 0 ./target/release/examples/perf_get_cycles
 taskset -c 0 ./target/release/examples/perf_churn_cycles
@@ -82,12 +108,20 @@ taskset -c 0 ./target/release/examples/perf_mixed_cycles_bounded
 
 | Example | Description |
 |---------|-------------|
-| `perf_insert_cycles.rs` | Insert latency in cycles |
-| `perf_get_cycles.rs` | Get latency in cycles |
+| `perf_insert_cycles.rs` | Insert latency (unbounded Slab) |
+| `perf_get_cycles.rs` | Get latency via UntrackedAccessor (unbounded) |
 | `perf_churn_cycles.rs` | Insert/remove interleaved |
-| `perf_indexing_cycles.rs` | Index operator latency |
-| `perf_mixed_cycles.rs` | Mixed operations with growth |
-| `perf_mixed_cycles_bounded.rs` | Mixed operations (bounded) |
+| `perf_indexing_cycles.rs` | Index operator latency via UntrackedAccessor |
+| `perf_mixed_cycles.rs` | Mixed ops with growth (unbounded) |
+| `perf_mixed_cycles_bounded.rs` | Mixed ops: tracked vs unchecked |
+| `perf_access_methods.rs` | **All access methods side-by-side** |
+
+**Recommended:** Run `perf_access_methods` for a clear comparison of all access methods:
+- `get_unchecked()` (~20 cycles) - no checks
+- `get_untracked()` (~30 cycles) - validity check only
+- `get()` → `Ref<T>` (~32 cycles) - tracked
+- `UntrackedAccessor[key]` (~28 cycles) - Index syntax
+- `contains_key()` (~30 cycles) - validity check only
 
 ---
 
@@ -106,10 +140,17 @@ fn rdtscp() -> u64 {
     }
 }
 
+// Tracked access (safe, returns guard)
 let start = rdtscp();
-black_box(slab.insert(value));
+black_box(slab.get(key));  // Returns Option<Ref<T>>
 let end = rdtscp();
-let cycles = end.wrapping_sub(start);
+
+// Untracked access (unsafe, fastest)
+// SAFETY: No Entry operations during benchmark
+let accessor = unsafe { slab.untracked() };
+let start = rdtscp();
+black_box(accessor[key]);  // Direct &T via Index
+let end = rdtscp();
 ```
 
 ### Histogram Collection
