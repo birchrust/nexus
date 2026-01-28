@@ -70,7 +70,7 @@
 //! # Critical Invariant: Same Storage Instance
 //!
 //! All operations on a list must use the same storage instance.
-//! This is the caller's responsibility (same discipline as the `slab` crate).
+//! This is the caller's responsibility.
 //! Passing a different storage causes undefined behavior.
 //!
 //! ```no_run
@@ -91,27 +91,6 @@
 //! | Storage | Capacity | Allocation | Use Case |
 //! |---------|----------|------------|----------|
 //! | [`BoxedStorage`] | Fixed (runtime) | Single heap alloc | Default choice |
-//! | `slab::Slab` | Growable | May reallocate | When size unknown |
-//! | `nexus_slab::Slab` | Fixed | Page-aligned, mlockable | Latency-critical |
-//! | `HashMap<K, V>` | Growable | May reallocate | When keys are in values |
-//!
-//! Enable `slab` or `nexus-slab` features to use external storage backends.
-//!
-//! # Storage Traits
-//!
-//! Storage is split into bounded and unbounded variants:
-//!
-//! ```text
-//! Storage<T>           - base trait: get, remove, len
-//!     │
-//!     ├── BoundedStorage<T>   - fixed capacity, try_insert -> Result
-//!     │
-//!     └── UnboundedStorage<T> - growable, insert -> Key (infallible)
-//! ```
-//!
-//! This enables different APIs for data structures:
-//! - `try_push` for bounded storage (returns `Result<K, Full<T>>`)
-//! - `push` for unbounded storage (returns `K`, infallible)
 //!
 //! # Data Structures
 //!
@@ -135,38 +114,17 @@
 //! | SkipList get | 842 | O(log n), 10K elements |
 //! | SkipList remove | 802 | O(log n), 10K elements |
 //! | SkipList first/pop_first | 62-116 | O(1) |
-//!
-//! # Feature Flags
-//!
-//! - `slab` - Enable [`Storage`] impl for `slab::Slab`
-//! - `nexus-slab` - Enable [`Storage`] impl for `nexus_slab::Slab`
 
 #![warn(missing_docs)]
 
 pub mod heap;
 pub mod key;
 pub mod list;
-pub mod owned;
 pub mod skiplist;
 pub mod storage;
 
 pub use heap::{BoxedHeapStorage, Heap};
 pub use key::Key;
 pub use list::{BoxedListStorage, List};
-pub use owned::{OwnedHeap, OwnedList, OwnedSkipList};
 pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, VacantEntry};
 pub use storage::{BoundedStorage, BoxedStorage, Full, Storage, UnboundedStorage};
-
-#[cfg(feature = "nexus-slab")]
-pub use heap::{BoundedNexusHeapStorage, UnboundedNexusHeapStorage};
-#[cfg(feature = "nexus-slab")]
-pub use list::{BoundedNexusListStorage, UnboundedNexusListStorage};
-#[cfg(feature = "nexus-slab")]
-pub use skiplist::{BoundedNexusSkipStorage, UnboundedNexusSkipStorage};
-
-#[cfg(feature = "slab")]
-pub use heap::SlabHeapStorage;
-#[cfg(feature = "slab")]
-pub use list::SlabListStorage;
-#[cfg(feature = "slab")]
-pub use skiplist::SlabSkipStorage;

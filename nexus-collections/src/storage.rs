@@ -14,30 +14,17 @@
 //!     └── UnboundedStorage<T> - growable, insert -> Key (infallible)
 //! ```
 //!
-//! # Key Generation Models
-//!
-//! **Storage-assigned keys** (slab-like): Storage generates keys on insert.
-//! - `BoxedStorage`, `slab::Slab`, `nexus_slab::Slab`
-//!
-//! **Value-provided keys** (map-like): Value contains its own key via [`Keyed`] trait.
-//! - `HashMap<K, V>` where `V: Keyed<Key = K>`
-//!
 //! # Implementations
 //!
-//! | Type | Traits | Key Model |
-//! |------|--------|-----------|
-//! | `BoxedStorage<T>` | `BoundedStorage` | Storage-assigned |
-//! | `slab::Slab<T>` | `UnboundedStorage` | Storage-assigned |
-//! | `nexus_slab::Slab<T>` | `BoundedStorage` | Storage-assigned |
-//! | `HashMap<K, V>` | `UnboundedStorage` | Value-provided (`V: Keyed`) |
+//! | Type | Traits |
+//! |------|--------|
+//! | `BoxedStorage<T>` | `BoundedStorage` |
 
 use crate::Key;
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
-use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
 // =============================================================================
@@ -104,7 +91,6 @@ pub trait Storage<T> {
 /// # Implementations
 ///
 /// - [`BoxedStorage<T>`] - runtime capacity, heap allocated
-/// - `nexus_slab::Slab<T>` - page-aligned, mlockable (feature `nexus-slab`)
 pub trait BoundedStorage<T>: Storage<T> {
     /// Attempts to insert a value, returning its stable key.
     ///
@@ -125,31 +111,11 @@ pub trait BoundedStorage<T>: Storage<T> {
 ///
 /// Use this when you want storage that grows as needed. Insertion
 /// is infallible (may allocate).
-///
-/// # Implementations
-///
-/// - `slab::Slab<T>` - growable, heap allocated (feature `slab`)
-/// - `HashMap<K, V>` where `V: Keyed<Key = K>` (feature `std`)
 pub trait UnboundedStorage<T>: Storage<T> {
     /// Inserts a value, returning its stable key.
     ///
     /// This operation is infallible but may allocate.
     fn insert(&mut self, value: T) -> Self::Key;
-}
-
-/// Caller-provided key storage with map semantics.
-///
-/// Use this when keys are external identifiers (ClOrdId, OrderId, etc.)
-/// rather than assigned by the storage.
-///
-/// # Implementations
-///
-/// - `HashMap<K, V>` - standard hash map
-pub trait KeyedStorage<T>: Storage<T> {
-    /// Inserts a value only if the key doesn't exist.
-    ///
-    /// Returns `Ok(())` on success, or `Err(value)` if key already exists.
-    fn try_insert(&mut self, key: Self::Key, value: T) -> Result<(), T>;
 }
 
 // =============================================================================
@@ -234,7 +200,11 @@ impl<T> BoxedStorage<T> {
         // Round up to power of 2 for bitmap efficiency
         let capacity = min_capacity.next_power_of_two();
 
-        assert!(capacity <= NONE, "capacity exceeds key type maximum");
+        // Note: NONE is usize::MAX, so this check guards against overflow from next_power_of_two()
+        #[allow(clippy::absurd_extreme_comparisons)]
+        {
+            assert!(capacity <= NONE, "capacity exceeds key type maximum");
+        }
 
         // Calculate layout
         // Layout: [entries][padding][bitmap][padding][free_stack]
@@ -289,9 +259,6 @@ impl<T> BoxedStorage<T> {
     /// this storage, they will have dangling references. Only call this when
     /// you know nothing else references the storage, or after clearing those
     /// data structures first.
-    ///
-    /// For owned wrappers like `OwnedList` and `OwnedHeap`, this is handled
-    /// automatically.
     pub fn clear(&mut self) {
         // Drop all occupied values
         for i in 0..self.capacity {
@@ -477,122 +444,6 @@ impl<T> Drop for BoxedStorage<T> {
 // Safety: BoxedStorage owns its data, safe to send if T is Send
 unsafe impl<T: Send> Send for BoxedStorage<T> {}
 
-// =============================================================================
-// HashMap implementation (UnboundedStorage for Keyed values)
-// =============================================================================
-
-impl<K, V, S> Storage<V> for HashMap<K, V, S>
-where
-    K: Key + Hash + Eq,
-    S: BuildHasher,
-{
-    type Key = K;
-
-    #[inline]
-    fn remove(&mut self, key: Self::Key) -> Option<V> {
-        self.remove(&key)
-    }
-
-    #[inline]
-    fn get(&self, key: Self::Key) -> Option<&V> {
-        self.get(&key)
-    }
-
-    #[inline]
-    fn get_mut(&mut self, key: Self::Key) -> Option<&mut V> {
-        self.get_mut(&key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    unsafe fn get_unchecked(&self, key: Self::Key) -> &V {
-        unsafe { self.get(&key).unwrap_unchecked() }
-    }
-
-    #[inline]
-    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut V {
-        unsafe { self.get_mut(&key).unwrap_unchecked() }
-    }
-
-    #[inline]
-    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> V {
-        unsafe { self.remove(&key).unwrap_unchecked() }
-    }
-}
-
-impl<K, V, S> KeyedStorage<V> for HashMap<K, V, S>
-where
-    K: Key + Hash + Eq,
-    S: BuildHasher,
-{
-    #[inline]
-    fn try_insert(&mut self, key: Self::Key, value: V) -> Result<(), V> {
-        use std::collections::hash_map::Entry;
-        match self.entry(key) {
-            Entry::Vacant(e) => {
-                e.insert(value);
-                Ok(())
-            }
-            Entry::Occupied(_) => Err(value),
-        }
-    }
-}
-
-// =============================================================================
-// slab::Slab implementation (UnboundedStorage)
-// =============================================================================
-
-#[cfg(feature = "slab")]
-impl<T> Storage<T> for slab::Slab<T> {
-    type Key = usize;
-
-    #[inline]
-    fn remove(&mut self, key: Self::Key) -> Option<T> {
-        self.try_remove(key)
-    }
-
-    #[inline]
-    fn get(&self, key: Self::Key) -> Option<&T> {
-        self.get(key)
-    }
-
-    #[inline]
-    fn get_mut(&mut self, key: Self::Key) -> Option<&mut T> {
-        self.get_mut(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    unsafe fn get_unchecked(&self, key: Self::Key) -> &T {
-        unsafe { self.get(key).unwrap_unchecked() }
-    }
-
-    #[inline]
-    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T {
-        unsafe { self.get_mut(key).unwrap_unchecked() }
-    }
-
-    #[inline]
-    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T {
-        self.remove(key)
-    }
-}
-
-#[cfg(feature = "slab")]
-impl<T> UnboundedStorage<T> for slab::Slab<T> {
-    #[inline]
-    fn insert(&mut self, value: T) -> Self::Key {
-        self.insert(value)
-    }
-}
 
 // =============================================================================
 // nexus_slab implementation
@@ -718,7 +569,7 @@ impl<T> UnboundedStorage<T> for Slab<T> {
 
 #[inline]
 const fn bitmap_words(capacity: usize) -> usize {
-    (capacity + 63) / 64
+    capacity.div_ceil(64)
 }
 
 // =============================================================================
@@ -878,151 +729,6 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // HashMap tests
-    // =========================================================================
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    struct OrderId(u64);
-
-    // Implement Key trait for OrderId
-    impl crate::Key for OrderId {
-        const NONE: Self = OrderId(u64::MAX);
-
-        fn is_none(&self) -> bool {
-            self.0 == u64::MAX
-        }
-    }
-
-    #[derive(Debug, PartialEq, Eq, Hash)]
-    struct Order {
-        id: OrderId,
-        price: u64,
-    }
-
-    #[test]
-    fn hashmap_storage_basic() {
-        let mut storage: HashMap<OrderId, Order> = HashMap::new();
-
-        let order = Order {
-            id: OrderId(1),
-            price: 100,
-        };
-
-        let result = KeyedStorage::try_insert(&mut storage, order.id, order);
-        assert!(result.is_ok());
-
-        let retrieved = Storage::get(&storage, OrderId(1));
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().price, 100);
-    }
-
-    #[test]
-    fn hashmap_storage_remove() {
-        let mut storage: HashMap<OrderId, Order> = HashMap::new();
-
-        KeyedStorage::try_insert(
-            &mut storage,
-            OrderId(1),
-            Order {
-                id: OrderId(1),
-                price: 100,
-            },
-        )
-        .unwrap();
-        KeyedStorage::try_insert(
-            &mut storage,
-            OrderId(2),
-            Order {
-                id: OrderId(2),
-                price: 200,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(Storage::len(&storage), 2);
-
-        let removed = Storage::remove(&mut storage, OrderId(1));
-        assert!(removed.is_some());
-        assert_eq!(removed.unwrap().price, 100);
-
-        assert_eq!(Storage::len(&storage), 1);
-        assert!(Storage::get(&storage, OrderId(1)).is_none());
-    }
-
-    #[test]
-    fn hashmap_storage_get_mut() {
-        let mut storage: HashMap<OrderId, Order> = HashMap::new();
-
-        KeyedStorage::try_insert(
-            &mut storage,
-            OrderId(1),
-            Order {
-                id: OrderId(1),
-                price: 100,
-            },
-        )
-        .unwrap();
-
-        if let Some(order) = Storage::get_mut(&mut storage, OrderId(1)) {
-            order.price = 150;
-        }
-
-        assert_eq!(Storage::get(&storage, OrderId(1)).unwrap().price, 150);
-    }
-
-    // =========================================================================
-    // slab::Slab tests
-    // =========================================================================
-
-    #[cfg(feature = "slab")]
-    mod slab_tests {
-        use super::*;
-
-        #[test]
-        fn insert_get_remove() {
-            let mut storage = slab::Slab::new();
-
-            let key = UnboundedStorage::insert(&mut storage, 42);
-            assert_eq!(Storage::get(&storage, key), Some(&42));
-
-            let removed = Storage::remove(&mut storage, key);
-            assert_eq!(removed, Some(42));
-            assert_eq!(Storage::get(&storage, key), None);
-        }
-
-        #[test]
-        fn slot_reuse() {
-            let mut storage = slab::Slab::new();
-
-            let key1 = UnboundedStorage::insert(&mut storage, 1);
-            Storage::remove(&mut storage, key1);
-
-            let key2 = UnboundedStorage::insert(&mut storage, 2);
-            assert_eq!(key1, key2); // Slot reused
-        }
-    }
-
-    // =========================================================================
-    // nexus_slab::Slab tests
-    // =========================================================================
-
-    #[cfg(feature = "nexus-slab")]
-    mod nexus_slab_tests {
-        use super::*;
-
-        #[test]
-        fn insert_get_remove() {
-            let mut storage: nexus_slab::Slab<u64> = nexus_slab::Slab::with_capacity(16);
-
-            let key = UnboundedStorage::insert(&mut storage, 42);
-            assert_eq!(Storage::get(&storage, key), Some(&42));
-
-            let removed = Storage::remove(&mut storage, key);
-            assert_eq!(removed, Some(42));
-            assert_eq!(Storage::get(&storage, key), None);
-        }
-    }
 
     // =========================================================================
     // Benchmarks

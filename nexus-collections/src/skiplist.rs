@@ -739,7 +739,7 @@ where
     update: [Idx; MAX_LEVEL],
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'_, K, V, S, Idx, R, MAX_LEVEL>
 where
     K: Ord,
     Idx: Key,
@@ -999,7 +999,7 @@ where
     prev_at_level: [Idx; MAX_LEVEL],
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, Idx, R, const MAX_LEVEL: usize> Cursor<'_, K, V, S, Idx, R, MAX_LEVEL>
 where
     K: Ord,
     Idx: Key,
@@ -1129,10 +1129,9 @@ where
     _marker: PhantomData<(K, V)>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
     for Iter<'a, K, V, S, Idx, MAX_LEVEL>
 where
-    Idx: Key,
     S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     type Item = (&'a K, &'a V);
@@ -1158,10 +1157,9 @@ where
     _marker: PhantomData<(K, V)>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
     for IterMut<'a, K, V, S, Idx, MAX_LEVEL>
 where
-    Idx: Key,
     S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     type Item = (&'a K, &'a mut V);
@@ -1192,10 +1190,9 @@ where
     inner: Iter<'a, K, V, S, Idx, MAX_LEVEL>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
     for Keys<'a, K, V, S, Idx, MAX_LEVEL>
 where
-    Idx: Key,
     S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     type Item = &'a K;
@@ -1214,10 +1211,9 @@ where
     inner: Iter<'a, K, V, S, Idx, MAX_LEVEL>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
     for Values<'a, K, V, S, Idx, MAX_LEVEL>
 where
-    Idx: Key,
     S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     type Item = &'a V;
@@ -1234,11 +1230,6 @@ where
 /// Boxed storage for skip list nodes.
 pub type BoxedSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
     crate::BoxedStorage<SkipNode<K, V, usize, MAX_LEVEL>>;
-
-#[cfg(feature = "slab")]
-/// Slab storage for skip list nodes (unbounded).
-pub type SlabSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
-    slab::Slab<SkipNode<K, V, usize, MAX_LEVEL>>;
 
 /// Type alias for bounded skip list storage backed by `nexus_slab::FixedSlab`.
 #[cfg(feature = "nexus-slab")]
