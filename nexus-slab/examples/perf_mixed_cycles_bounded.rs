@@ -6,6 +6,8 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
+use nexus_slab::{BoundedSlab, Key};
+
 const CAPACITY: usize = 100_000;
 const OPERATIONS: usize = 1_000_000;
 const SEED: u64 = 0xDEADBEEF;
@@ -87,17 +89,17 @@ impl Stats {
 }
 
 fn bench_bounded_slab() -> Stats {
-    let mut slab: nexus_slab::BoundedSlab<u64> = nexus_slab::BoundedSlab::with_capacity(CAPACITY);
+    let slab: BoundedSlab<u64> = BoundedSlab::with_capacity(CAPACITY);
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(CAPACITY);
+    let mut keys: Vec<Key> = Vec::with_capacity(CAPACITY);
 
     // Warm up: fill to ~50% capacity
     let warmup_target = CAPACITY / 2;
     for i in 0..warmup_target {
-        let key = slab.try_insert(i as u64).unwrap();
-        keys.push(key);
+        let entry = slab.insert(i as u64).unwrap();
+        keys.push(entry.key());
     }
 
     // Mixed operations
@@ -107,10 +109,10 @@ fn bench_bounded_slab() -> Stats {
         if op < 3 && slab.len() < CAPACITY - 1000 {
             // Insert (30%)
             let start = rdtscp();
-            let key = slab.try_insert(rng.next()).unwrap();
+            let entry = slab.insert(rng.next()).unwrap();
             let end = rdtscp();
             let _ = stats.insert.record(end.wrapping_sub(start));
-            keys.push(key);
+            keys.push(entry.key());
         } else if op < 8 && !keys.is_empty() {
             // Get (50%)
             let idx = rng.next_usize(keys.len());
@@ -124,7 +126,7 @@ fn bench_bounded_slab() -> Stats {
             let idx = rng.next_usize(keys.len());
             let key = keys.swap_remove(idx);
             let start = rdtscp();
-            black_box(slab.remove(key));
+            black_box(slab.remove_by_key(key));
             let end = rdtscp();
             let _ = stats.remove.record(end.wrapping_sub(start));
         }
@@ -134,17 +136,17 @@ fn bench_bounded_slab() -> Stats {
 }
 
 fn bench_bounded_slab_unchecked() -> Stats {
-    let mut slab: nexus_slab::BoundedSlab<u64> = nexus_slab::BoundedSlab::with_capacity(CAPACITY);
+    let slab: BoundedSlab<u64> = BoundedSlab::with_capacity(CAPACITY);
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(CAPACITY);
+    let mut keys: Vec<Key> = Vec::with_capacity(CAPACITY);
 
     // Warm up: fill to ~50% capacity
     let warmup_target = CAPACITY / 2;
     for i in 0..warmup_target {
-        let key = slab.try_insert(i as u64).unwrap();
-        keys.push(key);
+        let entry = slab.insert(i as u64).unwrap();
+        keys.push(entry.key());
     }
 
     // Mixed operations - using unchecked where possible
@@ -154,10 +156,10 @@ fn bench_bounded_slab_unchecked() -> Stats {
         if op < 3 && slab.len() < CAPACITY - 1000 {
             // Insert (30%)
             let start = rdtscp();
-            let key = slab.try_insert(rng.next()).unwrap();
+            let entry = slab.insert(rng.next()).unwrap();
             let end = rdtscp();
             let _ = stats.insert.record(end.wrapping_sub(start));
-            keys.push(key);
+            keys.push(entry.key());
         } else if op < 8 && !keys.is_empty() {
             // Get unchecked (50%)
             let idx = rng.next_usize(keys.len());
@@ -167,11 +169,11 @@ fn bench_bounded_slab_unchecked() -> Stats {
             let end = rdtscp();
             let _ = stats.get.record(end.wrapping_sub(start));
         } else if !keys.is_empty() {
-            // Remove unchecked (20%)
+            // Remove (20%) - no remove_unchecked, use remove_by_key
             let idx = rng.next_usize(keys.len());
             let key = keys.swap_remove(idx);
             let start = rdtscp();
-            black_box(unsafe { slab.remove_unchecked(key) });
+            black_box(slab.remove_by_key(key));
             let end = rdtscp();
             let _ = stats.remove.record(end.wrapping_sub(start));
         }
@@ -286,6 +288,6 @@ fn main() {
     );
 
     println!();
-    println!("NOTE: BoundedSlab has generational keys (ABA protection)");
-    println!("      slab crate does not - stale keys return wrong values");
+    println!("NOTE: BoundedSlab uses Entry-based API with Weak reference checks");
+    println!("      slab crate uses simple index keys without liveness checking");
 }

@@ -75,7 +75,8 @@
 //! Each slot has a `tag: u32` that indicates state:
 //!
 //! - **Occupied**: `tag == 0` (value is valid)
-//! - **Vacant**: `tag` has bit 31 set, bits 0-30 encode next free slot index
+//! - **Vacant**: `tag` has bit 31 set, bits 0-29 encode next free slot index
+//! - **Borrowed**: `tag` has bit 30 set (for runtime borrow checking)
 //!
 //! This enables a single comparison (`tag == 0`) to check occupancy.
 //!
@@ -118,18 +119,25 @@
 //! ```
 //! use nexus_slab::Slab;
 //!
-//! let mut slab = Slab::with_capacity(1000);
+//! let slab = Slab::with_capacity(1000);
 //!
-//! let key = slab.insert(42);
-//! assert_eq!(slab[key], 42);
-//!
-//! let value = slab.remove(key);
+//! // Entry-based API (primary)
+//! let entry = slab.insert(42);
+//! assert_eq!(*entry.get(), 42);
+//! let value = entry.remove();
 //! assert_eq!(value, 42);
+//!
+//! // Key-based API (for collections)
+//! let entry = slab.insert(100);
+//! let key = entry.key();
+//! assert_eq!(slab[key], 100);
+//! let value = slab.remove_by_key(key);
+//! assert_eq!(value, 100);
 //! ```
 //!
 //! # Choosing Between BoundedSlab and Slab
 //!
-//! - **[`BoundedSlab`]**: Fixed capacity, pre-allocated. Returns `Err(Full)` when
+//! - **[`BoundedSlab`]**: Fixed capacity, pre-allocated. Returns `None` when
 //!   exhausted. Use when capacity is known and you want zero allocation after init.
 //!   This is the production choice for latency-critical systems.
 //!
@@ -142,17 +150,15 @@
 pub mod bounded;
 pub mod unbounded;
 
-pub use bounded::BoundedSlab;
-pub use unbounded::Slab;
+// Re-export primary types at root
+pub use bounded::{BoundedSlab, Entry, Ref, RefMut};
+pub use unbounded::{Slab, SlabBuilder};
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/// Bit 31 of tag: set indicates slot is vacant.
-const VACANT_BIT: u32 = 1 << 31; // 0x8000_0000
-
-/// Mask for next_free index (bits 0-30).
+/// Mask for key index (bits 0-30).
 const INDEX_MASK: u32 = (1 << 31) - 1; // 0x7FFF_FFFF
 
 /// Sentinel value indicating end of freelist chain or invalid key.
@@ -282,72 +288,6 @@ impl std::fmt::Debug for Key {
     }
 }
 
-// =============================================================================
-// Slot
-// =============================================================================
-
-/// Internal slot storage with vacant/occupied state.
-///
-/// # Tag Encoding (32-bit)
-///
-/// ```text
-/// ┌───┬─────────────────────────────────┐
-/// │ V │       next_free (31 bits)       │
-/// └───┴─────────────────────────────────┘
-/// bit 31              low
-/// ```
-///
-/// - **Bit 31 (V)**: Vacant flag. Set = vacant, clear = occupied.
-/// - **Bits 0-30**: When vacant, the next free slot index (or [`SLOT_NONE`]).
-///
-/// When occupied, the entire tag is zero. This enables a single comparison
-/// to validate occupancy.
-#[repr(C)]
-pub(crate) struct Slot<T> {
-    tag: u32,
-    pub(crate) value: std::mem::MaybeUninit<T>,
-}
-
-impl<T> Slot<T> {
-    /// Creates a new vacant slot pointing to `next_free`.
-    #[inline]
-    pub(crate) const fn new_vacant(next_free: u32) -> Self {
-        Self {
-            tag: VACANT_BIT | (next_free & INDEX_MASK),
-            value: std::mem::MaybeUninit::uninit(),
-        }
-    }
-
-    /// Returns `true` if this slot contains a value.
-    #[inline]
-    pub(crate) const fn is_occupied(&self) -> bool {
-        self.tag == 0
-    }
-
-    /// Returns the next free slot index.
-    ///
-    /// # Safety
-    ///
-    /// Only valid when slot is vacant. Debug-asserts this invariant.
-    #[inline]
-    pub(crate) const fn next_free(&self) -> u32 {
-        debug_assert!(self.tag != 0, "next_free called on occupied slot");
-        self.tag & INDEX_MASK
-    }
-
-    /// Marks this slot as occupied.
-    #[inline]
-    pub(crate) fn set_occupied(&mut self) {
-        self.tag = 0;
-    }
-
-    /// Marks this slot as vacant, pointing to the next free slot.
-    #[inline]
-    pub(crate) fn set_vacant(&mut self, next_free: u32) {
-        self.tag = VACANT_BIT | (next_free & INDEX_MASK);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,105 +372,5 @@ mod tests {
     #[test]
     fn key_size() {
         assert_eq!(std::mem::size_of::<Key>(), 4);
-    }
-
-    // =========================================================================
-    // Slot tests
-    // =========================================================================
-
-    #[test]
-    fn slot_new_vacant() {
-        let slot: Slot<u64> = Slot::new_vacant(42);
-        assert!(!slot.is_occupied());
-        assert_eq!(slot.next_free(), 42);
-    }
-
-    #[test]
-    fn slot_new_vacant_with_none() {
-        let slot: Slot<u64> = Slot::new_vacant(SLOT_NONE);
-        assert!(!slot.is_occupied());
-        assert_eq!(slot.next_free(), SLOT_NONE);
-    }
-
-    #[test]
-    fn slot_set_occupied() {
-        let mut slot: Slot<u64> = Slot::new_vacant(42);
-        assert!(!slot.is_occupied());
-
-        slot.set_occupied();
-        assert!(slot.is_occupied());
-    }
-
-    #[test]
-    fn slot_set_vacant() {
-        let mut slot: Slot<u64> = Slot::new_vacant(0);
-        slot.set_occupied();
-        assert!(slot.is_occupied());
-
-        slot.set_vacant(123);
-        assert!(!slot.is_occupied());
-        assert_eq!(slot.next_free(), 123);
-    }
-
-    #[test]
-    fn slot_occupied_tag_is_zero() {
-        let mut slot: Slot<u64> = Slot::new_vacant(42);
-        slot.set_occupied();
-        // Occupied slots have tag == 0
-        assert_eq!(slot.tag, 0);
-    }
-
-    #[test]
-    fn slot_vacant_tag_has_bit_set() {
-        let slot: Slot<u64> = Slot::new_vacant(42);
-        // Vacant slots have VACANT_BIT set
-        assert_ne!(slot.tag & VACANT_BIT, 0);
-    }
-
-    #[test]
-    fn slot_max_next_free() {
-        let slot: Slot<u64> = Slot::new_vacant(INDEX_MASK);
-        assert!(!slot.is_occupied());
-        assert_eq!(slot.next_free(), INDEX_MASK);
-    }
-
-    #[test]
-    fn slot_none_sentinel_value() {
-        // SLOT_NONE equals INDEX_MASK (max 31-bit value)
-        assert_eq!(SLOT_NONE, INDEX_MASK);
-        assert_eq!(SLOT_NONE, (1 << 31) - 1);
-    }
-
-    #[test]
-    fn slot_size_u64() {
-        // Slot<u64>: 4-byte tag + 8-byte value = 12 bytes, aligned to 16
-        assert_eq!(std::mem::size_of::<Slot<u64>>(), 16);
-    }
-
-    #[test]
-    fn slot_size_u32() {
-        // Slot<u32>: 4-byte tag + 4-byte value = 8 bytes (no padding)
-        assert_eq!(std::mem::size_of::<Slot<u32>>(), 8);
-    }
-
-    #[test]
-    fn slot_size_u8() {
-        // Slot<u8>: 4-byte tag + 1-byte value = 5 bytes, aligned to 8
-        assert_eq!(std::mem::size_of::<Slot<u8>>(), 8);
-    }
-
-    #[test]
-    fn slot_cycle_occupied_vacant() {
-        let mut slot: Slot<u64> = Slot::new_vacant(10);
-
-        // Cycle through states
-        for next in [20, 30, 40, SLOT_NONE] {
-            assert!(!slot.is_occupied());
-            slot.set_occupied();
-            assert!(slot.is_occupied());
-            slot.set_vacant(next);
-            assert!(!slot.is_occupied());
-            assert_eq!(slot.next_free(), next);
-        }
     }
 }

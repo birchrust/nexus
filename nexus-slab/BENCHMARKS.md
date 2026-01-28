@@ -30,6 +30,23 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core, turbo boost d
 The `slab` crate uses `Vec`, which copies all existing data on reallocation.
 `nexus-slab` adds independent chunks - no copying.
 
+### Entry-based API
+
+The Entry-based API provides handle-based access with optional safety checks.
+
+| Operation | Entry (safe) | Entry (unchecked) | Key-based | Notes |
+|-----------|-------------|-------------------|-----------|-------|
+| GET p50 | ~36 cycles | ~24 cycles | ~24 cycles | Safe adds liveness + borrow check |
+| GET_MUT p50 | ~34 cycles | ~24 cycles | ~24 cycles | Same overhead pattern |
+| INSERT p50 | ~22 cycles | - | ~26 cycles | Entry slightly faster |
+| REMOVE p50 | ~42 cycles | - | ~26 cycles | Weak::upgrade overhead |
+
+**Key insight:** Unchecked Entry access matches key-based performance exactly.
+The safe API adds ~10-16 cycles for `Weak::upgrade()` (liveness check) and
+borrow flag operations.
+
+For hot paths, use `get_unchecked()` / `get_mut_unchecked()` for zero overhead.
+
 ---
 
 ## Running Benchmarks
@@ -61,32 +78,15 @@ taskset -c 0 ./target/release/examples/perf_mixed_cycles
 taskset -c 0 ./target/release/examples/perf_mixed_cycles_bounded
 ```
 
-### Criterion Benchmarks
-
-Throughput comparison with statistical analysis:
-
-```bash
-# Run all comparison benchmarks
-cargo bench --bench slab_comparison
-
-# Run specific benchmark group
-cargo bench --bench slab_comparison -- INSERT
-cargo bench --bench slab_comparison -- GET_sequential
-cargo bench --bench slab_comparison -- REMOVE
-```
-
-### Example Benchmarks
-
-The `examples/` directory contains:
+### Available Benchmarks
 
 | Example | Description |
 |---------|-------------|
-| `perf_slab_compare.rs` | Criterion-based comparison (throughput) |
 | `perf_insert_cycles.rs` | Insert latency in cycles |
 | `perf_get_cycles.rs` | Get latency in cycles |
 | `perf_churn_cycles.rs` | Insert/remove interleaved |
 | `perf_indexing_cycles.rs` | Index operator latency |
-| `perf_mixed_cycles.rs` | Mixed operations (growable) |
+| `perf_mixed_cycles.rs` | Mixed operations with growth |
 | `perf_mixed_cycles_bounded.rs` | Mixed operations (bounded) |
 
 ---

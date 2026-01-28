@@ -4,12 +4,14 @@ A high-performance slab allocator optimized for **predictable tail latency**.
 
 ## Why nexus-slab?
 
-Traditional slab allocators using `Vec` exhibit bimodal p999 latency—most operations are fast, but occasional reallocations cause multi-thousand cycle spikes. For latency-critical systems like trading engines, a single slow operation can mean a missed fill.
+Traditional slab allocators using `Vec` exhibit bimodal p999 latency—most operations are fast, but occasional reallocations cause multi-thousand cycle spikes. For latency-critical systems, a single slow operation can mean a missed fill.
 
 `nexus-slab` provides two allocators:
 
 - **`BoundedSlab`**: Fixed capacity, pre-allocated. The production choice for deterministic latency.
 - **`Slab`**: Grows by adding independent chunks. No copying on growth—only the new chunk is allocated.
+
+Both use an **Entry-based API** where `insert()` returns a handle (`Entry<T>`) for direct access to the value.
 
 ## Performance
 
@@ -37,45 +39,51 @@ Steady-state p50 matches `slab` crate (~22-32 cycles). The win is tail latency d
 ## Usage
 
 ### BoundedSlab (fixed capacity)
+
 ```rust
-use nexus_slab::{BoundedSlab, Full};
+use nexus_slab::BoundedSlab;
 
-// All memory allocated upfront, pre-touched
-let mut slab: BoundedSlab<u64> = BoundedSlab::with_capacity(100_000);
+// All memory allocated upfront
+let slab = BoundedSlab::with_capacity(100_000);
 
-// O(1) operations
-let key = slab.try_insert(42).unwrap();
-assert_eq!(slab[key], 42);
+// Insert returns an Entry handle
+let entry = slab.insert(42).unwrap();
+assert_eq!(*entry.get(), 42);
 
-let value = slab.remove(key);
-assert_eq!(value, 42);
+// Modify through the entry
+*entry.get_mut() = 100;
 
-// Returns Err(Full) when exhausted—no surprise allocations
-match slab.try_insert(123) {
-    Ok(key) => { /* ... */ }
-    Err(Full(value)) => { /* handle backpressure */ }
+// Remove via entry
+let value = entry.remove();
+assert_eq!(value, 100);
+
+// Returns None when full—no surprise allocations
+if slab.insert(123).is_none() {
+    // handle backpressure
 }
 ```
 
 ### Slab (growable)
+
 ```rust
 use nexus_slab::Slab;
 
 // Lazy allocation—no memory until first insert
-let mut slab: Slab<u64> = Slab::new();
+let slab = Slab::new();
 
 // Or pre-allocate for expected capacity
-let mut slab: Slab<u64> = Slab::with_capacity(10_000);
+let slab = Slab::with_capacity(10_000);
 
-// Grows automatically when needed
-let key = slab.insert(42);
-assert_eq!(slab[key], 42);
+// Grows automatically, always succeeds
+let entry = slab.insert(42);
+assert_eq!(*entry.get(), 42);
 
-let value = slab.remove(key);
+let value = entry.remove();
 assert_eq!(value, 42);
 ```
 
 ### Builder API (Slab only)
+
 ```rust
 use nexus_slab::Slab;
 
@@ -85,29 +93,79 @@ let slab: Slab<u64> = Slab::builder()
     .build();
 ```
 
-### Vacant Entry Pattern
+### Key-Based Access (for collections)
 
-For self-referential structures where the value needs to know its own key:
+Entry-based access is the primary API, but key-based access is available for integration with data structures like linked lists and heaps:
+
 ```rust
-use nexus_slab::{BoundedSlab, Key};
+use nexus_slab::BoundedSlab;
+
+let slab = BoundedSlab::with_capacity(1024);
+
+let entry = slab.insert(42).unwrap();
+let key = entry.key();  // Extract the key
+
+// Key-based access
+assert_eq!(slab[key], 42);
+assert_eq!(slab.get(key), Some(&42));
+
+// Key-based removal
+let value = slab.remove_by_key(key);
+assert_eq!(value, 42);
+```
+
+### Self-Referential Patterns
+
+`insert_with` provides access to the Entry before the value exists, enabling self-referential structures:
+
+```rust
+use nexus_slab::{BoundedSlab, Entry};
 
 struct Node {
-    self_key: Key,
+    self_ref: Entry<Node>,
+    parent: Option<Entry<Node>>,
     data: u64,
 }
 
-let mut slab = BoundedSlab::with_capacity(1024);
+let slab = BoundedSlab::with_capacity(1024);
 
-let entry = slab.try_vacant_entry().unwrap();
-let key = entry.key();
-entry.insert(Node { self_key: key, data: 42 });
+let root = slab.insert_with(|e| Node {
+    self_ref: e.clone(),
+    parent: None,
+    data: 0,
+}).unwrap();
 
-assert_eq!(slab[key].self_key, key);
+let child = slab.insert_with(|e| Node {
+    self_ref: e.clone(),
+    parent: Some(root.clone()),
+    data: 1,
+}).unwrap();
+
+assert!(child.get().parent.is_some());
+```
+
+### Unchecked Access (hot paths)
+
+For latency-critical code where you can guarantee validity:
+
+```rust
+use nexus_slab::BoundedSlab;
+
+let slab = BoundedSlab::with_capacity(1024);
+let entry = slab.insert(42).unwrap();
+
+// Safe: ~30 cycles (liveness + borrow check)
+let value = entry.get();
+
+// Unchecked: ~20 cycles (direct pointer deref)
+// SAFETY: Entry is valid and not borrowed elsewhere
+let value = unsafe { entry.get_unchecked() };
 ```
 
 ## Architecture
 
 ### Memory Layout
+
 ```
 BoundedSlab (single contiguous allocation):
 ┌─────────────────────────────────────────────┐
@@ -120,7 +178,7 @@ BoundedSlab (single contiguous allocation):
 Slab (multiple independent chunks):
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
 │ Chunk 0      │  │ Chunk 1      │  │ Chunk 2      │
-│ (BoundedSlab)│  │ (BoundedSlab)│  │ (BoundedSlab)│
+│ (internal)   │  │ (internal)   │  │ (internal)   │
 └──────────────┘  └──────────────┘  └──────────────┘
        ▲                                   ▲
        └─── head_with_space ───────────────┘
@@ -131,17 +189,20 @@ Slab (multiple independent chunks):
 
 Each slot has a `tag: u32`:
 
-- **Occupied**: `tag == 0`
-- **Vacant**: bit 31 set, bits 0-30 encode next free slot index
+- **Occupied**: `tag == 0` (or has borrowed bit set)
+- **Vacant**: bit 31 set, bits 0-29 encode next free slot index
+- **Borrowed**: bit 30 set (runtime borrow tracking for safe API)
 
-Single comparison (`tag == 0`) checks occupancy.
+Single comparison (`tag & VACANT_BIT == 0`) checks occupancy.
 
-### Allocation Strategy
+### Entry Design
 
-1. **Check freelist head**: O(1) access to a slot (or chunk) with space
-2. **LIFO reuse**: Recently-freed slots reused first for cache locality
-3. **Pop when full**: Exhausted chunks removed from freelist
-4. **Growth** (Slab only): Allocate new chunk when all are full
+`Entry<T>` holds:
+- `Weak<SlabInner<T>>` — liveness check (detect if slab dropped)
+- `*const SlotCell<T>` — direct pointer for O(1) access
+- `u32` index — for freelist update on remove
+
+The safe API (`get()`, `get_mut()`) checks liveness and sets a borrow bit. The unchecked API bypasses all checks for minimal latency.
 
 ### Key Encoding
 
@@ -156,37 +217,49 @@ Single comparison (`tag == 0`) checks occupancy.
 
 Decoding is two instructions: shift and mask.
 
-## Key Validity
-
-Keys are simple indices with occupancy checks. After removal, `get()` returns `None`:
-```rust
-let key = slab.insert(42);
-assert!(slab.contains(key));
-
-slab.remove(key);
-assert!(!slab.contains(key));  // Slot is vacant
-assert!(slab.get(key).is_none());
-```
-
-**No generational indices.** If a new value occupies the same slot, an old key will access the new value. For systems requiring stale-key protection, validate against authoritative external identifiers (exchange order IDs, database keys, etc.).
-
-See the [`Key`](https://docs.rs/nexus-slab/latest/nexus_slab/struct.Key.html) documentation for design rationale.
-
 ## API Summary
 
-| Method | BoundedSlab | Slab | Description |
-|--------|-------------|------|-------------|
-| `try_insert(value)` | `Result<Key, Full>` | — | Insert, returns `Err` if full |
-| `insert(value)` | — | `Key` | Insert, grows if needed |
-| `get(key)` | `Option<&T>` | `Option<&T>` | Get reference |
-| `get_mut(key)` | `Option<&mut T>` | `Option<&mut T>` | Get mutable reference |
-| `remove(key)` | `T` | `T` | Remove and return (panics if invalid) |
-| `slab[key]` | `&T` / `&mut T` | `&T` / `&mut T` | Index access (panics if invalid) |
-| `contains(key)` | `bool` | `bool` | Check if slot is occupied |
-| `len()` | `usize` | `usize` | Number of occupied slots |
-| `capacity()` | `usize` | `usize` | Total slots available |
-| `is_full()` | `bool` | — | Check if at capacity |
-| `clear()` | `()` | `()` | Remove all elements |
+### BoundedSlab
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `insert(value)` | `Option<Entry<T>>` | Insert, returns `None` if full |
+| `insert_with(f)` | `Option<Entry<T>>` | Insert with access to Entry (self-ref) |
+| `get(key)` | `Option<&T>` | Get by key |
+| `get_mut(key)` | `Option<&mut T>` | Get mutable by key |
+| `remove(entry)` | `T` | Remove via Entry (fast path) |
+| `remove_by_key(key)` | `T` | Remove via key |
+| `slab[key]` | `&T` / `&mut T` | Index access (panics if invalid) |
+| `len()` / `capacity()` | `usize` | Slot counts |
+| `clear()` | `()` | Remove all elements |
+
+### Slab
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `insert(value)` | `Entry<T>` | Insert, grows if needed |
+| `insert_with(f)` | `Entry<T>` | Insert with access to Entry |
+| `get(key)` | `Option<&T>` | Get by key |
+| `get_mut(key)` | `Option<&mut T>` | Get mutable by key |
+| `remove(entry)` | `T` | Remove via Entry (fast path) |
+| `remove_by_key(key)` | `T` | Remove via key |
+| `slab[key]` | `&T` / `&mut T` | Index access (panics if invalid) |
+| `len()` / `capacity()` | `usize` | Slot counts |
+| `clear()` | `()` | Remove all (keeps allocated chunks) |
+
+### Entry
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get()` | `Ref<T>` | Borrow with safety checks (panics if invalid) |
+| `try_get()` | `Option<Ref<T>>` | Borrow, returns None if invalid |
+| `get_mut()` | `RefMut<T>` | Mutable borrow with safety checks |
+| `try_get_mut()` | `Option<RefMut<T>>` | Mutable borrow, returns None if invalid |
+| `get_unchecked()` | `&T` | Direct access (unsafe) |
+| `get_mut_unchecked()` | `&mut T` | Direct mutable access (unsafe) |
+| `remove()` | `T` | Remove and return value |
+| `key()` | `Key` | Get the key for this entry |
+| `is_alive()` | `bool` | Check if slab still exists |
 
 ## When to Use This
 
@@ -194,15 +267,24 @@ See the [`Key`](https://docs.rs/nexus-slab/latest/nexus_slab/struct.Key.html) do
 - Capacity is known upfront
 - You need deterministic latency (no allocations after init)
 - Production trading systems, matching engines
+- Using with nexus-collections (intrusive data structures)
 
 **Use `Slab` when:**
 - Capacity is unknown or needs overflow headroom
-- Growth is infrequent and latency spikes during growth are acceptable
+- Growth is infrequent and acceptable
 - You want the tail latency benefits over `Vec`-based slabs
 
 **Use the `slab` crate when:**
 - You don't need the tail latency guarantees
 - Simpler dependency is preferred
+
+## No Generational Indices
+
+Keys are simple indices with occupancy checks. After removal, `get()` returns `None`. If a new value occupies the same slot, an old key will access the new value.
+
+**This is intentional.** In real systems, your data has authoritative external identifiers (exchange order IDs, database keys). You validate against those anyway. Generational indices add ~8 cycles per operation to catch bugs that domain validation already catches.
+
+See the [`Key`](https://docs.rs/nexus-slab/latest/nexus_slab/struct.Key.html) documentation for full rationale.
 
 ## License
 

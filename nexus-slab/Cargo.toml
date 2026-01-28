@@ -11,16 +11,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
 hdrhistogram = "7.5"
 slab = "0.4"
 
 [lints]
 workspace = true
-
-[[example]]
-name = "perf_slab_compare"
-harness = false
 
 [[example]]
 name = "perf_insert_cycles"
@@ -44,8 +39,4 @@ harness = false
 
 [[example]]
 name = "perf_mixed_cycles_bounded"
-harness = false
-
-[[bench]]
-name = "slab_comparison"
 harness = false

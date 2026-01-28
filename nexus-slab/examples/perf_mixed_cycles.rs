@@ -8,6 +8,8 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
+use nexus_slab::{Key, Slab};
+
 const INITIAL_CAPACITY: usize = 100_000;
 const FINAL_SIZE: usize = 500_000;
 const OPERATIONS_PER_PHASE: usize = 500_000;
@@ -107,19 +109,19 @@ impl GrowthStats {
 
 fn bench_nexus() -> GrowthStats {
     // Start with initial capacity, let it grow
-    let mut slab = nexus_slab::Slab::with_capacity(INITIAL_CAPACITY);
+    let slab = Slab::with_capacity(INITIAL_CAPACITY);
     let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(FINAL_SIZE);
+    let mut keys: Vec<Key> = Vec::with_capacity(FINAL_SIZE);
 
     // Phase 1: Pre-growth (fill to ~80% of initial capacity)
     let pre_growth_target = INITIAL_CAPACITY * 8 / 10;
     for i in 0..pre_growth_target {
         let start = rdtscp();
-        let key = slab.insert(i as u64);
+        let entry = slab.insert(i as u64);
         let end = rdtscp();
         let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
-        keys.push(key);
+        keys.push(entry.key());
     }
 
     // Mixed ops within pre-allocated space
@@ -128,10 +130,10 @@ fn bench_nexus() -> GrowthStats {
         if op < 2 && slab.len() < pre_growth_target {
             // Insert
             let start = rdtscp();
-            let key = slab.insert(rng.next());
+            let entry = slab.insert(rng.next());
             let end = rdtscp();
             let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
-            keys.push(key);
+            keys.push(entry.key());
         } else if op < 8 && !keys.is_empty() {
             // Get
             let idx = rng.next_usize(keys.len());
@@ -145,7 +147,7 @@ fn bench_nexus() -> GrowthStats {
             let idx = rng.next_usize(keys.len());
             let key = keys.swap_remove(idx);
             let start = rdtscp();
-            black_box(slab.remove(key));
+            black_box(slab.remove_by_key(key));
             let end = rdtscp();
             let _ = stats.pre_growth.remove.record(end.wrapping_sub(start));
         }
@@ -154,10 +156,10 @@ fn bench_nexus() -> GrowthStats {
     // Phase 2: Growth (push beyond initial capacity)
     while slab.capacity() < FINAL_SIZE {
         let start = rdtscp();
-        let key = slab.insert(rng.next());
+        let entry = slab.insert(rng.next());
         let end = rdtscp();
         let _ = stats.during_growth.insert.record(end.wrapping_sub(start));
-        keys.push(key);
+        keys.push(entry.key());
         // Some gets during growth
         if !keys.is_empty() && rng.next() % 4 == 0 {
             let idx = rng.next_usize(keys.len());
@@ -174,10 +176,10 @@ fn bench_nexus() -> GrowthStats {
         let op = rng.next() % 10;
         if op < 2 {
             let start = rdtscp();
-            let key = slab.insert(rng.next());
+            let entry = slab.insert(rng.next());
             let end = rdtscp();
             let _ = stats.post_growth.insert.record(end.wrapping_sub(start));
-            keys.push(key);
+            keys.push(entry.key());
         } else if op < 8 && !keys.is_empty() {
             let idx = rng.next_usize(keys.len());
             let key = keys[idx];
@@ -189,7 +191,7 @@ fn bench_nexus() -> GrowthStats {
             let idx = rng.next_usize(keys.len());
             let key = keys.swap_remove(idx);
             let start = rdtscp();
-            black_box(slab.remove(key));
+            black_box(slab.remove_by_key(key));
             let end = rdtscp();
             let _ = stats.post_growth.remove.record(end.wrapping_sub(start));
         }
