@@ -10,6 +10,8 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
+use nexus_slab::Slab;
+
 const CAPACITY: usize = 100_000;
 const OPS: usize = 1_000_000;
 
@@ -37,20 +39,20 @@ fn print_stats(name: &str, hist: &Histogram<u64>) {
 }
 
 fn bench_nexus_slab() -> Histogram<u64> {
-    let mut slab = nexus_slab::Slab::with_capacity(CAPACITY);
+    let slab = Slab::with_capacity(CAPACITY);
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
     // Warmup
     for i in 0..10_000u64 {
-        let key = slab.insert(i);
-        black_box(slab.remove(key));
+        let entry = slab.insert(i);
+        black_box(slab.remove(entry));
     }
 
-    // Measured churn: insert then immediately remove
+    // Measured churn: insert then immediately remove (using fast path)
     for i in 0..OPS as u64 {
         let start = rdtscp();
-        let key = slab.insert(i);
-        black_box(slab.remove(key));
+        let entry = slab.insert(i);
+        black_box(slab.remove(entry));
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }

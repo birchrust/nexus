@@ -13,6 +13,8 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
+use nexus_slab::{Key, Slab};
+
 // 100K entries × 16 bytes = 1.6MB - fits in L2/L3 cache
 const CAPACITY: usize = 100_000;
 const OPS: usize = 1_000_000;
@@ -65,22 +67,25 @@ fn generate_random_indices(count: usize, max: usize, seed: u64) -> Vec<usize> {
 }
 
 fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
-    let mut slab = nexus_slab::Slab::with_capacity(CAPACITY);
+    let slab = Slab::with_capacity(CAPACITY);
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
-    // Fill the slab - store the actual keys
-    let keys: Vec<_> = (0..CAPACITY as u64).map(|i| slab.insert(i)).collect();
+    // Fill the slab - store the keys
+    let keys: Vec<Key> = (0..CAPACITY as u64).map(|i| slab.insert(i).key()).collect();
+
+    // SAFETY: No Entry operations during benchmark - untracked access is safe
+    let accessor = unsafe { slab.untracked() };
 
     // Warmup - random access using stored keys
     for &idx in indices.iter().take(10_000) {
-        black_box(slab[keys[idx]]);
+        black_box(accessor[keys[idx]]);
     }
 
     // Measured random gets
     for &idx in indices {
         let key = keys[idx];
         let start = rdtscp();
-        black_box(slab[key]);
+        black_box(accessor[key]);
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }
