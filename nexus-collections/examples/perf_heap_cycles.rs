@@ -7,7 +7,8 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
-use nexus_collections::{BoxedHeapStorage, Heap};
+use nexus_collections::{Heap, HeapStorage};
+use nexus_slab::Key as NexusKey;
 
 const CAPACITY: usize = 100_000;
 const OPERATIONS: usize = 500_000;
@@ -112,8 +113,8 @@ impl Stats {
 }
 
 fn bench_heap_individual_ops() -> Stats {
-    let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(CAPACITY);
-    let mut heap: Heap<u64, BoxedHeapStorage<u64>, usize> = Heap::new();
+    let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(CAPACITY);
+    let mut heap: Heap<u64, HeapStorage<u64>> = Heap::new();
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
@@ -171,12 +172,12 @@ fn bench_heap_individual_ops() -> Stats {
 }
 
 fn bench_heap_mixed() -> Stats {
-    let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(CAPACITY);
-    let mut heap: Heap<u64, BoxedHeapStorage<u64>, usize> = Heap::new();
+    let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(CAPACITY);
+    let mut heap: Heap<u64, HeapStorage<u64>> = Heap::new();
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<usize> = Vec::with_capacity(CAPACITY);
+    let mut keys: Vec<NexusKey> = Vec::with_capacity(CAPACITY);
 
     // Warm up: fill to ~50% capacity
     for _ in 0..(CAPACITY / 2) {

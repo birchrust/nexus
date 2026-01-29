@@ -7,9 +7,9 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
-use nexus_collections::{BoxedSkipStorage, SkipList};
-use rand::rngs::SmallRng;
+use nexus_collections::{SkipList, SkipStorage};
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 const CAPACITY: usize = 100_000;
 const OPERATIONS: usize = 500_000;
@@ -124,9 +124,9 @@ impl Stats {
 }
 
 fn bench_skiplist_individual_ops() -> Stats {
-    let mut storage: BoxedSkipStorage<u64, u64> = BoxedSkipStorage::with_capacity(CAPACITY);
+    let mut storage: SkipStorage<u64, u64, 16> = SkipStorage::with_capacity(CAPACITY);
     let rng = SmallRng::seed_from_u64(SEED);
-    let mut skiplist: SkipList<u64, u64, BoxedSkipStorage<u64, u64>, usize, SmallRng, 16> =
+    let mut skiplist: SkipList<u64, u64, SkipStorage<u64, u64, 16>, SmallRng, 16> =
         SkipList::new(rng);
 
     let mut stats = Stats::new();
@@ -152,7 +152,10 @@ fn bench_skiplist_individual_ops() -> Stats {
     let mut keys: Vec<u64> = Vec::with_capacity(CAPACITY / 2);
     for _ in 0..(CAPACITY / 2) {
         let key = data_rng.next();
-        if skiplist.try_insert(&mut storage, key, data_rng.next()).is_ok() {
+        if skiplist
+            .try_insert(&mut storage, key, data_rng.next())
+            .is_ok()
+        {
             keys.push(key);
         }
     }
@@ -202,9 +205,9 @@ fn bench_skiplist_individual_ops() -> Stats {
 }
 
 fn bench_skiplist_mixed() -> Stats {
-    let mut storage: BoxedSkipStorage<u64, u64> = BoxedSkipStorage::with_capacity(CAPACITY);
+    let mut storage: SkipStorage<u64, u64, 16> = SkipStorage::with_capacity(CAPACITY);
     let rng = SmallRng::seed_from_u64(SEED);
-    let mut skiplist: SkipList<u64, u64, BoxedSkipStorage<u64, u64>, usize, SmallRng, 16> =
+    let mut skiplist: SkipList<u64, u64, SkipStorage<u64, u64, 16>, SmallRng, 16> =
         SkipList::new(rng);
 
     let mut stats = Stats::new();
@@ -214,7 +217,10 @@ fn bench_skiplist_mixed() -> Stats {
     // Warm up: fill to ~50% capacity
     for _ in 0..(CAPACITY / 2) {
         let key = data_rng.next() % 10_000_000;
-        if skiplist.try_insert(&mut storage, key, data_rng.next()).is_ok() {
+        if skiplist
+            .try_insert(&mut storage, key, data_rng.next())
+            .is_ok()
+        {
             keys.push(key);
         }
     }

@@ -7,7 +7,7 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
-use nexus_collections::{BoxedListStorage, List};
+use nexus_collections::{List, ListStorage};
 
 const CAPACITY: usize = 100_000;
 const OPERATIONS: usize = 500_000;
@@ -122,8 +122,8 @@ impl Stats {
 }
 
 fn bench_list_individual_ops() -> Stats {
-    let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(CAPACITY);
-    let mut list: List<u64, BoxedListStorage<u64>, usize> = List::new();
+    let mut storage: ListStorage<u64> = ListStorage::with_capacity(CAPACITY);
+    let mut list: List<u64, ListStorage<u64>> = List::new();
 
     let mut stats = Stats::new();
 
@@ -202,12 +202,12 @@ fn bench_list_individual_ops() -> Stats {
 }
 
 fn bench_list_mixed() -> Stats {
-    let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(CAPACITY);
-    let mut list: List<u64, BoxedListStorage<u64>, usize> = List::new();
+    let mut storage: ListStorage<u64> = ListStorage::with_capacity(CAPACITY);
+    let mut list: List<u64, ListStorage<u64>> = List::new();
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut keys: Vec<usize> = Vec::with_capacity(CAPACITY);
+    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(CAPACITY);
 
     // Warm up: fill to ~50% capacity
     for i in 0..(CAPACITY / 2) {
@@ -280,7 +280,7 @@ fn bench_list_mixed() -> Stats {
 }
 
 fn main() {
-    println!("LIST BENCHMARK (BoxedStorage)");
+    println!("LIST BENCHMARK (ListStorage)");
     println!("Capacity: {}, Operations: {}", CAPACITY, OPERATIONS);
     println!("================================================================\n");
 

@@ -18,10 +18,10 @@
 //! # Example
 //!
 //! ```
-//! use nexus_collections::{BoxedHeapStorage, Heap};
+//! use nexus_collections::{HeapStorage, Heap};
 //!
-//! let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(16);
-//! let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::new();
+//! let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(16);
+//! let mut heap: Heap<u64, HeapStorage<u64>> = Heap::new();
 //!
 //! let a = heap.try_push(&mut storage, 3).unwrap();
 //! let b = heap.try_push(&mut storage, 1).unwrap();
@@ -37,56 +37,29 @@
 
 use std::{cmp::Ordering, marker::PhantomData};
 
-use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
-
-/// Type alias for bounded heap storage backed by a boxed allocation.
-pub type BoxedHeapStorage<T> = BoxedStorage<HeapNode<T>>;
-
-/// Type alias for bounded heap storage backed by `nexus_slab::BoundedSlab`.
-pub type BoundedNexusHeapStorage<T> = nexus_slab::BoundedSlab<HeapNode<T>>;
-
-/// Type alias for unbounded heap storage backed by `nexus_slab::Slab`.
-pub type UnboundedNexusHeapStorage<T> = nexus_slab::Slab<HeapNode<T>>;
-
-const HEAP_POS_NONE: usize = usize::MAX;
-
-/// A node in the heap. Wraps user data with heap position tracking.
-#[derive(Debug)]
-pub struct HeapNode<T> {
-    pub(crate) data: T,
-    pub(crate) heap_pos: usize, // position in indices vec
-}
-
-impl<T> HeapNode<T> {
-    #[inline]
-    fn new(data: T) -> Self {
-        Self {
-            data,
-            heap_pos: HEAP_POS_NONE,
-        }
-    }
-}
+use crate::storage::{
+    BoundedHeapStorageOps, Full, GrowableHeapStorageOps, HEAP_POS_NONE, HeapNode, HeapStorageOps,
+};
+#[cfg(test)]
+use crate::storage::{GrowableHeapStorage, HeapStorage};
+use nexus_slab::Key as NexusKey;
 
 /// A min-heap over external storage with O(log n) handle operations.
 ///
 /// # Type Parameters
 ///
 /// - `T`: Element type (must implement `Ord`)
-/// - `S`: Storage type (e.g., [`BoxedHeapStorage<T>`])
-/// - `K`: Key type (default `u32`)
+/// - `S`: Storage type implementing [`HeapStorageOps<T>`]
 #[derive(Debug)]
-pub struct Heap<T: Ord, S, K: Key>
+pub struct Heap<T: Ord, S>
 where
-    S: Storage<HeapNode<T>, Key = K>,
+    S: HeapStorageOps<T>,
 {
-    indices: Vec<K>,
+    indices: Vec<NexusKey>,
     _marker: PhantomData<(T, S)>,
 }
 
-impl<T: Ord, S, K: Key> Default for Heap<T, S, K>
-where
-    S: Storage<HeapNode<T>, Key = K>,
-{
+impl<T: Ord, S: HeapStorageOps<T>> Default for Heap<T, S> {
     fn default() -> Self {
         Self::new()
     }
@@ -96,10 +69,7 @@ where
 // Base impl - works with any Storage (read/remove/update operations)
 // =============================================================================
 
-impl<T: Ord, S, K: Key> Heap<T, S, K>
-where
-    S: Storage<HeapNode<T>, Key = K>,
-{
+impl<T: Ord, S: HeapStorageOps<T>> Heap<T, S> {
     /// Creates an empty heap.
     #[inline]
     pub const fn new() -> Self {
@@ -154,8 +124,8 @@ where
 
         // Clear heap position and remove from storage
         // Safety: storage_key came from our indices
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = HEAP_POS_NONE;
-        let node = storage.remove(storage_key)?;
+        unsafe { storage.get_node_unchecked_mut(storage_key) }.heap_pos = HEAP_POS_NONE;
+        let node = storage.remove_node(storage_key)?;
 
         // Restore heap property if heap not empty
         if !self.indices.is_empty() {
@@ -167,18 +137,15 @@ where
 
     /// Returns a reference to the minimum element without removing it.
     #[inline]
-    pub fn peek<'a>(&self, storage: &'a S) -> Option<&'a T>
-    where
-        K: 'a,
-    {
+    pub fn peek<'a>(&self, storage: &'a S) -> Option<&'a T> {
         let storage_key = *self.indices.first()?;
         // Safety: indices only contains valid storage keys
-        Some(unsafe { &storage.get_unchecked(storage_key).data })
+        Some(unsafe { &storage.get_node_unchecked(storage_key).data })
     }
 
     /// Returns the storage key of the minimum element.
     #[inline]
-    pub fn peek_key(&self) -> Option<K> {
+    pub fn peek_key(&self) -> Option<NexusKey> {
         self.indices.first().copied()
     }
 
@@ -194,12 +161,12 @@ where
     ///
     /// O(log n)
     #[inline]
-    pub fn remove(&mut self, storage: &mut S, storage_key: K) -> Option<T> {
-        let node = storage.get(storage_key)?;
+    pub fn remove(&mut self, storage: &mut S, storage_key: NexusKey) -> Option<T> {
+        let node = storage.get_node(storage_key)?;
         let heap_pos = node.heap_pos;
 
         // Not in heap
-        if heap_pos.is_none() {
+        if heap_pos == HEAP_POS_NONE {
             return None;
         }
 
@@ -214,8 +181,8 @@ where
 
         // Clear heap position and remove from storage
         // Safety: storage_key was validated above
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = HEAP_POS_NONE;
-        let node = storage.remove(storage_key)?;
+        unsafe { storage.get_node_unchecked_mut(storage_key) }.heap_pos = HEAP_POS_NONE;
+        let node = storage.remove_node(storage_key)?;
 
         // Restore heap property if needed
         if pos < self.indices.len() {
@@ -233,10 +200,10 @@ where
     ///
     /// Panics if `storage_key` is not in the heap (debug builds only).
     #[inline]
-    pub fn decrease_key(&mut self, storage: &mut S, storage_key: K) {
+    pub fn decrease_key(&mut self, storage: &mut S, storage_key: NexusKey) {
         let heap_pos = Self::get_heap_pos(storage, storage_key);
-        debug_assert!(heap_pos.is_some(), "key not in heap");
-        if heap_pos.is_some() {
+        debug_assert!(heap_pos != HEAP_POS_NONE, "key not in heap");
+        if heap_pos != HEAP_POS_NONE {
             self.sift_up(storage, heap_pos);
         }
     }
@@ -249,10 +216,10 @@ where
     ///
     /// Panics if `storage_key` is not in the heap (debug builds only).
     #[inline]
-    pub fn increase_key(&mut self, storage: &mut S, storage_key: K) {
+    pub fn increase_key(&mut self, storage: &mut S, storage_key: NexusKey) {
         let heap_pos = Self::get_heap_pos(storage, storage_key);
-        debug_assert!(heap_pos.is_some(), "key not in heap");
-        if heap_pos.is_some() {
+        debug_assert!(heap_pos != HEAP_POS_NONE, "key not in heap");
+        if heap_pos != HEAP_POS_NONE {
             self.sift_down(storage, heap_pos);
         }
     }
@@ -265,26 +232,26 @@ where
     ///
     /// Panics if `storage_key` is not in the heap (debug builds only).
     #[inline]
-    pub fn update_key(&mut self, storage: &mut S, storage_key: K) {
+    pub fn update_key(&mut self, storage: &mut S, storage_key: NexusKey) {
         let heap_pos = Self::get_heap_pos(storage, storage_key);
-        debug_assert!(heap_pos.is_some(), "key not in heap");
-        if heap_pos.is_some() {
+        debug_assert!(heap_pos != HEAP_POS_NONE, "key not in heap");
+        if heap_pos != HEAP_POS_NONE {
             self.sift_update(storage, heap_pos);
         }
     }
 
     /// Returns `true` if the storage key is currently in the heap.
     #[inline]
-    pub fn contains(&self, storage: &S, storage_key: K) -> bool {
+    pub fn contains(&self, storage: &S, storage_key: NexusKey) -> bool {
         storage
-            .get(storage_key)
-            .is_some_and(|n| n.heap_pos.is_some())
+            .get_node(storage_key)
+            .is_some_and(|n| n.heap_pos != HEAP_POS_NONE)
     }
 
     /// Replaces the value at key with a new value, restoring heap property.
     /// Returns the old value, or None if key invalid.
-    pub fn replace(&mut self, storage: &mut S, key: K, value: T) -> Option<T> {
-        let node = storage.get_mut(key)?;
+    pub fn replace(&mut self, storage: &mut S, key: NexusKey, value: T) -> Option<T> {
+        let node = storage.get_node_mut(key)?;
         let old = std::mem::replace(&mut node.data, value);
         let cmp = node.data.cmp(&old);
         let pos = node.heap_pos;
@@ -298,22 +265,22 @@ where
     }
 
     /// Mutates value in place (caller asserts it decreased), sifts up.
-    pub fn decrease_with<F>(&mut self, storage: &mut S, key: K, f: F)
+    pub fn decrease_with<F>(&mut self, storage: &mut S, key: NexusKey, f: F)
     where
         F: FnOnce(&mut T),
     {
-        let node = storage.get_mut(key).expect("invalid key");
+        let node = storage.get_node_mut(key).expect("invalid key");
         let pos = node.heap_pos;
         f(&mut node.data);
         self.sift_up(storage, pos);
     }
 
     /// Mutates value in place (caller asserts it increased), sifts down.
-    pub fn increase_with<F>(&mut self, storage: &mut S, key: K, f: F)
+    pub fn increase_with<F>(&mut self, storage: &mut S, key: NexusKey, f: F)
     where
         F: FnOnce(&mut T),
     {
-        let node = storage.get_mut(key).expect("invalid key");
+        let node = storage.get_node_mut(key).expect("invalid key");
         let pos = node.heap_pos;
         f(&mut node.data);
         self.sift_down(storage, pos);
@@ -326,7 +293,7 @@ where
     /// Removes all elements from the heap, deallocating from storage.
     pub fn clear(&mut self, storage: &mut S) {
         for &storage_key in &self.indices {
-            storage.remove(storage_key);
+            storage.remove_node(storage_key);
         }
         self.indices.clear();
     }
@@ -336,7 +303,7 @@ where
     /// Each call to `next()` performs a `pop()`, so this yields
     /// elements from smallest to largest.
     #[inline]
-    pub fn drain<'a>(&'a mut self, storage: &'a mut S) -> Drain<'a, T, S, K> {
+    pub fn drain<'a>(&'a mut self, storage: &'a mut S) -> Drain<'a, T, S> {
         Drain {
             heap: self,
             storage,
@@ -350,10 +317,10 @@ where
     /// # Example
     ///
     /// ```
-    /// use nexus_collections::{BoxedHeapStorage, Heap};
+    /// use nexus_collections::{HeapStorage, Heap};
     ///
-    /// let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(16);
-    /// let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::new();
+    /// let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(16);
+    /// let mut heap: Heap<u64, HeapStorage<u64>> = Heap::new();
     ///
     /// heap.try_push(&mut storage, 1).unwrap();
     /// heap.try_push(&mut storage, 5).unwrap();
@@ -365,11 +332,7 @@ where
     /// assert_eq!(heap.peek(&storage), Some(&10));
     /// ```
     #[inline]
-    pub fn drain_while<'a, F>(
-        &'a mut self,
-        storage: &'a mut S,
-        pred: F,
-    ) -> DrainWhile<'a, T, S, K, F>
+    pub fn drain_while<'a, F>(&'a mut self, storage: &'a mut S, pred: F) -> DrainWhile<'a, T, S, F>
     where
         F: FnMut(&T) -> bool,
     {
@@ -385,9 +348,9 @@ where
     // ========================================================================
 
     #[inline]
-    fn get_heap_pos(storage: &S, storage_key: K) -> usize {
+    fn get_heap_pos(storage: &S, storage_key: NexusKey) -> usize {
         storage
-            .get(storage_key)
+            .get_node(storage_key)
             .map_or(HEAP_POS_NONE, |n| n.heap_pos)
     }
 
@@ -400,8 +363,8 @@ where
         self.indices.swap(pos_a, pos_b);
 
         // Safety: indices came from our vec
-        unsafe { storage.get_unchecked_mut(key_a) }.heap_pos = pos_b;
-        unsafe { storage.get_unchecked_mut(key_b) }.heap_pos = pos_a;
+        unsafe { storage.get_node_unchecked_mut(key_a) }.heap_pos = pos_b;
+        unsafe { storage.get_node_unchecked_mut(key_b) }.heap_pos = pos_a;
     }
 
     /// Sifts an element up toward the root using hole technique.
@@ -421,13 +384,13 @@ where
             let parent_key = *unsafe { self.indices.get_unchecked(parent) };
 
             // Safety: both keys are valid in storage
-            let current = unsafe { &storage.get_unchecked(key).data };
-            let parent_val = unsafe { &storage.get_unchecked(parent_key).data };
+            let current = unsafe { &storage.get_node_unchecked(key).data };
+            let parent_val = unsafe { &storage.get_node_unchecked(parent_key).data };
 
             if current < parent_val {
                 // Move parent down into hole
                 *unsafe { self.indices.get_unchecked_mut(hole) } = parent_key;
-                unsafe { storage.get_unchecked_mut(parent_key) }.heap_pos = hole;
+                unsafe { storage.get_node_unchecked_mut(parent_key) }.heap_pos = hole;
                 hole = parent;
             } else {
                 break;
@@ -437,7 +400,7 @@ where
         // Place element in final position
         if hole != pos {
             *unsafe { self.indices.get_unchecked_mut(hole) } = key;
-            unsafe { storage.get_unchecked_mut(key) }.heap_pos = hole;
+            unsafe { storage.get_node_unchecked_mut(key) }.heap_pos = hole;
         }
     }
 
@@ -467,8 +430,8 @@ where
             let smaller = if right < len {
                 let right_key = *unsafe { self.indices.get_unchecked(right) };
                 // Safety: both keys valid in storage
-                let left_val = unsafe { &storage.get_unchecked(left_key).data };
-                let right_val = unsafe { &storage.get_unchecked(right_key).data };
+                let left_val = unsafe { &storage.get_node_unchecked(left_key).data };
+                let right_val = unsafe { &storage.get_node_unchecked(right_key).data };
                 if right_val < left_val { right } else { left }
             } else {
                 left
@@ -477,7 +440,7 @@ where
             // Safety: smaller < len
             let smaller_key = *unsafe { self.indices.get_unchecked(smaller) };
             *unsafe { self.indices.get_unchecked_mut(hole) } = smaller_key;
-            unsafe { storage.get_unchecked_mut(smaller_key) }.heap_pos = hole;
+            unsafe { storage.get_node_unchecked_mut(smaller_key) }.heap_pos = hole;
             hole = smaller;
         }
 
@@ -488,12 +451,12 @@ where
             let parent_key = *unsafe { self.indices.get_unchecked(parent) };
 
             // Safety: both keys valid in storage
-            let current = unsafe { &storage.get_unchecked(key).data };
-            let parent_val = unsafe { &storage.get_unchecked(parent_key).data };
+            let current = unsafe { &storage.get_node_unchecked(key).data };
+            let parent_val = unsafe { &storage.get_node_unchecked(parent_key).data };
 
             if current < parent_val {
                 *unsafe { self.indices.get_unchecked_mut(hole) } = parent_key;
-                unsafe { storage.get_unchecked_mut(parent_key) }.heap_pos = hole;
+                unsafe { storage.get_node_unchecked_mut(parent_key) }.heap_pos = hole;
                 hole = parent;
             } else {
                 break;
@@ -502,7 +465,7 @@ where
 
         // Place element in final position
         *unsafe { self.indices.get_unchecked_mut(hole) } = key;
-        unsafe { storage.get_unchecked_mut(key) }.heap_pos = hole;
+        unsafe { storage.get_node_unchecked_mut(key) }.heap_pos = hole;
     }
 
     /// Sifts in the appropriate direction after an update.
@@ -515,7 +478,7 @@ where
         self.sift_up(storage, pos);
 
         // Check if we moved by looking at the element's current heap_pos
-        let current_pos = unsafe { storage.get_unchecked(storage_key) }.heap_pos;
+        let current_pos = unsafe { storage.get_node_unchecked(storage_key) }.heap_pos;
 
         // If we didn't move up, try sifting down
         if current_pos == pos {
@@ -525,13 +488,10 @@ where
 }
 
 // =============================================================================
-// BoundedStorage impl - fallible push
+// BoundedHeapStorageOps impl - fallible push
 // =============================================================================
 
-impl<T: Ord, S, K: Key> Heap<T, S, K>
-where
-    S: BoundedStorage<HeapNode<T>, Key = K>,
-{
+impl<T: Ord, S: BoundedHeapStorageOps<T>> Heap<T, S> {
     /// Pushes a value onto the heap.
     ///
     /// Returns the storage key, which can be used for O(log n) removal
@@ -541,16 +501,14 @@ where
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
-    pub fn try_push(&mut self, storage: &mut S, value: T) -> Result<K, Full<T>> {
-        let storage_key = storage
-            .try_insert(HeapNode::new(value))
-            .map_err(|e| Full(e.0.data))?;
+    pub fn try_push(&mut self, storage: &mut S, value: T) -> Result<NexusKey, Full<T>> {
+        let storage_key = storage.try_insert_node(HeapNode::new(value))?;
 
         let heap_pos = self.indices.len();
 
         // Set heap position and add to indices
         // Safety: we just inserted this
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = heap_pos;
+        unsafe { storage.get_node_unchecked_mut(storage_key) }.heap_pos = heap_pos;
         self.indices.push(storage_key);
 
         // Restore heap property
@@ -561,25 +519,22 @@ where
 }
 
 // =============================================================================
-// UnboundedStorage impl - infallible push
+// GrowableHeapStorageOps impl - infallible push
 // =============================================================================
 
-impl<T: Ord, S, K: Key> Heap<T, S, K>
-where
-    S: UnboundedStorage<HeapNode<T>, Key = K>,
-{
+impl<T: Ord, S: GrowableHeapStorageOps<T>> Heap<T, S> {
     /// Pushes a value onto the heap.
     ///
     /// Returns the storage key, which can be used for O(log n) removal
     /// or priority updates.
     #[inline]
-    pub fn push(&mut self, storage: &mut S, value: T) -> K {
-        let storage_key = storage.insert(HeapNode::new(value));
+    pub fn push(&mut self, storage: &mut S, value: T) -> NexusKey {
+        let storage_key = storage.insert_node(HeapNode::new(value));
         let heap_pos = self.indices.len();
 
         // Set heap position and add to indices
         // Safety: we just inserted this
-        unsafe { storage.get_unchecked_mut(storage_key) }.heap_pos = heap_pos;
+        unsafe { storage.get_node_unchecked_mut(storage_key) }.heap_pos = heap_pos;
         self.indices.push(storage_key);
 
         // Restore heap property
@@ -589,24 +544,20 @@ where
     }
 }
 
-
 // ============================================================================
 // Iterators
 // ============================================================================
 
 /// Iterator that drains elements from the heap in sorted order.
-pub struct Drain<'a, T: Ord, S, K: Key>
+pub struct Drain<'a, T: Ord, S>
 where
-    S: Storage<HeapNode<T>, Key = K>,
+    S: HeapStorageOps<T>,
 {
-    heap: &'a mut Heap<T, S, K>,
+    heap: &'a mut Heap<T, S>,
     storage: &'a mut S,
 }
 
-impl<T: Ord, S, K: Key> Iterator for Drain<'_, T, S, K>
-where
-    S: Storage<HeapNode<T>, Key = K>,
-{
+impl<T: Ord, S: HeapStorageOps<T>> Iterator for Drain<'_, T, S> {
     type Item = T;
 
     #[inline]
@@ -621,15 +572,9 @@ where
     }
 }
 
-impl<T: Ord, S, K: Key> ExactSizeIterator for Drain<'_, T, S, K> where
-    S: Storage<HeapNode<T>, Key = K>
-{
-}
+impl<T: Ord, S: HeapStorageOps<T>> ExactSizeIterator for Drain<'_, T, S> {}
 
-impl<T: Ord, S, K: Key> Drop for Drain<'_, T, S, K>
-where
-    S: Storage<HeapNode<T>, Key = K>,
-{
+impl<T: Ord, S: HeapStorageOps<T>> Drop for Drain<'_, T, S> {
     fn drop(&mut self) {
         // Exhaust remaining elements
         for _ in self.by_ref() {}
@@ -637,21 +582,17 @@ where
 }
 
 /// Iterator that drains elements while a predicate holds.
-pub struct DrainWhile<'a, T: Ord, S, K: Key, F>
+pub struct DrainWhile<'a, T: Ord, S, F>
 where
-    S: Storage<HeapNode<T>, Key = K>,
+    S: HeapStorageOps<T>,
     F: FnMut(&T) -> bool,
 {
-    heap: &'a mut Heap<T, S, K>,
+    heap: &'a mut Heap<T, S>,
     storage: &'a mut S,
     pred: F,
 }
 
-impl<T: Ord, S, K: Key, F> Iterator for DrainWhile<'_, T, S, K, F>
-where
-    S: Storage<HeapNode<T>, Key = K>,
-    F: FnMut(&T) -> bool,
-{
+impl<T: Ord, S: HeapStorageOps<T>, F: FnMut(&T) -> bool> Iterator for DrainWhile<'_, T, S, F> {
     type Item = T;
 
     #[inline]
@@ -679,7 +620,7 @@ mod tests {
 
     #[test]
     fn new_heap_is_empty() {
-        let heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::new();
+        let heap: Heap<u64, HeapStorage<u64>> = Heap::new();
         assert!(heap.is_empty());
         assert_eq!(heap.len(), 0);
         assert!(heap.peek_key().is_none());
@@ -687,8 +628,8 @@ mod tests {
 
     #[test]
     fn try_push_single() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let key = heap.try_push(&mut storage, 42).unwrap();
 
@@ -700,8 +641,8 @@ mod tests {
 
     #[test]
     fn try_push_maintains_min_heap() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 3).unwrap();
         assert_eq!(heap.peek(&storage), Some(&3));
@@ -718,8 +659,8 @@ mod tests {
 
     #[test]
     fn pop_returns_min() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 3).unwrap();
         heap.try_push(&mut storage, 1).unwrap();
@@ -731,8 +672,8 @@ mod tests {
 
     #[test]
     fn pop_returns_sorted_order() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 5).unwrap();
         heap.try_push(&mut storage, 3).unwrap();
@@ -750,16 +691,16 @@ mod tests {
 
     #[test]
     fn pop_empty_returns_none() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         assert_eq!(heap.pop(&mut storage), None);
     }
 
     #[test]
     fn peek_does_not_remove() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 42).unwrap();
 
@@ -770,8 +711,8 @@ mod tests {
 
     #[test]
     fn peek_empty_returns_none() {
-        let storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(16);
-        let heap: Heap<u64, _, _> = Heap::new();
+        let storage: HeapStorage<u64> = HeapStorage::with_capacity(16);
+        let heap: Heap<u64, _> = Heap::new();
 
         assert_eq!(heap.peek(&storage), None);
     }
@@ -782,8 +723,8 @@ mod tests {
 
     #[test]
     fn remove_by_handle() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let _a = heap.try_push(&mut storage, 3).unwrap();
         let _b = heap.try_push(&mut storage, 1).unwrap();
@@ -800,8 +741,8 @@ mod tests {
 
     #[test]
     fn remove_min_by_handle() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 3).unwrap();
         let min_key = heap.try_push(&mut storage, 1).unwrap();
@@ -813,8 +754,8 @@ mod tests {
 
     #[test]
     fn remove_last_by_handle() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 2).unwrap();
@@ -826,8 +767,8 @@ mod tests {
 
     #[test]
     fn remove_invalid_returns_none() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let key = heap.try_push(&mut storage, 1).unwrap();
         heap.pop(&mut storage);
@@ -838,8 +779,8 @@ mod tests {
 
     #[test]
     fn contains() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let key = heap.try_push(&mut storage, 42).unwrap();
         assert!(heap.contains(&storage, key));
@@ -850,8 +791,8 @@ mod tests {
 
     #[test]
     fn decrease_key() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         let key = heap.try_push(&mut storage, 10).unwrap();
@@ -861,7 +802,7 @@ mod tests {
         assert_eq!(heap.peek(&storage), Some(&1));
 
         // Decrease 10 to 0 (need mutable access to data)
-        unsafe { storage.get_unchecked_mut(key) }.data = 0;
+        unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
         heap.decrease_key(&mut storage, key);
 
         // Now it's the min
@@ -870,8 +811,8 @@ mod tests {
 
     #[test]
     fn increase_key() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let key = heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 5).unwrap();
@@ -881,7 +822,7 @@ mod tests {
         assert_eq!(heap.peek(&storage), Some(&1));
 
         // Increase 1 to 100
-        unsafe { storage.get_unchecked_mut(key) }.data = 100;
+        unsafe { storage.get_node_unchecked_mut(key) }.data = 100;
         heap.increase_key(&mut storage, key);
 
         // Now 5 is the min
@@ -895,14 +836,14 @@ mod tests {
 
     #[test]
     fn update_key_decrease() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         let key = heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 5).unwrap();
 
-        unsafe { storage.get_unchecked_mut(key) }.data = 0;
+        unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
         heap.update_key(&mut storage, key);
 
         assert_eq!(heap.peek(&storage), Some(&0));
@@ -910,14 +851,14 @@ mod tests {
 
     #[test]
     fn update_key_increase() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let key = heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 5).unwrap();
         heap.try_push(&mut storage, 10).unwrap();
 
-        unsafe { storage.get_unchecked_mut(key) }.data = 100;
+        unsafe { storage.get_node_unchecked_mut(key) }.data = 100;
         heap.update_key(&mut storage, key);
 
         assert_eq!(heap.peek(&storage), Some(&5));
@@ -927,8 +868,8 @@ mod tests {
 
     #[test]
     fn replace_decreases() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -949,8 +890,8 @@ mod tests {
 
     #[test]
     fn replace_increases() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let a = heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -971,8 +912,8 @@ mod tests {
 
     #[test]
     fn replace_equal() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let a = heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -985,8 +926,8 @@ mod tests {
 
     #[test]
     fn replace_invalid_key() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let a = heap.try_push(&mut storage, 10).unwrap();
         heap.pop(&mut storage);
@@ -998,8 +939,8 @@ mod tests {
 
     #[test]
     fn decrease_with_closure() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -1018,8 +959,8 @@ mod tests {
 
     #[test]
     fn increase_with_closure() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let a = heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -1056,8 +997,8 @@ mod tests {
             }
         }
 
-        let mut storage: BoxedHeapStorage<Timer> = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<Timer, _, _> = Heap::new();
+        let mut storage: HeapStorage<Timer> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<Timer, _> = Heap::new();
 
         heap.try_push(
             &mut storage,
@@ -1114,8 +1055,8 @@ mod tests {
             }
         }
 
-        let mut storage: BoxedHeapStorage<Timer> = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<Timer, _, _> = Heap::new();
+        let mut storage: HeapStorage<Timer> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<Timer, _> = Heap::new();
 
         let t1 = heap
             .try_push(
@@ -1157,8 +1098,8 @@ mod tests {
 
     #[test]
     fn single_element_pop() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 42).unwrap();
         assert_eq!(heap.pop(&mut storage), Some(42));
@@ -1167,8 +1108,8 @@ mod tests {
 
     #[test]
     fn single_element_remove() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let key = heap.try_push(&mut storage, 42).unwrap();
         assert_eq!(heap.remove(&mut storage, key), Some(42));
@@ -1177,8 +1118,8 @@ mod tests {
 
     #[test]
     fn two_elements() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 2).unwrap();
         heap.try_push(&mut storage, 1).unwrap();
@@ -1189,8 +1130,8 @@ mod tests {
 
     #[test]
     fn duplicates() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 1).unwrap();
@@ -1204,8 +1145,8 @@ mod tests {
 
     #[test]
     fn try_push_full_returns_value() {
-        let mut storage = BoxedHeapStorage::with_capacity(2);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(2);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 2).unwrap();
@@ -1223,8 +1164,8 @@ mod tests {
 
     #[test]
     fn clear() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 2).unwrap();
@@ -1238,8 +1179,8 @@ mod tests {
 
     #[test]
     fn drain_sorted_order() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 5).unwrap();
         heap.try_push(&mut storage, 1).unwrap();
@@ -1254,8 +1195,8 @@ mod tests {
 
     #[test]
     fn drain_partial_then_drop() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 2).unwrap();
@@ -1273,8 +1214,8 @@ mod tests {
 
     #[test]
     fn drain_while_expired_timers() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -1293,8 +1234,8 @@ mod tests {
 
     #[test]
     fn drain_while_none_match() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 10).unwrap();
         heap.try_push(&mut storage, 20).unwrap();
@@ -1306,8 +1247,8 @@ mod tests {
 
     #[test]
     fn drain_while_all_match() {
-        let mut storage = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         heap.try_push(&mut storage, 1).unwrap();
         heap.try_push(&mut storage, 2).unwrap();
@@ -1324,8 +1265,8 @@ mod tests {
 
     #[test]
     fn storage_reuse_after_pop() {
-        let mut storage = BoxedHeapStorage::with_capacity(4);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(4);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let a = heap.try_push(&mut storage, 1).unwrap();
         heap.pop(&mut storage);
@@ -1337,8 +1278,8 @@ mod tests {
 
     #[test]
     fn storage_reuse_after_remove() {
-        let mut storage = BoxedHeapStorage::with_capacity(4);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(4);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let a = heap.try_push(&mut storage, 1).unwrap();
         heap.remove(&mut storage, a);
@@ -1353,8 +1294,8 @@ mod tests {
 
     #[test]
     fn stress_push_pop_sorted() {
-        let mut storage = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         // Push in reverse order
         for i in (0..1000).rev() {
@@ -1371,8 +1312,8 @@ mod tests {
 
     #[test]
     fn stress_interleaved_push_pop() {
-        let mut storage = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         for i in 0..1000 {
             heap.try_push(&mut storage, i).unwrap();
@@ -1390,8 +1331,8 @@ mod tests {
 
     #[test]
     fn stress_remove_random() {
-        let mut storage = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, _, _> = Heap::new();
+        let mut storage = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, _> = Heap::new();
 
         let mut keys = Vec::new();
         for i in 0..100 {
@@ -1436,8 +1377,8 @@ mod tests {
             }
         }
 
-        let mut storage: BoxedHeapStorage<Task> = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<Task, _, _> = Heap::new();
+        let mut storage: HeapStorage<Task> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<Task, _> = Heap::new();
 
         heap.try_push(
             &mut storage,
@@ -1469,7 +1410,6 @@ mod tests {
         assert_eq!(heap.pop(&mut storage).unwrap().name, "low");
     }
 }
-
 
 #[cfg(test)]
 mod bench_boxed_storage {
@@ -1506,10 +1446,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_try_push() {
-        let mut storage: BoxedHeapStorage<u64> =
-            BoxedHeapStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> =
-            Heap::with_capacity(ITERATIONS + WARMUP);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(ITERATIONS + WARMUP);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -1531,10 +1469,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_pop() {
-        let mut storage: BoxedHeapStorage<u64> =
-            BoxedHeapStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> =
-            Heap::with_capacity(ITERATIONS + WARMUP);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(ITERATIONS + WARMUP);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -1556,8 +1492,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_peek() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(1024);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         // Build a heap of 1000 elements
@@ -1582,8 +1518,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_remove() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(16);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(16);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(16);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -1615,8 +1551,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_decrease_key() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(1024);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         // Build heap with values 0..1000
@@ -1627,25 +1563,25 @@ mod bench_boxed_storage {
 
         for _ in 0..WARMUP {
             let key = keys[500];
-            unsafe { storage.get_unchecked_mut(key) }.data = 0;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
             heap.decrease_key(&mut storage, key);
-            unsafe { storage.get_unchecked_mut(key) }.data = 1000;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 1000;
             heap.increase_key(&mut storage, key);
         }
 
         for i in 0..ITERATIONS {
             let key = keys[i % 1000];
-            let original = unsafe { storage.get_unchecked(key) }.data;
+            let original = unsafe { storage.get_node_unchecked(key) }.data;
 
             // Decrease to 0
-            unsafe { storage.get_unchecked_mut(key) }.data = 0;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
             let start = rdtscp();
             heap.decrease_key(&mut storage, key);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
             // Restore
-            unsafe { storage.get_unchecked_mut(key) }.data = original;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = original;
             heap.increase_key(&mut storage, key);
         }
 
@@ -1655,8 +1591,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_increase_key() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(1024);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -1666,25 +1602,25 @@ mod bench_boxed_storage {
 
         for _ in 0..WARMUP {
             let key = keys[0];
-            unsafe { storage.get_unchecked_mut(key) }.data = 10000;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 10000;
             heap.increase_key(&mut storage, key);
-            unsafe { storage.get_unchecked_mut(key) }.data = 0;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
             heap.decrease_key(&mut storage, key);
         }
 
         for i in 0..ITERATIONS {
             let key = keys[i % 1000];
-            let original = unsafe { storage.get_unchecked(key) }.data;
+            let original = unsafe { storage.get_node_unchecked(key) }.data;
 
             // Increase to max
-            unsafe { storage.get_unchecked_mut(key) }.data = 10000;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 10000;
             let start = rdtscp();
             heap.increase_key(&mut storage, key);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
             // Restore
-            unsafe { storage.get_unchecked_mut(key) }.data = original;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = original;
             heap.decrease_key(&mut storage, key);
         }
 
@@ -1694,8 +1630,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_update_key() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(1024);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -1705,26 +1641,26 @@ mod bench_boxed_storage {
 
         for i in 0..WARMUP {
             let key = keys[i % 1000];
-            let original = unsafe { storage.get_unchecked(key) }.data;
-            unsafe { storage.get_unchecked_mut(key) }.data = (i % 2000) as u64;
+            let original = unsafe { storage.get_node_unchecked(key) }.data;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = (i % 2000) as u64;
             heap.update_key(&mut storage, key);
-            unsafe { storage.get_unchecked_mut(key) }.data = original;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = original;
             heap.update_key(&mut storage, key);
         }
 
         for i in 0..ITERATIONS {
             let key = keys[i % 1000];
-            let original = unsafe { storage.get_unchecked(key) }.data;
+            let original = unsafe { storage.get_node_unchecked(key) }.data;
 
             // Change to random-ish value
-            unsafe { storage.get_unchecked_mut(key) }.data = (i % 2000) as u64;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = (i % 2000) as u64;
             let start = rdtscp();
             heap.update_key(&mut storage, key);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
             // Restore
-            unsafe { storage.get_unchecked_mut(key) }.data = original;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = original;
             heap.update_key(&mut storage, key);
         }
 
@@ -1734,8 +1670,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_heap_contains() {
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(1024);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -1762,8 +1698,8 @@ mod bench_boxed_storage {
     #[ignore]
     fn bench_heap_timer_workflow() {
         // Simulates a timer wheel: insert timers, fire expired ones
-        let mut storage: BoxedHeapStorage<u64> = BoxedHeapStorage::with_capacity(1024);
-        let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> = Heap::with_capacity(1024);
+        let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(1024);
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_fire = Histogram::<u64>::new(3).unwrap();
@@ -1812,10 +1748,8 @@ mod bench_boxed_storage {
         println!("\n=== Heap try_push at varying sizes (BoxedStorage) ===");
 
         for &size in &[10, 100, 1000, 10000] {
-            let mut storage: BoxedHeapStorage<u64> =
-                BoxedHeapStorage::with_capacity(size + ITERATIONS);
-            let mut heap: Heap<u64, BoxedHeapStorage<u64>, _> =
-                Heap::with_capacity(size + ITERATIONS);
+            let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(size + ITERATIONS);
+            let mut heap: Heap<u64, HeapStorage<u64>> = Heap::with_capacity(size + ITERATIONS);
             let mut hist = Histogram::<u64>::new(3).unwrap();
 
             // Build initial heap
@@ -1860,7 +1794,6 @@ mod bench_boxed_storage {
     }
 }
 
-
 #[cfg(test)]
 mod bench_nexus_slab_storage {
     use super::*;
@@ -1896,9 +1829,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_push() {
-        let mut storage: UnboundedNexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+        let mut storage: GrowableHeapStorage<u64> =
+            GrowableHeapStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> =
             Heap::with_capacity(ITERATIONS + WARMUP);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -1921,9 +1854,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_pop() {
-        let mut storage: UnboundedNexusHeapStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
+        let mut storage: GrowableHeapStorage<u64> =
+            GrowableHeapStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> =
             Heap::with_capacity(ITERATIONS + WARMUP);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -1946,9 +1879,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_peek() {
-        let mut storage: UnboundedNexusHeapStorage<u64> = nexus_slab::Slab::with_capacity(1024);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
-            Heap::with_capacity(1024);
+        let mut storage: GrowableHeapStorage<u64> = GrowableHeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..1000 {
@@ -1972,9 +1904,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_remove() {
-        let mut storage: UnboundedNexusHeapStorage<u64> = nexus_slab::Slab::with_capacity(16);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
-            Heap::with_capacity(16);
+        let mut storage: GrowableHeapStorage<u64> = GrowableHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(16);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2006,9 +1937,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_decrease_key() {
-        let mut storage: UnboundedNexusHeapStorage<u64> = nexus_slab::Slab::with_capacity(1024);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
-            Heap::with_capacity(1024);
+        let mut storage: GrowableHeapStorage<u64> = GrowableHeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -2018,23 +1948,23 @@ mod bench_nexus_slab_storage {
 
         for _ in 0..WARMUP {
             let key = keys[500];
-            unsafe { storage.get_unchecked_mut(key) }.data = 0;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
             heap.decrease_key(&mut storage, key);
-            unsafe { storage.get_unchecked_mut(key) }.data = 1000;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 1000;
             heap.increase_key(&mut storage, key);
         }
 
         for i in 0..ITERATIONS {
             let key = keys[i % 1000];
-            let original = unsafe { storage.get_unchecked(key) }.data;
+            let original = unsafe { storage.get_node_unchecked(key) }.data;
 
-            unsafe { storage.get_unchecked_mut(key) }.data = 0;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
             let start = rdtscp();
             heap.decrease_key(&mut storage, key);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
-            unsafe { storage.get_unchecked_mut(key) }.data = original;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = original;
             heap.increase_key(&mut storage, key);
         }
 
@@ -2044,9 +1974,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_increase_key() {
-        let mut storage: UnboundedNexusHeapStorage<u64> = nexus_slab::Slab::with_capacity(1024);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
-            Heap::with_capacity(1024);
+        let mut storage: GrowableHeapStorage<u64> = GrowableHeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(1024);
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -2056,23 +1985,23 @@ mod bench_nexus_slab_storage {
 
         for _ in 0..WARMUP {
             let key = keys[0];
-            unsafe { storage.get_unchecked_mut(key) }.data = 10000;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 10000;
             heap.increase_key(&mut storage, key);
-            unsafe { storage.get_unchecked_mut(key) }.data = 0;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 0;
             heap.decrease_key(&mut storage, key);
         }
 
         for i in 0..ITERATIONS {
             let key = keys[i % 1000];
-            let original = unsafe { storage.get_unchecked(key) }.data;
+            let original = unsafe { storage.get_node_unchecked(key) }.data;
 
-            unsafe { storage.get_unchecked_mut(key) }.data = 10000;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = 10000;
             let start = rdtscp();
             heap.increase_key(&mut storage, key);
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
-            unsafe { storage.get_unchecked_mut(key) }.data = original;
+            unsafe { storage.get_node_unchecked_mut(key) }.data = original;
             heap.decrease_key(&mut storage, key);
         }
 
@@ -2082,9 +2011,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_heap_timer_workflow() {
-        let mut storage: UnboundedNexusHeapStorage<u64> = nexus_slab::Slab::with_capacity(1024);
-        let mut heap: Heap<u64, UnboundedNexusHeapStorage<u64>, nexus_slab::Key> =
-            Heap::with_capacity(1024);
+        let mut storage: GrowableHeapStorage<u64> = GrowableHeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(1024);
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_fire = Histogram::<u64>::new(3).unwrap();

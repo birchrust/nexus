@@ -30,13 +30,13 @@
 //! # Quick Start
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{List, ListStorage};
 //!
 //! // Storage owns the data (wrapped in ListNode internally)
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1000);
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(1000);
 //!
 //! // List coordinates keys into storage
-//! let mut queue: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut queue: List<u64, ListStorage<u64>> = List::new();
 //!
 //! // Insert returns stable key for O(1) access later
 //! let key = queue.try_push_back(&mut storage, 42).unwrap();
@@ -51,11 +51,11 @@
 //! The storage key stays valid.
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{List, ListStorage};
 //!
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(100);
-//! let mut queue_a: List<u64, BoxedListStorage<u64>, _> = List::new();
-//! let mut queue_b: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
+//! let mut queue_a: List<u64, ListStorage<u64>> = List::new();
+//! let mut queue_b: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = queue_a.try_push_back(&mut storage, 42).unwrap();
 //!
@@ -74,11 +74,11 @@
 //! Passing a different storage causes undefined behavior.
 //!
 //! ```no_run
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{List, ListStorage};
 //!
-//! let mut storage_a: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut storage_b: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage_a: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut storage_b: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut list: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = list.try_push_back(&mut storage_a, 1).unwrap();
 //!
@@ -88,17 +88,11 @@
 //!
 //! # Storage Options
 //!
-//! ## Specialized Storage (Recommended)
-//!
 //! | Collection | Bounded | Growable |
 //! |------------|---------|----------|
 //! | [`List`] | [`ListStorage<T>`] | [`GrowableListStorage<T>`] |
-//!
-//! ## Legacy Storage (Deprecated)
-//!
-//! | Storage | Capacity | Allocation | Use Case |
-//! |---------|----------|------------|----------|
-//! | [`BoxedStorage`] | Fixed (runtime) | Single heap alloc | Default choice |
+//! | [`Heap`] | [`HeapStorage<T>`] | [`GrowableHeapStorage<T>`] |
+//! | [`SkipList`] | [`SkipStorage<K, V>`] | [`GrowableSkipStorage<K, V>`] |
 //!
 //! # Data Structures
 //!
@@ -128,16 +122,14 @@
 mod internal;
 
 pub mod heap;
-pub mod key;
 pub mod list;
 pub mod skiplist;
 pub mod storage;
 
-pub use heap::{BoxedHeapStorage, Heap};
-pub use key::Key;
-pub use list::{BoxedListStorage, List};
-pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, VacantEntry};
+pub use heap::Heap;
+pub use list::List;
+pub use skiplist::{Entry, OccupiedEntry, SkipList, VacantEntry};
 pub use storage::{
-    BoundedStorage, BoxedStorage, Full, GrowableListStorage, ListNode, ListStorage, Storage,
-    UnboundedStorage,
+    Full, GrowableHeapStorage, GrowableListStorage, GrowableSkipStorage, HeapNode, HeapStorage,
+    ListNode, ListStorage, SkipNode, SkipStorage,
 };

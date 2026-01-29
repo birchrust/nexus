@@ -16,20 +16,17 @@
 //! use nexus_collections::{List, ListStorage};
 //!
 //! let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
-//! let mut list: List<u64, ListStorage<u64>, _> = List::new();
+//! let mut list: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = list.try_push_back(&mut storage, 42).unwrap();
 //! assert_eq!(list.get(&storage, key), Some(&42));
 //! ```
 
-// TODO: Remove these allows once List is updated to use the new storage types directly
-#![allow(dead_code)]
 // SlabOps uses interior mutability (&self for mutations), but &mut self is
 // semantically correct for our API - we are mutating the storage.
 #![allow(clippy::needless_pass_by_ref_mut)]
 
 use crate::internal::SlabOps;
-use crate::Key;
 
 use super::Full;
 use nexus_slab::{BoundedSlab, Key as NexusKey, Slab};
@@ -43,22 +40,101 @@ use nexus_slab::{BoundedSlab, Key as NexusKey, Slab};
 /// This wraps user data with prev/next links. Users interact with `&T` and `&mut T`
 /// through the list's accessor methods; the node structure is an implementation detail.
 #[derive(Debug)]
-pub struct ListNode<T, K> {
+pub struct ListNode<T> {
     pub(crate) data: T,
-    pub(crate) prev: K,
-    pub(crate) next: K,
+    pub(crate) prev: NexusKey,
+    pub(crate) next: NexusKey,
 }
 
-impl<T, K: Key> ListNode<T, K> {
+impl<T> ListNode<T> {
     /// Creates a new unlinked node.
     #[inline]
     pub(crate) fn new(data: T) -> Self {
         Self {
             data,
-            prev: K::NONE,
-            next: K::NONE,
+            prev: NexusKey::NONE,
+            next: NexusKey::NONE,
         }
     }
+}
+
+// =============================================================================
+// ListStorageOps trait
+// =============================================================================
+
+/// Operations required for list storage.
+///
+/// This is a sealed trait implemented by [`ListStorage`] and [`GrowableListStorage`].
+/// It enables [`List`](crate::List) to work with either bounded or growable storage.
+pub trait ListStorageOps<T>: list_sealed::Sealed {
+    /// Returns the number of elements stored.
+    fn len(&self) -> usize;
+
+    /// Returns `true` if no elements are stored.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns `true` if the key is valid.
+    fn contains(&self, key: NexusKey) -> bool;
+
+    /// Returns a reference to the node at `key`.
+    fn get_node(&self, key: NexusKey) -> Option<&ListNode<T>>;
+
+    /// Returns a mutable reference to the node at `key`.
+    fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut ListNode<T>>;
+
+    /// Returns a reference to the node without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// Key must be valid and occupied.
+    unsafe fn get_node_unchecked(&self, key: NexusKey) -> &ListNode<T>;
+
+    /// Returns a mutable reference to the node without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// Key must be valid and occupied.
+    unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut ListNode<T>;
+
+    /// Removes and returns the node at `key`.
+    fn remove_node(&mut self, key: NexusKey) -> Option<ListNode<T>>;
+
+    /// Removes the node without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// Key must be valid and occupied.
+    unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> ListNode<T>;
+}
+
+/// Operations for bounded list storage (fallible insertion).
+pub trait BoundedListStorageOps<T>: ListStorageOps<T> {
+    /// Returns the total capacity.
+    fn capacity(&self) -> usize;
+
+    /// Returns `true` if storage is at capacity.
+    fn is_full(&self) -> bool {
+        self.len() >= self.capacity()
+    }
+
+    /// Attempts to insert a node, returning its key.
+    fn try_insert_node(&mut self, node: ListNode<T>) -> Result<NexusKey, Full<T>>;
+}
+
+/// Operations for growable list storage (infallible insertion).
+pub trait GrowableListStorageOps<T>: ListStorageOps<T> {
+    /// Inserts a node, returning its key. May allocate.
+    fn insert_node(&mut self, node: ListNode<T>) -> NexusKey;
+}
+
+mod list_sealed {
+    use super::{GrowableListStorage, ListStorage};
+
+    pub trait Sealed {}
+    impl<T> Sealed for ListStorage<T> {}
+    impl<T> Sealed for GrowableListStorage<T> {}
 }
 
 // =============================================================================
@@ -76,7 +152,7 @@ impl<T, K: Key> ListNode<T, K> {
 /// use nexus_collections::{List, ListStorage};
 ///
 /// let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
-/// let mut list: List<u64, ListStorage<u64>, _> = List::new();
+/// let mut list: List<u64, ListStorage<u64>> = List::new();
 ///
 /// for i in 0..100 {
 ///     list.try_push_back(&mut storage, i).unwrap();
@@ -85,7 +161,7 @@ impl<T, K: Key> ListNode<T, K> {
 /// ```
 #[derive(Debug)]
 pub struct ListStorage<T> {
-    inner: BoundedSlab<ListNode<T, NexusKey>>,
+    inner: BoundedSlab<ListNode<T>>,
 }
 
 impl<T> ListStorage<T> {
@@ -100,97 +176,64 @@ impl<T> ListStorage<T> {
             inner: BoundedSlab::with_capacity(capacity),
         }
     }
+}
 
-    /// Returns the total capacity.
+impl<T> ListStorageOps<T> for ListStorage<T> {
     #[inline]
-    pub fn capacity(&self) -> usize {
-        self.inner.capacity()
-    }
-
-    /// Returns the number of elements stored.
-    #[inline]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.inner.slab_len()
     }
 
-    /// Returns `true` if no elements are stored.
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.inner.slab_is_empty()
-    }
-
-    /// Returns `true` if storage is at capacity.
-    #[inline]
-    pub fn is_full(&self) -> bool {
-        self.len() >= self.capacity()
-    }
-
-    /// Returns `true` if the key is valid.
-    #[inline]
-    pub fn contains(&self, key: NexusKey) -> bool {
+    fn contains(&self, key: NexusKey) -> bool {
         self.inner.slab_contains(key)
     }
 
-    /// Attempts to insert a node, returning its key.
     #[inline]
-    pub(crate) fn try_insert(&mut self, node: ListNode<T, NexusKey>) -> Result<NexusKey, Full<T>> {
-        self.inner
-            .insert(node)
-            .map(|entry| entry.key())
-            .map_err(|e| Full(e.0.data))
-    }
-
-    /// Returns a reference to the node at `key`.
-    #[inline]
-    pub(crate) fn get_node(&self, key: NexusKey) -> Option<&ListNode<T, NexusKey>> {
+    fn get_node(&self, key: NexusKey) -> Option<&ListNode<T>> {
         // SAFETY: We have &self, so no mutable references can exist.
         unsafe { self.inner.slab_get_untracked(key) }
     }
 
-    /// Returns a mutable reference to the node at `key`.
     #[inline]
-    pub(crate) fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut ListNode<T, NexusKey>> {
+    fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut ListNode<T>> {
         // SAFETY: We have &mut self, so no other references can exist.
         unsafe { self.inner.slab_get_untracked_mut(key) }
     }
 
-    /// Returns a reference to the node without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and occupied.
     #[inline]
-    pub(crate) unsafe fn get_node_unchecked(&self, key: NexusKey) -> &ListNode<T, NexusKey> {
+    unsafe fn get_node_unchecked(&self, key: NexusKey) -> &ListNode<T> {
         unsafe { self.inner.slab_get_unchecked(key) }
     }
 
-    /// Returns a mutable reference to the node without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and occupied.
     #[inline]
-    pub(crate) unsafe fn get_node_unchecked_mut(
-        &mut self,
-        key: NexusKey,
-    ) -> &mut ListNode<T, NexusKey> {
+    unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut ListNode<T> {
         unsafe { self.inner.slab_get_unchecked_mut(key) }
     }
 
-    /// Removes and returns the node at `key`.
     #[inline]
-    pub(crate) fn remove_node(&mut self, key: NexusKey) -> Option<ListNode<T, NexusKey>> {
+    fn remove_node(&mut self, key: NexusKey) -> Option<ListNode<T>> {
         self.inner.slab_try_remove(key)
     }
 
-    /// Removes the node without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and occupied.
     #[inline]
-    pub(crate) unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> ListNode<T, NexusKey> {
+    unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> ListNode<T> {
         unsafe { self.inner.slab_remove_unchecked(key) }
+    }
+}
+
+impl<T> BoundedListStorageOps<T> for ListStorage<T> {
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    #[inline]
+    fn try_insert_node(&mut self, node: ListNode<T>) -> Result<NexusKey, Full<T>> {
+        self.inner
+            .insert(node)
+            .map(|entry| entry.key())
+            .map_err(|e| Full(e.0.data))
     }
 }
 
@@ -209,7 +252,7 @@ impl<T> ListStorage<T> {
 /// use nexus_collections::{List, GrowableListStorage};
 ///
 /// let mut storage: GrowableListStorage<u64> = GrowableListStorage::new();
-/// let mut list: List<u64, GrowableListStorage<u64>, _> = List::new();
+/// let mut list: List<u64, GrowableListStorage<u64>> = List::new();
 ///
 /// // Can grow indefinitely
 /// for i in 0..10_000 {
@@ -218,7 +261,7 @@ impl<T> ListStorage<T> {
 /// ```
 #[derive(Debug)]
 pub struct GrowableListStorage<T> {
-    inner: Slab<ListNode<T, NexusKey>>,
+    inner: Slab<ListNode<T>>,
 }
 
 impl<T> GrowableListStorage<T> {
@@ -237,194 +280,62 @@ impl<T> GrowableListStorage<T> {
             inner: Slab::with_capacity(capacity),
         }
     }
+}
 
-    /// Returns the number of elements stored.
+impl<T> ListStorageOps<T> for GrowableListStorage<T> {
     #[inline]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.inner.slab_len()
     }
 
-    /// Returns `true` if no elements are stored.
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.inner.slab_is_empty()
-    }
-
-    /// Returns `true` if the key is valid.
-    #[inline]
-    pub fn contains(&self, key: NexusKey) -> bool {
+    fn contains(&self, key: NexusKey) -> bool {
         self.inner.slab_contains(key)
     }
 
-    /// Inserts a node, returning its key.
     #[inline]
-    pub(crate) fn insert(&mut self, node: ListNode<T, NexusKey>) -> NexusKey {
-        self.inner.insert(node).key()
-    }
-
-    /// Returns a reference to the node at `key`.
-    #[inline]
-    pub(crate) fn get_node(&self, key: NexusKey) -> Option<&ListNode<T, NexusKey>> {
+    fn get_node(&self, key: NexusKey) -> Option<&ListNode<T>> {
         // SAFETY: We have &self, so no mutable references can exist.
         unsafe { self.inner.slab_get_untracked(key) }
     }
 
-    /// Returns a mutable reference to the node at `key`.
     #[inline]
-    pub(crate) fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut ListNode<T, NexusKey>> {
+    fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut ListNode<T>> {
         // SAFETY: We have &mut self, so no other references can exist.
         unsafe { self.inner.slab_get_untracked_mut(key) }
     }
 
-    /// Returns a reference to the node without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and occupied.
     #[inline]
-    pub(crate) unsafe fn get_node_unchecked(&self, key: NexusKey) -> &ListNode<T, NexusKey> {
+    unsafe fn get_node_unchecked(&self, key: NexusKey) -> &ListNode<T> {
         unsafe { self.inner.slab_get_unchecked(key) }
     }
 
-    /// Returns a mutable reference to the node without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and occupied.
     #[inline]
-    pub(crate) unsafe fn get_node_unchecked_mut(
-        &mut self,
-        key: NexusKey,
-    ) -> &mut ListNode<T, NexusKey> {
+    unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut ListNode<T> {
         unsafe { self.inner.slab_get_unchecked_mut(key) }
     }
 
-    /// Removes and returns the node at `key`.
     #[inline]
-    pub(crate) fn remove_node(&mut self, key: NexusKey) -> Option<ListNode<T, NexusKey>> {
+    fn remove_node(&mut self, key: NexusKey) -> Option<ListNode<T>> {
         self.inner.slab_try_remove(key)
     }
 
-    /// Removes the node without bounds checking.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and occupied.
     #[inline]
-    pub(crate) unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> ListNode<T, NexusKey> {
+    unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> ListNode<T> {
         unsafe { self.inner.slab_remove_unchecked(key) }
+    }
+}
+
+impl<T> GrowableListStorageOps<T> for GrowableListStorage<T> {
+    #[inline]
+    fn insert_node(&mut self, node: ListNode<T>) -> NexusKey {
+        self.inner.insert(node).key()
     }
 }
 
 impl<T> Default for GrowableListStorage<T> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// =============================================================================
-// Storage trait implementations for legacy compatibility
-// =============================================================================
-
-use super::{BoundedStorage, Storage, UnboundedStorage};
-
-impl<T> Storage<ListNode<T, NexusKey>> for ListStorage<T> {
-    type Key = NexusKey;
-
-    #[inline]
-    fn remove(&mut self, key: Self::Key) -> Option<ListNode<T, NexusKey>> {
-        self.remove_node(key)
-    }
-
-    #[inline]
-    fn get(&self, key: Self::Key) -> Option<&ListNode<T, NexusKey>> {
-        self.get_node(key)
-    }
-
-    #[inline]
-    fn get_mut(&mut self, key: Self::Key) -> Option<&mut ListNode<T, NexusKey>> {
-        self.get_node_mut(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    #[inline]
-    unsafe fn get_unchecked(&self, key: Self::Key) -> &ListNode<T, NexusKey> {
-        unsafe { self.get_node_unchecked(key) }
-    }
-
-    #[inline]
-    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut ListNode<T, NexusKey> {
-        unsafe { self.get_node_unchecked_mut(key) }
-    }
-
-    #[inline]
-    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> ListNode<T, NexusKey> {
-        unsafe { self.remove_node_unchecked(key) }
-    }
-}
-
-impl<T> BoundedStorage<ListNode<T, NexusKey>> for ListStorage<T> {
-    #[inline]
-    fn try_insert(&mut self, node: ListNode<T, NexusKey>) -> Result<Self::Key, Full<ListNode<T, NexusKey>>> {
-        self.inner
-            .insert(node)
-            .map(|entry| entry.key())
-            .map_err(|e| Full(e.0))
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity()
-    }
-}
-
-impl<T> Storage<ListNode<T, NexusKey>> for GrowableListStorage<T> {
-    type Key = NexusKey;
-
-    #[inline]
-    fn remove(&mut self, key: Self::Key) -> Option<ListNode<T, NexusKey>> {
-        self.remove_node(key)
-    }
-
-    #[inline]
-    fn get(&self, key: Self::Key) -> Option<&ListNode<T, NexusKey>> {
-        self.get_node(key)
-    }
-
-    #[inline]
-    fn get_mut(&mut self, key: Self::Key) -> Option<&mut ListNode<T, NexusKey>> {
-        self.get_node_mut(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        GrowableListStorage::len(self)
-    }
-
-    #[inline]
-    unsafe fn get_unchecked(&self, key: Self::Key) -> &ListNode<T, NexusKey> {
-        unsafe { self.get_node_unchecked(key) }
-    }
-
-    #[inline]
-    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut ListNode<T, NexusKey> {
-        unsafe { self.get_node_unchecked_mut(key) }
-    }
-
-    #[inline]
-    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> ListNode<T, NexusKey> {
-        unsafe { self.remove_node_unchecked(key) }
-    }
-}
-
-impl<T> UnboundedStorage<ListNode<T, NexusKey>> for GrowableListStorage<T> {
-    #[inline]
-    fn insert(&mut self, node: ListNode<T, NexusKey>) -> Self::Key {
-        GrowableListStorage::insert(self, node)
     }
 }
 
@@ -442,7 +353,7 @@ mod tests {
         assert!(storage.is_empty());
         assert_eq!(storage.capacity(), 16);
 
-        let key = storage.try_insert(ListNode::new(42)).unwrap();
+        let key = storage.try_insert_node(ListNode::new(42)).unwrap();
         assert_eq!(storage.len(), 1);
         assert!(storage.contains(key));
 
@@ -458,11 +369,11 @@ mod tests {
     fn list_storage_full() {
         let mut storage: ListStorage<u64> = ListStorage::with_capacity(2);
 
-        storage.try_insert(ListNode::new(1)).unwrap();
-        storage.try_insert(ListNode::new(2)).unwrap();
+        storage.try_insert_node(ListNode::new(1)).unwrap();
+        storage.try_insert_node(ListNode::new(2)).unwrap();
         assert!(storage.is_full());
 
-        let err = storage.try_insert(ListNode::new(3));
+        let err = storage.try_insert_node(ListNode::new(3));
         assert!(err.is_err());
         assert_eq!(err.unwrap_err().into_inner(), 3);
     }
@@ -472,7 +383,7 @@ mod tests {
         let mut storage: GrowableListStorage<u64> = GrowableListStorage::new();
         assert!(storage.is_empty());
 
-        let key = storage.insert(ListNode::new(42));
+        let key = storage.insert_node(ListNode::new(42));
         assert_eq!(storage.len(), 1);
         assert!(storage.contains(key));
 
@@ -491,7 +402,7 @@ mod tests {
         // Insert many elements - should grow as needed
         let mut keys = Vec::new();
         for i in 0..1000 {
-            keys.push(storage.insert(ListNode::new(i)));
+            keys.push(storage.insert_node(ListNode::new(i)));
         }
 
         assert_eq!(storage.len(), 1000);

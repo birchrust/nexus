@@ -21,13 +21,13 @@
 //! # Example
 //!
 //! ```rust
-//! use nexus_collections::{SkipList, BoxedSkipStorage};
+//! use nexus_collections::{SkipList, SkipStorage};
 //! use rand::SeedableRng;
 //! use rand::rngs::SmallRng;
 //!
-//! let mut storage: BoxedSkipStorage<u64, String> = BoxedSkipStorage::with_capacity(100);
+//! let mut storage: SkipStorage<u64, String, 16> = SkipStorage::with_capacity(100);
 //! let rng = SmallRng::seed_from_u64(12345);
-//! let mut map: SkipList<u64, String, _, _, _, 16> = SkipList::new(rng);
+//! let mut map: SkipList<u64, String, _, SmallRng, 16> = SkipList::new(rng);
 //!
 //! map.try_insert(&mut storage, 100, "first".into()).unwrap();
 //! map.try_insert(&mut storage, 50, "second".into()).unwrap();
@@ -40,42 +40,10 @@ use core::marker::PhantomData;
 
 use rand_core::RngCore;
 
-use crate::key::Key;
-use crate::storage::{BoundedStorage, Full, Storage, UnboundedStorage};
-
-// ============================================================================
-// SkipNode
-// ============================================================================
-
-/// A node in the skip list containing key, value, and forward pointers.
-///
-/// Forward pointers at each level point to the next node at that level.
-/// Nodes with higher `level` values participate in more express lanes,
-/// allowing O(log n) traversal.
-#[derive(Debug, Clone)]
-pub struct SkipNode<K, V, Idx: Key, const MAX_LEVEL: usize> {
-    /// The key used for ordering.
-    pub key: K,
-    /// The value associated with this key.
-    pub value: V,
-    /// Forward pointers at each level. `forward[i]` points to the next node at level i.
-    forward: [Idx; MAX_LEVEL],
-    /// The level of this node (0-indexed). Node participates in levels 0..=level.
-    level: u8,
-}
-
-impl<K, V, Idx: Key, const MAX_LEVEL: usize> SkipNode<K, V, Idx, MAX_LEVEL> {
-    /// Creates a new node with the given key, value, and level.
-    #[inline]
-    fn new(key: K, value: V, level: u8) -> Self {
-        Self {
-            key,
-            value,
-            forward: [Idx::NONE; MAX_LEVEL],
-            level,
-        }
-    }
-}
+use crate::storage::{
+    BoundedSkipStorageOps, Full, GrowableSkipStorageOps, SkipNode, SkipStorageOps,
+};
+use nexus_slab::Key as NexusKey;
 
 // ============================================================================
 // SkipList
@@ -95,15 +63,15 @@ impl<K, V, Idx: Key, const MAX_LEVEL: usize> SkipNode<K, V, Idx, MAX_LEVEL> {
 /// - `R`: Random number generator implementing [`RngCore`]
 /// - `MAX_LEVEL`: Maximum number of levels, defaults to 16 (~65K elements efficient)
 #[derive(Debug)]
-pub struct SkipList<K, V, S, Idx, R = (), const MAX_LEVEL: usize = 16>
+pub struct SkipList<K, V, S, R = (), const MAX_LEVEL: usize = 16>
 where
     K: Ord,
-    Idx: Key,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Head pointers for each level. `head[i]` points to the first node at level i.
-    head: [Idx; MAX_LEVEL],
+    head: [NexusKey; MAX_LEVEL],
     /// Tail pointer (last node at level 0) for O(1) `last()` access.
-    tail: Idx,
+    tail: NexusKey,
     /// Random number generator for level assignment.
     rng: R,
     /// Current maximum level in use (0-indexed).
@@ -118,12 +86,11 @@ where
     _marker: PhantomData<(K, V, S)>,
 }
 
-impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, R, const MAX_LEVEL: usize> SkipList<K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     /// Creates a new empty skip list.
     ///
@@ -148,8 +115,8 @@ where
     pub fn with_level_ratio(rng: R, level_ratio: u32) -> Self {
         let level_ratio = level_ratio.max(2).next_power_of_two();
         Self {
-            head: [Idx::NONE; MAX_LEVEL],
-            tail: Idx::NONE,
+            head: [NexusKey::NONE; MAX_LEVEL],
+            tail: NexusKey::NONE,
             rng,
             level: 0,
             len: 0,
@@ -180,33 +147,33 @@ where
     #[inline]
     pub fn get<'a>(&'a self, storage: &'a S, key: &K) -> Option<&'a V> {
         let found = self.find(storage, key);
-        found.map(|idx| &storage.get(idx).expect("invalid index").value)
+        found.map(|idx| &storage.get_node(idx).expect("invalid index").value)
     }
 
     /// Returns a mutable reference to the value for the given key, or `None` if not found.
     #[inline]
     pub fn get_mut<'a>(&'a mut self, storage: &'a mut S, key: &K) -> Option<&'a mut V> {
         let found = self.find(storage, key);
-        found.map(|idx| &mut storage.get_mut(idx).expect("invalid index").value)
+        found.map(|idx| &mut storage.get_node_mut(idx).expect("invalid index").value)
     }
 
     /// Returns the first (smallest) key-value pair, or `None` if empty.
     #[inline]
     pub fn first<'a>(&'a self, storage: &'a S) -> Option<(&'a K, &'a V)> {
-        if self.head[0].is_none() {
+        if self.head[0] == NexusKey::NONE {
             return None;
         }
-        let node = storage.get(self.head[0]).expect("invalid head");
+        let node = storage.get_node(self.head[0]).expect("invalid head");
         Some((&node.key, &node.value))
     }
 
     /// Returns a mutable reference to the first (smallest) key-value pair.
     #[inline]
     pub fn first_mut<'a>(&'a mut self, storage: &'a mut S) -> Option<(&'a K, &'a mut V)> {
-        if self.head[0].is_none() {
+        if self.head[0] == NexusKey::NONE {
             return None;
         }
-        let node = storage.get_mut(self.head[0]).expect("invalid head");
+        let node = storage.get_node_mut(self.head[0]).expect("invalid head");
         Some((&node.key, &mut node.value))
     }
 
@@ -215,10 +182,10 @@ where
     /// This is O(1) due to maintained tail pointer.
     #[inline]
     pub fn last<'a>(&'a self, storage: &'a S) -> Option<(&'a K, &'a V)> {
-        if self.tail.is_none() {
+        if self.tail == NexusKey::NONE {
             return None;
         }
-        let node = storage.get(self.tail).expect("invalid tail");
+        let node = storage.get_node(self.tail).expect("invalid tail");
         Some((&node.key, &node.value))
     }
 
@@ -227,16 +194,16 @@ where
     /// This is O(1) due to maintained tail pointer.
     #[inline]
     pub fn last_mut<'a>(&'a mut self, storage: &'a mut S) -> Option<(&'a K, &'a mut V)> {
-        if self.tail.is_none() {
+        if self.tail == NexusKey::NONE {
             return None;
         }
-        let node = storage.get_mut(self.tail).expect("invalid tail");
+        let node = storage.get_node_mut(self.tail).expect("invalid tail");
         Some((&node.key, &mut node.value))
     }
 
     /// Removes the first (smallest) key-value pair and returns it.
     pub fn pop_first(&mut self, storage: &mut S) -> Option<(K, V)> {
-        if self.head[0].is_none() {
+        if self.head[0] == NexusKey::NONE {
             return None;
         }
 
@@ -244,7 +211,7 @@ where
 
         // Get raw pointer - avoids holding borrow
         let node_ptr =
-            storage.get(first_idx).expect("invalid head") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+            storage.get_node(first_idx).expect("invalid head") as *const SkipNode<K, V, MAX_LEVEL>;
 
         // Safety: node_ptr is valid, we're just reading
         let node_level = unsafe { (*node_ptr).level } as usize;
@@ -256,18 +223,18 @@ where
         }
 
         // Update tail if this was the only node
-        if self.head[0].is_none() {
-            self.tail = Idx::NONE;
+        if self.head[0] == NexusKey::NONE {
+            self.tail = NexusKey::NONE;
         }
 
         // Reduce level if needed
-        while self.level > 0 && self.head[self.level].is_none() {
+        while self.level > 0 && self.head[self.level] == NexusKey::NONE {
             self.level -= 1;
         }
 
         self.len -= 1;
 
-        let node = storage.remove(first_idx).expect("invalid index");
+        let node = storage.remove_node(first_idx).expect("invalid index");
         Some((node.key, node.value))
     }
 
@@ -278,22 +245,26 @@ where
     where
         K: Clone,
     {
-        if self.tail.is_none() {
+        if self.tail == NexusKey::NONE {
             return None;
         }
 
         // Clone the key to release the borrow on storage
-        let tail_key = storage.get(self.tail).expect("invalid tail").key.clone();
+        let tail_key = storage
+            .get_node(self.tail)
+            .expect("invalid tail")
+            .key
+            .clone();
 
         // Search for predecessors
-        let mut update = [Idx::NONE; MAX_LEVEL];
+        let mut update = [NexusKey::NONE; MAX_LEVEL];
         self.search(storage, &tail_key, &mut update);
 
         let idx = self.tail;
 
         // Get raw pointer - avoids holding borrow
         let node_ptr =
-            storage.get(idx).expect("invalid tail") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+            storage.get_node(idx).expect("invalid tail") as *const SkipNode<K, V, MAX_LEVEL>;
 
         // Safety: node_ptr is valid, we're just reading
         let node_level = unsafe { (*node_ptr).level } as usize;
@@ -303,11 +274,11 @@ where
             // Safety: node_ptr still valid, just reading forward[i]
             let next = unsafe { (*node_ptr).forward[i] };
 
-            if update[i].is_none() {
+            if update[i] == NexusKey::NONE {
                 self.head[i] = next;
             } else {
                 // Safety: update[i] != idx (predecessor is always before target)
-                let prev = unsafe { storage.get_unchecked_mut(update[i]) };
+                let prev = unsafe { storage.get_node_unchecked_mut(update[i]) };
                 prev.forward[i] = next;
             }
         }
@@ -316,40 +287,40 @@ where
         self.tail = update[0];
 
         // Reduce level if needed
-        while self.level > 0 && self.head[self.level].is_none() {
+        while self.level > 0 && self.head[self.level] == NexusKey::NONE {
             self.level -= 1;
         }
 
         self.len -= 1;
 
-        let node = storage.remove(idx).expect("invalid index");
+        let node = storage.remove_node(idx).expect("invalid index");
         Some((node.key, node.value))
     }
 
     /// Removes the entry for the given key and returns the value, or `None` if not found.
     pub fn remove(&mut self, storage: &mut S, key: &K) -> Option<V> {
-        let mut update = [Idx::NONE; MAX_LEVEL];
+        let mut update = [NexusKey::NONE; MAX_LEVEL];
         let found = self.search(storage, key, &mut update);
         let idx = found?;
 
         // Get raw pointer - avoids holding borrow
         let node_ptr =
-            storage.get(idx).expect("invalid index") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+            storage.get_node(idx).expect("invalid index") as *const SkipNode<K, V, MAX_LEVEL>;
 
         // Safety: node_ptr is valid, we're just reading
         let node_level = unsafe { (*node_ptr).level } as usize;
-        let forward_0_is_none = unsafe { (*node_ptr).forward[0].is_none() };
+        let forward_0_is_none = unsafe { (*node_ptr).forward[0] == NexusKey::NONE };
 
         // Update forward pointers at each level
         for i in 0..=node_level {
             // Safety: node_ptr still valid, just reading forward[i]
             let next = unsafe { (*node_ptr).forward[i] };
 
-            if update[i].is_none() {
+            if update[i] == NexusKey::NONE {
                 self.head[i] = next;
             } else {
                 // Safety: update[i] != idx (predecessor is always before target)
-                let prev = unsafe { storage.get_unchecked_mut(update[i]) };
+                let prev = unsafe { storage.get_node_unchecked_mut(update[i]) };
                 prev.forward[i] = next;
             }
         }
@@ -360,13 +331,13 @@ where
         }
 
         // Reduce level if needed
-        while self.level > 0 && self.head[self.level].is_none() {
+        while self.level > 0 && self.head[self.level] == NexusKey::NONE {
             self.level -= 1;
         }
 
         self.len -= 1;
 
-        let node = storage.remove(idx).expect("invalid index");
+        let node = storage.remove_node(idx).expect("invalid index");
         Some(node.value)
     }
 
@@ -374,21 +345,21 @@ where
     pub fn clear(&mut self, storage: &mut S) {
         // Walk level 0 and remove all nodes
         let mut current = self.head[0];
-        while current.is_some() {
-            let next = storage.get(current).expect("invalid index").forward[0];
-            storage.remove(current);
+        while current != NexusKey::NONE {
+            let next = storage.get_node(current).expect("invalid index").forward[0];
+            storage.remove_node(current);
             current = next;
         }
 
-        self.head = [Idx::NONE; MAX_LEVEL];
-        self.tail = Idx::NONE;
+        self.head = [NexusKey::NONE; MAX_LEVEL];
+        self.tail = NexusKey::NONE;
         self.level = 0;
         self.len = 0;
     }
 
     /// Returns an iterator over key-value pairs in sorted order.
     #[inline]
-    pub fn iter<'a>(&'a self, storage: &'a S) -> Iter<'a, K, V, S, Idx, MAX_LEVEL> {
+    pub fn iter<'a>(&'a self, storage: &'a S) -> Iter<'a, K, V, S, MAX_LEVEL> {
         Iter {
             storage,
             current: self.head[0],
@@ -398,7 +369,7 @@ where
 
     /// Returns a mutable iterator over key-value pairs in sorted order.
     #[inline]
-    pub fn iter_mut<'a>(&'a mut self, storage: &'a mut S) -> IterMut<'a, K, V, S, Idx, MAX_LEVEL> {
+    pub fn iter_mut<'a>(&'a mut self, storage: &'a mut S) -> IterMut<'a, K, V, S, MAX_LEVEL> {
         IterMut {
             current: self.head[0],
             storage,
@@ -408,7 +379,7 @@ where
 
     /// Returns an iterator over keys in sorted order.
     #[inline]
-    pub fn keys<'a>(&'a self, storage: &'a S) -> Keys<'a, K, V, S, Idx, MAX_LEVEL> {
+    pub fn keys<'a>(&'a self, storage: &'a S) -> Keys<'a, K, V, S, MAX_LEVEL> {
         Keys {
             inner: self.iter(storage),
         }
@@ -416,7 +387,7 @@ where
 
     /// Returns an iterator over values in sorted order by key.
     #[inline]
-    pub fn values<'a>(&'a self, storage: &'a S) -> Values<'a, K, V, S, Idx, MAX_LEVEL> {
+    pub fn values<'a>(&'a self, storage: &'a S) -> Values<'a, K, V, S, MAX_LEVEL> {
         Values {
             inner: self.iter(storage),
         }
@@ -424,16 +395,13 @@ where
 
     /// Returns a cursor starting at the first element.
     #[inline]
-    pub fn cursor_front<'a>(
-        &'a mut self,
-        storage: &'a mut S,
-    ) -> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL> {
+    pub fn cursor_front<'a>(&'a mut self, storage: &'a mut S) -> Cursor<'a, K, V, S, R, MAX_LEVEL> {
         let current = self.head[0];
         Cursor {
             list: self,
             storage,
             current,
-            prev_at_level: [Idx::NONE; MAX_LEVEL],
+            prev_at_level: [NexusKey::NONE; MAX_LEVEL],
         }
     }
 
@@ -443,8 +411,8 @@ where
         &'a mut self,
         storage: &'a mut S,
         key: &K,
-    ) -> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL> {
-        let mut prev_at_level = [Idx::NONE; MAX_LEVEL];
+    ) -> Cursor<'a, K, V, S, R, MAX_LEVEL> {
+        let mut prev_at_level = [NexusKey::NONE; MAX_LEVEL];
         let found = self.search(storage, key, &mut prev_at_level);
         let current = if let Some(idx) = found {
             idx
@@ -453,7 +421,7 @@ where
             if prev_at_level[0].is_none() {
                 self.head[0]
             } else {
-                let prev = storage.get(prev_at_level[0]).expect("invalid index");
+                let prev = storage.get_node(prev_at_level[0]).expect("invalid index");
                 prev.forward[0]
             }
         };
@@ -473,21 +441,21 @@ where
     /// Finds the index of a key without computing predecessors.
     /// Used for read-only operations (get, contains_key).
     #[inline]
-    fn find(&self, storage: &S, key: &K) -> Option<Idx> {
-        let mut current = Idx::NONE;
+    fn find(&self, storage: &S, key: &K) -> Option<NexusKey> {
+        let mut current = NexusKey::NONE;
 
         // Start from the highest level
         for i in (0..=self.level).rev() {
-            let mut next = if current.is_none() {
+            let mut next = if current == NexusKey::NONE {
                 self.head[i]
             } else {
                 // Safety: current is valid
-                unsafe { storage.get_unchecked(current) }.forward[i]
+                unsafe { storage.get_node_unchecked(current) }.forward[i]
             };
 
             // Traverse forward while next key is less than target
             while next.is_some() {
-                let next_node = unsafe { storage.get_unchecked(next) };
+                let next_node = unsafe { storage.get_node_unchecked(next) };
                 if next_node.key >= *key {
                     break;
                 }
@@ -497,13 +465,13 @@ where
         }
 
         // Check if we found the exact key
-        let next = if current.is_none() {
+        let next = if current == NexusKey::NONE {
             self.head[0]
         } else {
-            unsafe { storage.get_unchecked(current) }.forward[0]
+            unsafe { storage.get_node_unchecked(current) }.forward[0]
         };
 
-        if next.is_some() && unsafe { storage.get_unchecked(next) }.key == *key {
+        if next.is_some() && unsafe { storage.get_node_unchecked(next) }.key == *key {
             Some(next)
         } else {
             None
@@ -514,21 +482,21 @@ where
     /// Used for mutations (insert, remove).
     /// Returns the index if found.
     #[inline]
-    fn search(&self, storage: &S, key: &K, update: &mut [Idx; MAX_LEVEL]) -> Option<Idx> {
-        let mut current = Idx::NONE;
+    fn search(&self, storage: &S, key: &K, update: &mut [NexusKey; MAX_LEVEL]) -> Option<NexusKey> {
+        let mut current = NexusKey::NONE;
 
         // Start from the highest level
         for i in (0..=self.level).rev() {
-            let mut next = if current.is_none() {
+            let mut next = if current == NexusKey::NONE {
                 self.head[i]
             } else {
                 // Safety: current is valid
-                unsafe { storage.get_unchecked(current) }.forward[i]
+                unsafe { storage.get_node_unchecked(current) }.forward[i]
             };
 
             // Traverse forward while next key is less than target
             while next.is_some() {
-                let next_node = unsafe { storage.get_unchecked(next) };
+                let next_node = unsafe { storage.get_node_unchecked(next) };
                 if next_node.key >= *key {
                     break;
                 }
@@ -540,13 +508,13 @@ where
         }
 
         // Check if we found the exact key
-        let next = if current.is_none() {
+        let next = if current == NexusKey::NONE {
             self.head[0]
         } else {
-            unsafe { storage.get_unchecked(current) }.forward[0]
+            unsafe { storage.get_node_unchecked(current) }.forward[0]
         };
 
-        if next.is_some() && unsafe { storage.get_unchecked(next) }.key == *key {
+        if next.is_some() && unsafe { storage.get_node_unchecked(next) }.key == *key {
             Some(next)
         } else {
             None
@@ -566,18 +534,24 @@ where
 
     /// Links a newly inserted node into the skip list structure.
     #[inline]
-    fn link_node(&mut self, storage: &mut S, idx: Idx, new_level: u8, update: &[Idx; MAX_LEVEL]) {
+    fn link_node(
+        &mut self,
+        storage: &mut S,
+        idx: NexusKey,
+        new_level: u8,
+        update: &[NexusKey; MAX_LEVEL],
+    ) {
         let node_ptr =
-            storage.get_mut(idx).expect("invalid index") as *mut SkipNode<K, V, Idx, MAX_LEVEL>;
+            storage.get_node_mut(idx).expect("invalid index") as *mut SkipNode<K, V, MAX_LEVEL>;
 
         let mut is_tail = true;
 
         for i in 0..=new_level as usize {
-            let next = if update[i].is_none() {
+            let next = if update[i] == NexusKey::NONE {
                 self.head[i]
             } else {
                 // Safety: update[i] valid from search, != idx
-                unsafe { storage.get_unchecked(update[i]) }.forward[i]
+                unsafe { storage.get_node_unchecked(update[i]) }.forward[i]
             };
 
             // Set new node's forward pointer
@@ -590,10 +564,10 @@ where
             }
 
             // Update predecessor to point to new node
-            if update[i].is_none() {
+            if update[i] == NexusKey::NONE {
                 self.head[i] = idx;
             } else {
-                unsafe { storage.get_unchecked_mut(update[i]) }.forward[i] = idx;
+                unsafe { storage.get_node_unchecked_mut(update[i]) }.forward[i] = idx;
             }
         }
 
@@ -613,12 +587,11 @@ where
 // Bounded storage impl
 // ============================================================================
 
-impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, R, const MAX_LEVEL: usize> SkipList<K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
+    S: BoundedSkipStorageOps<K, V, MAX_LEVEL>,
     R: RngCore,
-    S: BoundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     /// Tries to insert a key-value pair, returning an error if storage is full.
     ///
@@ -630,12 +603,12 @@ where
         value: V,
     ) -> Result<Option<V>, Full<(K, V)>> {
         // Search first to check if key exists
-        let mut update = [Idx::NONE; MAX_LEVEL];
+        let mut update = [NexusKey::NONE; MAX_LEVEL];
         let found = self.search(storage, &key, &mut update);
 
         // If key exists, update value
         if let Some(existing_idx) = found {
-            let node = storage.get_mut(existing_idx).expect("invalid index");
+            let node = storage.get_node_mut(existing_idx).expect("invalid index");
             let old_value = core::mem::replace(&mut node.value, value);
             return Ok(Some(old_value));
         }
@@ -643,10 +616,7 @@ where
         // Key doesn't exist, allocate new node
         let new_level = self.random_level();
         let node = SkipNode::new(key, value, new_level);
-        let idx = match storage.try_insert(node) {
-            Ok(idx) => idx,
-            Err(Full(node)) => return Err(Full((node.key, node.value))),
-        };
+        let idx = storage.try_insert_node(node)?;
 
         // Link the node into the list
         self.link_node(storage, idx, new_level, &update);
@@ -659,24 +629,23 @@ where
 // Unbounded storage impl
 // ============================================================================
 
-impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, R, const MAX_LEVEL: usize> SkipList<K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
+    S: GrowableSkipStorageOps<K, V, MAX_LEVEL>,
     R: RngCore,
-    S: UnboundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     /// Inserts a key-value pair.
     ///
     /// If the key already exists, the value is updated and the old value is returned.
     pub fn insert(&mut self, storage: &mut S, key: K, value: V) -> Option<V> {
         // Search first to check if key exists
-        let mut update = [Idx::NONE; MAX_LEVEL];
+        let mut update = [NexusKey::NONE; MAX_LEVEL];
         let found = self.search(storage, &key, &mut update);
 
         // If key exists, update value
         if let Some(existing_idx) = found {
-            let node = storage.get_mut(existing_idx).expect("invalid index");
+            let node = storage.get_node_mut(existing_idx).expect("invalid index");
             let old_value = core::mem::replace(&mut node.value, value);
             return Some(old_value);
         }
@@ -684,7 +653,7 @@ where
         // Key doesn't exist, allocate new node
         let new_level = self.random_level();
         let node = SkipNode::new(key, value, new_level);
-        let idx = storage.insert(node);
+        let idx = storage.insert_node(node);
 
         // Link the node into the list
         self.link_node(storage, idx, new_level, &update);
@@ -698,58 +667,54 @@ where
 // ============================================================================
 
 /// A view into a single entry in the skip list.
-pub enum Entry<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+pub enum Entry<'a, K, V, S, R, const MAX_LEVEL: usize>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// An occupied entry.
-    Occupied(OccupiedEntry<'a, K, V, S, Idx, R, MAX_LEVEL>),
+    Occupied(OccupiedEntry<'a, K, V, S, R, MAX_LEVEL>),
     /// A vacant entry.
-    Vacant(VacantEntry<'a, K, V, S, Idx, R, MAX_LEVEL>),
+    Vacant(VacantEntry<'a, K, V, S, R, MAX_LEVEL>),
 }
 
 /// An occupied entry in the skip list.
-pub struct OccupiedEntry<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+pub struct OccupiedEntry<'a, K, V, S, R, const MAX_LEVEL: usize>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
-    list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
+    list: &'a mut SkipList<K, V, S, R, MAX_LEVEL>,
     storage: &'a mut S,
-    idx: Idx,
-    update: [Idx; MAX_LEVEL],
+    idx: NexusKey,
+    update: [NexusKey; MAX_LEVEL],
 }
 
 /// A vacant entry in the skip list.
-pub struct VacantEntry<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+pub struct VacantEntry<'a, K, V, S, R, const MAX_LEVEL: usize>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
-    list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
+    list: &'a mut SkipList<K, V, S, R, MAX_LEVEL>,
     storage: &'a mut S,
     key: K,
-    update: [Idx; MAX_LEVEL],
+    update: [NexusKey; MAX_LEVEL],
 }
 
-impl<K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'_, K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, R, const MAX_LEVEL: usize> Entry<'_, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Returns a reference to the key.
     pub fn key(&self) -> &K {
         match self {
-            Entry::Occupied(e) => &e.storage.get(e.idx).expect("invalid index").key,
+            Entry::Occupied(e) => &e.storage.get_node(e.idx).expect("invalid index").key,
             Entry::Vacant(e) => &e.key,
         }
     }
@@ -760,19 +725,18 @@ where
         F: FnOnce(&mut V),
     {
         if let Entry::Occupied(ref mut e) = self {
-            let node = e.storage.get_mut(e.idx).expect("invalid index");
+            let node = e.storage.get_node_mut(e.idx).expect("invalid index");
             f(&mut node.value);
         }
         self
     }
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<'a, K, V, S, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: BoundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: BoundedSkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Ensures a value is in the entry by inserting the default if empty.
     /// Returns `None` if storage is full.
@@ -784,18 +748,19 @@ where
     /// Returns `None` if storage is full.
     pub fn or_try_insert_with<F: FnOnce() -> V>(self, f: F) -> Option<&'a mut V> {
         match self {
-            Entry::Occupied(e) => Some(&mut e.storage.get_mut(e.idx).expect("invalid index").value),
+            Entry::Occupied(e) => {
+                Some(&mut e.storage.get_node_mut(e.idx).expect("invalid index").value)
+            }
             Entry::Vacant(e) => e.try_insert(f()),
         }
     }
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<'a, K, V, S, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: UnboundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: GrowableSkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Ensures a value is in the entry by inserting the default if empty.
     pub fn or_insert(self, default: V) -> &'a mut V {
@@ -805,7 +770,7 @@ where
     /// Ensures a value is in the entry by inserting the result of the function if empty.
     pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
         match self {
-            Entry::Occupied(e) => &mut e.storage.get_mut(e.idx).expect("invalid index").value,
+            Entry::Occupied(e) => &mut e.storage.get_node_mut(e.idx).expect("invalid index").value,
             Entry::Vacant(e) => e.insert(f()),
         }
     }
@@ -819,28 +784,39 @@ where
     }
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> OccupiedEntry<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<'a, K, V, S, R, const MAX_LEVEL: usize> OccupiedEntry<'a, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Gets a reference to the value.
     #[inline]
     pub fn get(&self) -> &V {
-        &self.storage.get(self.idx).expect("invalid index").value
+        &self
+            .storage
+            .get_node(self.idx)
+            .expect("invalid index")
+            .value
     }
 
     /// Gets a mutable reference to the value.
     #[inline]
     pub fn get_mut(&mut self) -> &mut V {
-        &mut self.storage.get_mut(self.idx).expect("invalid index").value
+        &mut self
+            .storage
+            .get_node_mut(self.idx)
+            .expect("invalid index")
+            .value
     }
 
     /// Converts to a mutable reference to the value.
     pub fn into_mut(self) -> &'a mut V {
-        &mut self.storage.get_mut(self.idx).expect("invalid index").value
+        &mut self
+            .storage
+            .get_node_mut(self.idx)
+            .expect("invalid index")
+            .value
     }
 
     /// Removes the entry and returns the value.
@@ -849,19 +825,19 @@ where
 
         // Get raw pointer - avoids holding borrow
         let node_ptr =
-            self.storage.get(idx).expect("invalid index") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+            self.storage.get_node(idx).expect("invalid index") as *const SkipNode<K, V, MAX_LEVEL>;
 
         let node_level = unsafe { (*node_ptr).level } as usize;
-        let forward_0_is_none = unsafe { (*node_ptr).forward[0].is_none() };
+        let forward_0_is_none = unsafe { (*node_ptr).forward[0] == NexusKey::NONE };
 
         // Unlink at each level
         for i in 0..=node_level {
             let next = unsafe { (*node_ptr).forward[i] };
 
-            if self.update[i].is_none() {
+            if self.update[i] == NexusKey::NONE {
                 self.list.head[i] = next;
             } else {
-                let prev = unsafe { self.storage.get_unchecked_mut(self.update[i]) };
+                let prev = unsafe { self.storage.get_node_unchecked_mut(self.update[i]) };
                 prev.forward[i] = next;
             }
         }
@@ -872,72 +848,65 @@ where
         }
 
         // Reduce level if needed
-        while self.list.level > 0 && self.list.head[self.list.level].is_none() {
+        while self.list.level > 0 && self.list.head[self.list.level] == NexusKey::NONE {
             self.list.level -= 1;
         }
 
         self.list.len -= 1;
 
-        self.storage.remove(idx).expect("invalid index").value
+        self.storage.remove_node(idx).expect("invalid index").value
     }
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> VacantEntry<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<'a, K, V, S, R, const MAX_LEVEL: usize> VacantEntry<'a, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: BoundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: BoundedSkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Tries to insert a value, returning `None` if storage is full.
     pub fn try_insert(self, value: V) -> Option<&'a mut V> {
         let new_level = self.list.random_level();
         let node = SkipNode::new(self.key, value, new_level);
-        let idx = self.storage.try_insert(node).ok()?;
+        let idx = self.storage.try_insert_node(node).ok()?;
 
         // Link the node
         self.list
             .link_node(self.storage, idx, new_level, &self.update);
 
-        Some(&mut self.storage.get_mut(idx).expect("just inserted").value)
+        Some(&mut self.storage.get_node_mut(idx).expect("just inserted").value)
     }
 }
 
-impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> VacantEntry<'a, K, V, S, Idx, R, MAX_LEVEL>
+impl<'a, K, V, S, R, const MAX_LEVEL: usize> VacantEntry<'a, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: UnboundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: GrowableSkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Inserts a value.
     pub fn insert(self, value: V) -> &'a mut V {
         let new_level = self.list.random_level();
         let node = SkipNode::new(self.key, value, new_level);
-        let idx = self.storage.insert(node);
+        let idx = self.storage.insert_node(node);
 
         // Link the node
         self.list
             .link_node(self.storage, idx, new_level, &self.update);
 
-        &mut self.storage.get_mut(idx).expect("just inserted").value
+        &mut self.storage.get_node_mut(idx).expect("just inserted").value
     }
 }
 
-impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, R, const MAX_LEVEL: usize> SkipList<K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     /// Gets the entry for the given key.
-    pub fn entry<'a>(
-        &'a mut self,
-        storage: &'a mut S,
-        key: K,
-    ) -> Entry<'a, K, V, S, Idx, R, MAX_LEVEL> {
-        let mut update = [Idx::NONE; MAX_LEVEL];
+    pub fn entry<'a>(&'a mut self, storage: &'a mut S, key: K) -> Entry<'a, K, V, S, R, MAX_LEVEL> {
+        let mut update = [NexusKey::NONE; MAX_LEVEL];
         let found = self.search(storage, &key, &mut update);
 
         if let Some(idx) = found {
@@ -986,55 +955,62 @@ where
 /// ```
 ///
 /// For read-only traversal, prefer `iter()` which has no tracking overhead.
-pub struct Cursor<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+pub struct Cursor<'a, K, V, S, R, const MAX_LEVEL: usize>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
-    list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
+    list: &'a mut SkipList<K, V, S, R, MAX_LEVEL>,
     storage: &'a mut S,
-    current: Idx,
-    prev_at_level: [Idx; MAX_LEVEL],
+    current: NexusKey,
+    prev_at_level: [NexusKey; MAX_LEVEL],
 }
 
-impl<K, V, S, Idx, R, const MAX_LEVEL: usize> Cursor<'_, K, V, S, Idx, R, MAX_LEVEL>
+impl<K, V, S, R, const MAX_LEVEL: usize> Cursor<'_, K, V, S, R, MAX_LEVEL>
 where
     K: Ord,
-    Idx: Key,
     R: RngCore,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     /// Returns a reference to the current key-value pair, or `None` if exhausted.
     pub fn current(&self) -> Option<(&K, &V)> {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return None;
         }
-        let node = self.storage.get(self.current).expect("invalid current");
+        let node = self
+            .storage
+            .get_node(self.current)
+            .expect("invalid current");
         Some((&node.key, &node.value))
     }
 
     /// Returns a mutable reference to the current value, or `None` if exhausted.
     pub fn current_mut(&mut self) -> Option<(&K, &mut V)> {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return None;
         }
-        let node = self.storage.get_mut(self.current).expect("invalid current");
+        let node = self
+            .storage
+            .get_node_mut(self.current)
+            .expect("invalid current");
         Some((&node.key, &mut node.value))
     }
 
     /// Returns a reference to the next key-value pair without advancing.
     pub fn peek_next(&self) -> Option<(&K, &V)> {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return None;
         }
-        let node = self.storage.get(self.current).expect("invalid current");
+        let node = self
+            .storage
+            .get_node(self.current)
+            .expect("invalid current");
         let next = node.forward[0];
-        if next.is_none() {
+        if next == NexusKey::NONE {
             return None;
         }
-        let next_node = self.storage.get(next).expect("invalid next");
+        let next_node = self.storage.get_node(next).expect("invalid next");
         Some((&next_node.key, &next_node.value))
     }
 
@@ -1044,11 +1020,14 @@ where
     /// in. This is O(1) amortized (~2 writes average) and enables O(1) removal
     /// via `remove_current()`.
     pub fn move_next(&mut self) {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return;
         }
 
-        let node = self.storage.get(self.current).expect("invalid current");
+        let node = self
+            .storage
+            .get_node(self.current)
+            .expect("invalid current");
         let node_level = node.level as usize;
 
         // Track current as predecessor for levels it participates in.
@@ -1066,15 +1045,15 @@ where
     ///
     /// Returns the removed key-value pair, or `None` if cursor is exhausted.
     pub fn remove_current(&mut self) -> Option<(K, V)> {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return None;
         }
 
         let idx = self.current;
 
         // Get raw pointer - avoids holding borrow
-        let node_ptr = self.storage.get(idx).expect("invalid current")
-            as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+        let node_ptr = self.storage.get_node(idx).expect("invalid current")
+            as *const SkipNode<K, V, MAX_LEVEL>;
 
         // Safety: node_ptr is valid, we're just reading
         let node_level = unsafe { (*node_ptr).level } as usize;
@@ -1089,18 +1068,18 @@ where
                 self.list.head[i] = forward_i;
             } else {
                 // Safety: prev_at_level[i] != idx (predecessor is always before current)
-                let prev = unsafe { self.storage.get_unchecked_mut(self.prev_at_level[i]) };
+                let prev = unsafe { self.storage.get_node_unchecked_mut(self.prev_at_level[i]) };
                 prev.forward[i] = forward_i;
             }
         }
 
         // Update tail if we removed the last node
-        if next.is_none() {
+        if next == NexusKey::NONE {
             self.list.tail = self.prev_at_level[0];
         }
 
         // Reduce level if needed
-        while self.list.level > 0 && self.list.head[self.list.level].is_none() {
+        while self.list.level > 0 && self.list.head[self.list.level] == NexusKey::NONE {
             self.list.level -= 1;
         }
 
@@ -1109,7 +1088,7 @@ where
         // Advance cursor
         self.current = next;
 
-        let node = self.storage.remove(idx).expect("invalid index");
+        let node = self.storage.remove_node(idx).expect("invalid index");
         Some((node.key, node.value))
     }
 }
@@ -1119,53 +1098,51 @@ where
 // ============================================================================
 
 /// An iterator over key-value pairs in sorted order.
-pub struct Iter<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+pub struct Iter<'a, K, V, S, const MAX_LEVEL: usize>
 where
-    Idx: Key,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    K: Ord,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     storage: &'a S,
-    current: Idx,
+    current: NexusKey,
     _marker: PhantomData<(K, V)>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
-    for Iter<'a, K, V, S, Idx, MAX_LEVEL>
+impl<'a, K: Ord + 'a, V: 'a, S, const MAX_LEVEL: usize> Iterator for Iter<'a, K, V, S, MAX_LEVEL>
 where
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return None;
         }
-        let node = self.storage.get(self.current).expect("invalid index");
+        let node = self.storage.get_node(self.current).expect("invalid index");
         self.current = node.forward[0];
         Some((&node.key, &node.value))
     }
 }
 
 /// A mutable iterator over key-value pairs in sorted order.
-pub struct IterMut<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+pub struct IterMut<'a, K, V, S, const MAX_LEVEL: usize>
 where
-    Idx: Key,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    K: Ord,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     storage: &'a mut S,
-    current: Idx,
+    current: NexusKey,
     _marker: PhantomData<(K, V)>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
-    for IterMut<'a, K, V, S, Idx, MAX_LEVEL>
+impl<'a, K: Ord + 'a, V: 'a, S, const MAX_LEVEL: usize> Iterator for IterMut<'a, K, V, S, MAX_LEVEL>
 where
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     type Item = (&'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_none() {
+        if self.current == NexusKey::NONE {
             return None;
         }
         let idx = self.current;
@@ -1173,8 +1150,8 @@ where
         // Safety: We only visit each node once (current advances before return).
         // The storage lives for 'a, so the node reference is valid for 'a.
         // We're working around the borrow checker's inability to track this.
-        let node: &'a mut SkipNode<K, V, Idx, MAX_LEVEL> =
-            unsafe { &mut *(self.storage.get_mut(idx).expect("invalid index") as *mut _) };
+        let node: &'a mut SkipNode<K, V, MAX_LEVEL> =
+            unsafe { &mut *(self.storage.get_node_mut(idx).expect("invalid index") as *mut _) };
 
         self.current = node.forward[0];
         Some((&node.key, &mut node.value))
@@ -1182,18 +1159,17 @@ where
 }
 
 /// An iterator over keys in sorted order.
-pub struct Keys<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+pub struct Keys<'a, K, V, S, const MAX_LEVEL: usize>
 where
-    Idx: Key,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    K: Ord,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
-    inner: Iter<'a, K, V, S, Idx, MAX_LEVEL>,
+    inner: Iter<'a, K, V, S, MAX_LEVEL>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
-    for Keys<'a, K, V, S, Idx, MAX_LEVEL>
+impl<'a, K: Ord + 'a, V: 'a, S, const MAX_LEVEL: usize> Iterator for Keys<'a, K, V, S, MAX_LEVEL>
 where
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     type Item = &'a K;
 
@@ -1203,18 +1179,17 @@ where
 }
 
 /// An iterator over values in sorted order by key.
-pub struct Values<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+pub struct Values<'a, K, V, S, const MAX_LEVEL: usize>
 where
-    Idx: Key,
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    K: Ord,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
-    inner: Iter<'a, K, V, S, Idx, MAX_LEVEL>,
+    inner: Iter<'a, K, V, S, MAX_LEVEL>,
 }
 
-impl<'a, K: 'a, V: 'a, S, Idx: 'a + Key, const MAX_LEVEL: usize> Iterator
-    for Values<'a, K, V, S, Idx, MAX_LEVEL>
+impl<'a, K: Ord + 'a, V: 'a, S, const MAX_LEVEL: usize> Iterator for Values<'a, K, V, S, MAX_LEVEL>
 where
-    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+    S: SkipStorageOps<K, V, MAX_LEVEL>,
 {
     type Item = &'a V;
 
@@ -1227,26 +1202,15 @@ where
 // Type aliases
 // ============================================================================
 
-/// Boxed storage for skip list nodes.
-pub type BoxedSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
-    crate::BoxedStorage<SkipNode<K, V, usize, MAX_LEVEL>>;
-
-/// Type alias for bounded skip list storage backed by `nexus_slab::BoundedSlab`.
-pub type BoundedNexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
-    nexus_slab::BoundedSlab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
-
-/// Type alias for unbounded skip list storage backed by `nexus_slab::Slab`.
-pub type UnboundedNexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
-    nexus_slab::Slab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
-    type TestStorage = BoxedSkipStorage<u64, String, 8>;
-    type TestSkipList = SkipList<u64, String, TestStorage, usize, SmallRng, 8>;
+    use crate::storage::SkipStorage;
+    type TestStorage = SkipStorage<u64, String, 8>;
+    type TestSkipList = SkipList<u64, String, TestStorage, SmallRng, 8>;
 
     fn make_rng() -> SmallRng {
         SmallRng::seed_from_u64(12345)
@@ -1258,7 +1222,7 @@ mod tests {
 
     #[test]
     fn new_is_empty() {
-        let storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let storage: TestStorage = SkipStorage::with_capacity(10);
         let list: TestSkipList = SkipList::new(make_rng());
 
         assert!(list.is_empty());
@@ -1269,7 +1233,7 @@ mod tests {
 
     #[test]
     fn insert_single() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         let old = list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1284,7 +1248,7 @@ mod tests {
 
     #[test]
     fn insert_updates_existing() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "first".into()).unwrap();
@@ -1297,7 +1261,7 @@ mod tests {
 
     #[test]
     fn insert_multiple_maintains_order() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         // Insert out of order
@@ -1317,7 +1281,7 @@ mod tests {
 
     #[test]
     fn get_and_get_mut() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1334,7 +1298,7 @@ mod tests {
 
     #[test]
     fn contains_key() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1349,7 +1313,7 @@ mod tests {
 
     #[test]
     fn remove_existing() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1362,7 +1326,7 @@ mod tests {
 
     #[test]
     fn remove_nonexistent() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1374,7 +1338,7 @@ mod tests {
 
     #[test]
     fn remove_middle_preserves_order() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1391,7 +1355,7 @@ mod tests {
 
     #[test]
     fn remove_first_updates_head() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1404,7 +1368,7 @@ mod tests {
 
     #[test]
     fn remove_last_updates_tail() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1421,7 +1385,7 @@ mod tests {
 
     #[test]
     fn pop_first() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1437,7 +1401,7 @@ mod tests {
 
     #[test]
     fn pop_last() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1457,7 +1421,7 @@ mod tests {
 
     #[test]
     fn clear() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1476,7 +1440,7 @@ mod tests {
 
     #[test]
     fn iter_sorted() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 50, "fifty".into()).unwrap();
@@ -1496,7 +1460,7 @@ mod tests {
 
     #[test]
     fn iter_mut() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "a".into()).unwrap();
@@ -1512,7 +1476,7 @@ mod tests {
 
     #[test]
     fn keys_and_values() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1531,7 +1495,7 @@ mod tests {
 
     #[test]
     fn entry_or_try_insert_vacant() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         let val = list
@@ -1544,7 +1508,7 @@ mod tests {
 
     #[test]
     fn entry_or_try_insert_occupied() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "existing".into())
@@ -1559,7 +1523,7 @@ mod tests {
 
     #[test]
     fn entry_and_modify() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1573,7 +1537,7 @@ mod tests {
 
     #[test]
     fn entry_remove() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 100, "hello".into()).unwrap();
@@ -1592,7 +1556,7 @@ mod tests {
 
     #[test]
     fn cursor_traverse() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1612,7 +1576,7 @@ mod tests {
 
     #[test]
     fn cursor_remove_current() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1637,7 +1601,7 @@ mod tests {
 
     #[test]
     fn cursor_sweep_remove_evens() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for i in 1..=6 {
@@ -1661,7 +1625,7 @@ mod tests {
 
     #[test]
     fn cursor_peek_next() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1678,7 +1642,7 @@ mod tests {
 
     #[test]
     fn level_ratio_default() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut storage: TestStorage = SkipStorage::with_capacity(100);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for i in 0..50 {
@@ -1692,7 +1656,7 @@ mod tests {
 
     #[test]
     fn level_ratio_redis_style() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut storage: TestStorage = SkipStorage::with_capacity(100);
         let mut list: TestSkipList = SkipList::with_level_ratio(make_rng(), 4);
 
         for i in 0..50 {
@@ -1705,7 +1669,7 @@ mod tests {
 
     #[test]
     fn level_ratio_invalid_rounded() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         // Invalid value 3 should round to 4
         let mut list: TestSkipList = SkipList::with_level_ratio(make_rng(), 3);
 
@@ -1719,7 +1683,7 @@ mod tests {
 
     #[test]
     fn storage_full() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(2);
+        let mut storage: TestStorage = SkipStorage::with_capacity(2);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1740,7 +1704,7 @@ mod tests {
 
     #[test]
     fn first_mut_and_last_mut() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         list.try_insert(&mut storage, 10, "ten".into()).unwrap();
@@ -1763,7 +1727,7 @@ mod tests {
 
     #[test]
     fn stress_insert_remove() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(1000);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         // Insert 500 items
@@ -1794,7 +1758,7 @@ mod tests {
     fn stress_random_operations() {
         use rand::Rng;
 
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut storage: TestStorage = SkipStorage::with_capacity(500);
         let mut list: TestSkipList = SkipList::new(make_rng());
         let mut rng = SmallRng::seed_from_u64(99999);
         let mut reference: std::collections::BTreeMap<u64, String> =
@@ -1842,7 +1806,7 @@ mod tests {
 
     #[test]
     fn stress_head_tail_invariants() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(200);
+        let mut storage: TestStorage = SkipStorage::with_capacity(200);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         // Insert in reverse order
@@ -1876,7 +1840,7 @@ mod tests {
 
     #[test]
     fn stress_pop_first_drain() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut storage: TestStorage = SkipStorage::with_capacity(500);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for i in 0..300 {
@@ -1902,7 +1866,7 @@ mod tests {
 
     #[test]
     fn stress_pop_last_drain() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut storage: TestStorage = SkipStorage::with_capacity(500);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for i in 0..300 {
@@ -1926,7 +1890,7 @@ mod tests {
 
     #[test]
     fn stress_cursor_full_sweep_remove() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut storage: TestStorage = SkipStorage::with_capacity(500);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for i in 0..200 {
@@ -1953,7 +1917,7 @@ mod tests {
 
     #[test]
     fn stress_cursor_selective_remove() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut storage: TestStorage = SkipStorage::with_capacity(500);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for i in 0..200 {
@@ -1982,7 +1946,9 @@ mod tests {
 
     #[test]
     fn stress_interleaved_insert_remove() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        // Need 200 capacity: inserts 20 per round for 10 rounds = 200 total insertions
+        // (though some are removed, we need space for peak usage of 100)
+        let mut storage: TestStorage = SkipStorage::with_capacity(200);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for round in 0..10 {
@@ -2012,7 +1978,7 @@ mod tests {
 
     #[test]
     fn stress_entry_api() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut storage: TestStorage = SkipStorage::with_capacity(500);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         // Use entry API to build counters
@@ -2037,7 +2003,7 @@ mod tests {
 
     #[test]
     fn stress_reinsert_after_remove() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut storage: TestStorage = SkipStorage::with_capacity(100);
         let mut list: TestSkipList = SkipList::new(make_rng());
 
         for _ in 0..5 {
@@ -2096,8 +2062,9 @@ mod bench_skiplist {
         );
     }
 
-    type TestStorage = BoxedSkipStorage<u64, u64, 12>;
-    type TestSkipList = SkipList<u64, u64, TestStorage, usize, SmallRng, 12>;
+    use crate::storage::SkipStorage;
+    type TestStorage = SkipStorage<u64, u64, 12>;
+    type TestSkipList = SkipList<u64, u64, TestStorage, SmallRng, 12>;
 
     const WARMUP: usize = 10_000;
     const ITERATIONS: usize = 100_000;
@@ -2113,7 +2080,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_insert_sequential() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS + WARMUP);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2137,7 +2104,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_insert_random() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS + WARMUP);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut rng = make_rng(99999);
         let mut hist = Histogram::<u64>::new(3).unwrap();
@@ -2167,7 +2134,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_insert_reverse() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS + WARMUP);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2195,7 +2162,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_get_hit() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10_000);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut rng = make_rng(99999);
         let mut hist = Histogram::<u64>::new(3).unwrap();
@@ -2229,7 +2196,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_get_miss() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10_000);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut rng = make_rng(99999);
         let mut hist = Histogram::<u64>::new(3).unwrap();
@@ -2272,7 +2239,7 @@ mod bench_skiplist {
 
         // Run multiple rounds since we deplete the list
         for round in 0..10 {
-            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS / 10 + 100);
+            let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS / 10 + 100);
             let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
 
             // Fill
@@ -2309,7 +2276,7 @@ mod bench_skiplist {
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for round in 0..10 {
-            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS / 10 + 100);
+            let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS / 10 + 100);
             let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
 
             // Fill
@@ -2335,7 +2302,7 @@ mod bench_skiplist {
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for round in 0..10 {
-            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS / 10 + 100);
+            let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS / 10 + 100);
             let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
 
             // Fill
@@ -2362,7 +2329,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_first() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10_000);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2387,7 +2354,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_last() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(10_000);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2416,7 +2383,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_cursor_move_next() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(1_000);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2444,7 +2411,7 @@ mod bench_skiplist {
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for round in 0..100 {
-            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+            let mut storage: TestStorage = SkipStorage::with_capacity(1_000);
             let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
 
             for i in 0..1_000u64 {
@@ -2470,7 +2437,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_entry_vacant() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut storage: TestStorage = SkipStorage::with_capacity(ITERATIONS + WARMUP);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
@@ -2496,7 +2463,7 @@ mod bench_skiplist {
     #[test]
     #[ignore]
     fn bench_entry_occupied() {
-        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+        let mut storage: TestStorage = SkipStorage::with_capacity(1_000);
         let mut list: TestSkipList = SkipList::new(make_rng(12345));
         let mut rng = make_rng(99999);
         let mut hist = Histogram::<u64>::new(3).unwrap();
@@ -2541,7 +2508,7 @@ mod bench_skiplist {
         println!("\n--- Get scaling by size ---");
 
         for size in [100, 1_000, 5_000, 10_000] {
-            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(size + 100);
+            let mut storage: TestStorage = SkipStorage::with_capacity(size + 100);
             let mut list: TestSkipList = SkipList::new(make_rng(12345));
             let mut rng = make_rng(99999);
             let mut hist = Histogram::<u64>::new(3).unwrap();
@@ -2580,7 +2547,7 @@ mod bench_skiplist {
 
             for round in 0..10 {
                 let mut storage: TestStorage =
-                    BoxedSkipStorage::with_capacity(size + ITERATIONS / 10 + 100);
+                    SkipStorage::with_capacity(size + ITERATIONS / 10 + 100);
                 let mut list: TestSkipList = SkipList::new(make_rng(12345 + round as u64));
 
                 for i in 0..size as u64 {
@@ -2611,7 +2578,7 @@ mod bench_skiplist {
         let mut hist_pop = Histogram::<u64>::new(3).unwrap();
 
         for round in 0..10 {
-            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+            let mut storage: TestStorage = SkipStorage::with_capacity(1_000);
             let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
             let mut rng = make_rng(99999 + round);
 
