@@ -10,7 +10,7 @@
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
-use nexus_slab::Slab;
+use nexus_slab::unbounded;
 
 const CAPACITY: usize = 100_000;
 const OPS: usize = 1_000_000;
@@ -39,7 +39,7 @@ fn print_stats(name: &str, hist: &Histogram<u64>) {
 }
 
 fn bench_nexus_slab() -> Histogram<u64> {
-    let slab = Slab::with_capacity(CAPACITY);
+    let slab = unbounded::Slab::with_capacity(CAPACITY);
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
     // Warmup

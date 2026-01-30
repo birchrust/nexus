@@ -74,14 +74,13 @@
 //!
 //! Each slot has a `stamp: u64` that encodes state and key:
 //!
-//! - **Bits 63-32**: State (vacant flag, borrowed flag, next_free index)
+//! - **Bits 63-32**: State
+//!   - Bit 63: Vacant flag (1 = vacant, 0 = occupied)
+//!   - Bits 61-32: When vacant, next free slot index (30 bits)
 //! - **Bits 31-0**: Key (stored when claimed, valid regardless of state)
 //!
-//! - **Occupied, not borrowed**: upper 32 bits = 0, lower 32 bits = key
-//! - **Occupied, borrowed**: bit 62 set, lower 32 bits = key
-//! - **Vacant**: bit 63 set + next_free in upper bits
-//!
-//! This enables `is_available() == (stamp >> 32 == 0)` for fast checking.
+//! - **Occupied**: upper 32 bits = 0, lower 32 bits = key
+//! - **Vacant**: bit 63 set + next_free index in bits 61-32
 //!
 //! Freelists are **intra-slab only** - chains never cross slab boundaries.
 //! This enables slabs to drain independently.
@@ -130,11 +129,12 @@
 //! let value = entry.remove();
 //! assert_eq!(value, 42);
 //!
-//! // Key-based API (for collections) - leak to store key externally
+//! // Key-based API (for collections) - forget to store key externally
 //! let entry = slab.insert(100);
-//! let key = entry.leak(); // keep data alive, get key
-//! assert_eq!(*slab.get(key).unwrap(), 100);
-//! let value = slab.remove_by_key(key).unwrap();
+//! let key = entry.forget(); // keep data alive, get key
+//!
+//! // SAFETY: key is valid (just obtained from forget)
+//! let value = unsafe { slab.remove_by_key(key) };
 //! assert_eq!(value, 100);
 //! ```
 //!
@@ -155,137 +155,11 @@ pub mod bounded;
 pub(crate) mod shared;
 pub mod unbounded;
 
-use std::fmt;
-use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
-use std::pin::Pin;
-
-use shared::SlotCell;
-
 // Convenience re-exports for common usage
-#[allow(deprecated)]
-pub use bounded::BoundedSlab;
 pub use unbounded::Slab;
 
-// =============================================================================
-// Ref / RefMut guards
-// =============================================================================
-
-/// RAII guard for a borrowed reference.
-///
-/// Clears the borrow flag on drop.
-pub struct Ref<T> {
-    slot_ptr: *mut SlotCell<T>,
-    _marker: PhantomData<T>,
-}
-
-impl<T> Ref<T> {
-    /// Creates a new Ref. Internal use only.
-    #[inline]
-    pub(crate) fn new(slot_ptr: *mut SlotCell<T>) -> Self {
-        Self {
-            slot_ptr,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T> Deref for Ref<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &T {
-        // SAFETY: Slot is borrowed, value is valid
-        unsafe { (*self.slot_ptr).value_ref() }
-    }
-}
-
-impl<T> Drop for Ref<T> {
-    fn drop(&mut self) {
-        // SAFETY: We set borrowed, so we clear it
-        unsafe { (*self.slot_ptr).clear_borrowed() };
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for Ref<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&**self, f)
-    }
-}
-
-impl<T: fmt::Display> fmt::Display for Ref<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&**self, f)
-    }
-}
-
-/// RAII guard for a mutably borrowed reference.
-///
-/// Clears the borrow flag on drop.
-pub struct RefMut<T> {
-    slot_ptr: *mut SlotCell<T>,
-    _marker: PhantomData<T>,
-}
-
-impl<T> RefMut<T> {
-    /// Creates a new RefMut. Internal use only.
-    #[inline]
-    pub(crate) fn new(slot_ptr: *mut SlotCell<T>) -> Self {
-        Self {
-            slot_ptr,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T> Deref for RefMut<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &T {
-        // SAFETY: Slot is borrowed, value is valid
-        unsafe { (*self.slot_ptr).value_ref() }
-    }
-}
-
-impl<T> DerefMut for RefMut<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: Slot is mutably borrowed, value is valid
-        unsafe { (*self.slot_ptr).value_mut() }
-    }
-}
-
-impl<T> Drop for RefMut<T> {
-    fn drop(&mut self) {
-        // SAFETY: We set borrowed, so we clear it
-        unsafe { (*self.slot_ptr).clear_borrowed() };
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for RefMut<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&**self, f)
-    }
-}
-
-impl<T: fmt::Display> fmt::Display for RefMut<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&**self, f)
-    }
-}
-
-// =============================================================================
-// Constants
-// =============================================================================
-
-/// Mask for key index (bits 0-30).
-const INDEX_MASK: u32 = (1 << 31) - 1; // 0x7FFF_FFFF
-
-/// Sentinel value indicating end of freelist chain or invalid key.
-///
-/// Max 31-bit value, limiting addressable slots to ~2 billion.
-pub const SLOT_NONE: u32 = INDEX_MASK; // 0x7FFF_FFFF
+// Re-export sentinel for Key::NONE
+pub use shared::SLOT_NONE;
 
 // =============================================================================
 // Errors
@@ -436,82 +310,141 @@ impl std::fmt::Debug for Key {
 }
 
 // =============================================================================
-// EntryOps trait
+// Builder (typestate pattern)
 // =============================================================================
 
-/// Common operations for entry handles.
+use std::marker::PhantomData;
+
+/// Typestate for unconfigured builder.
+#[derive(Debug, Clone, Copy)]
+pub struct Unconfigured;
+
+/// Typestate for bounded slab configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct Bounded;
+
+/// Typestate for unbounded slab configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct Unbounded;
+
+/// Typestate builder for creating slabs.
 ///
-/// This trait enables generic code over both [`bounded::Entry`] and
-/// [`unbounded::Entry`]. Most users should use the concrete entry types
-/// directly.
-pub trait EntryOps<T>: Sized {
-    /// Returns the storage key.
-    fn key(&self) -> Key;
+/// Use [`Builder::default()`] then call [`.bounded()`](Builder::bounded) or
+/// [`.unbounded()`](Builder::unbounded) to select the slab type, configure,
+/// and [`.build()`](BoundedBuilder::build).
+///
+/// # Examples
+///
+/// ```
+/// use nexus_slab::{Builder, bounded, unbounded};
+///
+/// // Bounded slab with fixed capacity
+/// let slab: bounded::Slab<u64> = Builder::default()
+///     .bounded()
+///     .capacity(1024)
+///     .build();
+///
+/// // Unbounded slab with custom chunk size
+/// let slab: unbounded::Slab<u64> = Builder::default()
+///     .unbounded()
+///     .chunk_capacity(8192)
+///     .capacity(100_000)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct Builder<T, State = Unconfigured> {
+    _marker: PhantomData<(T, State)>,
+}
 
-    /// Returns `true` if the slot is still occupied.
-    fn is_valid(&self) -> bool;
+impl<T> Default for Builder<T, Unconfigured> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    /// Consumes the entry without deallocating. Returns the key.
-    fn leak(self) -> Key;
-
-    /// Returns a tracked reference to the value.
-    fn get(&self) -> Ref<T>;
-
-    /// Returns a tracked reference, or `None` if invalid/borrowed.
-    fn try_get(&self) -> Option<Ref<T>>;
-
-    /// Returns a tracked mutable reference to the value.
-    fn get_mut(&self) -> RefMut<T>;
-
-    /// Returns a tracked mutable reference, or `None` if invalid/borrowed.
-    fn try_get_mut(&self) -> Option<RefMut<T>>;
-
-    /// Returns a pinned reference to the value.
-    fn get_pinned(&self) -> Pin<Ref<T>> {
-        unsafe { Pin::new_unchecked(self.get()) }
+impl<T> Builder<T, Unconfigured> {
+    /// Creates a new unconfigured builder.
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
     }
 
-    /// Returns a pinned mutable reference to the value.
-    fn get_pinned_mut(&self) -> Pin<RefMut<T>> {
-        unsafe { Pin::new_unchecked(self.get_mut()) }
+    /// Configure for a bounded (fixed-capacity) slab.
+    pub fn bounded(self) -> BoundedBuilder<T> {
+        BoundedBuilder {
+            capacity: 4096,
+            _marker: PhantomData,
+        }
     }
 
-    /// Returns a reference without any checks.
+    /// Configure for an unbounded (growable) slab.
+    pub fn unbounded(self) -> UnboundedBuilder<T> {
+        UnboundedBuilder {
+            capacity: 0,
+            chunk_capacity: 4096,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Builder for bounded (fixed-capacity) slabs.
+#[derive(Debug, Clone)]
+pub struct BoundedBuilder<T> {
+    capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> BoundedBuilder<T> {
+    /// Sets the fixed capacity of the slab.
     ///
-    /// # Safety
+    /// Default: 4096
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Builds and returns the bounded slab.
+    pub fn build(self) -> bounded::Slab<T> {
+        bounded::Slab::with_capacity(self.capacity)
+    }
+}
+
+/// Builder for unbounded (growable) slabs.
+#[derive(Debug, Clone)]
+pub struct UnboundedBuilder<T> {
+    capacity: usize,
+    chunk_capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> UnboundedBuilder<T> {
+    /// Sets the capacity of each internal chunk.
     ///
-    /// Slot must be valid. No concurrent mutable access.
-    unsafe fn get_unchecked(&self) -> &T;
-
-    /// Returns a mutable reference without any checks.
+    /// Rounded up to the next power of two internally.
     ///
-    /// # Safety
+    /// Default: 4096
+    pub fn chunk_capacity(mut self, chunk_capacity: usize) -> Self {
+        self.chunk_capacity = chunk_capacity;
+        self
+    }
+
+    /// Pre-allocates space for at least this many items.
     ///
-    /// Slot must be valid. No concurrent access.
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn get_unchecked_mut(&self) -> &mut T;
+    /// Default: 0 (no pre-allocation)
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
 
-    /// Replaces the value, returning the old one.
-    fn replace(&self, value: T) -> T;
-
-    /// Replaces the value if valid, returning the old one.
-    fn try_replace(&self, value: T) -> Option<T>;
-
-    /// Modifies the value in place if valid.
-    fn and_modify<F: FnOnce(&mut T)>(&self, f: F) -> &Self;
-
-    /// Removes and returns the value, deallocating the slot.
-    fn remove(self) -> T;
-
-    /// Removes and returns the value if valid.
-    fn try_remove(self) -> Option<T>;
-
-    /// Removes and returns the value without any checks.
-    ///
-    /// # Safety
-    ///
-    /// Slot must be valid and not borrowed.
-    unsafe fn remove_unchecked(self) -> T;
+    /// Builds and returns the unbounded slab.
+    pub fn build(self) -> unbounded::Slab<T> {
+        let slab = unbounded::Slab::with_chunk_capacity(self.chunk_capacity);
+        while slab.capacity() < self.capacity {
+            slab.grow();
+        }
+        slab
+    }
 }
 
 #[cfg(test)]

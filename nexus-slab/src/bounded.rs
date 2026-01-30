@@ -19,7 +19,7 @@
 //! ```
 //! use nexus_slab::bounded::Slab;
 //!
-//! let slab = Slab::leak(1024);
+//! let slab = Slab::with_capacity(1024);
 //!
 //! // RAII entry - slot freed when entry drops
 //! {
@@ -27,12 +27,13 @@
 //!     assert_eq!(*entry.get(), "hello");
 //! } // entry drops, slot freed
 //!
-//! // Leak to keep data alive
+//! // Forget to keep data alive
 //! let entry = slab.try_insert("world").unwrap();
-//! let key = entry.leak(); // data stays, returns Key
+//! let key = entry.forget(); // data stays, returns Key
 //!
-//! // Access via key
-//! assert_eq!(*slab.get(key).unwrap(), "world");
+//! // Access via key (unsafe - caller guarantees key validity)
+//! // SAFETY: key was just returned from forget(), slot is occupied
+//! assert_eq!(*unsafe { slab.get_by_key(key) }, "world");
 //! ```
 //!
 //! # Self-Referential Patterns
@@ -45,7 +46,7 @@
 //!     data: u64,
 //! }
 //!
-//! let slab = Slab::leak(16);
+//! let slab: Slab<Node> = Slab::with_capacity(16);
 //!
 //! let entry = slab.try_insert_with(|e| Node {
 //!     self_key: e.key(),
@@ -59,11 +60,10 @@ use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use std::ops::{Index, IndexMut};
 use std::pin::Pin;
 
-use crate::shared::{SlotCell, SLOT_NONE};
-use crate::{CapacityError, Full, Key, Ref, RefMut};
+use crate::shared::{SLOT_NONE, SlotCell};
+use crate::{CapacityError, Full, Key};
 
 // =============================================================================
 // BoundedSlabInner
@@ -80,7 +80,7 @@ pub(crate) struct BoundedSlabInner<T> {
 impl<T> BoundedSlabInner<T> {
     pub(crate) fn with_capacity(capacity: u32) -> Self {
         assert!(capacity > 0, "capacity must be non-zero");
-        assert!(capacity <= SLOT_NONE, "capacity exceeds maximum");
+        assert!(capacity < SLOT_NONE, "capacity exceeds maximum");
 
         let mut slots: Vec<SlotCell<T>> = Vec::with_capacity(capacity as usize);
 
@@ -118,11 +118,12 @@ impl<T> BoundedSlabInner<T> {
 /// RAII handle to an occupied slot in a bounded [`Slab`].
 ///
 /// When dropped, the slot is deallocated and returned to the freelist.
-/// Use [`leak()`](Self::leak) to keep the data alive without the entry.
+/// Use [`forget()`](Self::forget) to keep the data alive without the entry.
 ///
 /// # Size
 ///
 /// 16 bytes: slot pointer (8) + inner pointer (8).
+#[must_use = "dropping Entry deallocates the slot"]
 pub struct Entry<T> {
     slot: *mut SlotCell<T>,
     inner: *mut BoundedSlabInner<T>,
@@ -149,23 +150,14 @@ impl<T> Entry<T> {
 
     /// Extracts the value, returning it with a [`VacantEntry`] for the slot.
     ///
-    /// Unlike drop, this keeps the slot reserved.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slot is invalid or currently borrowed.
+    /// Unlike drop, this keeps the slot reserved. The VacantEntry can be used
+    /// to insert a new value into the same slot, or dropped to return the slot
+    /// to the freelist.
     pub fn take(self) -> (T, VacantEntry<T>) {
-        self.try_take().expect("slot invalid or borrowed")
-    }
-
-    /// Extracts the value if valid, returning it with a [`VacantEntry`].
-    pub fn try_take(self) -> Option<(T, VacantEntry<T>)> {
         let slot = self.slot();
-        if !slot.is_available() {
-            return None;
-        }
-
         let key = self.key();
+
+        // SAFETY: Entry owns the slot, so it's valid
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         let vacant = VacantEntry {
@@ -176,28 +168,6 @@ impl<T> Entry<T> {
         };
 
         // Don't run Entry's Drop (which would deallocate)
-        std::mem::forget(self);
-
-        Some((value, vacant))
-    }
-
-    /// Extracts the value without checks.
-    ///
-    /// # Safety
-    ///
-    /// Slot must be valid and not borrowed.
-    pub unsafe fn take_unchecked(self) -> (T, VacantEntry<T>) {
-        let slot = self.slot();
-        let key = self.key();
-        let value = unsafe { (*slot.value.get()).assume_init_read() };
-
-        let vacant = VacantEntry {
-            inner: self.inner,
-            key,
-            consumed: false,
-            _marker: PhantomData,
-        };
-
         std::mem::forget(self);
 
         (value, vacant)
@@ -212,183 +182,96 @@ impl<T> Entry<T> {
         Key::new(self.slot().key_from_stamp())
     }
 
-    /// Returns `true` if the slot is still occupied.
+    /// Gives up ownership of this entry, keeping the data alive and returning its key.
+    ///
+    /// After calling `forget()`, the slot remains occupied but has no Entry owner.
+    /// Access the data via key-based methods (which are unsafe) or create a new
+    /// Entry via [`Slab::entry()`].
+    ///
+    /// Named after `std::mem::forget` - you're telling the Entry to not run its
+    /// destructor (which would deallocate the slot).
     #[inline]
-    pub fn is_valid(&self) -> bool {
-        self.slot().is_occupied()
-    }
-
-    /// Leaks this entry, keeping the data alive and returning its key.
-    #[inline]
-    pub fn leak(self) -> Key {
+    pub fn forget(self) -> Key {
         let key = self.key();
         std::mem::forget(self);
         key
     }
 
-    /// Returns a tracked reference to the value.
-    #[inline]
-    pub fn get(&self) -> Ref<T> {
-        self.try_get().expect("slot invalid or borrowed")
-    }
-
-    /// Returns a tracked reference if available.
-    #[inline]
-    pub fn try_get(&self) -> Option<Ref<T>> {
-        let slot = self.slot();
-        if !slot.is_available() {
-            return None;
-        }
-        slot.set_borrowed();
-        Some(Ref::new(self.slot))
-    }
-
-    /// Returns a tracked mutable reference to the value.
-    #[inline]
-    pub fn get_mut(&self) -> RefMut<T> {
-        self.try_get_mut().expect("slot invalid or borrowed")
-    }
-
-    /// Returns a tracked mutable reference if available.
-    #[inline]
-    pub fn try_get_mut(&self) -> Option<RefMut<T>> {
-        let slot = self.slot();
-        if !slot.is_available() {
-            return None;
-        }
-        slot.set_borrowed();
-        Some(RefMut::new(self.slot))
-    }
-
-    /// Returns a pinned tracked reference.
-    #[inline]
-    pub fn get_pinned(&self) -> Pin<Ref<T>> {
-        unsafe { Pin::new_unchecked(self.get()) }
-    }
-
-    /// Returns a pinned tracked mutable reference.
-    #[inline]
-    pub fn get_pinned_mut(&self) -> Pin<RefMut<T>> {
-        unsafe { Pin::new_unchecked(self.get_mut()) }
-    }
-
-    /// Returns an untracked reference if valid.
+    /// Returns a reference to the value.
     ///
-    /// # Safety
-    ///
-    /// No concurrent mutable access may exist.
+    /// Entry ownership guarantees the slot is valid.
     #[inline]
-    pub unsafe fn get_untracked(&self) -> Option<&T> {
-        let slot = self.slot();
-        if slot.is_vacant() {
-            return None;
-        }
-        Some(unsafe { slot.value_ref() })
-    }
-
-    /// Returns an untracked mutable reference if valid.
-    ///
-    /// # Safety
-    ///
-    /// No concurrent access may exist.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_untracked_mut(&self) -> Option<&mut T> {
-        let slot = self.slot();
-        if slot.is_vacant() {
-            return None;
-        }
-        Some(unsafe { slot.value_mut() })
-    }
-
-    /// Returns a reference without any checks.
-    ///
-    /// # Safety
-    ///
-    /// Slot must be valid. No concurrent mutable access.
-    #[inline]
-    pub unsafe fn get_unchecked(&self) -> &T {
+    pub fn get(&self) -> &T {
+        // SAFETY: Entry owns the slot, so it's valid and occupied
         unsafe { self.slot().value_ref() }
     }
 
-    /// Returns a mutable reference without any checks.
+    /// Returns a mutable reference to the value.
     ///
-    /// # Safety
-    ///
-    /// Slot must be valid. No concurrent access.
+    /// Requires `&mut Entry` to ensure exclusive access.
     #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_unchecked_mut(&self) -> &mut T {
+    pub fn get_mut(&mut self) -> &mut T {
+        // SAFETY: Entry owns the slot, &mut self ensures exclusivity
         unsafe { self.slot().value_mut() }
     }
 
     /// Replaces the value, returning the old one.
     #[inline]
-    pub fn replace(&self, value: T) -> T {
-        self.try_replace(value).expect("slot invalid or borrowed")
-    }
-
-    /// Replaces the value if available.
-    #[inline]
-    pub fn try_replace(&self, value: T) -> Option<T> {
+    pub fn replace(&mut self, value: T) -> T {
         let slot = self.slot();
-        if !slot.is_available() {
-            return None;
-        }
+        // SAFETY: Entry owns the slot
         let old = unsafe { (*slot.value.get()).assume_init_read() };
         unsafe { (*slot.value.get()).write(value) };
-        Some(old)
+        old
     }
 
-    /// Modifies the value in place.
+    /// Modifies the value in place. Returns self for chaining.
     #[inline]
-    pub fn and_modify<F: FnOnce(&mut T)>(&self, f: F) -> &Self {
-        if let Some(mut r) = self.try_get_mut() {
-            f(&mut r);
-        }
+    pub fn and_modify<F: FnOnce(&mut T)>(&mut self, f: F) -> &mut Self {
+        f(self.get_mut());
         self
     }
 
+    /// Returns `true` if the slot is still occupied.
+    ///
+    /// This should always return `true` for a properly-used Entry.
+    /// Returns `false` only if the slot was incorrectly deallocated
+    /// via unsafe key-based methods while this Entry existed.
+    ///
+    /// Useful for debug assertions to catch API misuse.
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        self.slot().is_occupied()
+    }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// This is safe because slab slots have stable addresses—the slab
+    /// is leaked and never reallocates.
+    #[inline]
+    pub fn pin(&self) -> Pin<&T> {
+        // SAFETY: Slot memory is leaked and never moves
+        unsafe { Pin::new_unchecked(self.get()) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// This is safe because slab slots have stable addresses—the slab
+    /// is leaked and never reallocates.
+    #[inline]
+    pub fn pin_mut(&mut self) -> Pin<&mut T> {
+        // SAFETY: Slot memory is leaked and never moves
+        unsafe { Pin::new_unchecked(self.get_mut()) }
+    }
+
     /// Removes the entry, returning the value.
+    ///
+    /// The slot is returned to the freelist.
     #[inline]
     pub fn remove(self) -> T {
-        self.try_remove().expect("slot invalid or borrowed")
-    }
-
-    /// Removes the entry if available.
-    #[inline]
-    pub fn try_remove(self) -> Option<T> {
         let slot = self.slot();
-        if !slot.is_available() {
-            return None;
-        }
 
-        let value = unsafe { (*slot.value.get()).assume_init_read() };
-
-        // Return slot to freelist
-        let inner = self.inner();
-        let free_head = inner.free_head.get();
-        slot.set_vacant(free_head);
-        inner.free_head.set(self.key().index());
-        inner.len.set(inner.len.get() - 1);
-
-        // Don't run Drop (we already handled deallocation)
-        std::mem::forget(self);
-
-        Some(value)
-    }
-
-    /// Removes the entry without any checks.
-    ///
-    /// # Safety
-    ///
-    /// Slot must be valid and not borrowed.
-    #[inline]
-    pub unsafe fn remove_unchecked(self) -> T {
-        let slot = self.slot();
-        debug_assert!(!slot.is_vacant(), "remove_unchecked on vacant slot");
-
-        // SAFETY: Caller guarantees slot is valid and not borrowed.
+        // SAFETY: Entry owns the slot
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         // Return slot to freelist
@@ -409,30 +292,18 @@ impl<T> Drop for Entry<T> {
     fn drop(&mut self) {
         let slot = self.slot();
 
-        // Only deallocate if slot is occupied
-        if slot.is_occupied() {
-            // Drop the value
-            unsafe {
-                std::ptr::drop_in_place((*slot.value.get()).as_mut_ptr());
-            }
-
-            // Return slot to freelist
-            let inner = self.inner();
-            let slot_index = slot.key_from_stamp();
-            let free_head = inner.free_head.get();
-            slot.set_vacant(free_head);
-            inner.free_head.set(slot_index);
-            inner.len.set(inner.len.get() - 1);
+        // SAFETY: Entry is sole owner (!Clone), so if Drop runs, slot is occupied
+        unsafe {
+            std::ptr::drop_in_place((*slot.value.get()).as_mut_ptr());
         }
-    }
-}
 
-impl<T> Clone for Entry<T> {
-    fn clone(&self) -> Self {
-        Self {
-            slot: self.slot,
-            inner: self.inner,
-        }
+        // Return slot to freelist
+        let inner = self.inner();
+        let slot_index = slot.key_from_stamp();
+        let free_head = inner.free_head.get();
+        slot.set_vacant(free_head);
+        inner.free_head.set(slot_index);
+        inner.len.set(inner.len.get() - 1);
     }
 }
 
@@ -442,14 +313,70 @@ impl<T> fmt::Debug for Entry<T> {
     }
 }
 
+impl<T> std::ops::Deref for Entry<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl<T> std::ops::DerefMut for Entry<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.get_mut()
+    }
+}
+
+impl<T> AsRef<T> for Entry<T> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<T> AsMut<T> for Entry<T> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<T> std::borrow::Borrow<T> for Entry<T> {
+    #[inline]
+    fn borrow(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<T> std::borrow::BorrowMut<T> for Entry<T> {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Entry<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl<T> fmt::Pointer for Entry<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Pointer::fmt(&self.slot, f)
+    }
+}
+
 // =============================================================================
 // Slab
 // =============================================================================
 
 /// A fixed-capacity slab allocator with RAII Entry-based access.
 ///
-/// Created via [`leak`](Self::leak), which allocates and leaks the slab,
-/// returning a `Copy` handle. The slab lives for `'static`.
+/// Created via [`with_capacity`](Self::with_capacity) or the [`Builder`](crate::Builder) API.
+/// The slab is leaked and lives for `'static`.
 ///
 /// # Thread Safety
 ///
@@ -461,7 +388,7 @@ impl<T> fmt::Debug for Entry<T> {
 /// ```
 /// use nexus_slab::bounded::Slab;
 ///
-/// let slab = Slab::leak(1024);
+/// let slab = Slab::with_capacity(1024);
 ///
 /// let entry = slab.try_insert(42).unwrap();
 /// assert_eq!(*entry.get(), 42);
@@ -480,7 +407,7 @@ impl<T> Slab<T> {
         unsafe { &*self.ptr }
     }
 
-    /// Creates and leaks a slab with the given capacity, returning a `Copy` handle.
+    /// Creates a slab with the given capacity.
     ///
     /// The slab lives for `'static` - it is never dropped. This is intentional:
     /// the slab is a dedicated allocator, not a temporary data structure.
@@ -494,10 +421,10 @@ impl<T> Slab<T> {
     /// ```
     /// use nexus_slab::bounded::Slab;
     ///
-    /// let slab = Slab::<String>::leak(1024);
+    /// let slab = Slab::<String>::with_capacity(1024);
     /// assert_eq!(slab.capacity(), 1024);
     /// ```
-    pub fn leak(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         let inner = Box::new(BoundedSlabInner::with_capacity(capacity as u32));
         let inner_ptr = Box::into_raw(inner);
 
@@ -538,7 +465,7 @@ impl<T> Slab<T> {
     /// Inserts a value, returning an RAII Entry handle.
     ///
     /// The returned [`Entry`] owns the slot. When dropped, the slot is
-    /// deallocated. Use [`Entry::leak()`] to keep the data alive.
+    /// deallocated. Use [`Entry::forget()`] to keep the data alive.
     ///
     /// # Errors
     ///
@@ -606,7 +533,7 @@ impl<T> Slab<T> {
         inner.len.set(inner.len.get() + 1);
 
         // Store key in stamp BEFORE creating Entry (so Entry::key() works)
-        // Slot is still "vacant" (VACANT_BIT set), so entry.try_get() will fail
+        // Slot is still "vacant" (VACANT_BIT set), value not yet written
         slot.set_key(free_head);
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
@@ -692,44 +619,6 @@ impl<T> Slab<T> {
         inner.slot(index).is_occupied()
     }
 
-    /// Returns a tracked reference to the value at `key`.
-    ///
-    /// The returned [`Ref`] guard participates in runtime borrow tracking.
-    #[inline]
-    pub fn get(&self, key: Key) -> Option<Ref<T>> {
-        let index = key.index();
-        let inner = self.inner();
-        if index >= inner.capacity {
-            return None;
-        }
-        let slot = inner.slot(index);
-        if !slot.is_available() {
-            return None;
-        }
-        slot.set_borrowed();
-        let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Some(Ref::new(slot_ptr))
-    }
-
-    /// Returns a tracked mutable reference to the value at `key`.
-    ///
-    /// The returned [`RefMut`] guard participates in runtime borrow tracking.
-    #[inline]
-    pub fn get_mut(&self, key: Key) -> Option<RefMut<T>> {
-        let index = key.index();
-        let inner = self.inner();
-        if index >= inner.capacity {
-            return None;
-        }
-        let slot = inner.slot(index);
-        if !slot.is_available() {
-            return None;
-        }
-        slot.set_borrowed();
-        let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Some(RefMut::new(slot_ptr))
-    }
-
     /// Creates an RAII Entry from a key.
     ///
     /// Returns `None` if the key is out of bounds or the slot is vacant.
@@ -752,23 +641,21 @@ impl<T> Slab<T> {
         Some(Entry::new(slot_ptr, self.ptr))
     }
 
-    /// Removes a value by key, bypassing RAII.
+    /// Removes a value by key.
     ///
-    /// Use this when you have a leaked key and want to deallocate.
-    /// Returns `None` if the key is invalid or slot is vacant/borrowed.
+    /// Use this when you have a forgotten key and want to deallocate.
+    ///
+    /// # Safety
+    ///
+    /// - Key must refer to an occupied slot
+    /// - No Entry may exist for this slot (would become dangling)
     #[inline]
-    pub fn remove_by_key(&self, key: Key) -> Option<T> {
+    pub unsafe fn remove_by_key(&self, key: Key) -> T {
         let index = key.index();
         let inner = self.inner();
-        if index >= inner.capacity {
-            return None;
-        }
-
         let slot = inner.slot(index);
-        if !slot.is_available() {
-            return None;
-        }
 
+        // SAFETY: Caller guarantees slot is occupied
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         let free_head = inner.free_head.get();
@@ -776,13 +663,7 @@ impl<T> Slab<T> {
         inner.free_head.set(index);
         inner.len.set(inner.len.get() - 1);
 
-        Some(value)
-    }
-
-    /// Alias for [`remove_by_key`](Self::remove_by_key).
-    #[inline]
-    pub fn try_remove_by_key(&self, key: Key) -> Option<T> {
-        self.remove_by_key(key)
+        value
     }
 
     /// Removes all values from the slab.
@@ -813,79 +694,33 @@ impl<T> Slab<T> {
     }
 
     // =========================================================================
-    // Unsafe access
+    // Unsafe key-based access
     // =========================================================================
 
-    /// Returns an untracked reference to the value at `key`.
+    /// Returns a reference to the value at `key`.
     ///
     /// # Safety
     ///
-    /// No concurrent mutable access to this slot may exist.
+    /// - Key must refer to an occupied slot
+    /// - No Entry may have exclusive (`&mut`) access to this slot
+    /// - Caller must ensure no aliasing violations
     #[inline]
-    pub unsafe fn get_untracked(&self, key: Key) -> Option<&T> {
-        let index = key.index();
-        let inner = self.inner();
-        if index >= inner.capacity {
-            return None;
-        }
-        let slot = inner.slot(index);
-        if slot.is_vacant() {
-            return None;
-        }
-        Some(unsafe { slot.value_ref() })
-    }
-
-    /// Returns an untracked mutable reference to the value at `key`.
-    ///
-    /// # Safety
-    ///
-    /// No concurrent access to this slot may exist.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_untracked_mut(&self, key: Key) -> Option<&mut T> {
-        let index = key.index();
-        let inner = self.inner();
-        if index >= inner.capacity {
-            return None;
-        }
-        let slot = inner.slot(index);
-        if slot.is_vacant() {
-            return None;
-        }
-        Some(unsafe { slot.value_mut() })
-    }
-
-    /// Returns a reference without any checks.
-    ///
-    /// # Safety
-    ///
-    /// Key must be valid and slot must be occupied. No concurrent mutable access.
-    #[inline]
-    pub unsafe fn get_unchecked(&self, key: Key) -> &T {
+    pub unsafe fn get_by_key(&self, key: Key) -> &T {
         let slot = self.inner().slot(key.index());
         unsafe { slot.value_ref() }
     }
 
-    /// Returns a mutable reference without any checks.
+    /// Returns a mutable reference to the value at `key`.
     ///
     /// # Safety
     ///
-    /// Key must be valid and slot must be occupied. No concurrent access.
+    /// - Key must refer to an occupied slot
+    /// - No other references (Entry-based or key-based) may exist to this slot
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_unchecked_mut(&self, key: Key) -> &mut T {
+    pub unsafe fn get_by_key_mut(&self, key: Key) -> &mut T {
         let slot = self.inner().slot(key.index());
         unsafe { slot.value_mut() }
-    }
-
-    /// Gets an accessor for Index/IndexMut syntax.
-    ///
-    /// # Safety
-    ///
-    /// While this accessor is live, no Entry operations may occur.
-    #[inline]
-    pub unsafe fn untracked(&self) -> UntrackedAccessor<'_, T> {
-        UntrackedAccessor(self)
     }
 
     // =========================================================================
@@ -954,46 +789,6 @@ impl<T> fmt::Debug for Slab<T> {
 }
 
 // =============================================================================
-// UntrackedAccessor
-// =============================================================================
-
-/// Wrapper enabling Index/IndexMut syntax with untracked access.
-///
-/// This type bypasses runtime borrow tracking for performance.
-///
-/// # Safety
-///
-/// While this accessor is live, no Entry operations may occur on any slot.
-pub struct UntrackedAccessor<'a, T>(&'a Slab<T>);
-
-impl<T> Index<Key> for UntrackedAccessor<'_, T> {
-    type Output = T;
-
-    #[inline]
-    fn index(&self, key: Key) -> &T {
-        // SAFETY: Caller of untracked() guarantees no conflicting Entry ops
-        unsafe { self.0.get_unchecked(key) }
-    }
-}
-
-impl<T> IndexMut<Key> for UntrackedAccessor<'_, T> {
-    #[inline]
-    fn index_mut(&mut self, key: Key) -> &mut T {
-        // SAFETY: Caller of untracked() guarantees no conflicting Entry ops
-        unsafe { self.0.get_unchecked_mut(key) }
-    }
-}
-
-impl<T> fmt::Debug for UntrackedAccessor<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UntrackedAccessor")
-            .field("len", &self.0.len())
-            .field("capacity", &self.0.capacity())
-            .finish()
-    }
-}
-
-// =============================================================================
 // VacantEntry
 // =============================================================================
 
@@ -1001,6 +796,7 @@ impl<T> fmt::Debug for UntrackedAccessor<'_, T> {
 ///
 /// Created by [`Slab::try_vacant_entry`]. Fill with [`insert`](Self::insert)
 /// or drop to return the slot to the freelist.
+#[must_use = "dropping VacantEntry releases the reserved slot"]
 pub struct VacantEntry<T> {
     inner: *mut BoundedSlabInner<T>,
     key: Key,
@@ -1039,6 +835,15 @@ impl<T> VacantEntry<T> {
         // Key is already in slot's stamp from when VacantEntry was created
         Entry::new(slot_ptr, self.inner)
     }
+
+    /// Fills the slot using a closure that receives the key.
+    ///
+    /// Useful for self-referential patterns.
+    #[inline]
+    pub fn insert_with<F: FnOnce(Key) -> T>(self, f: F) -> Entry<T> {
+        let key = self.key;
+        self.insert(f(key))
+    }
 }
 
 impl<T> Drop for VacantEntry<T> {
@@ -1065,14 +870,6 @@ impl<T> fmt::Debug for VacantEntry<T> {
 }
 
 // =============================================================================
-// Backwards compatibility alias
-// =============================================================================
-
-/// Alias for [`Slab`] for backwards compatibility.
-#[deprecated(since = "0.11.0", note = "Use bounded::Slab instead")]
-pub type BoundedSlab<T> = Slab<T>;
-
-// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1081,8 +878,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn leak_basic() {
-        let slab: Slab<u64> = Slab::leak(100);
+    fn with_capacity_basic() {
+        let slab: Slab<u64> = Slab::with_capacity(100);
         assert_eq!(slab.capacity(), 100);
         assert_eq!(slab.len(), 0);
         assert!(slab.is_empty());
@@ -1091,13 +888,13 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "capacity must be non-zero")]
-    fn leak_zero_panics() {
-        let _: Slab<u64> = Slab::leak(0);
+    fn zero_capacity_panics() {
+        let _: Slab<u64> = Slab::with_capacity(0);
     }
 
     #[test]
     fn insert_and_drop() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
 
         {
             let entry = slab.try_insert(42u64).unwrap();
@@ -1110,28 +907,30 @@ mod tests {
     }
 
     #[test]
-    fn leak_keeps_data() {
-        let slab = Slab::leak(16);
+    fn forget_keeps_data() {
+        let slab = Slab::with_capacity(16);
 
         let entry = slab.try_insert(100u64).unwrap();
-        let key = entry.leak();
+        let key = entry.forget();
 
         // Data still exists
         assert_eq!(slab.len(), 1);
-        assert_eq!(*slab.get(key).unwrap(), 100);
+        // SAFETY: key is valid (just obtained from forget)
+        assert_eq!(unsafe { *slab.get_by_key(key) }, 100);
 
         // Clean up via remove
-        let value = slab.remove_by_key(key).unwrap();
+        // SAFETY: key is valid
+        let value = unsafe { slab.remove_by_key(key) };
         assert_eq!(value, 100);
         assert_eq!(slab.len(), 0);
     }
 
     #[test]
     fn entry_from_key() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
 
         let entry = slab.try_insert(42u64).unwrap();
-        let key = entry.leak();
+        let key = entry.forget();
 
         // Re-acquire RAII entry
         {
@@ -1145,7 +944,7 @@ mod tests {
 
     #[test]
     fn insert_full_returns_error() {
-        let slab = Slab::leak(2);
+        let slab = Slab::with_capacity(2);
 
         let e1 = slab.try_insert(1u64).unwrap();
         let e2 = slab.try_insert(2u64).unwrap();
@@ -1160,7 +959,7 @@ mod tests {
 
     #[test]
     fn vacant_entry_insert() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
 
         let vacant = slab.try_vacant_entry().unwrap();
         let key = vacant.key();
@@ -1171,7 +970,7 @@ mod tests {
 
     #[test]
     fn vacant_entry_drop() {
-        let slab: Slab<u64> = Slab::leak(16);
+        let slab: Slab<u64> = Slab::with_capacity(16);
 
         {
             let _vacant = slab.try_vacant_entry().unwrap();
@@ -1184,7 +983,7 @@ mod tests {
 
     #[test]
     fn insert_with_self_reference() {
-        let slab = Slab::leak(16);
+        let slab: Slab<(Key, u64)> = Slab::with_capacity(16);
 
         let entry = slab.try_insert_with(|e| (e.key(), 42u64)).unwrap();
 
@@ -1194,24 +993,8 @@ mod tests {
     }
 
     #[test]
-    fn borrow_tracking() {
-        let slab = Slab::leak(16);
-
-        let entry = slab.try_insert(42u64).unwrap();
-
-        {
-            let _ref1 = entry.get();
-            // Second borrow should fail while first is held
-            assert!(entry.try_get().is_none());
-        }
-
-        // After drop, borrow succeeds
-        let _ref2 = entry.get();
-    }
-
-    #[test]
     fn handle_is_copy() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
         let slab2 = slab; // Copy
         let slab3 = slab; // Copy again
 
@@ -1231,7 +1014,7 @@ mod tests {
 
     #[test]
     fn take_and_reinsert() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
 
         let entry = slab.try_insert(42u64).unwrap();
         let key = entry.key();
@@ -1247,8 +1030,8 @@ mod tests {
 
     #[test]
     fn replace() {
-        let slab = Slab::leak(16);
-        let entry = slab.try_insert(42u64).unwrap();
+        let slab = Slab::with_capacity(16);
+        let mut entry = slab.try_insert(42u64).unwrap();
 
         let old = entry.replace(100);
         assert_eq!(old, 42);
@@ -1257,8 +1040,8 @@ mod tests {
 
     #[test]
     fn and_modify() {
-        let slab = Slab::leak(16);
-        let entry = slab.try_insert(0u64).unwrap();
+        let slab = Slab::with_capacity(16);
+        let mut entry = slab.try_insert(0u64).unwrap();
 
         entry.and_modify(|v| *v += 1).and_modify(|v| *v *= 2);
 
@@ -1267,7 +1050,7 @@ mod tests {
 
     #[test]
     fn explicit_remove() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
         let entry = slab.try_insert(42u64).unwrap();
 
         let value = entry.remove();
@@ -1277,12 +1060,12 @@ mod tests {
 
     #[test]
     fn clear() {
-        let slab = Slab::leak(16);
+        let slab = Slab::with_capacity(16);
 
-        // Insert and leak some entries
+        // Insert and forget some entries
         for i in 0..5 {
             let entry = slab.try_insert(i as u64).unwrap();
-            entry.leak();
+            entry.forget();
         }
 
         assert_eq!(slab.len(), 5);

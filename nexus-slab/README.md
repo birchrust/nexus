@@ -121,28 +121,30 @@ assert_eq!(value, 42);
 
 ### Self-Referential Patterns
 
-`insert_with` provides access to the Entry before the value exists, enabling self-referential structures:
+`insert_with` provides access to the Entry before the value exists, enabling self-referential structures.
+Use `Key` for references (not `Entry`, which is a unique owner):
 
 ```rust
-use nexus_slab::{BoundedSlab, Entry};
+use nexus_slab::{BoundedSlab, Key};
 
 struct Node {
-    self_ref: Entry<Node>,
-    parent: Option<Entry<Node>>,
+    self_key: Key,
+    parent: Option<Key>,
     data: u64,
 }
 
-let slab = BoundedSlab::with_capacity(1024);
+let slab = BoundedSlab::leak(1024);
 
-let root = slab.insert_with(|e| Node {
-    self_ref: e.clone(),
+let root = slab.try_insert_with(|e| Node {
+    self_key: e.key(),
     parent: None,
     data: 0,
 }).unwrap();
+let root_key = root.leak();
 
-let child = slab.insert_with(|e| Node {
-    self_ref: e.clone(),
-    parent: Some(root.clone()),
+let child = slab.try_insert_with(|e| Node {
+    self_key: e.key(),
+    parent: Some(root_key),
     data: 1,
 }).unwrap();
 

@@ -10,20 +10,16 @@ use std::mem::MaybeUninit;
 /// Vacant flag - bit 63 of stamp
 const VACANT_BIT: u64 = 1 << 63;
 
-/// Borrowed flag - bit 62 of stamp
-const BORROWED_BIT: u64 = 1 << 62;
-
-/// Mask for state bits (upper 32 bits of stamp)
-const STATE_MASK: u64 = 0xFFFF_FFFF_0000_0000;
-
 /// Mask for key (lower 32 bits of stamp)
 const KEY_MASK: u64 = 0x0000_0000_FFFF_FFFF;
 
 /// Mask for next_free index within state (bits 29-0 after shifting)
 const INDEX_MASK: u64 = (1 << 30) - 1;
 
-/// Sentinel for end of freelist (~1 billion max capacity)
-pub(crate) const SLOT_NONE: u32 = INDEX_MASK as u32;
+/// Sentinel for end of freelist (~1 billion max capacity).
+///
+/// This is the max 30-bit value, limiting addressable slots to ~1 billion.
+pub const SLOT_NONE: u32 = INDEX_MASK as u32;
 
 // =============================================================================
 // SlotCell
@@ -34,7 +30,6 @@ pub(crate) const SLOT_NONE: u32 = INDEX_MASK as u32;
 /// Stamp encoding (64-bit):
 /// - Bits 63-32: State
 ///   - Bit 63: Vacant flag (1 = vacant, 0 = occupied)
-///   - Bit 62: Borrowed flag (1 = borrowed, 0 = available) - only when occupied
 ///   - Bits 61-32: When vacant, next free slot index (30 bits)
 /// - Bits 31-0: Key (stored when slot is claimed, valid regardless of state)
 #[repr(C)]
@@ -62,18 +57,6 @@ impl<T> SlotCell<T> {
     }
 
     #[inline]
-    pub(crate) fn is_borrowed(&self) -> bool {
-        self.stamp.get() & STATE_MASK == BORROWED_BIT
-    }
-
-    /// Returns true if slot is occupied and not borrowed.
-    /// Branchless: state bits == 0 means available.
-    #[inline]
-    pub(crate) fn is_available(&self) -> bool {
-        self.stamp.get() & STATE_MASK == 0
-    }
-
-    #[inline]
     pub(crate) fn next_free(&self) -> u32 {
         debug_assert!(self.is_vacant(), "next_free called on occupied slot");
         ((self.stamp.get() >> 32) & INDEX_MASK) as u32
@@ -90,7 +73,7 @@ impl<T> SlotCell<T> {
     /// Called when claiming a slot, before marking occupied.
     #[inline]
     pub(crate) fn set_key(&self, key: u32) {
-        self.stamp.set((self.stamp.get() & STATE_MASK) | key as u64);
+        self.stamp.set((self.stamp.get() & !KEY_MASK) | key as u64);
     }
 
     /// Marks slot as occupied by clearing state bits. Preserves key.
@@ -104,19 +87,6 @@ impl<T> SlotCell<T> {
     pub(crate) fn set_vacant(&self, next_free: u32) {
         self.stamp
             .set(VACANT_BIT | ((next_free as u64 & INDEX_MASK) << 32));
-    }
-
-    #[inline]
-    pub(crate) fn set_borrowed(&self) {
-        debug_assert!(self.is_occupied(), "set_borrowed on vacant slot");
-        debug_assert!(!self.is_borrowed(), "already borrowed");
-        self.stamp.set(self.stamp.get() | BORROWED_BIT);
-    }
-
-    #[inline]
-    pub(crate) fn clear_borrowed(&self) {
-        debug_assert!(self.is_borrowed(), "clear_borrowed on non-borrowed slot");
-        self.stamp.set(self.stamp.get() & KEY_MASK);
     }
 
     /// # Safety

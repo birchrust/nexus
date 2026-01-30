@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 
-use nexus_slab::{BoundedSlab, Key, Slab};
+use nexus_slab::{Key, bounded, unbounded};
 
 // =============================================================================
 // BoundedSlab properties
@@ -12,7 +12,7 @@ proptest! {
     /// len() always equals the number of occupied slots
     #[test]
     fn bounded_len_invariant(ops in prop::collection::vec(0..100u64, 0..200)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(100);
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(100);
         let mut keys: Vec<Key> = Vec::new();
         let mut expected_len = 0;
 
@@ -21,12 +21,13 @@ proptest! {
                 // Remove
                 let idx = (op as usize) % keys.len();
                 let key = keys.remove(idx);
-                slab.remove_by_key(key);
+                // SAFETY: key is valid (from our keys vec)
+                unsafe { slab.remove_by_key(key) };
                 expected_len -= 1;
             } else if expected_len < 100 {
                 // Insert
                 if let Ok(entry) = slab.try_insert(op) {
-                    keys.push(entry.leak());
+                    keys.push(entry.forget());
                     expected_len += 1;
                 }
             }
@@ -39,7 +40,7 @@ proptest! {
     #[test]
     fn bounded_capacity_never_exceeded(values in prop::collection::vec(0..1000u64, 0..500)) {
         let capacity = 100;
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(capacity);
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(capacity);
 
         for value in values {
             if slab.len() < capacity {
@@ -55,7 +56,7 @@ proptest! {
     /// Insert returns the same value on remove
     #[test]
     fn bounded_insert_remove_roundtrip(values in prop::collection::vec(0..10000u64, 1..100)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(values.len());
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
 
         for value in values {
             let entry = slab.try_insert(value).unwrap();
@@ -67,44 +68,47 @@ proptest! {
     /// Keys remain valid until removed
     #[test]
     fn bounded_key_validity(values in prop::collection::vec(0..1000u64, 1..50)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(values.len());
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
         let mut key_value_pairs = Vec::new();
 
         // Insert all
         for value in &values {
             let entry = slab.try_insert(*value).unwrap();
-            key_value_pairs.push((entry.leak(), *value));
+            key_value_pairs.push((entry.forget(), *value));
         }
 
         // All keys should be valid
         for (key, expected) in &key_value_pairs {
             prop_assert!(slab.contains_key(*key));
-            prop_assert_eq!(*slab.get(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
         }
 
         // Remove half
         for (key, expected) in key_value_pairs.iter().take(values.len() / 2) {
-            prop_assert_eq!(slab.remove_by_key(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { slab.remove_by_key(*key) }, *expected);
             prop_assert!(!slab.contains_key(*key));
         }
 
         // Remaining keys still valid
         for (key, expected) in key_value_pairs.iter().skip(values.len() / 2) {
             prop_assert!(slab.contains_key(*key));
-            prop_assert_eq!(*slab.get(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
         }
     }
 
     /// LIFO: most recently freed slot is reused first
     #[test]
     fn bounded_lifo_freelist(n in 2..50usize) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(n);
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(n);
 
         // Fill the slab
         let mut keys: Vec<Key> = Vec::new();
         for i in 0..n {
             let entry = slab.try_insert(i as u64).unwrap();
-            keys.push(entry.leak());
+            keys.push(entry.forget());
         }
 
         // Remove two slots: first_removed, then second_removed
@@ -112,8 +116,11 @@ proptest! {
         // should be allocated first
         let first_removed = keys.pop().unwrap();
         let second_removed = keys.pop().unwrap();
-        slab.remove_by_key(first_removed);   // freelist: first_removed
-        slab.remove_by_key(second_removed);  // freelist: second_removed -> first_removed
+        // SAFETY: keys are valid
+        unsafe {
+            slab.remove_by_key(first_removed);   // freelist: first_removed
+            slab.remove_by_key(second_removed);  // freelist: second_removed -> first_removed
+        }
 
         // Next insert should get second_removed (most recently added to freelist)
         let new_entry1 = slab.try_insert(999u64).unwrap();
@@ -127,9 +134,9 @@ proptest! {
     /// Replace preserves slot, changes value
     #[test]
     fn bounded_replace_preserves_slot(values in prop::collection::vec(1..1000u64, 2..50)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(values.len());
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
 
-        let entry = slab.try_insert(0u64).unwrap();
+        let mut entry = slab.try_insert(0u64).unwrap();
         let original_key = entry.key();
         let mut expected_old = 0u64;
 
@@ -145,10 +152,10 @@ proptest! {
     /// Clear empties slab completely
     #[test]
     fn bounded_clear_empties(values in prop::collection::vec(0..1000u64, 1..100)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(values.len());
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
 
         for value in &values {
-            slab.try_insert(*value).unwrap().leak();
+            slab.try_insert(*value).unwrap().forget();
         }
 
         prop_assert_eq!(slab.len(), values.len());
@@ -166,7 +173,7 @@ proptest! {
     /// len() always equals the number of occupied slots
     #[test]
     fn unbounded_len_invariant(ops in prop::collection::vec(0..100u64, 0..200)) {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(16).build();
+        let slab: unbounded::Slab<u64> = nexus_slab::Builder::default().unbounded().chunk_capacity(16).build();
         let mut keys: Vec<Key> = Vec::new();
         let mut expected_len = 0;
 
@@ -175,11 +182,12 @@ proptest! {
                 // Remove
                 let idx = (op as usize) % keys.len();
                 let key = keys.remove(idx);
-                slab.remove_by_key(key);
+                // SAFETY: key is valid
+                unsafe { slab.remove_by_key(key) };
                 expected_len -= 1;
             } else {
                 // Insert (always succeeds for unbounded)
-                keys.push(slab.insert(op).leak());
+                keys.push(slab.insert(op).forget());
                 expected_len += 1;
             }
 
@@ -190,7 +198,7 @@ proptest! {
     /// Insert returns the same value on remove
     #[test]
     fn unbounded_insert_remove_roundtrip(values in prop::collection::vec(0..10000u64, 1..100)) {
-        let slab = Slab::with_capacity(values.len());
+        let slab = unbounded::Slab::with_capacity(values.len());
 
         for value in values {
             let entry = slab.insert(value);
@@ -202,42 +210,45 @@ proptest! {
     /// Keys remain valid until removed
     #[test]
     fn unbounded_key_validity(values in prop::collection::vec(0..1000u64, 1..50)) {
-        let slab = Slab::with_capacity(values.len());
+        let slab = unbounded::Slab::with_capacity(values.len());
         let mut key_value_pairs = Vec::new();
 
         // Insert all
         for value in &values {
             let entry = slab.insert(*value);
-            key_value_pairs.push((entry.leak(), *value));
+            key_value_pairs.push((entry.forget(), *value));
         }
 
         // All keys should be valid
         for (key, expected) in &key_value_pairs {
             prop_assert!(slab.contains_key(*key));
-            prop_assert_eq!(*slab.get(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
         }
 
         // Remove half
         for (key, expected) in key_value_pairs.iter().take(values.len() / 2) {
-            prop_assert_eq!(slab.remove_by_key(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { slab.remove_by_key(*key) }, *expected);
             prop_assert!(!slab.contains_key(*key));
         }
 
         // Remaining keys still valid
         for (key, expected) in key_value_pairs.iter().skip(values.len() / 2) {
             prop_assert!(slab.contains_key(*key));
-            prop_assert_eq!(*slab.get(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
         }
     }
 
     /// Growth: slab can exceed initial capacity
     #[test]
     fn unbounded_grows_beyond_capacity(n in 10..200usize) {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(8).build();
+        let slab: unbounded::Slab<u64> = nexus_slab::Builder::default().unbounded().chunk_capacity(8).build();
 
         // Insert more than a single chunk
         for i in 0..n {
-            slab.insert(i as u64).leak();
+            slab.insert(i as u64).forget();
         }
 
         prop_assert_eq!(slab.len(), n);
@@ -247,9 +258,9 @@ proptest! {
     /// Replace preserves slot, changes value
     #[test]
     fn unbounded_replace_preserves_slot(values in prop::collection::vec(1..1000u64, 2..50)) {
-        let slab = Slab::with_capacity(values.len());
+        let slab = unbounded::Slab::with_capacity(values.len());
 
-        let entry = slab.insert(0u64);
+        let mut entry = slab.insert(0u64);
         let original_key = entry.key();
         let mut expected_old = 0u64;
 
@@ -265,10 +276,10 @@ proptest! {
     /// Clear empties slab completely
     #[test]
     fn unbounded_clear_empties(values in prop::collection::vec(0..1000u64, 1..100)) {
-        let slab = Slab::with_capacity(values.len());
+        let slab = unbounded::Slab::with_capacity(values.len());
 
         for value in &values {
-            slab.insert(*value).leak();
+            slab.insert(*value).forget();
         }
 
         prop_assert_eq!(slab.len(), values.len());
@@ -280,18 +291,19 @@ proptest! {
     /// Multi-chunk: values distributed across chunks remain accessible
     #[test]
     fn unbounded_multi_chunk_access(values in prop::collection::vec(0..10000u64, 50..150)) {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(16).build();
+        let slab: unbounded::Slab<u64> = nexus_slab::Builder::default().unbounded().chunk_capacity(16).build();
         let mut key_value_pairs = Vec::new();
 
         // Insert all (will span multiple chunks)
         for value in &values {
             let entry = slab.insert(*value);
-            key_value_pairs.push((entry.leak(), *value));
+            key_value_pairs.push((entry.forget(), *value));
         }
 
         // All should be accessible
         for (key, expected) in &key_value_pairs {
-            prop_assert_eq!(*slab.get(*key).unwrap(), *expected);
+            // SAFETY: key is valid
+            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
         }
     }
 }
@@ -301,21 +313,22 @@ proptest! {
 // =============================================================================
 
 proptest! {
-    /// Entry::is_valid reflects actual state after key-based removal
+    /// Entry from key reflects state after key-based removal
     #[test]
-    fn entry_is_valid_reflects_state(values in prop::collection::vec(0..100u64, 1..20)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(values.len());
+    fn entry_reflects_state_after_removal(values in prop::collection::vec(0..100u64, 1..20)) {
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
         let mut keys = Vec::new();
 
         for value in &values {
             let entry = slab.try_insert(*value).unwrap();
-            keys.push(entry.leak());
+            keys.push(entry.forget());
         }
 
         // Remove every other via key
         for (i, key) in keys.iter().enumerate() {
             if i % 2 == 0 {
-                slab.remove_by_key(*key);
+                // SAFETY: key is valid
+                unsafe { slab.remove_by_key(*key) };
             }
         }
 
@@ -332,7 +345,7 @@ proptest! {
     /// VacantEntry key matches final Entry key
     #[test]
     fn vacant_entry_key_matches(n in 1..50usize) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(n);
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(n);
 
         for _ in 0..n {
             let vacant = slab.try_vacant_entry().unwrap();
@@ -346,7 +359,7 @@ proptest! {
     /// take() returns value and allows re-insert at same slot
     #[test]
     fn take_preserves_slot(values in prop::collection::vec(0..1000u64, 1..20)) {
-        let slab: BoundedSlab<u64> = BoundedSlab::leak(values.len());
+        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
         let entry = slab.try_insert(values[0]).unwrap();
         let original_key = entry.key();
 

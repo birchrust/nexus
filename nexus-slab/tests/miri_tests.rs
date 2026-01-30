@@ -3,7 +3,7 @@
 //! Run with: `MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test --test miri_tests`
 //!
 //! These tests focus on:
-//! - Unsafe code paths (unchecked access, manual memory management)
+//! - Unsafe key-based API (get_by_key, get_by_key_mut, remove_by_key)
 //! - Drop correctness (use-after-free, double-free)
 //! - Pointer validity (dangling pointers, aliasing)
 //!
@@ -13,7 +13,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use nexus_slab::{BoundedSlab, Key, Slab};
+use nexus_slab::{Key, bounded, unbounded};
 
 // =============================================================================
 // BoundedSlab unsafe paths
@@ -21,69 +21,51 @@ use nexus_slab::{BoundedSlab, Key, Slab};
 
 #[test]
 fn bounded_insert_unchecked() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
+    let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
 
     for i in 0..16u64 {
         let entry = unsafe { slab.insert_unchecked(i) };
         assert_eq!(*entry.get(), i);
-        entry.leak(); // Keep alive
+        entry.forget(); // Keep alive
     }
 
-    // Verify all values
+    // Verify all values via unsafe key access
     for i in 0..16u64 {
         let key = Key::from_raw(i as u32);
-        assert_eq!(*slab.get(key).unwrap(), i);
+        // SAFETY: key is valid (we just inserted it)
+        assert_eq!(unsafe { *slab.get_by_key(key) }, i);
     }
 }
 
 #[test]
-fn bounded_get_unchecked() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
+fn bounded_get_by_key() {
+    let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
     let entry = slab.try_insert(42u64).unwrap();
+    let key = entry.forget();
 
-    // Entry unchecked
+    // SAFETY: key is valid
     unsafe {
-        assert_eq!(*entry.get_unchecked(), 42);
-        *entry.get_unchecked_mut() = 100;
-        assert_eq!(*entry.get_unchecked(), 100);
+        assert_eq!(*slab.get_by_key(key), 42);
+        *slab.get_by_key_mut(key) = 100;
+        assert_eq!(*slab.get_by_key(key), 100);
     }
 
-    // Slab unchecked
-    let key = entry.key();
-    unsafe {
-        assert_eq!(*slab.get_unchecked(key), 100);
-        *slab.get_unchecked_mut(key) = 200;
-        assert_eq!(*slab.get_unchecked(key), 200);
-    }
+    // Clean up
+    // SAFETY: key is valid
+    unsafe { slab.remove_by_key(key) };
 }
 
 #[test]
-fn bounded_get_untracked() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
-    let entry = slab.try_insert(42u64).unwrap();
-    let key = entry.key();
-
-    unsafe {
-        // Slab untracked
-        assert_eq!(slab.get_untracked(key), Some(&42));
-        assert_eq!(slab.get_untracked_mut(key), Some(&mut 42));
-
-        // Entry untracked
-        assert_eq!(entry.get_untracked(), Some(&42));
-        assert_eq!(entry.get_untracked_mut(), Some(&mut 42));
-    }
-}
-
-#[test]
-fn bounded_remove_unchecked_by_key() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
+fn bounded_remove_by_key() {
+    let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
 
     let keys: Vec<Key> = (0..16u64)
-        .map(|i| slab.try_insert(i).unwrap().leak())
+        .map(|i| slab.try_insert(i).unwrap().forget())
         .collect();
 
     for (i, key) in keys.iter().enumerate() {
-        let value = unsafe { slab.remove_unchecked_by_key(*key) };
+        // SAFETY: key is valid
+        let value = unsafe { slab.remove_by_key(*key) };
         assert_eq!(value, i as u64);
     }
 
@@ -91,12 +73,12 @@ fn bounded_remove_unchecked_by_key() {
 }
 
 #[test]
-fn bounded_take_unchecked() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
+fn bounded_entry_take() {
+    let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
     let entry = slab.try_insert(42u64).unwrap();
     let key = entry.key();
 
-    let (value, vacant) = unsafe { entry.take_unchecked() };
+    let (value, vacant) = entry.take();
     assert_eq!(value, 42);
     assert_eq!(vacant.key(), key);
 
@@ -106,94 +88,45 @@ fn bounded_take_unchecked() {
     assert_eq!(*new_entry.get(), 100);
 }
 
-#[test]
-fn bounded_untracked_accessor() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
-    let entry = slab.try_insert(42u64).unwrap();
-    let key = entry.key();
-
-    unsafe {
-        let accessor = slab.untracked();
-        assert_eq!(accessor[key], 42);
-    }
-
-    unsafe {
-        let mut accessor = slab.untracked();
-        accessor[key] = 100;
-    }
-
-    assert_eq!(*entry.get(), 100);
-}
-
 // =============================================================================
 // Slab (unbounded) unsafe paths
 // =============================================================================
 
 #[test]
-fn unbounded_get_unchecked() {
-    let slab = Slab::with_capacity(16);
+fn unbounded_get_by_key() {
+    let slab = unbounded::Slab::with_capacity(16);
     let entry = slab.insert(42u64);
+    let key = entry.forget();
 
+    // SAFETY: key is valid
     unsafe {
-        assert_eq!(*entry.get_unchecked(), 42);
-        *entry.get_unchecked_mut() = 100;
-        assert_eq!(*entry.get_unchecked(), 100);
+        assert_eq!(*slab.get_by_key(key), 42);
+        *slab.get_by_key_mut(key) = 100;
+        assert_eq!(*slab.get_by_key(key), 100);
     }
 
-    let key = entry.key();
-    unsafe {
-        assert_eq!(*slab.get_unchecked(key), 100);
-        *slab.get_unchecked_mut(key) = 200;
-        assert_eq!(*slab.get_unchecked(key), 200);
-    }
+    // Clean up
+    // SAFETY: key is valid
+    unsafe { slab.remove_by_key(key) };
 }
 
 #[test]
-fn unbounded_get_untracked() {
-    let slab = Slab::with_capacity(16);
-    let entry = slab.insert(42u64);
-    let key = entry.key();
-
-    unsafe {
-        assert_eq!(slab.get_untracked(key), Some(&42));
-        assert_eq!(slab.get_untracked_mut(key), Some(&mut 42));
-        assert_eq!(entry.get_untracked(), Some(&42));
-        assert_eq!(entry.get_untracked_mut(), Some(&mut 42));
-    }
-}
-
-#[test]
-fn unbounded_remove_unchecked_by_key() {
-    let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
+fn unbounded_remove_by_key() {
+    let slab: unbounded::Slab<u64> = nexus_slab::Builder::default()
+        .unbounded()
+        .chunk_capacity(4)
+        .build();
 
     // Insert across multiple chunks
-    let keys: Vec<Key> = (0..16u64).map(|i| slab.insert(i).leak()).collect();
+    let keys: Vec<Key> = (0..16u64).map(|i| slab.insert(i).forget()).collect();
 
     for (i, key) in keys.iter().enumerate() {
-        let value = unsafe { slab.remove_unchecked_by_key(*key) };
+        // SAFETY: key is valid
+        let value = unsafe { slab.remove_by_key(*key) };
         assert_eq!(value, i as u64);
     }
 
     assert!(slab.is_empty());
-}
-
-#[test]
-fn unbounded_untracked_accessor() {
-    let slab = Slab::with_capacity(16);
-    let entry = slab.insert(42u64);
-    let key = entry.key();
-
-    unsafe {
-        let accessor = slab.untracked();
-        assert_eq!(accessor[key], 42);
-    }
-
-    unsafe {
-        let mut accessor = slab.untracked();
-        accessor[key] = 100;
-    }
-
-    assert_eq!(*entry.get(), 100);
 }
 
 // =============================================================================
@@ -221,11 +154,11 @@ impl Drop for DropTracker {
 fn bounded_drop_on_clear() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(10);
+    let slab: bounded::Slab<DropTracker> = bounded::Slab::with_capacity(10);
     for _ in 0..10 {
         unsafe {
             slab.insert_unchecked(DropTracker::new(counter.clone()))
-                .leak();
+                .forget();
         }
     }
 
@@ -235,19 +168,20 @@ fn bounded_drop_on_clear() {
 }
 
 #[test]
-fn bounded_drop_on_remove_unchecked() {
+fn bounded_drop_on_remove_by_key() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(10);
+    let slab: bounded::Slab<DropTracker> = bounded::Slab::with_capacity(10);
     let keys: Vec<Key> = (0..10)
         .map(|_| unsafe {
             slab.insert_unchecked(DropTracker::new(counter.clone()))
-                .leak()
+                .forget()
         })
         .collect();
 
     for key in keys {
-        let tracker = unsafe { slab.remove_unchecked_by_key(key) };
+        // SAFETY: key is valid
+        let tracker = unsafe { slab.remove_by_key(key) };
         drop(tracker);
     }
 
@@ -258,9 +192,12 @@ fn bounded_drop_on_remove_unchecked() {
 fn unbounded_drop_on_clear_multi_chunk() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab: Slab<DropTracker> = Slab::builder().chunk_capacity(4).build();
+    let slab: unbounded::Slab<DropTracker> = nexus_slab::Builder::default()
+        .unbounded()
+        .chunk_capacity(4)
+        .build();
     for _ in 0..20 {
-        slab.insert(DropTracker::new(counter.clone())).leak();
+        slab.insert(DropTracker::new(counter.clone())).forget();
     }
 
     assert_eq!(counter.get(), 0);
@@ -273,8 +210,8 @@ fn unbounded_drop_on_clear_multi_chunk() {
 // =============================================================================
 
 #[test]
-fn bounded_entry_pointer_valid_after_other_removes() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
+fn bounded_entry_valid_after_other_removes() {
+    let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
 
     // Insert multiple entries
     let e1 = slab.try_insert(1u64).unwrap();
@@ -285,29 +222,34 @@ fn bounded_entry_pointer_valid_after_other_removes() {
     e2.remove();
 
     // Other entries should still be valid and accessible
-    unsafe {
-        assert_eq!(*e1.get_unchecked(), 1);
-        assert_eq!(*e3.get_unchecked(), 3);
-    }
+    assert_eq!(*e1.get(), 1);
+    assert_eq!(*e3.get(), 3);
 }
 
 #[test]
-fn unbounded_entry_pointer_valid_after_other_removes() {
-    let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
+fn unbounded_key_valid_after_other_removes() {
+    let slab: unbounded::Slab<u64> = nexus_slab::Builder::default()
+        .unbounded()
+        .chunk_capacity(4)
+        .build();
 
-    // Insert across multiple chunks, leak all to keep them alive
-    let keys: Vec<Key> = (0..12u64).map(|i| slab.insert(i).leak()).collect();
+    // Insert across multiple chunks, forget all to keep them alive
+    let keys: Vec<Key> = (0..12u64).map(|i| slab.insert(i).forget()).collect();
 
     // Remove some via key
-    slab.remove_by_key(keys[1]);
-    slab.remove_by_key(keys[5]);
-    slab.remove_by_key(keys[9]);
+    // SAFETY: keys are valid
+    unsafe {
+        slab.remove_by_key(keys[1]);
+        slab.remove_by_key(keys[5]);
+        slab.remove_by_key(keys[9]);
+    }
 
     // Remaining should be valid
     for (i, key) in keys.iter().enumerate() {
         if i != 1 && i != 5 && i != 9 {
+            // SAFETY: key is valid
             unsafe {
-                assert_eq!(*slab.get_unchecked(*key), i as u64);
+                assert_eq!(*slab.get_by_key(*key), i as u64);
             }
         }
     }
@@ -316,7 +258,7 @@ fn unbounded_entry_pointer_valid_after_other_removes() {
 #[test]
 fn bounded_slot_reuse_no_use_after_free() {
     let counter = Rc::new(Cell::new(0));
-    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(1);
+    let slab: bounded::Slab<DropTracker> = bounded::Slab::with_capacity(1);
 
     // Insert, remove, insert cycle
     for i in 0..100u64 {
@@ -330,7 +272,10 @@ fn bounded_slot_reuse_no_use_after_free() {
 #[test]
 fn unbounded_slot_reuse_no_use_after_free() {
     let counter = Rc::new(Cell::new(0));
-    let slab: Slab<DropTracker> = Slab::builder().chunk_capacity(1).build();
+    let slab: unbounded::Slab<DropTracker> = nexus_slab::Builder::default()
+        .unbounded()
+        .chunk_capacity(1)
+        .build();
 
     for i in 0..100u64 {
         let entry = slab.insert(DropTracker::new(counter.clone()));
@@ -340,77 +285,54 @@ fn unbounded_slot_reuse_no_use_after_free() {
 }
 
 // =============================================================================
-// Aliasing tests (ensure no mutable aliasing)
+// Entry mutability tests
 // =============================================================================
 
 #[test]
-fn bounded_no_aliasing_through_entries() {
-    let slab: BoundedSlab<u64> = BoundedSlab::leak(16);
+fn bounded_entry_get_mut() {
+    let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
 
-    let e1 = slab.try_insert(1u64).unwrap();
-    let e2 = slab.try_insert(2u64).unwrap();
+    let mut e1 = slab.try_insert(1u64).unwrap();
+    let mut e2 = slab.try_insert(2u64).unwrap();
 
-    // Get mutable references to different slots - should not alias
-    unsafe {
-        let r1 = e1.get_unchecked_mut();
-        let r2 = e2.get_unchecked_mut();
+    // Mutate through entry
+    *e1.get_mut() = 10;
+    *e2.get_mut() = 20;
 
-        *r1 = 10;
-        *r2 = 20;
-
-        assert_eq!(*r1, 10);
-        assert_eq!(*r2, 20);
-    }
+    assert_eq!(*e1.get(), 10);
+    assert_eq!(*e2.get(), 20);
 }
 
 #[test]
-fn unbounded_no_aliasing_through_entries() {
-    let slab = Slab::with_capacity(16);
+fn unbounded_entry_get_mut() {
+    let slab = unbounded::Slab::with_capacity(16);
 
-    let e1 = slab.insert(1u64);
-    let e2 = slab.insert(2u64);
+    let mut e1 = slab.insert(1u64);
+    let mut e2 = slab.insert(2u64);
 
-    unsafe {
-        let r1 = e1.get_unchecked_mut();
-        let r2 = e2.get_unchecked_mut();
+    *e1.get_mut() = 10;
+    *e2.get_mut() = 20;
 
-        *r1 = 10;
-        *r2 = 20;
-
-        assert_eq!(*r1, 10);
-        assert_eq!(*r2, 20);
-    }
+    assert_eq!(*e1.get(), 10);
+    assert_eq!(*e2.get(), 20);
 }
 
 #[test]
-fn unbounded_no_aliasing_across_chunks() {
-    let slab: Slab<u64> = Slab::builder().chunk_capacity(2).build();
+fn unbounded_entry_get_mut_across_chunks() {
+    let slab: unbounded::Slab<u64> = nexus_slab::Builder::default()
+        .unbounded()
+        .chunk_capacity(2)
+        .build();
 
     // These will be in different chunks
-    let e1 = slab.insert(1);
-    let e2 = slab.insert(2);
-    let e3 = slab.insert(3); // Different chunk
-    let e4 = slab.insert(4); // Different chunk
+    let mut e1 = slab.insert(1);
+    let _e2 = slab.insert(2);
+    let mut e3 = slab.insert(3); // Different chunk
+    let _e4 = slab.insert(4); // Different chunk
 
-    unsafe {
-        let r1 = e1.get_unchecked_mut();
-        let r3 = e3.get_unchecked_mut();
+    *e1.get_mut() = 10;
+    *e3.get_mut() = 30;
 
-        *r1 = 10;
-        *r3 = 30;
-
-        assert_eq!(*r1, 10);
-        assert_eq!(*r3, 30);
-    }
-
-    unsafe {
-        let r2 = e2.get_unchecked_mut();
-        let r4 = e4.get_unchecked_mut();
-
-        *r2 = 20;
-        *r4 = 40;
-
-        assert_eq!(*r2, 20);
-        assert_eq!(*r4, 40);
-    }
+    assert_eq!(*e1.get(), 10);
+    assert_eq!(*e3.get(), 30);
 }
