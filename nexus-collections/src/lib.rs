@@ -30,13 +30,13 @@
 //! # Quick Start
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{List, ListStorage};
 //!
 //! // Storage owns the data (wrapped in ListNode internally)
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1000);
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(1000);
 //!
 //! // List coordinates keys into storage
-//! let mut queue: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut queue: List<u64, ListStorage<u64>> = List::new();
 //!
 //! // Insert returns stable key for O(1) access later
 //! let key = queue.try_push_back(&mut storage, 42).unwrap();
@@ -51,11 +51,11 @@
 //! The storage key stays valid.
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{List, ListStorage};
 //!
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(100);
-//! let mut queue_a: List<u64, BoxedListStorage<u64>, _> = List::new();
-//! let mut queue_b: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
+//! let mut queue_a: List<u64, ListStorage<u64>> = List::new();
+//! let mut queue_b: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = queue_a.try_push_back(&mut storage, 42).unwrap();
 //!
@@ -67,18 +67,84 @@
 //! assert_eq!(queue_b.get(&storage, key), Some(&42));
 //! ```
 //!
+//! # Entry API
+//!
+//! For ergonomic workflows, use the Entry API. Entries are cloneable handles
+//! that provide direct access to values without key lookups.
+//!
+//! ```
+//! use nexus_collections::{Heap, HeapStorage};
+//! use std::collections::HashMap;
+//!
+//! #[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+//! struct Task { priority: i32, id: u64 }
+//!
+//! let mut storage: HeapStorage<Task> = HeapStorage::with_capacity(100);
+//! let mut heap: Heap<Task, HeapStorage<Task>> = Heap::new();
+//! let mut cache: HashMap<u64, nexus_collections::HeapEntry<Task>> = HashMap::new();
+//!
+//! // Insert and cache entry
+//! let entry = heap.try_push_entry(&mut storage, Task { priority: 10, id: 1 }).unwrap();
+//! cache.insert(1, entry.clone());
+//!
+//! // Later: direct access through cached entry
+//! let entry = cache.get(&1).unwrap();
+//! assert_eq!(entry.get().priority, 10);
+//! ```
+//!
+//! ## Self-Referential Patterns
+//!
+//! Use `insert_with` or `vacant` when values need to know their own storage key:
+//!
+//! ```
+//! use nexus_collections::{Heap, HeapStorage};
+//! use nexus_slab::Key as NexusKey;
+//!
+//! struct Timer {
+//!     deadline: u64,
+//!     self_key: NexusKey,  // Knows its own location
+//! }
+//!
+//! // Heap ordering by deadline only
+//! impl Ord for Timer {
+//!     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+//!         self.deadline.cmp(&other.deadline)
+//!     }
+//! }
+//! impl PartialOrd for Timer {
+//!     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//!         Some(self.cmp(other))
+//!     }
+//! }
+//! impl PartialEq for Timer {
+//!     fn eq(&self, other: &Self) -> bool { self.deadline == other.deadline }
+//! }
+//! impl Eq for Timer {}
+//!
+//! let mut storage: HeapStorage<Timer> = HeapStorage::with_capacity(100);
+//! let mut heap: Heap<Timer, HeapStorage<Timer>> = Heap::new();
+//!
+//! // Closure receives entry before value exists
+//! let entry = heap.try_push_with(&mut storage, |e| Timer {
+//!     deadline: 1000,
+//!     self_key: e.key(),
+//! }).unwrap();
+//!
+//! assert_eq!(entry.get().self_key, entry.key());
+//! ```
+//!
 //! # Critical Invariant: Same Storage Instance
 //!
 //! All operations on a list must use the same storage instance.
-//! This is the caller's responsibility (same discipline as the `slab` crate).
+//! This is the caller's responsibility.
 //! Passing a different storage causes undefined behavior.
 //!
 //! ```no_run
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{List, ListStorage};
 //!
-//! let mut storage_a: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut storage_b: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage_a: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut storage_b: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut list: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = list.try_push_back(&mut storage_a, 1).unwrap();
 //!
@@ -88,30 +154,11 @@
 //!
 //! # Storage Options
 //!
-//! | Storage | Capacity | Allocation | Use Case |
-//! |---------|----------|------------|----------|
-//! | [`BoxedStorage`] | Fixed (runtime) | Single heap alloc | Default choice |
-//! | `slab::Slab` | Growable | May reallocate | When size unknown |
-//! | `nexus_slab::Slab` | Fixed | Page-aligned, mlockable | Latency-critical |
-//! | `HashMap<K, V>` | Growable | May reallocate | When keys are in values |
-//!
-//! Enable `slab` or `nexus-slab` features to use external storage backends.
-//!
-//! # Storage Traits
-//!
-//! Storage is split into bounded and unbounded variants:
-//!
-//! ```text
-//! Storage<T>           - base trait: get, remove, len
-//!     │
-//!     ├── BoundedStorage<T>   - fixed capacity, try_insert -> Result
-//!     │
-//!     └── UnboundedStorage<T> - growable, insert -> Key (infallible)
-//! ```
-//!
-//! This enables different APIs for data structures:
-//! - `try_push` for bounded storage (returns `Result<K, Full<T>>`)
-//! - `push` for unbounded storage (returns `K`, infallible)
+//! | Collection | Bounded | Growable |
+//! |------------|---------|----------|
+//! | [`List`] | [`ListStorage<T>`] | [`GrowableListStorage<T>`] |
+//! | [`Heap`] | [`HeapStorage<T>`] | [`GrowableHeapStorage<T>`] |
+//! | [`SkipList`] | [`SkipStorage<K, V>`] | [`GrowableSkipStorage<K, V>`] |
 //!
 //! # Data Structures
 //!
@@ -135,38 +182,22 @@
 //! | SkipList get | 842 | O(log n), 10K elements |
 //! | SkipList remove | 802 | O(log n), 10K elements |
 //! | SkipList first/pop_first | 62-116 | O(1) |
-//!
-//! # Feature Flags
-//!
-//! - `slab` - Enable [`Storage`] impl for `slab::Slab`
-//! - `nexus-slab` - Enable [`Storage`] impl for `nexus_slab::Slab`
 
 #![warn(missing_docs)]
 
+mod internal;
+
 pub mod heap;
-pub mod key;
 pub mod list;
-pub mod owned;
 pub mod skiplist;
 pub mod storage;
 
-pub use heap::{BoxedHeapStorage, Heap};
-pub use key::Key;
-pub use list::{BoxedListStorage, List};
-pub use owned::{OwnedHeap, OwnedList, OwnedSkipList};
-pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, VacantEntry};
-pub use storage::{BoundedStorage, BoxedStorage, Full, Storage, UnboundedStorage};
-
-#[cfg(feature = "nexus-slab")]
-pub use heap::{BoundedNexusHeapStorage, UnboundedNexusHeapStorage};
-#[cfg(feature = "nexus-slab")]
-pub use list::{BoundedNexusListStorage, UnboundedNexusListStorage};
-#[cfg(feature = "nexus-slab")]
-pub use skiplist::{BoundedNexusSkipStorage, UnboundedNexusSkipStorage};
-
-#[cfg(feature = "slab")]
-pub use heap::SlabHeapStorage;
-#[cfg(feature = "slab")]
-pub use list::SlabListStorage;
-#[cfg(feature = "slab")]
-pub use skiplist::SlabSkipStorage;
+pub use heap::Heap;
+pub use list::List;
+pub use skiplist::{Entry, OccupiedEntry, SkipList, VacantEntry};
+pub use storage::{
+    Full, GrowableHeapStorage, GrowableHeapVacant, GrowableListStorage, GrowableListVacant,
+    GrowableSkipStorage, GrowableSkipVacant, HeapEntry, HeapNode, HeapRef, HeapRefMut, HeapStorage,
+    HeapVacant, ListEntry, ListNode, ListRef, ListRefMut, ListStorage, ListVacant, SkipEntry,
+    SkipNode, SkipRef, SkipRefMut, SkipStorage, SkipVacant,
+};

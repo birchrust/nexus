@@ -15,11 +15,11 @@
 //! Insert operations have different APIs depending on storage type:
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{ListStorage, List};
 //!
 //! // Bounded storage (BoxedStorage, nexus_slab) - fallible insertion
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut list: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = list.try_push_back(&mut storage, 42).unwrap();
 //! ```
@@ -35,10 +35,10 @@
 //! # Example
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{ListStorage, List};
 //!
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut list: List<u64, ListStorage<u64>> = List::new();
 //!
 //! // Insert values - returns key for O(1) access/removal later
 //! let a = list.try_push_back(&mut storage, 1).unwrap();
@@ -65,11 +65,11 @@
 //! without deallocating. The storage key remains stable.
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{ListStorage, List};
 //!
-//! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-//! let mut list_a: List<u64, BoxedListStorage<u64>, _> = List::new();
-//! let mut list_b: List<u64, BoxedListStorage<u64>, _> = List::new();
+//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+//! let mut list_a: List<u64, ListStorage<u64>> = List::new();
+//! let mut list_b: List<u64, ListStorage<u64>> = List::new();
 //!
 //! let key = list_a.try_push_back(&mut storage, 42).unwrap();
 //!
@@ -86,7 +86,7 @@
 //! Multiple price-level queues sharing one storage pool:
 //!
 //! ```
-//! use nexus_collections::{BoxedListStorage, List};
+//! use nexus_collections::{ListStorage, List};
 //!
 //! #[derive(Debug)]
 //! struct Order {
@@ -95,11 +95,11 @@
 //! }
 //!
 //! // One storage for all orders
-//! let mut orders: BoxedListStorage<Order> = BoxedListStorage::with_capacity(100_000);
+//! let mut orders: ListStorage<Order> = ListStorage::with_capacity(100_000);
 //!
 //! // Separate queues per price level
-//! let mut queue_100: List<Order, BoxedListStorage<Order>, _> = List::new();
-//! let mut queue_101: List<Order, BoxedListStorage<Order>, _> = List::new();
+//! let mut queue_100: List<Order, ListStorage<Order>> = List::new();
+//! let mut queue_101: List<Order, ListStorage<Order>> = List::new();
 //!
 //! let key = queue_100.try_push_back(&mut orders, Order { id: 1, qty: 50 }).unwrap();
 //!
@@ -111,47 +111,11 @@
 
 use std::marker::PhantomData;
 
-use crate::{
-    BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage, storage::KeyedStorage,
+use nexus_slab::Key as NexusKey;
+
+use crate::storage::{
+    BoundedListStorageOps, Full, GrowableListStorageOps, ListEntry, ListNode, ListStorageOps,
 };
-
-/// Type alias for bounded list storage backed by a boxed allocation.
-pub type BoxedListStorage<T> = BoxedStorage<ListNode<T, usize>>;
-
-/// Type alias for unbounded list storage backed by `slab::Slab`.
-#[cfg(feature = "slab")]
-pub type SlabListStorage<T> = slab::Slab<ListNode<T, usize>>;
-
-/// Type alias for bounded list storage backed by `nexus_slab::BoundedSlab`.
-#[cfg(feature = "nexus-slab")]
-pub type BoundedNexusListStorage<T> = nexus_slab::BoundedSlab<ListNode<T, nexus_slab::Key>>;
-
-/// Type alias for unbounded list storage backed by `nexus_slab::Slab`.
-#[cfg(feature = "nexus-slab")]
-pub type UnboundedNexusListStorage<T> = nexus_slab::Slab<ListNode<T, nexus_slab::Key>>;
-
-/// A node in the linked list.
-///
-/// This wraps user data with prev/next links. Users interact with `&T` and `&mut T`
-/// through the list's accessor methods; the node structure is an implementation detail.
-#[derive(Debug)]
-pub struct ListNode<T, K> {
-    pub(crate) data: T,
-    pub(crate) prev: K,
-    pub(crate) next: K,
-}
-
-impl<T, K: Key> ListNode<T, K> {
-    /// Creates a new unlinked node.
-    #[inline]
-    fn new(data: T) -> Self {
-        Self {
-            data,
-            prev: K::NONE,
-            next: K::NONE,
-        }
-    }
-}
 
 /// A doubly-linked list over external storage.
 ///
@@ -161,34 +125,34 @@ impl<T, K: Key> ListNode<T, K> {
 /// # Type Parameters
 ///
 /// - `T`: Element type
-/// - `S`: Storage type (e.g., [`BoxedListStorage<T>`])
-/// - `K`: Key type (default `u32`)
+/// - `S`: Storage type (e.g., [`ListStorage<T>`])
+/// - `NexusKey`: Key type (default `u32`)
 ///
 /// # Example
 ///
 /// ```
-/// use nexus_collections::{BoxedListStorage, List};
+/// use nexus_collections::{ListStorage, List};
 ///
-/// let mut storage: BoxedListStorage<String> = BoxedListStorage::with_capacity(100);
-/// let mut list: List<String, BoxedListStorage<String>, _> = List::new();
+/// let mut storage: ListStorage<String> = ListStorage::with_capacity(100);
+/// let mut list: List<String, ListStorage<String>> = List::new();
 ///
 /// let key = list.try_push_back(&mut storage, "hello".into()).unwrap();
 /// assert_eq!(list.get(&storage, key), Some(&"hello".into()));
 /// ```
 #[derive(Debug)]
-pub struct List<T, S, K: Key>
+pub struct List<T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
-    head: K,
-    tail: K,
+    head: NexusKey,
+    tail: NexusKey,
     len: usize,
     _marker: PhantomData<(T, S)>,
 }
 
-impl<T, S, K: Key> Default for List<T, S, K>
+impl<T, S> Default for List<T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
     fn default() -> Self {
         Self::new()
@@ -199,16 +163,16 @@ where
 // Base impl - works with any Storage (read/link/remove operations)
 // =============================================================================
 
-impl<T, S, K: Key> List<T, S, K>
+impl<T, S> List<T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
     /// Creates an empty list.
     #[inline]
     pub const fn new() -> Self {
         Self {
-            head: K::NONE,
-            tail: K::NONE,
+            head: NexusKey::NONE,
+            tail: NexusKey::NONE,
             len: 0,
             _marker: PhantomData,
         }
@@ -228,7 +192,7 @@ where
 
     /// Returns the head node's key, or `None` if empty.
     #[inline]
-    pub fn front_key(&self) -> Option<K> {
+    pub fn front_key(&self) -> Option<NexusKey> {
         if self.head.is_none() {
             None
         } else {
@@ -238,7 +202,7 @@ where
 
     /// Returns the tail node's key, or `None` if empty.
     #[inline]
-    pub fn back_key(&self) -> Option<K> {
+    pub fn back_key(&self) -> Option<NexusKey> {
         if self.tail.is_none() {
             None
         } else {
@@ -261,7 +225,7 @@ where
 
         let key = self.head;
         self.unlink(storage, key);
-        storage.remove(key).map(|node| node.data)
+        storage.remove_node(key).map(|node| node.data)
     }
 
     /// Removes and returns the back element.
@@ -275,20 +239,17 @@ where
 
         let key = self.tail;
         self.unlink(storage, key);
-        storage.remove(key).map(|node| node.data)
+        storage.remove_node(key).map(|node| node.data)
     }
 
     /// Removes an element by key.
     ///
     /// Returns `None` if the key is invalid.
     #[inline]
-    pub fn remove(&mut self, storage: &mut S, key: K) -> Option<T> {
-        if storage.get(key).is_none() {
-            return None;
-        }
-
+    pub fn remove(&mut self, storage: &mut S, key: NexusKey) -> Option<T> {
+        storage.get_node(key)?;
         self.unlink(storage, key);
-        storage.remove(key).map(|node| node.data)
+        storage.remove_node(key).map(|node| node.data)
     }
 
     // ========================================================================
@@ -304,14 +265,14 @@ where
     ///
     /// Panics if `key` is not valid in storage.
     #[inline]
-    pub fn link_back(&mut self, storage: &mut S, key: K) {
-        let node = storage.get_mut(key).expect("invalid key");
+    pub fn link_back(&mut self, storage: &mut S, key: NexusKey) {
+        let node = storage.get_node_mut(key).expect("invalid key");
         node.prev = self.tail;
-        node.next = K::NONE;
+        node.next = NexusKey::NONE;
 
         if self.tail.is_some() {
             // Safety: tail is valid when is_some()
-            unsafe { storage.get_unchecked_mut(self.tail) }.next = key;
+            unsafe { storage.get_node_unchecked_mut(self.tail) }.next = key;
         } else {
             self.head = key;
         }
@@ -329,14 +290,14 @@ where
     ///
     /// Panics if `key` is not valid in storage.
     #[inline]
-    pub fn link_front(&mut self, storage: &mut S, key: K) {
-        let node = storage.get_mut(key).expect("invalid key");
+    pub fn link_front(&mut self, storage: &mut S, key: NexusKey) {
+        let node = storage.get_node_mut(key).expect("invalid key");
         node.next = self.head;
-        node.prev = K::NONE;
+        node.prev = NexusKey::NONE;
 
         if self.head.is_some() {
             // Safety: head is valid when is_some()
-            unsafe { storage.get_unchecked_mut(self.head) }.prev = key;
+            unsafe { storage.get_node_unchecked_mut(self.head) }.prev = key;
         } else {
             self.tail = key;
         }
@@ -351,18 +312,18 @@ where
     ///
     /// Panics if `after` or `key` is not valid in storage.
     #[inline]
-    pub fn link_after(&mut self, storage: &mut S, after: K, key: K) {
-        let next = storage.get(after).expect("invalid 'after' key").next;
-        let node = storage.get_mut(key).expect("invalid key");
+    pub fn link_after(&mut self, storage: &mut S, after: NexusKey, key: NexusKey) {
+        let next = storage.get_node(after).expect("invalid 'after' key").next;
+        let node = storage.get_node_mut(key).expect("invalid key");
         node.prev = after;
         node.next = next;
 
         // Safety: after validated above
-        unsafe { storage.get_unchecked_mut(after) }.next = key;
+        unsafe { storage.get_node_unchecked_mut(after) }.next = key;
 
         if next.is_some() {
             // Safety: next is valid when is_some() (list invariant)
-            unsafe { storage.get_unchecked_mut(next) }.prev = key;
+            unsafe { storage.get_node_unchecked_mut(next) }.prev = key;
         } else {
             self.tail = key;
         }
@@ -376,18 +337,18 @@ where
     ///
     /// Panics if `before` or `key` is not valid in storage.
     #[inline]
-    pub fn link_before(&mut self, storage: &mut S, before: K, key: K) {
-        let prev = storage.get(before).expect("invalid 'before' key").prev;
-        let node = storage.get_mut(key).expect("invalid key");
+    pub fn link_before(&mut self, storage: &mut S, before: NexusKey, key: NexusKey) {
+        let prev = storage.get_node(before).expect("invalid 'before' key").prev;
+        let node = storage.get_node_mut(key).expect("invalid key");
         node.next = before;
         node.prev = prev;
 
         // Safety: before validated above
-        unsafe { storage.get_unchecked_mut(before) }.prev = key;
+        unsafe { storage.get_node_unchecked_mut(before) }.prev = key;
 
         if prev.is_some() {
             // Safety: prev is valid when is_some() (list invariant)
-            unsafe { storage.get_unchecked_mut(prev) }.next = key;
+            unsafe { storage.get_node_unchecked_mut(prev) }.next = key;
         } else {
             self.head = key;
         }
@@ -406,8 +367,8 @@ where
     ///
     /// Panics if `key` is not valid in storage.
     #[inline]
-    pub fn unlink(&mut self, storage: &mut S, key: K) -> bool {
-        let node = storage.get(key).expect("invalid key");
+    pub fn unlink(&mut self, storage: &mut S, key: NexusKey) -> bool {
+        let node = storage.get_node(key).expect("invalid key");
         let prev = node.prev;
         let next = node.next;
 
@@ -419,23 +380,23 @@ where
 
         if prev.is_some() {
             // Safety: prev is valid when is_some() (list invariant)
-            unsafe { storage.get_unchecked_mut(prev) }.next = next;
+            unsafe { storage.get_node_unchecked_mut(prev) }.next = next;
         } else {
             self.head = next;
         }
 
         if next.is_some() {
             // Safety: next is valid when is_some() (list invariant)
-            unsafe { storage.get_unchecked_mut(next) }.prev = prev;
+            unsafe { storage.get_node_unchecked_mut(next) }.prev = prev;
         } else {
             self.tail = prev;
         }
 
         // Clear the removed node's links
         // Safety: key already validated
-        let node = unsafe { storage.get_unchecked_mut(key) };
-        node.prev = K::NONE;
-        node.next = K::NONE;
+        let node = unsafe { storage.get_node_unchecked_mut(key) };
+        node.prev = NexusKey::NONE;
+        node.next = NexusKey::NONE;
 
         self.len -= 1;
         true
@@ -447,14 +408,14 @@ where
 
     /// Returns a reference to the element at the given key.
     #[inline]
-    pub fn get<'a>(&'a self, storage: &'a S, key: K) -> Option<&'a T> {
-        storage.get(key).map(|node| &node.data)
+    pub fn get<'a>(&'a self, storage: &'a S, key: NexusKey) -> Option<&'a T> {
+        storage.get_node(key).map(|node| &node.data)
     }
 
     /// Returns a mutable reference to the element at the given key.
     #[inline]
-    pub fn get_mut<'a>(&'a mut self, storage: &'a mut S, key: K) -> Option<&'a mut T> {
-        storage.get_mut(key).map(|node| &mut node.data)
+    pub fn get_mut<'a>(&'a mut self, storage: &'a mut S, key: NexusKey) -> Option<&'a mut T> {
+        storage.get_node_mut(key).map(|node| &mut node.data)
     }
 
     /// Returns a reference to the front element.
@@ -464,7 +425,7 @@ where
             None
         } else {
             // Safety: head is valid when is_some()
-            Some(unsafe { &storage.get_unchecked(self.head).data })
+            Some(unsafe { &storage.get_node_unchecked(self.head).data })
         }
     }
 
@@ -475,7 +436,7 @@ where
             None
         } else {
             // Safety: head is valid when is_some()
-            Some(unsafe { &mut storage.get_unchecked_mut(self.head).data })
+            Some(unsafe { &mut storage.get_node_unchecked_mut(self.head).data })
         }
     }
 
@@ -486,7 +447,7 @@ where
             None
         } else {
             // Safety: tail is valid when is_some()
-            Some(unsafe { &storage.get_unchecked(self.tail).data })
+            Some(unsafe { &storage.get_node_unchecked(self.tail).data })
         }
     }
 
@@ -497,7 +458,7 @@ where
             None
         } else {
             // Safety: tail is valid when is_some()
-            Some(unsafe { &mut storage.get_unchecked_mut(self.tail).data })
+            Some(unsafe { &mut storage.get_node_unchecked_mut(self.tail).data })
         }
     }
 
@@ -512,13 +473,13 @@ where
         let mut key = self.head;
         while key.is_some() {
             // Safety: key is valid (came from list traversal)
-            let next = unsafe { storage.get_unchecked(key) }.next;
-            storage.remove(key);
+            let next = unsafe { storage.get_node_unchecked(key) }.next;
+            storage.remove_node(key);
             key = next;
         }
 
-        self.head = K::NONE;
-        self.tail = K::NONE;
+        self.head = NexusKey::NONE;
+        self.tail = NexusKey::NONE;
         self.len = 0;
     }
 
@@ -537,14 +498,14 @@ where
             self.len = other.len;
         } else {
             // Safety: self.tail and other.head are valid (non-empty lists)
-            unsafe { storage.get_unchecked_mut(self.tail) }.next = other.head;
-            unsafe { storage.get_unchecked_mut(other.head) }.prev = self.tail;
+            unsafe { storage.get_node_unchecked_mut(self.tail) }.next = other.head;
+            unsafe { storage.get_node_unchecked_mut(other.head) }.prev = self.tail;
             self.tail = other.tail;
             self.len += other.len;
         }
 
-        other.head = K::NONE;
-        other.tail = K::NONE;
+        other.head = NexusKey::NONE;
+        other.tail = NexusKey::NONE;
         other.len = 0;
     }
 
@@ -557,38 +518,38 @@ where
     ///
     /// Panics if `key` is not valid in storage.
     #[inline]
-    pub fn move_to_back(&mut self, storage: &mut S, key: K) {
+    pub fn move_to_back(&mut self, storage: &mut S, key: NexusKey) {
         // Already at back
         if self.tail == key {
             return;
         }
 
-        let node = storage.get(key).expect("invalid key");
+        let node = storage.get_node(key).expect("invalid key");
         let prev = node.prev;
         let next = node.next;
 
         // Unlink from current position
         if prev.is_some() {
             // Safety: prev is valid (list invariant)
-            unsafe { storage.get_unchecked_mut(prev) }.next = next;
+            unsafe { storage.get_node_unchecked_mut(prev) }.next = next;
         } else {
             self.head = next;
         }
 
         if next.is_some() {
             // Safety: next is valid (list invariant)
-            unsafe { storage.get_unchecked_mut(next) }.prev = prev;
+            unsafe { storage.get_node_unchecked_mut(next) }.prev = prev;
         }
         // Note: next can't be NONE here since we already checked key != tail
 
         // Link at back
         // Safety: tail is valid (list is non-empty)
-        unsafe { storage.get_unchecked_mut(self.tail) }.next = key;
+        unsafe { storage.get_node_unchecked_mut(self.tail) }.next = key;
 
         // Safety: key validated above
-        let node = unsafe { storage.get_unchecked_mut(key) };
+        let node = unsafe { storage.get_node_unchecked_mut(key) };
         node.prev = self.tail;
-        node.next = K::NONE;
+        node.next = NexusKey::NONE;
 
         self.tail = key;
     }
@@ -601,39 +562,39 @@ where
     ///
     /// Panics if `key` is not valid in storage.
     #[inline]
-    pub fn move_to_front(&mut self, storage: &mut S, key: K) {
+    pub fn move_to_front(&mut self, storage: &mut S, key: NexusKey) {
         // Already at front
         if self.head == key {
             return;
         }
 
         // Safety: key validated above
-        let node = storage.get(key).expect("invalid key");
+        let node = storage.get_node(key).expect("invalid key");
         let prev = node.prev;
         let next = node.next;
 
         // Unlink from current position
         if prev.is_some() {
             // Safety: prev is valid (list invariant)
-            unsafe { storage.get_unchecked_mut(prev) }.next = next;
+            unsafe { storage.get_node_unchecked_mut(prev) }.next = next;
         }
         // Note: prev can't be NONE here since we already checked key != head
 
         if next.is_some() {
             // Safety: next is valid (list invariant)
-            unsafe { storage.get_unchecked_mut(next) }.prev = prev;
+            unsafe { storage.get_node_unchecked_mut(next) }.prev = prev;
         } else {
             self.tail = prev;
         }
 
         // Link at front
         // Safety: head is valid (list is non-empty)
-        unsafe { storage.get_unchecked_mut(self.head) }.prev = key;
+        unsafe { storage.get_node_unchecked_mut(self.head) }.prev = key;
 
         // Safety: key validated above
-        let node = unsafe { storage.get_unchecked_mut(key) };
+        let node = unsafe { storage.get_node_unchecked_mut(key) };
         node.next = self.head;
-        node.prev = K::NONE;
+        node.prev = NexusKey::NONE;
 
         self.head = key;
     }
@@ -649,8 +610,8 @@ where
     ///
     /// Panics if `key` is not valid in storage.
     #[inline]
-    pub fn split_off(&mut self, storage: &mut S, key: K) -> Self {
-        let prev = storage.get(key).expect("invalid key").prev;
+    pub fn split_off(&mut self, storage: &mut S, key: NexusKey) -> Self {
+        let prev = storage.get_node(key).expect("invalid key").prev;
 
         // Splitting at head = take everything
         if self.head == key {
@@ -660,8 +621,8 @@ where
                 len: self.len,
                 _marker: PhantomData,
             };
-            self.head = K::NONE;
-            self.tail = K::NONE;
+            self.head = NexusKey::NONE;
+            self.tail = NexusKey::NONE;
             self.len = 0;
             return other;
         }
@@ -671,13 +632,13 @@ where
         let mut curr = key;
         while curr.is_some() {
             count += 1;
-            curr = unsafe { storage.get_unchecked(curr) }.next;
+            curr = unsafe { storage.get_node_unchecked(curr) }.next;
         }
 
         // Unlink at split point
         // Safety: prev is valid (key != head, so prev.is_some())
-        unsafe { storage.get_unchecked_mut(prev) }.next = K::NONE;
-        unsafe { storage.get_unchecked_mut(key) }.prev = K::NONE;
+        unsafe { storage.get_node_unchecked_mut(prev) }.next = NexusKey::NONE;
+        unsafe { storage.get_node_unchecked_mut(key) }.prev = NexusKey::NONE;
 
         let other = Self {
             head: key,
@@ -698,13 +659,13 @@ where
 
     /// Returns `true` if the node is currently the head of this list.
     #[inline]
-    pub fn is_head(&self, key: K) -> bool {
+    pub fn is_head(&self, key: NexusKey) -> bool {
         self.head == key
     }
 
     /// Returns `true` if the node is currently the tail of this list.
     #[inline]
-    pub fn is_tail(&self, key: K) -> bool {
+    pub fn is_tail(&self, key: NexusKey) -> bool {
         self.tail == key
     }
 
@@ -716,8 +677,8 @@ where
     ///
     /// Returns `None` if `key` is the tail or invalid.
     #[inline]
-    pub fn next_key(&self, storage: &S, key: K) -> Option<K> {
-        let next = storage.get(key)?.next;
+    pub fn next_key(&self, storage: &S, key: NexusKey) -> Option<NexusKey> {
+        let next = storage.get_node(key)?.next;
         if next.is_none() { None } else { Some(next) }
     }
 
@@ -725,8 +686,8 @@ where
     ///
     /// Returns `None` if `key` is the head or invalid.
     #[inline]
-    pub fn prev_key(&self, storage: &S, key: K) -> Option<K> {
-        let prev = storage.get(key)?.prev;
+    pub fn prev_key(&self, storage: &S, key: NexusKey) -> Option<NexusKey> {
+        let prev = storage.get_node(key)?.prev;
         if prev.is_none() { None } else { Some(prev) }
     }
 
@@ -736,7 +697,7 @@ where
 
     /// Returns an iterator over references to elements, front to back.
     #[inline]
-    pub fn iter<'a>(&self, storage: &'a S) -> Iter<'a, T, S, K> {
+    pub fn iter<'a>(&self, storage: &'a S) -> Iter<'a, T, S> {
         Iter {
             storage,
             front: self.head,
@@ -747,7 +708,7 @@ where
 
     /// Returns an iterator over mutable references to elements, front to back.
     #[inline]
-    pub fn iter_mut<'a>(&self, storage: &'a mut S) -> IterMut<'a, T, S, K> {
+    pub fn iter_mut<'a>(&self, storage: &'a mut S) -> IterMut<'a, T, S> {
         IterMut {
             storage,
             front: self.head,
@@ -761,7 +722,7 @@ where
     /// Useful when you need both the key and the value, or when you
     /// plan to modify the list during iteration (collect keys first).
     #[inline]
-    pub fn keys<'a>(&self, storage: &'a S) -> Keys<'a, T, K, S> {
+    pub fn keys<'a>(&self, storage: &'a S) -> Keys<'a, T, S> {
         Keys {
             storage,
             front: self.head,
@@ -775,10 +736,10 @@ where
     /// The list is empty after this call. Elements are deallocated from
     /// storage as the iterator is consumed.
     #[inline]
-    pub fn drain<'a>(&'a mut self, storage: &'a mut S) -> Drain<'a, T, S, K> {
+    pub fn drain<'a>(&'a mut self, storage: &'a mut S) -> Drain<'a, T, S> {
         let head = self.head;
-        self.head = K::NONE;
-        self.tail = K::NONE;
+        self.head = NexusKey::NONE;
+        self.tail = NexusKey::NONE;
         self.len = 0;
 
         Drain {
@@ -793,7 +754,7 @@ where
     /// The cursor allows mutable access and removal during iteration.
     /// See [`Cursor`] for usage examples.
     #[inline]
-    pub fn cursor_front<'a>(&'a mut self, storage: &'a mut S) -> Cursor<'a, T, S, K> {
+    pub fn cursor_front<'a>(&'a mut self, storage: &'a mut S) -> Cursor<'a, T, S> {
         let head = self.head;
         Cursor {
             list: self,
@@ -804,7 +765,7 @@ where
 
     /// Returns a cursor positioned at the back of the list.
     #[inline]
-    pub fn cursor_back<'a>(&'a mut self, storage: &'a mut S) -> Cursor<'a, T, S, K> {
+    pub fn cursor_back<'a>(&'a mut self, storage: &'a mut S) -> Cursor<'a, T, S> {
         let tail = self.tail;
         Cursor {
             list: self,
@@ -818,9 +779,9 @@ where
 // Bounded storage impl - fallible insertion
 // =============================================================================
 
-impl<T, S, K: Key> List<T, S, K>
+impl<T, S> List<T, S>
 where
-    S: BoundedStorage<ListNode<T, K>, Key = K>,
+    S: BoundedListStorageOps<T>,
 {
     /// Pushes a value to the back of the list.
     ///
@@ -830,10 +791,8 @@ where
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
-    pub fn try_push_back(&mut self, storage: &mut S, value: T) -> Result<K, Full<T>> {
-        let key = storage
-            .try_insert(ListNode::new(value))
-            .map_err(|e| Full(e.0.data))?;
+    pub fn try_push_back(&mut self, storage: &mut S, value: T) -> Result<NexusKey, Full<T>> {
+        let key = storage.try_insert_node(ListNode::new(value))?;
         self.link_back(storage, key);
         Ok(key)
     }
@@ -846,10 +805,8 @@ where
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
-    pub fn try_push_front(&mut self, storage: &mut S, value: T) -> Result<K, Full<T>> {
-        let key = storage
-            .try_insert(ListNode::new(value))
-            .map_err(|e| Full(e.0.data))?;
+    pub fn try_push_front(&mut self, storage: &mut S, value: T) -> Result<NexusKey, Full<T>> {
+        let key = storage.try_insert_node(ListNode::new(value))?;
         self.link_front(storage, key);
         Ok(key)
     }
@@ -866,10 +823,13 @@ where
     ///
     /// Panics if `after` is not valid in storage (debug builds only).
     #[inline]
-    pub fn try_insert_after(&mut self, storage: &mut S, after: K, value: T) -> Result<K, Full<T>> {
-        let key = storage
-            .try_insert(ListNode::new(value))
-            .map_err(|e| Full(e.0.data))?;
+    pub fn try_insert_after(
+        &mut self,
+        storage: &mut S,
+        after: NexusKey,
+        value: T,
+    ) -> Result<NexusKey, Full<T>> {
+        let key = storage.try_insert_node(ListNode::new(value))?;
         self.link_after(storage, after, key);
         Ok(key)
     }
@@ -889,14 +849,130 @@ where
     pub fn try_insert_before(
         &mut self,
         storage: &mut S,
-        before: K,
+        before: NexusKey,
         value: T,
-    ) -> Result<K, Full<T>> {
-        let key = storage
-            .try_insert(ListNode::new(value))
-            .map_err(|e| Full(e.0.data))?;
+    ) -> Result<NexusKey, Full<T>> {
+        let key = storage.try_insert_node(ListNode::new(value))?;
         self.link_before(storage, before, key);
         Ok(key)
+    }
+
+    // =========================================================================
+    // Entry-returning methods
+    // =========================================================================
+
+    /// Pushes a value to the back of the list, returning an entry handle.
+    ///
+    /// Like [`try_push_back`](List::try_push_back) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Full(value))` if storage is full.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, ListStorage};
+    ///
+    /// let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
+    /// let mut list: List<u64, ListStorage<u64>> = List::new();
+    ///
+    /// let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+    /// assert_eq!(*entry.get(), 42);
+    /// ```
+    #[inline]
+    pub fn try_push_back_entry(
+        &mut self,
+        storage: &mut S,
+        value: T,
+    ) -> Result<ListEntry<T>, Full<T>> {
+        let key = self.try_push_back(storage, value)?;
+        Ok(storage.entry(key).expect("just inserted"))
+    }
+
+    /// Pushes a value to the front of the list, returning an entry handle.
+    ///
+    /// Like [`try_push_front`](List::try_push_front) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Full(value))` if storage is full.
+    #[inline]
+    pub fn try_push_front_entry(
+        &mut self,
+        storage: &mut S,
+        value: T,
+    ) -> Result<ListEntry<T>, Full<T>> {
+        let key = self.try_push_front(storage, value)?;
+        Ok(storage.entry(key).expect("just inserted"))
+    }
+
+    /// Pushes a value to the back with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityError)` if storage is full.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, ListStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// struct Order {
+    ///     id: u64,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// let mut storage: ListStorage<Order> = ListStorage::with_capacity(100);
+    /// let mut list: List<Order, ListStorage<Order>> = List::new();
+    ///
+    /// let entry = list.try_push_back_with(&mut storage, |e| Order {
+    ///     id: 1,
+    ///     self_key: e.key(),
+    /// }).unwrap();
+    ///
+    /// assert_eq!(entry.get().self_key, entry.key());
+    /// ```
+    #[inline]
+    pub fn try_push_back_with<F>(
+        &mut self,
+        storage: &mut S,
+        f: F,
+    ) -> Result<ListEntry<T>, nexus_slab::CapacityError>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f)?;
+        let key = entry.key();
+        self.link_back(storage, key);
+        Ok(entry)
+    }
+
+    /// Pushes a value to the front with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityError)` if storage is full.
+    #[inline]
+    pub fn try_push_front_with<F>(
+        &mut self,
+        storage: &mut S,
+        f: F,
+    ) -> Result<ListEntry<T>, nexus_slab::CapacityError>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f)?;
+        let key = entry.key();
+        self.link_front(storage, key);
+        Ok(entry)
     }
 }
 
@@ -904,16 +980,16 @@ where
 // Unbounded storage impl - infallible insertion
 // =============================================================================
 
-impl<T, S, K: Key> List<T, S, K>
+impl<T, S> List<T, S>
 where
-    S: UnboundedStorage<ListNode<T, K>, Key = K>,
+    S: GrowableListStorageOps<T>,
 {
     /// Pushes a value to the back of the list.
     ///
     /// Returns the key of the inserted element.
     #[inline]
-    pub fn push_back(&mut self, storage: &mut S, value: T) -> K {
-        let key = storage.insert(ListNode::new(value));
+    pub fn push_back(&mut self, storage: &mut S, value: T) -> NexusKey {
+        let key = storage.insert_node(ListNode::new(value));
         self.link_back(storage, key);
         key
     }
@@ -922,8 +998,8 @@ where
     ///
     /// Returns the key of the inserted element.
     #[inline]
-    pub fn push_front(&mut self, storage: &mut S, value: T) -> K {
-        let key = storage.insert(ListNode::new(value));
+    pub fn push_front(&mut self, storage: &mut S, value: T) -> NexusKey {
+        let key = storage.insert_node(ListNode::new(value));
         self.link_front(storage, key);
         key
     }
@@ -936,8 +1012,8 @@ where
     ///
     /// Panics if `after` is not valid in storage (debug builds only).
     #[inline]
-    pub fn insert_after(&mut self, storage: &mut S, after: K, value: T) -> K {
-        let key = storage.insert(ListNode::new(value));
+    pub fn insert_after(&mut self, storage: &mut S, after: NexusKey, value: T) -> NexusKey {
+        let key = storage.insert_node(ListNode::new(value));
         self.link_after(storage, after, key);
         key
     }
@@ -950,145 +1026,96 @@ where
     ///
     /// Panics if `before` is not valid in storage (debug builds only).
     #[inline]
-    pub fn insert_before(&mut self, storage: &mut S, before: K, value: T) -> K {
-        let key = storage.insert(ListNode::new(value));
+    pub fn insert_before(&mut self, storage: &mut S, before: NexusKey, value: T) -> NexusKey {
+        let key = storage.insert_node(ListNode::new(value));
         self.link_before(storage, before, key);
         key
     }
-}
 
-// =============================================================================
-// Keyed storage impl - caller-provided keys
-// =============================================================================
+    // =========================================================================
+    // Entry-returning methods
+    // =========================================================================
 
-impl<T, S, K: Key> List<T, S, K>
-where
-    S: KeyedStorage<ListNode<T, K>, Key = K>,
-{
-    /// Pushes a value to the back of the list with a caller-provided key.
+    /// Pushes a value to the back of the list, returning an entry handle.
     ///
-    /// # Panics
+    /// Like [`push_back`](List::push_back) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
     ///
-    /// Panics if `key` already exists in storage.
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, GrowableListStorage};
+    ///
+    /// let mut storage: GrowableListStorage<u64> = GrowableListStorage::new();
+    /// let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+    ///
+    /// let entry = list.push_back_entry(&mut storage, 42);
+    /// assert_eq!(*entry.get(), 42);
+    /// ```
     #[inline]
-    pub fn push_back_with_key(&mut self, storage: &mut S, key: K, value: T) {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .ok()
-            .expect("key already exists in storage");
+    pub fn push_back_entry(&mut self, storage: &mut S, value: T) -> ListEntry<T> {
+        let key = self.push_back(storage, value);
+        storage.entry(key).expect("just inserted")
+    }
+
+    /// Pushes a value to the front of the list, returning an entry handle.
+    ///
+    /// Like [`push_front`](List::push_front) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    #[inline]
+    pub fn push_front_entry(&mut self, storage: &mut S, value: T) -> ListEntry<T> {
+        let key = self.push_front(storage, value);
+        storage.entry(key).expect("just inserted")
+    }
+
+    /// Pushes a value to the back with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, GrowableListStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// struct Order {
+    ///     id: u64,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// let mut storage: GrowableListStorage<Order> = GrowableListStorage::new();
+    /// let mut list: List<Order, GrowableListStorage<Order>> = List::new();
+    ///
+    /// let entry = list.push_back_with(&mut storage, |e| Order {
+    ///     id: 1,
+    ///     self_key: e.key(),
+    /// });
+    ///
+    /// assert_eq!(entry.get().self_key, entry.key());
+    /// ```
+    #[inline]
+    pub fn push_back_with<F>(&mut self, storage: &mut S, f: F) -> ListEntry<T>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f);
+        let key = entry.key();
         self.link_back(storage, key);
+        entry
     }
 
-    /// Pushes a value to the back of the list with a caller-provided key.
+    /// Pushes a value to the front with access to the entry before it exists.
     ///
-    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
+    /// Enables self-referential patterns where the value needs its own key.
     #[inline]
-    pub fn try_push_back_with_key(&mut self, storage: &mut S, key: K, value: T) -> Result<(), T> {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .map_err(|node| node.data)?;
-        self.link_back(storage, key);
-        Ok(())
-    }
-
-    /// Pushes a value to the front of the list with a caller-provided key.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `key` already exists in storage.
-    #[inline]
-    pub fn push_front_with_key(&mut self, storage: &mut S, key: K, value: T) {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .ok()
-            .expect("key already exists in storage");
+    pub fn push_front_with<F>(&mut self, storage: &mut S, f: F) -> ListEntry<T>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f);
+        let key = entry.key();
         self.link_front(storage, key);
-    }
-
-    /// Pushes a value to the front of the list with a caller-provided key.
-    ///
-    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
-    #[inline]
-    pub fn try_push_front_with_key(&mut self, storage: &mut S, key: K, value: T) -> Result<(), T> {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .map_err(|node| node.data)?;
-        self.link_front(storage, key);
-        Ok(())
-    }
-
-    /// Inserts a value after an existing node with a caller-provided key.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `key` already exists in storage.
-    /// Panics if `after` is not valid in storage (debug builds only).
-    #[inline]
-    pub fn insert_after_with_key(&mut self, storage: &mut S, after: K, key: K, value: T) {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .ok()
-            .expect("key already exists in storage");
-        self.link_after(storage, after, key);
-    }
-
-    /// Inserts a value after an existing node with a caller-provided key.
-    ///
-    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `after` is not valid in storage (debug builds only).
-    #[inline]
-    pub fn try_insert_after_with_key(
-        &mut self,
-        storage: &mut S,
-        after: K,
-        key: K,
-        value: T,
-    ) -> Result<(), T> {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .map_err(|node| node.data)?;
-        self.link_after(storage, after, key);
-        Ok(())
-    }
-
-    /// Inserts a value before an existing node with a caller-provided key.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `key` already exists in storage.
-    /// Panics if `before` is not valid in storage (debug builds only).
-    #[inline]
-    pub fn insert_before_with_key(&mut self, storage: &mut S, before: K, key: K, value: T) {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .ok()
-            .expect("key already exists in storage");
-        self.link_before(storage, before, key);
-    }
-
-    /// Inserts a value before an existing node with a caller-provided key.
-    ///
-    /// Returns `Ok(())` on success, or `Err(value)` if the key already exists.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `before` is not valid in storage (debug builds only).
-    #[inline]
-    pub fn try_insert_before_with_key(
-        &mut self,
-        storage: &mut S,
-        before: K,
-        key: K,
-        value: T,
-    ) -> Result<(), T> {
-        storage
-            .try_insert(key, ListNode::new(value))
-            .map_err(|node| node.data)?;
-        self.link_before(storage, before, key);
-        Ok(())
+        entry
     }
 }
 
@@ -1104,13 +1131,13 @@ where
 /// # Example
 ///
 /// ```
-/// use nexus_collections::{BoxedListStorage, List};
+/// use nexus_collections::{ListStorage, List};
 ///
 /// #[derive(Debug)]
 /// struct Order { qty: u64 }
 ///
-/// let mut storage: BoxedListStorage<Order> = BoxedListStorage::with_capacity(100);
-/// let mut queue: List<Order, BoxedListStorage<Order>, _> = List::new();
+/// let mut storage: ListStorage<Order> = ListStorage::with_capacity(100);
+/// let mut queue: List<Order, ListStorage<Order>> = List::new();
 ///
 /// queue.try_push_back(&mut storage, Order { qty: 100 }).unwrap();
 /// queue.try_push_back(&mut storage, Order { qty: 50 }).unwrap();
@@ -1134,18 +1161,18 @@ where
 ///     }
 /// }
 /// ```
-pub struct Cursor<'a, T, S, K: Key>
+pub struct Cursor<'a, T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
-    list: &'a mut List<T, S, K>,
+    list: &'a mut List<T, S>,
     storage: &'a mut S,
-    current: K,
+    current: NexusKey,
 }
 
-impl<'a, T, S, K: Key> Cursor<'a, T, S, K>
+impl<T, S> Cursor<'_, T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
     /// Returns a reference to the current element.
     ///
@@ -1156,7 +1183,7 @@ where
             None
         } else {
             // Safety: current is valid when not NONE
-            Some(unsafe { &self.storage.get_unchecked(self.current).data })
+            Some(unsafe { &self.storage.get_node_unchecked(self.current).data })
         }
     }
 
@@ -1169,7 +1196,7 @@ where
             None
         } else {
             // Safety: current is valid when not NONE
-            Some(unsafe { &mut self.storage.get_unchecked_mut(self.current).data })
+            Some(unsafe { &mut self.storage.get_node_unchecked_mut(self.current).data })
         }
     }
 
@@ -1177,7 +1204,7 @@ where
     ///
     /// Returns `None` if the cursor is exhausted.
     #[inline]
-    pub fn key(&self) -> Option<K> {
+    pub fn key(&self) -> Option<NexusKey> {
         if self.current.is_none() {
             None
         } else {
@@ -1192,7 +1219,7 @@ where
     pub fn move_next(&mut self) {
         if self.current.is_some() {
             // Safety: current is valid when not NONE
-            self.current = unsafe { self.storage.get_unchecked(self.current) }.next;
+            self.current = unsafe { self.storage.get_node_unchecked(self.current) }.next;
         }
     }
 
@@ -1203,7 +1230,7 @@ where
     pub fn move_prev(&mut self) {
         if self.current.is_some() {
             // Safety: current is valid when not NONE
-            self.current = unsafe { self.storage.get_unchecked(self.current) }.prev;
+            self.current = unsafe { self.storage.get_node_unchecked(self.current) }.prev;
         }
     }
 
@@ -1219,13 +1246,13 @@ where
 
         let key = self.current;
         // Safety: current is valid (cursor invariant)
-        let next = unsafe { self.storage.get_unchecked(key) }.next;
+        let next = unsafe { self.storage.get_node_unchecked(key) }.next;
 
         self.list.unlink(self.storage, key);
         self.current = next;
 
         // Safety: key was valid, we just unlinked it
-        let node = unsafe { self.storage.remove_unchecked(key) };
+        let node = unsafe { self.storage.remove_node_unchecked(key) };
         Some(node.data)
     }
 
@@ -1244,12 +1271,12 @@ where
             return None;
         }
         // Safety: current is valid
-        let next = unsafe { self.storage.get_unchecked(self.current) }.next;
+        let next = unsafe { self.storage.get_node_unchecked(self.current) }.next;
         if next.is_none() {
             None
         } else {
             // Safety: next is valid when not NONE
-            Some(unsafe { &self.storage.get_unchecked(next).data })
+            Some(unsafe { &self.storage.get_node_unchecked(next).data })
         }
     }
 }
@@ -1259,17 +1286,14 @@ where
 // =============================================================================
 
 /// Iterator over references to list elements.
-pub struct Iter<'a, T, S, K: Key> {
+pub struct Iter<'a, T, S> {
     storage: &'a S,
-    front: K,
-    back: K,
+    front: NexusKey,
+    back: NexusKey,
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: 'a, S, K: Key + 'a> Iterator for Iter<'a, T, S, K>
-where
-    S: Storage<ListNode<T, K>, Key = K>,
-{
+impl<'a, T: 'a, S: ListStorageOps<T>> Iterator for Iter<'a, T, S> {
     type Item = &'a T;
 
     #[inline]
@@ -1279,12 +1303,12 @@ where
         }
 
         // Safety: list invariants guarantee front is valid
-        let node = unsafe { self.storage.get_unchecked(self.front) };
+        let node = unsafe { self.storage.get_node_unchecked(self.front) };
 
         // Check if we've met in the middle
         if self.front == self.back {
-            self.front = K::NONE;
-            self.back = K::NONE;
+            self.front = NexusKey::NONE;
+            self.back = NexusKey::NONE;
         } else {
             self.front = node.next;
         }
@@ -1293,10 +1317,7 @@ where
     }
 }
 
-impl<'a, T: 'a, S, K: Key + 'a> DoubleEndedIterator for Iter<'a, T, S, K>
-where
-    S: Storage<ListNode<T, K>, Key = K>,
-{
+impl<'a, T: 'a, S: ListStorageOps<T>> DoubleEndedIterator for Iter<'a, T, S> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.back.is_none() {
@@ -1304,12 +1325,12 @@ where
         }
 
         // Safety: list invariants guarantee back is valid
-        let node = unsafe { self.storage.get_unchecked(self.back) };
+        let node = unsafe { self.storage.get_node_unchecked(self.back) };
 
         // Check if we've met in the middle
         if self.front == self.back {
-            self.front = K::NONE;
-            self.back = K::NONE;
+            self.front = NexusKey::NONE;
+            self.back = NexusKey::NONE;
         } else {
             self.back = node.prev;
         }
@@ -1319,17 +1340,14 @@ where
 }
 
 /// Iterator over mutable references to list elements.
-pub struct IterMut<'a, T, S, K: Key + 'a> {
+pub struct IterMut<'a, T, S> {
     storage: &'a mut S,
-    front: K,
-    back: K,
+    front: NexusKey,
+    back: NexusKey,
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: 'a, S, K: Key + 'a> Iterator for IterMut<'a, T, S, K>
-where
-    S: Storage<ListNode<T, K>, Key = K>,
-{
+impl<'a, T: 'a, S: ListStorageOps<T>> Iterator for IterMut<'a, T, S> {
     type Item = &'a mut T;
 
     #[inline]
@@ -1339,25 +1357,24 @@ where
         }
 
         // Safety: list invariants guarantee front is valid
-        let node = unsafe { self.storage.get_unchecked_mut(self.front) };
+        let node = unsafe { self.storage.get_node_unchecked_mut(self.front) };
 
         // Check if we've met in the middle
         if self.front == self.back {
-            self.front = K::NONE;
-            self.back = K::NONE;
+            self.front = NexusKey::NONE;
+            self.back = NexusKey::NONE;
         } else {
             self.front = node.next;
         }
 
         // Extend lifetime - safe because we visit each node exactly once
-        Some(unsafe { &mut *((&mut node.data) as *mut T) })
+        // The raw pointer dance is needed for lifetime extension
+        #[allow(clippy::deref_addrof)]
+        Some(unsafe { &mut *(&raw mut node.data) })
     }
 }
 
-impl<'a, T: 'a, S, K: Key + 'a> DoubleEndedIterator for IterMut<'a, T, S, K>
-where
-    S: Storage<ListNode<T, K>, Key = K>,
-{
+impl<'a, T: 'a, S: ListStorageOps<T>> DoubleEndedIterator for IterMut<'a, T, S> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.back.is_none() {
@@ -1365,34 +1382,33 @@ where
         }
 
         // Safety: list invariants guarantee back is valid
-        let node = unsafe { self.storage.get_unchecked_mut(self.back) };
+        let node = unsafe { self.storage.get_node_unchecked_mut(self.back) };
 
         // Check if we've met in the middle
         if self.front == self.back {
-            self.front = K::NONE;
-            self.back = K::NONE;
+            self.front = NexusKey::NONE;
+            self.back = NexusKey::NONE;
         } else {
             self.back = node.prev;
         }
 
         // Extend lifetime - safe because we visit each node exactly once
-        Some(unsafe { &mut *((&mut node.data) as *mut T) })
+        // The raw pointer dance is needed for lifetime extension
+        #[allow(clippy::deref_addrof)]
+        Some(unsafe { &mut *(&raw mut node.data) })
     }
 }
 
 /// Iterator over keys in the list.
-pub struct Keys<'a, T, K: Key, S> {
+pub struct Keys<'a, T, S> {
     storage: &'a S,
-    front: K,
-    back: K,
+    front: NexusKey,
+    back: NexusKey,
     _marker: PhantomData<T>,
 }
 
-impl<'a, T, K: Key, S> Iterator for Keys<'a, T, K, S>
-where
-    S: Storage<ListNode<T, K>, Key = K>,
-{
-    type Item = K;
+impl<T, S: ListStorageOps<T>> Iterator for Keys<'_, T, S> {
+    type Item = NexusKey;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -1402,11 +1418,11 @@ where
 
         let key = self.front;
         // Safety: list invariants guarantee front is valid
-        let node = unsafe { self.storage.get_unchecked(self.front) };
+        let node = unsafe { self.storage.get_node_unchecked(self.front) };
 
         if self.front == self.back {
-            self.front = K::NONE;
-            self.back = K::NONE;
+            self.front = NexusKey::NONE;
+            self.back = NexusKey::NONE;
         } else {
             self.front = node.next;
         }
@@ -1415,10 +1431,7 @@ where
     }
 }
 
-impl<'a, T, K: Key, S> DoubleEndedIterator for Keys<'a, T, K, S>
-where
-    S: Storage<ListNode<T, K>, Key = K>,
-{
+impl<T, S: ListStorageOps<T>> DoubleEndedIterator for Keys<'_, T, S> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.back.is_none() {
@@ -1427,11 +1440,11 @@ where
 
         let key = self.back;
         // Safety: list invariants guarantee back is valid
-        let node = unsafe { self.storage.get_unchecked(self.back) };
+        let node = unsafe { self.storage.get_node_unchecked(self.back) };
 
         if self.front == self.back {
-            self.front = K::NONE;
-            self.back = K::NONE;
+            self.front = NexusKey::NONE;
+            self.back = NexusKey::NONE;
         } else {
             self.back = node.prev;
         }
@@ -1441,18 +1454,18 @@ where
 }
 
 /// Iterator that removes and returns elements from a list.
-pub struct Drain<'a, T, S, K: Key>
+pub struct Drain<'a, T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
     storage: &'a mut S,
-    current: K,
+    current: NexusKey,
     _marker: PhantomData<T>,
 }
 
-impl<'a, T, S, K: Key> Iterator for Drain<'a, T, S, K>
+impl<T, S> Iterator for Drain<'_, T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
     type Item = T;
 
@@ -1464,14 +1477,14 @@ where
 
         let key = self.current;
         // Safety: current came from list traversal, must be valid
-        self.current = unsafe { self.storage.get_unchecked(key) }.next;
-        self.storage.remove(key).map(|node| node.data)
+        self.current = unsafe { self.storage.get_node_unchecked(key) }.next;
+        self.storage.remove_node(key).map(|node| node.data)
     }
 }
 
-impl<T, S, K: Key> Drop for Drain<'_, T, S, K>
+impl<T, S> Drop for Drain<'_, T, S>
 where
-    S: Storage<ListNode<T, K>, Key = K>,
+    S: ListStorageOps<T>,
 {
     fn drop(&mut self) {
         // Exhaust remaining elements to ensure cleanup
@@ -1482,10 +1495,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{GrowableListStorage, ListStorage};
 
     #[test]
     fn new_list_is_empty() {
-        let list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let list: List<u64, ListStorage<u64>> = List::new();
         assert!(list.is_empty());
         assert_eq!(list.len(), 0);
         assert!(list.front_key().is_none());
@@ -1494,8 +1508,8 @@ mod tests {
 
     #[test]
     fn try_push_back_single() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
 
@@ -1509,8 +1523,8 @@ mod tests {
 
     #[test]
     fn try_push_back_multiple() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let _b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1526,8 +1540,8 @@ mod tests {
 
     #[test]
     fn try_push_front_multiple() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_front(&mut storage, 1).unwrap();
         let _b = list.try_push_front(&mut storage, 2).unwrap();
@@ -1544,8 +1558,8 @@ mod tests {
 
     #[test]
     fn pop_front() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1562,8 +1576,8 @@ mod tests {
 
     #[test]
     fn pop_back() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1577,8 +1591,8 @@ mod tests {
 
     #[test]
     fn remove_middle() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let _a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1593,9 +1607,9 @@ mod tests {
 
     #[test]
     fn unlink_and_link_to_another_list() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list_a: List<u64, _, _> = List::new();
-        let mut list_b: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list_a: List<u64, _> = List::new();
+        let mut list_b: List<u64, _> = List::new();
 
         let key = list_a.try_push_back(&mut storage, 42).unwrap();
         list_a.try_push_back(&mut storage, 99).unwrap();
@@ -1609,13 +1623,13 @@ mod tests {
         assert_eq!(list_b.get(&storage, key), Some(&42));
 
         // Original key still works
-        assert_eq!(storage.get(key).map(|n| &n.data), Some(&42));
+        assert_eq!(storage.get_node(key).map(|n| &n.data), Some(&42));
     }
 
     #[test]
     fn unlink_not_in_list() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let key = list.try_push_back(&mut storage, 1).unwrap();
         list.unlink(&mut storage, key);
@@ -1626,8 +1640,8 @@ mod tests {
 
     #[test]
     fn get_and_get_mut() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 10).unwrap();
 
@@ -1639,8 +1653,8 @@ mod tests {
 
     #[test]
     fn front_and_back() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         assert!(list.front(&storage).is_none());
         assert!(list.back(&storage).is_none());
@@ -1655,8 +1669,8 @@ mod tests {
 
     #[test]
     fn try_insert_after() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let _c = list.try_push_back(&mut storage, 3).unwrap();
@@ -1668,8 +1682,8 @@ mod tests {
 
     #[test]
     fn try_insert_before() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let _a = list.try_push_back(&mut storage, 1).unwrap();
         let c = list.try_push_back(&mut storage, 3).unwrap();
@@ -1681,8 +1695,8 @@ mod tests {
 
     #[test]
     fn clear() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1697,9 +1711,9 @@ mod tests {
 
     #[test]
     fn append() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list1: List<u64, _, _> = List::new();
-        let mut list2: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list1: List<u64, _> = List::new();
+        let mut list2: List<u64, _> = List::new();
 
         list1.try_push_back(&mut storage, 1).unwrap();
         list1.try_push_back(&mut storage, 2).unwrap();
@@ -1717,8 +1731,8 @@ mod tests {
 
     #[test]
     fn move_to_back() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1732,8 +1746,8 @@ mod tests {
 
     #[test]
     fn move_to_front() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1747,8 +1761,8 @@ mod tests {
 
     #[test]
     fn split_off() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1767,8 +1781,8 @@ mod tests {
 
     #[test]
     fn is_head_and_is_tail() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1785,16 +1799,16 @@ mod tests {
 
     #[test]
     fn iter_empty() {
-        let storage = BoxedListStorage::with_capacity(16);
-        let list: List<u64, _, _> = List::new();
+        let storage = ListStorage::with_capacity(16);
+        let list: List<u64, _> = List::new();
 
         assert_eq!(list.iter(&storage).count(), 0);
     }
 
     #[test]
     fn iter_mut() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1810,8 +1824,8 @@ mod tests {
 
     #[test]
     fn keys_iterator() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1823,8 +1837,8 @@ mod tests {
 
     #[test]
     fn storage_reuse_after_remove() {
-        let mut storage = BoxedListStorage::with_capacity(4);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(4);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let _b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1845,8 +1859,8 @@ mod tests {
 
     #[test]
     fn cursor_basic_navigation() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1872,8 +1886,8 @@ mod tests {
 
     #[test]
     fn cursor_move_prev() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1892,8 +1906,8 @@ mod tests {
 
     #[test]
     fn cursor_current_mut() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 10).unwrap();
         list.try_push_back(&mut storage, 20).unwrap();
@@ -1911,8 +1925,8 @@ mod tests {
 
     #[test]
     fn cursor_remove_current() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -1937,8 +1951,8 @@ mod tests {
 
     #[test]
     fn cursor_remove_middle() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1958,8 +1972,8 @@ mod tests {
 
     #[test]
     fn cursor_peek_next() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -1981,8 +1995,8 @@ mod tests {
 
     #[test]
     fn cursor_empty_list() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let mut cursor = list.cursor_front(&mut storage);
 
@@ -1994,8 +2008,8 @@ mod tests {
 
     #[test]
     fn cursor_single_element() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 42).unwrap();
 
@@ -2011,8 +2025,8 @@ mod tests {
 
     #[test]
     fn cursor_matching_workflow() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         // Resting orders: 100, 50, 75
         list.try_push_back(&mut storage, 100).unwrap();
@@ -2054,8 +2068,8 @@ mod tests {
 
     #[test]
     fn iter_rev() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -2067,8 +2081,8 @@ mod tests {
 
     #[test]
     fn iter_double_ended() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -2086,8 +2100,8 @@ mod tests {
 
     #[test]
     fn keys_rev() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -2099,8 +2113,8 @@ mod tests {
 
     #[test]
     fn drain_all() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -2115,8 +2129,8 @@ mod tests {
 
     #[test]
     fn drain_partial_then_drop() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -2135,8 +2149,8 @@ mod tests {
 
     #[test]
     fn next_key_and_prev_key() {
-        let mut storage = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
         let a = list.try_push_back(&mut storage, 1).unwrap();
         let b = list.try_push_back(&mut storage, 2).unwrap();
@@ -2153,8 +2167,8 @@ mod tests {
 
     #[test]
     fn try_push_back_full_error() {
-        let mut storage = BoxedListStorage::with_capacity(2);
-        let mut list: List<u64, _, _> = List::new();
+        let mut storage = ListStorage::with_capacity(2);
+        let mut list: List<u64, _> = List::new();
 
         list.try_push_back(&mut storage, 1).unwrap();
         list.try_push_back(&mut storage, 2).unwrap();
@@ -2167,89 +2181,244 @@ mod tests {
         let Full(val) = result.unwrap_err();
         assert_eq!(val, 3);
     }
-}
 
-#[cfg(all(test, feature = "slab"))]
-mod tests_slab {
-    use super::*;
+    // ========================================================================
+    // Entry API Tests
+    // ========================================================================
 
     #[test]
-    fn slab_push_back_infallible() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+    fn try_push_back_entry_basic() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
-        // Infallible - no Result!
-        let a = list.push_back(&mut storage, 1);
-        let b = list.push_back(&mut storage, 2);
-        let c = list.push_back(&mut storage, 3);
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
 
-        assert_eq!(list.len(), 3);
-
-        let values: Vec<_> = list.iter(&storage).copied().collect();
-        assert_eq!(values, vec![1, 2, 3]);
-
-        // Keys are sequential
-        assert_eq!(a, 0);
-        assert_eq!(b, 1);
-        assert_eq!(c, 2);
+        assert_eq!(list.len(), 1);
+        assert_eq!(*entry.get(), 42);
+        assert!(entry.is_valid());
     }
 
     #[test]
-    fn slab_push_front_infallible() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+    fn try_push_front_entry_basic() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
-        list.push_front(&mut storage, 1);
-        list.push_front(&mut storage, 2);
-        list.push_front(&mut storage, 3);
+        list.try_push_back_entry(&mut storage, 1).unwrap();
+        let entry = list.try_push_front_entry(&mut storage, 2).unwrap();
 
-        let values: Vec<_> = list.iter(&storage).copied().collect();
-        assert_eq!(values, vec![3, 2, 1]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(*entry.get(), 2);
+        assert_eq!(list.front(&storage), Some(&2));
     }
 
     #[test]
-    fn slab_insert_after_infallible() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+    fn entry_clone() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
-        let a = list.push_back(&mut storage, 1);
-        list.push_back(&mut storage, 3);
-        list.insert_after(&mut storage, a, 2);
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+        let cloned = entry.clone();
 
-        let values: Vec<_> = list.iter(&storage).copied().collect();
-        assert_eq!(values, vec![1, 2, 3]);
+        assert_eq!(entry.key(), cloned.key());
+        assert_eq!(*cloned.get(), 42);
     }
 
     #[test]
-    fn slab_insert_before_infallible() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+    fn entry_mutation() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
 
-        list.push_back(&mut storage, 1);
-        let c = list.push_back(&mut storage, 3);
-        list.insert_before(&mut storage, c, 2);
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+        *entry.get_mut() = 100;
 
-        let values: Vec<_> = list.iter(&storage).copied().collect();
-        assert_eq!(values, vec![1, 2, 3]);
+        assert_eq!(*entry.get(), 100);
+        assert_eq!(list.front(&storage), Some(&100));
     }
 
     #[test]
-    fn slab_grows_automatically() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(2);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+    fn push_back_entry_growable() {
+        let mut storage = GrowableListStorage::new();
+        let mut list: List<u64, _> = List::new();
 
-        // Should grow beyond initial capacity
-        for i in 0..100 {
-            list.push_back(&mut storage, i);
+        let entry = list.push_back_entry(&mut storage, 42);
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(*entry.get(), 42);
+    }
+
+    #[test]
+    fn push_front_entry_growable() {
+        let mut storage = GrowableListStorage::new();
+        let mut list: List<u64, _> = List::new();
+
+        list.push_back_entry(&mut storage, 1);
+        let entry = list.push_front_entry(&mut storage, 2);
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(*entry.get(), 2);
+        assert_eq!(list.front(&storage), Some(&2));
+    }
+
+    #[test]
+    fn link_from_vacant() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        // Insert directly to storage via vacant
+        let vacant = storage.vacant().unwrap();
+        let entry = vacant.insert(42);
+
+        // Not in list yet
+        assert!(list.is_empty());
+
+        // Link into list
+        list.link_back(&mut storage, entry.key());
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.front(&storage), Some(&42));
+    }
+
+    #[test]
+    fn link_from_insert_with() {
+        struct Order {
+            id: u64,
+            self_key: NexusKey,
         }
 
-        assert_eq!(list.len(), 100);
+        let mut storage: ListStorage<Order> = ListStorage::with_capacity(16);
+        let mut list: List<Order, _> = List::new();
+
+        // Create self-referential item
+        let entry = storage
+            .insert_with(|e| Order {
+                id: 42,
+                self_key: e.key(),
+            })
+            .unwrap();
+
+        // Verify self-reference
+        assert_eq!(entry.get().self_key, entry.key());
+
+        // Link into list
+        list.link_back(&mut storage, entry.key());
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.front(&storage).unwrap().id, 42);
+    }
+
+    #[test]
+    fn try_push_back_with_self_referential() {
+        struct Order {
+            id: u64,
+            self_key: NexusKey,
+        }
+
+        let mut storage: ListStorage<Order> = ListStorage::with_capacity(16);
+        let mut list: List<Order, _> = List::new();
+
+        let entry = list
+            .try_push_back_with(&mut storage, |e| Order {
+                id: 100,
+                self_key: e.key(),
+            })
+            .unwrap();
+
+        // Verify self-reference and list membership
+        assert_eq!(entry.get().self_key, entry.key());
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.front(&storage).unwrap().id, 100);
+    }
+
+    #[test]
+    fn push_back_with_self_referential() {
+        #[allow(dead_code)]
+        struct Order {
+            id: u64,
+            self_key: NexusKey,
+        }
+
+        let mut storage: GrowableListStorage<Order> = GrowableListStorage::new();
+        let mut list: List<Order, _> = List::new();
+
+        let entry = list.push_back_with(&mut storage, |e| Order {
+            id: 100,
+            self_key: e.key(),
+        });
+
+        assert_eq!(entry.get().self_key, entry.key());
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn entry_becomes_invalid_after_remove() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+        assert!(entry.is_valid());
+
+        list.remove(&mut storage, entry.key());
+        assert!(!entry.is_valid());
+        assert!(entry.try_get().is_none());
+    }
+
+    #[test]
+    fn entry_try_methods() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+
+        // try_get works
+        assert_eq!(*entry.try_get().unwrap(), 42);
+
+        // try_get_mut works
+        *entry.try_get_mut().unwrap() = 100;
+        assert_eq!(*entry.get(), 100);
+    }
+
+    #[test]
+    fn multiple_entries_order() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let e1 = list.try_push_back_entry(&mut storage, 1).unwrap();
+        let e2 = list.try_push_back_entry(&mut storage, 2).unwrap();
+        let e3 = list.try_push_back_entry(&mut storage, 3).unwrap();
+
+        // Entries maintain their values
+        assert_eq!(*e1.get(), 1);
+        assert_eq!(*e2.get(), 2);
+        assert_eq!(*e3.get(), 3);
+
+        // List order is correct
+        assert_eq!(list.pop_front(&mut storage), Some(1));
+        assert_eq!(list.pop_front(&mut storage), Some(2));
+        assert_eq!(list.pop_front(&mut storage), Some(3));
+    }
+
+    #[test]
+    fn move_between_lists_with_entry() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list_a: List<u64, _> = List::new();
+        let mut list_b: List<u64, _> = List::new();
+
+        let entry = list_a.try_push_back_entry(&mut storage, 42).unwrap();
+
+        // Move to list_b - entry still valid
+        list_a.unlink(&mut storage, entry.key());
+        list_b.link_back(&mut storage, entry.key());
+
+        assert!(list_a.is_empty());
+        assert_eq!(list_b.len(), 1);
+        assert_eq!(*entry.get(), 42);
     }
 }
 
 #[cfg(test)]
 mod bench_boxed_storage {
     use super::*;
+    use crate::ListStorage;
     use hdrhistogram::Histogram;
 
     #[inline]
@@ -2282,9 +2451,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_try_push_back() {
-        let mut storage: BoxedListStorage<u64> =
-            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -2306,9 +2474,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_try_push_front() {
-        let mut storage: BoxedListStorage<u64> =
-            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -2330,9 +2497,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_pop_front() {
-        let mut storage: BoxedListStorage<u64> =
-            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2354,9 +2520,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_pop_back() {
-        let mut storage: BoxedListStorage<u64> =
-            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2378,8 +2543,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_get() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1024);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(1024);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -2405,8 +2570,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_remove_middle() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2438,14 +2603,14 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_unlink() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
             let key = list.try_push_back(&mut storage, 1).unwrap();
             list.unlink(&mut storage, key);
-            storage.remove(key);
+            storage.remove_node(key);
         }
 
         for _ in 0..ITERATIONS {
@@ -2456,7 +2621,7 @@ mod bench_boxed_storage {
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
-            storage.remove(key);
+            storage.remove_node(key);
         }
 
         print_histogram("unlink", &hist);
@@ -2465,8 +2630,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_link_back() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(16);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -2494,8 +2659,8 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_move_to_back() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1024);
-        let mut list: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(1024);
+        let mut list: List<u64, ListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         // Build a list of 100 elements
@@ -2522,9 +2687,9 @@ mod bench_boxed_storage {
     #[test]
     #[ignore]
     fn bench_list_order_queue_workflow() {
-        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(32);
-        let mut queue_a: List<u64, BoxedListStorage<u64>, _> = List::new();
-        let mut queue_b: List<u64, BoxedListStorage<u64>, _> = List::new();
+        let mut storage: ListStorage<u64> = ListStorage::with_capacity(32);
+        let mut queue_a: List<u64, ListStorage<u64>> = List::new();
+        let mut queue_b: List<u64, ListStorage<u64>> = List::new();
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_move = Histogram::<u64>::new(3).unwrap();
@@ -2581,338 +2746,10 @@ mod bench_boxed_storage {
     }
 }
 
-#[cfg(all(test, feature = "slab"))]
-mod bench_slab_storage {
-    use super::*;
-    use hdrhistogram::Histogram;
-
-    #[inline]
-    fn rdtscp() -> u64 {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            core::arch::x86_64::__rdtscp(&mut 0)
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            std::time::Instant::now().elapsed().as_nanos() as u64
-        }
-    }
-
-    fn print_histogram(name: &str, hist: &Histogram<u64>) {
-        println!(
-            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
-            name,
-            hist.value_at_quantile(0.50),
-            hist.value_at_quantile(0.99),
-            hist.value_at_quantile(0.999),
-            hist.min(),
-            hist.max(),
-        );
-    }
-
-    const WARMUP: usize = 10_000;
-    const ITERATIONS: usize = 100_000;
-
-    #[test]
-    #[ignore]
-    fn bench_list_push_back() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for i in 0..WARMUP {
-            let _ = list.push_back(&mut storage, i as u64);
-            let _ = list.pop_back(&mut storage);
-        }
-
-        for i in 0..ITERATIONS {
-            let start = rdtscp();
-            let _ = list.push_back(&mut storage, i as u64);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-            let _ = list.pop_back(&mut storage);
-        }
-
-        print_histogram("push_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_push_front() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for i in 0..WARMUP {
-            let _ = list.push_front(&mut storage, i as u64);
-            let _ = list.pop_front(&mut storage);
-        }
-
-        for i in 0..ITERATIONS {
-            let start = rdtscp();
-            let _ = list.push_front(&mut storage, i as u64);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-            let _ = list.pop_front(&mut storage);
-        }
-
-        print_histogram("push_front", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_pop_front() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for _ in 0..WARMUP {
-            let _ = list.push_back(&mut storage, 1);
-            let _ = list.pop_front(&mut storage);
-        }
-
-        for i in 0..ITERATIONS {
-            let _ = list.push_back(&mut storage, i as u64);
-            let start = rdtscp();
-            let _ = list.pop_front(&mut storage);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("pop_front", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_pop_back() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for _ in 0..WARMUP {
-            let _ = list.push_back(&mut storage, 1);
-            let _ = list.pop_back(&mut storage);
-        }
-
-        for i in 0..ITERATIONS {
-            let _ = list.push_back(&mut storage, i as u64);
-            let start = rdtscp();
-            let _ = list.pop_back(&mut storage);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("pop_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_get() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(1024);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        let mut keys = Vec::with_capacity(1000);
-        for i in 0..1000 {
-            keys.push(list.push_back(&mut storage, i as u64));
-        }
-
-        let mid_key = keys[500];
-        for _ in 0..WARMUP {
-            std::hint::black_box(list.get(&storage, mid_key));
-        }
-
-        for _ in 0..ITERATIONS {
-            let start = rdtscp();
-            std::hint::black_box(list.get(&storage, mid_key));
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("get (middle)", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_remove_middle() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for _ in 0..WARMUP {
-            let a = list.push_back(&mut storage, 1);
-            let b = list.push_back(&mut storage, 2);
-            let c = list.push_back(&mut storage, 3);
-            let _ = list.remove(&mut storage, b);
-            let _ = list.remove(&mut storage, a);
-            let _ = list.remove(&mut storage, c);
-        }
-
-        for _ in 0..ITERATIONS {
-            let a = list.push_back(&mut storage, 1);
-            let b = list.push_back(&mut storage, 2);
-            let c = list.push_back(&mut storage, 3);
-
-            let start = rdtscp();
-            let _ = list.remove(&mut storage, b);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            let _ = list.remove(&mut storage, a);
-            let _ = list.remove(&mut storage, c);
-        }
-
-        print_histogram("remove (middle)", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_unlink() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for _ in 0..WARMUP {
-            let key = list.push_back(&mut storage, 1);
-            list.unlink(&mut storage, key);
-            storage.remove(key);
-        }
-
-        for _ in 0..ITERATIONS {
-            let key = list.push_back(&mut storage, 1);
-
-            let start = rdtscp();
-            list.unlink(&mut storage, key);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            storage.remove(key);
-        }
-
-        print_histogram("unlink", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_link_back() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        for _ in 0..WARMUP {
-            let key = list.push_back(&mut storage, 1);
-            list.unlink(&mut storage, key);
-            list.link_back(&mut storage, key);
-            list.remove(&mut storage, key);
-        }
-
-        for _ in 0..ITERATIONS {
-            let key = list.push_back(&mut storage, 1);
-            list.unlink(&mut storage, key);
-
-            let start = rdtscp();
-            list.link_back(&mut storage, key);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            list.remove(&mut storage, key);
-        }
-
-        print_histogram("link_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_move_to_back() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(1024);
-        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        let mut keys = Vec::with_capacity(100);
-        for i in 0..100 {
-            keys.push(list.push_back(&mut storage, i as u64));
-        }
-
-        for _ in 0..WARMUP {
-            list.move_to_back(&mut storage, keys[0]);
-        }
-
-        for i in 0..ITERATIONS {
-            let key = keys[i % 100];
-            let start = rdtscp();
-            list.move_to_back(&mut storage, key);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("move_to_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_order_queue_workflow() {
-        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(32);
-        let mut queue_a: List<u64, SlabListStorage<u64>, usize> = List::new();
-        let mut queue_b: List<u64, SlabListStorage<u64>, usize> = List::new();
-
-        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
-        let mut hist_move = Histogram::<u64>::new(3).unwrap();
-        let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
-
-        for i in 0..WARMUP {
-            let key = queue_a.push_back(&mut storage, i as u64);
-            queue_a.unlink(&mut storage, key);
-            queue_b.link_back(&mut storage, key);
-            queue_b.remove(&mut storage, key);
-        }
-
-        for i in 0..ITERATIONS {
-            let start = rdtscp();
-            let key = queue_a.push_back(&mut storage, i as u64);
-            hist_insert.record(rdtscp() - start).unwrap();
-
-            let start = rdtscp();
-            queue_a.unlink(&mut storage, key);
-            queue_b.link_back(&mut storage, key);
-            hist_move.record(rdtscp() - start).unwrap();
-
-            let start = rdtscp();
-            queue_b.remove(&mut storage, key);
-            hist_cancel.record(rdtscp() - start).unwrap();
-        }
-
-        println!("\n=== Order Queue Workflow (slab::Slab) ===");
-        print_histogram("insert (new order)", &hist_insert);
-        print_histogram("move (price amend)", &hist_move);
-        print_histogram("cancel", &hist_cancel);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_all() {
-        println!("\n=== List Benchmarks (slab::Slab) ===");
-        println!(
-            "Run with: cargo test --release --features slab bench_slab_storage::bench_list_all -- --ignored --nocapture\n"
-        );
-
-        bench_list_push_back();
-        bench_list_push_front();
-        bench_list_pop_front();
-        bench_list_pop_back();
-        bench_list_get();
-        bench_list_remove_middle();
-        bench_list_unlink();
-        bench_list_link_back();
-        bench_list_move_to_back();
-
-        println!();
-        bench_list_order_queue_workflow();
-    }
-}
-
-#[cfg(all(test, feature = "nexus-slab"))]
+#[cfg(test)]
 mod bench_nexus_slab_storage {
     use super::*;
+    use crate::GrowableListStorage;
     use hdrhistogram::Histogram;
 
     #[inline]
@@ -2945,9 +2782,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_push_back() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -2969,9 +2806,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_push_front() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for i in 0..WARMUP {
@@ -2993,9 +2830,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_pop_front() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -3017,9 +2854,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_pop_back() {
-        let mut storage: UnboundedNexusListStorage<u64> =
-            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -3041,8 +2878,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_get() {
-        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(1024);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> = GrowableListStorage::with_capacity(1024);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(1000);
@@ -3068,8 +2905,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_remove_middle() {
-        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(16);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> = GrowableListStorage::with_capacity(16);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -3101,14 +2938,14 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_unlink() {
-        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(16);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> = GrowableListStorage::with_capacity(16);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
             let key = list.push_back(&mut storage, 1);
             list.unlink(&mut storage, key);
-            storage.remove(key);
+            storage.remove_node(key);
         }
 
         for _ in 0..ITERATIONS {
@@ -3119,7 +2956,7 @@ mod bench_nexus_slab_storage {
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
 
-            storage.remove(key);
+            storage.remove_node(key);
         }
 
         print_histogram("unlink", &hist);
@@ -3128,8 +2965,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_link_back() {
-        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(16);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> = GrowableListStorage::with_capacity(16);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         for _ in 0..WARMUP {
@@ -3157,8 +2994,8 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_move_to_back() {
-        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(1024);
-        let mut list: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> = GrowableListStorage::with_capacity(1024);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
 
         let mut keys = Vec::with_capacity(100);
@@ -3184,9 +3021,9 @@ mod bench_nexus_slab_storage {
     #[test]
     #[ignore]
     fn bench_list_order_queue_workflow() {
-        let mut storage: UnboundedNexusListStorage<u64> = nexus_slab::Slab::with_capacity(32);
-        let mut queue_a: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
-        let mut queue_b: List<u64, UnboundedNexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut storage: GrowableListStorage<u64> = GrowableListStorage::with_capacity(32);
+        let mut queue_a: List<u64, GrowableListStorage<u64>> = List::new();
+        let mut queue_b: List<u64, GrowableListStorage<u64>> = List::new();
 
         let mut hist_insert = Histogram::<u64>::new(3).unwrap();
         let mut hist_move = Histogram::<u64>::new(3).unwrap();
@@ -3240,410 +3077,104 @@ mod bench_nexus_slab_storage {
 
         println!();
         bench_list_order_queue_workflow();
-    }
-}
 
-#[cfg(test)]
-mod bench_hashmap_storage {
-    use super::*;
-    use hdrhistogram::Histogram;
-    use std::collections::HashMap;
-
-    // Test type that provides its own key
-    #[allow(unused)]
-    #[derive(Clone)]
-    struct Order {
-        id: u64,
+        println!("\n=== Entry API Comparison ===");
+        bench_push_back_entry();
+        bench_entry_get();
+        bench_entry_get_mut();
     }
 
-    type HashMapListStorage = HashMap<u64, ListNode<Order, u64>>;
-
-    #[inline]
-    fn rdtscp() -> u64 {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            core::arch::x86_64::__rdtscp(&mut 0)
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            std::time::Instant::now().elapsed().as_nanos() as u64
-        }
-    }
-
-    fn print_histogram(name: &str, hist: &Histogram<u64>) {
-        println!(
-            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
-            name,
-            hist.value_at_quantile(0.50),
-            hist.value_at_quantile(0.99),
-            hist.value_at_quantile(0.999),
-            hist.min(),
-            hist.max(),
-        );
-    }
-
-    const WARMUP: usize = 10_000;
-    const ITERATIONS: usize = 100_000;
+    // =========================================================================
+    // Entry API Benchmarks
+    // =========================================================================
 
     #[test]
     #[ignore]
-    fn bench_list_push_back() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+    fn bench_push_back_entry() {
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
         let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
 
         for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let _ = list.push_back_with_key(&mut storage, order.id, order);
-            let _ = list.pop_back(&mut storage);
-        }
-
-        for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-
-            let start = rdtscp();
-            let _ = list.push_back_with_key(&mut storage, order.id, order);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            let _ = list.pop_back(&mut storage);
-        }
-
-        print_histogram("push_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_push_front() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
-
-        for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let _ = list.push_front_with_key(&mut storage, order.id, order);
+            let _ = list.push_back_entry(&mut storage, 1);
             let _ = list.pop_front(&mut storage);
-        }
-
-        for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-
-            let start = rdtscp();
-            let _ = list.push_front_with_key(&mut storage, order.id, order);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            let _ = list.pop_front(&mut storage);
-        }
-
-        print_histogram("push_front", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_pop_front() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
-
-        for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let _ = list.push_back_with_key(&mut storage, order.id, order);
-            let _ = list.pop_front(&mut storage);
-        }
-
-        for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let _ = list.push_back_with_key(&mut storage, order.id, order);
-
-            let start = rdtscp();
-            let _ = list.pop_front(&mut storage);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("pop_front", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_pop_back() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
-
-        for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let _ = list.push_back_with_key(&mut storage, order.id, order);
-            let _ = list.pop_back(&mut storage);
-        }
-
-        for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let _ = list.push_back_with_key(&mut storage, order.id, order);
-
-            let start = rdtscp();
-            let _ = list.pop_back(&mut storage);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("pop_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_get() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(1024);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        let mut keys = Vec::with_capacity(1000);
-        for i in 0..1000u64 {
-            let order = Order { id: i };
-            keys.push(order.id);
-            list.push_back_with_key(&mut storage, order.id, order);
-        }
-
-        let mid_key = keys[500];
-        for _ in 0..WARMUP {
-            std::hint::black_box(list.get(&storage, mid_key));
-        }
-
-        for _ in 0..ITERATIONS {
-            let start = rdtscp();
-            std::hint::black_box(list.get(&storage, mid_key));
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-        }
-
-        print_histogram("get (middle)", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_remove_middle() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
-
-        for _ in 0..WARMUP {
-            let a = id_counter;
-            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
-            id_counter += 1;
-            let b = id_counter;
-            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
-            id_counter += 1;
-            let c = id_counter;
-            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
-            id_counter += 1;
-            let _ = list.remove(&mut storage, b);
-            let _ = list.remove(&mut storage, a);
-            let _ = list.remove(&mut storage, c);
-        }
-
-        for _ in 0..ITERATIONS {
-            let a = id_counter;
-            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
-            id_counter += 1;
-            let b = id_counter;
-            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
-            id_counter += 1;
-            let c = id_counter;
-            list.push_back_with_key(&mut storage, id_counter, Order { id: id_counter });
-            id_counter += 1;
-
-            let start = rdtscp();
-            let _ = list.remove(&mut storage, b);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            let _ = list.remove(&mut storage, a);
-            let _ = list.remove(&mut storage, c);
-        }
-
-        print_histogram("remove (middle)", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_unlink() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
-
-        for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let key = order.id;
-            list.push_back_with_key(&mut storage, order.id, order);
-            list.unlink(&mut storage, key);
-            storage.remove(&key);
-        }
-
-        for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let key = order.id;
-            list.push_back_with_key(&mut storage, order.id, order);
-
-            let start = rdtscp();
-            list.unlink(&mut storage, key);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            storage.remove(&key);
-        }
-
-        print_histogram("unlink", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_link_back() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-        let mut id_counter = 0u64;
-
-        for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let key = order.id;
-            list.push_back_with_key(&mut storage, order.id, order);
-            list.unlink(&mut storage, key);
-            list.link_back(&mut storage, key);
-            list.remove(&mut storage, key);
-        }
-
-        for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let key = order.id;
-            list.push_back_with_key(&mut storage, order.id, order);
-            list.unlink(&mut storage, key);
-
-            let start = rdtscp();
-            list.link_back(&mut storage, key);
-            let elapsed = rdtscp() - start;
-            hist.record(elapsed).unwrap();
-
-            list.remove(&mut storage, key);
-        }
-
-        print_histogram("link_back", &hist);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_move_to_back() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(1024);
-        let mut list: List<Order, HashMapListStorage, u64> = List::new();
-        let mut hist = Histogram::<u64>::new(3).unwrap();
-
-        let mut keys = Vec::with_capacity(100);
-        for i in 0..100u64 {
-            let order = Order { id: i };
-            keys.push(order.id);
-            list.push_back_with_key(&mut storage, order.id, order);
-        }
-
-        for _ in 0..WARMUP {
-            list.move_to_back(&mut storage, keys[0]);
         }
 
         for i in 0..ITERATIONS {
-            let key = keys[i % 100];
             let start = rdtscp();
-            list.move_to_back(&mut storage, key);
+            let _ = list.push_back_entry(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_front(&mut storage);
+        }
+
+        print_histogram("push_back_entry", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_entry_get() {
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(1024);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Build a list of 1000 elements and collect entries
+        let mut entries = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            entries.push(list.push_back_entry(&mut storage, i as u64));
+        }
+
+        // Warmup
+        for _ in 0..WARMUP {
+            for entry in &entries {
+                std::hint::black_box(entry.get());
+            }
+        }
+
+        // Benchmark
+        for _ in 0..ITERATIONS {
+            let entry = &entries[500]; // Middle entry
+            let start = rdtscp();
+            let _ = std::hint::black_box(entry.get());
             let elapsed = rdtscp() - start;
             hist.record(elapsed).unwrap();
         }
 
-        print_histogram("move_to_back", &hist);
+        print_histogram("entry.get()", &hist);
     }
 
     #[test]
     #[ignore]
-    fn bench_list_order_queue_workflow() {
-        let mut storage: HashMapListStorage = HashMap::with_capacity(32);
-        let mut queue_a: List<Order, HashMapListStorage, u64> = List::new();
-        let mut queue_b: List<Order, HashMapListStorage, u64> = List::new();
+    fn bench_entry_get_mut() {
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(1024);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
 
-        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
-        let mut hist_move = Histogram::<u64>::new(3).unwrap();
-        let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
+        // Build a list of 1000 elements and collect entries
+        let mut entries = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            entries.push(list.push_back_entry(&mut storage, i as u64));
+        }
 
-        let mut id_counter = 0u64;
-
+        // Warmup
         for _ in 0..WARMUP {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-            let key = order.id;
-            queue_a.push_back_with_key(&mut storage, order.id, order);
-            queue_a.unlink(&mut storage, key);
-            queue_b.link_back(&mut storage, key);
-            queue_b.remove(&mut storage, key);
+            for entry in &entries {
+                std::hint::black_box(entry.get_mut());
+            }
         }
 
+        // Benchmark
         for _ in 0..ITERATIONS {
-            let order = Order { id: id_counter };
-            id_counter += 1;
-
+            let entry = &entries[500]; // Middle entry
             let start = rdtscp();
-            let key = order.id;
-            queue_a.push_back_with_key(&mut storage, order.id, order);
-            hist_insert.record(rdtscp() - start).unwrap();
-
-            let start = rdtscp();
-            queue_a.unlink(&mut storage, key);
-            queue_b.link_back(&mut storage, key);
-            hist_move.record(rdtscp() - start).unwrap();
-
-            let start = rdtscp();
-            queue_b.remove(&mut storage, key);
-            hist_cancel.record(rdtscp() - start).unwrap();
+            let _ = std::hint::black_box(entry.get_mut());
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
         }
 
-        println!("\n=== Order Queue Workflow (HashMap) ===");
-        print_histogram("insert (new order)", &hist_insert);
-        print_histogram("move (price amend)", &hist_move);
-        print_histogram("cancel", &hist_cancel);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_list_all() {
-        println!("\n=== List Benchmarks (HashMap) ===");
-        println!(
-            "Run with: cargo test --release bench_hashmap_storage::bench_list_all -- --ignored --nocapture\n"
-        );
-
-        bench_list_push_back();
-        bench_list_push_front();
-        bench_list_pop_front();
-        bench_list_pop_back();
-        bench_list_get();
-        bench_list_remove_middle();
-        bench_list_unlink();
-        bench_list_link_back();
-        bench_list_move_to_back();
-
-        println!();
-        bench_list_order_queue_workflow();
+        print_histogram("entry.get_mut()", &hist);
     }
 }
