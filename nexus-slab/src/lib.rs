@@ -164,7 +164,7 @@ pub use bounded::{BoundedSlab, UntrackedAccessor, VacantEntry};
 pub use unbounded::{Slab, SlabBuilder, SlabUntrackedAccessor, SlabVacantEntry};
 
 // =============================================================================
-// Free Function Type
+// Free Function Type & VTable
 // =============================================================================
 
 /// Function pointer type for returning a slot to its freelist.
@@ -172,6 +172,18 @@ pub use unbounded::{Slab, SlabBuilder, SlabUntrackedAccessor, SlabVacantEntry};
 /// Called by Entry on drop/remove. Only manages freelist - does not drop the value.
 /// The key identifies which slot, ctx points to slab-specific data.
 pub(crate) type FreeFn = unsafe fn(Key, *mut ());
+
+/// VTable for slot deallocation. Leaked once per slab.
+///
+/// Combines the context pointer and free function into a single indirection,
+/// reducing Entry size from 32 to 24 bytes.
+#[repr(C)]
+pub(crate) struct FreeSlotVTable {
+    /// Pointer to the slab's inner data (BoundedSlabInner or SlabInner).
+    pub inner: *mut (),
+    /// Function to return a slot to the freelist.
+    pub free_fn: FreeFn,
+}
 
 // =============================================================================
 // Entry (Unified RAII Handle)
@@ -185,11 +197,10 @@ pub(crate) type FreeFn = unsafe fn(Key, *mut ());
 ///
 /// # Size
 ///
-/// Entry is 32 bytes: slot ptr (8) + ctx (8) + free_fn (8) + key (4) + padding (4).
+/// Entry is 24 bytes: slot ptr (8) + vtable ptr (8) + key (4) + padding (4).
 pub struct Entry<T> {
     slot: *mut SlotCell<T>,
-    ctx: *mut (),
-    free_fn: FreeFn,
+    vtable: *const FreeSlotVTable,
     key: Key,
     _marker: PhantomData<T>,
 }
@@ -197,16 +208,10 @@ pub struct Entry<T> {
 impl<T> Entry<T> {
     /// Creates a new Entry. Internal use only.
     #[inline]
-    pub(crate) fn new(
-        slot: *mut SlotCell<T>,
-        ctx: *mut (),
-        free_fn: FreeFn,
-        key: Key,
-    ) -> Self {
+    pub(crate) fn new(slot: *mut SlotCell<T>, vtable: *const FreeSlotVTable, key: Key) -> Self {
         Self {
             slot,
-            ctx,
-            free_fn,
+            vtable,
             key,
             _marker: PhantomData,
         }
@@ -218,10 +223,10 @@ impl<T> Entry<T> {
         unsafe { &*self.slot }
     }
 
-    /// Returns the context pointer. Internal use only.
+    /// Returns the vtable pointer. Internal use only.
     #[inline]
-    pub(crate) fn ctx(&self) -> *mut () {
-        self.ctx
+    pub(crate) fn vtable(&self) -> *const FreeSlotVTable {
+        self.vtable
     }
 
     /// Returns the storage key.
@@ -492,7 +497,8 @@ impl<T> Entry<T> {
 
         // Mark slot vacant first (defensive - ensures Entry::drop would no-op)
         // SAFETY: free_fn only manages freelist, doesn't touch value
-        unsafe { (self.free_fn)(self.key, self.ctx) };
+        let vtable = unsafe { &*self.vtable };
+        unsafe { (vtable.free_fn)(self.key, vtable.inner) };
 
         // Read value out (bits still there in memory, slot is now vacant)
         let value = unsafe { (*slot.value.get()).assume_init_read() };
@@ -510,7 +516,8 @@ impl<T> Entry<T> {
     /// Slot must be valid and not borrowed.
     pub unsafe fn remove_unchecked(self) -> T {
         // Mark slot vacant first
-        unsafe { (self.free_fn)(self.key, self.ctx) };
+        let vtable = unsafe { &*self.vtable };
+        unsafe { (vtable.free_fn)(self.key, vtable.inner) };
 
         // Read value
         let value = unsafe { (*self.slot().value.get()).assume_init_read() };
@@ -533,7 +540,8 @@ impl<T> Drop for Entry<T> {
 
             // Return slot to freelist
             // SAFETY: free_fn only manages freelist
-            unsafe { (self.free_fn)(self.key, self.ctx) };
+            let vtable = unsafe { &*self.vtable };
+            unsafe { (vtable.free_fn)(self.key, vtable.inner) };
         }
     }
 }
@@ -911,7 +919,7 @@ mod tests {
 
     #[test]
     fn entry_size() {
-        // Entry should be 32 bytes: slot(8) + ctx(8) + free_fn(8) + key(4) + padding(4)
-        assert_eq!(std::mem::size_of::<Entry<u64>>(), 32);
+        // Entry should be 24 bytes: slot(8) + vtable(8) + key(4) + padding(4)
+        assert_eq!(std::mem::size_of::<Entry<u64>>(), 24);
     }
 }

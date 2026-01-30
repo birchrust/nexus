@@ -62,7 +62,7 @@ use std::mem::ManuallyDrop;
 use std::ops::{Index, IndexMut};
 
 use crate::shared::{SlotCell, SLOT_NONE};
-use crate::{CapacityError, Entry, Full, Key, Ref, RefMut};
+use crate::{CapacityError, Entry, FreeFn, FreeSlotVTable, Full, Key, Ref, RefMut};
 
 // =============================================================================
 // BoundedSlabInner
@@ -165,6 +165,7 @@ pub(crate) unsafe fn bounded_slab_free<T>(key: Key, ctx: *mut ()) {
 #[derive(Clone, Copy)]
 pub struct BoundedSlab<T> {
     pub(crate) ptr: *mut BoundedSlabInner<T>,
+    vtable: *const FreeSlotVTable,
     _marker: PhantomData<*mut ()>, // Ensures !Send + !Sync
 }
 
@@ -193,11 +194,25 @@ impl<T> BoundedSlab<T> {
     /// assert_eq!(slab.capacity(), 1024);
     /// ```
     pub fn leak(capacity: usize) -> Self {
-        let inner = Box::new(BoundedSlabInner::with_capacity(capacity as u32));
-        let ptr = Box::into_raw(inner);
+        // 1. Allocate uninit box and leak immediately to get stable address
+        let inner_uninit = Box::<BoundedSlabInner<T>>::new_uninit();
+        let inner_ptr = Box::into_raw(inner_uninit) as *mut BoundedSlabInner<T>;
+
+        // 2. Create and leak vtable (needs inner_ptr which is now valid forever)
+        let vtable = Box::leak(Box::new(FreeSlotVTable {
+            inner: inner_ptr as *mut (),
+            free_fn: bounded_slab_free::<T> as FreeFn,
+        }));
+
+        // 3. Initialize inner in place through the leaked pointer
+        let inner_data = BoundedSlabInner::with_capacity(capacity as u32);
+        unsafe {
+            inner_ptr.write(inner_data);
+        }
 
         Self {
-            ptr,
+            ptr: inner_ptr,
+            vtable,
             _marker: PhantomData,
         }
     }
@@ -259,12 +274,7 @@ impl<T> BoundedSlab<T> {
         slot.set_occupied();
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Ok(Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            bounded_slab_free::<T>,
-            Key::new(free_head),
-        ))
+        Ok(Entry::new(slot_ptr, self.vtable, Key::new(free_head)))
     }
 
     /// Inserts a value, panicking if full.
@@ -305,12 +315,7 @@ impl<T> BoundedSlab<T> {
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
         // Create entry (slot not yet occupied)
-        let entry = Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            bounded_slab_free::<T>,
-            Key::new(free_head),
-        );
+        let entry = Entry::new(slot_ptr, self.vtable, Key::new(free_head));
 
         // Call closure to get value
         let value = f(&entry);
@@ -356,6 +361,7 @@ impl<T> BoundedSlab<T> {
 
         Ok(VacantEntry {
             ptr: self.ptr,
+            vtable: self.vtable,
             key: Key::new(free_head),
             consumed: false,
             _marker: PhantomData,
@@ -448,12 +454,7 @@ impl<T> BoundedSlab<T> {
         }
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Some(Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            bounded_slab_free::<T>,
-            key,
-        ))
+        Some(Entry::new(slot_ptr, self.vtable, key))
     }
 
     /// Removes a value by key, bypassing RAII.
@@ -618,12 +619,7 @@ impl<T> BoundedSlab<T> {
         slot.set_occupied();
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            bounded_slab_free::<T>,
-            Key::new(free_head),
-        )
+        Entry::new(slot_ptr, self.vtable, Key::new(free_head))
     }
 
     /// Removes a value by key without bounds or occupancy checks.
@@ -709,6 +705,7 @@ impl<T> fmt::Debug for UntrackedAccessor<'_, T> {
 /// or drop to return the slot to the freelist.
 pub struct VacantEntry<T> {
     ptr: *mut BoundedSlabInner<T>,
+    vtable: *const FreeSlotVTable,
     key: Key,
     consumed: bool,
     _marker: PhantomData<T>,
@@ -742,12 +739,7 @@ impl<T> VacantEntry<T> {
 
         self.consumed = true;
 
-        Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            bounded_slab_free::<T>,
-            self.key,
-        )
+        Entry::new(slot_ptr, self.vtable, self.key)
     }
 }
 
@@ -799,8 +791,13 @@ impl<T> Entry<T> {
 
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
+        // Get ptr from vtable
+        let vtable = self.vtable();
+        let ptr = unsafe { (*vtable).inner as *mut BoundedSlabInner<T> };
+
         let vacant = VacantEntry {
-            ptr: self.ctx() as *mut BoundedSlabInner<T>,
+            ptr,
+            vtable,
             key: self.key(),
             consumed: false,
             _marker: PhantomData,
@@ -822,8 +819,13 @@ impl<T> Entry<T> {
 
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
+        // Get ptr from vtable
+        let vtable = self.vtable();
+        let ptr = unsafe { (*vtable).inner as *mut BoundedSlabInner<T> };
+
         let vacant = VacantEntry {
-            ptr: self.ctx() as *mut BoundedSlabInner<T>,
+            ptr,
+            vtable,
             key: self.key(),
             consumed: false,
             _marker: PhantomData,
@@ -989,8 +991,8 @@ mod tests {
 
     #[test]
     fn entry_size() {
-        // Entry is 32 bytes: slot ptr (8) + ctx (8) + free_fn (8) + key (4) + padding (4)
-        assert_eq!(std::mem::size_of::<Entry<u64>>(), 32);
+        // Entry is 24 bytes: slot ptr (8) + vtable ptr (8) + key (4) + padding (4)
+        assert_eq!(std::mem::size_of::<Entry<u64>>(), 24);
     }
 
     #[test]

@@ -49,7 +49,7 @@ use std::ops::{Index, IndexMut};
 
 use crate::bounded::BoundedSlabInner;
 use crate::shared::{SlotCell, SLOT_NONE};
-use crate::{Entry, Key, Ref, RefMut};
+use crate::{Entry, FreeFn, FreeSlotVTable, Key, Ref, RefMut};
 
 // =============================================================================
 // Constants
@@ -290,6 +290,7 @@ impl<T> SlabInner<T> {
 #[derive(Clone, Copy)]
 pub struct Slab<T> {
     ptr: *mut SlabInner<T>,
+    vtable: *const FreeSlotVTable,
     _marker: PhantomData<*mut ()>, // Ensures !Send + !Sync
 }
 
@@ -328,11 +329,25 @@ impl<T> Slab<T> {
     ///
     /// Chunk capacity is rounded up to the next power of two.
     fn with_chunk_capacity(chunk_capacity: usize) -> Self {
-        let inner = Box::new(SlabInner::with_chunk_capacity(chunk_capacity));
-        let ptr = Box::into_raw(inner);
+        // 1. Allocate uninit box and leak immediately to get stable address
+        let inner_uninit = Box::<SlabInner<T>>::new_uninit();
+        let inner_ptr = Box::into_raw(inner_uninit) as *mut SlabInner<T>;
+
+        // 2. Create and leak vtable (needs inner_ptr which is now valid forever)
+        let vtable = Box::leak(Box::new(FreeSlotVTable {
+            inner: inner_ptr as *mut (),
+            free_fn: unbounded_slab_free::<T> as FreeFn,
+        }));
+
+        // 3. Initialize inner in place through the leaked pointer
+        let inner_data = SlabInner::with_chunk_capacity(chunk_capacity);
+        unsafe {
+            inner_ptr.write(inner_data);
+        }
 
         Self {
-            ptr,
+            ptr: inner_ptr,
+            vtable,
             _marker: PhantomData,
         }
     }
@@ -409,12 +424,7 @@ impl<T> Slab<T> {
         let global_idx = inner.encode(chunk_idx, free_head);
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            unbounded_slab_free::<T>,
-            Key::new(global_idx),
-        )
+        Entry::new(slot_ptr, self.vtable, Key::new(global_idx))
     }
 
     /// Inserts with access to the entry before the value exists.
@@ -448,12 +458,7 @@ impl<T> Slab<T> {
         let global_idx = inner.encode(chunk_idx, free_head);
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        let entry = Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            unbounded_slab_free::<T>,
-            Key::new(global_idx),
-        );
+        let entry = Entry::new(slot_ptr, self.vtable, Key::new(global_idx));
 
         let value = f(&entry);
 
@@ -493,12 +498,7 @@ impl<T> Slab<T> {
         }
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Some(Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            unbounded_slab_free::<T>,
-            key,
-        ))
+        Some(Entry::new(slot_ptr, self.vtable, key))
     }
 
     /// Reserves a slot without filling it, returning a [`SlabVacantEntry`].
@@ -534,6 +534,7 @@ impl<T> Slab<T> {
 
         SlabVacantEntry {
             ptr: self.ptr,
+            vtable: self.vtable,
             key: Key::new(global_idx),
             chunk_idx,
             local_idx: free_head,
@@ -879,6 +880,7 @@ impl<T> fmt::Debug for Slab<T> {
 /// or drop to return the slot to the freelist.
 pub struct SlabVacantEntry<T> {
     ptr: *mut SlabInner<T>,
+    vtable: *const FreeSlotVTable,
     key: Key,
     chunk_idx: u32,
     local_idx: u32,
@@ -919,12 +921,7 @@ impl<T> SlabVacantEntry<T> {
 
         self.consumed = true;
 
-        Entry::new(
-            slot_ptr,
-            self.ptr as *mut (),
-            unbounded_slab_free::<T>,
-            self.key,
-        )
+        Entry::new(slot_ptr, self.vtable, self.key)
     }
 }
 
