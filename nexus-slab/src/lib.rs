@@ -18,19 +18,19 @@
 //!
 //! | Operation | BoundedSlab | slab crate | Notes |
 //! |-----------|-------------|------------|-------|
-//! | INSERT p50 | ~20 cycles | ~22 cycles | 2 cycles faster |
-//! | GET p50 | ~24 cycles | ~26 cycles | 2 cycles faster |
-//! | REMOVE p50 | ~24 cycles | ~30 cycles | 6 cycles faster |
+//! | INSERT p50 | ~22 cycles | ~24 cycles | Comparable |
+//! | GET p50 | ~22 cycles | ~28 cycles | 21% faster (unchecked) |
+//! | REMOVE p50 | ~30 cycles | ~34 cycles | 12% faster |
 //!
 //! ## Slab (growable)
 //!
-//! Steady-state p50 matches `slab` crate (~22-32 cycles depending on operation).
+//! Steady-state p50 matches `slab` crate (~30-40 cycles depending on operation).
 //! The win is tail latency during growth:
 //!
 //! | Metric | Slab | slab crate | Notes |
 //! |--------|------|------------|-------|
-//! | Growth p999 | ~40 cycles | ~2000+ cycles | 50x better |
-//! | Growth max | ~70K cycles | ~1.5M cycles | 20x better |
+//! | Growth p999 | ~64 cycles | ~2700+ cycles | 43x better |
+//! | Growth max | ~230K cycles | ~2.7M cycles | 12x better |
 //!
 //! `Slab` adds chunks independently—no copying. `slab` crate uses `Vec`,
 //! which copies all existing data on reallocation.
@@ -54,10 +54,10 @@
 //! ```text
 //! BoundedSlab (single contiguous allocation):
 //! ┌─────────────────────────────────────────────┐
-//! │ Slot 0: [tag: u32][value: T]                │
-//! │ Slot 1: [tag: u32][value: T]                │
+//! │ Slot 0: [stamp: u64][value: T]              │
+//! │ Slot 1: [stamp: u64][value: T]              │
 //! │ ...                                         │
-//! │ Slot N: [tag: u32][value: T]                │
+//! │ Slot N: [stamp: u64][value: T]              │
 //! └─────────────────────────────────────────────┘
 //!
 //! Slab (multiple independent chunks):
@@ -799,8 +799,8 @@ impl Key {
 
     /// Returns the slot index.
     ///
-    /// For [`BoundedSlab`](crate::BoundedSlab), this is the direct slot index.
-    /// For [`Slab`](crate::Slab), this encodes slab and local index via
+    /// For [`BoundedSlab`], this is the direct slot index.
+    /// For [`Slab`], this encodes slab and local index via
     /// power-of-2 arithmetic.
     #[inline]
     pub const fn index(self) -> u32 {
