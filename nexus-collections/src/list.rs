@@ -114,7 +114,7 @@ use std::marker::PhantomData;
 use nexus_slab::Key as NexusKey;
 
 use crate::storage::{
-    BoundedListStorageOps, Full, GrowableListStorageOps, ListNode, ListStorageOps,
+    BoundedListStorageOps, Full, GrowableListStorageOps, ListEntry, ListNode, ListStorageOps,
 };
 
 /// A doubly-linked list over external storage.
@@ -856,6 +856,124 @@ where
         self.link_before(storage, before, key);
         Ok(key)
     }
+
+    // =========================================================================
+    // Entry-returning methods
+    // =========================================================================
+
+    /// Pushes a value to the back of the list, returning an entry handle.
+    ///
+    /// Like [`try_push_back`](List::try_push_back) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Full(value))` if storage is full.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, ListStorage};
+    ///
+    /// let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
+    /// let mut list: List<u64, ListStorage<u64>> = List::new();
+    ///
+    /// let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+    /// assert_eq!(*entry.get(), 42);
+    /// ```
+    #[inline]
+    pub fn try_push_back_entry(
+        &mut self,
+        storage: &mut S,
+        value: T,
+    ) -> Result<ListEntry<T>, Full<T>> {
+        let key = self.try_push_back(storage, value)?;
+        Ok(storage.entry(key).expect("just inserted"))
+    }
+
+    /// Pushes a value to the front of the list, returning an entry handle.
+    ///
+    /// Like [`try_push_front`](List::try_push_front) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Full(value))` if storage is full.
+    #[inline]
+    pub fn try_push_front_entry(
+        &mut self,
+        storage: &mut S,
+        value: T,
+    ) -> Result<ListEntry<T>, Full<T>> {
+        let key = self.try_push_front(storage, value)?;
+        Ok(storage.entry(key).expect("just inserted"))
+    }
+
+    /// Pushes a value to the back with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityError)` if storage is full.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, ListStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// struct Order {
+    ///     id: u64,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// let mut storage: ListStorage<Order> = ListStorage::with_capacity(100);
+    /// let mut list: List<Order, ListStorage<Order>> = List::new();
+    ///
+    /// let entry = list.try_push_back_with(&mut storage, |e| Order {
+    ///     id: 1,
+    ///     self_key: e.key(),
+    /// }).unwrap();
+    ///
+    /// assert_eq!(entry.get().self_key, entry.key());
+    /// ```
+    #[inline]
+    pub fn try_push_back_with<F>(
+        &mut self,
+        storage: &mut S,
+        f: F,
+    ) -> Result<ListEntry<T>, nexus_slab::CapacityError>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f)?;
+        let key = entry.key();
+        self.link_back(storage, key);
+        Ok(entry)
+    }
+
+    /// Pushes a value to the front with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityError)` if storage is full.
+    #[inline]
+    pub fn try_push_front_with<F>(
+        &mut self,
+        storage: &mut S,
+        f: F,
+    ) -> Result<ListEntry<T>, nexus_slab::CapacityError>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f)?;
+        let key = entry.key();
+        self.link_front(storage, key);
+        Ok(entry)
+    }
 }
 
 // =============================================================================
@@ -912,6 +1030,92 @@ where
         let key = storage.insert_node(ListNode::new(value));
         self.link_before(storage, before, key);
         key
+    }
+
+    // =========================================================================
+    // Entry-returning methods
+    // =========================================================================
+
+    /// Pushes a value to the back of the list, returning an entry handle.
+    ///
+    /// Like [`push_back`](List::push_back) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, GrowableListStorage};
+    ///
+    /// let mut storage: GrowableListStorage<u64> = GrowableListStorage::new();
+    /// let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+    ///
+    /// let entry = list.push_back_entry(&mut storage, 42);
+    /// assert_eq!(*entry.get(), 42);
+    /// ```
+    #[inline]
+    pub fn push_back_entry(&mut self, storage: &mut S, value: T) -> ListEntry<T> {
+        let key = self.push_back(storage, value);
+        storage.entry(key).expect("just inserted")
+    }
+
+    /// Pushes a value to the front of the list, returning an entry handle.
+    ///
+    /// Like [`push_front`](List::push_front) but returns a [`ListEntry`]
+    /// for direct value access without key lookups.
+    #[inline]
+    pub fn push_front_entry(&mut self, storage: &mut S, value: T) -> ListEntry<T> {
+        let key = self.push_front(storage, value);
+        storage.entry(key).expect("just inserted")
+    }
+
+    /// Pushes a value to the back with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{List, GrowableListStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// struct Order {
+    ///     id: u64,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// let mut storage: GrowableListStorage<Order> = GrowableListStorage::new();
+    /// let mut list: List<Order, GrowableListStorage<Order>> = List::new();
+    ///
+    /// let entry = list.push_back_with(&mut storage, |e| Order {
+    ///     id: 1,
+    ///     self_key: e.key(),
+    /// });
+    ///
+    /// assert_eq!(entry.get().self_key, entry.key());
+    /// ```
+    #[inline]
+    pub fn push_back_with<F>(&mut self, storage: &mut S, f: F) -> ListEntry<T>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f);
+        let key = entry.key();
+        self.link_back(storage, key);
+        entry
+    }
+
+    /// Pushes a value to the front with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    #[inline]
+    pub fn push_front_with<F>(&mut self, storage: &mut S, f: F) -> ListEntry<T>
+    where
+        F: FnOnce(ListEntry<T>) -> T,
+    {
+        let entry = storage.insert_with(f);
+        let key = entry.key();
+        self.link_front(storage, key);
+        entry
     }
 }
 
@@ -1291,7 +1495,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ListStorage;
+    use crate::{GrowableListStorage, ListStorage};
 
     #[test]
     fn new_list_is_empty() {
@@ -1977,6 +2181,238 @@ mod tests {
         let Full(val) = result.unwrap_err();
         assert_eq!(val, 3);
     }
+
+    // ========================================================================
+    // Entry API Tests
+    // ========================================================================
+
+    #[test]
+    fn try_push_back_entry_basic() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(*entry.get(), 42);
+        assert!(entry.is_valid());
+    }
+
+    #[test]
+    fn try_push_front_entry_basic() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        list.try_push_back_entry(&mut storage, 1).unwrap();
+        let entry = list.try_push_front_entry(&mut storage, 2).unwrap();
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(*entry.get(), 2);
+        assert_eq!(list.front(&storage), Some(&2));
+    }
+
+    #[test]
+    fn entry_clone() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+        let cloned = entry.clone();
+
+        assert_eq!(entry.key(), cloned.key());
+        assert_eq!(*cloned.get(), 42);
+    }
+
+    #[test]
+    fn entry_mutation() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+        *entry.get_mut() = 100;
+
+        assert_eq!(*entry.get(), 100);
+        assert_eq!(list.front(&storage), Some(&100));
+    }
+
+    #[test]
+    fn push_back_entry_growable() {
+        let mut storage = GrowableListStorage::new();
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.push_back_entry(&mut storage, 42);
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(*entry.get(), 42);
+    }
+
+    #[test]
+    fn push_front_entry_growable() {
+        let mut storage = GrowableListStorage::new();
+        let mut list: List<u64, _> = List::new();
+
+        list.push_back_entry(&mut storage, 1);
+        let entry = list.push_front_entry(&mut storage, 2);
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(*entry.get(), 2);
+        assert_eq!(list.front(&storage), Some(&2));
+    }
+
+    #[test]
+    fn link_from_vacant() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        // Insert directly to storage via vacant
+        let vacant = storage.vacant().unwrap();
+        let entry = vacant.insert(42);
+
+        // Not in list yet
+        assert!(list.is_empty());
+
+        // Link into list
+        list.link_back(&mut storage, entry.key());
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.front(&storage), Some(&42));
+    }
+
+    #[test]
+    fn link_from_insert_with() {
+        struct Order {
+            id: u64,
+            self_key: NexusKey,
+        }
+
+        let mut storage: ListStorage<Order> = ListStorage::with_capacity(16);
+        let mut list: List<Order, _> = List::new();
+
+        // Create self-referential item
+        let entry = storage
+            .insert_with(|e| Order {
+                id: 42,
+                self_key: e.key(),
+            })
+            .unwrap();
+
+        // Verify self-reference
+        assert_eq!(entry.get().self_key, entry.key());
+
+        // Link into list
+        list.link_back(&mut storage, entry.key());
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.front(&storage).unwrap().id, 42);
+    }
+
+    #[test]
+    fn try_push_back_with_self_referential() {
+        struct Order {
+            id: u64,
+            self_key: NexusKey,
+        }
+
+        let mut storage: ListStorage<Order> = ListStorage::with_capacity(16);
+        let mut list: List<Order, _> = List::new();
+
+        let entry = list
+            .try_push_back_with(&mut storage, |e| Order {
+                id: 100,
+                self_key: e.key(),
+            })
+            .unwrap();
+
+        // Verify self-reference and list membership
+        assert_eq!(entry.get().self_key, entry.key());
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.front(&storage).unwrap().id, 100);
+    }
+
+    #[test]
+    fn push_back_with_self_referential() {
+        #[allow(dead_code)]
+        struct Order {
+            id: u64,
+            self_key: NexusKey,
+        }
+
+        let mut storage: GrowableListStorage<Order> = GrowableListStorage::new();
+        let mut list: List<Order, _> = List::new();
+
+        let entry = list.push_back_with(&mut storage, |e| Order {
+            id: 100,
+            self_key: e.key(),
+        });
+
+        assert_eq!(entry.get().self_key, entry.key());
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn entry_becomes_invalid_after_remove() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+        assert!(entry.is_valid());
+
+        list.remove(&mut storage, entry.key());
+        assert!(!entry.is_valid());
+        assert!(entry.try_get().is_none());
+    }
+
+    #[test]
+    fn entry_try_methods() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let entry = list.try_push_back_entry(&mut storage, 42).unwrap();
+
+        // try_get works
+        assert_eq!(*entry.try_get().unwrap(), 42);
+
+        // try_get_mut works
+        *entry.try_get_mut().unwrap() = 100;
+        assert_eq!(*entry.get(), 100);
+    }
+
+    #[test]
+    fn multiple_entries_order() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list: List<u64, _> = List::new();
+
+        let e1 = list.try_push_back_entry(&mut storage, 1).unwrap();
+        let e2 = list.try_push_back_entry(&mut storage, 2).unwrap();
+        let e3 = list.try_push_back_entry(&mut storage, 3).unwrap();
+
+        // Entries maintain their values
+        assert_eq!(*e1.get(), 1);
+        assert_eq!(*e2.get(), 2);
+        assert_eq!(*e3.get(), 3);
+
+        // List order is correct
+        assert_eq!(list.pop_front(&mut storage), Some(1));
+        assert_eq!(list.pop_front(&mut storage), Some(2));
+        assert_eq!(list.pop_front(&mut storage), Some(3));
+    }
+
+    #[test]
+    fn move_between_lists_with_entry() {
+        let mut storage = ListStorage::with_capacity(16);
+        let mut list_a: List<u64, _> = List::new();
+        let mut list_b: List<u64, _> = List::new();
+
+        let entry = list_a.try_push_back_entry(&mut storage, 42).unwrap();
+
+        // Move to list_b - entry still valid
+        list_a.unlink(&mut storage, entry.key());
+        list_b.link_back(&mut storage, entry.key());
+
+        assert!(list_a.is_empty());
+        assert_eq!(list_b.len(), 1);
+        assert_eq!(*entry.get(), 42);
+    }
 }
 
 #[cfg(test)]
@@ -2641,5 +3077,104 @@ mod bench_nexus_slab_storage {
 
         println!();
         bench_list_order_queue_workflow();
+
+        println!("\n=== Entry API Comparison ===");
+        bench_push_back_entry();
+        bench_entry_get();
+        bench_entry_get_mut();
+    }
+
+    // =========================================================================
+    // Entry API Benchmarks
+    // =========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_push_back_entry() {
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.push_back_entry(&mut storage, 1);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.push_back_entry(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_front(&mut storage);
+        }
+
+        print_histogram("push_back_entry", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_entry_get() {
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(1024);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Build a list of 1000 elements and collect entries
+        let mut entries = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            entries.push(list.push_back_entry(&mut storage, i as u64));
+        }
+
+        // Warmup
+        for _ in 0..WARMUP {
+            for entry in &entries {
+                std::hint::black_box(entry.get());
+            }
+        }
+
+        // Benchmark
+        for _ in 0..ITERATIONS {
+            let entry = &entries[500]; // Middle entry
+            let start = rdtscp();
+            let _ = std::hint::black_box(entry.get());
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("entry.get()", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_entry_get_mut() {
+        let mut storage: GrowableListStorage<u64> =
+            GrowableListStorage::with_capacity(1024);
+        let mut list: List<u64, GrowableListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Build a list of 1000 elements and collect entries
+        let mut entries = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            entries.push(list.push_back_entry(&mut storage, i as u64));
+        }
+
+        // Warmup
+        for _ in 0..WARMUP {
+            for entry in &entries {
+                std::hint::black_box(entry.get_mut());
+            }
+        }
+
+        // Benchmark
+        for _ in 0..ITERATIONS {
+            let entry = &entries[500]; // Middle entry
+            let start = rdtscp();
+            let _ = std::hint::black_box(entry.get_mut());
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("entry.get_mut()", &hist);
     }
 }

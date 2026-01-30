@@ -67,6 +67,72 @@
 //! assert_eq!(queue_b.get(&storage, key), Some(&42));
 //! ```
 //!
+//! # Entry API
+//!
+//! For ergonomic workflows, use the Entry API. Entries are cloneable handles
+//! that provide direct access to values without key lookups.
+//!
+//! ```
+//! use nexus_collections::{Heap, HeapStorage};
+//! use std::collections::HashMap;
+//!
+//! #[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+//! struct Task { priority: i32, id: u64 }
+//!
+//! let mut storage: HeapStorage<Task> = HeapStorage::with_capacity(100);
+//! let mut heap: Heap<Task, HeapStorage<Task>> = Heap::new();
+//! let mut cache: HashMap<u64, nexus_collections::HeapEntry<Task>> = HashMap::new();
+//!
+//! // Insert and cache entry
+//! let entry = heap.try_push_entry(&mut storage, Task { priority: 10, id: 1 }).unwrap();
+//! cache.insert(1, entry.clone());
+//!
+//! // Later: direct access through cached entry
+//! let entry = cache.get(&1).unwrap();
+//! assert_eq!(entry.get().priority, 10);
+//! ```
+//!
+//! ## Self-Referential Patterns
+//!
+//! Use `insert_with` or `vacant` when values need to know their own storage key:
+//!
+//! ```
+//! use nexus_collections::{Heap, HeapStorage};
+//! use nexus_slab::Key as NexusKey;
+//!
+//! struct Timer {
+//!     deadline: u64,
+//!     self_key: NexusKey,  // Knows its own location
+//! }
+//!
+//! // Heap ordering by deadline only
+//! impl Ord for Timer {
+//!     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+//!         self.deadline.cmp(&other.deadline)
+//!     }
+//! }
+//! impl PartialOrd for Timer {
+//!     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//!         Some(self.cmp(other))
+//!     }
+//! }
+//! impl PartialEq for Timer {
+//!     fn eq(&self, other: &Self) -> bool { self.deadline == other.deadline }
+//! }
+//! impl Eq for Timer {}
+//!
+//! let mut storage: HeapStorage<Timer> = HeapStorage::with_capacity(100);
+//! let mut heap: Heap<Timer, HeapStorage<Timer>> = Heap::new();
+//!
+//! // Closure receives entry before value exists
+//! let entry = heap.try_push_with(&mut storage, |e| Timer {
+//!     deadline: 1000,
+//!     self_key: e.key(),
+//! }).unwrap();
+//!
+//! assert_eq!(entry.get().self_key, entry.key());
+//! ```
+//!
 //! # Critical Invariant: Same Storage Instance
 //!
 //! All operations on a list must use the same storage instance.
@@ -130,6 +196,8 @@ pub use heap::Heap;
 pub use list::List;
 pub use skiplist::{Entry, OccupiedEntry, SkipList, VacantEntry};
 pub use storage::{
-    Full, GrowableHeapStorage, GrowableListStorage, GrowableSkipStorage, HeapNode, HeapStorage,
-    ListNode, ListStorage, SkipNode, SkipStorage,
+    Full, GrowableHeapStorage, GrowableHeapVacant, GrowableListStorage, GrowableListVacant,
+    GrowableSkipStorage, GrowableSkipVacant, HeapEntry, HeapNode, HeapRef, HeapRefMut, HeapStorage,
+    HeapVacant, ListEntry, ListNode, ListRef, ListRefMut, ListStorage, ListVacant, SkipEntry,
+    SkipNode, SkipRef, SkipRefMut, SkipStorage, SkipVacant,
 };

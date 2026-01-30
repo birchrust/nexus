@@ -33,16 +33,16 @@ mod skip;
 
 // Re-export specialized storage types
 pub use heap::{
-    BoundedHeapStorageOps, GrowableHeapStorage, GrowableHeapStorageOps, HeapNode, HeapStorage,
-    HeapStorageOps,
+    BoundedHeapStorageOps, GrowableHeapStorage, GrowableHeapStorageOps, GrowableHeapVacant,
+    HeapEntry, HeapNode, HeapRef, HeapRefMut, HeapStorage, HeapStorageOps, HeapVacant,
 };
 pub use list::{
-    BoundedListStorageOps, GrowableListStorage, GrowableListStorageOps, ListNode, ListStorage,
-    ListStorageOps,
+    BoundedListStorageOps, GrowableListStorage, GrowableListStorageOps, GrowableListVacant,
+    ListEntry, ListNode, ListRef, ListRefMut, ListStorage, ListStorageOps, ListVacant,
 };
 pub use skip::{
-    BoundedSkipStorageOps, GrowableSkipStorage, GrowableSkipStorageOps, SkipNode, SkipStorage,
-    SkipStorageOps,
+    BoundedSkipStorageOps, GrowableSkipStorage, GrowableSkipStorageOps, GrowableSkipVacant,
+    SkipEntry, SkipNode, SkipRef, SkipRefMut, SkipStorage, SkipStorageOps, SkipVacant,
 };
 
 // Internal exports for crate use

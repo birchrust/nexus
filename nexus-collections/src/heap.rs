@@ -38,7 +38,8 @@
 use std::{cmp::Ordering, marker::PhantomData};
 
 use crate::storage::{
-    BoundedHeapStorageOps, Full, GrowableHeapStorageOps, HEAP_POS_NONE, HeapNode, HeapStorageOps,
+    BoundedHeapStorageOps, Full, GrowableHeapStorageOps, HEAP_POS_NONE, HeapEntry, HeapNode,
+    HeapStorageOps,
 };
 #[cfg(test)]
 use crate::storage::{GrowableHeapStorage, HeapStorage};
@@ -238,6 +239,87 @@ impl<T: Ord, S: HeapStorageOps<T>> Heap<T, S> {
         if heap_pos != HEAP_POS_NONE {
             self.sift_update(storage, heap_pos);
         }
+    }
+
+    /// Restores heap property after changing an element's priority.
+    ///
+    /// Alias for [`update_key`](Heap::update_key) with a more intuitive name
+    /// when working with heap entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `storage_key` is not in the heap (debug builds only).
+    #[inline]
+    pub fn update(&mut self, storage: &mut S, storage_key: NexusKey) {
+        self.update_key(storage, storage_key);
+    }
+
+    /// Links a storage entry into the heap.
+    ///
+    /// Use this after inserting an entry via [`HeapStorage::vacant()`] or
+    /// [`HeapStorage::insert_with()`]. The entry must exist in storage but
+    /// NOT already be in this heap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The key is invalid (not in storage)
+    /// - The key is already in a heap (debug builds only)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{Heap, HeapStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// struct Task {
+    ///     priority: i32,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// impl Ord for Task {
+    ///     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    ///         self.priority.cmp(&other.priority)
+    ///     }
+    /// }
+    /// impl PartialOrd for Task {
+    ///     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    ///         Some(self.cmp(other))
+    ///     }
+    /// }
+    /// impl PartialEq for Task {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         self.priority == other.priority
+    ///     }
+    /// }
+    /// impl Eq for Task {}
+    ///
+    /// let mut storage: HeapStorage<Task> = HeapStorage::with_capacity(100);
+    /// let mut heap: Heap<Task, HeapStorage<Task>> = Heap::new();
+    ///
+    /// // Create self-referential value
+    /// let entry = storage.insert_with(|e| Task {
+    ///     priority: 10,
+    ///     self_key: e.key(),
+    /// }).unwrap();
+    ///
+    /// // Link into heap
+    /// heap.link(&mut storage, entry.key());
+    /// assert_eq!(heap.len(), 1);
+    /// ```
+    #[inline]
+    pub fn link(&mut self, storage: &mut S, storage_key: NexusKey) {
+        let node = storage
+            .get_node_mut(storage_key)
+            .expect("invalid storage key");
+        debug_assert!(node.heap_pos == HEAP_POS_NONE, "key already in heap");
+
+        let heap_pos = self.indices.len();
+        node.heap_pos = heap_pos;
+        self.indices.push(storage_key);
+
+        // Restore heap property
+        self.sift_up(storage, heap_pos);
     }
 
     /// Returns `true` if the storage key is currently in the heap.
@@ -516,6 +598,100 @@ impl<T: Ord, S: BoundedHeapStorageOps<T>> Heap<T, S> {
 
         Ok(storage_key)
     }
+
+    /// Pushes a value onto the heap, returning an entry handle.
+    ///
+    /// Like [`try_push`](Heap::try_push) but returns a [`HeapEntry`] for
+    /// direct value access without key lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Full(value))` if storage is full.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{Heap, HeapStorage};
+    ///
+    /// let mut storage: HeapStorage<u64> = HeapStorage::with_capacity(100);
+    /// let mut heap: Heap<u64, HeapStorage<u64>> = Heap::new();
+    ///
+    /// let entry = heap.try_push_entry(&mut storage, 42).unwrap();
+    /// assert_eq!(*entry.get(), 42);
+    ///
+    /// // Entry can be cloned for caching
+    /// let cached = entry.clone();
+    /// assert_eq!(*cached.get(), 42);
+    /// ```
+    #[inline]
+    pub fn try_push_entry(&mut self, storage: &mut S, value: T) -> Result<HeapEntry<T>, Full<T>> {
+        let key = self.try_push(storage, value)?;
+        // SAFETY: We just inserted this key, so it's valid.
+        // Storage entry() uses interior mutability for tracking.
+        Ok(storage.entry(key).expect("just inserted"))
+    }
+
+    /// Pushes a value with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    /// The closure receives a [`HeapEntry`] that will point to the value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityError)` if storage is full. The closure is not
+    /// called in this case.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{Heap, HeapStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// #[derive(Eq, PartialEq)]
+    /// struct Task {
+    ///     priority: i32,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// impl Ord for Task {
+    ///     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    ///         self.priority.cmp(&other.priority)
+    ///     }
+    /// }
+    /// impl PartialOrd for Task {
+    ///     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    ///         Some(self.cmp(other))
+    ///     }
+    /// }
+    ///
+    /// let mut storage: HeapStorage<Task> = HeapStorage::with_capacity(100);
+    /// let mut heap: Heap<Task, HeapStorage<Task>> = Heap::new();
+    ///
+    /// let entry = heap.try_push_with(&mut storage, |e| Task {
+    ///     priority: 10,
+    ///     self_key: e.key(),
+    /// }).unwrap();
+    ///
+    /// assert_eq!(entry.get().self_key, entry.key());
+    /// ```
+    #[inline]
+    pub fn try_push_with<F>(
+        &mut self,
+        storage: &mut S,
+        f: F,
+    ) -> Result<HeapEntry<T>, nexus_slab::CapacityError>
+    where
+        F: FnOnce(HeapEntry<T>) -> T,
+    {
+        // Insert into storage with self-referential pattern
+        let entry = storage.insert_with(f)?;
+        let key = entry.key();
+
+        // Link into heap
+        self.link(storage, key);
+
+        Ok(entry)
+    }
 }
 
 // =============================================================================
@@ -541,6 +717,82 @@ impl<T: Ord, S: GrowableHeapStorageOps<T>> Heap<T, S> {
         self.sift_up(storage, heap_pos);
 
         storage_key
+    }
+
+    /// Pushes a value onto the heap, returning an entry handle.
+    ///
+    /// Like [`push`](Heap::push) but returns a [`HeapEntry`] for
+    /// direct value access without key lookups.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{Heap, GrowableHeapStorage};
+    ///
+    /// let mut storage: GrowableHeapStorage<u64> = GrowableHeapStorage::new();
+    /// let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::new();
+    ///
+    /// let entry = heap.push_entry(&mut storage, 42);
+    /// assert_eq!(*entry.get(), 42);
+    /// ```
+    #[inline]
+    pub fn push_entry(&mut self, storage: &mut S, value: T) -> HeapEntry<T> {
+        let key = self.push(storage, value);
+        // SAFETY: We just inserted this key, so it's valid.
+        storage.entry(key).expect("just inserted")
+    }
+
+    /// Pushes a value with access to the entry before it exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    /// The closure receives a [`HeapEntry`] that will point to the value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_collections::{Heap, GrowableHeapStorage};
+    /// use nexus_slab::Key as NexusKey;
+    ///
+    /// #[derive(Eq, PartialEq)]
+    /// struct Task {
+    ///     priority: i32,
+    ///     self_key: NexusKey,
+    /// }
+    ///
+    /// impl Ord for Task {
+    ///     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    ///         self.priority.cmp(&other.priority)
+    ///     }
+    /// }
+    /// impl PartialOrd for Task {
+    ///     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    ///         Some(self.cmp(other))
+    ///     }
+    /// }
+    ///
+    /// let mut storage: GrowableHeapStorage<Task> = GrowableHeapStorage::new();
+    /// let mut heap: Heap<Task, GrowableHeapStorage<Task>> = Heap::new();
+    ///
+    /// let entry = heap.push_with(&mut storage, |e| Task {
+    ///     priority: 10,
+    ///     self_key: e.key(),
+    /// });
+    ///
+    /// assert_eq!(entry.get().self_key, entry.key());
+    /// ```
+    #[inline]
+    pub fn push_with<F>(&mut self, storage: &mut S, f: F) -> HeapEntry<T>
+    where
+        F: FnOnce(HeapEntry<T>) -> T,
+    {
+        // Insert into storage with self-referential pattern
+        let entry = storage.insert_with(f);
+        let key = entry.key();
+
+        // Link into heap
+        self.link(storage, key);
+
+        entry
     }
 }
 
@@ -1409,6 +1661,251 @@ mod tests {
         assert_eq!(heap.pop(&mut storage).unwrap().name, "medium");
         assert_eq!(heap.pop(&mut storage).unwrap().name, "low");
     }
+
+    // ========================================================================
+    // Entry API Tests
+    // ========================================================================
+
+    #[test]
+    fn try_push_entry_basic() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let entry = heap.try_push_entry(&mut storage, 42).unwrap();
+
+        assert_eq!(heap.len(), 1);
+        assert_eq!(*entry.get(), 42);
+        assert!(entry.is_valid());
+    }
+
+    #[test]
+    fn try_push_entry_clone() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let entry = heap.try_push_entry(&mut storage, 42).unwrap();
+        let cloned = entry.clone();
+
+        assert_eq!(entry.key(), cloned.key());
+        assert_eq!(*cloned.get(), 42);
+    }
+
+    #[test]
+    fn try_push_entry_mutation() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        heap.try_push_entry(&mut storage, 10).unwrap();
+        let entry = heap.try_push_entry(&mut storage, 20).unwrap();
+        heap.try_push_entry(&mut storage, 30).unwrap();
+
+        // Mutate to become new minimum
+        *entry.get_mut() = 5;
+        heap.update(&mut storage, entry.key());
+
+        assert_eq!(heap.peek(&storage), Some(&5));
+    }
+
+    #[test]
+    fn push_entry_growable() {
+        let mut storage = GrowableHeapStorage::new();
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let entry = heap.push_entry(&mut storage, 42);
+
+        assert_eq!(heap.len(), 1);
+        assert_eq!(*entry.get(), 42);
+    }
+
+    #[test]
+    fn link_from_vacant() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        // Insert directly to storage via vacant
+        let vacant = storage.vacant().unwrap();
+        let entry = vacant.insert(42);
+
+        // Not in heap yet
+        assert!(heap.is_empty());
+
+        // Link into heap
+        heap.link(&mut storage, entry.key());
+
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.peek(&storage), Some(&42));
+    }
+
+    #[test]
+    fn link_from_insert_with() {
+        #[derive(Eq, PartialEq, Debug)]
+        struct Item {
+            value: u64,
+            self_key: NexusKey,
+        }
+
+        impl Ord for Item {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.value.cmp(&other.value)
+            }
+        }
+        impl PartialOrd for Item {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut storage: HeapStorage<Item> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<Item, _> = Heap::new();
+
+        // Create self-referential item
+        let entry = storage
+            .insert_with(|e| Item {
+                value: 42,
+                self_key: e.key(),
+            })
+            .unwrap();
+
+        // Verify self-reference
+        assert_eq!(entry.get().self_key, entry.key());
+
+        // Link into heap
+        heap.link(&mut storage, entry.key());
+
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.peek(&storage).unwrap().value, 42);
+    }
+
+    #[test]
+    fn try_push_with_self_referential() {
+        #[derive(Eq, PartialEq, Debug)]
+        struct Timer {
+            deadline: u64,
+            self_key: NexusKey,
+        }
+
+        impl Ord for Timer {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.deadline.cmp(&other.deadline)
+            }
+        }
+        impl PartialOrd for Timer {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut storage: HeapStorage<Timer> = HeapStorage::with_capacity(16);
+        let mut heap: Heap<Timer, _> = Heap::new();
+
+        let entry = heap
+            .try_push_with(&mut storage, |e| Timer {
+                deadline: 100,
+                self_key: e.key(),
+            })
+            .unwrap();
+
+        // Verify self-reference and heap membership
+        assert_eq!(entry.get().self_key, entry.key());
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.peek(&storage).unwrap().deadline, 100);
+    }
+
+    #[test]
+    fn push_with_self_referential() {
+        #[derive(Eq, PartialEq, Debug)]
+        struct Timer {
+            deadline: u64,
+            self_key: NexusKey,
+        }
+
+        impl Ord for Timer {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.deadline.cmp(&other.deadline)
+            }
+        }
+        impl PartialOrd for Timer {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut storage: GrowableHeapStorage<Timer> = GrowableHeapStorage::new();
+        let mut heap: Heap<Timer, _> = Heap::new();
+
+        let entry = heap.push_with(&mut storage, |e| Timer {
+            deadline: 100,
+            self_key: e.key(),
+        });
+
+        assert_eq!(entry.get().self_key, entry.key());
+        assert_eq!(heap.len(), 1);
+    }
+
+    #[test]
+    fn entry_becomes_invalid_after_remove() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let entry = heap.try_push_entry(&mut storage, 42).unwrap();
+        assert!(entry.is_valid());
+
+        heap.remove(&mut storage, entry.key());
+        assert!(!entry.is_valid());
+        assert!(entry.try_get().is_none());
+    }
+
+    #[test]
+    fn entry_try_methods() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let entry = heap.try_push_entry(&mut storage, 42).unwrap();
+
+        // try_get works
+        assert_eq!(*entry.try_get().unwrap(), 42);
+
+        // try_get_mut works
+        *entry.try_get_mut().unwrap() = 100;
+        assert_eq!(*entry.get(), 100);
+    }
+
+    #[test]
+    fn update_alias() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let entry_a = heap.try_push_entry(&mut storage, 10).unwrap();
+        heap.try_push_entry(&mut storage, 20).unwrap();
+        heap.try_push_entry(&mut storage, 30).unwrap();
+
+        // Increase value using update (alias for update_key)
+        *entry_a.get_mut() = 100;
+        heap.update(&mut storage, entry_a.key());
+
+        // 20 should now be the minimum
+        assert_eq!(heap.peek(&storage), Some(&20));
+    }
+
+    #[test]
+    fn multiple_entries_heap_order() {
+        let mut storage = HeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let e1 = heap.try_push_entry(&mut storage, 30).unwrap();
+        let e2 = heap.try_push_entry(&mut storage, 10).unwrap();
+        let e3 = heap.try_push_entry(&mut storage, 20).unwrap();
+
+        // Entries maintain their values
+        assert_eq!(*e1.get(), 30);
+        assert_eq!(*e2.get(), 10);
+        assert_eq!(*e3.get(), 20);
+
+        // Heap order is correct
+        assert_eq!(heap.pop(&mut storage), Some(10));
+        assert_eq!(heap.pop(&mut storage), Some(20));
+        assert_eq!(heap.pop(&mut storage), Some(30));
+    }
 }
 
 #[cfg(test)]
@@ -2069,5 +2566,105 @@ mod bench_nexus_slab_storage {
 
         println!();
         bench_heap_timer_workflow();
+
+        println!("\n=== Entry API Comparison ===");
+        bench_push_entry();
+        bench_entry_get();
+        bench_entry_get_mut();
+    }
+
+    // =========================================================================
+    // Entry API Benchmarks
+    // =========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_push_entry() {
+        let mut storage: GrowableHeapStorage<u64> =
+            GrowableHeapStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> =
+            Heap::with_capacity(ITERATIONS + WARMUP);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = heap.push_entry(&mut storage, 1);
+            let _ = heap.pop(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = heap.push_entry(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = heap.pop(&mut storage);
+        }
+
+        print_histogram("push_entry", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_entry_get() {
+        let mut storage: GrowableHeapStorage<u64> =
+            GrowableHeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(1024);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Build a heap of 1000 elements and collect entries
+        let mut entries = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            entries.push(heap.push_entry(&mut storage, i as u64));
+        }
+
+        // Warmup
+        for _ in 0..WARMUP {
+            for entry in &entries {
+                std::hint::black_box(entry.get());
+            }
+        }
+
+        // Benchmark
+        for _ in 0..ITERATIONS {
+            let entry = &entries[500]; // Middle entry
+            let start = rdtscp();
+            let _ = std::hint::black_box(entry.get());
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("entry.get()", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_entry_get_mut() {
+        let mut storage: GrowableHeapStorage<u64> =
+            GrowableHeapStorage::with_capacity(1024);
+        let mut heap: Heap<u64, GrowableHeapStorage<u64>> = Heap::with_capacity(1024);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Build a heap of 1000 elements and collect entries
+        let mut entries = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            entries.push(heap.push_entry(&mut storage, i as u64));
+        }
+
+        // Warmup
+        for _ in 0..WARMUP {
+            for entry in &entries {
+                std::hint::black_box(entry.get_mut());
+            }
+        }
+
+        // Benchmark
+        for _ in 0..ITERATIONS {
+            let entry = &entries[500]; // Middle entry
+            let start = rdtscp();
+            let _ = std::hint::black_box(entry.get_mut());
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("entry.get_mut()", &hist);
     }
 }
