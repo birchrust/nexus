@@ -1,6 +1,6 @@
 [package]
 name = "nexus-slab"
-version = "0.10.0"
+version = "0.11.0"
 description = "A high-performance slab allocator optimized for predictable tail latency"
 readme = "README.md"
 edition.workspace = true
@@ -40,4 +40,12 @@ harness = false
 
 [[example]]
 name = "perf_mixed_cycles_bounded"
+harness = false
+
+[[example]]
+name = "perf_full_distribution"
+harness = false
+
+[[example]]
+name = "perf_get_comparison"
 harness = false
