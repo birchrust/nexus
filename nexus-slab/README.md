@@ -21,18 +21,18 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core.
 
 | Operation | BoundedSlab | slab crate | Notes |
 |-----------|-------------|------------|-------|
-| INSERT p50 | ~20 cycles | ~22 cycles | 2 cycles faster |
-| GET p50 | ~24 cycles | ~26 cycles | 2 cycles faster |
-| REMOVE p50 | ~24 cycles | ~30 cycles | 6 cycles faster |
+| INSERT p50 | ~22 cycles | ~24 cycles | Comparable |
+| GET p50 | ~22 cycles | ~28 cycles | 21% faster (unchecked) |
+| REMOVE p50 | ~30 cycles | ~34 cycles | 12% faster |
 
 ### Slab (growable)
 
-Steady-state p50 matches `slab` crate (~22-32 cycles). The win is tail latency during growth:
+Steady-state p50 matches `slab` crate (~30-40 cycles). The win is tail latency during growth:
 
 | Metric | Slab | slab crate | Notes |
 |--------|------|------------|-------|
-| Growth p999 | ~40 cycles | ~2000+ cycles | 50x better |
-| Growth max | ~70K cycles | ~1.5M cycles | 20x better |
+| Growth p999 | ~64 cycles | ~2700+ cycles | 43x better |
+| Growth max | ~230K cycles | ~2.7M cycles | 12x better |
 
 `Slab` adds chunks independently—no copying. The `slab` crate uses `Vec`, which copies all existing data on reallocation.
 
@@ -174,10 +174,10 @@ let value = unsafe { entry.get_unchecked() };
 ```
 BoundedSlab (single contiguous allocation):
 ┌─────────────────────────────────────────────┐
-│ Slot 0: [tag: u32][value: T]                │
-│ Slot 1: [tag: u32][value: T]                │
+│ Slot 0: [stamp: u64][value: T]              │
+│ Slot 1: [stamp: u64][value: T]              │
 │ ...                                         │
-│ Slot N: [tag: u32][value: T]                │
+│ Slot N: [stamp: u64][value: T]              │
 └─────────────────────────────────────────────┘
 
 Slab (multiple independent chunks):
@@ -190,24 +190,27 @@ Slab (multiple independent chunks):
              (freelist of non-full chunks)
 ```
 
-### Slot Tag Encoding
+### Slot Stamp Encoding
 
-Each slot has a `tag: u32`:
+Each slot has a `stamp: u64` encoding state and key:
 
-- **Occupied**: `tag == 0` (or has borrowed bit set)
-- **Vacant**: bit 31 set, bits 0-29 encode next free slot index
-- **Borrowed**: bit 30 set (runtime borrow tracking for safe API)
+- **Bits 63-32 (state)**:
+  - Bit 63: Vacant flag (1 = vacant, 0 = occupied)
+  - Bit 62: Borrowed flag (runtime borrow tracking)
+  - Bits 61-32: Next free slot index (when vacant)
+- **Bits 31-0 (key)**: Slot key, stored when claimed
 
-Single comparison (`tag & VACANT_BIT == 0`) checks occupancy.
+Single comparison (`stamp & VACANT_BIT == 0`) checks occupancy.
 
 ### Entry Design
 
-`Entry<T>` holds:
-- `Weak<SlabInner<T>>` — liveness check (detect if slab dropped)
-- `*const SlotCell<T>` — direct pointer for O(1) access
-- `u32` index — for freelist update on remove
+`Entry<T>` is 16 bytes:
+- `*mut SlotCell<T>` — direct pointer for O(1) access
+- `*const FreeSlotVTable` — vtable with slab pointer and free function
 
-The safe API (`get()`, `get_mut()`) checks liveness and sets a borrow bit. The unchecked API bypasses all checks for minimal latency.
+The vtable is leaked once per slab (16 bytes overhead). On drop, Entry calls the vtable's free function to return the slot to the freelist.
+
+The safe API (`get()`, `get_mut()`) sets a borrow bit. The unchecked API bypasses all checks for minimal latency.
 
 ### Key Encoding
 

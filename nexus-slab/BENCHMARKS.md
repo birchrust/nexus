@@ -8,9 +8,9 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core, turbo boost d
 
 | Operation | unchecked | tracked | slab crate | Notes |
 |-----------|-----------|---------|------------|-------|
-| INSERT p50 | ~26 cycles | ~26 cycles | ~22 cycles | Comparable |
-| GET p50 | **~22 cycles** | ~32 cycles | ~28 cycles | Unchecked 21% faster |
-| REMOVE p50 | ~32 cycles | ~32 cycles | ~32 cycles | Comparable |
+| INSERT p50 | ~24 cycles | ~22 cycles | ~24 cycles | Comparable |
+| GET p50 | **~22 cycles** | ~30 cycles | ~28 cycles | Unchecked 21% faster |
+| REMOVE p50 | ~30 cycles | ~30 cycles | ~34 cycles | 12% faster |
 
 **unchecked** = `get_unchecked()` or `UntrackedAccessor` (no runtime checks)
 **tracked** = `get()` returning `Ref<T>` guard (borrow tracking)
@@ -29,8 +29,8 @@ is known for best performance.
 
 | Metric | nexus-slab | slab crate | Difference |
 |--------|------------|------------|------------|
-| Growth p999 | ~40 cycles | ~2000+ cycles | **50x better** |
-| Growth max | ~70K cycles | ~1.5M cycles | **20x better** |
+| Growth p999 | ~64 cycles | ~2700+ cycles | **43x better** |
+| Growth max | ~230K cycles | ~2.7M cycles | **12x better** |
 
 The `slab` crate uses `Vec`, which copies all existing data on reallocation.
 `nexus-slab` adds independent chunks - no copying. This is the primary value
@@ -40,38 +40,40 @@ proposition of the unbounded `Slab`.
 
 | Method | p50 | p99 | Notes |
 |--------|-----|-----|-------|
-| `get_unchecked()` | ~20 | ~22 | No checks, fastest |
-| `UntrackedAccessor[key]` | ~28 | ~68 | Index syntax, uses get_unchecked |
-| `get_untracked()` | ~30 | ~430 | Validity check, no borrow tracking |
-| `get()` → `Ref<T>` | ~32 | ~86 | Validity + borrow tracking |
-| `contains_key()` | ~30 | ~62 | Validity check only |
-| `Entry::get_unchecked()` | ~24 | ~48 | Direct pointer, no checks |
-| `Entry::get()` | ~36 | ~90 | Weak upgrade + borrow |
+| `get_unchecked()` | ~22 | ~26 | No checks, fastest |
+| `UntrackedAccessor[key]` | ~30 | ~64 | Index syntax, uses get_unchecked |
+| `get_untracked()` | ~30 | ~390 | Validity check, no borrow tracking |
+| `get()` → `Ref<T>` | ~32 | ~68 | Validity + borrow tracking |
+| `contains_key()` | ~30 | ~64 | Validity check only |
+| `Entry::get_unchecked()` | ~22 | ~26 | Direct pointer, no checks |
+| `Entry::get()` | ~32 | ~68 | Validity + borrow tracking |
 
 ### API Safety vs Performance
 
 ```
-                        ┌─────────────────────────────────────────────┐
-                        │           SAFETY CHECKS                     │
-                        ├─────────────┬─────────────┬─────────────────┤
-                        │  Validity   │   Borrow    │   Liveness      │
-                        │  (occupied) │  (runtime)  │   (Weak)        │
-┌───────────────────────┼─────────────┼─────────────┼─────────────────┤
-│ get_unchecked()       │      -      │      -      │       -         │ ~20 cycles
-│ UntrackedAccessor[key]│      -      │      -      │       -         │ ~28 cycles
-│ get_untracked()       │      ✓      │      -      │       -         │ ~30 cycles
-│ get() → Ref<T>        │      ✓      │      ✓      │       -         │ ~32 cycles
-│ contains_key()        │      ✓      │      -      │       -         │ ~30 cycles
-│ Entry::get_unchecked()│      -      │      -      │       -         │ ~24 cycles
-│ Entry::get_untracked()│      ✓      │      -      │       -         │ ~26 cycles
-│ Entry::get() → Ref<T> │      ✓      │      ✓      │       ✓         │ ~36 cycles
-└───────────────────────┴─────────────┴─────────────┴─────────────────┘
+                        ┌─────────────────────────────┐
+                        │       SAFETY CHECKS         │
+                        ├─────────────┬───────────────┤
+                        │  Validity   │    Borrow     │
+                        │  (occupied) │   (runtime)   │
+┌───────────────────────┼─────────────┼───────────────┤
+│ get_unchecked()       │      -      │       -       │ ~22 cycles
+│ UntrackedAccessor[key]│      -      │       -       │ ~30 cycles
+│ get_untracked()       │      ✓      │       -       │ ~30 cycles
+│ get() → Ref<T>        │      ✓      │       ✓       │ ~32 cycles
+│ contains_key()        │      ✓      │       -       │ ~30 cycles
+│ Entry::get_unchecked()│      -      │       -       │ ~22 cycles
+│ Entry::get_untracked()│      ✓      │       -       │ ~30 cycles
+│ Entry::get() → Ref<T> │      ✓      │       ✓       │ ~32 cycles
+└───────────────────────┴─────────────┴───────────────┘
 ```
 
 **Recommendations:**
-- **Hot paths:** Use `get_unchecked()` (~20 cycles) or `UntrackedAccessor` (~28 cycles)
+- **Hot paths:** Use `get_unchecked()` (~22 cycles) or `UntrackedAccessor` (~30 cycles)
 - **Normal paths:** Use `get()` for safe tracked access (~32 cycles)
 - **With Entry handles:** Use `Entry::get_unchecked()` when Entry validity is known
+
+**Entry size:** 16 bytes (slot pointer + vtable pointer)
 
 ---
 
@@ -117,10 +119,10 @@ taskset -c 0 ./target/release/examples/perf_mixed_cycles_bounded
 | `perf_access_methods.rs` | **All access methods side-by-side** |
 
 **Recommended:** Run `perf_access_methods` for a clear comparison of all access methods:
-- `get_unchecked()` (~20 cycles) - no checks
+- `get_unchecked()` (~22 cycles) - no checks
 - `get_untracked()` (~30 cycles) - validity check only
 - `get()` → `Ref<T>` (~32 cycles) - tracked
-- `UntrackedAccessor[key]` (~28 cycles) - Index syntax
+- `UntrackedAccessor[key]` (~30 cycles) - Index syntax
 - `contains_key()` (~30 cycles) - validity check only
 
 ---

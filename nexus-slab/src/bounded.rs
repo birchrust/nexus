@@ -61,7 +61,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::{Index, IndexMut};
 
-use crate::shared::{SlotCell, SLOT_NONE};
+use crate::shared::{SLOT_NONE, SlotCell};
 use crate::{CapacityError, Entry, FreeFn, FreeSlotVTable, Full, Key, Ref, RefMut};
 
 // =============================================================================
@@ -268,13 +268,16 @@ impl<T> BoundedSlab<T> {
         inner.free_head.set(next_free);
         inner.len.set(inner.len.get() + 1);
 
+        // Store key in stamp before writing value
+        slot.set_key(free_head);
+
         unsafe {
             (*slot.value.get()).write(value);
         }
         slot.set_occupied();
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Ok(Entry::new(slot_ptr, self.vtable, Key::new(free_head)))
+        Ok(Entry::new(slot_ptr, self.vtable))
     }
 
     /// Inserts a value, panicking if full.
@@ -312,10 +315,14 @@ impl<T> BoundedSlab<T> {
         inner.free_head.set(next_free);
         inner.len.set(inner.len.get() + 1);
 
+        // Store key in stamp BEFORE creating Entry (so Entry::key() works)
+        // Slot is still "vacant" (VACANT_BIT set), so entry.try_get() will fail
+        slot.set_key(free_head);
+
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        // Create entry (slot not yet occupied)
-        let entry = Entry::new(slot_ptr, self.vtable, Key::new(free_head));
+        // Create entry (slot not yet occupied, but key is readable from stamp)
+        let entry = Entry::new(slot_ptr, self.vtable);
 
         // Call closure to get value
         let value = f(&entry);
@@ -359,6 +366,10 @@ impl<T> BoundedSlab<T> {
         inner.free_head.set(next_free);
         inner.len.set(inner.len.get() + 1);
 
+        // Store key in stamp (VacantEntry still stores key for convenience,
+        // but stamp also has it for Entry creation later)
+        slot.set_key(free_head);
+
         Ok(VacantEntry {
             ptr: self.ptr,
             vtable: self.vtable,
@@ -390,12 +401,6 @@ impl<T> BoundedSlab<T> {
             return false;
         }
         inner.slot(index).is_occupied()
-    }
-
-    /// Alias for [`contains_key`](Self::contains_key).
-    #[inline]
-    pub fn contains(&self, key: Key) -> bool {
-        self.contains_key(key)
     }
 
     /// Returns a tracked reference to the value at `key`.
@@ -453,8 +458,9 @@ impl<T> BoundedSlab<T> {
             return None;
         }
 
+        // Key is already in slot's stamp from when it was inserted
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Some(Entry::new(slot_ptr, self.vtable, key))
+        Some(Entry::new(slot_ptr, self.vtable))
     }
 
     /// Removes a value by key, bypassing RAII.
@@ -615,11 +621,14 @@ impl<T> BoundedSlab<T> {
         inner.free_head.set(next_free);
         inner.len.set(inner.len.get() + 1);
 
+        // Store key in stamp before writing value
+        slot.set_key(free_head);
+
         unsafe { (*slot.value.get()).write(value) };
         slot.set_occupied();
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Entry::new(slot_ptr, self.vtable, Key::new(free_head))
+        Entry::new(slot_ptr, self.vtable)
     }
 
     /// Removes a value by key without bounds or occupancy checks.
@@ -739,7 +748,8 @@ impl<T> VacantEntry<T> {
 
         self.consumed = true;
 
-        Entry::new(slot_ptr, self.vtable, self.key)
+        // Key is already in slot's stamp from when VacantEntry was created
+        Entry::new(slot_ptr, self.vtable)
     }
 }
 
@@ -789,6 +799,9 @@ impl<T> Entry<T> {
             return None;
         }
 
+        // Read key from stamp before extracting value
+        let key = self.key();
+
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         // Get ptr from vtable
@@ -798,7 +811,7 @@ impl<T> Entry<T> {
         let vacant = VacantEntry {
             ptr,
             vtable,
-            key: self.key(),
+            key,
             consumed: false,
             _marker: PhantomData,
         };
@@ -817,6 +830,9 @@ impl<T> Entry<T> {
     pub unsafe fn take_unchecked(self) -> (T, VacantEntry<T>) {
         let slot = self.slot();
 
+        // Read key from stamp before extracting value
+        let key = self.key();
+
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         // Get ptr from vtable
@@ -826,7 +842,7 @@ impl<T> Entry<T> {
         let vacant = VacantEntry {
             ptr,
             vtable,
-            key: self.key(),
+            key,
             consumed: false,
             _marker: PhantomData,
         };
@@ -951,9 +967,7 @@ mod tests {
     fn insert_with_self_reference() {
         let slab = BoundedSlab::leak(16);
 
-        let entry = slab
-            .try_insert_with(|e| (e.key(), 42u64))
-            .unwrap();
+        let entry = slab.try_insert_with(|e| (e.key(), 42u64)).unwrap();
 
         let (stored_key, value) = *entry.get();
         assert_eq!(stored_key, entry.key());
@@ -991,8 +1005,9 @@ mod tests {
 
     #[test]
     fn entry_size() {
-        // Entry is 24 bytes: slot ptr (8) + vtable ptr (8) + key (4) + padding (4)
-        assert_eq!(std::mem::size_of::<Entry<u64>>(), 24);
+        // Entry is 16 bytes: slot ptr (8) + vtable ptr (8)
+        // Key is stored in slot's stamp, not in Entry
+        assert_eq!(std::mem::size_of::<Entry<u64>>(), 16);
     }
 
     #[test]
@@ -1026,9 +1041,7 @@ mod tests {
         let slab = BoundedSlab::leak(16);
         let entry = slab.try_insert(0u64).unwrap();
 
-        entry
-            .and_modify(|v| *v += 1)
-            .and_modify(|v| *v *= 2);
+        entry.and_modify(|v| *v += 1).and_modify(|v| *v *= 2);
 
         assert_eq!(*entry.get(), 2);
     }

@@ -70,15 +70,18 @@
 //!              (freelist of non-full chunks)
 //! ```
 //!
-//! ## Slot Tag Encoding
+//! ## Slot Stamp Encoding
 //!
-//! Each slot has a `tag: u32` that indicates state:
+//! Each slot has a `stamp: u64` that encodes state and key:
 //!
-//! - **Occupied**: `tag == 0` (value is valid)
-//! - **Vacant**: `tag` has bit 31 set, bits 0-29 encode next free slot index
-//! - **Borrowed**: `tag` has bit 30 set (for runtime borrow checking)
+//! - **Bits 63-32**: State (vacant flag, borrowed flag, next_free index)
+//! - **Bits 31-0**: Key (stored when claimed, valid regardless of state)
 //!
-//! This enables a single comparison (`tag == 0`) to check occupancy.
+//! - **Occupied, not borrowed**: upper 32 bits = 0, lower 32 bits = key
+//! - **Occupied, borrowed**: bit 62 set, lower 32 bits = key
+//! - **Vacant**: bit 63 set + next_free in upper bits
+//!
+//! This enables `is_available() == (stamp >> 32 == 0)` for fast checking.
 //!
 //! Freelists are **intra-slab only** - chains never cross slab boundaries.
 //! This enables slabs to drain independently.
@@ -197,22 +200,23 @@ pub(crate) struct FreeSlotVTable {
 ///
 /// # Size
 ///
-/// Entry is 24 bytes: slot ptr (8) + vtable ptr (8) + key (4) + padding (4).
+/// Entry is 16 bytes: slot ptr (8) + vtable ptr (8). The key is stored in the
+/// slot's stamp and read on demand.
 pub struct Entry<T> {
     slot: *mut SlotCell<T>,
     vtable: *const FreeSlotVTable,
-    key: Key,
     _marker: PhantomData<T>,
 }
 
 impl<T> Entry<T> {
     /// Creates a new Entry. Internal use only.
+    ///
+    /// The slot must have its key set in the stamp before calling this.
     #[inline]
-    pub(crate) fn new(slot: *mut SlotCell<T>, vtable: *const FreeSlotVTable, key: Key) -> Self {
+    pub(crate) fn new(slot: *mut SlotCell<T>, vtable: *const FreeSlotVTable) -> Self {
         Self {
             slot,
             vtable,
-            key,
             _marker: PhantomData,
         }
     }
@@ -232,7 +236,7 @@ impl<T> Entry<T> {
     /// Returns the storage key.
     #[inline]
     pub fn key(&self) -> Key {
-        self.key
+        Key::new(self.slot().key_from_stamp())
     }
 
     /// Returns `true` if the slot is still occupied.
@@ -253,7 +257,7 @@ impl<T> Entry<T> {
     /// the key stored externally.
     #[inline]
     pub fn leak(self) -> Key {
-        let key = self.key;
+        let key = self.key();
         std::mem::forget(self);
         key
     }
@@ -495,10 +499,13 @@ impl<T> Entry<T> {
             return None;
         }
 
+        // Read key from stamp before marking vacant
+        let key = Key::new(slot.key_from_stamp());
+
         // Mark slot vacant first (defensive - ensures Entry::drop would no-op)
         // SAFETY: free_fn only manages freelist, doesn't touch value
         let vtable = unsafe { &*self.vtable };
-        unsafe { (vtable.free_fn)(self.key, vtable.inner) };
+        unsafe { (vtable.free_fn)(key, vtable.inner) };
 
         // Read value out (bits still there in memory, slot is now vacant)
         let value = unsafe { (*slot.value.get()).assume_init_read() };
@@ -515,12 +522,17 @@ impl<T> Entry<T> {
     ///
     /// Slot must be valid and not borrowed.
     pub unsafe fn remove_unchecked(self) -> T {
+        let slot = self.slot();
+
+        // Read key from stamp before marking vacant
+        let key = Key::new(slot.key_from_stamp());
+
         // Mark slot vacant first
         let vtable = unsafe { &*self.vtable };
-        unsafe { (vtable.free_fn)(self.key, vtable.inner) };
+        unsafe { (vtable.free_fn)(key, vtable.inner) };
 
         // Read value
-        let value = unsafe { (*self.slot().value.get()).assume_init_read() };
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         std::mem::forget(self);
         value
@@ -533,6 +545,9 @@ impl<T> Drop for Entry<T> {
 
         // Only deallocate if slot is still occupied
         if slot.is_occupied() {
+            // Read key from stamp before marking vacant
+            let key = Key::new(slot.key_from_stamp());
+
             // Drop the value
             unsafe {
                 std::ptr::drop_in_place((*slot.value.get()).as_mut_ptr());
@@ -541,14 +556,15 @@ impl<T> Drop for Entry<T> {
             // Return slot to freelist
             // SAFETY: free_fn only manages freelist
             let vtable = unsafe { &*self.vtable };
-            unsafe { (vtable.free_fn)(self.key, vtable.inner) };
+            unsafe { (vtable.free_fn)(key, vtable.inner) };
         }
     }
 }
 
 impl<T> PartialEq for Entry<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.slot == other.slot && self.key == other.key
+        // Two entries are equal if they point to the same slot
+        self.slot == other.slot
     }
 }
 
@@ -557,7 +573,7 @@ impl<T> Eq for Entry<T> {}
 impl<T> fmt::Debug for Entry<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Entry")
-            .field("key", &self.key)
+            .field("key", &self.key())
             .field("valid", &self.is_valid())
             .finish()
     }
@@ -919,7 +935,8 @@ mod tests {
 
     #[test]
     fn entry_size() {
-        // Entry should be 24 bytes: slot(8) + vtable(8) + key(4) + padding(4)
-        assert_eq!(std::mem::size_of::<Entry<u64>>(), 24);
+        // Entry should be 16 bytes: slot(8) + vtable(8)
+        // Key is stored in slot's stamp, not in Entry
+        assert_eq!(std::mem::size_of::<Entry<u64>>(), 16);
     }
 }

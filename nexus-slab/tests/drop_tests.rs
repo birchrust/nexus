@@ -85,9 +85,7 @@ fn bounded_replace_drops_old_value() {
     let counter = Rc::new(Cell::new(0));
 
     let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
-    let entry = slab
-        .try_insert(DropTracker::new(counter.clone()))
-        .unwrap();
+    let entry = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
 
     assert_eq!(counter.get(), 0);
 
@@ -106,9 +104,7 @@ fn bounded_take_returns_value_without_dropping() {
     let counter = Rc::new(Cell::new(0));
 
     let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
-    let entry = slab
-        .try_insert(DropTracker::new(counter.clone()))
-        .unwrap();
+    let entry = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
 
     assert_eq!(counter.get(), 0);
 
@@ -146,16 +142,12 @@ fn bounded_partial_fill_drops_only_occupied() {
     let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
 
     // Insert 5, remove 2 via Entry RAII
-    let e1 = slab
-        .try_insert(DropTracker::new(counter.clone()))
-        .unwrap();
+    let e1 = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
     let _e2 = slab
         .try_insert(DropTracker::new(counter.clone()))
         .unwrap()
         .leak(); // leak keeps alive
-    let e3 = slab
-        .try_insert(DropTracker::new(counter.clone()))
-        .unwrap();
+    let e3 = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
     let _e4 = slab
         .try_insert(DropTracker::new(counter.clone()))
         .unwrap()

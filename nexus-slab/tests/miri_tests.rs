@@ -240,7 +240,10 @@ fn bounded_drop_on_remove_unchecked() {
 
     let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(10);
     let keys: Vec<Key> = (0..10)
-        .map(|_| unsafe { slab.insert_unchecked(DropTracker::new(counter.clone())).leak() })
+        .map(|_| unsafe {
+            slab.insert_unchecked(DropTracker::new(counter.clone()))
+                .leak()
+        })
         .collect();
 
     for key in keys {

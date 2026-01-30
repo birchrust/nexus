@@ -48,7 +48,7 @@ use std::mem::ManuallyDrop;
 use std::ops::{Index, IndexMut};
 
 use crate::bounded::BoundedSlabInner;
-use crate::shared::{SlotCell, SLOT_NONE};
+use crate::shared::{SLOT_NONE, SlotCell};
 use crate::{Entry, FreeFn, FreeSlotVTable, Key, Ref, RefMut};
 
 // =============================================================================
@@ -415,16 +415,20 @@ impl<T> Slab<T> {
             inner.head_with_space.set(chunk.next_with_space.get());
         }
 
+        let global_idx = inner.encode(chunk_idx, free_head);
+
+        // Store key in stamp before writing value
+        slot.set_key(global_idx);
+
         // Write value and mark occupied
         unsafe {
             (*slot.value.get()).write(value);
         }
         slot.set_occupied();
 
-        let global_idx = inner.encode(chunk_idx, free_head);
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        Entry::new(slot_ptr, self.vtable, Key::new(global_idx))
+        Entry::new(slot_ptr, self.vtable)
     }
 
     /// Inserts with access to the entry before the value exists.
@@ -456,9 +460,15 @@ impl<T> Slab<T> {
         }
 
         let global_idx = inner.encode(chunk_idx, free_head);
+
+        // Store key in stamp BEFORE creating Entry (so Entry::key() works)
+        // Slot is still "vacant" (VACANT_BIT set), so entry.try_get() will fail
+        slot.set_key(global_idx);
+
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        let entry = Entry::new(slot_ptr, self.vtable, Key::new(global_idx));
+        // Create entry (slot not yet occupied, but key is readable from stamp)
+        let entry = Entry::new(slot_ptr, self.vtable);
 
         let value = f(&entry);
 
@@ -497,8 +507,9 @@ impl<T> Slab<T> {
             return None;
         }
 
+        // Key is already in slot's stamp from when it was inserted
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
-        Some(Entry::new(slot_ptr, self.vtable, key))
+        Some(Entry::new(slot_ptr, self.vtable))
     }
 
     /// Reserves a slot without filling it, returning a [`SlabVacantEntry`].
@@ -531,6 +542,10 @@ impl<T> Slab<T> {
         }
 
         let global_idx = inner.encode(chunk_idx, free_head);
+
+        // Store key in stamp (SlabVacantEntry still stores key for convenience,
+        // but stamp also has it for Entry creation later)
+        slot.set_key(global_idx);
 
         SlabVacantEntry {
             ptr: self.ptr,
@@ -565,12 +580,6 @@ impl<T> Slab<T> {
         }
 
         chunk.inner.slot(local_idx).is_occupied()
-    }
-
-    /// Alias for [`contains_key`](Self::contains_key).
-    #[inline]
-    pub fn contains(&self, key: Key) -> bool {
-        self.contains_key(key)
     }
 
     /// Returns a tracked reference to the value at `key`.
@@ -921,7 +930,8 @@ impl<T> SlabVacantEntry<T> {
 
         self.consumed = true;
 
-        Entry::new(slot_ptr, self.vtable, self.key)
+        // Key is already in slot's stamp from when SlabVacantEntry was created
+        Entry::new(slot_ptr, self.vtable)
     }
 }
 
