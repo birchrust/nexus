@@ -231,8 +231,9 @@ impl<T> Entry<T> {
     /// Entry ownership guarantees the slot is valid.
     #[inline]
     pub fn get(&self) -> &T {
-        // SAFETY: Entry owns the slot, so it's valid and occupied
-        unsafe { self.slot().value_ref() }
+        // SAFETY: Entry owns the slot. SlotCell is repr(C): [stamp: 8][value: T]
+        // Go directly to value at offset 8, bypassing abstraction chain.
+        unsafe { &*((self.slot as *const u8).add(8) as *const T) }
     }
 
     /// Returns a mutable reference to the value.
@@ -240,17 +241,19 @@ impl<T> Entry<T> {
     /// Requires `&mut Entry` to ensure exclusive access.
     #[inline]
     pub fn get_mut(&mut self) -> &mut T {
-        // SAFETY: Entry owns the slot, &mut self ensures exclusivity
-        unsafe { self.slot().value_mut() }
+        // SAFETY: Entry owns the slot, &mut self ensures exclusivity.
+        // SlotCell is repr(C): [stamp: 8][value: T]
+        unsafe { &mut *((self.slot as *mut u8).add(8) as *mut T) }
     }
 
     /// Replaces the value, returning the old one.
     #[inline]
     pub fn replace(&mut self, value: T) -> T {
-        let slot = self.slot();
-        // SAFETY: Entry owns the slot
-        let old = unsafe { (*slot.value.get()).assume_init_read() };
-        unsafe { (*slot.value.get()).write(value) };
+        // SAFETY: Entry owns the slot. SlotCell is repr(C): [stamp: 8][value: T]
+        // Direct pointer access to value at offset 8.
+        let value_ptr = unsafe { (self.slot as *mut u8).add(8) as *mut T };
+        let old = unsafe { value_ptr.read() };
+        unsafe { value_ptr.write(value) };
         old
     }
 
@@ -270,7 +273,10 @@ impl<T> Entry<T> {
     /// Useful for debug assertions to catch API misuse.
     #[inline]
     pub fn is_valid(&self) -> bool {
-        self.slot().is_occupied()
+        // SAFETY: SlotCell is repr(C): [stamp: 8][value: T]
+        // Read stamp directly at offset 0. Occupied = VACANT_BIT not set.
+        let stamp = unsafe { *(self.slot as *const u64) };
+        stamp & crate::shared::VACANT_BIT == 0
     }
 
     /// Extracts the value, returning it with a [`VacantEntry`] for the slot.
@@ -586,7 +592,7 @@ impl<T> Slab<T> {
         debug_assert!(free_head != SLOT_NONE);
 
         let slot = chunk_inner.slot(free_head);
-        let next_free = slot.next_free();
+        let next_free = slot.claim_next_free(); // 1 stamp read
 
         chunk_inner.free_head.set(next_free);
         chunk_inner.len.set(chunk_inner.len.get() + 1);
@@ -599,14 +605,11 @@ impl<T> Slab<T> {
 
         let global_idx = inner.encode(chunk_idx, free_head);
 
-        // Store key in stamp before writing value
-        slot.set_key(global_idx);
-
         // Write value and mark occupied
         unsafe {
             (*slot.value.get()).write(value);
         }
-        slot.set_occupied();
+        slot.set_key_occupied(global_idx); // 1 stamp write
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
@@ -632,7 +635,7 @@ impl<T> Slab<T> {
 
         let free_head = chunk_inner.free_head.get();
         let slot = chunk_inner.slot(free_head);
-        let next_free = slot.next_free();
+        let next_free = slot.claim_next_free(); // 1 stamp read
 
         chunk_inner.free_head.set(next_free);
         chunk_inner.len.set(chunk_inner.len.get() + 1);
@@ -645,7 +648,7 @@ impl<T> Slab<T> {
         let global_idx = inner.encode(chunk_idx, free_head);
 
         // Store key in stamp BEFORE creating Entry (so Entry::key() works)
-        // Slot is still "vacant" (VACANT_BIT set), value not yet written
+        // This requires read-modify-write since we preserve VACANT_BIT temporarily
         slot.set_key(global_idx);
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
@@ -658,7 +661,7 @@ impl<T> Slab<T> {
         unsafe {
             (*slot.value.get()).write(value);
         }
-        slot.set_occupied();
+        slot.set_key_occupied(global_idx); // 1 stamp write
 
         entry
     }
@@ -713,7 +716,7 @@ impl<T> Slab<T> {
 
         let free_head = chunk_inner.free_head.get();
         let slot = chunk_inner.slot(free_head);
-        let next_free = slot.next_free();
+        let next_free = slot.claim_next_free(); // 1 stamp read
 
         chunk_inner.free_head.set(next_free);
         chunk_inner.len.set(chunk_inner.len.get() + 1);
@@ -727,8 +730,7 @@ impl<T> Slab<T> {
 
         let global_idx = inner.encode(chunk_idx, free_head);
 
-        // Store key in stamp (VacantEntry still stores key for convenience,
-        // but stamp also has it for Entry creation later)
+        // Store key in stamp - VacantEntry::insert will later call set_key_occupied
         slot.set_key(global_idx);
 
         VacantEntry {
@@ -940,7 +942,8 @@ impl<T> VacantEntry<T> {
     /// Fills the slot with a value, returning an RAII [`Entry`].
     #[inline]
     pub fn insert(mut self, value: T) -> Entry<T> {
-        // Scope the borrow of self to avoid conflict with consumed assignment
+        let key_index = self.key.index();
+
         let slot_ptr = {
             let inner = self.inner();
             let chunk = inner.chunk(self.chunk_idx);
@@ -949,14 +952,13 @@ impl<T> VacantEntry<T> {
             unsafe {
                 (*slot.value.get()).write(value);
             }
-            slot.set_occupied();
+            slot.set_key_occupied(key_index); // 1 write (no read needed)
 
             (slot as *const SlotCell<T>).cast_mut()
         };
 
         self.consumed = true;
 
-        // Key is already in slot's stamp from when VacantEntry was created
         Entry::new(slot_ptr, self.inner)
     }
 

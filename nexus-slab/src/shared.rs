@@ -8,13 +8,13 @@ use std::mem::MaybeUninit;
 // =============================================================================
 
 /// Vacant flag - bit 63 of stamp
-const VACANT_BIT: u64 = 1 << 63;
+pub(crate) const VACANT_BIT: u64 = 1 << 63;
 
 /// Mask for key (lower 32 bits of stamp)
-const KEY_MASK: u64 = 0x0000_0000_FFFF_FFFF;
+pub(crate) const KEY_MASK: u64 = 0x0000_0000_FFFF_FFFF;
 
 /// Mask for next_free index within state (bits 29-0 after shifting)
-const INDEX_MASK: u64 = (1 << 30) - 1;
+pub(crate) const INDEX_MASK: u64 = (1 << 30) - 1;
 
 /// Sentinel for end of freelist (~1 billion max capacity).
 ///
@@ -56,10 +56,13 @@ impl<T> SlotCell<T> {
         !self.is_vacant()
     }
 
+    /// Claims a vacant slot, returning the next_free index.
+    /// Single stamp read. Use with set_key_occupied() for optimal insert.
     #[inline]
-    pub(crate) fn next_free(&self) -> u32 {
-        debug_assert!(self.is_vacant(), "next_free called on occupied slot");
-        ((self.stamp.get() >> 32) & INDEX_MASK) as u32
+    pub(crate) fn claim_next_free(&self) -> u32 {
+        let stamp = self.stamp.get();
+        debug_assert!(stamp & VACANT_BIT != 0, "claim on non-vacant slot");
+        ((stamp >> 32) & INDEX_MASK) as u32
     }
 
     /// Returns the key stored in the stamp.
@@ -69,17 +72,19 @@ impl<T> SlotCell<T> {
         (self.stamp.get() & KEY_MASK) as u32
     }
 
-    /// Sets the key in the stamp without changing state bits.
-    /// Called when claiming a slot, before marking occupied.
+    /// Sets key in stamp without changing state bits.
+    /// Only needed for insert_with pattern where key must be readable before value exists.
     #[inline]
     pub(crate) fn set_key(&self, key: u32) {
         self.stamp.set((self.stamp.get() & !KEY_MASK) | key as u64);
     }
 
-    /// Marks slot as occupied by clearing state bits. Preserves key.
+    /// Sets key and marks slot as occupied in a single write.
+    /// Use this for normal insert path after claim_next_free().
     #[inline]
-    pub(crate) fn set_occupied(&self) {
-        self.stamp.set(self.stamp.get() & KEY_MASK);
+    pub(crate) fn set_key_occupied(&self, key: u32) {
+        // Key in bits 31-0, bits 63-32 = 0 means occupied
+        self.stamp.set(key as u64);
     }
 
     /// Marks slot as vacant with given next_free index. Clobbers key.

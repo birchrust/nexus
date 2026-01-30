@@ -1,209 +1,194 @@
 # nexus-slab Benchmarks
 
-All measurements in CPU cycles using `rdtscp`. Best of 5 runs with `taskset -c 0` pinning.
+All measurements in CPU cycles using batched unrolled timing (see Methodology below).
 
-**Test conditions:** 100k capacity, 500k operations, 50% fill steady-state, pre-allocated.
+**Test conditions:** Intel Core Ultra 7 155H, `taskset -c 0` pinning, turbo boost disabled.
+
+---
+
+## Methodology
+
+### The Problem with Single-Operation Timing
+
+The `rdtsc`/`rdtscp` instructions have ~20-25 cycles of inherent overhead. When measuring operations that complete in 2-8 cycles, single-operation timing gives misleading results—everything appears to take ~22-24 cycles (the measurement floor).
+
+### Solution: Batched Unrolled Measurement
+
+We measure 100 operations per sample using a manually unrolled macro:
+
+```rust
+macro_rules! unroll_100 {
+    ($op:expr) => {
+        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 10
+        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 20
+        // ... 100 total
+    };
+}
+
+let start = rdtsc_start();
+unroll_100!({ black_box(entry.get()); });
+let end = rdtsc_end();
+let cycles_per_op = (end - start) / 100;
+```
+
+This eliminates:
+- **Timing overhead**: Amortized across 100 ops
+- **Loop overhead**: No branches, just straight-line code
+- **Compiler optimization**: `black_box()` prevents hoisting
+
+### Interpreting Results
+
+- **0 cycles**: Instruction-Level Parallelism (ILP) - CPU executes operation "for free" alongside other work
+- **2-3 cycles**: Single memory access, no dependent loads
+- **4-8 cycles**: Multiple dependent operations or cache misses
+
+---
+
+## Summary (BoundedSlab p50)
+
+| Operation | Entry API | Key-based | slab crate | Notes |
+|-----------|-----------|-----------|------------|-------|
+| GET (random) | 5 | **3** | **3** | Key-based matches slab |
+| GET (hot) | **1** | - | **1** | ILP - CPU pipelines loads |
+| GET_MUT | **2** | **2** | 3 | Entry/key tied |
+| CONTAINS | **2** | 3 | **2** | Entry/slab tied |
+| INSERT | 7 | - | **5** | slab wins - simpler freelist |
+| REMOVE | 7 | **3** | **3** | Key-based matches slab |
+| REPLACE | **2** | - | 4 | Entry has direct pointer |
+| TAKE | 19 | - | **8** | slab remove+insert faster |
+
+**Key findings:**
+- Entry API wins for mutation (GET_MUT, REPLACE) - direct pointer avoids index lookup
+- Key-based removal matches slab crate (both ~3 cycles)
+- INSERT/TAKE favor slab crate's simpler freelist
+- Hot access shows ILP - CPU pipelines repeated loads to same address
+
+---
+
+## GET Operations
+
+### Random Access Pattern
+
+Accessing entries at random indices (realistic workload):
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.get()` | 5 | 7 | 7 | 25 | 234 |
+| `get_by_key()` [unsafe] | **3** | **3** | **4** | **5** | 85 |
+| slab crate | **3** | 4 | 4 | 10 | 44 |
+
+Entry's higher p50 reflects validity check overhead. Key-based matches slab.
+
+### Hot Access Pattern
+
+Repeatedly accessing the same entry (measures ILP):
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.get()` | **1** | **1** | **1** | **1** | 18 |
+| slab crate | **1** | **1** | 2 | 3 | 57 |
+
+Both achieve ~1 cycle due to CPU pipelining repeated loads.
+
+### GET_MUT
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.get_mut()` | **2** | **2** | **2** | **3** | 24 |
+| `get_by_key_mut()` [unsafe] | **2** | **2** | **2** | **3** | 32 |
+| slab crate | 3 | 3 | 5 | 10 | 73 |
+
+Entry/key-based are 50% faster than slab at p50, with tighter tail latency.
 
 ---
 
 ## INSERT
 
-| Variant | p50 | p99 | p99.9 | p99.99 |
-|---------|-----|-----|-------|--------|
-| bounded | **22** | 28 | 42 | 132 |
-| unbounded | 32 | 44 | 54 | 130 |
-| slab crate | **22** | 24 | 30 | **2397** |
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| BoundedSlab | 7 | 10 | 12 | 15 | 78 |
+| slab crate | **5** | **5** | **5** | **8** | 87 |
 
-**Key finding:** bounded and slab are tied at p50 (22 cycles). The slab crate's p99.99 spikes to ~2400 cycles due to `Vec` reallocation. unbounded is ~10 cycles slower due to chunk indirection but has no reallocation stalls.
-
----
-
-## GET by Key (valid slot)
-
-### Checked + borrow-tracked: `slab.get(key)`
-
-| Variant | p50 | p99 | p99.9 | p99.99 |
-|---------|-----|-----|-------|--------|
-| bounded | 24 | 52 | 60 | 392 |
-| unbounded | 34 | 62 | 76 | 448 |
-| slab crate | **22** | **24** | **28** | 138 |
-
-### Untracked (no borrow tracking): `slab.get_untracked(key)` *(unsafe)*
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | 38 |
-| unbounded | 24 | 28 | 48 |
-
-### Unchecked (no validity check): `slab.get_unchecked(key)` *(unsafe)*
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | 40 |
-| unbounded | **22** | 26 | 42 |
-
-### UntrackedAccessor indexing: `slab.untracked()[key]` *(unsafe)*
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | **36** |
-| unbounded | **22** | 26 | 42 |
-
-**Key finding:** The safe checked path (`slab.get(key)`) is 2-12 cycles slower than slab crate at p50. The unsafe paths (`get_unchecked`, `untracked()`) match slab crate performance exactly (22 cycles).
+Slab crate wins by ~2 cycles due to simpler freelist management. Our stamp encoding (64-bit with state flags) has slightly more overhead.
 
 ---
 
-## GET by Key (stale/invalid slot)
+## REMOVE
 
-Tests validity checking when key points to a removed slot.
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.remove()` | 7 | 11 | 14 | 18 | 221 |
+| `remove_by_key()` [unsafe] | **3** | **3** | 5 | 14 | 134 |
+| slab crate | **3** | 4 | 7 | 13 | 91 |
 
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | 26 | 38 |
-| unbounded | 28 | 32 | 44 |
-| slab crate | **22** | **24** | **28** |
-
-**Key finding:** Validity checking for stale keys is essentially free (same as valid access). The check is a simple version comparison, not a hash lookup.
+Entry-based remove has ~4 cycles overhead for validity check. Key-based matches slab at p50.
 
 ---
 
-## Entry API - GET (valid slot)
+## REPLACE
 
-### Checked + borrow-tracked: `entry.get()`
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.replace()` | **2** | **3** | **3** | **5** | 70 |
+| slab get_mut+replace | 4 | 4 | 5 | 12 | 78 |
 
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | 30 | 66 | 418 |
-| unbounded | 30 | 66 | 432 |
-
-### Untracked: `entry.get_untracked()` *(unsafe)*
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | **36** |
-| unbounded | **22** | **24** | **36** |
-
-### Unchecked: `entry.get_unchecked()` *(unsafe)*
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | **36** |
-| unbounded | **22** | **24** | 38 |
-
-**Key finding:** `entry.get()` is ~8 cycles slower than key-based access at p50 (30 vs 22). This is the cost of creating a `Ref<T>` guard. The unsafe entry methods match the fastest key-based paths (22 cycles).
+Entry's cached pointer saves 2 cycles - no index lookup needed.
 
 ---
 
-## Entry API - GET (stale entry)
+## CONTAINS
 
-Tests `entry.try_get()` when the slot was removed via another handle.
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.is_valid()` | **2** | **2** | **3** | **5** | 23 |
+| `contains_key()` | 3 | 3 | 4 | 6 | 65 |
+| slab crate | **2** | **2** | 4 | 6 | 81 |
 
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | 26 | 46 |
-| unbounded | **22** | 28 | 40 |
-
-**Key finding:** Detecting a stale entry is 22 cycles - same as a valid access. No penalty for safety.
-
----
-
-## REMOVE by Key
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | 40 |
-| unbounded | 26 | 32 | 50 |
-| slab crate | **22** | **24** | **28** |
+All implementations perform a simple stamp/version comparison. Entry and slab tied at p50.
 
 ---
 
-## Entry API - REMOVE
+## TAKE (extract value, keep slot reserved)
 
-### Checked: `entry.remove()`
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `entry.take()` | 19 | 29 | 33 | 139 | 160 |
+| slab remove+insert | **8** | **8** | **12** | **19** | 115 |
 
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | 26 | 42 |
-| unbounded | 26 | 34 | 44 |
-
-### Unchecked: `entry.remove_unchecked()` *(unsafe)*
-
-| Variant | p50 | p99 | p99.9 |
-|---------|-----|-----|-------|
-| bounded | **22** | **24** | **38** |
-| unbounded | 24 | 30 | 46 |
-
-**Key finding:** `entry.remove_unchecked()` saves 2-4 cycles at p99 by skipping the `is_available()` check. At p50 they're equivalent for bounded (22 cycles).
+Take is expensive due to VacantEntry creation overhead. If you need this pattern frequently, consider remove+insert.
 
 ---
 
-## Summary
+## Unbounded vs Bounded
 
-### bounded vs slab crate (p50)
+The unbounded `Slab` adds ~2-4 cycles per operation due to chunk indirection (extra pointer chase). The tradeoff is:
 
-| Operation | bounded | slab | Δ |
-|-----------|---------|------|---|
-| insert | 22 | 22 | tie |
-| get (checked) | 24 | 22 | +2 |
-| get (unchecked) | 22 | 22 | tie |
-| get (stale) | 22 | 22 | tie |
-| remove | 22 | 22 | tie |
+| | Bounded | Unbounded |
+|---|---------|-----------|
+| GET overhead | +0 | +2-4 cycles |
+| Growth behavior | Fails when full | Adds chunks (no copy) |
+| Tail latency | Deterministic | No reallocation stalls |
 
-### bounded vs unbounded (p50)
-
-| Operation | bounded | unbounded | Δ |
-|-----------|---------|-----------|---|
-| insert | 22 | 32 | +10 |
-| get (checked) | 24 | 34 | +10 |
-| get (unchecked) | 22 | 22 | tie |
-| remove | 22 | 26 | +4 |
-
-The ~10 cycle overhead for unbounded comes from chunk indirection (extra pointer chase).
+Use bounded when capacity is known and latency is critical. Use unbounded when growth may be needed and you want to avoid `Vec` reallocation spikes.
 
 ---
 
 ## When to Use What
 
-### Use `bounded::Slab` when:
-- Capacity is known at compile time or startup
-- You need the absolute lowest latency
-- Memory footprint must be fixed
+### Use `BoundedSlab` + Entry API when:
+- You hold entries for repeated access (GET, REPLACE)
+- Capacity is known upfront
+- You need the absolute lowest GET latency (2 cycles vs 3)
 
-### Use `unbounded::Slab` when:
-- Capacity may grow over time
-- You need no-copy growth (important for embedded pointers)
-- The 10-cycle overhead is acceptable
+### Use `BoundedSlab` + key-based API when:
+- Single-shot access patterns
+- Integrating with data structures that store keys
+- Remove performance matters (4 cycles vs 8)
 
 ### Use `slab` crate when:
-- You don't need the Entry API
-- You don't need validity checking for stale keys
-- Vec reallocation stalls (p99.99) are acceptable
-
----
-
-## Access Method Quick Reference
-
-### GET
-
-| Method | Validity | Borrow | p50 | Use case |
-|--------|----------|--------|-----|----------|
-| `slab.get(key)` | ✓ | ✓ | 24 | General safe access |
-| `slab.get_untracked(key)` | ✓ | - | 22 | Single accessor, still validates |
-| `slab.get_unchecked(key)` | - | - | 22 | Hot path, caller guarantees validity |
-| `slab.untracked()[key]` | - | - | 22 | Batch access pattern |
-| `entry.get()` | ✓ | ✓ | 24 | Repeated access with guard |
-| `entry.get_untracked()` | ✓ | - | 22 | Known single accessor via entry |
-| `entry.get_unchecked()` | - | - | 22 | Fastest via entry |
-| `entry.try_get()` | ✓ | ✓ | 22 | Check if entry still valid |
-
-### REMOVE
-
-| Method | Validity | p50 | Use case |
-|--------|----------|-----|----------|
-| `slab.remove_by_key(key)` | ✓ | 24 | Remove by key, returns Option |
-| `slab.remove_unchecked_by_key(key)` | - | 22 | Unsafe, caller guarantees validity |
-| `entry.remove()` | ✓ | 22 | Remove via entry handle |
-| `entry.remove_unchecked()` | - | 22 | Unsafe, skips availability check |
+- INSERT performance is critical (5 cycles vs 8)
+- You don't need Entry handles
+- Vec reallocation stalls at p99.99 are acceptable
 
 ---
 
@@ -224,17 +209,8 @@ echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
 ```bash
 cargo build --release --examples
 
-# Full API comparison (all methods)
+# Full distribution with unrolled methodology
 taskset -c 0 ./target/release/examples/perf_full_distribution
-
-# Isolated GET comparison
-taskset -c 0 ./target/release/examples/perf_get_comparison
-
-# Insert latency
-taskset -c 0 ./target/release/examples/perf_insert_cycles
-
-# Mixed operations
-taskset -c 0 ./target/release/examples/perf_mixed_cycles
 ```
 
 ### Re-enable Turbo Boost

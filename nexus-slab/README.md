@@ -15,19 +15,21 @@ Both use an **Entry-based API** where `insert()` returns a handle (`Entry<T>`) f
 
 ## Performance
 
-Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core.
+Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core. Cycle counts measured using batched unrolled timing to eliminate `rdtsc` overhead (see [BENCHMARKS.md](./BENCHMARKS.md) for methodology).
 
-### BoundedSlab (fixed capacity)
+### BoundedSlab vs slab crate (p50)
 
-| Operation | BoundedSlab | slab crate | Notes |
-|-----------|-------------|------------|-------|
-| INSERT p50 | ~22 cycles | ~24 cycles | Comparable |
-| GET p50 | ~22 cycles | ~28 cycles | 21% faster (unchecked) |
-| REMOVE p50 | ~30 cycles | ~34 cycles | 12% faster |
+| Operation | Entry API | Key-based | slab crate | Notes |
+|-----------|-----------|-----------|------------|-------|
+| GET | 5 cycles | **3 cycles** | **3 cycles** | Key-based matches slab |
+| GET_MUT | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
+| INSERT | 7 cycles | - | **5 cycles** | slab's simpler freelist |
+| REMOVE | 7 cycles | **3 cycles** | **3 cycles** | Key-based matches slab |
+| REPLACE | **2 cycles** | - | 4 cycles | Entry's cached pointer |
 
-### Slab (growable)
+### Slab (growable) - Tail Latency
 
-Steady-state p50 matches `slab` crate (~30-40 cycles). The win is tail latency during growth:
+Steady-state operations add ~2-4 cycles due to chunk indirection. The win is tail latency during growth:
 
 | Metric | Slab | slab crate | Notes |
 |--------|------|------------|-------|
