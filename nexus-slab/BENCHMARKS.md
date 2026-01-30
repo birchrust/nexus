@@ -48,14 +48,14 @@ This eliminates:
 
 | Operation | Entry API | Key-based | slab crate | Notes |
 |-----------|-----------|-----------|------------|-------|
-| GET (random) | 5 | **3** | **3** | Key-based matches slab |
-| GET (hot) | **1** | - | **1** | ILP - CPU pipelines loads |
+| GET (random) | **2** | **2** | 3 | Entry/key tied, faster than slab |
+| GET (hot) | **0** | - | 1 | ILP - CPU pipelines loads |
 | GET_MUT | **2** | **2** | 3 | Entry/key tied |
-| CONTAINS | **2** | 3 | **2** | Entry/slab tied |
+| CONTAINS | **2** | 3 | 3 | Entry fastest |
 | INSERT | 7 | - | **5** | slab wins - simpler freelist |
-| REMOVE | 7 | **3** | **3** | Key-based matches slab |
-| REPLACE | **2** | - | 4 | Entry has direct pointer |
-| TAKE | 19 | - | **8** | slab remove+insert faster |
+| REMOVE | 8 | **3** | 4 | Key-based fastest |
+| REPLACE | **3** | - | 4 | Entry has direct pointer |
+| TAKE | 18 | - | **8** | slab remove+insert faster |
 
 **Key findings:**
 - Entry API wins for mutation (GET_MUT, REPLACE) - direct pointer avoids index lookup
@@ -73,11 +73,11 @@ Accessing entries at random indices (realistic workload):
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.get()` | 5 | 7 | 7 | 25 | 234 |
-| `get_by_key()` [unsafe] | **3** | **3** | **4** | **5** | 85 |
-| slab crate | **3** | 4 | 4 | 10 | 44 |
+| `entry.get()` | **2** | **2** | **2** | 5 | 21 |
+| `get_by_key()` [unsafe] | **2** | **2** | **2** | **2** | 33 |
+| slab crate | 3 | 3 | 3 | 8 | 88 |
 
-Entry's higher p50 reflects validity check overhead. Key-based matches slab.
+Entry and key-based both beat slab crate by ~1 cycle.
 
 ### Hot Access Pattern
 
@@ -85,20 +85,20 @@ Repeatedly accessing the same entry (measures ILP):
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.get()` | **1** | **1** | **1** | **1** | 18 |
-| slab crate | **1** | **1** | 2 | 3 | 57 |
+| `entry.get()` | **0** | 1 | 2 | 2 | 1731 |
+| slab crate | 1 | 2 | 2 | 2 | 25 |
 
-Both achieve ~1 cycle due to CPU pipelining repeated loads.
+Entry achieves 0 cycles at p50 due to CPU pipelining repeated loads.
 
 ### GET_MUT
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.get_mut()` | **2** | **2** | **2** | **3** | 24 |
-| `get_by_key_mut()` [unsafe] | **2** | **2** | **2** | **3** | 32 |
-| slab crate | 3 | 3 | 5 | 10 | 73 |
+| `entry.get_mut()` | **2** | **2** | **2** | **2** | 97 |
+| `get_by_key_mut()` [unsafe] | **2** | **2** | 3 | 5 | 53 |
+| slab crate | 3 | 3 | 3 | 7 | 116 |
 
-Entry/key-based are 50% faster than slab at p50, with tighter tail latency.
+Entry/key-based are 33% faster than slab at p50.
 
 ---
 
@@ -106,8 +106,8 @@ Entry/key-based are 50% faster than slab at p50, with tighter tail latency.
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| BoundedSlab | 7 | 10 | 12 | 15 | 78 |
-| slab crate | **5** | **5** | **5** | **8** | 87 |
+| BoundedSlab | 7 | 11 | 12 | 41 | 105 |
+| slab crate | **5** | **5** | **6** | **10** | 81 |
 
 Slab crate wins by ~2 cycles due to simpler freelist management. Our stamp encoding (64-bit with state flags) has slightly more overhead.
 
@@ -117,11 +117,11 @@ Slab crate wins by ~2 cycles due to simpler freelist management. Our stamp encod
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.remove()` | 7 | 11 | 14 | 18 | 221 |
-| `remove_by_key()` [unsafe] | **3** | **3** | 5 | 14 | 134 |
-| slab crate | **3** | 4 | 7 | 13 | 91 |
+| `entry.remove()` | 8 | 12 | 16 | 23 | 481 |
+| `remove_by_key()` [unsafe] | **3** | **4** | 7 | 13 | 68 |
+| slab crate | 4 | 4 | 4 | 13 | 48 |
 
-Entry-based remove has ~4 cycles overhead for validity check. Key-based matches slab at p50.
+Key-based remove is fastest at p50. Entry-based has ~5 cycles overhead for validity check.
 
 ---
 
@@ -129,10 +129,10 @@ Entry-based remove has ~4 cycles overhead for validity check. Key-based matches 
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.replace()` | **2** | **3** | **3** | **5** | 70 |
-| slab get_mut+replace | 4 | 4 | 5 | 12 | 78 |
+| `entry.replace()` | **3** | **3** | **3** | **5** | 62 |
+| slab get_mut+replace | 4 | 4 | 6 | 13 | 77 |
 
-Entry's cached pointer saves 2 cycles - no index lookup needed.
+Entry's cached pointer saves 1 cycle - no index lookup needed.
 
 ---
 
@@ -140,11 +140,11 @@ Entry's cached pointer saves 2 cycles - no index lookup needed.
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.is_valid()` | **2** | **2** | **3** | **5** | 23 |
-| `contains_key()` | 3 | 3 | 4 | 6 | 65 |
-| slab crate | **2** | **2** | 4 | 6 | 81 |
+| `entry.is_valid()` | **2** | **2** | **3** | **4** | 24 |
+| `contains_key()` | 3 | 3 | 3 | 4 | 547 |
+| slab crate | 3 | 3 | 3 | 3 | 45 |
 
-All implementations perform a simple stamp/version comparison. Entry and slab tied at p50.
+Entry is fastest at p50. All implementations perform a simple stamp/version comparison.
 
 ---
 
@@ -152,8 +152,8 @@ All implementations perform a simple stamp/version comparison. Entry and slab ti
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `entry.take()` | 19 | 29 | 33 | 139 | 160 |
-| slab remove+insert | **8** | **8** | **12** | **19** | 115 |
+| `entry.take()` | 18 | 26 | 35 | 78 | 1124 |
+| slab remove+insert | **8** | **8** | **10** | **19** | 111 |
 
 Take is expensive due to VacantEntry creation overhead. If you need this pattern frequently, consider remove+insert.
 

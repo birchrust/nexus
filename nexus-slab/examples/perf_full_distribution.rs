@@ -8,6 +8,7 @@
 //!   taskset -c 0 ./target/release/examples/perf_full_distribution
 
 use hdrhistogram::Histogram;
+use seq_macro::seq;
 use std::hint::black_box;
 
 use nexus_slab::bounded;
@@ -16,19 +17,10 @@ const NUM_SLOTS: usize = 10_000;
 const OPS: usize = 500_000;
 const BATCH_SIZE: u64 = 100;
 
-/// Unroll 100 operations - no loop overhead, just straight-line code.
-macro_rules! unroll_100 {
-    ($op:expr) => {
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 10
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 20
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 30
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 40
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 50
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 60
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 70
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 80
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 90
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 100
+/// Unroll N iterations of an expression - no loop overhead, just straight-line code.
+macro_rules! unroll {
+    ($n:literal, $op:expr) => {
+        seq!(_ in 0..$n { $op; })
     };
 }
 
@@ -94,7 +86,7 @@ fn bench_get() {
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let entry = black_box(&entries[idx % NUM_SLOTS]);
             black_box(entry.get());
             idx = idx.wrapping_add(1);
@@ -107,7 +99,7 @@ fn bench_get() {
     let hot_entry = &entries[0];
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let entry = black_box(hot_entry);
             black_box(entry.get());
         });
@@ -123,7 +115,7 @@ fn bench_get() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&bounded_slab2);
             let key = black_box(keys2[idx % NUM_SLOTS]);
             black_box(unsafe { slab_ref.get_by_key(key) });
@@ -141,7 +133,7 @@ fn bench_get() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             black_box(slab_ref.get(key));
@@ -155,7 +147,7 @@ fn bench_get() {
     let hot_key = keys[0];
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&slab);
             let key = black_box(hot_key);
             black_box(slab_ref.get(key));
@@ -198,7 +190,7 @@ fn bench_get_mut() {
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let entry = black_box(&mut entries[idx % NUM_SLOTS]);
             black_box(entry.get_mut());
             idx = idx.wrapping_add(1);
@@ -215,7 +207,7 @@ fn bench_get_mut() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&bounded_slab2);
             let key = black_box(keys2[idx % NUM_SLOTS]);
             black_box(unsafe { slab_ref.get_by_key_mut(key) });
@@ -232,7 +224,7 @@ fn bench_get_mut() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&mut slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             black_box(slab_ref.get_mut(key));
@@ -274,7 +266,7 @@ fn bench_contains() {
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let entry = black_box(&entries[idx % NUM_SLOTS]);
             black_box(entry.is_valid());
             idx = idx.wrapping_add(1);
@@ -291,7 +283,7 @@ fn bench_contains() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&bounded_slab2);
             let key = black_box(keys2[idx % NUM_SLOTS]);
             black_box(slab_ref.contains_key(key));
@@ -308,7 +300,7 @@ fn bench_contains() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             black_box(slab_ref.contains(key));
@@ -341,7 +333,7 @@ fn bench_insert() {
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&bounded_slab);
             let entry = slab_ref.try_insert(black_box(42u64)).unwrap();
             temp_entries.push(entry);
@@ -361,7 +353,7 @@ fn bench_insert() {
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&mut slab);
             let key = slab_ref.insert(black_box(42u64));
             temp_keys.push(key);
@@ -405,9 +397,11 @@ fn bench_remove() {
         // Time the removes
         let mut idx = 0usize;
         let start = rdtsc_start();
-        unroll_100!({
-            let entry = black_box(std::mem::replace(&mut temp_entries[idx],
-                bounded_slab.try_insert(0).unwrap())); // placeholder
+        unroll!(100, {
+            let entry = black_box(std::mem::replace(
+                &mut temp_entries[idx],
+                bounded_slab.try_insert(0).unwrap(),
+            )); // placeholder
             black_box(entry.remove());
             idx += 1;
         });
@@ -431,7 +425,7 @@ fn bench_remove() {
 
         let mut idx = 0usize;
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&bounded_slab2);
             let key = black_box(temp_keys[idx]);
             black_box(unsafe { slab_ref.remove_by_key(key) });
@@ -446,13 +440,11 @@ fn bench_remove() {
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
-        let temp_keys: Vec<_> = (0..BATCH_SIZE)
-            .map(|_| slab.insert(42u64))
-            .collect();
+        let temp_keys: Vec<_> = (0..BATCH_SIZE).map(|_| slab.insert(42u64)).collect();
 
         let mut idx = 0usize;
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&mut slab);
             let key = black_box(temp_keys[idx]);
             black_box(slab_ref.remove(key));
@@ -493,7 +485,7 @@ fn bench_replace() {
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let entry = black_box(&mut entries[idx % NUM_SLOTS]);
             black_box(entry.replace(black_box(999u64)));
             idx = idx.wrapping_add(1);
@@ -506,7 +498,7 @@ fn bench_replace() {
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&mut slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             if let Some(v) = slab_ref.get_mut(key) {
@@ -545,9 +537,8 @@ fn bench_take() {
 
         let mut idx = 0usize;
         let start = rdtsc_start();
-        unroll_100!({
-            let entry = std::mem::replace(&mut entries[idx],
-                bounded_slab.try_insert(0).unwrap()); // placeholder
+        unroll!(100, {
+            let entry = std::mem::replace(&mut entries[idx], bounded_slab.try_insert(0).unwrap()); // placeholder
             let entry = black_box(entry);
             let (val, vacant) = entry.take();
             black_box(val);
@@ -572,7 +563,7 @@ fn bench_take() {
 
         let mut idx = 0usize;
         let start = rdtsc_start();
-        unroll_100!({
+        unroll!(100, {
             let slab_ref = black_box(&mut slab);
             let key = black_box(keys[idx]);
             let val = slab_ref.remove(key);
@@ -601,7 +592,10 @@ fn bench_take() {
 fn main() {
     println!("NEXUS-SLAB vs SLAB CRATE - ACTUAL CYCLE COUNTS");
     println!("===============================================");
-    println!("Unrolled {} ops per sample, {} total ops per benchmark", BATCH_SIZE, OPS);
+    println!(
+        "Unrolled {} ops per sample, {} total ops per benchmark",
+        BATCH_SIZE, OPS
+    );
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)\n");
 
     bench_get();

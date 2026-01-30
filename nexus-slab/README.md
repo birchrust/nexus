@@ -21,11 +21,11 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core. Cycle counts 
 
 | Operation | Entry API | Key-based | slab crate | Notes |
 |-----------|-----------|-----------|------------|-------|
-| GET | 5 cycles | **3 cycles** | **3 cycles** | Key-based matches slab |
+| GET | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
 | GET_MUT | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
 | INSERT | 7 cycles | - | **5 cycles** | slab's simpler freelist |
-| REMOVE | 7 cycles | **3 cycles** | **3 cycles** | Key-based matches slab |
-| REPLACE | **2 cycles** | - | 4 cycles | Entry's cached pointer |
+| REMOVE | 8 cycles | **3 cycles** | 4 cycles | Key-based fastest |
+| REPLACE | **3 cycles** | - | 4 cycles | Entry's cached pointer |
 
 ### Slab (growable) - Tail Latency
 
