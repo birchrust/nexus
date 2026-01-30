@@ -45,14 +45,14 @@ fn bench_nexus_slab() -> Histogram<u64> {
     // Warmup
     for i in 0..10_000u64 {
         let entry = slab.insert(i);
-        black_box(slab.remove(entry));
+        black_box(entry.remove());
     }
 
     // Measured churn: insert then immediately remove (using fast path)
     for i in 0..OPS as u64 {
         let start = rdtscp();
         let entry = slab.insert(i);
-        black_box(slab.remove(entry));
+        black_box(entry.remove());
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }

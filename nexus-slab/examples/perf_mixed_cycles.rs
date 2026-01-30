@@ -123,7 +123,7 @@ fn bench_nexus() -> GrowthStats {
         let entry = slab.insert(i as u64);
         let end = rdtscp();
         let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
-        keys.push(entry.key());
+        keys.push(entry.leak());
     }
 
     // Mixed ops within pre-allocated space
@@ -135,7 +135,7 @@ fn bench_nexus() -> GrowthStats {
             let entry = slab.insert(rng.next());
             let end = rdtscp();
             let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
-            keys.push(entry.key());
+            keys.push(entry.leak());
         } else if op < 8 && !keys.is_empty() {
             // Get
             let idx = rng.next_usize(keys.len());
@@ -161,7 +161,7 @@ fn bench_nexus() -> GrowthStats {
         let entry = slab.insert(rng.next());
         let end = rdtscp();
         let _ = stats.during_growth.insert.record(end.wrapping_sub(start));
-        keys.push(entry.key());
+        keys.push(entry.leak());
         // Some gets during growth
         if !keys.is_empty() && rng.next() % 4 == 0 {
             let idx = rng.next_usize(keys.len());
@@ -181,7 +181,7 @@ fn bench_nexus() -> GrowthStats {
             let entry = slab.insert(rng.next());
             let end = rdtscp();
             let _ = stats.post_growth.insert.record(end.wrapping_sub(start));
-            keys.push(entry.key());
+            keys.push(entry.leak());
         } else if op < 8 && !keys.is_empty() {
             let idx = rng.next_usize(keys.len());
             let key = keys[idx];

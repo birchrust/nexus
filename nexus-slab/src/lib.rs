@@ -121,17 +121,17 @@
 //!
 //! let slab = Slab::with_capacity(1000);
 //!
-//! // Entry-based API (primary)
+//! // Entry-based API (primary) - RAII semantics
 //! let entry = slab.insert(42);
 //! assert_eq!(*entry.get(), 42);
 //! let value = entry.remove();
 //! assert_eq!(value, 42);
 //!
-//! // Key-based API (for collections)
+//! // Key-based API (for collections) - leak to store key externally
 //! let entry = slab.insert(100);
-//! let key = entry.key();
+//! let key = entry.leak(); // keep data alive, get key
 //! assert_eq!(*slab.get(key).unwrap(), 100);
-//! let value = slab.remove_by_key(key);
+//! let value = slab.remove_by_key(key).unwrap();
 //! assert_eq!(value, 100);
 //! ```
 //!
@@ -152,9 +152,516 @@ pub mod bounded;
 mod shared;
 pub mod unbounded;
 
+use std::fmt;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
+
+use shared::SlotCell;
+
 // Re-export primary types at root
-pub use bounded::{BoundedSlab, Entry, Ref, RefMut, UntrackedAccessor, VacantEntry};
+pub use bounded::{BoundedSlab, UntrackedAccessor, VacantEntry};
 pub use unbounded::{Slab, SlabBuilder, SlabUntrackedAccessor, SlabVacantEntry};
+
+// =============================================================================
+// Free Function Type
+// =============================================================================
+
+/// Function pointer type for returning a slot to its freelist.
+///
+/// Called by Entry on drop/remove. Only manages freelist - does not drop the value.
+/// The key identifies which slot, ctx points to slab-specific data.
+pub(crate) type FreeFn = unsafe fn(Key, *mut ());
+
+// =============================================================================
+// Entry (Unified RAII Handle)
+// =============================================================================
+
+/// RAII handle to a slot in any slab.
+///
+/// When dropped, the value is dropped and the slot is returned to the freelist.
+/// Use [`leak()`](Self::leak) to keep the data alive and get the key for
+/// external storage.
+///
+/// # Size
+///
+/// Entry is 32 bytes: slot ptr (8) + ctx (8) + free_fn (8) + key (4) + padding (4).
+pub struct Entry<T> {
+    slot: *mut SlotCell<T>,
+    ctx: *mut (),
+    free_fn: FreeFn,
+    key: Key,
+    _marker: PhantomData<T>,
+}
+
+impl<T> Entry<T> {
+    /// Creates a new Entry. Internal use only.
+    #[inline]
+    pub(crate) fn new(
+        slot: *mut SlotCell<T>,
+        ctx: *mut (),
+        free_fn: FreeFn,
+        key: Key,
+    ) -> Self {
+        Self {
+            slot,
+            ctx,
+            free_fn,
+            key,
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn slot(&self) -> &SlotCell<T> {
+        // SAFETY: slot pointer is valid for 'static (slab is leaked)
+        unsafe { &*self.slot }
+    }
+
+    /// Returns the context pointer. Internal use only.
+    #[inline]
+    pub(crate) fn ctx(&self) -> *mut () {
+        self.ctx
+    }
+
+    /// Returns the storage key.
+    #[inline]
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    /// Returns `true` if the slot is still occupied.
+    ///
+    /// This can return `false` if the slot was removed via `slab.remove_by_key()`
+    /// while this entry existed (e.g., from a leaked key).
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        self.slot().is_occupied()
+    }
+
+    /// Consumes the entry without deallocating. Returns the key.
+    ///
+    /// The data remains in the slab. Use the returned key with
+    /// `slab.get(key)`, `slab.entry(key)`, or `slab.remove_by_key(key)`.
+    ///
+    /// This is the "escape hatch" for patterns where you need
+    /// the key stored externally.
+    #[inline]
+    pub fn leak(self) -> Key {
+        let key = self.key;
+        std::mem::forget(self);
+        key
+    }
+
+    // =========================================================================
+    // Safe access (borrow tracking)
+    // =========================================================================
+
+    /// Returns a tracked reference to the value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or already borrowed.
+    #[inline]
+    pub fn get(&self) -> Ref<T> {
+        self.try_get().expect("slot invalid or borrowed")
+    }
+
+    /// Returns a tracked mutable reference to the value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or already borrowed.
+    #[inline]
+    pub fn get_mut(&self) -> RefMut<T> {
+        self.try_get_mut().expect("slot invalid or borrowed")
+    }
+
+    /// Returns a tracked reference, or `None` if invalid/borrowed.
+    #[inline]
+    pub fn try_get(&self) -> Option<Ref<T>> {
+        let slot = self.slot();
+        if !slot.is_available() {
+            return None;
+        }
+        slot.set_borrowed();
+        Some(Ref::new(self.slot))
+    }
+
+    /// Returns a tracked mutable reference, or `None` if invalid/borrowed.
+    #[inline]
+    pub fn try_get_mut(&self) -> Option<RefMut<T>> {
+        let slot = self.slot();
+        if !slot.is_available() {
+            return None;
+        }
+        slot.set_borrowed();
+        Some(RefMut::new(self.slot))
+    }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or already borrowed.
+    pub fn get_pinned(&self) -> Pin<Ref<T>> {
+        unsafe { Pin::new_unchecked(self.get()) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or already borrowed.
+    pub fn get_pinned_mut(&self) -> Pin<RefMut<T>> {
+        unsafe { Pin::new_unchecked(self.get_mut()) }
+    }
+
+    /// Returns a pinned reference, or `None` if invalid/borrowed.
+    pub fn try_get_pinned(&self) -> Option<Pin<Ref<T>>> {
+        self.try_get().map(|r| unsafe { Pin::new_unchecked(r) })
+    }
+
+    /// Returns a pinned mutable reference, or `None` if invalid/borrowed.
+    pub fn try_get_pinned_mut(&self) -> Option<Pin<RefMut<T>>> {
+        self.try_get_mut().map(|r| unsafe { Pin::new_unchecked(r) })
+    }
+
+    // =========================================================================
+    // Unsafe access
+    // =========================================================================
+
+    /// Returns an untracked reference.
+    ///
+    /// # Safety
+    ///
+    /// No concurrent mutable access to this slot.
+    #[inline]
+    pub unsafe fn get_untracked(&self) -> Option<&T> {
+        let slot = self.slot();
+        if slot.is_vacant() {
+            return None;
+        }
+        Some(unsafe { slot.value_ref() })
+    }
+
+    /// Returns an untracked mutable reference.
+    ///
+    /// # Safety
+    ///
+    /// No concurrent access to this slot.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_untracked_mut(&self) -> Option<&mut T> {
+        let slot = self.slot();
+        if slot.is_vacant() {
+            return None;
+        }
+        Some(unsafe { slot.value_mut() })
+    }
+
+    /// Returns a reference without any checks.
+    ///
+    /// # Safety
+    ///
+    /// Slot must be valid. No concurrent mutable access.
+    #[inline]
+    pub unsafe fn get_unchecked(&self) -> &T {
+        unsafe { self.slot().value_ref() }
+    }
+
+    /// Returns a mutable reference without any checks.
+    ///
+    /// # Safety
+    ///
+    /// Slot must be valid. No concurrent access.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_unchecked_mut(&self) -> &mut T {
+        unsafe { self.slot().value_mut() }
+    }
+
+    /// Pinned read without checks.
+    ///
+    /// # Safety
+    ///
+    /// Same requirements as [`get_unchecked`](Self::get_unchecked).
+    #[inline]
+    pub unsafe fn get_pinned_unchecked(&self) -> Pin<&T> {
+        unsafe { Pin::new_unchecked(self.get_unchecked()) }
+    }
+
+    /// Pinned write without checks.
+    ///
+    /// # Safety
+    ///
+    /// Same requirements as [`get_unchecked_mut`](Self::get_unchecked_mut).
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_pinned_mut_unchecked(&self) -> Pin<&mut T> {
+        unsafe { Pin::new_unchecked(self.get_unchecked_mut()) }
+    }
+
+    // =========================================================================
+    // Replace API
+    // =========================================================================
+
+    /// Replaces the value, returning the old one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or currently borrowed.
+    pub fn replace(&self, value: T) -> T {
+        self.try_replace(value).expect("slot invalid or borrowed")
+    }
+
+    /// Replaces the value if valid, returning the old one.
+    pub fn try_replace(&self, value: T) -> Option<T> {
+        self.try_replace_with(|_| value)
+    }
+
+    /// Replaces the value using a closure, returning the old value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or currently borrowed.
+    pub fn replace_with<F>(&self, f: F) -> T
+    where
+        F: FnOnce(&T) -> T,
+    {
+        self.try_replace_with(f).expect("slot invalid or borrowed")
+    }
+
+    /// Replaces the value using a closure if valid, returning the old value.
+    pub fn try_replace_with<F>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(&T) -> T,
+    {
+        let slot = self.slot();
+        if !slot.is_available() {
+            return None;
+        }
+
+        let old_value = unsafe { (*slot.value.get()).assume_init_read() };
+        let new_value = f(&old_value);
+        unsafe {
+            (*slot.value.get()).write(new_value);
+        }
+
+        Some(old_value)
+    }
+
+    // =========================================================================
+    // Modify API
+    // =========================================================================
+
+    /// Modifies the value in place if valid.
+    ///
+    /// Returns `&self` for chaining.
+    pub fn and_modify<F>(&self, f: F) -> &Self
+    where
+        F: FnOnce(&mut T),
+    {
+        if let Some(mut guard) = self.try_get_mut() {
+            f(&mut *guard);
+        }
+        self
+    }
+
+    // =========================================================================
+    // Remove (explicit deallocation)
+    // =========================================================================
+
+    /// Removes and returns the value, deallocating the slot.
+    ///
+    /// This is an explicit alternative to just dropping the entry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is invalid or currently borrowed.
+    pub fn remove(self) -> T {
+        self.try_remove().expect("slot invalid or borrowed")
+    }
+
+    /// Removes and returns the value if valid.
+    pub fn try_remove(self) -> Option<T> {
+        let slot = self.slot();
+        if !slot.is_available() {
+            return None;
+        }
+
+        // Mark slot vacant first (defensive - ensures Entry::drop would no-op)
+        // SAFETY: free_fn only manages freelist, doesn't touch value
+        unsafe { (self.free_fn)(self.key, self.ctx) };
+
+        // Read value out (bits still there in memory, slot is now vacant)
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
+
+        // Skip Entry::drop (slot already vacant, would no-op anyway)
+        std::mem::forget(self);
+
+        Some(value)
+    }
+
+    /// Removes without checks.
+    ///
+    /// # Safety
+    ///
+    /// Slot must be valid and not borrowed.
+    pub unsafe fn remove_unchecked(self) -> T {
+        // Mark slot vacant first
+        unsafe { (self.free_fn)(self.key, self.ctx) };
+
+        // Read value
+        let value = unsafe { (*self.slot().value.get()).assume_init_read() };
+
+        std::mem::forget(self);
+        value
+    }
+}
+
+impl<T> Drop for Entry<T> {
+    fn drop(&mut self) {
+        let slot = self.slot();
+
+        // Only deallocate if slot is still occupied
+        if slot.is_occupied() {
+            // Drop the value
+            unsafe {
+                std::ptr::drop_in_place((*slot.value.get()).as_mut_ptr());
+            }
+
+            // Return slot to freelist
+            // SAFETY: free_fn only manages freelist
+            unsafe { (self.free_fn)(self.key, self.ctx) };
+        }
+    }
+}
+
+impl<T> PartialEq for Entry<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.slot == other.slot && self.key == other.key
+    }
+}
+
+impl<T> Eq for Entry<T> {}
+
+impl<T> fmt::Debug for Entry<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Entry")
+            .field("key", &self.key)
+            .field("valid", &self.is_valid())
+            .finish()
+    }
+}
+
+// =============================================================================
+// Ref / RefMut guards
+// =============================================================================
+
+/// RAII guard for a borrowed reference.
+///
+/// Clears the borrow flag on drop.
+pub struct Ref<T> {
+    slot_ptr: *mut SlotCell<T>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> Ref<T> {
+    /// Creates a new Ref. Internal use only.
+    #[inline]
+    pub(crate) fn new(slot_ptr: *mut SlotCell<T>) -> Self {
+        Self {
+            slot_ptr,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Deref for Ref<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        // SAFETY: Slot is borrowed, value is valid
+        unsafe { (*self.slot_ptr).value_ref() }
+    }
+}
+
+impl<T> Drop for Ref<T> {
+    fn drop(&mut self) {
+        // SAFETY: We set borrowed, so we clear it
+        unsafe { (*self.slot_ptr).clear_borrowed() };
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Ref<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Ref<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
+
+/// RAII guard for a mutably borrowed reference.
+///
+/// Clears the borrow flag on drop.
+pub struct RefMut<T> {
+    slot_ptr: *mut SlotCell<T>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> RefMut<T> {
+    /// Creates a new RefMut. Internal use only.
+    #[inline]
+    pub(crate) fn new(slot_ptr: *mut SlotCell<T>) -> Self {
+        Self {
+            slot_ptr,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Deref for RefMut<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        // SAFETY: Slot is borrowed, value is valid
+        unsafe { (*self.slot_ptr).value_ref() }
+    }
+}
+
+impl<T> DerefMut for RefMut<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: Slot is mutably borrowed, value is valid
+        unsafe { (*self.slot_ptr).value_mut() }
+    }
+}
+
+impl<T> Drop for RefMut<T> {
+    fn drop(&mut self) {
+        // SAFETY: We set borrowed, so we clear it
+        unsafe { (*self.slot_ptr).clear_borrowed() };
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for RefMut<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for RefMut<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
 
 // =============================================================================
 // Constants
@@ -400,5 +907,11 @@ mod tests {
     #[test]
     fn key_size() {
         assert_eq!(std::mem::size_of::<Key>(), 4);
+    }
+
+    #[test]
+    fn entry_size() {
+        // Entry should be 32 bytes: slot(8) + ctx(8) + free_fn(8) + key(4) + padding(4)
+        assert_eq!(std::mem::size_of::<Entry<u64>>(), 32);
     }
 }

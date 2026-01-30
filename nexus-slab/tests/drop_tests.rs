@@ -2,9 +2,12 @@
 //!
 //! These tests verify that values are properly dropped when:
 //! - Entry::remove() is called
-//! - Slab is dropped
+//! - Entry is dropped (RAII)
 //! - clear() is called
 //! - VacantEntry is dropped without inserting
+//!
+//! Note: In the static allocator model, slabs themselves are never dropped
+//! (they are leaked). Values are dropped when entries are dropped or removed.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -37,8 +40,8 @@ impl Drop for DropTracker {
 fn bounded_remove_drops_value() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab = BoundedSlab::with_capacity(16);
-    let entry = slab.insert(DropTracker::new(counter.clone())).unwrap();
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
+    let entry = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
 
     assert_eq!(counter.get(), 0);
     entry.remove();
@@ -46,27 +49,27 @@ fn bounded_remove_drops_value() {
 }
 
 #[test]
-fn bounded_slab_drop_drops_all_values() {
+fn bounded_entry_drop_drops_value() {
     let counter = Rc::new(Cell::new(0));
 
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
     {
-        let slab = BoundedSlab::with_capacity(16);
-        for _ in 0..10 {
-            slab.insert(DropTracker::new(counter.clone())).unwrap();
-        }
+        let _entry = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
         assert_eq!(counter.get(), 0);
     }
-
-    assert_eq!(counter.get(), 10);
+    // Entry dropped via RAII
+    assert_eq!(counter.get(), 1);
 }
 
 #[test]
 fn bounded_clear_drops_all_values() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab = BoundedSlab::with_capacity(16);
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
     for _ in 0..10 {
-        slab.insert(DropTracker::new(counter.clone())).unwrap();
+        slab.try_insert(DropTracker::new(counter.clone()))
+            .unwrap()
+            .leak(); // leak to keep values alive
     }
 
     assert_eq!(counter.get(), 0);
@@ -81,8 +84,10 @@ fn bounded_clear_drops_all_values() {
 fn bounded_replace_drops_old_value() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab = BoundedSlab::with_capacity(16);
-    let entry = slab.insert(DropTracker::new(counter.clone())).unwrap();
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
+    let entry = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap();
 
     assert_eq!(counter.get(), 0);
 
@@ -100,8 +105,10 @@ fn bounded_replace_drops_old_value() {
 fn bounded_take_returns_value_without_dropping() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab = BoundedSlab::with_capacity(16);
-    let entry = slab.insert(DropTracker::new(counter.clone())).unwrap();
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
+    let entry = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap();
 
     assert_eq!(counter.get(), 0);
 
@@ -121,9 +128,9 @@ fn bounded_take_returns_value_without_dropping() {
 fn bounded_vacant_entry_drop_no_drop() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab: BoundedSlab<DropTracker> = BoundedSlab::with_capacity(16);
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
     {
-        let _vacant = slab.vacant_entry().unwrap();
+        let _vacant = slab.try_vacant_entry().unwrap();
         // Don't insert anything
     }
 
@@ -136,24 +143,35 @@ fn bounded_vacant_entry_drop_no_drop() {
 fn bounded_partial_fill_drops_only_occupied() {
     let counter = Rc::new(Cell::new(0));
 
-    {
-        let slab = BoundedSlab::with_capacity(16);
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
 
-        // Insert 5, remove 2
-        let e1 = slab.insert(DropTracker::new(counter.clone())).unwrap();
-        let _e2 = slab.insert(DropTracker::new(counter.clone())).unwrap();
-        let e3 = slab.insert(DropTracker::new(counter.clone())).unwrap();
-        let _e4 = slab.insert(DropTracker::new(counter.clone())).unwrap();
-        let _e5 = slab.insert(DropTracker::new(counter.clone())).unwrap();
+    // Insert 5, remove 2 via Entry RAII
+    let e1 = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap();
+    let _e2 = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap()
+        .leak(); // leak keeps alive
+    let e3 = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap();
+    let _e4 = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap()
+        .leak();
+    let _e5 = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap()
+        .leak();
 
-        // Remove 2 of them
-        e1.remove();
-        e3.remove();
-        assert_eq!(counter.get(), 2);
+    // Remove 2 of them explicitly
+    e1.remove();
+    e3.remove();
+    assert_eq!(counter.get(), 2);
 
-        // Slab drop should drop remaining 3
-    }
-
+    // clear() should drop remaining 3
+    slab.clear();
     assert_eq!(counter.get(), 5);
 }
 
@@ -174,18 +192,16 @@ fn unbounded_remove_drops_value() {
 }
 
 #[test]
-fn unbounded_slab_drop_drops_all_values() {
+fn unbounded_entry_drop_drops_value() {
     let counter = Rc::new(Cell::new(0));
 
+    let slab: Slab<DropTracker> = Slab::with_capacity(16);
     {
-        let slab = Slab::with_capacity(16);
-        for _ in 0..10 {
-            slab.insert(DropTracker::new(counter.clone()));
-        }
+        let _entry = slab.insert(DropTracker::new(counter.clone()));
         assert_eq!(counter.get(), 0);
     }
-
-    assert_eq!(counter.get(), 10);
+    // Entry dropped via RAII
+    assert_eq!(counter.get(), 1);
 }
 
 #[test]
@@ -194,7 +210,7 @@ fn unbounded_clear_drops_all_values() {
 
     let slab = Slab::with_capacity(16);
     for _ in 0..10 {
-        slab.insert(DropTracker::new(counter.clone()));
+        slab.insert(DropTracker::new(counter.clone())).leak();
     }
 
     assert_eq!(counter.get(), 0);
@@ -205,21 +221,19 @@ fn unbounded_clear_drops_all_values() {
 }
 
 #[test]
-fn unbounded_multi_chunk_drops_all() {
+fn unbounded_multi_chunk_clears_all() {
     let counter = Rc::new(Cell::new(0));
 
-    {
-        // Small chunk size to force multiple chunks
-        let slab: Slab<DropTracker> = Slab::builder().chunk_capacity(4).build();
+    // Small chunk size to force multiple chunks
+    let slab: Slab<DropTracker> = Slab::builder().chunk_capacity(4).build();
 
-        // Insert enough to span multiple chunks
-        for _ in 0..20 {
-            slab.insert(DropTracker::new(counter.clone()));
-        }
-
-        assert_eq!(counter.get(), 0);
+    // Insert enough to span multiple chunks
+    for _ in 0..20 {
+        slab.insert(DropTracker::new(counter.clone())).leak();
     }
 
+    assert_eq!(counter.get(), 0);
+    slab.clear();
     assert_eq!(counter.get(), 20);
 }
 
@@ -238,25 +252,6 @@ fn unbounded_replace_drops_old_value() {
 
     entry.remove();
     assert_eq!(counter.get(), 2);
-}
-
-#[test]
-fn unbounded_take_returns_value_without_dropping() {
-    let counter = Rc::new(Cell::new(0));
-
-    let slab = Slab::with_capacity(16);
-    let entry = slab.insert(DropTracker::new(counter.clone()));
-
-    assert_eq!(counter.get(), 0);
-
-    let (value, vacant) = entry.take();
-    assert_eq!(counter.get(), 0);
-
-    drop(value);
-    assert_eq!(counter.get(), 1);
-
-    drop(vacant);
-    assert_eq!(counter.get(), 1);
 }
 
 #[test]
@@ -280,8 +275,11 @@ fn unbounded_vacant_entry_drop_no_drop() {
 fn bounded_remove_by_key_drops_value() {
     let counter = Rc::new(Cell::new(0));
 
-    let slab = BoundedSlab::with_capacity(16);
-    let key = slab.insert(DropTracker::new(counter.clone())).unwrap().key();
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
+    let key = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap()
+        .leak();
 
     assert_eq!(counter.get(), 0);
     let removed = slab.remove_by_key(key);
@@ -294,7 +292,7 @@ fn unbounded_remove_by_key_drops_value() {
     let counter = Rc::new(Cell::new(0));
 
     let slab = Slab::with_capacity(16);
-    let key = slab.insert(DropTracker::new(counter.clone())).key();
+    let key = slab.insert(DropTracker::new(counter.clone())).leak();
 
     assert_eq!(counter.get(), 0);
     let removed = slab.remove_by_key(key);
@@ -307,8 +305,10 @@ fn bounded_insert_with_closure_drops_on_remove() {
     let counter = Rc::new(Cell::new(0));
     let counter_clone = counter.clone();
 
-    let slab = BoundedSlab::with_capacity(16);
-    let entry = slab.insert_with(|_| DropTracker::new(counter_clone)).unwrap();
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
+    let entry = slab
+        .try_insert_with(|_| DropTracker::new(counter_clone))
+        .unwrap();
 
     assert_eq!(counter.get(), 0);
     entry.remove();
@@ -325,5 +325,40 @@ fn unbounded_insert_with_closure_drops_on_remove() {
 
     assert_eq!(counter.get(), 0);
     entry.remove();
+    assert_eq!(counter.get(), 1);
+}
+
+#[test]
+fn bounded_leak_then_entry_drops_value() {
+    let counter = Rc::new(Cell::new(0));
+
+    let slab: BoundedSlab<DropTracker> = BoundedSlab::leak(16);
+    let key = slab
+        .try_insert(DropTracker::new(counter.clone()))
+        .unwrap()
+        .leak();
+
+    assert_eq!(counter.get(), 0);
+
+    // Re-acquire entry and let it drop
+    {
+        let _entry = slab.entry(key).unwrap();
+    }
+    assert_eq!(counter.get(), 1);
+}
+
+#[test]
+fn unbounded_leak_then_entry_drops_value() {
+    let counter = Rc::new(Cell::new(0));
+
+    let slab: Slab<DropTracker> = Slab::with_capacity(16);
+    let key = slab.insert(DropTracker::new(counter.clone())).leak();
+
+    assert_eq!(counter.get(), 0);
+
+    // Re-acquire entry and let it drop
+    {
+        let _entry = slab.entry(key).unwrap();
+    }
     assert_eq!(counter.get(), 1);
 }

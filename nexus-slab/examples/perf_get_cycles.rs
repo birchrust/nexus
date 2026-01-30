@@ -71,7 +71,7 @@ fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
     // Fill the slab - store the keys
-    let keys: Vec<Key> = (0..CAPACITY as u64).map(|i| slab.insert(i).key()).collect();
+    let keys: Vec<Key> = (0..CAPACITY as u64).map(|i| slab.insert(i).leak()).collect();
 
     // SAFETY: No Entry operations during benchmark - untracked access is safe
     let accessor = unsafe { slab.untracked() };

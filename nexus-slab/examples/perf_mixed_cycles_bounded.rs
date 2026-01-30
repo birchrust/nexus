@@ -89,7 +89,7 @@ impl Stats {
 }
 
 fn bench_bounded_slab() -> Stats {
-    let slab: BoundedSlab<u64> = BoundedSlab::with_capacity(CAPACITY);
+    let slab: BoundedSlab<u64> = BoundedSlab::leak(CAPACITY);
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
@@ -98,8 +98,8 @@ fn bench_bounded_slab() -> Stats {
     // Warm up: fill to ~50% capacity
     let warmup_target = CAPACITY / 2;
     for i in 0..warmup_target {
-        let entry = slab.insert(i as u64).unwrap();
-        keys.push(entry.key());
+        let entry = slab.try_insert(i as u64).unwrap();
+        keys.push(entry.leak());
     }
 
     // Mixed operations
@@ -109,10 +109,10 @@ fn bench_bounded_slab() -> Stats {
         if op < 3 && slab.len() < CAPACITY - 1000 {
             // Insert (30%)
             let start = rdtscp();
-            let entry = slab.insert(rng.next()).unwrap();
+            let entry = slab.try_insert(rng.next()).unwrap();
             let end = rdtscp();
             let _ = stats.insert.record(end.wrapping_sub(start));
-            keys.push(entry.key());
+            keys.push(entry.leak());
         } else if op < 8 && !keys.is_empty() {
             // Get (50%)
             let idx = rng.next_usize(keys.len());
@@ -136,7 +136,7 @@ fn bench_bounded_slab() -> Stats {
 }
 
 fn bench_bounded_slab_unchecked() -> Stats {
-    let slab: BoundedSlab<u64> = BoundedSlab::with_capacity(CAPACITY);
+    let slab: BoundedSlab<u64> = BoundedSlab::leak(CAPACITY);
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
@@ -145,8 +145,8 @@ fn bench_bounded_slab_unchecked() -> Stats {
     // Warm up: fill to ~50% capacity
     let warmup_target = CAPACITY / 2;
     for i in 0..warmup_target {
-        let entry = slab.insert(i as u64).unwrap();
-        keys.push(entry.key());
+        let entry = slab.try_insert(i as u64).unwrap();
+        keys.push(entry.leak());
     }
 
     // Mixed operations - using unchecked where possible
@@ -156,10 +156,10 @@ fn bench_bounded_slab_unchecked() -> Stats {
         if op < 3 && slab.len() < CAPACITY - 1000 {
             // Insert (30%)
             let start = rdtscp();
-            let entry = slab.insert(rng.next()).unwrap();
+            let entry = slab.try_insert(rng.next()).unwrap();
             let end = rdtscp();
             let _ = stats.insert.record(end.wrapping_sub(start));
-            keys.push(entry.key());
+            keys.push(entry.leak());
         } else if op < 8 && !keys.is_empty() {
             // Get unchecked (50%)
             let idx = rng.next_usize(keys.len());
@@ -288,6 +288,6 @@ fn main() {
     );
 
     println!();
-    println!("NOTE: BoundedSlab uses Entry-based API with Weak reference checks");
+    println!("NOTE: BoundedSlab uses Entry-based API with static lifetime");
     println!("      slab crate uses simple index keys without liveness checking");
 }

@@ -65,11 +65,11 @@ fn generate_random_indices(count: usize, max: usize, seed: u64) -> Vec<usize> {
 }
 
 fn main() {
-    let slab: BoundedSlab<u64> = BoundedSlab::with_capacity(CAPACITY);
+    let slab: BoundedSlab<u64> = BoundedSlab::leak(CAPACITY);
 
     // Fill the slab
     let keys: Vec<Key> = (0..CAPACITY as u64)
-        .map(|i| slab.insert(i).unwrap().key())
+        .map(|i| slab.try_insert(i).unwrap().leak())
         .collect();
 
     let indices = generate_random_indices(OPS, CAPACITY, SEED);
