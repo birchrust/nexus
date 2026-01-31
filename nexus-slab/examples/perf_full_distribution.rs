@@ -110,7 +110,7 @@ fn bench_get() {
     // get_by_key() - random access
     let bounded_slab2 = bounded::Slab::<u64>::with_capacity(NUM_SLOTS);
     let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| bounded_slab2.try_insert(i).unwrap().forget())
+        .map(|i| bounded_slab2.try_insert(i).unwrap().leak())
         .collect();
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -202,7 +202,7 @@ fn bench_get_mut() {
     // get_by_key_mut() - random access
     let bounded_slab2 = bounded::Slab::<u64>::with_capacity(NUM_SLOTS);
     let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| bounded_slab2.try_insert(i).unwrap().forget())
+        .map(|i| bounded_slab2.try_insert(i).unwrap().leak())
         .collect();
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -278,7 +278,7 @@ fn bench_contains() {
     // contains_key() - random access
     let bounded_slab2 = bounded::Slab::<u64>::with_capacity(NUM_SLOTS);
     let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| bounded_slab2.try_insert(i).unwrap().forget())
+        .map(|i| bounded_slab2.try_insert(i).unwrap().leak())
         .collect();
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -329,7 +329,7 @@ fn bench_insert() {
 
     // bounded::Slab insert - need to remove after each batch to make room
     let bounded_slab = bounded::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let mut temp_entries: Vec<bounded::Entry<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+    let mut temp_entries: Vec<bounded::Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
@@ -389,7 +389,7 @@ fn bench_remove() {
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
-        let mut temp_entries: Vec<bounded::Entry<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp_entries: Vec<bounded::Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
             temp_entries.push(bounded_slab.try_insert(42u64).unwrap());
         }
@@ -420,7 +420,7 @@ fn bench_remove() {
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
         let mut temp_keys: Vec<_> = (0..BATCH_SIZE)
-            .map(|_| bounded_slab2.try_insert(42u64).unwrap().forget())
+            .map(|_| bounded_slab2.try_insert(42u64).unwrap().leak())
             .collect();
 
         let mut idx = 0usize;
@@ -608,7 +608,7 @@ fn main() {
 
     println!("===============================================");
     println!("Legend:");
-    println!("  entry.*()           Entry-based API (safe, owns slot)");
+    println!("  entry.*()           Slot-based API (safe, owns slot)");
     println!("  *_by_key() [unsafe] Key-based API (caller ensures validity)");
     println!("  slab.*()            slab crate (key + bounds checking)");
 }

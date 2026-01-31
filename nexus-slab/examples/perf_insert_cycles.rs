@@ -42,7 +42,7 @@ fn bench_nexus_slab() -> Histogram<u64> {
 
     // Warmup - fill and clear to prime caches
     for i in 0..(CAPACITY / 10) as u64 {
-        slab.insert(i).forget();
+        slab.insert(i).leak();
     }
     slab.clear();
 
@@ -52,7 +52,7 @@ fn bench_nexus_slab() -> Histogram<u64> {
         let entry = slab.insert(i);
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
-        black_box(entry.forget());
+        black_box(entry.leak());
     }
 
     hist

@@ -1,7 +1,7 @@
 //! Access method latency comparison.
 //!
 //! Benchmarks access methods:
-//! - Entry::get() - direct access (safe, Entry owns slot)
+//! - Slot::get() - direct access (safe, Slot owns slot)
 //! - get_by_key() - unsafe key-based access
 //! - contains_key() - validity check
 //!
@@ -67,7 +67,7 @@ fn main() {
 
     // Fill the slab - forget entries to keep them alive
     let keys: Vec<Key> = (0..CAPACITY as u64)
-        .map(|i| slab.try_insert(i).unwrap().forget())
+        .map(|i| slab.try_insert(i).unwrap().leak())
         .collect();
 
     let indices = generate_random_indices(OPS, CAPACITY, SEED);
@@ -104,16 +104,16 @@ fn main() {
     }
     print_stats("contains_key()", &hist);
 
-    // 3. Entry::get() via re-acquiring entry
+    // 3. Slot::get() via re-acquiring entry
     // This is the recommended pattern: acquire entry, use it, let it drop
     let mut hist = Histogram::<u64>::new(3).unwrap();
     for &idx in &indices {
         let key = keys[idx];
         let start = rdtscp();
         // Re-acquire entry and access
-        if let Some(entry) = slab.entry(key) {
+        if let Some(entry) = slab.slot(key) {
             black_box(entry.get());
-            entry.forget(); // Don't drop, keep data alive
+            entry.leak(); // Don't drop, keep data alive
         }
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
@@ -125,5 +125,5 @@ fn main() {
     println!("Legend:");
     println!("  get_by_key() [unsafe]  - direct access via key, caller ensures validity");
     println!("  contains_key()         - validity check only, no value access");
-    println!("  entry(key)?.get()      - safe pattern: acquire Entry, then direct access");
+    println!("  entry(key)?.get()      - safe pattern: acquire Slot, then direct access");
 }

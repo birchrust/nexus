@@ -71,7 +71,7 @@ fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
 
     // Fill the slab - store the keys
     let keys: Vec<Key> = (0..CAPACITY as u64)
-        .map(|i| slab.insert(i).forget())
+        .map(|i| slab.insert(i).leak())
         .collect();
 
     // Warmup - random access using stored keys

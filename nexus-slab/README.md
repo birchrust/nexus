@@ -11,7 +11,7 @@ Traditional slab allocators using `Vec` exhibit bimodal p999 latency—most oper
 - **`BoundedSlab`**: Fixed capacity, pre-allocated. The production choice for deterministic latency.
 - **`Slab`**: Grows by adding independent chunks. No copying on growth—only the new chunk is allocated.
 
-Both use an **Entry-based API** where `insert()` returns a handle (`Entry<T>`) for direct access to the value.
+Both use a **Slot-based API** where `insert()` returns a handle (`Slot<T>`) for direct access to the value. Think of `Slot<T>` as analogous to `Box<T>`—it's an owning handle that provides access to the value and deallocates on drop. The difference is that `Box` allocates from the heap, while `Slot` allocates from a pre-allocated slab.
 
 ## Performance
 
@@ -19,13 +19,13 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core. Cycle counts 
 
 ### BoundedSlab vs slab crate (p50)
 
-| Operation | Entry API | Key-based | slab crate | Notes |
-|-----------|-----------|-----------|------------|-------|
+| Operation | Slot API | Key-based | slab crate | Notes |
+|-----------|----------|-----------|------------|-------|
 | GET | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
 | GET_MUT | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
 | INSERT | 7 cycles | - | **5 cycles** | slab's simpler freelist |
 | REMOVE | 8 cycles | **3 cycles** | 4 cycles | Key-based fastest |
-| REPLACE | **3 cycles** | - | 4 cycles | Entry's cached pointer |
+| REPLACE | **3 cycles** | - | 4 cycles | Slot's cached pointer |
 
 ### Slab (growable) - Tail Latency
 
@@ -48,15 +48,15 @@ use nexus_slab::BoundedSlab;
 // All memory allocated upfront
 let slab = BoundedSlab::with_capacity(100_000);
 
-// Insert returns Result<Entry, Full<T>>
-let entry = slab.insert(42).unwrap();
-assert_eq!(*entry.get(), 42);
+// Insert returns Result<Slot, Full<T>>
+let slot = slab.insert(42).unwrap();
+assert_eq!(*slot.get(), 42);
 
-// Modify through the entry
-*entry.get_mut() = 100;
+// Modify through the slot
+*slot.get_mut() = 100;
 
-// Remove via entry
-let value = entry.remove();
+// Remove via slot (like Box::into_inner)
+let value = slot.into_inner();
 assert_eq!(value, 100);
 
 // Returns Err(Full(value)) when full—recover the rejected value
@@ -78,10 +78,10 @@ let slab = Slab::new();
 let slab = Slab::with_capacity(10_000);
 
 // Grows automatically, always succeeds
-let entry = slab.insert(42);
-assert_eq!(*entry.get(), 42);
+let slot = slab.insert(42);
+assert_eq!(*slot.get(), 42);
 
-let value = entry.remove();
+let value = slot.into_inner();
 assert_eq!(value, 42);
 ```
 
@@ -98,21 +98,21 @@ let slab: Slab<u64> = Slab::builder()
 
 ### Key-Based Access (for collections)
 
-Entry-based access is the primary API, but key-based access is available for integration with data structures like linked lists and heaps:
+Slot-based access is the primary API, but key-based access is available for integration with data structures like linked lists and heaps:
 
 ```rust
 use nexus_slab::BoundedSlab;
 
 let slab = BoundedSlab::with_capacity(1024);
 
-let entry = slab.insert(42).unwrap();
-let key = entry.key();  // Extract the key
+let slot = slab.insert(42).unwrap();
+let key = slot.key();  // Extract the key
 
 // Key-based access (returns Ref<T> guard with borrow tracking)
 assert_eq!(*slab.get(key).unwrap(), 42);
 
 // Unchecked index access via UntrackedAccessor (unsafe, fastest)
-// SAFETY: No Entry operations while accessor is in use
+// SAFETY: No Slot operations while accessor is in use
 let accessor = unsafe { slab.untracked() };
 assert_eq!(accessor[key], 42);
 
@@ -123,8 +123,8 @@ assert_eq!(value, 42);
 
 ### Self-Referential Patterns
 
-`insert_with` provides access to the Entry before the value exists, enabling self-referential structures.
-Use `Key` for references (not `Entry`, which is a unique owner):
+`insert_with` provides access to the Slot before the value exists, enabling self-referential structures.
+Use `Key` for references (not `Slot`, which is a unique owner):
 
 ```rust
 use nexus_slab::{BoundedSlab, Key};
@@ -161,14 +161,14 @@ For latency-critical code where you can guarantee validity:
 use nexus_slab::BoundedSlab;
 
 let slab = BoundedSlab::with_capacity(1024);
-let entry = slab.insert(42).unwrap();
+let slot = slab.insert(42).unwrap();
 
 // Safe: ~30 cycles (liveness + borrow check)
-let value = entry.get();
+let value = slot.get();
 
 // Unchecked: ~20 cycles (direct pointer deref)
-// SAFETY: Entry is valid and not borrowed elsewhere
-let value = unsafe { entry.get_unchecked() };
+// SAFETY: Slot is valid and not borrowed elsewhere
+let value = unsafe { slot.get_unchecked() };
 ```
 
 ## Architecture
@@ -206,13 +206,13 @@ Each slot has a `stamp: u64` encoding state and key:
 
 Single comparison (`stamp & VACANT_BIT == 0`) checks occupancy.
 
-### Entry Design
+### Slot Design
 
-`Entry<T>` is 16 bytes:
+`Slot<T>` is 16 bytes:
 - `*mut SlotCell<T>` — direct pointer for O(1) access
 - `*const FreeSlotVTable` — vtable with slab pointer and free function
 
-The vtable is leaked once per slab (16 bytes overhead). On drop, Entry calls the vtable's free function to return the slot to the freelist.
+The vtable is leaked once per slab (16 bytes overhead). On drop, Slot calls the vtable's free function to return the slot to the freelist.
 
 The safe API (`get()`, `get_mut()`) sets a borrow bit. The unchecked API bypasses all checks for minimal latency.
 
@@ -235,12 +235,12 @@ Decoding is two instructions: shift and mask.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `insert(value)` | `Result<Entry, Full<T>>` | Insert, returns `Err(Full(value))` if full |
-| `insert_with(f)` | `Result<Entry, CapacityError>` | Insert with access to Entry (self-ref) |
-| `vacant_entry()` | `Result<VacantEntry, CapacityError>` | Reserve slot, fill later |
+| `insert(value)` | `Result<Slot, Full<T>>` | Insert, returns `Err(Full(value))` if full |
+| `insert_with(f)` | `Result<Slot, CapacityError>` | Insert with access to Slot (self-ref) |
+| `vacant_slot()` | `Result<VacantSlot, CapacityError>` | Reserve slot, fill later |
 | `get(key)` | `Option<Ref<T>>` | Get by key (tracked borrow) |
 | `get_mut(key)` | `Option<RefMut<T>>` | Get mutable by key (tracked borrow) |
-| `remove(entry)` | `T` | Remove via Entry (fast path) |
+| `into_inner(slot)` | `T` | Remove via Slot (fast path) |
 | `remove_by_key(key)` | `T` | Remove via key |
 | `contains_key(key)` | `bool` | Check if key is valid |
 | `untracked()` | `UntrackedAccessor` | Index access (unsafe) |
@@ -251,19 +251,19 @@ Decoding is two instructions: shift and mask.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `insert(value)` | `Entry<T>` | Insert, grows if needed |
-| `insert_with(f)` | `Entry<T>` | Insert with access to Entry |
-| `vacant_entry()` | `SlabVacantEntry<T>` | Reserve slot, fill later |
+| `insert(value)` | `Slot<T>` | Insert, grows if needed |
+| `insert_with(f)` | `Slot<T>` | Insert with access to Slot |
+| `vacant_slot()` | `VacantSlot<T>` | Reserve slot, fill later |
 | `get(key)` | `Option<Ref<T>>` | Get by key (tracked borrow) |
 | `get_mut(key)` | `Option<RefMut<T>>` | Get mutable by key (tracked borrow) |
-| `remove(entry)` | `T` | Remove via Entry (fast path) |
+| `into_inner(slot)` | `T` | Remove via Slot (fast path) |
 | `remove_by_key(key)` | `T` | Remove via key |
 | `contains_key(key)` | `bool` | Check if key is valid |
 | `untracked()` | `SlabUntrackedAccessor` | Index access (unsafe) |
 | `len()` / `capacity()` | `usize` | Slot counts |
 | `clear()` | `()` | Remove all (keeps allocated chunks) |
 
-### Entry
+### Slot
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -275,10 +275,13 @@ Decoding is two instructions: shift and mask.
 | `get_unchecked_mut()` | `&mut T` | Direct mutable access (unsafe) |
 | `replace(value)` | `T` | Swap value, return old |
 | `and_modify(f)` | `&Self` | Modify in place (chainable) |
-| `take()` | `(T, VacantEntry)` | Extract value, keep slot reserved |
-| `remove()` | `T` | Remove and return value |
-| `key()` | `Key` | Get the key for this entry |
-| `is_valid()` | `bool` | Check if entry is valid (slab alive, slot occupied) |
+| `take()` | `(T, VacantSlot)` | Extract value, keep slot reserved |
+| `into_inner()` | `T` | Remove and return value |
+| `as_ptr()` | `*const T` | Raw pointer to value |
+| `as_mut_ptr()` | `*mut T` | Mutable raw pointer to value |
+| `key()` | `Key` | Get the key for this slot |
+| `leak()` | `Key` | Keep value alive, return key |
+| `is_valid()` | `bool` | Check if slot is valid (slab alive, slot occupied) |
 
 ## When to Use This
 

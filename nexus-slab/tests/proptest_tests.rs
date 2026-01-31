@@ -27,7 +27,7 @@ proptest! {
             } else if expected_len < 100 {
                 // Insert
                 if let Ok(entry) = slab.try_insert(op) {
-                    keys.push(entry.forget());
+                    keys.push(entry.leak());
                     expected_len += 1;
                 }
             }
@@ -74,7 +74,7 @@ proptest! {
         // Insert all
         for value in &values {
             let entry = slab.try_insert(*value).unwrap();
-            key_value_pairs.push((entry.forget(), *value));
+            key_value_pairs.push((entry.leak(), *value));
         }
 
         // All keys should be valid
@@ -108,7 +108,7 @@ proptest! {
         let mut keys: Vec<Key> = Vec::new();
         for i in 0..n {
             let entry = slab.try_insert(i as u64).unwrap();
-            keys.push(entry.forget());
+            keys.push(entry.leak());
         }
 
         // Remove two slots: first_removed, then second_removed
@@ -155,7 +155,7 @@ proptest! {
         let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
 
         for value in &values {
-            slab.try_insert(*value).unwrap().forget();
+            slab.try_insert(*value).unwrap().leak();
         }
 
         prop_assert_eq!(slab.len(), values.len());
@@ -187,7 +187,7 @@ proptest! {
                 expected_len -= 1;
             } else {
                 // Insert (always succeeds for unbounded)
-                keys.push(slab.insert(op).forget());
+                keys.push(slab.insert(op).leak());
                 expected_len += 1;
             }
 
@@ -216,7 +216,7 @@ proptest! {
         // Insert all
         for value in &values {
             let entry = slab.insert(*value);
-            key_value_pairs.push((entry.forget(), *value));
+            key_value_pairs.push((entry.leak(), *value));
         }
 
         // All keys should be valid
@@ -248,7 +248,7 @@ proptest! {
 
         // Insert more than a single chunk
         for i in 0..n {
-            slab.insert(i as u64).forget();
+            slab.insert(i as u64).leak();
         }
 
         prop_assert_eq!(slab.len(), n);
@@ -279,7 +279,7 @@ proptest! {
         let slab = unbounded::Slab::with_capacity(values.len());
 
         for value in &values {
-            slab.insert(*value).forget();
+            slab.insert(*value).leak();
         }
 
         prop_assert_eq!(slab.len(), values.len());
@@ -297,7 +297,7 @@ proptest! {
         // Insert all (will span multiple chunks)
         for value in &values {
             let entry = slab.insert(*value);
-            key_value_pairs.push((entry.forget(), *value));
+            key_value_pairs.push((entry.leak(), *value));
         }
 
         // All should be accessible
@@ -309,11 +309,11 @@ proptest! {
 }
 
 // =============================================================================
-// Entry invariants
+// Slot invariants
 // =============================================================================
 
 proptest! {
-    /// Entry from key reflects state after key-based removal
+    /// Slot from key reflects state after key-based removal
     #[test]
     fn entry_reflects_state_after_removal(values in prop::collection::vec(0..100u64, 1..20)) {
         let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
@@ -321,7 +321,7 @@ proptest! {
 
         for value in &values {
             let entry = slab.try_insert(*value).unwrap();
-            keys.push(entry.forget());
+            keys.push(entry.leak());
         }
 
         // Remove every other via key
@@ -332,23 +332,23 @@ proptest! {
             }
         }
 
-        // Check validity via slab.entry()
+        // Check validity via slab.slot()
         for (i, key) in keys.iter().enumerate() {
             if i % 2 == 0 {
-                prop_assert!(slab.entry(*key).is_none());
+                prop_assert!(slab.slot(*key).is_none());
             } else {
-                prop_assert!(slab.entry(*key).is_some());
+                prop_assert!(slab.slot(*key).is_some());
             }
         }
     }
 
-    /// VacantEntry key matches final Entry key
+    /// VacantSlot key matches final Slot key
     #[test]
     fn vacant_entry_key_matches(n in 1..50usize) {
         let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(n);
 
         for _ in 0..n {
-            let vacant = slab.try_vacant_entry().unwrap();
+            let vacant = slab.try_vacant_slot().unwrap();
             let expected_key = vacant.key();
             let entry = vacant.insert(42u64);
             prop_assert_eq!(entry.key(), expected_key);

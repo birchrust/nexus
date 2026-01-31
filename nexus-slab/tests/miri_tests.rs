@@ -26,7 +26,7 @@ fn bounded_insert_unchecked() {
     for i in 0..16u64 {
         let entry = unsafe { slab.insert_unchecked(i) };
         assert_eq!(*entry.get(), i);
-        entry.forget(); // Keep alive
+        entry.leak(); // Keep alive
     }
 
     // Verify all values via unsafe key access
@@ -41,7 +41,7 @@ fn bounded_insert_unchecked() {
 fn bounded_get_by_key() {
     let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
     let entry = slab.try_insert(42u64).unwrap();
-    let key = entry.forget();
+    let key = entry.leak();
 
     // SAFETY: key is valid
     unsafe {
@@ -60,7 +60,7 @@ fn bounded_remove_by_key() {
     let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(16);
 
     let keys: Vec<Key> = (0..16u64)
-        .map(|i| slab.try_insert(i).unwrap().forget())
+        .map(|i| slab.try_insert(i).unwrap().leak())
         .collect();
 
     for (i, key) in keys.iter().enumerate() {
@@ -96,7 +96,7 @@ fn bounded_entry_take() {
 fn unbounded_get_by_key() {
     let slab = unbounded::Slab::with_capacity(16);
     let entry = slab.insert(42u64);
-    let key = entry.forget();
+    let key = entry.leak();
 
     // SAFETY: key is valid
     unsafe {
@@ -118,7 +118,7 @@ fn unbounded_remove_by_key() {
         .build();
 
     // Insert across multiple chunks
-    let keys: Vec<Key> = (0..16u64).map(|i| slab.insert(i).forget()).collect();
+    let keys: Vec<Key> = (0..16u64).map(|i| slab.insert(i).leak()).collect();
 
     for (i, key) in keys.iter().enumerate() {
         // SAFETY: key is valid
@@ -158,7 +158,7 @@ fn bounded_drop_on_clear() {
     for _ in 0..10 {
         unsafe {
             slab.insert_unchecked(DropTracker::new(counter.clone()))
-                .forget();
+                .leak();
         }
     }
 
@@ -175,7 +175,7 @@ fn bounded_drop_on_remove_by_key() {
     let keys: Vec<Key> = (0..10)
         .map(|_| unsafe {
             slab.insert_unchecked(DropTracker::new(counter.clone()))
-                .forget()
+                .leak()
         })
         .collect();
 
@@ -197,7 +197,7 @@ fn unbounded_drop_on_clear_multi_chunk() {
         .chunk_capacity(4)
         .build();
     for _ in 0..20 {
-        slab.insert(DropTracker::new(counter.clone())).forget();
+        slab.insert(DropTracker::new(counter.clone())).leak();
     }
 
     assert_eq!(counter.get(), 0);
@@ -234,7 +234,7 @@ fn unbounded_key_valid_after_other_removes() {
         .build();
 
     // Insert across multiple chunks, forget all to keep them alive
-    let keys: Vec<Key> = (0..12u64).map(|i| slab.insert(i).forget()).collect();
+    let keys: Vec<Key> = (0..12u64).map(|i| slab.insert(i).leak()).collect();
 
     // Remove some via key
     // SAFETY: keys are valid
@@ -285,7 +285,7 @@ fn unbounded_slot_reuse_no_use_after_free() {
 }
 
 // =============================================================================
-// Entry mutability tests
+// Slot mutability tests
 // =============================================================================
 
 #[test]
