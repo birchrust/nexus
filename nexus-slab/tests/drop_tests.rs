@@ -44,7 +44,7 @@ fn bounded_remove_drops_value() {
     let entry = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
 
     assert_eq!(counter.get(), 0);
-    entry.remove();
+    entry.into_inner();
     assert_eq!(counter.get(), 1);
 }
 
@@ -95,7 +95,7 @@ fn bounded_replace_drops_old_value() {
     assert_eq!(counter.get(), 1);
 
     // Original entry now holds new tracker
-    entry.remove();
+    entry.into_inner();
     assert_eq!(counter.get(), 2);
 }
 
@@ -158,8 +158,8 @@ fn bounded_partial_fill_drops_only_occupied() {
         .leak();
 
     // Remove 2 of them explicitly
-    e1.remove();
-    e3.remove();
+    e1.into_inner();
+    e3.into_inner();
     assert_eq!(counter.get(), 2);
 
     // clear() should drop remaining 3
@@ -179,7 +179,7 @@ fn unbounded_remove_drops_value() {
     let entry = slab.insert(DropTracker::new(counter.clone()));
 
     assert_eq!(counter.get(), 0);
-    entry.remove();
+    entry.into_inner();
     assert_eq!(counter.get(), 1);
 }
 
@@ -245,7 +245,7 @@ fn unbounded_replace_drops_old_value() {
     drop(old);
     assert_eq!(counter.get(), 1);
 
-    entry.remove();
+    entry.into_inner();
     assert_eq!(counter.get(), 2);
 }
 
@@ -308,7 +308,7 @@ fn bounded_insert_with_closure_drops_on_remove() {
         .unwrap();
 
     assert_eq!(counter.get(), 0);
-    entry.remove();
+    entry.into_inner();
     assert_eq!(counter.get(), 1);
 }
 
@@ -321,7 +321,7 @@ fn unbounded_insert_with_closure_drops_on_remove() {
     let entry = slab.insert_with(|_| DropTracker::new(counter_clone));
 
     assert_eq!(counter.get(), 0);
-    entry.remove();
+    entry.into_inner();
     assert_eq!(counter.get(), 1);
 }
 

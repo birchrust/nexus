@@ -219,7 +219,7 @@ fn bounded_entry_valid_after_other_removes() {
     let e3 = slab.try_insert(3u64).unwrap();
 
     // Remove middle entry
-    e2.remove();
+    e2.into_inner();
 
     // Other entries should still be valid and accessible
     assert_eq!(*e1.get(), 1);
@@ -263,7 +263,7 @@ fn bounded_slot_reuse_no_use_after_free() {
     // Insert, remove, insert cycle
     for i in 0..100u64 {
         let entry = slab.try_insert(DropTracker::new(counter.clone())).unwrap();
-        entry.remove();
+        entry.into_inner();
         // Each iteration should have dropped the value
         assert_eq!(counter.get(), (i + 1) as usize);
     }
@@ -279,7 +279,7 @@ fn unbounded_slot_reuse_no_use_after_free() {
 
     for i in 0..100u64 {
         let entry = slab.insert(DropTracker::new(counter.clone()));
-        entry.remove();
+        entry.into_inner();
         assert_eq!(counter.get(), (i + 1) as usize);
     }
 }

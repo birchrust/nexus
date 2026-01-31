@@ -226,13 +226,6 @@ impl<T> Slot<T> {
         key
     }
 
-    /// Alias for [`leak()`](Self::leak) for backwards compatibility.
-    #[inline]
-    #[doc(hidden)]
-    pub fn forget(self) -> Key {
-        self.leak()
-    }
-
     /// Returns a raw pointer to the value.
     ///
     /// The pointer is valid for the lifetime of the slab (which is `'static`).
@@ -372,13 +365,6 @@ impl<T> Slot<T> {
         unsafe { self.into_inner_unchecked() }
     }
 
-    /// Alias for [`into_inner()`](Self::into_inner) for backwards compatibility.
-    #[inline]
-    #[doc(hidden)]
-    pub fn remove(self) -> T {
-        self.into_inner()
-    }
-
     /// Consumes the slot without validity checks, returning the value.
     ///
     /// Currently identical to [`into_inner()`](Self::into_inner) since Slot ownership
@@ -422,13 +408,6 @@ impl<T> Slot<T> {
         std::mem::forget(self);
 
         value
-    }
-
-    /// Alias for [`into_inner_unchecked()`](Self::into_inner_unchecked) for backwards compatibility.
-    #[inline]
-    #[doc(hidden)]
-    pub unsafe fn remove_unchecked(self) -> T {
-        unsafe { self.into_inner_unchecked() }
     }
 }
 
@@ -753,14 +732,6 @@ impl<T> Slab<T> {
         Some(Slot::new(slot_ptr, self.ptr))
     }
 
-    /// Alias for [`slot()`](Self::slot) for backwards compatibility.
-    #[inline]
-    #[doc(hidden)]
-    #[deprecated(since = "0.9.0", note = "renamed to slot")]
-    pub fn entry(&self, key: Key) -> Option<Slot<T>> {
-        self.slot(key)
-    }
-
     /// Reserves a slot without filling it, returning a [`VacantSlot`].
     ///
     /// If dropped without calling `insert`, the slot is automatically
@@ -805,14 +776,6 @@ impl<T> Slab<T> {
             consumed: false,
             _marker: PhantomData,
         }
-    }
-
-    /// Alias for [`vacant_slot()`](Self::vacant_slot) for backwards compatibility.
-    #[inline]
-    #[doc(hidden)]
-    #[deprecated(since = "0.9.0", note = "renamed to vacant_slot")]
-    pub fn vacant_entry(&self) -> VacantSlot<T> {
-        self.vacant_slot()
     }
 
     // =========================================================================

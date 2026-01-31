@@ -343,7 +343,7 @@ fn bench_insert() {
 
         // Cleanup batch
         for entry in temp_entries.drain(..) {
-            entry.remove();
+            entry.into_inner();
         }
     }
 
@@ -384,7 +384,7 @@ fn bench_remove() {
     let mut key_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // entry.remove() - insert batch, then remove batch
+    // entry.into_inner() - insert batch, then remove batch
     let bounded_slab = bounded::Slab::<u64>::with_capacity(NUM_SLOTS);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -402,7 +402,7 @@ fn bench_remove() {
                 &mut temp_entries[idx],
                 bounded_slab.try_insert(0).unwrap(),
             )); // placeholder
-            black_box(entry.remove());
+            black_box(entry.into_inner());
             idx += 1;
         });
         let end = rdtsc_end();
@@ -410,7 +410,7 @@ fn bench_remove() {
 
         // Cleanup placeholders
         for entry in temp_entries {
-            entry.remove();
+            entry.into_inner();
         }
     }
 
@@ -435,7 +435,7 @@ fn bench_remove() {
         let _ = key_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // slab.remove()
+    // slab.into_inner()
     let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -454,9 +454,9 @@ fn bench_remove() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("entry.remove()", &entry_hist);
+    print_hist("entry.into_inner()", &entry_hist);
     print_hist("remove_by_key() [unsafe]", &key_hist);
-    print_hist("slab.remove()", &slab_hist);
+    print_hist("slab.into_inner()", &slab_hist);
     println!();
 }
 
@@ -550,11 +550,11 @@ fn bench_take() {
 
         // Cleanup
         for entry in entries {
-            entry.remove();
+            entry.into_inner();
         }
     }
 
-    // slab.remove() (no vacant entry concept)
+    // slab.into_inner() (no vacant entry concept)
     let mut slab = slab::Slab::<u64>::with_capacity(BATCH_SIZE as usize + 10);
 
     for _ in 0..OPS / BATCH_SIZE as usize {

@@ -61,7 +61,7 @@ proptest! {
         for value in values {
             let entry = slab.try_insert(value).unwrap();
             prop_assert_eq!(*entry.get(), value);
-            prop_assert_eq!(entry.remove(), value);
+            prop_assert_eq!(entry.into_inner(), value);
         }
     }
 
@@ -203,7 +203,7 @@ proptest! {
         for value in values {
             let entry = slab.insert(value);
             prop_assert_eq!(*entry.get(), value);
-            prop_assert_eq!(entry.remove(), value);
+            prop_assert_eq!(entry.into_inner(), value);
         }
     }
 
@@ -352,7 +352,7 @@ proptest! {
             let expected_key = vacant.key();
             let entry = vacant.insert(42u64);
             prop_assert_eq!(entry.key(), expected_key);
-            entry.remove();
+            entry.into_inner();
         }
     }
 
