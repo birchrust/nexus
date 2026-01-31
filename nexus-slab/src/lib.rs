@@ -14,25 +14,25 @@
 //!
 //! Benchmarked against the `slab` crate (the standard ecosystem choice):
 //!
-//! ## BoundedSlab (fixed capacity)
+//! ## bounded::Slab (fixed capacity)
 //!
-//! | Operation | BoundedSlab | slab crate | Notes |
-//! |-----------|-------------|------------|-------|
-//! | INSERT p50 | ~20 cycles | ~22 cycles | 2 cycles faster |
-//! | GET p50 | ~24 cycles | ~26 cycles | 2 cycles faster |
-//! | REMOVE p50 | ~24 cycles | ~30 cycles | 6 cycles faster |
+//! | Operation | bounded::Slab | slab crate | Notes |
+//! |-----------|---------------|------------|-------|
+//! | INSERT p50 | ~22 cycles | ~24 cycles | Comparable |
+//! | GET p50 | ~22 cycles | ~28 cycles | 21% faster (unchecked) |
+//! | REMOVE p50 | ~30 cycles | ~34 cycles | 12% faster |
 //!
-//! ## Slab (growable)
+//! ## unbounded::Slab (growable)
 //!
-//! Steady-state p50 matches `slab` crate (~22-32 cycles depending on operation).
+//! Steady-state p50 matches `slab` crate (~30-40 cycles depending on operation).
 //! The win is tail latency during growth:
 //!
-//! | Metric | Slab | slab crate | Notes |
-//! |--------|------|------------|-------|
-//! | Growth p999 | ~40 cycles | ~2000+ cycles | 50x better |
-//! | Growth max | ~70K cycles | ~1.5M cycles | 20x better |
+//! | Metric | unbounded::Slab | slab crate | Notes |
+//! |--------|-----------------|------------|-------|
+//! | Growth p999 | ~64 cycles | ~2700+ cycles | 43x better |
+//! | Growth max | ~230K cycles | ~2.7M cycles | 12x better |
 //!
-//! `Slab` adds chunks independently—no copying. `slab` crate uses `Vec`,
+//! `unbounded::Slab` adds chunks independently—no copying. `slab` crate uses `Vec`,
 //! which copies all existing data on reallocation.
 //!
 //! # Architecture
@@ -52,33 +52,35 @@
 //! ## Memory Layout
 //!
 //! ```text
-//! BoundedSlab (single contiguous allocation):
+//! bounded::Slab (single contiguous allocation):
 //! ┌─────────────────────────────────────────────┐
-//! │ Slot 0: [tag: u32][value: T]                │
-//! │ Slot 1: [tag: u32][value: T]                │
+//! │ Slot 0: [stamp: u64][value: T]              │
+//! │ Slot 1: [stamp: u64][value: T]              │
 //! │ ...                                         │
-//! │ Slot N: [tag: u32][value: T]                │
+//! │ Slot N: [stamp: u64][value: T]              │
 //! └─────────────────────────────────────────────┘
 //!
-//! Slab (multiple independent chunks):
+//! unbounded::Slab (multiple independent chunks):
 //! ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
 //! │ Chunk 0      │  │ Chunk 1      │  │ Chunk 2      │
-//! │ (BoundedSlab)│  │ (BoundedSlab)│  │ (BoundedSlab)│
+//! │ (internal)   │  │ (internal)   │  │ (internal)   │
 //! └──────────────┘  └──────────────┘  └──────────────┘
 //!        ▲                                   ▲
 //!        └─── head_with_space ───────────────┘
 //!              (freelist of non-full chunks)
 //! ```
 //!
-//! ## Slot Tag Encoding
+//! ## Slot Stamp Encoding
 //!
-//! Each slot has a `tag: u32` that indicates state:
+//! Each slot has a `stamp: u64` that encodes state and key:
 //!
-//! - **Occupied**: `tag == 0` (value is valid)
-//! - **Vacant**: `tag` has bit 31 set, bits 0-29 encode next free slot index
-//! - **Borrowed**: `tag` has bit 30 set (for runtime borrow checking)
+//! - **Bits 63-32**: State
+//!   - Bit 63: Vacant flag (1 = vacant, 0 = occupied)
+//!   - Bits 61-32: When vacant, next free slot index (30 bits)
+//! - **Bits 31-0**: Key (stored when claimed, valid regardless of state)
 //!
-//! This enables a single comparison (`tag == 0`) to check occupancy.
+//! - **Occupied**: upper 32 bits = 0, lower 32 bits = key
+//! - **Vacant**: bit 63 set + next_free index in bits 61-32
 //!
 //! Freelists are **intra-slab only** - chains never cross slab boundaries.
 //! This enables slabs to drain independently.
@@ -117,56 +119,47 @@
 //! # Example
 //!
 //! ```
-//! use nexus_slab::Slab;
+//! use nexus_slab::unbounded;
 //!
-//! let slab = Slab::with_capacity(1000);
+//! let slab = unbounded::Slab::with_capacity(1000);
 //!
-//! // Entry-based API (primary)
+//! // Slot-based API (primary) - RAII semantics
 //! let entry = slab.insert(42);
 //! assert_eq!(*entry.get(), 42);
-//! let value = entry.remove();
+//! let value = entry.into_inner();
 //! assert_eq!(value, 42);
 //!
-//! // Key-based API (for collections)
+//! // Key-based API (for collections) - leak to store key externally
 //! let entry = slab.insert(100);
-//! let key = entry.key();
-//! assert_eq!(*slab.get(key).unwrap(), 100);
-//! let value = slab.remove_by_key(key);
+//! let key = entry.leak(); // keep data alive, get key
+//!
+//! // SAFETY: key is valid (just obtained from leak)
+//! let value = unsafe { slab.remove_by_key(key) };
 //! assert_eq!(value, 100);
 //! ```
 //!
-//! # Choosing Between BoundedSlab and Slab
+//! # Choosing Between bounded::Slab and unbounded::Slab
 //!
-//! - **[`BoundedSlab`]**: Fixed capacity, pre-allocated. Returns `Err(Full(value))`
+//! - **[`bounded::Slab`]**: Fixed capacity, pre-allocated. Returns `Err(Full(value))`
 //!   when exhausted, allowing recovery of the rejected value. Use when capacity
 //!   is known and you want zero allocation after init. This is the production
 //!   choice for latency-critical systems.
 //!
-//! - **[`Slab`]**: Grows by adding new chunks. Use when capacity is unbounded
+//! - **[`unbounded::Slab`]**: Grows by adding new chunks. Use when capacity is unbounded
 //!   or as an overflow safety net. Growth allocates one chunk at a time—no
 //!   copying of existing data.
 
 #![warn(missing_docs)]
 
 pub mod bounded;
-mod shared;
+pub(crate) mod shared;
 pub mod unbounded;
 
-// Re-export primary types at root
-pub use bounded::{BoundedSlab, Entry, Ref, RefMut, UntrackedAccessor, VacantEntry};
-pub use unbounded::{Slab, SlabBuilder, SlabUntrackedAccessor, SlabVacantEntry};
+// Convenience re-exports for common usage
+pub use unbounded::Slab;
 
-// =============================================================================
-// Constants
-// =============================================================================
-
-/// Mask for key index (bits 0-30).
-const INDEX_MASK: u32 = (1 << 31) - 1; // 0x7FFF_FFFF
-
-/// Sentinel value indicating end of freelist chain or invalid key.
-///
-/// Max 31-bit value, limiting addressable slots to ~2 billion.
-pub const SLOT_NONE: u32 = INDEX_MASK; // 0x7FFF_FFFF
+// Re-export sentinel for Key::NONE
+pub use shared::SLOT_NONE;
 
 // =============================================================================
 // Errors
@@ -268,8 +261,8 @@ impl Key {
 
     /// Returns the slot index.
     ///
-    /// For [`BoundedSlab`](crate::BoundedSlab), this is the direct slot index.
-    /// For [`Slab`](crate::Slab), this encodes slab and local index via
+    /// For [`bounded::Slab`], this is the direct slot index.
+    /// For [`unbounded::Slab`], this encodes slab and local index via
     /// power-of-2 arithmetic.
     #[inline]
     pub const fn index(self) -> u32 {
@@ -313,6 +306,144 @@ impl std::fmt::Debug for Key {
         } else {
             write!(f, "Key({})", self.0)
         }
+    }
+}
+
+// =============================================================================
+// Builder (typestate pattern)
+// =============================================================================
+
+use std::marker::PhantomData;
+
+/// Typestate for unconfigured builder.
+#[derive(Debug, Clone, Copy)]
+pub struct Unconfigured;
+
+/// Typestate for bounded slab configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct Bounded;
+
+/// Typestate for unbounded slab configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct Unbounded;
+
+/// Typestate builder for creating slabs.
+///
+/// Use [`Builder::default()`] then call [`.bounded()`](Builder::bounded) or
+/// [`.unbounded()`](Builder::unbounded) to select the slab type, configure,
+/// and [`.build()`](BoundedBuilder::build).
+///
+/// # Examples
+///
+/// ```
+/// use nexus_slab::{Builder, bounded, unbounded};
+///
+/// // Bounded slab with fixed capacity
+/// let slab: bounded::Slab<u64> = Builder::default()
+///     .bounded()
+///     .capacity(1024)
+///     .build();
+///
+/// // Unbounded slab with custom chunk size
+/// let slab: unbounded::Slab<u64> = Builder::default()
+///     .unbounded()
+///     .chunk_capacity(8192)
+///     .capacity(100_000)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct Builder<T, State = Unconfigured> {
+    _marker: PhantomData<(T, State)>,
+}
+
+impl<T> Default for Builder<T, Unconfigured> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Builder<T, Unconfigured> {
+    /// Creates a new unconfigured builder.
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+
+    /// Configure for a bounded (fixed-capacity) slab.
+    pub fn bounded(self) -> BoundedBuilder<T> {
+        BoundedBuilder {
+            capacity: 4096,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Configure for an unbounded (growable) slab.
+    pub fn unbounded(self) -> UnboundedBuilder<T> {
+        UnboundedBuilder {
+            capacity: 0,
+            chunk_capacity: 4096,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Builder for bounded (fixed-capacity) slabs.
+#[derive(Debug, Clone)]
+pub struct BoundedBuilder<T> {
+    capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> BoundedBuilder<T> {
+    /// Sets the fixed capacity of the slab.
+    ///
+    /// Default: 4096
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Builds and returns the bounded slab.
+    pub fn build(self) -> bounded::Slab<T> {
+        bounded::Slab::with_capacity(self.capacity)
+    }
+}
+
+/// Builder for unbounded (growable) slabs.
+#[derive(Debug, Clone)]
+pub struct UnboundedBuilder<T> {
+    capacity: usize,
+    chunk_capacity: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> UnboundedBuilder<T> {
+    /// Sets the capacity of each internal chunk.
+    ///
+    /// Rounded up to the next power of two internally.
+    ///
+    /// Default: 4096
+    pub fn chunk_capacity(mut self, chunk_capacity: usize) -> Self {
+        self.chunk_capacity = chunk_capacity;
+        self
+    }
+
+    /// Pre-allocates space for at least this many items.
+    ///
+    /// Default: 0 (no pre-allocation)
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Builds and returns the unbounded slab.
+    pub fn build(self) -> unbounded::Slab<T> {
+        let slab = unbounded::Slab::with_chunk_capacity(self.chunk_capacity);
+        while slab.capacity() < self.capacity {
+            slab.grow();
+        }
+        slab
     }
 }
 
@@ -400,5 +531,13 @@ mod tests {
     #[test]
     fn key_size() {
         assert_eq!(std::mem::size_of::<Key>(), 4);
+    }
+
+    #[test]
+    fn slot_size() {
+        // Slot should be 16 bytes: slot(8) + inner(8)
+        // Key is stored in slot's stamp, not in Slot
+        assert_eq!(std::mem::size_of::<bounded::Slot<u64>>(), 16);
+        assert_eq!(std::mem::size_of::<unbounded::Slot<u64>>(), 16);
     }
 }

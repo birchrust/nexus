@@ -22,6 +22,8 @@ categories = ["concurrency", "data-structures"]
 
 [workspace.dependencies]
 crossbeam-utils = "0.8.21"
+hdrhistogram = "7.5"
+seq-macro = "0.3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

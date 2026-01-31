@@ -1,40 +1,58 @@
-//! Growable slab allocator with Entry-based access.
+//! Growable slab allocator with RAII Slot-based access.
 //!
-//! [`Slab`] grows by adding fixed-size chunks. No copying occurs during growth,
-//! providing consistent tail latency even when capacity is exceeded.
+//! [`Slab`] is a leaked allocator that grows by adding fixed-size chunks.
+//! No copying occurs during growth, providing consistent tail latency.
+//!
+//! # Design Philosophy
+//!
+//! Like [`bounded::Slab`](crate::bounded::Slab), this is an allocator, not a data structure:
+//! - The allocator lives forever (leaked on creation)
+//! - Handles are lightweight views (`Copy`, `!Send`)
+//! - Entries own their slots (RAII - drop deallocates)
 //!
 //! # Example
 //!
 //! ```
-//! use nexus_slab::Slab;
+//! use nexus_slab::unbounded::Slab;
 //!
-//! let slab = Slab::new();
+//! let slab = Slab::with_capacity(1000);
 //!
-//! // Grows automatically
-//! let entry = slab.insert(42);
-//! assert_eq!(*entry.get(), 42);
+//! // RAII slot - storage freed when slot drops
+//! {
+//!     let entry = slab.insert(42);
+//!     assert_eq!(*entry.get(), 42);
+//! } // slot drops, storage freed
+//!
+//! // Leak to keep data alive
+//! let entry = slab.insert(100);
+//! let key = entry.leak();
+//!
+//! // Access via key (unsafe - caller guarantees key validity)
+//! // SAFETY: key was just returned from leak(), slot is occupied
+//! assert_eq!(*unsafe { slab.get_by_key(key) }, 100);
 //! ```
 //!
 //! # Builder API
 //!
 //! ```
-//! use nexus_slab::Slab;
+//! use nexus_slab::{Builder, unbounded::Slab};
 //!
-//! let slab: Slab<u64> = Slab::builder()
+//! let slab: Slab<u64> = Builder::default()
+//!     .unbounded()
 //!     .chunk_capacity(8192)
-//!     .reserve(100_000)
+//!     .capacity(100_000)
 //!     .build();
 //! ```
 
 use std::cell::{Cell, UnsafeCell};
 use std::fmt;
 use std::marker::PhantomData;
-use std::ops::{Index, IndexMut};
-use std::rc::Rc;
+use std::mem::ManuallyDrop;
+use std::pin::Pin;
 
-use crate::bounded::{BoundedSlabInner, Entry, Ref, RefMut};
-use crate::shared::{SlotCell, SLOT_NONE};
 use crate::Key;
+use crate::bounded::BoundedSlabInner;
+use crate::shared::{SLOT_NONE, SlotCell};
 
 // =============================================================================
 // Constants
@@ -45,77 +63,13 @@ const CHUNK_NONE: u32 = u32::MAX;
 
 /// Default chunk capacity for growable slab
 const DEFAULT_CHUNK_CAPACITY: usize = 4096;
-
-// =============================================================================
-// SlabBuilder
-// =============================================================================
-
-/// Builder for configuring a growable [`Slab`].
-///
-/// # Example
-///
-/// ```
-/// use nexus_slab::Slab;
-///
-/// let slab: Slab<u64> = Slab::builder()
-///     .chunk_capacity(8192)
-///     .reserve(100_000)
-///     .build();
-/// ```
-#[derive(Debug, Clone)]
-pub struct SlabBuilder<T> {
-    chunk_capacity: usize,
-    reserve: usize,
-    _marker: PhantomData<T>,
-}
-
-impl<T> Default for SlabBuilder<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> SlabBuilder<T> {
-    /// Creates a new builder with default settings.
-    pub fn new() -> Self {
-        Self {
-            chunk_capacity: DEFAULT_CHUNK_CAPACITY,
-            reserve: 0,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Sets the capacity of each internal chunk.
-    ///
-    /// Rounded up to the next power of two. Default: 4096.
-    pub fn chunk_capacity(mut self, capacity: usize) -> Self {
-        self.chunk_capacity = capacity;
-        self
-    }
-
-    /// Pre-allocates space for at least this many items.
-    pub fn reserve(mut self, count: usize) -> Self {
-        self.reserve = count;
-        self
-    }
-
-    /// Builds the slab.
-    pub fn build(self) -> Slab<T> {
-        let slab = Slab::with_chunk_capacity(self.chunk_capacity);
-        while slab.capacity() < self.reserve {
-            slab.grow();
-        }
-        slab
-    }
-}
-
 // =============================================================================
 // ChunkEntry
 // =============================================================================
 
 /// Internal wrapper for a chunk in the growable slab.
-struct ChunkEntry<T> {
-    inner: Rc<BoundedSlabInner<T>>,
+pub(crate) struct ChunkEntry<T> {
+    inner: ManuallyDrop<Box<BoundedSlabInner<T>>>,
     next_with_space: Cell<u32>,
 }
 
@@ -123,13 +77,14 @@ struct ChunkEntry<T> {
 // SlabInner
 // =============================================================================
 
-/// Internal state for the growable slab.
-struct SlabInner<T> {
+/// Internal state for the growable slab (leaked).
+pub(crate) struct SlabInner<T> {
     chunks: UnsafeCell<Vec<ChunkEntry<T>>>,
     chunk_shift: u32,
     chunk_mask: u32,
     head_with_space: Cell<u32>,
     chunk_capacity: u32,
+    len: Cell<usize>,
 }
 
 impl<T> SlabInner<T> {
@@ -147,19 +102,31 @@ impl<T> SlabInner<T> {
             chunk_mask,
             head_with_space: Cell::new(CHUNK_NONE),
             chunk_capacity,
+            len: Cell::new(0),
         }
     }
 
-    /// Computes len from all chunks.
-    fn len(&self) -> usize {
-        self.chunks()
-            .iter()
-            .map(|c| c.inner.len.get() as usize)
-            .sum()
+    #[inline]
+    fn chunks(&self) -> &Vec<ChunkEntry<T>> {
+        // SAFETY: Single-threaded access guaranteed by !Send
+        unsafe { &*self.chunks.get() }
     }
 
     #[inline]
-    fn decode(&self, index: u32) -> (u32, u32) {
+    #[allow(clippy::mut_from_ref)]
+    fn chunks_mut(&self) -> &mut Vec<ChunkEntry<T>> {
+        // SAFETY: Single-threaded access guaranteed by !Send
+        unsafe { &mut *self.chunks.get() }
+    }
+
+    /// Returns the cached total length.
+    #[inline]
+    fn len(&self) -> usize {
+        self.len.get()
+    }
+
+    #[inline]
+    pub(crate) fn decode(&self, index: u32) -> (u32, u32) {
         let chunk_idx = index >> self.chunk_shift;
         let local_idx = index & self.chunk_mask;
         (chunk_idx, local_idx)
@@ -171,31 +138,23 @@ impl<T> SlabInner<T> {
     }
 
     #[inline]
-    fn chunks(&self) -> &Vec<ChunkEntry<T>> {
-        unsafe { &*self.chunks.get() }
-    }
-
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    fn chunks_mut(&self) -> &mut Vec<ChunkEntry<T>> {
-        unsafe { &mut *self.chunks.get() }
-    }
-
-    fn chunk(&self, chunk_idx: u32) -> &ChunkEntry<T> {
-        debug_assert!((chunk_idx as usize) < self.chunks().len());
-        unsafe { self.chunks().get_unchecked(chunk_idx as usize) }
+    pub(crate) fn chunk(&self, chunk_idx: u32) -> &ChunkEntry<T> {
+        let chunks = self.chunks();
+        debug_assert!((chunk_idx as usize) < chunks.len());
+        unsafe { chunks.get_unchecked(chunk_idx as usize) }
     }
 
     fn grow(&self) {
-        let chunk_idx = self.chunks().len() as u32;
-        let inner = Rc::new(BoundedSlabInner::with_capacity(self.chunk_capacity));
+        let chunks = self.chunks_mut();
+        let chunk_idx = chunks.len() as u32;
+        let inner = Box::new(BoundedSlabInner::with_capacity(self.chunk_capacity));
 
         let entry = ChunkEntry {
-            inner,
+            inner: ManuallyDrop::new(inner),
             next_with_space: Cell::new(self.head_with_space.get()),
         };
 
-        self.chunks_mut().push(entry);
+        chunks.push(entry);
         self.head_with_space.set(chunk_idx);
     }
 
@@ -204,182 +163,560 @@ impl<T> SlabInner<T> {
     }
 }
 
+// Note: No Drop impl - this is leaked and never dropped
+
+// =============================================================================
+// Slot
+// =============================================================================
+
+/// RAII handle to an occupied slot in an unbounded [`Slab`].
+///
+/// When dropped, the slot is deallocated and returned to the freelist.
+/// Use [`leak()`](Self::leak) to keep the data alive without the slot handle.
+///
+/// # Size
+///
+/// 16 bytes: slot pointer (8) + inner pointer (8).
+#[must_use = "dropping Slot deallocates the slot"]
+pub struct Slot<T> {
+    slot: *mut SlotCell<T>,
+    inner: *mut SlabInner<T>,
+}
+
+impl<T> Slot<T> {
+    /// Creates a new slot handle.
+    #[inline]
+    pub(crate) fn new(slot: *mut SlotCell<T>, inner: *mut SlabInner<T>) -> Self {
+        Self { slot, inner }
+    }
+
+    #[inline]
+    fn slot(&self) -> &SlotCell<T> {
+        // SAFETY: Slot holds a valid slot pointer
+        unsafe { &*self.slot }
+    }
+
+    #[inline]
+    fn inner(&self) -> &SlabInner<T> {
+        // SAFETY: Slot holds a valid inner pointer (leaked)
+        unsafe { &*self.inner }
+    }
+}
+
+// Core Slot methods as inherent (no trait import needed)
+impl<T> Slot<T> {
+    /// Returns the key for this slot.
+    #[inline]
+    pub fn key(&self) -> Key {
+        Key::new(self.slot().key_from_stamp())
+    }
+
+    /// Leaks the slot, keeping the data alive and returning its key.
+    ///
+    /// After calling `leak()`, the slot remains occupied but has no Slot owner.
+    /// Access the data via key-based methods (which are unsafe) or create a new
+    /// Slot via [`Slab::slot()`].
+    ///
+    /// This is the [`Box::leak`]-style API. The slot's memory is "leaked" in the
+    /// sense that automatic cleanup is disabled.
+    #[inline]
+    pub fn leak(self) -> Key {
+        let key = self.key();
+        std::mem::forget(self);
+        key
+    }
+
+    /// Returns a raw pointer to the value.
+    ///
+    /// The pointer is valid for the lifetime of the slab (which is `'static`).
+    /// This is the [`Box::as_ptr`]-style API.
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        // SlotCell is repr(C): [stamp: 8][value: T]
+        unsafe { (self.slot as *const u8).add(8) as *const T }
+    }
+
+    /// Returns a mutable raw pointer to the value.
+    ///
+    /// The pointer is valid for the lifetime of the slab (which is `'static`).
+    /// This is the [`Box::as_mut_ptr`]-style API.
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        // SlotCell is repr(C): [stamp: 8][value: T]
+        unsafe { (self.slot as *mut u8).add(8) as *mut T }
+    }
+
+    /// Returns a reference to the value.
+    ///
+    /// Slot ownership guarantees the slot is valid.
+    #[inline]
+    pub fn get(&self) -> &T {
+        // SAFETY: Slot owns the slot. SlotCell is repr(C): [stamp: 8][value: T]
+        // Go directly to value at offset 8, bypassing abstraction chain.
+        unsafe { &*((self.slot as *const u8).add(8) as *const T) }
+    }
+
+    /// Returns a mutable reference to the value.
+    ///
+    /// Requires `&mut Slot` to ensure exclusive access.
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut T {
+        // SAFETY: Slot owns the slot, &mut self ensures exclusivity.
+        // SlotCell is repr(C): [stamp: 8][value: T]
+        unsafe { &mut *((self.slot as *mut u8).add(8) as *mut T) }
+    }
+
+    /// Replaces the value, returning the old one.
+    #[inline]
+    pub fn replace(&mut self, value: T) -> T {
+        // SAFETY: Slot owns the slot. SlotCell is repr(C): [stamp: 8][value: T]
+        // Direct pointer access to value at offset 8.
+        let value_ptr = unsafe { (self.slot as *mut u8).add(8) as *mut T };
+        let old = unsafe { value_ptr.read() };
+        unsafe { value_ptr.write(value) };
+        old
+    }
+
+    /// Modifies the value in place. Returns self for chaining.
+    #[inline]
+    pub fn and_modify<F: FnOnce(&mut T)>(&mut self, f: F) -> &mut Self {
+        f(self.get_mut());
+        self
+    }
+
+    /// Returns `true` if the slot is still occupied.
+    ///
+    /// This should always return `true` for a properly-used Slot.
+    /// Returns `false` only if the slot was incorrectly deallocated
+    /// via unsafe key-based methods while this Slot existed.
+    ///
+    /// Useful for debug assertions to catch API misuse.
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        // SAFETY: SlotCell is repr(C): [stamp: 8][value: T]
+        // Read stamp directly at offset 0. Occupied = VACANT_BIT not set.
+        let stamp = unsafe { *(self.slot as *const u64) };
+        stamp & crate::shared::VACANT_BIT == 0
+    }
+
+    /// Extracts the value, returning it with a [`VacantSlot`] for the slot.
+    ///
+    /// Unlike drop, this keeps the slot reserved. The VacantSlot can be used
+    /// to insert a new value into the same slot, or dropped to return the slot
+    /// to the freelist.
+    pub fn take(self) -> (T, VacantSlot<T>) {
+        let slot = self.slot();
+        let key = self.key();
+        let inner = self.inner();
+
+        // Decode once
+        let (chunk_idx, local_idx) = inner.decode(key.index());
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
+
+        // Check if chunk is currently full (before we free this slot)
+        let chunk_became_full = chunk_inner.is_full();
+
+        // SAFETY: Slot owns the slot, so it's valid
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
+
+        let vacant = VacantSlot {
+            inner: self.inner,
+            key,
+            chunk_idx,
+            local_idx,
+            chunk_became_full,
+            consumed: false,
+            _marker: PhantomData,
+        };
+
+        // Don't run Slot's Drop (which would deallocate)
+        std::mem::forget(self);
+
+        (value, vacant)
+    }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// This is safe because slab slots have stable addresses—chunks
+    /// are leaked and never reallocate.
+    #[inline]
+    pub fn pin(&self) -> Pin<&T> {
+        // SAFETY: Chunk memory is leaked and never moves
+        unsafe { Pin::new_unchecked(self.get()) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// This is safe because slab slots have stable addresses—chunks
+    /// are leaked and never reallocate.
+    #[inline]
+    pub fn pin_mut(&mut self) -> Pin<&mut T> {
+        // SAFETY: Chunk memory is leaked and never moves
+        unsafe { Pin::new_unchecked(self.get_mut()) }
+    }
+
+    /// Consumes the slot, returning the value and deallocating.
+    ///
+    /// The slot is returned to the freelist. This is the [`Box::into_inner`]-style API.
+    #[inline]
+    pub fn into_inner(self) -> T {
+        // SAFETY: Slot owns the slot, so it's always valid
+        unsafe { self.into_inner_unchecked() }
+    }
+
+    /// Consumes the slot without validity checks, returning the value.
+    ///
+    /// Currently identical to [`into_inner()`](Self::into_inner) since Slot ownership
+    /// guarantees validity. Provided for API consistency with key-based methods.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be valid (not previously consumed or taken).
+    #[inline]
+    pub unsafe fn into_inner_unchecked(self) -> T {
+        let slot = self.slot();
+        let inner = self.inner();
+
+        // Read key from stamp and decode once
+        let key_index = slot.key_from_stamp();
+        let (chunk_idx, local_idx) = inner.decode(key_index);
+
+        // SAFETY: Caller guarantees slot is valid
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
+
+        // Return slot to freelist
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
+
+        // Was chunk full before this free?
+        let was_full = chunk_inner.is_full();
+
+        let free_head = chunk_inner.free_head.get();
+        slot.set_vacant(free_head);
+        chunk_inner.free_head.set(local_idx);
+        chunk_inner.len.set(chunk_inner.len.get() - 1);
+        inner.len.set(inner.len.get() - 1);
+
+        // If chunk was full, add it back to slab's chunk freelist
+        if was_full {
+            chunk.next_with_space.set(inner.head_with_space.get());
+            inner.head_with_space.set(chunk_idx);
+        }
+
+        // Don't run Drop (we already handled deallocation)
+        std::mem::forget(self);
+
+        value
+    }
+}
+
+impl<T> Drop for Slot<T> {
+    fn drop(&mut self) {
+        let slot = self.slot();
+        let inner = self.inner();
+
+        // Read key from stamp and decode once
+        let key_index = slot.key_from_stamp();
+        let (chunk_idx, local_idx) = inner.decode(key_index);
+
+        // SAFETY: Slot is sole owner (!Clone), so if Drop runs, slot is occupied
+        unsafe {
+            std::ptr::drop_in_place((*slot.value.get()).as_mut_ptr());
+        }
+
+        // Return slot to freelist
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
+
+        // Was chunk full before this free?
+        let was_full = chunk_inner.is_full();
+
+        let free_head = chunk_inner.free_head.get();
+        slot.set_vacant(free_head);
+        chunk_inner.free_head.set(local_idx);
+        chunk_inner.len.set(chunk_inner.len.get() - 1);
+        inner.len.set(inner.len.get() - 1);
+
+        // If chunk was full, add it back to slab's chunk freelist
+        if was_full {
+            chunk.next_with_space.set(inner.head_with_space.get());
+            inner.head_with_space.set(chunk_idx);
+        }
+    }
+}
+
+impl<T> fmt::Debug for Slot<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Slot").field("key", &self.key()).finish()
+    }
+}
+
+impl<T> std::ops::Deref for Slot<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl<T> std::ops::DerefMut for Slot<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.get_mut()
+    }
+}
+
+impl<T> AsRef<T> for Slot<T> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<T> AsMut<T> for Slot<T> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<T> std::borrow::Borrow<T> for Slot<T> {
+    #[inline]
+    fn borrow(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<T> std::borrow::BorrowMut<T> for Slot<T> {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Slot<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl<T> fmt::Pointer for Slot<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Pointer::fmt(&self.slot, f)
+    }
+}
+
 // =============================================================================
 // Slab (growable)
 // =============================================================================
 
-/// A growable slab allocator with Entry-based access.
+/// A growable slab allocator with RAII Slot-based access.
 ///
-/// Grows by adding fixed-size chunks. No copying occurs during growth.
-/// Entries remain valid across growth operations.
+/// Created via [`new`](Self::new), [`with_capacity`](Self::with_capacity),
+/// or the [`Builder`](crate::Builder) API. The slab is leaked and lives for `'static`.
+///
+/// # Thread Safety
+///
+/// `Slab` is `!Send` and `!Sync` - it uses raw pointers internally.
+/// The slab must only be used from the thread that created it.
 ///
 /// # Example
 ///
 /// ```
-/// use nexus_slab::Slab;
+/// use nexus_slab::unbounded::Slab;
 ///
-/// let slab = Slab::new();
+/// let slab = Slab::with_capacity(1000);
 /// let entry = slab.insert(42);
 /// assert_eq!(*entry.get(), 42);
 /// ```
+#[derive(Clone, Copy)]
 pub struct Slab<T> {
-    inner: Rc<SlabInner<T>>,
+    ptr: *mut SlabInner<T>,
+    _marker: PhantomData<*mut ()>, // Ensures !Send + !Sync
 }
 
 impl<T> Slab<T> {
-    /// Creates a new empty slab with default settings.
+    #[inline]
+    fn inner(&self) -> &SlabInner<T> {
+        // SAFETY: ptr is valid for 'static (leaked)
+        unsafe { &*self.ptr }
+    }
+
+    /// Creates an empty slab with default settings.
     ///
-    /// Uses a chunk capacity of 4096 slots. No memory is allocated
-    /// until the first insert.
+    /// No memory is allocated until first insert.
     pub fn new() -> Self {
         Self::with_chunk_capacity(DEFAULT_CHUNK_CAPACITY)
     }
 
-    /// Creates a new slab with pre-allocated capacity.
+    /// Creates a slab with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self::builder().reserve(capacity).build()
+        let slab = Self::with_chunk_capacity(DEFAULT_CHUNK_CAPACITY);
+        while slab.capacity() < capacity {
+            slab.grow();
+        }
+        slab
     }
 
-    /// Returns a builder for configuring a slab.
-    pub fn builder() -> SlabBuilder<T> {
-        SlabBuilder::new()
-    }
-
-    /// Creates a new slab with the specified chunk capacity.
+    /// Creates a slab with the specified chunk capacity.
     ///
     /// Chunk capacity is rounded up to the next power of two.
-    pub fn with_chunk_capacity(chunk_capacity: usize) -> Self {
+    pub(crate) fn with_chunk_capacity(chunk_capacity: usize) -> Self {
+        let inner = Box::new(SlabInner::with_chunk_capacity(chunk_capacity));
+        let inner_ptr = Box::into_raw(inner);
+
         Self {
-            inner: Rc::new(SlabInner::with_chunk_capacity(chunk_capacity)),
+            ptr: inner_ptr,
+            _marker: PhantomData,
         }
     }
 
     /// Returns the number of occupied slots.
     #[inline]
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.inner().len()
     }
 
     /// Returns `true` if no slots are occupied.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.inner.len() == 0
+        self.inner().len() == 0
     }
 
     /// Returns the total capacity across all allocated chunks.
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.inner.capacity()
+        self.inner().capacity()
     }
 
     /// Returns the number of allocated chunks.
     #[inline]
     pub fn num_chunks(&self) -> usize {
-        self.inner.chunks().len()
+        self.inner().chunks().len()
     }
 
     /// Allocates a new chunk.
-    fn grow(&self) {
-        self.inner.grow();
+    pub(crate) fn grow(&self) {
+        self.inner().grow();
     }
 
-    /// Inserts a value, returning an Entry handle.
+    // =========================================================================
+    // Insert
+    // =========================================================================
+
+    /// Inserts a value, returning an RAII [`Slot`] handle.
     ///
-    /// Grows automatically if needed.
-    pub fn insert(&self, value: T) -> Entry<T> {
+    /// Grows automatically if needed. The returned slot owns the storage.
+    /// When dropped, the slot is deallocated.
+    pub fn insert(&self, value: T) -> Slot<T> {
+        let inner = self.inner();
+
         // Ensure we have space
-        if self.inner.head_with_space.get() == CHUNK_NONE {
-            self.inner.grow();
+        if inner.head_with_space.get() == CHUNK_NONE {
+            inner.grow();
         }
 
-        let chunk_idx = self.inner.head_with_space.get();
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
+        let chunk_idx = inner.head_with_space.get();
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
 
         let free_head = chunk_inner.free_head.get();
         debug_assert!(free_head != SLOT_NONE);
 
         let slot = chunk_inner.slot(free_head);
-        let next_free = slot.next_free();
+        let next_free = slot.claim_next_free(); // 1 stamp read
 
         chunk_inner.free_head.set(next_free);
         chunk_inner.len.set(chunk_inner.len.get() + 1);
+        inner.len.set(inner.len.get() + 1);
 
         // Update chunk freelist if this chunk is now full
         if chunk_inner.is_full() {
-            self.inner.head_with_space.set(chunk.next_with_space.get());
+            inner.head_with_space.set(chunk.next_with_space.get());
         }
+
+        let global_idx = inner.encode(chunk_idx, free_head);
 
         // Write value and mark occupied
         unsafe {
             (*slot.value.get()).write(value);
         }
-        slot.set_occupied();
+        slot.set_key_occupied(global_idx); // 1 stamp write
 
-        let global_idx = self.inner.encode(chunk_idx, free_head);
+        let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        Entry {
-            slab: Rc::downgrade(chunk_inner),
-            slot_ptr: slot as *const SlotCell<T>,
-            index: global_idx,
-        }
+        Slot::new(slot_ptr, self.ptr)
     }
 
-    /// Inserts with access to the Entry before the value exists.
-    pub fn insert_with<F>(&self, f: F) -> Entry<T>
+    /// Inserts with access to the slot before the value exists.
+    ///
+    /// Enables self-referential patterns where the value needs its own key.
+    pub fn insert_with<F>(&self, f: F) -> Slot<T>
     where
-        F: FnOnce(Entry<T>) -> T,
+        F: FnOnce(&Slot<T>) -> T,
     {
-        if self.inner.head_with_space.get() == CHUNK_NONE {
-            self.inner.grow();
+        let inner = self.inner();
+
+        if inner.head_with_space.get() == CHUNK_NONE {
+            inner.grow();
         }
 
-        let chunk_idx = self.inner.head_with_space.get();
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
+        let chunk_idx = inner.head_with_space.get();
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
 
         let free_head = chunk_inner.free_head.get();
         let slot = chunk_inner.slot(free_head);
-        let next_free = slot.next_free();
+        let next_free = slot.claim_next_free(); // 1 stamp read
 
         chunk_inner.free_head.set(next_free);
         chunk_inner.len.set(chunk_inner.len.get() + 1);
+        inner.len.set(inner.len.get() + 1);
 
         if chunk_inner.is_full() {
-            self.inner.head_with_space.set(chunk.next_with_space.get());
+            inner.head_with_space.set(chunk.next_with_space.get());
         }
 
-        let global_idx = self.inner.encode(chunk_idx, free_head);
+        let global_idx = inner.encode(chunk_idx, free_head);
 
-        let entry = Entry {
-            slab: Rc::downgrade(chunk_inner),
-            slot_ptr: slot as *const SlotCell<T>,
-            index: global_idx,
-        };
+        // Store key in stamp BEFORE creating Slot (so Slot::key() works)
+        // This requires read-modify-write since we preserve VACANT_BIT temporarily
+        slot.set_key(global_idx);
 
-        let value = f(entry.clone());
+        let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
+
+        // Create slot handle (storage not yet occupied, but key is readable from stamp)
+        let entry = Slot::new(slot_ptr, self.ptr);
+
+        let value = f(&entry);
 
         unsafe {
             (*slot.value.get()).write(value);
         }
-        slot.set_occupied();
+        slot.set_key_occupied(global_idx); // 1 stamp write
 
         entry
     }
 
-    /// Creates an Entry from a key.
+    /// Creates an RAII Slot from a key.
     ///
     /// Returns `None` if the key is out of bounds or the slot is vacant.
-    pub fn entry(&self, key: Key) -> Option<Entry<T>> {
+    ///
+    /// **Warning**: The returned slot owns the storage. When dropped, the slot
+    /// is deallocated. Only call this when you want to take ownership.
+    pub fn slot(&self, key: Key) -> Option<Slot<T>> {
+        let inner = self.inner();
         let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
+        let (chunk_idx, local_idx) = inner.decode(index);
 
-        if (chunk_idx as usize) >= self.inner.chunks().len() {
+        if (chunk_idx as usize) >= inner.chunks().len() {
             return None;
         }
 
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
 
         if local_idx >= chunk_inner.capacity {
             return None;
@@ -390,110 +727,100 @@ impl<T> Slab<T> {
             return None;
         }
 
-        Some(Entry {
-            slab: Rc::downgrade(chunk_inner),
-            slot_ptr: slot as *const SlotCell<T>,
-            index,
-        })
+        // Key is already in slot's stamp from when it was inserted
+        let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
+        Some(Slot::new(slot_ptr, self.ptr))
     }
 
-    /// Reserves a slot without filling it, returning a [`SlabVacantEntry`].
+    /// Reserves a slot without filling it, returning a [`VacantSlot`].
     ///
-    /// The `SlabVacantEntry` can be used to get the key before constructing
-    /// the value, then fill the slot via [`SlabVacantEntry::insert`].
-    ///
-    /// If the `SlabVacantEntry` is dropped without calling `insert`, the slot
-    /// is automatically returned to the freelist.
-    ///
-    /// Unlike [`BoundedSlab::vacant_entry`](crate::BoundedSlab::vacant_entry),
-    /// this never fails - the slab grows if needed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nexus_slab::Slab;
-    ///
-    /// let slab: Slab<String> = Slab::new();
-    ///
-    /// let vacant = slab.vacant_entry();
-    /// let key = vacant.key();
-    ///
-    /// let entry = vacant.insert(format!("item-{}", key.index()));
-    /// assert!(entry.get().starts_with("item-"));
-    /// ```
-    pub fn vacant_entry(&self) -> SlabVacantEntry<T> {
+    /// If dropped without calling `insert`, the slot is automatically
+    /// returned to the freelist.
+    pub fn vacant_slot(&self) -> VacantSlot<T> {
+        let inner = self.inner();
+
         // Ensure we have space
-        if self.inner.head_with_space.get() == CHUNK_NONE {
-            self.inner.grow();
+        if inner.head_with_space.get() == CHUNK_NONE {
+            inner.grow();
         }
 
-        let chunk_idx = self.inner.head_with_space.get();
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
+        let chunk_idx = inner.head_with_space.get();
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
 
         let free_head = chunk_inner.free_head.get();
         let slot = chunk_inner.slot(free_head);
-        let next_free = slot.next_free();
+        let next_free = slot.claim_next_free(); // 1 stamp read
 
         chunk_inner.free_head.set(next_free);
         chunk_inner.len.set(chunk_inner.len.get() + 1);
+        inner.len.set(inner.len.get() + 1);
 
         // Check if chunk became full after our reservation
         let chunk_became_full = chunk_inner.is_full();
         if chunk_became_full {
-            self.inner.head_with_space.set(chunk.next_with_space.get());
+            inner.head_with_space.set(chunk.next_with_space.get());
         }
 
-        let global_idx = self.inner.encode(chunk_idx, free_head);
+        let global_idx = inner.encode(chunk_idx, free_head);
 
-        SlabVacantEntry {
-            chunk_inner: Rc::downgrade(chunk_inner),
-            slab_inner: Rc::downgrade(&self.inner),
-            slot_ptr: slot as *const SlotCell<T>,
-            local_index: free_head,
-            global_index: global_idx,
+        // Store key in stamp - VacantSlot::insert will later call set_key_occupied
+        slot.set_key(global_idx);
+
+        VacantSlot {
+            inner: self.ptr,
+            key: Key::new(global_idx),
             chunk_idx,
+            local_idx: free_head,
             chunk_became_full,
+            consumed: false,
             _marker: PhantomData,
         }
     }
 
-    /// Removes a value via its Entry handle.
-    ///
-    /// This is faster than [`Entry::remove`] because it skips the
-    /// `Weak::upgrade()` liveness check.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slot is vacant or borrowed.
-    #[inline]
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn remove(&self, entry: Entry<T>) -> T {
-        self.try_remove(entry).expect("slot is vacant or borrowed")
-    }
+    // =========================================================================
+    // Key-based access
+    // =========================================================================
 
-    /// Removes a value via its Entry handle, returning `None` if invalid.
-    ///
-    /// This is the non-panicking version of [`remove`](Self::remove).
-    /// Returns `None` if the slot is vacant or currently borrowed.
-    ///
-    /// This is faster than [`Entry::try_remove`] because it skips the
-    /// `Weak::upgrade()` liveness check - the slab already has the `Rc`.
+    /// Returns `true` if the key refers to an occupied slot.
     #[inline]
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn try_remove(&self, entry: Entry<T>) -> Option<T> {
-        let slot = unsafe { &*entry.slot_ptr };
+    pub fn contains_key(&self, key: Key) -> bool {
+        let inner = self.inner();
+        let index = key.index();
+        let (chunk_idx, local_idx) = inner.decode(index);
 
-        if !slot.is_available() {
-            return None;
+        if (chunk_idx as usize) >= inner.chunks().len() {
+            return false;
         }
 
-        let value = unsafe { (*slot.value.get()).assume_init_read() };
+        let chunk = inner.chunk(chunk_idx);
+        if local_idx >= chunk.inner.capacity {
+            return false;
+        }
 
-        // Decode chunk and local index
-        let (chunk_idx, local_idx) = self.inner.decode(entry.index);
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
+        chunk.inner.slot(local_idx).is_occupied()
+    }
+
+    /// Removes a value by key.
+    ///
+    /// Use this when you have a leaked key and want to deallocate.
+    ///
+    /// # Safety
+    ///
+    /// - Key must refer to an occupied slot
+    /// - No Slot may exist for this slot (would become dangling)
+    #[inline]
+    pub unsafe fn remove_by_key(&self, key: Key) -> T {
+        let inner = self.inner();
+        let index = key.index();
+        let (chunk_idx, local_idx) = inner.decode(index);
+
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
+        let slot = chunk_inner.slot(local_idx);
+
+        // SAFETY: Caller guarantees slot is occupied
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         // Was chunk full before this remove?
         let was_full = chunk_inner.is_full();
@@ -503,27 +830,68 @@ impl<T> Slab<T> {
         slot.set_vacant(free_head);
         chunk_inner.free_head.set(local_idx);
         chunk_inner.len.set(chunk_inner.len.get() - 1);
+        inner.len.set(inner.len.get() - 1);
 
         // If chunk was full, add it back to the slab's chunk freelist
         if was_full {
-            chunk.next_with_space.set(self.inner.head_with_space.get());
-            self.inner.head_with_space.set(chunk_idx);
+            chunk.next_with_space.set(inner.head_with_space.get());
+            inner.head_with_space.set(chunk_idx);
         }
 
-        Some(value)
+        value
+    }
+
+    /// Removes a value by key without bounds or occupancy checks.
+    ///
+    /// # Safety
+    ///
+    /// The key must be valid and the slot must be occupied.
+    #[inline]
+    pub unsafe fn remove_unchecked_by_key(&self, key: Key) -> T {
+        let inner = self.inner();
+        let index = key.index();
+        let (chunk_idx, local_idx) = inner.decode(index);
+
+        let chunk = inner.chunk(chunk_idx);
+        let chunk_inner = &*chunk.inner;
+        let slot = chunk_inner.slot(local_idx);
+
+        debug_assert!(!slot.is_vacant(), "remove_unchecked_by_key on vacant slot");
+
+        // SAFETY: Caller guarantees slot is occupied
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
+
+        // Was chunk full before this remove?
+        let was_full = chunk_inner.is_full();
+
+        // Update chunk freelist
+        let free_head = chunk_inner.free_head.get();
+        slot.set_vacant(free_head);
+        chunk_inner.free_head.set(local_idx);
+        chunk_inner.len.set(chunk_inner.len.get() - 1);
+        inner.len.set(inner.len.get() - 1);
+
+        // If chunk was full, add it back to the slab's chunk freelist
+        if was_full {
+            chunk.next_with_space.set(inner.head_with_space.get());
+            inner.head_with_space.set(chunk_idx);
+        }
+
+        value
     }
 
     /// Removes all values from the slab.
     ///
     /// Chunks are not deallocated.
     pub fn clear(&self) {
-        if self.inner.len() == 0 {
+        let inner = self.inner();
+
+        if inner.len() == 0 {
             return;
         }
 
-        let chunks = self.inner.chunks();
-        for (i, chunk) in chunks.iter().enumerate() {
-            let chunk_inner = &chunk.inner;
+        for (i, chunk) in inner.chunks().iter().enumerate() {
+            let chunk_inner = &*chunk.inner;
 
             for j in 0..chunk_inner.capacity {
                 let slot = chunk_inner.slot(j);
@@ -544,7 +912,7 @@ impl<T> Slab<T> {
             chunk_inner.free_head.set(0);
 
             // Rebuild chunk freelist
-            let next_chunk = if i + 1 < chunks.len() {
+            let next_chunk = if i + 1 < inner.chunks().len() {
                 (i + 1) as u32
             } else {
                 CHUNK_NONE
@@ -552,309 +920,53 @@ impl<T> Slab<T> {
             chunk.next_with_space.set(next_chunk);
         }
 
-        if !chunks.is_empty() {
-            self.inner.head_with_space.set(0);
+        if !inner.chunks().is_empty() {
+            inner.head_with_space.set(0);
         }
+
+        inner.len.set(0);
     }
 
     // =========================================================================
-    // Key-based access (for collections compatibility)
+    // Unsafe key-based access
     // =========================================================================
 
-    /// Returns `true` if the key refers to an occupied slot.
-    #[inline]
-    pub fn contains_key(&self, key: Key) -> bool {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        if (chunk_idx as usize) >= self.inner.chunks().len() {
-            return false;
-        }
-
-        let chunk = self.inner.chunk(chunk_idx);
-        if local_idx >= chunk.inner.capacity {
-            return false;
-        }
-
-        chunk.inner.slot(local_idx).is_occupied()
-    }
-
-    /// Alias for [`contains_key`](Self::contains_key) for API compatibility.
-    #[inline]
-    pub fn contains(&self, key: Key) -> bool {
-        self.contains_key(key)
-    }
-
-    /// Returns a tracked reference to the value at `key`.
-    ///
-    /// The returned [`Ref`] guard participates in runtime borrow tracking,
-    /// preventing conflicting access while the guard is held.
-    #[inline]
-    pub fn get(&self, key: Key) -> Option<Ref<T>> {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        if (chunk_idx as usize) >= self.inner.chunks().len() {
-            return None;
-        }
-
-        let chunk = self.inner.chunk(chunk_idx);
-        if local_idx >= chunk.inner.capacity {
-            return None;
-        }
-
-        let slot = chunk.inner.slot(local_idx);
-        if !slot.is_available() {
-            return None;
-        }
-
-        slot.set_borrowed();
-        Some(Ref {
-            _slab: Rc::clone(&chunk.inner),
-            slot_ptr: slot as *const SlotCell<T>,
-        })
-    }
-
-    /// Returns a tracked mutable reference to the value at `key`.
-    ///
-    /// The returned [`RefMut`] guard participates in runtime borrow tracking,
-    /// preventing conflicting access while the guard is held.
-    #[inline]
-    pub fn get_mut(&self, key: Key) -> Option<RefMut<T>> {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        if (chunk_idx as usize) >= self.inner.chunks().len() {
-            return None;
-        }
-
-        let chunk = self.inner.chunk(chunk_idx);
-        if local_idx >= chunk.inner.capacity {
-            return None;
-        }
-
-        let slot = chunk.inner.slot(local_idx);
-        if !slot.is_available() {
-            return None;
-        }
-
-        slot.set_borrowed();
-        Some(RefMut {
-            _slab: Rc::clone(&chunk.inner),
-            slot_ptr: slot as *const SlotCell<T>,
-        })
-    }
-
-    // =========================================================================
-    // Untracked access (unsafe - bypasses borrow tracking)
-    // =========================================================================
-
-    /// Returns an untracked reference to the value at `key`.
-    ///
-    /// This bypasses runtime borrow tracking for performance. The validity
-    /// of the key is still checked.
+    /// Returns a reference to the value at `key`.
     ///
     /// # Safety
     ///
-    /// Caller must ensure no conflicting Entry operations (remove, replace,
-    /// get_mut) occur on this slot while the reference is live.
+    /// - Key must refer to an occupied slot
+    /// - No Slot may have exclusive (`&mut`) access to this slot
+    /// - Caller must ensure no aliasing violations
     #[inline]
-    pub unsafe fn get_untracked(&self, key: Key) -> Option<&T> {
+    pub unsafe fn get_by_key(&self, key: Key) -> &T {
+        let inner = self.inner();
         let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        if (chunk_idx as usize) >= self.inner.chunks().len() {
-            return None;
-        }
-
-        let chunk = self.inner.chunk(chunk_idx);
-        if local_idx >= chunk.inner.capacity {
-            return None;
-        }
-
-        let slot = chunk.inner.slot(local_idx);
-        if slot.is_vacant() {
-            return None;
-        }
-
-        Some(unsafe { slot.value_ref() })
-    }
-
-    /// Returns an untracked mutable reference to the value at `key`.
-    ///
-    /// This bypasses runtime borrow tracking for performance. The validity
-    /// of the key is still checked.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure exclusive access and no conflicting Entry operations
-    /// occur on this slot while the reference is live.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_untracked_mut(&self, key: Key) -> Option<&mut T> {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        if (chunk_idx as usize) >= self.inner.chunks().len() {
-            return None;
-        }
-
-        let chunk = self.inner.chunk(chunk_idx);
-        if local_idx >= chunk.inner.capacity {
-            return None;
-        }
-
-        let slot = chunk.inner.slot(local_idx);
-        if slot.is_vacant() {
-            return None;
-        }
-
-        Some(unsafe { slot.value_mut() })
-    }
-
-    /// Returns an untracked reference without any checks.
-    ///
-    /// # Safety
-    ///
-    /// - The key must be valid and the slot must be occupied.
-    /// - No conflicting Entry operations while reference is live.
-    #[inline]
-    pub unsafe fn get_unchecked(&self, key: Key) -> &T {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-        let chunk = self.inner.chunk(chunk_idx);
+        let (chunk_idx, local_idx) = inner.decode(index);
+        let chunk = inner.chunk(chunk_idx);
         unsafe { chunk.inner.slot(local_idx).value_ref() }
     }
 
-    /// Returns an untracked mutable reference without any checks.
+    /// Returns a mutable reference to the value at `key`.
     ///
     /// # Safety
     ///
-    /// - The key must be valid and the slot must be occupied.
-    /// - Caller must ensure exclusive access.
-    /// - No conflicting Entry operations while reference is live.
+    /// - Key must refer to an occupied slot
+    /// - No other references (Slot-based or key-based) may exist to this slot
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_unchecked_mut(&self, key: Key) -> &mut T {
+    pub unsafe fn get_by_key_mut(&self, key: Key) -> &mut T {
+        let inner = self.inner();
         let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-        let chunk = self.inner.chunk(chunk_idx);
+        let (chunk_idx, local_idx) = inner.decode(index);
+        let chunk = inner.chunk(chunk_idx);
         unsafe { chunk.inner.slot(local_idx).value_mut() }
-    }
-
-    /// Returns an [`SlabUntrackedAccessor`] for Index/IndexMut syntax.
-    ///
-    /// # Safety
-    ///
-    /// While the accessor or any reference from it is live, caller must not
-    /// perform Entry operations that could invalidate references.
-    #[inline]
-    pub unsafe fn untracked(&self) -> SlabUntrackedAccessor<'_, T> {
-        SlabUntrackedAccessor(self)
-    }
-
-    /// Removes and returns the value at `key`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the key is invalid, the slot is vacant, or borrowed.
-    #[inline]
-    pub fn remove_by_key(&self, key: Key) -> T {
-        self.try_remove_by_key(key)
-            .expect("key invalid, slot vacant, or borrowed")
-    }
-
-    /// Removes a value by key, returning `None` if invalid.
-    ///
-    /// This is the non-panicking version of [`remove_by_key`](Self::remove_by_key).
-    /// Returns `None` if the key is out of bounds, the slot is vacant, or borrowed.
-    #[inline]
-    pub fn try_remove_by_key(&self, key: Key) -> Option<T> {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        let chunks = self.inner.chunks();
-        if (chunk_idx as usize) >= chunks.len() {
-            return None;
-        }
-
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
-
-        if local_idx >= chunk_inner.capacity {
-            return None;
-        }
-
-        let slot = chunk_inner.slot(local_idx);
-        if !slot.is_available() {
-            return None;
-        }
-
-        let value = unsafe { (*slot.value.get()).assume_init_read() };
-
-        // Was chunk full before this remove?
-        let was_full = chunk_inner.is_full();
-
-        // Update chunk freelist
-        let free_head = chunk_inner.free_head.get();
-        slot.set_vacant(free_head);
-        chunk_inner.free_head.set(local_idx);
-        chunk_inner.len.set(chunk_inner.len.get() - 1);
-
-        // If chunk was full, add it back to the slab's chunk freelist
-        if was_full {
-            chunk.next_with_space.set(self.inner.head_with_space.get());
-            self.inner.head_with_space.set(chunk_idx);
-        }
-
-        Some(value)
-    }
-
-    /// Removes a value by key without bounds or occupancy checks.
-    ///
-    /// # Safety
-    ///
-    /// The key must be valid and the slot must be occupied.
-    #[inline]
-    pub unsafe fn remove_unchecked_by_key(&self, key: Key) -> T {
-        let index = key.index();
-        let (chunk_idx, local_idx) = self.inner.decode(index);
-
-        let chunk = self.inner.chunk(chunk_idx);
-        let chunk_inner = &chunk.inner;
-        let slot = chunk_inner.slot(local_idx);
-
-        debug_assert!(!slot.is_vacant(), "remove_unchecked_by_key on vacant slot");
-
-        let value = unsafe { (*slot.value.get()).assume_init_read() };
-
-        let was_full = chunk_inner.is_full();
-
-        let free_head = chunk_inner.free_head.get();
-        slot.set_vacant(free_head);
-        chunk_inner.free_head.set(local_idx);
-        chunk_inner.len.set(chunk_inner.len.get() - 1);
-
-        if was_full {
-            chunk.next_with_space.set(self.inner.head_with_space.get());
-            self.inner.head_with_space.set(chunk_idx);
-        }
-
-        value
     }
 }
 
 impl<T> Default for Slab<T> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<T> Clone for Slab<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-        }
     }
 }
 
@@ -869,154 +981,114 @@ impl<T> fmt::Debug for Slab<T> {
 }
 
 // =============================================================================
-// SlabVacantEntry
+// VacantSlot
 // =============================================================================
 
 /// A reserved but unfilled slot in a [`Slab`].
 ///
-/// Created by [`Slab::vacant_entry`], this represents a slot that has been
-/// claimed from the freelist but not yet filled with a value.
-///
-/// Use [`insert`](Self::insert) to fill the slot and get an [`Entry`] handle.
-/// If dropped without calling `insert`, the slot is automatically returned
-/// to the freelist.
-///
-/// # Example
-///
-/// ```
-/// use nexus_slab::Slab;
-///
-/// let slab: Slab<String> = Slab::new();
-///
-/// let vacant = slab.vacant_entry();
-/// let key = vacant.key();
-///
-/// let entry = vacant.insert(format!("slot-{}", key.index()));
-/// assert_eq!(*entry.get(), format!("slot-{}", key.index()));
-/// ```
-pub struct SlabVacantEntry<T> {
-    chunk_inner: std::rc::Weak<BoundedSlabInner<T>>,
-    slab_inner: std::rc::Weak<SlabInner<T>>,
-    slot_ptr: *const SlotCell<T>,
-    local_index: u32,
-    global_index: u32,
+/// Created by [`Slab::vacant_slot`]. Fill with [`insert`](Self::insert)
+/// or drop to return the slot to the freelist.
+#[must_use = "dropping VacantSlot releases the reserved slot"]
+pub struct VacantSlot<T> {
+    inner: *mut SlabInner<T>,
+    key: Key,
     chunk_idx: u32,
+    local_idx: u32,
     chunk_became_full: bool,
+    consumed: bool,
     _marker: PhantomData<T>,
 }
 
-impl<T> SlabVacantEntry<T> {
+impl<T> VacantSlot<T> {
+    #[inline]
+    fn inner(&self) -> &SlabInner<T> {
+        // SAFETY: inner ptr is valid for 'static
+        unsafe { &*self.inner }
+    }
+
     /// Returns the key this slot will have once filled.
     #[inline]
     pub fn key(&self) -> Key {
-        Key::new(self.global_index)
+        self.key
     }
 
-    /// Fills the slot with a value, returning an [`Entry`] handle.
-    ///
-    /// Consumes the `SlabVacantEntry`, preventing the slot from being
-    /// returned to the freelist.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slab has been dropped while holding this `SlabVacantEntry`.
+    /// Fills the slot with a value, returning an RAII [`Slot`].
     #[inline]
-    pub fn insert(self, value: T) -> Entry<T> {
-        // Verify chunk is still alive
-        let _chunk_inner = self
-            .chunk_inner
-            .upgrade()
-            .expect("slab dropped while holding SlabVacantEntry");
+    pub fn insert(mut self, value: T) -> Slot<T> {
+        let key_index = self.key.index();
 
-        let slot = unsafe { &*self.slot_ptr };
+        let slot_ptr = {
+            let inner = self.inner();
+            let chunk = inner.chunk(self.chunk_idx);
+            let slot = chunk.inner.slot(self.local_idx);
 
-        // Write the value and mark occupied
-        unsafe {
-            (*slot.value.get()).write(value);
-        }
-        slot.set_occupied();
+            unsafe {
+                (*slot.value.get()).write(value);
+            }
+            slot.set_key_occupied(key_index); // 1 write (no read needed)
 
-        // Create Entry before forgetting self
-        let entry = Entry {
-            slab: self.chunk_inner.clone(),
-            slot_ptr: self.slot_ptr,
-            index: self.global_index,
+            (slot as *const SlotCell<T>).cast_mut()
         };
 
-        // Prevent Drop from returning slot to freelist
-        std::mem::forget(self);
+        self.consumed = true;
 
-        entry
+        Slot::new(slot_ptr, self.inner)
+    }
+
+    /// Fills the slot using a closure that receives the key.
+    ///
+    /// Useful for self-referential patterns.
+    #[inline]
+    pub fn insert_with<F: FnOnce(Key) -> T>(self, f: F) -> Slot<T> {
+        let key = self.key;
+        self.insert(f(key))
     }
 }
 
-impl<T> Drop for SlabVacantEntry<T> {
+impl<T> Drop for VacantSlot<T> {
     fn drop(&mut self) {
-        // Return slot to chunk freelist if chunk still exists
-        if let Some(chunk_inner) = self.chunk_inner.upgrade() {
-            let slot = unsafe { &*self.slot_ptr };
+        if !self.consumed {
+            let inner = self.inner();
+            let chunk = inner.chunk(self.chunk_idx);
+            let chunk_inner = &*chunk.inner;
+            let slot = chunk_inner.slot(self.local_idx);
 
+            // Return slot to freelist
             let free_head = chunk_inner.free_head.get();
             slot.set_vacant(free_head);
-            chunk_inner.free_head.set(self.local_index);
+            chunk_inner.free_head.set(self.local_idx);
             chunk_inner.len.set(chunk_inner.len.get() - 1);
+            inner.len.set(inner.len.get() - 1);
 
             // If chunk was full after our reservation, re-add to slab freelist
             if self.chunk_became_full {
-                if let Some(slab_inner) = self.slab_inner.upgrade() {
-                    let chunk = slab_inner.chunk(self.chunk_idx);
-                    chunk.next_with_space.set(slab_inner.head_with_space.get());
-                    slab_inner.head_with_space.set(self.chunk_idx);
-                }
+                chunk.next_with_space.set(inner.head_with_space.get());
+                inner.head_with_space.set(self.chunk_idx);
             }
         }
     }
 }
 
-impl<T> fmt::Debug for SlabVacantEntry<T> {
+impl<T> fmt::Debug for VacantSlot<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SlabVacantEntry")
-            .field("global_index", &self.global_index)
-            .field("chunk_idx", &self.chunk_idx)
-            .field("local_index", &self.local_index)
-            .field("alive", &(self.chunk_inner.strong_count() > 0))
+        f.debug_struct("VacantSlot")
+            .field("key", &self.key)
             .finish()
     }
 }
 
 // =============================================================================
-// SlabUntrackedAccessor
+// Additional helper for Slab (try_insert for API parity with bounded::Slab)
 // =============================================================================
 
-/// Wrapper enabling Index/IndexMut syntax with untracked access for [`Slab`].
-///
-/// See [`UntrackedAccessor`](crate::UntrackedAccessor) for safety requirements.
-pub struct SlabUntrackedAccessor<'a, T>(&'a Slab<T>);
-
-impl<T> Index<Key> for SlabUntrackedAccessor<'_, T> {
-    type Output = T;
-
+impl<T> Slab<T> {
+    /// Inserts a value, returning an RAII [`Slot`] handle.
+    ///
+    /// This always succeeds (grows if needed), but the method name
+    /// provides API parity with [`bounded::Slab::try_insert`](crate::bounded::Slab::try_insert).
     #[inline]
-    fn index(&self, key: Key) -> &T {
-        // SAFETY: Caller of untracked() guarantees no conflicting Entry ops
-        unsafe { self.0.get_unchecked(key) }
-    }
-}
-
-impl<T> IndexMut<Key> for SlabUntrackedAccessor<'_, T> {
-    #[inline]
-    fn index_mut(&mut self, key: Key) -> &mut T {
-        // SAFETY: Caller of untracked() guarantees no conflicting Entry ops
-        unsafe { self.0.get_unchecked_mut(key) }
-    }
-}
-
-impl<T> fmt::Debug for SlabUntrackedAccessor<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SlabUntrackedAccessor")
-            .field("len", &self.0.len())
-            .field("capacity", &self.0.capacity())
-            .finish()
+    pub fn try_insert(&self, value: T) -> Slot<T> {
+        self.insert(value)
     }
 }
 
@@ -1027,6 +1099,7 @@ impl<T> fmt::Debug for SlabUntrackedAccessor<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Builder;
 
     #[test]
     fn new_is_empty() {
@@ -1055,75 +1128,101 @@ mod tests {
 
     #[test]
     fn builder_api() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(128).reserve(1000).build();
-
+        let slab: Slab<u64> = Builder::default()
+            .unbounded()
+            .chunk_capacity(128)
+            .capacity(1000)
+            .build();
         assert!(slab.capacity() >= 1000);
     }
 
     #[test]
-    fn insert_remove() {
+    fn insert_and_drop() {
         let slab: Slab<u64> = Slab::new();
 
-        let entry = slab.insert(42);
-        assert_eq!(*entry.get(), 42);
+        {
+            let entry = slab.insert(42);
+            assert_eq!(slab.len(), 1);
+            assert_eq!(*entry.get(), 42);
+        }
 
-        let value = entry.remove();
-        assert_eq!(value, 42);
+        // Slot dropped, slot freed
         assert_eq!(slab.len(), 0);
     }
 
     #[test]
-    fn entry_key_roundtrip() {
+    fn leak_keeps_data() {
+        let slab: Slab<u64> = Slab::new();
+
+        let entry = slab.insert(100);
+        let key = entry.leak();
+
+        // Data still exists
+        assert_eq!(slab.len(), 1);
+        // SAFETY: key is valid (just obtained from leak)
+        assert_eq!(unsafe { *slab.get_by_key(key) }, 100);
+
+        // Clean up via remove
+        // SAFETY: key is valid
+        let value = unsafe { slab.remove_by_key(key) };
+        assert_eq!(value, 100);
+        assert_eq!(slab.len(), 0);
+    }
+
+    #[test]
+    fn slot_from_key() {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(42);
-        let key = entry.key();
+        let key = entry.leak();
 
-        let entry2 = slab.entry(key).unwrap();
-        assert_eq!(*entry2.get(), 42);
+        // Re-acquire RAII slot
+        {
+            let entry = slab.slot(key).unwrap();
+            assert_eq!(*entry.get(), 42);
+        }
+
+        // Slot dropped, slot freed
+        assert_eq!(slab.len(), 0);
     }
 
     #[test]
     fn multiple_chunks() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
+        let slab: Slab<u64> = Builder::default().unbounded().chunk_capacity(4).build();
 
-        let mut entries = Vec::new();
+        // Insert and leak to keep slots alive
+        let mut keys = Vec::new();
         for i in 0..20u64 {
-            entries.push(slab.insert(i));
+            let entry = slab.insert(i);
+            keys.push(entry.leak());
         }
 
         assert!(slab.num_chunks() > 1);
         assert_eq!(slab.len(), 20);
 
-        for (i, entry) in entries.iter().enumerate() {
-            assert_eq!(*entry.get(), i as u64);
+        for (i, key) in keys.iter().enumerate() {
+            // SAFETY: key is valid
+            assert_eq!(unsafe { *slab.get_by_key(*key) }, i as u64);
         }
     }
 
     #[test]
     fn insert_with_self_referential() {
-        struct Node {
-            self_ref: Entry<Node>,
-            data: u64,
-        }
+        let slab: Slab<(Key, u64)> = Slab::new();
 
-        let slab: Slab<Node> = Slab::new();
+        let entry = slab.insert_with(|e| (e.key(), 42));
 
-        let entry = slab.insert_with(|e| Node {
-            self_ref: e.clone(),
-            data: 42,
-        });
-
-        let node = entry.get();
-        assert_eq!(node.data, 42);
+        let (stored_key, value) = *entry.get();
+        assert_eq!(stored_key, entry.key());
+        assert_eq!(value, 42);
     }
 
     #[test]
     fn clear_preserves_chunks() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
+        let slab: Slab<u64> = Builder::default().unbounded().chunk_capacity(4).build();
 
         for i in 0..20u64 {
-            slab.insert(i);
+            slab.insert(i).leak(); // Leak to keep data
         }
 
         let chunks_before = slab.num_chunks();
@@ -1135,56 +1234,13 @@ mod tests {
 
     #[test]
     fn stress_insert_remove() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(64).build();
+        let slab: Slab<u64> = Builder::default().unbounded().chunk_capacity(64).build();
 
         for i in 0..10_000u64 {
             let entry = slab.insert(i);
             assert_eq!(*entry.get(), i);
-            entry.remove();
+            entry.into_inner();
         }
-    }
-
-    #[test]
-    fn slab_remove_fast_path() {
-        let slab: Slab<u64> = Slab::new();
-
-        let entry = slab.insert(42);
-        assert_eq!(slab.len(), 1);
-
-        let value = slab.remove(entry);
-        assert_eq!(value, 42);
-        assert_eq!(slab.len(), 0);
-    }
-
-    #[test]
-    fn slab_remove_fast_path_across_chunks() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
-
-        // Fill multiple chunks
-        let entries: Vec<_> = (0..20u64).map(|i| slab.insert(i)).collect();
-        assert!(slab.num_chunks() > 1);
-
-        // Remove all via fast path
-        for (i, entry) in entries.into_iter().enumerate() {
-            let value = slab.remove(entry);
-            assert_eq!(value, i as u64);
-        }
-
-        assert_eq!(slab.len(), 0);
-    }
-
-    #[test]
-    fn slab_remove_fast_path_reuses_slot() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
-
-        for i in 0..1000u64 {
-            let entry = slab.insert(i);
-            let value = slab.remove(entry);
-            assert_eq!(value, i);
-        }
-
-        // Should only have used first chunk since we kept removing
-        assert_eq!(slab.num_chunks(), 1);
     }
 
     #[test]
@@ -1192,213 +1248,66 @@ mod tests {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(42);
-        let key = entry.key();
+        let key = entry.leak();
 
         assert!(slab.contains_key(key));
 
-        // Safe tracked access returns Ref guard
-        {
-            let guard = slab.get(key).unwrap();
-            assert_eq!(*guard, 42);
-        }
+        // Unsafe key-based access
+        // SAFETY: key is valid
+        assert_eq!(unsafe { *slab.get_by_key(key) }, 42);
 
-        // Unsafe untracked access via SlabUntrackedAccessor for indexing
-        unsafe {
-            let accessor = slab.untracked();
-            assert_eq!(accessor[key], 42);
-        }
-
-        let removed = slab.remove_by_key(key);
+        // SAFETY: key is valid
+        let removed = unsafe { slab.remove_by_key(key) };
         assert_eq!(removed, 42);
         assert!(!slab.contains_key(key));
     }
 
     #[test]
-    fn get_untracked_basic() {
-        let slab: Slab<u64> = Slab::new();
-        let entry = slab.insert(42);
-        let key = entry.key();
+    fn handle_is_copy() {
+        let slab = Slab::new();
+        let slab2 = slab; // Copy
+        let slab3 = slab; // Copy again
 
-        // Slab-level untracked
-        unsafe {
-            assert_eq!(slab.get_untracked(key), Some(&42));
-            assert_eq!(slab.get_untracked_mut(key), Some(&mut 42));
-        }
+        let _e1 = slab.try_insert(1u64).leak();
+        let _e2 = slab2.try_insert(2u64).leak();
+        let _e3 = slab3.try_insert(3u64).leak();
 
-        // Entry-level untracked
-        unsafe {
-            assert_eq!(entry.get_untracked(), Some(&42));
-            assert_eq!(entry.get_untracked_mut(), Some(&mut 42));
-        }
+        assert_eq!(slab.len(), 3);
     }
 
     #[test]
-    fn untracked_accessor_basic() {
-        let slab: Slab<u64> = Slab::new();
-        let entry = slab.insert(42);
-        let key = entry.key();
-
-        unsafe {
-            let accessor = slab.untracked();
-            assert_eq!(accessor[key], 42);
-        }
-
-        unsafe {
-            let mut accessor = slab.untracked();
-            accessor[key] = 100;
-        }
-
-        assert_eq!(*entry.get(), 100);
-    }
-
-    #[test]
-    fn tracked_get_blocks_double_borrow() {
-        let slab: Slab<u64> = Slab::new();
-        let entry = slab.insert(42);
-        let key = entry.key();
-
-        // Hold a tracked borrow via slab.get()
-        let _guard = slab.get(key).unwrap();
-
-        // Entry access should fail (slot is borrowed)
-        assert!(entry.try_get().is_none());
-
-        // Another slab.get() should also fail
-        assert!(slab.get(key).is_none());
-    }
-
-    #[test]
-    fn remove_unchecked_by_key_basic() {
+    fn remove_by_key_basic() {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(42);
-        let key = entry.key();
+        let key = entry.leak();
 
-        let value = unsafe { slab.remove_unchecked_by_key(key) };
+        // SAFETY: key is valid
+        let value = unsafe { slab.remove_by_key(key) };
         assert_eq!(value, 42);
         assert_eq!(slab.len(), 0);
     }
 
     #[test]
-    fn remove_unchecked_by_key_across_chunks() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
-
-        // Fill multiple chunks
-        let keys: Vec<Key> = (0..20u64).map(|i| slab.insert(i).key()).collect();
-        assert!(slab.num_chunks() > 1);
-
-        // Remove all via unchecked
-        for (i, key) in keys.into_iter().enumerate() {
-            let value = unsafe { slab.remove_unchecked_by_key(key) };
-            assert_eq!(value, i as u64);
-        }
-
-        assert_eq!(slab.len(), 0);
-    }
-
-    #[test]
-    fn entry_is_valid() {
+    fn slot_after_key_removal() {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(42);
-        assert!(entry.is_valid());
+        let key = entry.leak();
 
-        // Still valid even when borrowed
-        let _r = entry.get();
-        let entry2 = entry.clone();
-        assert!(entry2.is_valid());
+        // Remove via key
+        // SAFETY: key is valid
+        unsafe { slab.remove_by_key(key) };
 
-        drop(_r);
-
-        // Invalid after remove
-        entry.remove();
-        assert!(!entry2.is_valid());
+        // Can't re-acquire slot - storage is vacant
+        assert!(slab.slot(key).is_none());
     }
 
     #[test]
-    fn entry_equality() {
+    fn vacant_slot_insert() {
         let slab: Slab<u64> = Slab::new();
 
-        let e1 = slab.insert(1);
-        let e2 = slab.insert(2);
-        let e1_clone = e1.clone();
-
-        assert_eq!(e1, e1_clone);
-        assert_ne!(e1, e2);
-    }
-
-    #[test]
-    fn try_remove_success() {
-        let slab: Slab<u64> = Slab::new();
-        let entry = slab.insert(42);
-
-        let value = slab.try_remove(entry);
-        assert_eq!(value, Some(42));
-        assert!(slab.is_empty());
-    }
-
-    #[test]
-    fn try_remove_vacant_returns_none() {
-        let slab: Slab<u64> = Slab::new();
-        let entry = slab.insert(42);
-        let entry_clone = entry.clone();
-
-        // Remove via one handle
-        slab.remove(entry);
-
-        // Try to remove via the other - should return None
-        let result = slab.try_remove(entry_clone);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn try_remove_borrowed_returns_none() {
-        let slab: Slab<u64> = Slab::new();
-        let entry = slab.insert(42);
-        let entry_clone = entry.clone();
-
-        // Hold a borrow
-        let _guard = entry.get();
-
-        // Try to remove - should return None because borrowed
-        let result = slab.try_remove(entry_clone);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn try_remove_by_key_success() {
-        let slab: Slab<u64> = Slab::new();
-        let key = slab.insert(42).key();
-
-        let value = slab.try_remove_by_key(key);
-        assert_eq!(value, Some(42));
-        assert!(slab.is_empty());
-    }
-
-    #[test]
-    fn try_remove_by_key_invalid_returns_none() {
-        let slab: Slab<u64> = Slab::new();
-
-        // Invalid key (out of bounds - no chunks yet)
-        let result = slab.try_remove_by_key(Key::from_raw(100));
-        assert!(result.is_none());
-
-        // Valid index but vacant
-        let key = slab.insert(42).key();
-        slab.remove_by_key(key);
-        let result = slab.try_remove_by_key(key);
-        assert!(result.is_none());
-    }
-
-    // =========================================================================
-    // SlabVacantEntry tests
-    // =========================================================================
-
-    #[test]
-    fn slab_vacant_entry_insert() {
-        let slab: Slab<u64> = Slab::new();
-
-        let vacant = slab.vacant_entry();
+        let vacant = slab.vacant_slot();
         let entry = vacant.insert(42);
 
         assert_eq!(*entry.get(), 42);
@@ -1406,10 +1315,10 @@ mod tests {
     }
 
     #[test]
-    fn slab_vacant_entry_key_matches_final_entry() {
+    fn vacant_slot_key_matches() {
         let slab: Slab<u64> = Slab::new();
 
-        let vacant = slab.vacant_entry();
+        let vacant = slab.vacant_slot();
         let key_before = vacant.key();
         let entry = vacant.insert(100);
         let key_after = entry.key();
@@ -1418,13 +1327,12 @@ mod tests {
     }
 
     #[test]
-    fn slab_vacant_entry_drop_returns_slot() {
+    fn vacant_slot_drop_returns_slot() {
         let slab: Slab<u64> = Slab::new();
 
-        // Create and drop a vacant entry
         {
-            let _vacant = slab.vacant_entry();
-            assert_eq!(slab.len(), 1); // Slot is reserved
+            let _vacant = slab.vacant_slot();
+            assert_eq!(slab.len(), 1);
         }
 
         // After drop, slot is returned to freelist
@@ -1432,83 +1340,39 @@ mod tests {
     }
 
     #[test]
-    fn slab_vacant_entry_reuses_freed_slot() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
-
-        // Reserve and drop a slot
-        let key1 = {
-            let vacant = slab.vacant_entry();
-            vacant.key()
-        };
-
-        // Next insert should reuse the same slot (LIFO)
-        let entry = slab.insert(42);
-        assert_eq!(entry.key(), key1);
-    }
-
-    #[test]
-    fn slab_vacant_entry_grows_if_needed() {
+    fn replace() {
         let slab: Slab<u64> = Slab::new();
+        let mut entry = slab.insert(42);
 
-        assert_eq!(slab.capacity(), 0);
-
-        // vacant_entry should trigger growth
-        let vacant = slab.vacant_entry();
-        assert!(slab.capacity() > 0);
-
-        // Clean up
-        vacant.insert(42);
-    }
-
-    #[test]
-    fn slab_vacant_entry_across_chunks() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
-
-        // Fill first chunk
-        let _entries: Vec<_> = (0..4u64).map(|i| slab.insert(i)).collect();
-        assert_eq!(slab.num_chunks(), 1);
-
-        // Next vacant_entry should create a new chunk
-        let vacant = slab.vacant_entry();
-        assert_eq!(slab.num_chunks(), 2);
-
-        // Insert should work
-        let entry = vacant.insert(100);
+        let old = entry.replace(100);
+        assert_eq!(old, 42);
         assert_eq!(*entry.get(), 100);
     }
 
     #[test]
-    fn slab_vacant_entry_drop_when_chunk_was_full() {
-        let slab: Slab<u64> = Slab::builder().chunk_capacity(4).build();
+    fn and_modify() {
+        let slab: Slab<u64> = Slab::new();
+        let mut entry = slab.insert(0);
 
-        // Fill first chunk completely (4 slots)
-        let _entries: Vec<_> = (0..4u64).map(|i| slab.insert(i)).collect();
-        assert_eq!(slab.num_chunks(), 1);
+        entry.and_modify(|v| *v += 1).and_modify(|v| *v *= 2);
 
-        // Get a vacant entry from second chunk
-        let vacant = slab.vacant_entry();
-        assert_eq!(slab.num_chunks(), 2);
-        assert_eq!(slab.len(), 5); // 4 in chunk 0, 1 reserved in chunk 1
-
-        // Drop the vacant entry - should return slot AND re-add chunk to freelist
-        drop(vacant);
-        assert_eq!(slab.len(), 4);
-
-        // The next insert should use the freed slot in chunk 1
-        // (not create a third chunk)
-        let entry = slab.insert(999);
-        assert_eq!(slab.num_chunks(), 2); // Still only 2 chunks
-        assert_eq!(*entry.get(), 999);
+        assert_eq!(*entry.get(), 2);
     }
 
     #[test]
-    fn slab_vacant_entry_debug() {
+    fn explicit_remove() {
         let slab: Slab<u64> = Slab::new();
-        let vacant = slab.vacant_entry();
+        let entry = slab.insert(42);
 
-        let debug = format!("{:?}", vacant);
-        assert!(debug.contains("SlabVacantEntry"));
-        assert!(debug.contains("global_index"));
-        assert!(debug.contains("alive"));
+        let value = entry.into_inner();
+        assert_eq!(value, 42);
+        assert_eq!(slab.len(), 0);
+    }
+
+    #[test]
+    fn slot_size() {
+        // Slot is 16 bytes: slot ptr (8) + inner ptr (8)
+        // Key is stored in slot's stamp, not in Slot
+        assert_eq!(std::mem::size_of::<Slot<u64>>(), 16);
     }
 }

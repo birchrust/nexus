@@ -1,77 +1,194 @@
 # nexus-slab Benchmarks
 
-## Baseline Numbers
+All measurements in CPU cycles using batched unrolled timing (see Methodology below).
 
-Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core, turbo boost disabled.
+**Test conditions:** Intel Core Ultra 7 155H, `taskset -c 0` pinning, turbo boost disabled.
 
-### BoundedSlab (fixed capacity)
+---
 
-| Operation | unchecked | tracked | slab crate | Notes |
-|-----------|-----------|---------|------------|-------|
-| INSERT p50 | ~26 cycles | ~26 cycles | ~22 cycles | Comparable |
-| GET p50 | **~22 cycles** | ~32 cycles | ~28 cycles | Unchecked 21% faster |
-| REMOVE p50 | ~32 cycles | ~32 cycles | ~32 cycles | Comparable |
+## Methodology
 
-**unchecked** = `get_unchecked()` or `UntrackedAccessor` (no runtime checks)
-**tracked** = `get()` returning `Ref<T>` guard (borrow tracking)
+### The Problem with Single-Operation Timing
 
-### Slab (growable, steady-state)
+The `rdtsc`/`rdtscp` instructions have ~20-25 cycles of inherent overhead. When measuring operations that complete in 2-8 cycles, single-operation timing gives misleading results—everything appears to take ~22-24 cycles (the measurement floor).
 
-| Operation | unchecked | tracked | slab crate | Notes |
-|-----------|-----------|---------|------------|-------|
-| GET p50 | ~38 cycles | ~44 cycles | ~26 cycles | Chunk decode overhead |
+### Solution: Batched Unrolled Measurement
 
-The unbounded `Slab` has inherent overhead from chunk-based storage (decode
-chunk index, indirect through chunk pointer). Use `BoundedSlab` when capacity
-is known for best performance.
+We measure 100 operations per sample using a manually unrolled macro:
 
-### Slab (growable, during growth)
+```rust
+macro_rules! unroll_100 {
+    ($op:expr) => {
+        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 10
+        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 20
+        // ... 100 total
+    };
+}
 
-| Metric | nexus-slab | slab crate | Difference |
-|--------|------------|------------|------------|
-| Growth p999 | ~40 cycles | ~2000+ cycles | **50x better** |
-| Growth max | ~70K cycles | ~1.5M cycles | **20x better** |
-
-The `slab` crate uses `Vec`, which copies all existing data on reallocation.
-`nexus-slab` adds independent chunks - no copying. This is the primary value
-proposition of the unbounded `Slab`.
-
-### Access Method Comparison (BoundedSlab)
-
-| Method | p50 | p99 | Notes |
-|--------|-----|-----|-------|
-| `get_unchecked()` | ~20 | ~22 | No checks, fastest |
-| `UntrackedAccessor[key]` | ~28 | ~68 | Index syntax, uses get_unchecked |
-| `get_untracked()` | ~30 | ~430 | Validity check, no borrow tracking |
-| `get()` → `Ref<T>` | ~32 | ~86 | Validity + borrow tracking |
-| `contains_key()` | ~30 | ~62 | Validity check only |
-| `Entry::get_unchecked()` | ~24 | ~48 | Direct pointer, no checks |
-| `Entry::get()` | ~36 | ~90 | Weak upgrade + borrow |
-
-### API Safety vs Performance
-
-```
-                        ┌─────────────────────────────────────────────┐
-                        │           SAFETY CHECKS                     │
-                        ├─────────────┬─────────────┬─────────────────┤
-                        │  Validity   │   Borrow    │   Liveness      │
-                        │  (occupied) │  (runtime)  │   (Weak)        │
-┌───────────────────────┼─────────────┼─────────────┼─────────────────┤
-│ get_unchecked()       │      -      │      -      │       -         │ ~20 cycles
-│ UntrackedAccessor[key]│      -      │      -      │       -         │ ~28 cycles
-│ get_untracked()       │      ✓      │      -      │       -         │ ~30 cycles
-│ get() → Ref<T>        │      ✓      │      ✓      │       -         │ ~32 cycles
-│ contains_key()        │      ✓      │      -      │       -         │ ~30 cycles
-│ Entry::get_unchecked()│      -      │      -      │       -         │ ~24 cycles
-│ Entry::get_untracked()│      ✓      │      -      │       -         │ ~26 cycles
-│ Entry::get() → Ref<T> │      ✓      │      ✓      │       ✓         │ ~36 cycles
-└───────────────────────┴─────────────┴─────────────┴─────────────────┘
+let start = rdtsc_start();
+unroll_100!({ black_box(entry.get()); });
+let end = rdtsc_end();
+let cycles_per_op = (end - start) / 100;
 ```
 
-**Recommendations:**
-- **Hot paths:** Use `get_unchecked()` (~20 cycles) or `UntrackedAccessor` (~28 cycles)
-- **Normal paths:** Use `get()` for safe tracked access (~32 cycles)
-- **With Entry handles:** Use `Entry::get_unchecked()` when Entry validity is known
+This eliminates:
+- **Timing overhead**: Amortized across 100 ops
+- **Loop overhead**: No branches, just straight-line code
+- **Compiler optimization**: `black_box()` prevents hoisting
+
+### Interpreting Results
+
+- **0 cycles**: Instruction-Level Parallelism (ILP) - CPU executes operation "for free" alongside other work
+- **2-3 cycles**: Single memory access, no dependent loads
+- **4-8 cycles**: Multiple dependent operations or cache misses
+
+---
+
+## Summary (BoundedSlab p50)
+
+| Operation | Slot API | Key-based | slab crate | Notes |
+|-----------|----------|-----------|------------|-------|
+| GET (random) | **2** | **2** | 3 | Slot/key tied, faster than slab |
+| GET (hot) | **0** | - | 1 | ILP - CPU pipelines loads |
+| GET_MUT | **2** | **2** | 3 | Slot/key tied |
+| CONTAINS | **2** | 3 | 3 | Slot fastest |
+| INSERT | 7 | - | **5** | slab wins - simpler freelist |
+| REMOVE | 8 | **3** | 4 | Key-based fastest |
+| REPLACE | **3** | - | 4 | Slot has direct pointer |
+| TAKE | 18 | - | **8** | slab remove+insert faster |
+
+**Key findings:**
+- Slot API wins for mutation (GET_MUT, REPLACE) - direct pointer avoids index lookup
+- Key-based removal matches slab crate (both ~3 cycles)
+- INSERT/TAKE favor slab crate's simpler freelist
+- Hot access shows ILP - CPU pipelines repeated loads to same address
+
+---
+
+## GET Operations
+
+### Random Access Pattern
+
+Accessing entries at random indices (realistic workload):
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.get()` | **2** | **2** | **2** | 5 | 21 |
+| `get_by_key()` [unsafe] | **2** | **2** | **2** | **2** | 33 |
+| slab crate | 3 | 3 | 3 | 8 | 88 |
+
+Slot and key-based both beat slab crate by ~1 cycle.
+
+### Hot Access Pattern
+
+Repeatedly accessing the same entry (measures ILP):
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.get()` | **0** | 1 | 2 | 2 | 1731 |
+| slab crate | 1 | 2 | 2 | 2 | 25 |
+
+Slot achieves 0 cycles at p50 due to CPU pipelining repeated loads.
+
+### GET_MUT
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.get_mut()` | **2** | **2** | **2** | **2** | 97 |
+| `get_by_key_mut()` [unsafe] | **2** | **2** | 3 | 5 | 53 |
+| slab crate | 3 | 3 | 3 | 7 | 116 |
+
+Slot/key-based are 33% faster than slab at p50.
+
+---
+
+## INSERT
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| BoundedSlab | 7 | 11 | 12 | 41 | 105 |
+| slab crate | **5** | **5** | **6** | **10** | 81 |
+
+Slab crate wins by ~2 cycles due to simpler freelist management. Our stamp encoding (64-bit with state flags) has slightly more overhead.
+
+---
+
+## REMOVE
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.into_inner()` | 8 | 12 | 16 | 23 | 481 |
+| `remove_by_key()` [unsafe] | **3** | **4** | 7 | 13 | 68 |
+| slab crate | 4 | 4 | 4 | 13 | 48 |
+
+Key-based remove is fastest at p50. Slot-based `into_inner()` has ~5 cycles overhead for validity check.
+
+---
+
+## REPLACE
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.replace()` | **3** | **3** | **3** | **5** | 62 |
+| slab get_mut+replace | 4 | 4 | 6 | 13 | 77 |
+
+Slot's cached pointer saves 1 cycle - no index lookup needed.
+
+---
+
+## CONTAINS
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.is_valid()` | **2** | **2** | **3** | **4** | 24 |
+| `contains_key()` | 3 | 3 | 3 | 4 | 547 |
+| slab crate | 3 | 3 | 3 | 3 | 45 |
+
+Slot is fastest at p50. All implementations perform a simple stamp/version comparison.
+
+---
+
+## TAKE (extract value, keep slot reserved)
+
+| Method | p50 | p90 | p99 | p99.9 | max |
+|--------|-----|-----|-----|-------|-----|
+| `slot.take()` | 18 | 26 | 35 | 78 | 1124 |
+| slab remove+insert | **8** | **8** | **10** | **19** | 111 |
+
+Take is expensive due to VacantSlot creation overhead. If you need this pattern frequently, consider remove+insert.
+
+---
+
+## Unbounded vs Bounded
+
+The unbounded `Slab` adds ~2-4 cycles per operation due to chunk indirection (extra pointer chase). The tradeoff is:
+
+| | Bounded | Unbounded |
+|---|---------|-----------|
+| GET overhead | +0 | +2-4 cycles |
+| Growth behavior | Fails when full | Adds chunks (no copy) |
+| Tail latency | Deterministic | No reallocation stalls |
+
+Use bounded when capacity is known and latency is critical. Use unbounded when growth may be needed and you want to avoid `Vec` reallocation spikes.
+
+---
+
+## When to Use What
+
+### Use `BoundedSlab` + Slot API when:
+- You hold slots for repeated access (GET, REPLACE)
+- Capacity is known upfront
+- You need the absolute lowest GET latency (2 cycles vs 3)
+
+### Use `BoundedSlab` + key-based API when:
+- Single-shot access patterns
+- Integrating with data structures that store keys
+- Remove performance matters (4 cycles vs 8)
+
+### Use `slab` crate when:
+- INSERT performance is critical (5 cycles vs 8)
+- You don't need Slot handles
+- Vec reallocation stalls at p99.99 are acceptable
 
 ---
 
@@ -87,122 +204,16 @@ echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
 echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
 ```
 
-### Cycle-Accurate Examples
-
-Individual operation benchmarks with rdtscp timing:
+### Run Benchmarks
 
 ```bash
-# Build all examples
 cargo build --release --examples
 
-# Run pinned to a physical core (adjust path for workspace)
-taskset -c 0 ./target/release/examples/perf_insert_cycles
-taskset -c 0 ./target/release/examples/perf_get_cycles
-taskset -c 0 ./target/release/examples/perf_churn_cycles
-taskset -c 0 ./target/release/examples/perf_indexing_cycles
-taskset -c 0 ./target/release/examples/perf_mixed_cycles
-taskset -c 0 ./target/release/examples/perf_mixed_cycles_bounded
+# Full distribution with unrolled methodology
+taskset -c 0 ./target/release/examples/perf_full_distribution
 ```
 
-### Available Benchmarks
-
-| Example | Description |
-|---------|-------------|
-| `perf_insert_cycles.rs` | Insert latency (unbounded Slab) |
-| `perf_get_cycles.rs` | Get latency via UntrackedAccessor (unbounded) |
-| `perf_churn_cycles.rs` | Insert/remove interleaved |
-| `perf_indexing_cycles.rs` | Index operator latency via UntrackedAccessor |
-| `perf_mixed_cycles.rs` | Mixed ops with growth (unbounded) |
-| `perf_mixed_cycles_bounded.rs` | Mixed ops: tracked vs unchecked |
-| `perf_access_methods.rs` | **All access methods side-by-side** |
-
-**Recommended:** Run `perf_access_methods` for a clear comparison of all access methods:
-- `get_unchecked()` (~20 cycles) - no checks
-- `get_untracked()` (~30 cycles) - validity check only
-- `get()` → `Ref<T>` (~32 cycles) - tracked
-- `UntrackedAccessor[key]` (~28 cycles) - Index syntax
-- `contains_key()` (~30 cycles) - validity check only
-
----
-
-## Benchmark Methodology
-
-### Cycle Measurement
-
-Uses `rdtscp` for cycle-accurate timing on x86_64:
-
-```rust
-#[inline(always)]
-fn rdtscp() -> u64 {
-    unsafe {
-        let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
-    }
-}
-
-// Tracked access (safe, returns guard)
-let start = rdtscp();
-black_box(slab.get(key));  // Returns Option<Ref<T>>
-let end = rdtscp();
-
-// Untracked access (unsafe, fastest)
-// SAFETY: No Entry operations during benchmark
-let accessor = unsafe { slab.untracked() };
-let start = rdtscp();
-black_box(accessor[key]);  // Direct &T via Index
-let end = rdtscp();
-```
-
-### Histogram Collection
-
-Uses `hdrhistogram` for percentile tracking:
-
-```rust
-let mut hist = Histogram::<u64>::new(3).unwrap();
-
-for i in 0..ITERATIONS {
-    let cycles = measure_operation();
-    hist.record(cycles);
-}
-
-println!("p50:  {} cycles", hist.value_at_quantile(0.50));
-println!("p99:  {} cycles", hist.value_at_quantile(0.99));
-println!("p999: {} cycles", hist.value_at_quantile(0.999));
-```
-
-### Best Practices
-
-1. **Disable turbo boost** - Prevents frequency scaling artifacts
-2. **Pin to physical core** - Avoids context switches and cache pollution
-3. **Warmup** - Prime caches before measurement
-4. **Use `black_box`** - Prevent compiler from optimizing away operations
-5. **Large sample sizes** - 100K+ operations for stable percentiles
-
----
-
-## Interpreting Results
-
-### What to look for
-
-- **p50** - Typical operation latency
-- **p99/p999** - Tail latency (important for trading systems)
-- **max** - Worst case (often during growth or cache misses)
-
-### Expected variation
-
-- p50 should be stable (within ~5 cycles)
-- p99/p999 may vary more due to cache effects
-- max varies significantly - run multiple times
-
-### Red flags
-
-- Bimodal distribution (two distinct peaks) - indicates different code paths
-- Extremely high max (>100K cycles) - indicates allocation or syscall
-- Inconsistent p50 - indicates measurement issues
-
----
-
-## Re-enable Turbo Boost
+### Re-enable Turbo Boost
 
 ```bash
 # Intel

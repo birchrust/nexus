@@ -7,45 +7,48 @@ use std::mem::MaybeUninit;
 // Constants
 // =============================================================================
 
-/// Bit 31: Vacant flag (1 = vacant)
-pub(crate) const VACANT_BIT: u32 = 1 << 31;
+/// Vacant flag - bit 63 of stamp
+pub(crate) const VACANT_BIT: u64 = 1 << 63;
 
-/// Bit 30: Borrowed flag (1 = borrowed)
-pub(crate) const BORROWED_BIT: u32 = 1 << 30;
+/// Mask for key (lower 32 bits of stamp)
+pub(crate) const KEY_MASK: u64 = 0x0000_0000_FFFF_FFFF;
 
-/// Mask for next_free index (bits 0-29)
-pub(crate) const INDEX_MASK: u32 = (1 << 30) - 1;
+/// Mask for next_free index within state (bits 29-0 after shifting)
+pub(crate) const INDEX_MASK: u64 = (1 << 30) - 1;
 
-/// Sentinel for end of freelist (~1 billion max capacity)
-pub(crate) const SLOT_NONE: u32 = INDEX_MASK;
+/// Sentinel for end of freelist (~1 billion max capacity).
+///
+/// This is the max 30-bit value, limiting addressable slots to ~1 billion.
+pub const SLOT_NONE: u32 = INDEX_MASK as u32;
 
 // =============================================================================
 // SlotCell
 // =============================================================================
 
-/// Internal slot storage with tag for state tracking.
+/// Internal slot storage with stamp for state tracking and key storage.
 ///
-/// Tag encoding (32-bit):
-/// - Bit 31: Vacant flag (1 = vacant, 0 = occupied)
-/// - Bit 30: Borrowed flag (1 = borrowed, 0 = available) - only when occupied
-/// - Bits 0-29: When vacant, next free slot index
+/// Stamp encoding (64-bit):
+/// - Bits 63-32: State
+///   - Bit 63: Vacant flag (1 = vacant, 0 = occupied)
+///   - Bits 61-32: When vacant, next free slot index (30 bits)
+/// - Bits 31-0: Key (stored when slot is claimed, valid regardless of state)
 #[repr(C)]
 pub(crate) struct SlotCell<T> {
-    tag: Cell<u32>,
+    stamp: Cell<u64>,
     pub(crate) value: UnsafeCell<MaybeUninit<T>>,
 }
 
 impl<T> SlotCell<T> {
     pub(crate) fn new_vacant(next_free: u32) -> Self {
         Self {
-            tag: Cell::new(VACANT_BIT | (next_free & INDEX_MASK)),
+            stamp: Cell::new(VACANT_BIT | ((next_free as u64 & INDEX_MASK) << 32)),
             value: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
 
     #[inline]
     pub(crate) fn is_vacant(&self) -> bool {
-        self.tag.get() & VACANT_BIT != 0
+        self.stamp.get() & VACANT_BIT != 0
     }
 
     #[inline]
@@ -53,45 +56,42 @@ impl<T> SlotCell<T> {
         !self.is_vacant()
     }
 
+    /// Claims a vacant slot, returning the next_free index.
+    /// Single stamp read. Use with set_key_occupied() for optimal insert.
     #[inline]
-    pub(crate) fn is_borrowed(&self) -> bool {
-        self.tag.get() == BORROWED_BIT
+    pub(crate) fn claim_next_free(&self) -> u32 {
+        let stamp = self.stamp.get();
+        debug_assert!(stamp & VACANT_BIT != 0, "claim on non-vacant slot");
+        ((stamp >> 32) & INDEX_MASK) as u32
     }
 
-    /// Returns true if slot is occupied and not borrowed.
-    /// Branchless: only tag == 0 means available.
+    /// Returns the key stored in the stamp.
+    /// Valid regardless of vacant/occupied state (key is set when slot is claimed).
     #[inline]
-    pub(crate) fn is_available(&self) -> bool {
-        self.tag.get() == 0
+    pub(crate) fn key_from_stamp(&self) -> u32 {
+        (self.stamp.get() & KEY_MASK) as u32
     }
 
+    /// Sets key in stamp without changing state bits.
+    /// Only needed for insert_with pattern where key must be readable before value exists.
     #[inline]
-    pub(crate) fn next_free(&self) -> u32 {
-        debug_assert!(self.is_vacant(), "next_free called on occupied slot");
-        self.tag.get() & INDEX_MASK
+    pub(crate) fn set_key(&self, key: u32) {
+        self.stamp.set((self.stamp.get() & !KEY_MASK) | key as u64);
     }
 
+    /// Sets key and marks slot as occupied in a single write.
+    /// Use this for normal insert path after claim_next_free().
     #[inline]
-    pub(crate) fn set_occupied(&self) {
-        self.tag.set(0);
+    pub(crate) fn set_key_occupied(&self, key: u32) {
+        // Key in bits 31-0, bits 63-32 = 0 means occupied
+        self.stamp.set(key as u64);
     }
 
+    /// Marks slot as vacant with given next_free index. Clobbers key.
     #[inline]
     pub(crate) fn set_vacant(&self, next_free: u32) {
-        self.tag.set(VACANT_BIT | (next_free & INDEX_MASK));
-    }
-
-    #[inline]
-    pub(crate) fn set_borrowed(&self) {
-        debug_assert!(self.is_occupied(), "set_borrowed on vacant slot");
-        debug_assert!(!self.is_borrowed(), "already borrowed");
-        self.tag.set(BORROWED_BIT);
-    }
-
-    #[inline]
-    pub(crate) fn clear_borrowed(&self) {
-        debug_assert!(self.is_borrowed(), "clear_borrowed on non-borrowed slot");
-        self.tag.set(0);
+        self.stamp
+            .set(VACANT_BIT | ((next_free as u64 & INDEX_MASK) << 32));
     }
 
     /// # Safety
