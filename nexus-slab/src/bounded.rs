@@ -21,18 +21,18 @@
 //!
 //! let slab = Slab::with_capacity(1024);
 //!
-//! // RAII entry - slot freed when entry drops
+//! // RAII slot - storage freed when slot drops
 //! {
 //!     let entry = slab.try_insert("hello").unwrap();
 //!     assert_eq!(*entry.get(), "hello");
-//! } // entry drops, slot freed
+//! } // slot drops, storage freed
 //!
-//! // Forget to keep data alive
+//! // Leak to keep data alive
 //! let entry = slab.try_insert("world").unwrap();
 //! let key = entry.leak(); // data stays, returns Key
 //!
 //! // Access via key (unsafe - caller guarantees key validity)
-//! // SAFETY: key was just returned from forget(), slot is occupied
+//! // SAFETY: key was just returned from leak(), slot is occupied
 //! assert_eq!(*unsafe { slab.get_by_key(key) }, "world");
 //! ```
 //!
@@ -312,7 +312,7 @@ impl<T> Slot<T> {
         let slot = self.slot();
         let slot_index = slot.key_from_stamp();
 
-        // SAFETY: Caller guarantees entry is valid
+        // SAFETY: Caller guarantees slot is valid
         let value = unsafe { (*slot.value.get()).assume_init_read() };
 
         // Return slot to freelist
@@ -433,7 +433,7 @@ impl<T> fmt::Pointer for Slot<T> {
 ///
 /// let entry = slab.try_insert(42).unwrap();
 /// assert_eq!(*entry.get(), 42);
-/// // entry drops, slot freed
+/// // slot drops, storage freed
 /// ```
 #[derive(Clone, Copy)]
 pub struct Slab<T> {
@@ -506,7 +506,7 @@ impl<T> Slab<T> {
     /// Inserts a value, returning an RAII Slot handle.
     ///
     /// The returned [`Slot`] owns the slot. When dropped, the slot is
-    /// deallocated. Use [`Slot::forget()`] to keep the data alive.
+    /// deallocated. Use [`Slot::leak()`] to keep the data alive.
     ///
     /// # Errors
     ///
@@ -576,7 +576,7 @@ impl<T> Slab<T> {
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        // Create entry (slot not yet occupied, but key is readable from stamp)
+        // Create slot handle (storage not yet occupied, but key is readable from stamp)
         let entry = Slot::new(slot_ptr, self.ptr);
 
         // Call closure to get value
@@ -680,7 +680,7 @@ impl<T> Slab<T> {
 
     /// Removes a value by key.
     ///
-    /// Use this when you have a forgotten key and want to deallocate.
+    /// Use this when you have a leaked key and want to deallocate.
     ///
     /// # Safety
     ///
@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn forget_keeps_data() {
+    fn leak_keeps_data() {
         let slab = Slab::with_capacity(16);
 
         let entry = slab.try_insert(100u64).unwrap();
@@ -949,7 +949,7 @@ mod tests {
 
         // Data still exists
         assert_eq!(slab.len(), 1);
-        // SAFETY: key is valid (just obtained from forget)
+        // SAFETY: key is valid (just obtained from leak)
         assert_eq!(unsafe { *slab.get_by_key(key) }, 100);
 
         // Clean up via remove
@@ -960,13 +960,13 @@ mod tests {
     }
 
     #[test]
-    fn entry_from_key() {
+    fn slot_from_key() {
         let slab = Slab::with_capacity(16);
 
         let entry = slab.try_insert(42u64).unwrap();
         let key = entry.leak();
 
-        // Re-acquire RAII entry
+        // Re-acquire RAII slot
         {
             let entry = slab.slot(key).unwrap();
             assert_eq!(*entry.get(), 42);
@@ -992,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn vacant_entry_insert() {
+    fn vacant_slot_insert() {
         let slab = Slab::with_capacity(16);
 
         let vacant = slab.try_vacant_slot().unwrap();
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn vacant_entry_drop() {
+    fn vacant_slot_drop() {
         let slab: Slab<u64> = Slab::with_capacity(16);
 
         {
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_size() {
+    fn slot_size() {
         // Slot is 16 bytes: slot ptr (8) + inner ptr (8)
         // Key is stored in slot's stamp, not in Slot
         assert_eq!(std::mem::size_of::<Slot<u64>>(), 16);
@@ -1096,7 +1096,7 @@ mod tests {
     fn clear() {
         let slab = Slab::with_capacity(16);
 
-        // Insert and forget some entries
+        // Insert and leak some slots
         for i in 0..5 {
             let entry = slab.try_insert(i as u64).unwrap();
             entry.leak();

@@ -129,11 +129,11 @@
 //! let value = entry.into_inner();
 //! assert_eq!(value, 42);
 //!
-//! // Key-based API (for collections) - forget to store key externally
+//! // Key-based API (for collections) - leak to store key externally
 //! let entry = slab.insert(100);
 //! let key = entry.leak(); // keep data alive, get key
 //!
-//! // SAFETY: key is valid (just obtained from forget)
+//! // SAFETY: key is valid (just obtained from leak)
 //! let value = unsafe { slab.remove_by_key(key) };
 //! assert_eq!(value, 100);
 //! ```
@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_size() {
+    fn slot_size() {
         // Slot should be 16 bytes: slot(8) + inner(8)
         // Key is stored in slot's stamp, not in Slot
         assert_eq!(std::mem::size_of::<bounded::Slot<u64>>(), 16);

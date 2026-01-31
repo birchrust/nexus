@@ -17,18 +17,18 @@
 //!
 //! let slab = Slab::with_capacity(1000);
 //!
-//! // RAII entry - slot freed when entry drops
+//! // RAII slot - storage freed when slot drops
 //! {
 //!     let entry = slab.insert(42);
 //!     assert_eq!(*entry.get(), 42);
-//! } // entry drops, slot freed
+//! } // slot drops, storage freed
 //!
-//! // Forget to keep data alive
+//! // Leak to keep data alive
 //! let entry = slab.insert(100);
 //! let key = entry.leak();
 //!
 //! // Access via key (unsafe - caller guarantees key validity)
-//! // SAFETY: key was just returned from forget(), slot is occupied
+//! // SAFETY: key was just returned from leak(), slot is occupied
 //! assert_eq!(*unsafe { slab.get_by_key(key) }, 100);
 //! ```
 //!
@@ -687,7 +687,7 @@ impl<T> Slab<T> {
 
         let slot_ptr = (slot as *const SlotCell<T>).cast_mut();
 
-        // Create entry (slot not yet occupied, but key is readable from stamp)
+        // Create slot handle (storage not yet occupied, but key is readable from stamp)
         let entry = Slot::new(slot_ptr, self.ptr);
 
         let value = f(&entry);
@@ -803,7 +803,7 @@ impl<T> Slab<T> {
 
     /// Removes a value by key.
     ///
-    /// Use this when you have a forgotten key and want to deallocate.
+    /// Use this when you have a leaked key and want to deallocate.
     ///
     /// # Safety
     ///
@@ -1151,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn forget_keeps_data() {
+    fn leak_keeps_data() {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(100);
@@ -1159,7 +1159,7 @@ mod tests {
 
         // Data still exists
         assert_eq!(slab.len(), 1);
-        // SAFETY: key is valid (just obtained from forget)
+        // SAFETY: key is valid (just obtained from leak)
         assert_eq!(unsafe { *slab.get_by_key(key) }, 100);
 
         // Clean up via remove
@@ -1170,13 +1170,13 @@ mod tests {
     }
 
     #[test]
-    fn entry_from_key() {
+    fn slot_from_key() {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(42);
         let key = entry.leak();
 
-        // Re-acquire RAII entry
+        // Re-acquire RAII slot
         {
             let entry = slab.slot(key).unwrap();
             assert_eq!(*entry.get(), 42);
@@ -1190,7 +1190,7 @@ mod tests {
     fn multiple_chunks() {
         let slab: Slab<u64> = Builder::default().unbounded().chunk_capacity(4).build();
 
-        // Insert and forget to keep entries alive
+        // Insert and leak to keep slots alive
         let mut keys = Vec::new();
         for i in 0..20u64 {
             let entry = slab.insert(i);
@@ -1222,7 +1222,7 @@ mod tests {
         let slab: Slab<u64> = Builder::default().unbounded().chunk_capacity(4).build();
 
         for i in 0..20u64 {
-            slab.insert(i).leak(); // Forget to keep data
+            slab.insert(i).leak(); // Leak to keep data
         }
 
         let chunks_before = slab.num_chunks();
@@ -1289,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_after_key_removal() {
+    fn slot_after_key_removal() {
         let slab: Slab<u64> = Slab::new();
 
         let entry = slab.insert(42);
@@ -1299,12 +1299,12 @@ mod tests {
         // SAFETY: key is valid
         unsafe { slab.remove_by_key(key) };
 
-        // Can't re-acquire entry - slot is vacant
+        // Can't re-acquire slot - storage is vacant
         assert!(slab.slot(key).is_none());
     }
 
     #[test]
-    fn vacant_entry_insert() {
+    fn vacant_slot_insert() {
         let slab: Slab<u64> = Slab::new();
 
         let vacant = slab.vacant_slot();
@@ -1315,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn vacant_entry_key_matches() {
+    fn vacant_slot_key_matches() {
         let slab: Slab<u64> = Slab::new();
 
         let vacant = slab.vacant_slot();
@@ -1327,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn vacant_entry_drop_returns_slot() {
+    fn vacant_slot_drop_returns_slot() {
         let slab: Slab<u64> = Slab::new();
 
         {
@@ -1370,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_size() {
+    fn slot_size() {
         // Slot is 16 bytes: slot ptr (8) + inner ptr (8)
         // Key is stored in slot's stamp, not in Slot
         assert_eq!(std::mem::size_of::<Slot<u64>>(), 16);
