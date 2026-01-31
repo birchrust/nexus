@@ -435,11 +435,20 @@ impl<T> fmt::Pointer for Slot<T> {
 /// assert_eq!(*entry.get(), 42);
 /// // slot drops, storage freed
 /// ```
-#[derive(Clone, Copy)]
 pub struct Slab<T> {
     pub(crate) ptr: *mut BoundedSlabInner<T>,
     _marker: PhantomData<*mut ()>, // Ensures !Send + !Sync
 }
+
+// Manual impls without T: Copy/Clone bounds - Slab is just a pointer
+impl<T> Clone for Slab<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Slab<T> {}
 
 impl<T> Slab<T> {
     #[inline]
