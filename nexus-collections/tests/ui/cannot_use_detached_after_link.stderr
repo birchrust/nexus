@@ -1,0 +1,10 @@
+error[E0382]: use of moved value: `detached`
+  --> tests/ui/cannot_use_detached_after_link.rs:14:13
+   |
+10 |     let detached = slab.create_node(42).unwrap();
+   |         -------- move occurs because `detached` has type `DetachedListNode<u64, BoundedListSlab<u64>>`, which does not implement the `Copy` trait
+11 |     let _slot = list.link_back(detached);
+   |                                -------- value moved here
+...
+14 |     let _ = detached.take();
+   |             ^^^^^^^^ value used here after move

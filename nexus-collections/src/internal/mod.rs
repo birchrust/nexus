@@ -1,7 +1,8 @@
 //! Internal implementation details.
 //!
 //! This module contains traits and utilities used internally by the
-//! collection implementations. Nothing here is part of the public API.
+//! collection implementations. The traits are public (for use in generic
+//! bounds) but sealed - users cannot implement them.
 
 // TODO(phase-2): Remove these allows once ListStorage uses SlabOps
 #![allow(dead_code)]
@@ -9,4 +10,5 @@
 
 pub(crate) mod slab_ops;
 
-pub(crate) use slab_ops::SlabOps;
+// Re-export publicly for use in generic bounds (but traits are sealed)
+pub use slab_ops::{SlabOps, SlotOps};

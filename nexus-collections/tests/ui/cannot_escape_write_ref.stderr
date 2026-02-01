@@ -1,0 +1,35 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/ui/cannot_escape_write_ref.rs:14:9
+   |
+12 |     let escaped: &mut u64;
+   |         ------- `escaped` declared here, outside of the closure body
+13 |     list.write(&mut slot, |data| {
+   |                            ---- `data` is a reference that is only valid in the closure body
+14 |         escaped = data;  // ERROR: reference escapes closure
+   |         ^^^^^^^^^^^^^^ `data` escapes the closure body here
+
+error[E0594]: cannot assign to `escaped`, as it is not declared as mutable
+  --> tests/ui/cannot_escape_write_ref.rs:14:9
+   |
+14 |         escaped = data;  // ERROR: reference escapes closure
+   |         ^^^^^^^^^^^^^^ cannot assign
+   |
+help: consider changing this to be mutable
+   |
+12 |     let mut escaped: &mut u64;
+   |         +++
+
+error[E0381]: used binding `escaped` isn't initialized
+  --> tests/ui/cannot_escape_write_ref.rs:13:27
+   |
+12 |     let escaped: &mut u64;
+   |         ------- binding declared here but left uninitialized
+13 |     list.write(&mut slot, |data| {
+   |                           ^^^^^^ `escaped` used here but it isn't initialized
+14 |         escaped = data;  // ERROR: reference escapes closure
+   |         ------- borrow occurs due to use in closure
+   |
+help: consider assigning a value
+   |
+12 |     let escaped: &mut u64 = &mut 42;
+   |                           +++++++++

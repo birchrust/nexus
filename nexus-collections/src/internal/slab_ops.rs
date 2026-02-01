@@ -4,7 +4,41 @@
 //! bounded and unbounded storage variants without exposing implementation
 //! details to users.
 
-use nexus_slab::{bounded, unbounded, CapacityError, Full, Key};
+use nexus_slab::{CapacityError, Full, Key, bounded, unbounded};
+
+// =============================================================================
+// SlotOps - trait for Slot types
+// =============================================================================
+
+/// Operations available on Slot types (bounded::Slot and unbounded::Slot).
+///
+/// This is a sealed trait - only implemented for `nexus_slab` slot types.
+pub trait SlotOps: slot_sealed::Sealed {
+    /// Leaks the slot, keeping the data alive and returning its key.
+    fn leak(self) -> Key;
+}
+
+impl<T> SlotOps for bounded::Slot<T> {
+    #[inline]
+    fn leak(self) -> Key {
+        bounded::Slot::leak(self)
+    }
+}
+
+impl<T> SlotOps for unbounded::Slot<T> {
+    #[inline]
+    fn leak(self) -> Key {
+        unbounded::Slot::leak(self)
+    }
+}
+
+mod slot_sealed {
+    use nexus_slab::{bounded, unbounded};
+
+    pub trait Sealed {}
+    impl<T> Sealed for bounded::Slot<T> {}
+    impl<T> Sealed for unbounded::Slot<T> {}
+}
 
 /// Operations common to bounded::Slab and unbounded::Slab.
 ///
@@ -16,9 +50,9 @@ use nexus_slab::{bounded, unbounded, CapacityError, Full, Key};
 ///
 /// - `Slot`: The RAII handle returned by insert operations
 /// - `VacantSlot`: The pre-allocation handle for self-referential patterns
-pub(crate) trait SlabOps<T>: sealed::Sealed + Copy {
+pub trait SlabOps<T>: sealed::Sealed + Copy {
     /// The RAII slot handle type (bounded::Slot or unbounded::Slot).
-    type Slot;
+    type Slot: SlotOps;
 
     /// The vacant slot handle type for pre-allocation patterns.
     type VacantSlot;
@@ -154,12 +188,12 @@ impl<T> SlabOps<T> for bounded::Slab<T> {
     where
         F: FnOnce(&Self::Slot) -> T,
     {
-        self.insert_with(f)
+        self.try_insert_with(f)
     }
 
     #[inline]
     fn slab_vacant_slot(&self) -> Result<Self::VacantSlot, CapacityError> {
-        self.vacant_slot()
+        self.try_vacant_slot()
     }
 
     #[inline]

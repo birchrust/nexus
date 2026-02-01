@@ -1,0 +1,5 @@
+error[E0599]: no method named `get` found for struct `ListSlot<T, S>` in the current scope
+  --> tests/ui/slot_is_opaque.rs:14:18
+   |
+14 |     let _ = slot.get();
+   |                  ^^^ method not found in `ListSlot<u64, BoundedListSlab<u64>>`

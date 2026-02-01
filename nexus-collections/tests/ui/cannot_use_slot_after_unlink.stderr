@@ -1,0 +1,11 @@
+error[E0382]: borrow of moved value: `slot`
+  --> tests/ui/cannot_use_slot_after_unlink.rs:16:23
+   |
+11 |     let slot = list.link_back(detached);
+   |         ---- move occurs because `slot` has type `ListSlot<u64, BoundedListSlab<u64>>`, which does not implement the `Copy` trait
+12 |
+13 |     let _detached = list.unlink(slot);
+   |                                 ---- value moved here
+...
+16 |     let _ = list.read(&slot, |x| *x);
+   |                       ^^^^^ value borrowed here after move

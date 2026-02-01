@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/cannot_link_slot.rs:14:20
+   |
+14 |     list.link_back(slot);
+   |          --------- ^^^^ expected `DetachedListNode<u64, ...>`, found `ListSlot<u64, BoundedListSlab<u64>>`
+   |          |
+   |          arguments to this method are incorrect
+   |
+   = note: expected struct `DetachedListNode<u64, BoundedListSlab<u64>>`
+              found struct `ListSlot<u64, BoundedListSlab<u64>>`
+note: method defined here
+  --> src/list.rs
+   |
+   |     pub fn link_back(&mut self, node: DetachedListNode<T, S>) -> ListSlot<T, S> {
+   |            ^^^^^^^^^
