@@ -261,24 +261,72 @@ The most important advantage of a dedicated slab is **isolation from the global 
 Both Box and Slab run with identical "noise" between measurements:
 - 20-80 mixed-size allocations (32B-2KB) to the global allocator
 - Swiss-cheese free pattern (keep 50-75%)
-- Then measure a batch of 100 allocations
+- Then measure a batch of 10-100 allocations
 
 Box goes through the (equally warm) global allocator. Slab bypasses it entirely.
 
-### Results (p50 cycles, clean process state)
+### Hot Cache Results (Best of 5 isolated runs)
 
-| Size | Box | Slab | Box p99.99 | Slab p99.99 |
-|------|-----|------|------------|-------------|
-| 64B | 15 | **10** | 6003 | **108** |
-| 256B | 17 | **17** | 184 | **82** |
-| 1024B | 25 | 26 | 107 | 168 |
-| 4096B | 133 | **71** | 419 | **367** |
+Steady-state performance with warm caches:
 
-**Key findings:**
+| Size | Alloc | p25 | p50 | p75 | p90 | p99 | p99.9 |
+|------|-------|-----|-----|-----|-----|-----|-------|
+| 64B | Box | 12 | 12 | 13 | 14 | 20 | 48 |
+| 64B | **Slab** | **9** | **9** | **9** | **10** | **12** | **19** |
+| 256B | Box | 15 | 15 | 16 | 17 | 48 | 80 |
+| 256B | **Slab** | **16** | **16** | **16** | **16** | **25** | **50** |
+| 1024B | Box | 23 | 24 | 25 | 30 | 68 | 102 |
+| 1024B | **Slab** | **23** | **23** | **24** | **24** | **40** | **75** |
+| 4096B | Box | 101 | 105 | 111 | 126 | 149 | 209 |
+| 4096B | **Slab** | **61** | **62** | **62** | **64** | **71** | **129** |
 
-1. **Median latency**: Slab wins at small (64B) and large (4096B) sizes, tied at medium sizes
-2. **Tail latency is dramatic**: At 64B, Box p99.99 = 6003 cycles vs Slab p99.99 = 108 cycles (**55x better**)
-3. **Large allocations**: Slab is ~1.9x faster at 4096B because malloc has to do more bookkeeping
+**Hot cache findings:**
+- **64B**: Slab 1.3x faster at p50 (9 vs 12), 1.7x better at p99 (12 vs 20)
+- **256B**: Tied at p50, but slab 1.9x better at p99 (25 vs 48)
+- **1024B**: Slab 1.04x faster at p50, 1.7x better at p99 (40 vs 68)
+- **4096B**: Slab **1.7x faster** at p50 (62 vs 105), 2.1x better at p99 (71 vs 149)
+
+### Cold Cache Results
+
+Two scenarios measured with 24MB eviction buffer (2x L3), strided access pattern, interleaved measurement:
+
+#### Single-Op Cold (True First-Access Latency)
+
+One alloc+free per cache eviction. Measures the **first operation** after cache pressure—what you pay after a context switch or when allocator state has been evicted.
+
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|------|---------|----------|---------|----------|
+| 64B | 132 | **126** | 334 | **218** |
+| 256B | 166 | **122** | 336 | **230** |
+
+Note: Includes ~20-25 cycle rdtsc overhead.
+
+**Single-op findings:**
+- **64B**: Slab 5% faster at p50, **35% better** at p99
+- **256B**: Slab **27% faster** at p50, 31% better at p99
+
+#### Batched Cold (Burst After Cache Eviction)
+
+10 operations per cache eviction. Measures burst allocation patterns where only the first op is truly cold.
+
+| Size | Alloc | p25 | p50 | p75 | p90 | p99 | p99.9 |
+|------|-------|-----|-----|-----|-----|-----|-------|
+| 64B | Box | 48 | 51 | 54 | 57 | 71 | 140 |
+| 64B | Slab | 48 | 52 | 54 | 57 | **65** | **117** |
+| 256B | Box | 55 | 58 | 61 | 65 | 94 | 247 |
+| 256B | Slab | 59 | 62 | 65 | 68 | **80** | **186** |
+| 4096B | Box | 177 | 181 | 186 | 193 | 270 | 568 |
+| 4096B | **Slab** | **116** | **120** | **124** | **128** | **166** | **227** |
+
+**Batched findings:**
+- **64B/256B**: Roughly tied at p50 (first op cold, rest warm). Slab wins at p99.
+- **4096B**: Slab **1.5x faster** at p50, **1.6x better** at p99
+
+#### Why the Difference?
+
+In batched measurement, ops 2-10 run with warm metadata from op 1. Box's tcache is highly optimized for warm small-object free, which masks Slab's cold-start advantage.
+
+Single-op measurement shows true cold performance where Slab's simpler data structures (fewer cache lines to fetch) win consistently.
 
 ### Why Slab Wins
 
@@ -292,18 +340,22 @@ The slab:
 - Has its own freelist that nothing else touches
 - Never interacts with the OS after init
 
-**This isolation is the killer feature for latency-sensitive code.**
+**The cold cache advantage is particularly important**: In real systems, your allocator state won't always be in L1/L2 cache. The slab's simpler data structures mean fewer cache lines to fetch on the critical path.
 
 ### Benchmark Isolation Warning
 
-**Important**: Run benchmarks in isolation or as the first test in a suite. Memory-intensive tests that run before can pollute cache/TLB state and skew results. We observed 2x slower slab performance at 256B when running after 8 other memory-intensive tests—an artifact of test ordering, not real performance.
+**Important**: Run benchmarks in isolation or as the first test in a suite. Memory-intensive tests that run before can pollute cache/TLB state and skew results.
 
 For accurate comparisons:
 ```bash
-# Run contention test in isolation
-taskset -c 0 ./target/release/examples/minimal_256
+# Hot cache (steady-state performance)
+taskset -c 0 ./target/release/examples/minimal_contention
 
-# Or ensure it runs first in the stress test suite
+# Cold cache - batched (burst allocation pattern)
+taskset -c 0 ./target/release/examples/minimal_contention_cold
+
+# Cold cache - single-op (true first-access latency)
+taskset -c 0 ./target/release/examples/cold_single_op
 ```
 
 ---

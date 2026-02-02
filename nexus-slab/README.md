@@ -69,13 +69,34 @@ One cycle per object lifecycle for the ergonomics of a global allocator pattern.
 
 The killer feature: **slab is isolated from the global allocator**. In production, `Box::new()` shares malloc with everything else. Your slab is yours alone.
 
-| Size | Box p50 | Slab p50 | Box p99.99 | Slab p99.99 |
-|------|---------|----------|------------|-------------|
-| 64B | 15 | **10** | 6003 | **108** |
-| 256B | 17 | 17 | 184 | **82** |
-| 4096B | 133 | **71** | 419 | **367** |
+#### Hot Cache (realistic steady-state)
 
-**Tail latency**: At 64B, Box worst-case is **55x worse** (6003 vs 108 cycles). This is the difference between hitting malloc contention/syscalls vs a simple freelist pop.
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 | Box p99.9 | Slab p99.9 |
+|------|---------|----------|---------|----------|-----------|------------|
+| 64B | 12 | **9** | 20 | **12** | 48 | **19** |
+| 256B | 15 | 16 | 48 | **25** | 80 | **50** |
+| 4096B | 105 | **62** | 149 | **71** | 209 | **129** |
+
+#### Cold Cache (single-op, true first-access latency)
+
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|------|---------|----------|---------|----------|
+| 64B | 132 | **126** | 334 | **218** |
+| 256B | 166 | **122** | 336 | **230** |
+
+#### Cold Cache (batched burst pattern)
+
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|------|---------|----------|---------|----------|
+| 64B | 51 | 52 | 71 | **65** |
+| 256B | 58 | 62 | 94 | **80** |
+| 4096B | 181 | **120** | 270 | **166** |
+
+**Key findings:**
+- **Hot cache**: Slab **1.7x faster** at p50 for 4096B (62 vs 105 cycles)
+- **Cold single-op**: Slab **27% faster** at p50 for 256B (122 vs 166 cycles)
+- **Cold batched 4096B**: Slab **1.5x faster** at p50 (120 vs 181 cycles)
+- **Tail latency**: Slab consistently 1.5-2x better at p99
 
 See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and stress test results.
 
