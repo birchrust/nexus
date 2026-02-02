@@ -37,7 +37,6 @@ pub struct BoundedSlabInner<T> {
     pub(crate) slots: ManuallyDrop<Vec<SlotCell<T>>>,
     pub(crate) capacity: u32,
     pub(crate) free_head: Cell<u32>,
-    pub(crate) len: Cell<u32>,
 }
 
 impl<T> BoundedSlabInner<T> {
@@ -57,7 +56,6 @@ impl<T> BoundedSlabInner<T> {
             slots: ManuallyDrop::new(slots),
             capacity,
             free_head: Cell::new(0),
-            len: Cell::new(0),
         }
     }
 
@@ -76,15 +74,17 @@ impl<T> BoundedSlabInner<T> {
     }
 
     /// Returns the current length (number of occupied slots).
-    #[inline]
+    ///
+    /// This scans all slots - O(n). Use only for diagnostics/shutdown, not hot path.
     pub fn len(&self) -> u32 {
-        self.len.get()
+        self.slots.iter().filter(|s| SlotCell::is_occupied(s)).count() as u32
     }
 
     /// Returns true if no slots are occupied.
-    #[inline]
+    ///
+    /// This scans slots - O(n). Use only for diagnostics/shutdown, not hot path.
     pub fn is_empty(&self) -> bool {
-        self.len.get() == 0
+        self.slots.iter().all(SlotCell::is_vacant)
     }
 
     /// Returns the capacity.
@@ -97,11 +97,6 @@ impl<T> BoundedSlabInner<T> {
     pub(crate) fn slot(&self, index: u32) -> &SlotCell<T> {
         debug_assert!(index < self.capacity);
         unsafe { self.slots.get_unchecked(index as usize) }
-    }
-
-    #[inline]
-    pub(crate) fn is_full(&self) -> bool {
-        self.free_head.get() == SLOT_NONE
     }
 }
 
@@ -126,16 +121,15 @@ unsafe fn bounded_try_claim<T>(inner: *mut ()) -> Option<ClaimedSlot> {
     let slot = inner.slot(free_head);
     let next_free = slot.claim_next_free();
 
-    inner.free_head.set(next_free);
-    inner.len.set(inner.len.get() + 1);
-
-    // Key is passed via ClaimedSlot; stamp written by set_key_occupied after value write
+    // Prepare return value before the store - keeps all loads grouped,
+    // then single store at end before return
     let slot_ptr = (slot as *const SlotCell<T>).cast_mut() as *mut ();
+    let key = Key::new(free_head);
 
-    Some(ClaimedSlot {
-        slot_ptr,
-        key: Key::new(free_head),
-    })
+    // Single store to freelist - last operation before return
+    inner.free_head.set(next_free);
+
+    Some(ClaimedSlot { slot_ptr, key })
 }
 
 /// Frees a slot in a bounded slab.
@@ -149,12 +143,14 @@ unsafe fn bounded_try_claim<T>(inner: *mut ()) -> Option<ClaimedSlot> {
 unsafe fn bounded_free<T>(inner: *mut (), key: Key) {
     let inner = unsafe { &*(inner as *mut BoundedSlabInner<T>) };
     let index = key.index();
-    let slot = inner.slot(index);
 
+    // Group loads together
+    let slot = inner.slot(index);
     let free_head = inner.free_head.get();
+
+    // Stores: stamp first (marks slot as vacant), then freelist update
     slot.set_vacant(free_head);
     inner.free_head.set(index);
-    inner.len.set(inner.len.get() - 1);
 }
 
 /// Gets the slot pointer for a key in a bounded slab.

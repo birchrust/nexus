@@ -60,7 +60,6 @@ pub struct SlabInner<T> {
     chunk_mask: u32,
     head_with_space: Cell<u32>,
     chunk_capacity: u32,
-    len: Cell<usize>,
 }
 
 impl<T> SlabInner<T> {
@@ -94,7 +93,6 @@ impl<T> SlabInner<T> {
             chunk_mask,
             head_with_space: Cell::new(CHUNK_NONE),
             chunk_capacity,
-            len: Cell::new(0),
         }
     }
 
@@ -111,18 +109,20 @@ impl<T> SlabInner<T> {
         unsafe { &mut *self.chunks.get() }
     }
 
-    /// Returns the cached total length.
+    /// Returns the total length (number of occupied slots across all chunks).
+    ///
+    /// This scans all chunks - O(chunks * slots). Use only for diagnostics/shutdown.
     #[doc(hidden)]
-    #[inline]
     pub fn len(&self) -> usize {
-        self.len.get()
+        self.chunks().iter().map(|c| c.inner.len() as usize).sum()
     }
 
     /// Returns true if the slab is empty.
+    ///
+    /// This scans chunks - O(chunks * slots). Use only for diagnostics/shutdown.
     #[doc(hidden)]
-    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len.get() == 0
+        self.chunks().iter().all(|c| c.inner.is_empty())
     }
 
     #[inline]
@@ -190,6 +190,7 @@ unsafe fn unbounded_try_claim<T>(inner: *mut ()) -> Option<ClaimedSlot> {
         inner.grow();
     }
 
+    // Group all loads together first
     let chunk_idx = inner.head_with_space.get();
     let chunk = inner.chunk(chunk_idx);
     let chunk_inner = &*chunk.inner;
@@ -200,24 +201,22 @@ unsafe fn unbounded_try_claim<T>(inner: *mut ()) -> Option<ClaimedSlot> {
     let slot = chunk_inner.slot(free_head);
     let next_free = slot.claim_next_free();
 
-    chunk_inner.free_head.set(next_free);
-    chunk_inner.len.set(chunk_inner.len.get() + 1);
-    inner.len.set(inner.len.get() + 1);
+    // Prepare return value before stores
+    let global_idx = inner.encode(chunk_idx, free_head);
+    let slot_ptr = (slot as *const SlotCell<T>).cast_mut() as *mut ();
+    let key = Key::new(global_idx);
 
-    // Update chunk freelist if this chunk is now full
-    if chunk_inner.is_full() {
+    // All stores grouped at end:
+    // 1. Update chunk's freelist
+    chunk_inner.free_head.set(next_free);
+
+    // 2. If chunk is now full, remove from slab's available-chunk list
+    //    Use next_free directly instead of is_full() - avoids redundant load
+    if next_free == SLOT_NONE {
         inner.head_with_space.set(chunk.next_with_space.get());
     }
 
-    let global_idx = inner.encode(chunk_idx, free_head);
-
-    // Key is passed via ClaimedSlot; stamp written by set_key_occupied after value write
-    let slot_ptr = (slot as *const SlotCell<T>).cast_mut() as *mut ();
-
-    Some(ClaimedSlot {
-        slot_ptr,
-        key: Key::new(global_idx),
-    })
+    Some(ClaimedSlot { slot_ptr, key })
 }
 
 /// Frees a slot in an unbounded slab.
@@ -233,20 +232,24 @@ unsafe fn unbounded_free<T>(inner: *mut (), key: Key) {
     let inner = unsafe { &*(inner as *mut SlabInner<T>) };
     let (chunk_idx, local_idx) = inner.decode(key.index());
 
+    // Group all loads together
     let chunk = inner.chunk(chunk_idx);
     let chunk_inner = &*chunk.inner;
     let slot = chunk_inner.slot(local_idx);
 
-    // Was chunk full before this free?
-    let was_full = chunk_inner.is_full();
-
+    // Single load for free_head - also tells us if chunk was full
+    // (is_full() would redundantly load this again)
     let free_head = chunk_inner.free_head.get();
-    slot.set_vacant(free_head);
-    chunk_inner.free_head.set(local_idx);
-    chunk_inner.len.set(chunk_inner.len.get() - 1);
-    inner.len.set(inner.len.get() - 1);
+    let was_full = free_head == SLOT_NONE;
 
-    // If chunk was full, add it back to slab's chunk freelist
+    // Stores grouped together:
+    // 1. Mark slot as vacant (stamp write)
+    slot.set_vacant(free_head);
+
+    // 2. Update chunk's freelist head
+    chunk_inner.free_head.set(local_idx);
+
+    // 3. If chunk was full, add it back to slab's available-chunk list
     if was_full {
         chunk.next_with_space.set(inner.head_with_space.get());
         inner.head_with_space.set(chunk_idx);
