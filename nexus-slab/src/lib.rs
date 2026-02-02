@@ -144,6 +144,12 @@ pub mod macros;
 // Re-export sentinel for Key::NONE
 pub use shared::SLOT_NONE;
 
+// Re-export SlotCell for direct slot access (used by nexus-collections)
+pub use shared::SlotCell;
+
+// Re-export VTable for direct vtable access (used by nexus-collections)
+pub use shared::VTable;
+
 // =============================================================================
 // Key
 // =============================================================================

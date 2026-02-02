@@ -49,14 +49,57 @@ impl<T> SlotCell<T> {
         }
     }
 
+    /// Returns `true` if the slot is vacant.
     #[inline]
-    pub(crate) fn is_vacant(&self) -> bool {
+    pub fn is_vacant(&self) -> bool {
         self.stamp.get() & VACANT_BIT != 0
     }
 
+    /// Returns `true` if the slot is occupied.
     #[inline]
-    pub(crate) fn is_occupied(&self) -> bool {
+    pub fn is_occupied(&self) -> bool {
         !self.is_vacant()
+    }
+
+    /// Returns a pointer to the value.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied. Caller must ensure no mutable references exist.
+    #[inline]
+    pub unsafe fn value_ptr(&self) -> *const T {
+        unsafe { (*self.value.get()).as_ptr() }
+    }
+
+    /// Returns a mutable pointer to the value.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied. Caller must ensure exclusive access.
+    #[inline]
+    pub unsafe fn value_ptr_mut(&self) -> *mut T {
+        unsafe { (*self.value.get()).as_mut_ptr() }
+    }
+
+    /// Returns a reference to the value.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied. Caller must ensure no mutable references exist.
+    #[inline]
+    pub unsafe fn get_value(&self) -> &T {
+        unsafe { (*self.value.get()).assume_init_ref() }
+    }
+
+    /// Returns a mutable reference to the value.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied. Caller must ensure exclusive access.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_value_mut(&self) -> &mut T {
+        unsafe { (*self.value.get()).assume_init_mut() }
     }
 
     /// Claims a vacant slot, returning the next_free index.
@@ -150,17 +193,31 @@ pub type ContainsKeyFn = unsafe fn(inner: *const (), key: Key) -> bool;
 /// The type parameter `T` provides type safety - a `VTable<Order>` can only
 /// be used with `Order` values, even though the function pointers are
 /// type-erased internally.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Grab vtable pointer once (does TLS lookup)
+/// let vtable = my_alloc::vtable_ptr();
+///
+/// // Use methods for operations (no TLS lookup)
+/// unsafe {
+///     let claimed = (*vtable).try_claim()?;
+///     // ... write value ...
+///     (*vtable).free(key);
+/// }
+/// ```
 pub struct VTable<T> {
     /// Pointer to the slab's inner state (type-erased).
-    pub inner: *mut (),
+    pub(crate) inner: *mut (),
     /// Claims a slot from the slab.
-    pub try_claim_fn: TryClaimFn,
+    pub(crate) try_claim_fn: TryClaimFn,
     /// Frees a slot back to the slab.
-    pub free_fn: FreeFn,
+    pub(crate) free_fn: FreeFn,
     /// Gets slot pointer from key.
-    pub slot_ptr_fn: SlotPtrFn,
+    pub(crate) slot_ptr_fn: SlotPtrFn,
     /// Checks if key is valid and occupied.
-    pub contains_key_fn: ContainsKeyFn,
+    pub(crate) contains_key_fn: ContainsKeyFn,
     /// Marker for type safety.
     _marker: PhantomData<T>,
 }
@@ -194,5 +251,58 @@ impl<T> VTable<T> {
     #[inline]
     pub unsafe fn set_inner(&mut self, inner: *mut ()) {
         self.inner = inner;
+    }
+
+    // =========================================================================
+    // Public methods - these are the intended API for external use
+    // =========================================================================
+
+    /// Claims a slot from the slab.
+    ///
+    /// Returns `None` if the slab is full (bounded) or allocation fails.
+    /// The slot is reserved but not occupied - caller must write the value
+    /// and call `SlotCell::set_key_occupied()`.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from the thread that owns this slab.
+    #[inline]
+    pub unsafe fn try_claim(&self) -> Option<ClaimedSlot> {
+        unsafe { (self.try_claim_fn)(self.inner) }
+    }
+
+    /// Frees a slot, returning it to the freelist.
+    ///
+    /// Does NOT drop the value - caller is responsible for dropping before calling.
+    ///
+    /// # Safety
+    ///
+    /// - `key` must refer to a slot that was previously claimed
+    /// - Value must already be dropped or moved out
+    /// - Must be called from the thread that owns this slab
+    #[inline]
+    pub unsafe fn free(&self, key: Key) {
+        unsafe { (self.free_fn)(self.inner, key) }
+    }
+
+    /// Gets the slot pointer for a key.
+    ///
+    /// # Safety
+    ///
+    /// - `key` must refer to a valid slot (bounds checking is caller's responsibility)
+    /// - Must be called from the thread that owns this slab
+    #[inline]
+    pub unsafe fn slot_ptr(&self, key: Key) -> *mut SlotCell<T> {
+        unsafe { (self.slot_ptr_fn)(self.inner.cast_const(), key) as *mut SlotCell<T> }
+    }
+
+    /// Checks if a key refers to an occupied slot.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from the thread that owns this slab.
+    #[inline]
+    pub unsafe fn contains_key(&self, key: Key) -> bool {
+        unsafe { (self.contains_key_fn)(self.inner.cast_const(), key) }
     }
 }
