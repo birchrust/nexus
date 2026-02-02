@@ -35,8 +35,12 @@
 /// - `insert(value: T) -> Slot` - Insert a value (panics if not initialized or full)
 /// - `try_insert(value: T) -> Option<Slot>` - Insert a value (returns None if full)
 /// - `contains_key(key: Key) -> bool` - Check if key is valid
-/// - `unsafe fn get_unchecked(key: Key) -> &'static T` - Get reference by key
-/// - `unsafe fn get_unchecked_mut(key: Key) -> &'static mut T` - Get mutable reference
+/// - `unsafe fn get(key: Key) -> Option<&'static T>` - Get reference (checked)
+/// - `unsafe fn get_mut(key: Key) -> Option<&'static mut T>` - Get mutable reference (checked)
+/// - `unsafe fn get_unchecked(key: Key) -> &'static T` - Get reference (unchecked)
+/// - `unsafe fn get_unchecked_mut(key: Key) -> &'static mut T` - Get mutable reference (unchecked)
+/// - `unsafe fn try_remove_by_key(key: Key) -> Option<T>` - Remove and return value (checked)
+/// - `unsafe fn remove_by_key(key: Key) -> T` - Remove and return value (unchecked)
 /// - `shutdown() -> Result<(), SlotsRemaining>` - Shutdown the allocator
 /// - `Slot` - RAII handle (8 bytes)
 ///
@@ -463,6 +467,37 @@ macro_rules! create_allocator {
 
             /// Get a reference to a value by key.
             ///
+            /// Returns `None` if the key is invalid or the slot is vacant.
+            ///
+            /// # Safety
+            ///
+            /// Caller must ensure no mutable references to this slot exist.
+            #[inline]
+            pub unsafe fn get(key: Key) -> Option<&'static $T> {
+                if !contains_key(key) {
+                    return None;
+                }
+                Some(unsafe { get_unchecked(key) })
+            }
+
+            /// Get a mutable reference to a value by key.
+            ///
+            /// Returns `None` if the key is invalid or the slot is vacant.
+            ///
+            /// # Safety
+            ///
+            /// Caller must ensure no other references to this slot exist.
+            #[inline]
+            #[allow(clippy::mut_from_ref)]
+            pub unsafe fn get_mut(key: Key) -> Option<&'static mut $T> {
+                if !contains_key(key) {
+                    return None;
+                }
+                Some(unsafe { get_unchecked_mut(key) })
+            }
+
+            /// Get a reference to a value by key without checking validity.
+            ///
             /// # Safety
             ///
             /// - Key must refer to an occupied slot
@@ -479,7 +514,7 @@ macro_rules! create_allocator {
                 })
             }
 
-            /// Get a mutable reference to a value by key.
+            /// Get a mutable reference to a value by key without checking validity.
             ///
             /// # Safety
             ///
@@ -495,6 +530,50 @@ macro_rules! create_allocator {
                     let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
                     // SlotCell is repr(C): [stamp: 8][value: T]
                     unsafe { &mut *((slot_ptr as *mut u8).add(8) as *mut $T) }
+                })
+            }
+
+            /// Try to remove a value by key, returning the value if present.
+            ///
+            /// Returns `None` if the key is invalid or the slot is vacant.
+            /// This is the safe version of [`remove_by_key`].
+            ///
+            /// # Safety
+            ///
+            /// Caller must ensure no references to this slot exist.
+            #[inline]
+            pub unsafe fn try_remove_by_key(key: Key) -> Option<$T> {
+                if !contains_key(key) {
+                    return None;
+                }
+                Some(unsafe { remove_by_key(key) })
+            }
+
+            /// Remove a value by key, returning the value.
+            ///
+            /// This is the key-based equivalent of [`Slot::into_inner()`].
+            ///
+            /// # Safety
+            ///
+            /// - Key must refer to an occupied slot
+            /// - No references may exist to this slot
+            /// - The key must not be used after this call
+            #[inline]
+            pub unsafe fn remove_by_key(key: Key) -> $T {
+                VTABLE.with(|v| {
+                    let vtable = v.get();
+                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
+                    let vtable = unsafe { &*vtable };
+                    let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
+
+                    // Read the value out (SlotCell is repr(C): [stamp: 8][value: T])
+                    let value_ptr = (slot_ptr as *const u8).add(8) as *const $T;
+                    let value = unsafe { std::ptr::read(value_ptr) };
+
+                    // Free the slot
+                    unsafe { (vtable.free_fn)(vtable.inner, key) };
+
+                    value
                 })
             }
 
