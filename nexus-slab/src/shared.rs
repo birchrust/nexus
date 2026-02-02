@@ -3,12 +3,14 @@
 use std::cell::{Cell, UnsafeCell};
 use std::mem::MaybeUninit;
 
+use crate::Key;
+
 // =============================================================================
 // Constants
 // =============================================================================
 
 /// Vacant flag - bit 63 of stamp
-pub(crate) const VACANT_BIT: u64 = 1 << 63;
+pub const VACANT_BIT: u64 = 1 << 63;
 
 /// Mask for key (lower 32 bits of stamp)
 pub(crate) const KEY_MASK: u64 = 0x0000_0000_FFFF_FFFF;
@@ -33,9 +35,10 @@ pub const SLOT_NONE: u32 = INDEX_MASK as u32;
 ///   - Bits 61-32: When vacant, next free slot index (30 bits)
 /// - Bits 31-0: Key (stored when slot is claimed, valid regardless of state)
 #[repr(C)]
-pub(crate) struct SlotCell<T> {
+pub struct SlotCell<T> {
     stamp: Cell<u64>,
-    pub(crate) value: UnsafeCell<MaybeUninit<T>>,
+    /// The value storage.
+    pub value: UnsafeCell<MaybeUninit<T>>,
 }
 
 impl<T> SlotCell<T> {
@@ -68,21 +71,14 @@ impl<T> SlotCell<T> {
     /// Returns the key stored in the stamp.
     /// Valid regardless of vacant/occupied state (key is set when slot is claimed).
     #[inline]
-    pub(crate) fn key_from_stamp(&self) -> u32 {
+    pub fn key_from_stamp(&self) -> u32 {
         (self.stamp.get() & KEY_MASK) as u32
-    }
-
-    /// Sets key in stamp without changing state bits.
-    /// Only needed for insert_with pattern where key must be readable before value exists.
-    #[inline]
-    pub(crate) fn set_key(&self, key: u32) {
-        self.stamp.set((self.stamp.get() & !KEY_MASK) | key as u64);
     }
 
     /// Sets key and marks slot as occupied in a single write.
     /// Use this for normal insert path after claim_next_free().
     #[inline]
-    pub(crate) fn set_key_occupied(&self, key: u32) {
+    pub fn set_key_occupied(&self, key: u32) {
         // Key in bits 31-0, bits 63-32 = 0 means occupied
         self.stamp.set(key as u64);
     }
@@ -93,19 +89,110 @@ impl<T> SlotCell<T> {
         self.stamp
             .set(VACANT_BIT | ((next_free as u64 & INDEX_MASK) << 32));
     }
+}
 
-    /// # Safety
-    /// Slot must be occupied.
+// =============================================================================
+// VTable
+// =============================================================================
+
+use std::marker::PhantomData;
+
+/// Result of claiming a slot (before value is written).
+///
+/// The slot is reserved but not yet occupied. The caller must write the value
+/// and mark the slot as occupied.
+#[derive(Debug, Clone, Copy)]
+pub struct ClaimedSlot {
+    /// Type-erased pointer to the SlotCell.
+    pub slot_ptr: *mut (),
+    /// The key for this slot.
+    pub key: Key,
+}
+
+/// Claims a slot from the slab, returning slot pointer and key.
+///
+/// Returns `None` if the slab is full (bounded) or allocation fails.
+/// The slot is reserved but not occupied - caller must write the value.
+///
+/// # Safety
+/// - `inner` must be a valid pointer to the slab's inner state
+/// - Must be called from single thread (slab is !Send)
+pub type TryClaimFn = unsafe fn(inner: *mut ()) -> Option<ClaimedSlot>;
+
+/// Frees a slot, returning it to the freelist.
+///
+/// Does NOT drop the value - caller is responsible for dropping before calling.
+///
+/// # Safety
+/// - `inner` must be a valid pointer to the slab's inner state
+/// - `key` must refer to a slot that was previously claimed
+/// - Value must already be dropped or moved out
+pub type FreeFn = unsafe fn(inner: *mut (), key: Key);
+
+/// Gets the slot pointer for a key.
+///
+/// # Safety
+/// - `inner` must be a valid pointer to the slab's inner state
+/// - `key` must refer to a valid slot (bounds checking is caller's responsibility)
+pub type SlotPtrFn = unsafe fn(inner: *const (), key: Key) -> *mut ();
+
+/// Checks if a key refers to an occupied slot.
+///
+/// # Safety
+/// - `inner` must be a valid pointer to the slab's inner state
+pub type ContainsKeyFn = unsafe fn(inner: *const (), key: Key) -> bool;
+
+/// VTable for type-erased slab operations.
+///
+/// Contains both the function pointers for slab operations and the pointer
+/// to the slab's inner state. This is what gets stored in TLS.
+///
+/// The type parameter `T` provides type safety - a `VTable<Order>` can only
+/// be used with `Order` values, even though the function pointers are
+/// type-erased internally.
+pub struct VTable<T> {
+    /// Pointer to the slab's inner state (type-erased).
+    pub inner: *mut (),
+    /// Claims a slot from the slab.
+    pub try_claim_fn: TryClaimFn,
+    /// Frees a slot back to the slab.
+    pub free_fn: FreeFn,
+    /// Gets slot pointer from key.
+    pub slot_ptr_fn: SlotPtrFn,
+    /// Checks if key is valid and occupied.
+    pub contains_key_fn: ContainsKeyFn,
+    /// Marker for type safety.
+    _marker: PhantomData<T>,
+}
+
+impl<T> VTable<T> {
+    /// Creates a new VTable with the given function pointers.
+    ///
+    /// `inner` should be set to the slab's inner pointer after creation.
     #[inline]
-    pub(crate) unsafe fn value_ref(&self) -> &T {
-        unsafe { (*self.value.get()).assume_init_ref() }
+    pub const fn new(
+        try_claim_fn: TryClaimFn,
+        free_fn: FreeFn,
+        slot_ptr_fn: SlotPtrFn,
+        contains_key_fn: ContainsKeyFn,
+    ) -> Self {
+        Self {
+            inner: std::ptr::null_mut(),
+            try_claim_fn,
+            free_fn,
+            slot_ptr_fn,
+            contains_key_fn,
+            _marker: PhantomData,
+        }
     }
 
+    /// Sets the inner pointer.
+    ///
     /// # Safety
-    /// Slot must be occupied and caller must have exclusive access.
+    /// - Must only be called once
+    /// - `inner` must be a valid pointer to the slab's inner state
     #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub(crate) unsafe fn value_mut(&self) -> &mut T {
-        unsafe { (*self.value.get()).assume_init_mut() }
+    pub unsafe fn set_inner(&mut self, inner: *mut ()) {
+        self.inner = inner;
     }
 }

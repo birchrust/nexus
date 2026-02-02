@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2243b3d602c3bba3dfa568518527e76eeb2297cffd6c0d51b01fa7418d53c0bf # shrinks to cycles = 1
+cc c942d6801de97fea3f00275095afd4c30b2978f6d292bb39295a0151765c4ae9 # shrinks to count = 1
+cc a85c4f6e622b987e64d74313aef588bbb84ac784713b8030870cc3e0cd53639b # shrinks to capacity = 1, inserts = []
+cc 74c4179b2fa245f9d503ea7d038777678ff7216c1f7548399442f90c8ece48df # shrinks to ops = [Insert(0)]
+cc abdba7a43ddb98b438b8faf51f973a6780a5e715386513a6861a3176ed23e56d # shrinks to ops = [Insert(0)]
+cc 8e1d815b8cb0a9512f6ad2ddddf14bc6f2cfb1f667842e5f0d1438aa612e8d54 # shrinks to ops = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+cc 4afa4612a0082d86c17c8b0e5172d39fdba7b4d24b8a3324e67caceb9b0dacb3 # shrinks to ops = [Insert(0)]
+cc 9887b06befd6ca876d7c5f205e052b12f73174b4095a8c2a0f5ba30da60473ba # shrinks to capacity = 5, ops = [false]

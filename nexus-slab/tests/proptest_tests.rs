@@ -1,373 +1,545 @@
-//! Property-based tests for slab invariants.
+//! Property-based tests using proptest.
+//!
+//! These tests verify invariants hold under randomized inputs:
+//! - len() always matches actual occupied slots
+//! - contains_key() accurately reflects slot state
+//! - Freelist maintains integrity under arbitrary insert/remove sequences
+//! - Values are never corrupted
+//!
+//! Note: Due to TLS persistence, each proptest uses a uniquely named allocator
+//! to avoid reinitialization issues across test iterations.
 
+use nexus_slab::{Key, create_allocator};
 use proptest::prelude::*;
-
-use nexus_slab::{Key, bounded, unbounded};
+use std::collections::HashMap;
 
 // =============================================================================
-// BoundedSlab properties
+// Key Properties (stateless, no allocator needed)
 // =============================================================================
 
 proptest! {
-    /// len() always equals the number of occupied slots
-    #[test]
-    fn bounded_len_invariant(ops in prop::collection::vec(0..100u64, 0..200)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(100);
-        let mut keys: Vec<Key> = Vec::new();
-        let mut expected_len = 0;
+    #![proptest_config(ProptestConfig::with_cases(1000))]
 
-        for op in ops {
-            if op % 3 == 0 && !keys.is_empty() {
-                // Remove
-                let idx = (op as usize) % keys.len();
-                let key = keys.remove(idx);
-                // SAFETY: key is valid (from our keys vec)
-                unsafe { slab.remove_by_key(key) };
-                expected_len -= 1;
-            } else if expected_len < 100 {
+    #[test]
+    fn key_roundtrip(raw in 0u32..nexus_slab::SLOT_NONE) {
+        let key = Key::from_raw(raw);
+        prop_assert_eq!(key.into_raw(), raw);
+        prop_assert_eq!(key.index(), raw);
+    }
+
+    #[test]
+    fn key_valid_is_some(raw in 0u32..nexus_slab::SLOT_NONE) {
+        let key = Key::from_raw(raw);
+        prop_assert!(key.is_some());
+        prop_assert!(!key.is_none());
+    }
+}
+
+#[test]
+fn key_none_is_special() {
+    let key = Key::NONE;
+    assert!(key.is_none());
+    assert!(!key.is_some());
+    assert_eq!(key.index(), nexus_slab::SLOT_NONE);
+}
+
+// =============================================================================
+// Bounded Slab Properties
+// Each test creates a uniquely-named allocator to avoid TLS conflicts.
+// =============================================================================
+
+/// Test that len() always matches actual occupied slots
+#[test]
+fn bounded_len_invariant_random() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(50).build();
+
+    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
+        proptest::test_runner::RngAlgorithm::ChaCha
+    );
+
+    let mut slots = Vec::new();
+    let mut leaked_count = 0usize;
+
+    for _ in 0..500 {
+        let action: u8 = rng.random_range(0..10);
+
+        match action {
+            0..=5 => {
                 // Insert
-                if let Ok(entry) = slab.try_insert(op) {
-                    keys.push(entry.leak());
-                    expected_len += 1;
+                if let Some(slot) = test_alloc::try_insert(rng.random()) {
+                    slots.push(slot);
                 }
             }
-
-            prop_assert_eq!(slab.len(), expected_len);
-        }
-    }
-
-    /// Capacity is never exceeded
-    #[test]
-    fn bounded_capacity_never_exceeded(values in prop::collection::vec(0..1000u64, 0..500)) {
-        let capacity = 100;
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(capacity);
-
-        for value in values {
-            if slab.len() < capacity {
-                prop_assert!(slab.try_insert(value).is_ok());
-            } else {
-                prop_assert!(slab.try_insert(value).is_err());
+            6..=7 => {
+                // Remove last
+                let _ = slots.pop();
             }
+            8 => {
+                // Remove random
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let _ = slots.swap_remove(idx);
+                }
+            }
+            9 => {
+                // Leak random
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let slot = slots.swap_remove(idx);
+                    let _ = slot.leak();
+                    leaked_count += 1;
+                }
+            }
+            _ => unreachable!(),
         }
 
-        prop_assert!(slab.len() <= capacity);
-    }
-
-    /// Insert returns the same value on remove
-    #[test]
-    fn bounded_insert_remove_roundtrip(values in prop::collection::vec(0..10000u64, 1..100)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
-
-        for value in values {
-            let entry = slab.try_insert(value).unwrap();
-            prop_assert_eq!(*entry.get(), value);
-            prop_assert_eq!(entry.into_inner(), value);
-        }
-    }
-
-    /// Keys remain valid until removed
-    #[test]
-    fn bounded_key_validity(values in prop::collection::vec(0..1000u64, 1..50)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
-        let mut key_value_pairs = Vec::new();
-
-        // Insert all
-        for value in &values {
-            let entry = slab.try_insert(*value).unwrap();
-            key_value_pairs.push((entry.leak(), *value));
-        }
-
-        // All keys should be valid
-        for (key, expected) in &key_value_pairs {
-            prop_assert!(slab.contains_key(*key));
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
-        }
-
-        // Remove half
-        for (key, expected) in key_value_pairs.iter().take(values.len() / 2) {
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { slab.remove_by_key(*key) }, *expected);
-            prop_assert!(!slab.contains_key(*key));
-        }
-
-        // Remaining keys still valid
-        for (key, expected) in key_value_pairs.iter().skip(values.len() / 2) {
-            prop_assert!(slab.contains_key(*key));
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
-        }
-    }
-
-    /// LIFO: most recently freed slot is reused first
-    #[test]
-    fn bounded_lifo_freelist(n in 2..50usize) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(n);
-
-        // Fill the slab
-        let mut keys: Vec<Key> = Vec::new();
-        for i in 0..n {
-            let entry = slab.try_insert(i as u64).unwrap();
-            keys.push(entry.leak());
-        }
-
-        // Remove two slots: first_removed, then second_removed
-        // LIFO = Last In First Out, so second_removed (last to enter freelist)
-        // should be allocated first
-        let first_removed = keys.pop().unwrap();
-        let second_removed = keys.pop().unwrap();
-        // SAFETY: keys are valid
-        unsafe {
-            slab.remove_by_key(first_removed);   // freelist: first_removed
-            slab.remove_by_key(second_removed);  // freelist: second_removed -> first_removed
-        }
-
-        // Next insert should get second_removed (most recently added to freelist)
-        let new_entry1 = slab.try_insert(999u64).unwrap();
-        prop_assert_eq!(new_entry1.key(), second_removed);
-
-        // Next insert should get first_removed
-        let new_entry2 = slab.try_insert(998u64).unwrap();
-        prop_assert_eq!(new_entry2.key(), first_removed);
-    }
-
-    /// Replace preserves slot, changes value
-    #[test]
-    fn bounded_replace_preserves_slot(values in prop::collection::vec(1..1000u64, 2..50)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
-
-        let mut entry = slab.try_insert(0u64).unwrap();
-        let original_key = entry.key();
-        let mut expected_old = 0u64;
-
-        for value in values {
-            let old = entry.replace(value);
-            prop_assert_eq!(entry.key(), original_key); // Key preserved
-            prop_assert_eq!(old, expected_old);         // Got previous value
-            prop_assert_eq!(*entry.get(), value);       // New value set
-            expected_old = value;
-        }
-    }
-
-    /// Clear empties slab completely
-    #[test]
-    fn bounded_clear_empties(values in prop::collection::vec(0..1000u64, 1..100)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
-
-        for value in &values {
-            slab.try_insert(*value).unwrap().leak();
-        }
-
-        prop_assert_eq!(slab.len(), values.len());
-        slab.clear();
-        prop_assert_eq!(slab.len(), 0);
-        prop_assert!(slab.is_empty());
+        // Invariant: len() == slots.len() + leaked_count
+        assert_eq!(test_alloc::len(), slots.len() + leaked_count);
     }
 }
 
-// =============================================================================
-// Slab (unbounded) properties
-// =============================================================================
+/// Test that contains_key() accurately reflects slot state
+#[test]
+fn bounded_contains_key_invariant_random() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(50).build();
 
-proptest! {
-    /// len() always equals the number of occupied slots
-    #[test]
-    fn unbounded_len_invariant(ops in prop::collection::vec(0..100u64, 0..200)) {
-        let slab: unbounded::Slab<u64> = nexus_slab::Builder::default().unbounded().chunk_capacity(16).build();
-        let mut keys: Vec<Key> = Vec::new();
-        let mut expected_len = 0;
+    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
+        proptest::test_runner::RngAlgorithm::ChaCha
+    );
 
-        for op in ops {
-            if op % 3 == 0 && !keys.is_empty() {
-                // Remove
-                let idx = (op as usize) % keys.len();
-                let key = keys.remove(idx);
-                // SAFETY: key is valid
-                unsafe { slab.remove_by_key(key) };
-                expected_len -= 1;
-            } else {
-                // Insert (always succeeds for unbounded)
-                keys.push(slab.insert(op).leak());
-                expected_len += 1;
+    let mut slots = Vec::new();
+    let mut leaked_keys = Vec::new();
+
+    for _ in 0..500 {
+        let action: u8 = rng.random_range(0..10);
+
+        match action {
+            0..=5 => {
+                if let Some(slot) = test_alloc::try_insert(rng.random()) {
+                    slots.push(slot);
+                }
             }
-
-            prop_assert_eq!(slab.len(), expected_len);
-        }
-    }
-
-    /// Insert returns the same value on remove
-    #[test]
-    fn unbounded_insert_remove_roundtrip(values in prop::collection::vec(0..10000u64, 1..100)) {
-        let slab = unbounded::Slab::with_capacity(values.len());
-
-        for value in values {
-            let entry = slab.insert(value);
-            prop_assert_eq!(*entry.get(), value);
-            prop_assert_eq!(entry.into_inner(), value);
-        }
-    }
-
-    /// Keys remain valid until removed
-    #[test]
-    fn unbounded_key_validity(values in prop::collection::vec(0..1000u64, 1..50)) {
-        let slab = unbounded::Slab::with_capacity(values.len());
-        let mut key_value_pairs = Vec::new();
-
-        // Insert all
-        for value in &values {
-            let entry = slab.insert(*value);
-            key_value_pairs.push((entry.leak(), *value));
+            6..=7 => {
+                let _ = slots.pop();
+            }
+            8 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let _ = slots.swap_remove(idx);
+                }
+            }
+            9 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let slot = slots.swap_remove(idx);
+                    leaked_keys.push(slot.leak());
+                }
+            }
+            _ => unreachable!(),
         }
 
-        // All keys should be valid
-        for (key, expected) in &key_value_pairs {
-            prop_assert!(slab.contains_key(*key));
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
+        // Invariant: contains_key returns true for all held slots
+        for slot in &slots {
+            assert!(test_alloc::contains_key(slot.key()));
         }
 
-        // Remove half
-        for (key, expected) in key_value_pairs.iter().take(values.len() / 2) {
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { slab.remove_by_key(*key) }, *expected);
-            prop_assert!(!slab.contains_key(*key));
-        }
-
-        // Remaining keys still valid
-        for (key, expected) in key_value_pairs.iter().skip(values.len() / 2) {
-            prop_assert!(slab.contains_key(*key));
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
-        }
-    }
-
-    /// Growth: slab can exceed initial capacity
-    #[test]
-    fn unbounded_grows_beyond_capacity(n in 10..200usize) {
-        let slab: unbounded::Slab<u64> = nexus_slab::Builder::default().unbounded().chunk_capacity(8).build();
-
-        // Insert more than a single chunk
-        for i in 0..n {
-            slab.insert(i as u64).leak();
-        }
-
-        prop_assert_eq!(slab.len(), n);
-        prop_assert!(slab.capacity() >= n);
-    }
-
-    /// Replace preserves slot, changes value
-    #[test]
-    fn unbounded_replace_preserves_slot(values in prop::collection::vec(1..1000u64, 2..50)) {
-        let slab = unbounded::Slab::with_capacity(values.len());
-
-        let mut entry = slab.insert(0u64);
-        let original_key = entry.key();
-        let mut expected_old = 0u64;
-
-        for value in values {
-            let old = entry.replace(value);
-            prop_assert_eq!(entry.key(), original_key); // Key preserved
-            prop_assert_eq!(old, expected_old);         // Got previous value
-            prop_assert_eq!(*entry.get(), value);       // New value set
-            expected_old = value;
-        }
-    }
-
-    /// Clear empties slab completely
-    #[test]
-    fn unbounded_clear_empties(values in prop::collection::vec(0..1000u64, 1..100)) {
-        let slab = unbounded::Slab::with_capacity(values.len());
-
-        for value in &values {
-            slab.insert(*value).leak();
-        }
-
-        prop_assert_eq!(slab.len(), values.len());
-        slab.clear();
-        prop_assert_eq!(slab.len(), 0);
-        prop_assert!(slab.is_empty());
-    }
-
-    /// Multi-chunk: values distributed across chunks remain accessible
-    #[test]
-    fn unbounded_multi_chunk_access(values in prop::collection::vec(0..10000u64, 50..150)) {
-        let slab: unbounded::Slab<u64> = nexus_slab::Builder::default().unbounded().chunk_capacity(16).build();
-        let mut key_value_pairs = Vec::new();
-
-        // Insert all (will span multiple chunks)
-        for value in &values {
-            let entry = slab.insert(*value);
-            key_value_pairs.push((entry.leak(), *value));
-        }
-
-        // All should be accessible
-        for (key, expected) in &key_value_pairs {
-            // SAFETY: key is valid
-            prop_assert_eq!(unsafe { *slab.get_by_key(*key) }, *expected);
+        // Invariant: contains_key returns true for all leaked keys
+        for &key in &leaked_keys {
+            assert!(test_alloc::contains_key(key));
         }
     }
 }
 
-// =============================================================================
-// Slot invariants
-// =============================================================================
+/// Test that values are never corrupted
+#[test]
+fn bounded_value_integrity_random() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(50).build();
 
-proptest! {
-    /// Slot from key reflects state after key-based removal
-    #[test]
-    fn entry_reflects_state_after_removal(values in prop::collection::vec(0..100u64, 1..20)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
-        let mut keys = Vec::new();
+    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
+        proptest::test_runner::RngAlgorithm::ChaCha
+    );
 
-        for value in &values {
-            let entry = slab.try_insert(*value).unwrap();
-            keys.push(entry.leak());
-        }
+    // Track expected values
+    let mut slots: Vec<(_, u64)> = Vec::new();
 
-        // Remove every other via key
-        for (i, key) in keys.iter().enumerate() {
-            if i % 2 == 0 {
-                // SAFETY: key is valid
-                unsafe { slab.remove_by_key(*key) };
+    for _ in 0..500 {
+        let action: u8 = rng.random_range(0..10);
+
+        match action {
+            0..=5 => {
+                let value: u64 = rng.random();
+                if let Some(slot) = test_alloc::try_insert(value) {
+                    slots.push((slot, value));
+                }
             }
-        }
-
-        // Check validity via slab.slot()
-        for (i, key) in keys.iter().enumerate() {
-            if i % 2 == 0 {
-                prop_assert!(slab.slot(*key).is_none());
-            } else {
-                prop_assert!(slab.slot(*key).is_some());
+            6..=7 => {
+                let _ = slots.pop();
             }
+            8 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let _ = slots.swap_remove(idx);
+                }
+            }
+            9 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let new_value: u64 = rng.random();
+                    slots[idx].0.replace(new_value);
+                    slots[idx].1 = new_value;
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        // Invariant: all values match expected
+        for (slot, expected) in &slots {
+            assert_eq!(*slot.get(), *expected);
+        }
+    }
+}
+
+/// Test capacity is never exceeded (separate tests for each capacity)
+#[test]
+fn bounded_capacity_never_exceeded_1() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(1).build();
+
+    let mut slots = Vec::new();
+    for i in 0..200 {
+        if let Some(slot) = test_alloc::try_insert(i) {
+            slots.push(slot);
+        }
+    }
+    assert!(slots.len() <= 1);
+}
+
+#[test]
+fn bounded_capacity_never_exceeded_10() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(10).build();
+
+    let mut slots = Vec::new();
+    for i in 0..200 {
+        if let Some(slot) = test_alloc::try_insert(i) {
+            slots.push(slot);
+        }
+    }
+    assert!(slots.len() <= 10);
+}
+
+#[test]
+fn bounded_capacity_never_exceeded_50() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(50).build();
+
+    let mut slots = Vec::new();
+    for i in 0..200 {
+        if let Some(slot) = test_alloc::try_insert(i) {
+            slots.push(slot);
+        }
+    }
+    assert!(slots.len() <= 50);
+}
+
+/// Test fill/drain cycles maintain integrity
+#[test]
+fn bounded_fill_drain_integrity() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(20).build();
+
+    for cycle in 0..10 {
+        // Fill
+        let slots: Vec<_> = (0..20)
+            .map(|i| test_alloc::insert((cycle * 20 + i) as u64))
+            .collect();
+
+        assert_eq!(test_alloc::len(), 20);
+
+        // Verify values
+        for (i, slot) in slots.iter().enumerate() {
+            assert_eq!(*slot.get(), (cycle * 20 + i) as u64);
+        }
+
+        // Drain
+        drop(slots);
+        assert_eq!(test_alloc::len(), 0);
+    }
+}
+
+// =============================================================================
+// Unbounded Slab Properties
+// =============================================================================
+
+#[test]
+fn unbounded_len_invariant_random() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().unbounded().chunk_capacity(8).build();
+
+    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
+        proptest::test_runner::RngAlgorithm::ChaCha
+    );
+
+    let mut slots = Vec::new();
+    let mut leaked_count = 0usize;
+
+    for _ in 0..500 {
+        let action: u8 = rng.random_range(0..10);
+
+        match action {
+            0..=5 => {
+                slots.push(test_alloc::insert(rng.random()));
+            }
+            6..=7 => {
+                let _ = slots.pop();
+            }
+            8 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let _ = slots.swap_remove(idx);
+                }
+            }
+            9 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let slot = slots.swap_remove(idx);
+                    let _ = slot.leak();
+                    leaked_count += 1;
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        assert_eq!(test_alloc::len(), slots.len() + leaked_count);
+    }
+}
+
+#[test]
+fn unbounded_value_integrity_random() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().unbounded().chunk_capacity(8).build();
+
+    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
+        proptest::test_runner::RngAlgorithm::ChaCha
+    );
+
+    let mut slots: Vec<(_, u64)> = Vec::new();
+
+    for _ in 0..500 {
+        let action: u8 = rng.random_range(0..10);
+
+        match action {
+            0..=5 => {
+                let value: u64 = rng.random();
+                slots.push((test_alloc::insert(value), value));
+            }
+            6..=7 => {
+                let _ = slots.pop();
+            }
+            8 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let _ = slots.swap_remove(idx);
+                }
+            }
+            9 => {
+                if !slots.is_empty() {
+                    let idx = rng.random_range(0..slots.len());
+                    let new_value: u64 = rng.random();
+                    slots[idx].0.replace(new_value);
+                    slots[idx].1 = new_value;
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        for (slot, expected) in &slots {
+            assert_eq!(*slot.get(), *expected);
+        }
+    }
+}
+
+#[test]
+fn unbounded_growth_maintains_integrity() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().unbounded().chunk_capacity(8).build();
+
+    // Test with increasing counts in a single allocator
+    for count in [10, 50, 100, 200] {
+        let slots: Vec<_> = (0..count).map(|i| test_alloc::insert(i as u64)).collect();
+
+        for (i, slot) in slots.iter().enumerate() {
+            assert_eq!(*slot.get(), i as u64);
+        }
+
+        assert!(test_alloc::capacity() >= count);
+
+        // Clean up for next iteration
+        drop(slots);
+    }
+}
+
+#[test]
+fn unbounded_cross_chunk_contains_key() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().unbounded().chunk_capacity(8).build();
+
+    let count = 100;
+    let slots: Vec<_> = (0..count).map(|i| test_alloc::insert(i as u64)).collect();
+
+    for slot in &slots {
+        assert!(test_alloc::contains_key(slot.key()));
+    }
+
+    // Leak every 3rd slot, keep the rest
+    let mut remaining_slots = Vec::new();
+    let mut leaked_keys = Vec::new();
+
+    for (i, slot) in slots.into_iter().enumerate() {
+        if i % 3 == 0 {
+            leaked_keys.push(slot.leak());
+        } else {
+            remaining_slots.push(slot);
         }
     }
 
-    /// VacantSlot key matches final Slot key
-    #[test]
-    fn vacant_entry_key_matches(n in 1..50usize) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(n);
+    for &key in &leaked_keys {
+        assert!(test_alloc::contains_key(key));
+    }
 
-        for _ in 0..n {
-            let vacant = slab.try_vacant_slot().unwrap();
-            let expected_key = vacant.key();
-            let entry = vacant.insert(42u64);
-            prop_assert_eq!(entry.key(), expected_key);
-            entry.into_inner();
+    for slot in &remaining_slots {
+        assert!(test_alloc::contains_key(slot.key()));
+    }
+}
+
+// =============================================================================
+// Freelist Properties
+// =============================================================================
+
+#[test]
+fn freelist_no_duplicates() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(20).build();
+
+    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
+        proptest::test_runner::RngAlgorithm::ChaCha
+    );
+
+    let mut slots = Vec::new();
+    let mut seen_keys = HashMap::new();
+
+    for _ in 0..200 {
+        let should_insert = rng.random_bool(0.6) || slots.is_empty();
+
+        if should_insert {
+            if let Some(slot) = test_alloc::try_insert(0) {
+                let key = slot.key();
+                // Key should not be a duplicate of any currently held slot
+                for (existing_key, _) in &slots {
+                    assert_ne!(key, *existing_key, "Duplicate key returned!");
+                }
+                slots.push((key, slot));
+                *seen_keys.entry(key.index()).or_insert(0) += 1;
+            }
+        } else if !slots.is_empty() {
+            let idx = rng.random_range(0..slots.len());
+            let _ = slots.swap_remove(idx);
         }
     }
+}
 
-    /// take() returns value and allows re-insert at same slot
-    #[test]
-    fn take_preserves_slot(values in prop::collection::vec(0..1000u64, 1..20)) {
-        let slab: bounded::Slab<u64> = bounded::Slab::with_capacity(values.len());
-        let entry = slab.try_insert(values[0]).unwrap();
-        let original_key = entry.key();
+#[test]
+fn freelist_reuses_freed_slots() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(10).build();
 
-        let (value, vacant) = entry.take();
-        prop_assert_eq!(value, values[0]);
-        prop_assert_eq!(vacant.key(), original_key);
+    let mut slots = Vec::new();
+    let mut freed_keys = Vec::new();
 
-        let new_entry = vacant.insert(values.get(1).copied().unwrap_or(999));
-        prop_assert_eq!(new_entry.key(), original_key);
+    for i in 0..100 {
+        let should_insert = i % 3 != 2 || slots.is_empty();
+
+        if should_insert {
+            if let Some(slot) = test_alloc::try_insert(0) {
+                let key = slot.key();
+                // If we had freed slots, this should reuse one (LIFO)
+                if let Some(expected) = freed_keys.pop() {
+                    assert_eq!(key, expected, "Expected LIFO reuse");
+                }
+                slots.push(slot);
+            }
+        } else if !slots.is_empty() {
+            let slot = slots.pop().unwrap();
+            freed_keys.push(slot.key());
+        }
     }
+}
+
+// =============================================================================
+// Drop Counting
+// =============================================================================
+
+use std::cell::Cell;
+
+thread_local! {
+    static DROP_COUNTER: Cell<usize> = const { Cell::new(0) };
+}
+
+pub struct Counted;
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        DROP_COUNTER.with(|c| c.set(c.get() + 1));
+    }
+}
+
+fn reset_counter() {
+    DROP_COUNTER.with(|c| c.set(0));
+}
+
+fn get_counter() -> usize {
+    DROP_COUNTER.with(|c| c.get())
+}
+
+#[test]
+fn drop_count_matches_inserts() {
+    reset_counter();
+
+    create_allocator!(test_alloc, crate::Counted);
+    test_alloc::init().bounded(100).build();
+
+    let count = 50;
+    {
+        let _slots: Vec<_> = (0..count).map(|_| test_alloc::insert(crate::Counted)).collect();
+    }
+
+    assert_eq!(get_counter(), count);
+}
+
+#[test]
+fn into_inner_prevents_drop() {
+    reset_counter();
+
+    create_allocator!(test_alloc, crate::Counted);
+    test_alloc::init().bounded(100).build();
+
+    let count = 20;
+    let slots: Vec<_> = (0..count).map(|_| test_alloc::insert(crate::Counted)).collect();
+
+    // Take half via into_inner
+    let half = count / 2;
+    let mut values = Vec::new();
+    for slot in slots.into_iter().take(half) {
+        values.push(slot.into_inner());
+    }
+
+    // Rest are dropped, but into_inner ones are not
+    assert_eq!(get_counter(), count - half);
+
+    // Now drop the values
+    drop(values);
+    assert_eq!(get_counter(), count);
 }

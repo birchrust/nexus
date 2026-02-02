@@ -1,312 +1,316 @@
 # nexus-slab
 
-A high-performance slab allocator optimized for **predictable tail latency**.
+A high-performance slab allocator for **stable memory addresses** without heap allocation overhead.
 
-## Why nexus-slab?
+## What Is This?
 
-Traditional slab allocators using `Vec` exhibit bimodal p999 latency—most operations are fast, but occasional reallocations cause multi-thousand cycle spikes. For latency-critical systems, a single slow operation can mean a missed fill.
+`nexus-slab` is a **custom allocator pattern**—not a replacement for Rust's global allocator, but a specialized allocator for specific use cases where you need:
 
-`nexus-slab` provides two allocators:
+- **Stable memory addresses** - pointers remain valid until explicitly freed
+- **Box-like semantics without Box** - RAII ownership with pre-allocated backing storage
+- **Node-based data structures** - linked lists, trees, graphs with internal pointers
+- **Predictable tail latency** - no reallocation spikes during growth
 
-- **`BoundedSlab`**: Fixed capacity, pre-allocated. The production choice for deterministic latency.
-- **`Slab`**: Grows by adding independent chunks. No copying on growth—only the new chunk is allocated.
+Think of `Slot<T>` as analogous to `Box<T>`: an owning handle that provides access to a value and deallocates on drop. The difference is that `Box` allocates from the heap on every call, while `Slot` allocates from a pre-allocated slab—making allocation O(1) with no syscalls.
 
-Both use a **Slot-based API** where `insert()` returns a handle (`Slot<T>`) for direct access to the value. Think of `Slot<T>` as analogous to `Box<T>`—it's an owning handle that provides access to the value and deallocates on drop. The difference is that `Box` allocates from the heap, while `Slot` allocates from a pre-allocated slab.
+## Quick Start
+
+```rust
+use nexus_slab::create_allocator;
+
+// Define an allocator for your type
+create_allocator!(order_alloc, Order);
+
+// Initialize at startup (once per thread)
+order_alloc::init().bounded(1024).build();
+
+// Insert returns an 8-byte RAII Slot
+let slot = order_alloc::insert(Order::new());
+assert_eq!(slot.price, 100);
+
+// Modify through the slot
+slot.get_mut().quantity = 50;
+
+// Slot auto-deallocates on drop
+drop(slot);
+assert_eq!(order_alloc::len(), 0);
+```
 
 ## Performance
 
-Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core. Cycle counts measured using batched unrolled timing to eliminate `rdtsc` overhead (see [BENCHMARKS.md](./BENCHMARKS.md) for methodology).
+All measurements in CPU cycles. See [BENCHMARKS.md](./BENCHMARKS.md) for methodology.
 
-### BoundedSlab vs slab crate (p50)
+### Macro API vs slab crate (p50)
 
 | Operation | Slot API | Key-based | slab crate | Notes |
 |-----------|----------|-----------|------------|-------|
-| GET | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
-| GET_MUT | **2 cycles** | **2 cycles** | 3 cycles | 33% faster |
-| INSERT | 7 cycles | - | **5 cycles** | slab's simpler freelist |
-| REMOVE | 8 cycles | **3 cycles** | 4 cycles | Key-based fastest |
-| REPLACE | **3 cycles** | - | 4 cycles | Slot's cached pointer |
+| GET | **2** | 3 | 3 | Direct pointer, no lookup |
+| GET (hot) | **1** | - | 2 | ILP - CPU pipelines loads |
+| GET_MUT | **2** | 2 | 3 | Direct pointer |
+| INSERT | 8 | - | **4** | +4 cycles TLS overhead |
+| REMOVE | 4 | - | **3** | TLS overhead |
+| REPLACE | **2** | - | 4 | Direct pointer, no lookup |
+| CONTAINS | **2** | 3 | 2 | slot.is_valid() fastest |
 
-### Slab (growable) - Tail Latency
+**Key insight**: The TLS lookup adds ~4 cycles to INSERT/REMOVE, but access operations (GET/REPLACE) have zero overhead because `Slot` caches the pointer. For access-heavy workloads, this is a net win.
 
-Steady-state operations add ~2-4 cycles due to chunk indirection. The win is tail latency during growth:
+### Full Lifecycle Cost
 
-| Metric | Slab | slab crate | Notes |
-|--------|------|------------|-------|
-| Growth p999 | ~64 cycles | ~2700+ cycles | 43x better |
-| Growth max | ~230K cycles | ~2.7M cycles | 12x better |
+| | Direct API | Macro API | Delta |
+|---|---|---|---|
+| INSERT | 7 | 11 | +4 |
+| GET | 2 | 2 | 0 |
+| REMOVE | 8 | 5 | -3 |
+| **Total** | **17** | **18** | **+1** |
 
-`Slab` adds chunks independently—no copying. The `slab` crate uses `Vec`, which copies all existing data on reallocation.
+One cycle per object lifecycle for the ergonomics of a global allocator pattern.
 
-## Usage
+### vs Box (Isolation Advantage)
 
-### BoundedSlab (fixed capacity)
+The killer feature: **slab is isolated from the global allocator**. In production, `Box::new()` shares malloc with everything else. Your slab is yours alone.
+
+#### Hot Cache (realistic steady-state)
+
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 | Box p99.9 | Slab p99.9 |
+|------|---------|----------|---------|----------|-----------|------------|
+| 64B | 12 | **9** | 20 | **12** | 48 | **19** |
+| 256B | 15 | 16 | 48 | **25** | 80 | **50** |
+| 4096B | 105 | **62** | 149 | **71** | 209 | **129** |
+
+#### Cold Cache (single-op, true first-access latency)
+
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|------|---------|----------|---------|----------|
+| 64B | 132 | **126** | 334 | **218** |
+| 256B | 166 | **122** | 336 | **230** |
+
+#### Cold Cache (batched burst pattern)
+
+| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|------|---------|----------|---------|----------|
+| 64B | 51 | 52 | 71 | **65** |
+| 256B | 58 | 62 | 94 | **80** |
+| 4096B | 181 | **120** | 270 | **166** |
+
+**Key findings:**
+- **Hot cache**: Slab **1.7x faster** at p50 for 4096B (62 vs 105 cycles)
+- **Cold single-op**: Slab **27% faster** at p50 for 256B (122 vs 166 cycles)
+- **Cold batched 4096B**: Slab **1.5x faster** at p50 (120 vs 181 cycles)
+- **Tail latency**: Slab consistently 1.5-2x better at p99
+
+See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and stress test results.
+
+## Use Cases
+
+### Node-Based Data Structures
 
 ```rust
-use nexus_slab::BoundedSlab;
+use nexus_slab::{create_allocator, Key};
 
-// All memory allocated upfront
-let slab = BoundedSlab::with_capacity(100_000);
+struct Node {
+    value: i32,
+    next: Key,  // 4 bytes, not 8 for Option<Box<Node>>
+    prev: Key,
+}
 
-// Insert returns Result<Slot, Full<T>>
-let slot = slab.insert(42).unwrap();
-assert_eq!(*slot.get(), 42);
+create_allocator!(node_alloc, Node);
 
-// Modify through the slot
-*slot.get_mut() = 100;
+fn build_list() {
+    node_alloc::init().bounded(1000).build();
 
-// Remove via slot (like Box::into_inner)
-let value = slot.into_inner();
-assert_eq!(value, 100);
+    let head = node_alloc::insert(Node {
+        value: 1,
+        next: Key::NONE,
+        prev: Key::NONE,
+    });
 
-// Returns Err(Full(value)) when full—recover the rejected value
-if let Err(full) = slab.insert(123) {
-    let rejected_value = full.into_inner();
-    // handle backpressure
+    // Keys are stable - safe to store in other nodes
+    let head_key = head.key();
+
+    let tail = node_alloc::insert(Node {
+        value: 2,
+        next: Key::NONE,
+        prev: head_key,
+    });
+
+    head.get_mut().next = tail.key();
 }
 ```
 
-### Slab (growable)
+### Stable Memory Addresses
 
 ```rust
-use nexus_slab::Slab;
+create_allocator!(buffer_alloc, [u8; 4096]);
 
-// Lazy allocation—no memory until first insert
-let slab = Slab::new();
+fn get_stable_buffer() -> *const u8 {
+    buffer_alloc::init().bounded(100).build();
 
-// Or pre-allocate for expected capacity
-let slab = Slab::with_capacity(10_000);
+    let slot = buffer_alloc::insert([0u8; 4096]);
+    let ptr = slot.as_ptr() as *const u8;
 
-// Grows automatically, always succeeds
-let slot = slab.insert(42);
-assert_eq!(*slot.get(), 42);
+    // Pointer remains valid as long as slot exists
+    // No reallocation, no movement
 
-let value = slot.into_inner();
-assert_eq!(value, 42);
+    let _ = slot.leak();  // Keep alive, return key for later cleanup
+    ptr
+}
 ```
 
-### Builder API (Slab only)
+### Key Serialization
+
+Keys can be converted to/from `u32` for external storage:
 
 ```rust
-use nexus_slab::Slab;
+let slot = my_alloc::insert(value);
+let key = slot.leak();
 
-let slab: Slab<u64> = Slab::builder()
-    .chunk_capacity(8192)   // Slots per chunk (default: 4096)
-    .reserve(100_000)       // Pre-allocate space for N items
+// Serialize
+let raw: u32 = key.into_raw();
+store_somewhere(raw);
+
+// Deserialize
+let raw = load_from_somewhere();
+let key = Key::from_raw(raw);
+
+// Access (caller must ensure validity)
+let value = unsafe { my_alloc::get_unchecked(key) };
+```
+
+**Warning**: Keys are simple indices with no generation counter. If you store keys externally (databases, wire protocols), you must ensure the key is still valid before use. For wire protocols, prefer authoritative external identifiers (exchange order IDs, database primary keys) and use the slab key only for internal indexing.
+
+## API
+
+### Allocator Module (generated by `create_allocator!`)
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `init()` | `Builder` | Start configuring the allocator |
+| `insert(value)` | `Slot` | Insert, panics if full |
+| `try_insert(value)` | `Option<Slot>` | Insert, returns None if full |
+| `contains_key(key)` | `bool` | Check if key is valid |
+| `get_unchecked(key)` | `&'static T` | Get by key (unsafe) |
+| `get_unchecked_mut(key)` | `&'static mut T` | Get mut by key (unsafe) |
+| `len()` / `capacity()` | `usize` | Slot counts |
+| `is_empty()` | `bool` | Check if empty |
+| `is_initialized()` | `bool` | Check if init() was called |
+| `shutdown()` | `Result<(), SlotsRemaining>` | Shutdown (must be empty) |
+
+### Slot (8 bytes)
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get()` | `&T` | Borrow the value |
+| `get_mut()` | `&mut T` | Mutably borrow the value |
+| `replace(value)` | `T` | Swap value, return old |
+| `into_inner()` | `T` | Remove and return value |
+| `key()` | `Key` | Get the key for this slot |
+| `leak()` | `Key` | Keep alive, return key |
+| `is_valid()` | `bool` | Check if slot is still valid |
+| `as_ptr()` | `*const T` | Raw pointer to value |
+| `as_mut_ptr()` | `*mut T` | Mutable raw pointer |
+
+`Slot` implements `Deref` and `DerefMut` for ergonomic access.
+
+### Key (4 bytes)
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `index()` | `u32` | The slot index |
+| `into_raw()` | `u32` | For serialization |
+| `from_raw(u32)` | `Key` | From serialized value |
+| `is_none()` | `bool` | Check if sentinel |
+| `is_some()` | `bool` | Check if valid |
+| `Key::NONE` | `Key` | Sentinel value |
+
+### Builder Pattern
+
+```rust
+// Bounded: fixed capacity, returns None when full
+my_alloc::init()
+    .bounded(1024)
+    .build();
+
+// Unbounded: grows by adding chunks (no copying)
+my_alloc::init()
+    .unbounded()
+    .chunk_capacity(4096)  // slots per chunk
+    .capacity(10_000)      // pre-allocate
     .build();
 ```
 
-### Key-Based Access (for collections)
+## Bounded vs Unbounded
 
-Slot-based access is the primary API, but key-based access is available for integration with data structures like linked lists and heaps:
+| | Bounded | Unbounded |
+|---|---------|-----------|
+| Growth | Fixed capacity | Adds chunks |
+| Full behavior | Returns `None` | Always succeeds |
+| Tail latency | Deterministic | +2-4 cycles chunk lookup |
+| Use case | Known capacity | Unknown/variable load |
 
-```rust
-use nexus_slab::BoundedSlab;
+Use **bounded** when capacity is known—it's faster and fully deterministic.
 
-let slab = BoundedSlab::with_capacity(1024);
-
-let slot = slab.insert(42).unwrap();
-let key = slot.key();  // Extract the key
-
-// Key-based access (returns Ref<T> guard with borrow tracking)
-assert_eq!(*slab.get(key).unwrap(), 42);
-
-// Unchecked index access via UntrackedAccessor (unsafe, fastest)
-// SAFETY: No Slot operations while accessor is in use
-let accessor = unsafe { slab.untracked() };
-assert_eq!(accessor[key], 42);
-
-// Key-based removal
-let value = slab.remove_by_key(key);
-assert_eq!(value, 42);
-```
-
-### Self-Referential Patterns
-
-`insert_with` provides access to the Slot before the value exists, enabling self-referential structures.
-Use `Key` for references (not `Slot`, which is a unique owner):
-
-```rust
-use nexus_slab::{BoundedSlab, Key};
-
-struct Node {
-    self_key: Key,
-    parent: Option<Key>,
-    data: u64,
-}
-
-let slab = BoundedSlab::leak(1024);
-
-let root = slab.try_insert_with(|e| Node {
-    self_key: e.key(),
-    parent: None,
-    data: 0,
-}).unwrap();
-let root_key = root.leak();
-
-let child = slab.try_insert_with(|e| Node {
-    self_key: e.key(),
-    parent: Some(root_key),
-    data: 1,
-}).unwrap();
-
-assert!(child.get().parent.is_some());
-```
-
-### Unchecked Access (hot paths)
-
-For latency-critical code where you can guarantee validity:
-
-```rust
-use nexus_slab::BoundedSlab;
-
-let slab = BoundedSlab::with_capacity(1024);
-let slot = slab.insert(42).unwrap();
-
-// Safe: ~30 cycles (liveness + borrow check)
-let value = slot.get();
-
-// Unchecked: ~20 cycles (direct pointer deref)
-// SAFETY: Slot is valid and not borrowed elsewhere
-let value = unsafe { slot.get_unchecked() };
-```
+Use **unbounded** when you need overflow headroom without `Vec` reallocation spikes.
 
 ## Architecture
+
+### Slot Design
+
+Each `Slot` is **8 bytes** (single pointer). The VTable for slab operations is stored in thread-local storage:
+
+```
+Slot (8 bytes):
+┌─────────────────────────┐
+│ *mut SlotCell<T>        │  ← Direct pointer to value
+└─────────────────────────┘
+
+TLS (per allocator):
+┌─────────────────────────┐
+│ *const VTable<T>        │  ← Cached for fast access
+└─────────────────────────┘
+```
+
+This design gives:
+- **8-byte handles** (vs 16+ for pointer+vtable designs)
+- **Zero-cost access** (GET/REPLACE don't touch TLS)
+- **RAII semantics** (drop returns slot to freelist)
 
 ### Memory Layout
 
 ```
-BoundedSlab (single contiguous allocation):
-┌─────────────────────────────────────────────┐
-│ Slot 0: [stamp: u64][value: T]              │
-│ Slot 1: [stamp: u64][value: T]              │
-│ ...                                         │
-│ Slot N: [stamp: u64][value: T]              │
-└─────────────────────────────────────────────┘
-
-Slab (multiple independent chunks):
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ Chunk 0      │  │ Chunk 1      │  │ Chunk 2      │
-│ (internal)   │  │ (internal)   │  │ (internal)   │
-└──────────────┘  └──────────────┘  └──────────────┘
-       ▲                                   ▲
-       └─── head_with_space ───────────────┘
-             (freelist of non-full chunks)
+Slab (contiguous allocation):
+┌──────────────────────────────────────────┐
+│ SlotCell 0: [stamp: u64][value: T]       │
+│ SlotCell 1: [stamp: u64][value: T]       │
+│ ...                                       │
+│ SlotCell N: [stamp: u64][value: T]       │
+└──────────────────────────────────────────┘
 ```
 
-### Slot Stamp Encoding
+### No Generational Indices
 
-Each slot has a `stamp: u64` encoding state and key:
+Keys are simple indices. This is intentional—see the [Key documentation](https://docs.rs/nexus-slab/latest/nexus_slab/struct.Key.html) for rationale.
 
-- **Bits 63-32 (state)**:
-  - Bit 63: Vacant flag (1 = vacant, 0 = occupied)
-  - Bit 62: Borrowed flag (runtime borrow tracking)
-  - Bits 61-32: Next free slot index (when vacant)
-- **Bits 31-0 (key)**: Slot key, stored when claimed
+**TL;DR**: Your data has authoritative external identifiers (exchange order IDs, database keys). You validate against those anyway. Generational indices add ~8 cycles to catch bugs that domain validation already catches.
 
-Single comparison (`stamp & VACANT_BIT == 0`) checks occupancy.
+## Thread Safety
 
-### Slot Design
+Each thread has its own allocator instance. The allocator is `!Send` and `!Sync`.
 
-`Slot<T>` is 16 bytes:
-- `*mut SlotCell<T>` — direct pointer for O(1) access
-- `*const FreeSlotVTable` — vtable with slab pointer and free function
+**Do not store `Slot` in `thread_local!`**. Rust drops stack variables before TLS, so stack slots drop correctly. But if both `Slot` and the slab are in TLS, drop order is unspecified.
 
-The vtable is leaked once per slab (16 bytes overhead). On drop, Slot calls the vtable's free function to return the slot to the freelist.
+## Direct API (Advanced)
 
-The safe API (`get()`, `get_mut()`) sets a borrow bit. The unchecked API bypasses all checks for minimal latency.
+For cases where the macro API doesn't fit (multiple slabs, dynamic creation), use the direct API:
 
-### Key Encoding
+```rust
+use nexus_slab::bounded::BoundedSlab;
 
-`BoundedSlab` keys are direct slot indices.
-
-`Slab` keys encode chunk and local index via power-of-2 arithmetic:
-```
-┌─────────────────────┬──────────────────────┐
-│  chunk_idx (high)   │  local_idx (low)     │
-└─────────────────────┴──────────────────────┘
+let slab = BoundedSlab::with_capacity(1024);
+let slot = slab.insert(42).unwrap();
+assert_eq!(*slot.get(), 42);
 ```
 
-Decoding is two instructions: shift and mask.
-
-## API Summary
-
-### BoundedSlab
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `insert(value)` | `Result<Slot, Full<T>>` | Insert, returns `Err(Full(value))` if full |
-| `insert_with(f)` | `Result<Slot, CapacityError>` | Insert with access to Slot (self-ref) |
-| `vacant_slot()` | `Result<VacantSlot, CapacityError>` | Reserve slot, fill later |
-| `get(key)` | `Option<Ref<T>>` | Get by key (tracked borrow) |
-| `get_mut(key)` | `Option<RefMut<T>>` | Get mutable by key (tracked borrow) |
-| `into_inner(slot)` | `T` | Remove via Slot (fast path) |
-| `remove_by_key(key)` | `T` | Remove via key |
-| `contains_key(key)` | `bool` | Check if key is valid |
-| `untracked()` | `UntrackedAccessor` | Index access (unsafe) |
-| `len()` / `capacity()` | `usize` | Slot counts |
-| `clear()` | `()` | Remove all elements |
-
-### Slab
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `insert(value)` | `Slot<T>` | Insert, grows if needed |
-| `insert_with(f)` | `Slot<T>` | Insert with access to Slot |
-| `vacant_slot()` | `VacantSlot<T>` | Reserve slot, fill later |
-| `get(key)` | `Option<Ref<T>>` | Get by key (tracked borrow) |
-| `get_mut(key)` | `Option<RefMut<T>>` | Get mutable by key (tracked borrow) |
-| `into_inner(slot)` | `T` | Remove via Slot (fast path) |
-| `remove_by_key(key)` | `T` | Remove via key |
-| `contains_key(key)` | `bool` | Check if key is valid |
-| `untracked()` | `SlabUntrackedAccessor` | Index access (unsafe) |
-| `len()` / `capacity()` | `usize` | Slot counts |
-| `clear()` | `()` | Remove all (keeps allocated chunks) |
-
-### Slot
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `get()` | `Ref<T>` | Borrow with safety checks (panics if invalid) |
-| `try_get()` | `Option<Ref<T>>` | Borrow, returns None if invalid |
-| `get_mut()` | `RefMut<T>` | Mutable borrow with safety checks |
-| `try_get_mut()` | `Option<RefMut<T>>` | Mutable borrow, returns None if invalid |
-| `get_unchecked()` | `&T` | Direct access (unsafe) |
-| `get_unchecked_mut()` | `&mut T` | Direct mutable access (unsafe) |
-| `replace(value)` | `T` | Swap value, return old |
-| `and_modify(f)` | `&Self` | Modify in place (chainable) |
-| `take()` | `(T, VacantSlot)` | Extract value, keep slot reserved |
-| `into_inner()` | `T` | Remove and return value |
-| `as_ptr()` | `*const T` | Raw pointer to value |
-| `as_mut_ptr()` | `*mut T` | Mutable raw pointer to value |
-| `key()` | `Key` | Get the key for this slot |
-| `leak()` | `Key` | Keep value alive, return key |
-| `is_valid()` | `bool` | Check if slot is valid (slab alive, slot occupied) |
-
-## When to Use This
-
-**Use `BoundedSlab` when:**
-- Capacity is known upfront
-- You need deterministic latency (no allocations after init)
-- Production trading systems, matching engines
-- Using with nexus-collections (intrusive data structures)
-
-**Use `Slab` when:**
-- Capacity is unknown or needs overflow headroom
-- Growth is infrequent and acceptable
-- You want the tail latency benefits over `Vec`-based slabs
-
-**Use the `slab` crate when:**
-- You don't need the tail latency guarantees
-- Simpler dependency is preferred
-
-## No Generational Indices
-
-Keys are simple indices with occupancy checks. After removal, `get()` returns `None`. If a new value occupies the same slot, an old key will access the new value.
-
-**This is intentional.** In real systems, your data has authoritative external identifiers (exchange order IDs, database keys). You validate against those anyway. Generational indices add ~8 cycles per operation to catch bugs that domain validation already catches.
-
-See the [`Key`](https://docs.rs/nexus-slab/latest/nexus_slab/struct.Key.html) documentation for full rationale.
+See the [bounded](https://docs.rs/nexus-slab/latest/nexus_slab/bounded/) and [unbounded](https://docs.rs/nexus-slab/latest/nexus_slab/unbounded/) modules.
 
 ## License
 
