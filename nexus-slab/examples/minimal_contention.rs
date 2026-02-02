@@ -80,19 +80,19 @@ macro_rules! contention_test {
         // Box with contention
         for _ in 0..SAMPLES {
             // Random noise to global allocator (NOT timed)
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let noise_count = 20 + (rng % 60) as usize;
             let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
             for _ in 0..noise_count {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let size = 32 << (rng % 6);
                 noise.push(vec![0u8; size as usize].into_boxed_slice());
             }
             // Swiss cheese
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let keep = 50 + (rng % 25) as usize;
             while noise.len() > keep { 
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let idx = (rng as usize) % noise.len();
                 noise.swap_remove(idx); 
             }
@@ -114,18 +114,18 @@ macro_rules! contention_test {
         
         // Slab with same noise
         for _ in 0..SAMPLES {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let noise_count = 20 + (rng % 60) as usize;
             let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
             for _ in 0..noise_count {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let size = 32 << (rng % 6);
                 noise.push(vec![0u8; size as usize].into_boxed_slice());
             }
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let keep = 50 + (rng % 25) as usize;
             while noise.len() > keep { 
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let idx = (rng as usize) % noise.len();
                 noise.swap_remove(idx); 
             }

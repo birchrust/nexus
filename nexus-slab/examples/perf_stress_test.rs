@@ -110,7 +110,7 @@ fn test_long_running_churn() {
             let mut samples = Vec::with_capacity(OPS_PER_PHASE / 10);
 
             for op in 0..OPS_PER_PHASE {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let idx = (rng as usize) % CAPACITY;
 
                 // Sample every 10th operation
@@ -173,7 +173,7 @@ fn test_long_running_churn() {
             let mut samples = Vec::with_capacity(OPS_PER_PHASE / 10);
 
             for op in 0..OPS_PER_PHASE {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let idx = (rng as usize) % CAPACITY;
 
                 let should_sample = op % 10 == 0;
@@ -635,7 +635,7 @@ fn test_sustained_pressure() {
         let mut rng = 12345u64;
 
         for _ in 0..CHURN_OPS {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let idx = (rng as usize) % TARGET_COUNT;
 
             let start = rdtsc_start();
@@ -673,7 +673,7 @@ fn test_sustained_pressure() {
         let mut rng = 12345u64;
 
         for _ in 0..CHURN_OPS {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let idx = (rng as usize) % TARGET_COUNT;
 
             let start = rdtsc_start();
@@ -942,12 +942,12 @@ macro_rules! contention_test {
 
                 for _ in 0..CONTENTION_SAMPLES {
                     // Randomized background noise (NOT timed)
-                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                     let noise_count = 20 + (rng % 60) as usize; // 20-80 allocations
 
                     let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
                     for _ in 0..noise_count {
-                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                         let size = match rng % 7 {
                             0 => 32,
                             1 => 64,
@@ -961,7 +961,7 @@ macro_rules! contention_test {
                     }
 
                     // Free random subset (swiss cheese within noise)
-                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                     let keep_mod = (rng % 3) + 2; // keep all except every 2nd, 3rd, or 4th
                     let noise: Vec<_> = noise
                         .into_iter()
@@ -997,12 +997,12 @@ macro_rules! contention_test {
 
                 for _ in 0..CONTENTION_SAMPLES {
                     // SAME background noise as Box - keeps global allocator equally warm
-                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                     let noise_count = 20 + (rng % 60) as usize;
 
                     let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
                     for _ in 0..noise_count {
-                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                         let size = match rng % 7 {
                             0 => 32,
                             1 => 64,
@@ -1015,7 +1015,7 @@ macro_rules! contention_test {
                         noise.push(vec![0u8; size as usize].into_boxed_slice());
                     }
 
-                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                     let keep_mod = (rng % 3) + 2;
                     let noise: Vec<_> = noise
                         .into_iter()

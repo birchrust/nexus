@@ -1,7 +1,7 @@
 //! Macro for creating TLS-based global allocators.
 //!
-//! The [`create_allocator!`] macro generates a module with thread-local slab
-//! storage and a lightweight [`Slot`] handle (8 bytes).
+//! The `create_allocator!` macro generates a module with thread-local slab
+//! storage and a lightweight `Slot` handle (8 bytes).
 //!
 //! # Example
 //!
@@ -192,7 +192,7 @@ macro_rules! create_allocator {
                     // Free the slot
                     VTABLE.with(|v| {
                         let vtable = v.get();
-                        debug_assert!(!vtable.is_null(), "allocator not initialized");
+                        debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
                         // SAFETY: VTable is valid, slot was occupied
                         unsafe {
                             let vtable = &*vtable;
@@ -219,7 +219,7 @@ macro_rules! create_allocator {
                     // Free the slot via VTable
                     VTABLE.with(|v| {
                         let vtable = v.get();
-                        debug_assert!(!vtable.is_null(), "allocator not initialized");
+                        debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
                         // SAFETY: VTable is valid
                         unsafe {
                             let vtable = &*vtable;
@@ -418,9 +418,12 @@ macro_rules! create_allocator {
             pub fn try_insert(value: $T) -> Option<Slot> {
                 VTABLE.with(|v| {
                     let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized");
+                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
 
-                    // SAFETY: VTable is valid (debug_assert guards this in debug, null deref in release)
+                    // SAFETY: Caller must have called init().build() before any operations.
+                    // Debug builds: panic above. Release builds: null deref crash.
+                    // We don't add a runtime check here to avoid hot path overhead.
+                    // Use is_initialized() if you need to check at runtime.
                     let vtable = unsafe { &*vtable };
 
                     // Try to claim a slot
@@ -448,7 +451,7 @@ macro_rules! create_allocator {
             pub fn contains_key(key: Key) -> bool {
                 VTABLE.with(|v| {
                     let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized");
+                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
 
                     // SAFETY: VTable is valid (debug_assert guards this in debug, null deref in release)
                     unsafe {
@@ -468,7 +471,7 @@ macro_rules! create_allocator {
             pub unsafe fn get_unchecked(key: Key) -> &'static $T {
                 VTABLE.with(|v| {
                     let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized");
+                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
                     let vtable = unsafe { &*vtable };
                     let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
                     // SlotCell is repr(C): [stamp: 8][value: T]
@@ -487,7 +490,7 @@ macro_rules! create_allocator {
             pub unsafe fn get_unchecked_mut(key: Key) -> &'static mut $T {
                 VTABLE.with(|v| {
                     let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized");
+                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
                     let vtable = unsafe { &*vtable };
                     let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
                     // SlotCell is repr(C): [stamp: 8][value: T]

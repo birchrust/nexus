@@ -222,7 +222,7 @@ fn bench_access() {
 
         for _ in 0..SAMPLES {
             // LCG for deterministic "random" access
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let base_idx = (rng_state as usize) % (POOL_SIZE - 100);
 
             let mut sum = 0u64;
@@ -253,7 +253,7 @@ fn bench_access() {
         let mut rng_state = 12345u64;
 
         for _ in 0..SAMPLES {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let base_idx = (rng_state as usize) % (POOL_SIZE - 100);
 
             let mut sum = 0u64;
@@ -349,7 +349,7 @@ fn bench_realistic_workload() {
 
         let start = rdtsc_start();
         for _ in 0..OPS {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let idx = (rng as usize) % WORKING_SET;
             let action = (rng >> 32) % 10;
 
@@ -398,7 +398,7 @@ fn bench_realistic_workload() {
 
         let start = rdtsc_start();
         for _ in 0..OPS {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let idx = (rng as usize) % WORKING_SET;
             let action = (rng >> 32) % 10;
 
