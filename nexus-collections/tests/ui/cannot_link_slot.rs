@@ -1,9 +1,9 @@
 //! Test that link_back() requires DetachedListNode, not ListSlot.
 //! Type-state prevents linking an already-linked slot.
 
-use nexus_collections::create_list;
+use nexus_collections::list_allocator;
 
-create_list!(test_alloc, u64);
+list_allocator!(test_alloc, u64);
 
 fn main() {
     test_alloc::init().bounded(16).build();

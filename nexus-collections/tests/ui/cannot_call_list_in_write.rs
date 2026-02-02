@@ -1,9 +1,9 @@
 //! Test that list methods cannot be called inside write() closure.
 //! The &mut self borrow prevents any other access to the list.
 
-use nexus_collections::create_list;
+use nexus_collections::list_allocator;
 
-create_list!(test_alloc, u64);
+list_allocator!(test_alloc, u64);
 
 fn main() {
     test_alloc::init().bounded(16).build();

@@ -1,0 +1,37 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/ui/cannot_escape_cursor_read_ref.rs:19:13
+   |
+14 |     let escaped: &u64;
+   |         ------- `escaped` declared here, outside of the closure body
+...
+18 |         guard.read(|data| {
+   |                     ---- `data` is a reference that is only valid in the closure body
+19 |             escaped = data; // ERROR: reference escapes closure
+   |             ^^^^^^^^^^^^^^ `data` escapes the closure body here
+
+error[E0594]: cannot assign to `escaped`, as it is not declared as mutable
+  --> tests/ui/cannot_escape_cursor_read_ref.rs:19:13
+   |
+19 |             escaped = data; // ERROR: reference escapes closure
+   |             ^^^^^^^^^^^^^^ cannot assign
+   |
+help: consider changing this to be mutable
+   |
+14 |     let mut escaped: &u64;
+   |         +++
+
+error[E0381]: used binding `escaped` isn't initialized
+  --> tests/ui/cannot_escape_cursor_read_ref.rs:18:20
+   |
+14 |     let escaped: &u64;
+   |         ------- binding declared here but left uninitialized
+...
+18 |         guard.read(|data| {
+   |                    ^^^^^^ `escaped` used here but it isn't initialized
+19 |             escaped = data; // ERROR: reference escapes closure
+   |             ------- borrow occurs due to use in closure
+   |
+help: consider assigning a value
+   |
+14 |     let escaped: &u64 = &42;
+   |                       +++++

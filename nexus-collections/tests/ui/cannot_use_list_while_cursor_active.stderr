@@ -1,0 +1,11 @@
+error[E0502]: cannot borrow `list` as immutable because it is also borrowed as mutable
+  --> tests/ui/cannot_use_list_while_cursor_active.rs:23:13
+   |
+19 |     let mut cursor = list.cursor();
+   |                      ---- mutable borrow occurs here
+...
+23 |     let _ = list.read(&slot1, |x| *x);
+   |             ^^^^ immutable borrow occurs here
+...
+26 |     let _ = cursor.next();
+   |             ------ mutable borrow later used here

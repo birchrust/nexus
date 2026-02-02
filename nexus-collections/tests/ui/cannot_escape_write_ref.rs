@@ -1,8 +1,8 @@
 //! Test that references cannot escape from write() closure.
 
-use nexus_collections::create_list;
+use nexus_collections::list_allocator;
 
-create_list!(test_alloc, u64);
+list_allocator!(test_alloc, u64);
 
 fn main() {
     test_alloc::init().bounded(16).build();

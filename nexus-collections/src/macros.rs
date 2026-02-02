@@ -1,6 +1,6 @@
 //! Macros for creating typed collection allocators.
 //!
-//! The `create_list!` macro generates a module with TLS-based storage
+//! The `list_allocator!` macro generates a module with TLS-based storage
 //! for list nodes, providing a clean API without visible generics.
 
 /// Creates a TLS-based list allocator module for a specific type.
@@ -8,7 +8,7 @@
 /// # Syntax
 ///
 /// ```ignore
-/// create_list!(module_name, Type);
+/// list_allocator!(module_name, Type);
 /// ```
 ///
 /// The type must be visible from the scope where the macro is invoked.
@@ -25,20 +25,20 @@
 /// - `len() -> usize` - Number of nodes in the slab
 /// - `capacity() -> usize` - Total capacity
 /// - `create_node(value: T) -> Option<DetachedNode>` - Create a detached node
-/// - `List` - The list type (type alias, no generics visible)
+/// - `List` - Wrapper type for creating lists
 /// - `ListSlot` - Handle to a linked node (type alias)
 /// - `DetachedNode` - Handle to an unlinked node (type alias)
 ///
 /// # Example
 ///
 /// ```ignore
-/// use nexus_collections::create_list;
+/// use nexus_collections::list_allocator;
 ///
 /// #[derive(Debug)]
 /// struct Order { id: u64, price: f64 }
 ///
 /// // Create the allocator module
-/// create_list!(orders, Order);
+/// list_allocator!(orders, Order);
 ///
 /// fn main() {
 ///     // Initialize at startup
@@ -55,7 +55,7 @@
 /// }
 /// ```
 #[macro_export]
-macro_rules! create_list {
+macro_rules! list_allocator {
     ($name:ident, $T:ty) => {
         /// TLS-based list storage for the specified type.
         #[allow(dead_code)]
@@ -68,9 +68,11 @@ macro_rules! create_list {
             // We use a public type alias so it's accessible from nested modules.
             pub type __T = $T;
 
-            // Re-export Node for internal use
+            // Re-export types for internal use
             #[doc(hidden)]
             pub use $crate::__private::Key as __Key;
+            #[doc(hidden)]
+            pub use $crate::__private::VTable as __VTable;
             #[doc(hidden)]
             pub use $crate::list::Node;
 
@@ -82,65 +84,74 @@ macro_rules! create_list {
             pub use __slab::{capacity, init, is_initialized, len, shutdown};
 
             // =================================================================
-            // Storage marker type
+            // Type aliases (no generics visible to users)
             // =================================================================
 
-            /// Marker type that implements ListStorage for this allocator.
-            #[derive(Copy, Clone)]
-            pub struct Storage;
+            /// Handle to a linked node in the list.
+            pub type ListSlot = $crate::list::ListSlot<__T>;
 
-            impl $crate::internal::ListStorage<__T> for Storage {
-                #[inline]
-                fn contains_key(key: __Key) -> bool {
-                    __slab::contains_key(key)
-                }
+            /// Handle to an unlinked node (not in any list).
+            pub type DetachedNode = $crate::list::DetachedListNode<__T>;
 
-                #[inline]
-                unsafe fn get(key: __Key) -> Option<&'static Node<__T>> {
-                    unsafe { __slab::get(key) }
-                }
+            /// Transitionary guard for pop operations.
+            pub type Detached = $crate::list::Detached<__T>;
 
-                #[inline]
-                unsafe fn get_mut(key: __Key) -> Option<&'static mut Node<__T>> {
-                    unsafe { __slab::get_mut(key) }
-                }
+            /// Cursor for list traversal.
+            pub type Cursor<'a> = $crate::list::Cursor<'a, __T>;
 
-                #[inline]
-                unsafe fn get_unchecked(key: __Key) -> &'static Node<__T> {
-                    unsafe { __slab::get_unchecked(key) }
-                }
-
-                #[inline]
-                unsafe fn get_unchecked_mut(key: __Key) -> &'static mut Node<__T> {
-                    unsafe { __slab::get_unchecked_mut(key) }
-                }
-
-                #[inline]
-                fn try_remove(key: __Key) -> Option<Node<__T>> {
-                    unsafe { __slab::try_remove_by_key(key) }
-                }
-
-                #[inline]
-                unsafe fn remove_unchecked(key: __Key) -> Node<__T> {
-                    unsafe { __slab::remove_by_key(key) }
-                }
-            }
+            /// Guard for cursor position.
+            pub type CursorGuard<'cursor, 'list> = $crate::list::CursorGuard<'cursor, 'list, __T>;
 
             // =================================================================
-            // Type aliases (hide generics from users)
+            // List wrapper (newtype for orphan rule compliance)
             // =================================================================
 
             /// A doubly-linked list for this type.
-            pub type List = $crate::list::List<__T, Storage>;
+            ///
+            /// This is a thin wrapper around `nexus_collections::List<T>` that
+            /// provides module-local construction via `new()`.
+            #[repr(transparent)]
+            pub struct List {
+                inner: $crate::list::List<__T>,
+            }
 
-            /// Handle to a linked node in the list.
-            pub type ListSlot = $crate::list::ListSlot<__T, Storage>;
+            impl List {
+                /// Creates a new empty list.
+                ///
+                /// # Panics
+                ///
+                /// Panics in debug builds if the allocator is not initialized.
+                #[inline]
+                pub fn new() -> Self {
+                    let vtable = __slab::vtable_ptr();
+                    // SAFETY: vtable_ptr returns a valid pointer when initialized
+                    Self {
+                        inner: unsafe { $crate::list::List::with_vtable(vtable) },
+                    }
+                }
+            }
 
-            /// Handle to an unlinked node (not in any list).
-            pub type DetachedNode = $crate::list::DetachedListNode<__T, Storage>;
+            impl Default for List {
+                fn default() -> Self {
+                    Self::new()
+                }
+            }
 
-            /// Transitionary guard for pop operations.
-            pub type Detached<'a> = $crate::list::Detached<'a, __T, Storage>;
+            impl core::ops::Deref for List {
+                type Target = $crate::list::List<__T>;
+
+                #[inline]
+                fn deref(&self) -> &Self::Target {
+                    &self.inner
+                }
+            }
+
+            impl core::ops::DerefMut for List {
+                #[inline]
+                fn deref_mut(&mut self) -> &mut Self::Target {
+                    &mut self.inner
+                }
+            }
 
             // =================================================================
             // Node creation
@@ -153,9 +164,10 @@ macro_rules! create_list {
             #[inline]
             pub fn create_node(data: __T) -> Option<DetachedNode> {
                 let slot = __slab::try_insert(Node::detached(data))?;
+                let vtable = __slab::vtable_ptr();
                 let key = slot.leak();
                 // SAFETY: We just created this node, it's valid and detached
-                Some(unsafe { $crate::list::DetachedListNode::from_key(key) })
+                Some(unsafe { $crate::list::DetachedListNode::from_key_vtable(key, vtable) })
             }
 
             /// Creates a new detached list node, panicking if full.

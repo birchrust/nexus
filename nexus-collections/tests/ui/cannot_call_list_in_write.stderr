@@ -1,13 +1,11 @@
-error[E0502]: cannot borrow `list` as mutable because it is also borrowed as immutable
-  --> tests/ui/cannot_call_list_in_write.rs:15:5
+error[E0502]: cannot borrow `list` as immutable because it is also borrowed as mutable
+  --> tests/ui/cannot_call_list_in_write.rs:15:27
    |
-15 |       list.write(&mut slot, |_data| {
-   |       ^    -----            ------- immutable borrow occurs here
-   |       |    |
-   |  _____|    immutable borrow later used by call
-   | |
-16 | |         // ERROR: cannot borrow `list` as immutable because it is also borrowed as mutable
-17 | |         let _ = list.len();
-   | |                 ---- first borrow occurs due to use of `list` in closure
-18 | |     });
-   | |______^ mutable borrow occurs here
+15 |     list.write(&mut slot, |_data| {
+   |     ---- -----            ^^^^^^^ immutable borrow occurs here
+   |     |    |
+   |     |    mutable borrow later used by call
+   |     mutable borrow occurs here
+16 |         // ERROR: cannot borrow `list` as immutable because it is also borrowed as mutable
+17 |         let _ = list.len();
+   |                 ---- second borrow occurs due to use of `list` in closure

@@ -1,9 +1,9 @@
 //! Test that slot cannot be used after being moved to unlink().
 //! The slot is consumed by unlink(), preventing use-after-move.
 
-use nexus_collections::create_list;
+use nexus_collections::list_allocator;
 
-create_list!(test_alloc, u64);
+list_allocator!(test_alloc, u64);
 
 fn main() {
     test_alloc::init().bounded(16).build();

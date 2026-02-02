@@ -1,9 +1,9 @@
 //! Test that detached node cannot be used after being moved to link_back().
 //! The detached node is consumed by link_back(), preventing use-after-move.
 
-use nexus_collections::create_list;
+use nexus_collections::list_allocator;
 
-create_list!(test_alloc, u64);
+list_allocator!(test_alloc, u64);
 
 fn main() {
     test_alloc::init().bounded(16).build();

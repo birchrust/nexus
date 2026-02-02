@@ -1,0 +1,11 @@
+error[E0502]: cannot borrow `list` as immutable because it is also borrowed as mutable
+  --> tests/ui/cannot_alias_read_while_write.rs:19:28
+   |
+19 |     list.write(&mut slot1, |_data1| {
+   |     ---- -----             ^^^^^^^^ immutable borrow occurs here
+   |     |    |
+   |     |    mutable borrow later used by call
+   |     mutable borrow occurs here
+20 |         // ERROR: cannot borrow `list` as immutable because it is also borrowed as mutable
+21 |         let _ = list.read(&slot2, |data2| *data2);
+   |                 ---- second borrow occurs due to use of `list` in closure

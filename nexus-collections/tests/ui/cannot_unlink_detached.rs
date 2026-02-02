@@ -1,9 +1,9 @@
 //! Test that unlink() requires ListSlot, not DetachedListNode.
 //! Type-state prevents unlinking a not-linked node.
 
-use nexus_collections::create_list;
+use nexus_collections::list_allocator;
 
-create_list!(test_alloc, u64);
+list_allocator!(test_alloc, u64);
 
 fn main() {
     test_alloc::init().bounded(16).build();

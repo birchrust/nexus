@@ -10,13 +10,13 @@
 //!
 //! # Creating a List
 //!
-//! Use the [`create_list!`](crate::create_list) macro to create a typed list:
+//! Use the [`list_allocator!`](crate::create_list) macro to create a typed list:
 //!
 //! ```ignore
 //! use nexus_collections::create_list;
 //!
 //! // Define an allocator for Order lists
-//! create_list!(orders, Order);
+//! list_allocator!(orders, Order);
 //!
 //! // Initialize at startup
 //! orders::init().bounded(1000).build();
@@ -41,11 +41,9 @@
 //! Violations with unchecked API → undefined behavior.
 
 use core::cell::Cell;
-use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 
-use crate::internal::ListStorage;
-use nexus_slab::Key;
+use nexus_slab::{Key, VTable};
 
 // =============================================================================
 // Id - Unique list identifier
@@ -131,31 +129,23 @@ impl<T> Node<T> {
 /// - Extract the data via `take()`
 ///
 /// Dropping this removes the data from the slab (correct cleanup).
-pub struct DetachedListNode<T: 'static, A>
-where
-    A: ListStorage<T>,
-{
+pub struct DetachedListNode<T: 'static> {
     key: Key,
-    _marker: PhantomData<(T, A)>,
+    vtable: *const VTable<Node<T>>,
 }
 
-impl<T: 'static, A> DetachedListNode<T, A>
-where
-    A: ListStorage<T>,
-{
-    /// Creates a new detached node from a key.
+impl<T: 'static> DetachedListNode<T> {
+    /// Creates a new detached node from a key and vtable pointer.
     ///
     /// # Safety
     ///
-    /// The key must be valid and point to an occupied slot containing
-    /// a detached node (owner == Id::NONE).
+    /// - The key must be valid and point to an occupied slot containing
+    ///   a detached node (owner == Id::NONE).
+    /// - The vtable pointer must be valid for the lifetime of the allocator.
     #[doc(hidden)]
     #[inline]
-    pub unsafe fn from_key(key: Key) -> Self {
-        Self {
-            key,
-            _marker: PhantomData,
-        }
+    pub unsafe fn from_key_vtable(key: Key, vtable: *const VTable<Node<T>>) -> Self {
+        Self { key, vtable }
     }
 
     /// Extracts the owned data, removing from slab. Consumes handle.
@@ -163,7 +153,11 @@ where
     pub fn take(self) -> T {
         // Use ManuallyDrop to prevent Drop from running (which would double-free)
         let this = ManuallyDrop::new(self);
-        unsafe { A::remove_unchecked(this.key) }.data
+        // SAFETY: Key is valid, vtable is valid
+        let slot_cell = unsafe { (*this.vtable).slot_ptr(this.key) };
+        let node = unsafe { std::ptr::read((*slot_cell).value_ptr()) };
+        unsafe { (*this.vtable).free(this.key) };
+        node.data
     }
 
     /// Returns the key for internal use.
@@ -174,22 +168,25 @@ where
 
     /// Converts to a linked slot. Internal use only.
     #[inline]
-    pub(crate) fn into_slot(self) -> ListSlot<T, A> {
+    pub(crate) fn into_slot(self) -> ListSlot<T> {
         let this = ManuallyDrop::new(self);
         ListSlot {
             key: this.key,
-            _marker: PhantomData,
+            vtable: this.vtable,
         }
     }
 }
 
-impl<T: 'static, A> Drop for DetachedListNode<T, A>
-where
-    A: ListStorage<T>,
-{
+impl<T: 'static> Drop for DetachedListNode<T> {
     fn drop(&mut self) {
         // Remove from slab on drop (correct cleanup for detached node)
-        A::try_remove(self.key);
+        // Check if key is valid first
+        if unsafe { (*self.vtable).contains_key(self.key) } {
+            // Read and drop the value
+            let slot_cell = unsafe { (*self.vtable).slot_ptr(self.key) };
+            unsafe { std::ptr::drop_in_place((*slot_cell).value_ptr_mut()) };
+            unsafe { (*self.vtable).free(self.key) };
+        }
     }
 }
 
@@ -207,18 +204,12 @@ where
 /// You must unlink this slot before dropping it. Dropping while linked
 /// removes the slab entry, creating dangling prev/next pointers in the list.
 /// The safe API will panic on subsequent access; the unchecked API has UB.
-pub struct ListSlot<T: 'static, A>
-where
-    A: ListStorage<T>,
-{
+pub struct ListSlot<T: 'static> {
     key: Key,
-    _marker: PhantomData<(T, A)>,
+    vtable: *const VTable<Node<T>>,
 }
 
-impl<T: 'static, A> ListSlot<T, A>
-where
-    A: ListStorage<T>,
-{
+impl<T: 'static> ListSlot<T> {
     /// Returns the key for internal use.
     #[inline]
     pub(crate) fn key(&self) -> Key {
@@ -227,25 +218,27 @@ where
 
     /// Converts to detached. Internal use only (after unlink).
     #[inline]
-    pub(crate) fn into_detached(self) -> DetachedListNode<T, A> {
+    pub(crate) fn into_detached(self) -> DetachedListNode<T> {
         let this = ManuallyDrop::new(self);
         DetachedListNode {
             key: this.key,
-            _marker: PhantomData,
+            vtable: this.vtable,
         }
     }
 }
 
-impl<T: 'static, A> Drop for ListSlot<T, A>
-where
-    A: ListStorage<T>,
-{
+impl<T: 'static> Drop for ListSlot<T> {
     fn drop(&mut self) {
         // Slot owns the slab entry - dropping removes it.
         // If still linked, this creates dangling prev/next pointers in the list.
         // Safe API will catch this on next access via get() returning None.
         // This is a user invariant violation, not a bug in our code.
-        A::try_remove(self.key);
+        if unsafe { (*self.vtable).contains_key(self.key) } {
+            // Read and drop the value
+            let slot_cell = unsafe { (*self.vtable).slot_ptr(self.key) };
+            unsafe { std::ptr::drop_in_place((*slot_cell).value_ptr_mut()) };
+            unsafe { (*self.vtable).free(self.key) };
+        }
     }
 }
 
@@ -263,21 +256,23 @@ where
 ///
 /// You must consume this guard via `take()` or `try_take()`.
 /// Dropping without consuming orphans the popped node in the slab.
-pub struct Detached<'a, T: 'static, A>
-where
-    A: ListStorage<T>,
-{
-    // Held for potential future re-linking operations
-    #[allow(dead_code)]
-    list: &'a mut List<T, A>,
+pub struct Detached<T: 'static> {
     key: Key,
-    _marker: PhantomData<&'a T>,
+    vtable: *const VTable<Node<T>>,
 }
 
-impl<T: 'static, A> Detached<'_, T, A>
-where
-    A: ListStorage<T>,
-{
+impl<T: 'static> Detached<T> {
+    /// Creates a new Detached guard.
+    ///
+    /// # Safety
+    ///
+    /// - The key must point to a valid, unlinked node in the slab.
+    /// - The vtable pointer must be valid.
+    #[inline]
+    pub(crate) unsafe fn new(key: Key, vtable: *const VTable<Node<T>>) -> Self {
+        Self { key, vtable }
+    }
+
     /// Take the slot back using the reference to identify it.
     ///
     /// The closure receives `&T` to identify which slot to retrieve.
@@ -287,13 +282,18 @@ where
     ///
     /// Panics if the closure panics. Use `try_take` for fallible lookups.
     #[inline]
-    pub fn take<F>(self, f: F) -> DetachedListNode<T, A>
+    pub fn take<F>(self, f: F) -> DetachedListNode<T>
     where
-        F: FnOnce(&T) -> ListSlot<T, A>,
+        F: FnOnce(&T) -> ListSlot<T>,
     {
         let this = ManuallyDrop::new(self);
         // SAFETY: Read-only access, no mutable refs exist to this slot
-        let node = unsafe { A::get(this.key) }.expect("detached node was removed from slab");
+        let slot_cell = unsafe { (*this.vtable).slot_ptr(this.key) };
+        assert!(
+            unsafe { (*slot_cell).is_occupied() },
+            "detached node was removed from slab"
+        );
+        let node = unsafe { (*slot_cell).get_value() };
         let slot = f(&node.data);
         slot.into_detached()
     }
@@ -307,24 +307,22 @@ where
     /// If this returns `None`, the popped node is orphaned in the slab.
     /// This is a memory leak and indicates a bug in your index tracking.
     #[inline]
-    pub fn try_take<F>(self, f: F) -> Option<DetachedListNode<T, A>>
+    pub fn try_take<F>(self, f: F) -> Option<DetachedListNode<T>>
     where
-        F: FnOnce(&T) -> Option<ListSlot<T, A>>,
+        F: FnOnce(&T) -> Option<ListSlot<T>>,
     {
         let this = ManuallyDrop::new(self);
         // SAFETY: Read-only access, no mutable refs exist to this slot
-        let data = match unsafe { A::get(this.key) } {
-            Some(node) => &node.data,
-            None => return None,
-        };
-        f(data).map(ListSlot::into_detached)
+        if !unsafe { (*this.vtable).contains_key(this.key) } {
+            return None;
+        }
+        let slot_cell = unsafe { (*this.vtable).slot_ptr(this.key) };
+        let node = unsafe { (*slot_cell).get_value() };
+        f(&node.data).map(ListSlot::into_detached)
     }
 }
 
-impl<T: 'static, A> Drop for Detached<'_, T, A>
-where
-    A: ListStorage<T>,
-{
+impl<T: 'static> Drop for Detached<T> {
     fn drop(&mut self) {
         // Trivial drop - no panic.
         // If not consumed, the popped node is orphaned in slab (leak).
@@ -341,7 +339,6 @@ where
 /// # Type Parameters
 ///
 /// - `T`: Element type
-/// - `A`: Storage marker (generated by `create_list!` macro)
 ///
 /// # Access Pattern
 ///
@@ -353,31 +350,29 @@ where
 /// ```
 ///
 /// This ensures the borrow checker prevents aliasing.
-#[derive(Debug)]
-pub struct List<T: 'static, A>
-where
-    A: ListStorage<T>,
-{
+pub struct List<T: 'static> {
     head: Key,
     tail: Key,
     len: usize,
     id: Id,
-    _marker: PhantomData<(T, A)>,
+    vtable: *const VTable<Node<T>>,
 }
 
-impl<T: 'static, A> List<T, A>
-where
-    A: ListStorage<T>,
-{
-    /// Creates a new empty list.
+impl<T: 'static> List<T> {
+    /// Creates a new empty list with the given vtable.
+    ///
+    /// # Safety
+    ///
+    /// The vtable pointer must be valid for the lifetime of the allocator.
+    #[doc(hidden)]
     #[inline]
-    pub fn new() -> Self {
+    pub unsafe fn with_vtable(vtable: *const VTable<Node<T>>) -> Self {
         Self {
             head: Key::NONE,
             tail: Key::NONE,
             len: 0,
             id: next_id(),
-            _marker: PhantomData,
+            vtable,
         }
     }
 
@@ -400,6 +395,36 @@ where
     }
 
     // =========================================================================
+    // Internal helpers
+    // =========================================================================
+
+    /// Gets a reference to a node by key (checked).
+    #[inline]
+    fn get_node(&self, key: Key) -> Option<&Node<T>> {
+        if !unsafe { (*self.vtable).contains_key(key) } {
+            return None;
+        }
+        let slot_cell = unsafe { (*self.vtable).slot_ptr(key) };
+        Some(unsafe { (*slot_cell).get_value() })
+    }
+
+    /// Gets a mutable reference to a node by key (unchecked).
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_node_unchecked_mut(&self, key: Key) -> &mut Node<T> {
+        unsafe {
+            let slot_cell = (*self.vtable).slot_ptr(key);
+            (*slot_cell).get_value_mut()
+        }
+    }
+
+    /// Checks if a key is valid.
+    #[inline]
+    fn contains_key(&self, key: Key) -> bool {
+        unsafe { (*self.vtable).contains_key(key) }
+    }
+
+    // =========================================================================
     // Link operations (DetachedListNode -> ListSlot)
     // =========================================================================
 
@@ -407,12 +432,12 @@ where
     ///
     /// Consumes the `DetachedListNode` and returns a `ListSlot`.
     #[inline]
-    pub fn link_back(&mut self, node: DetachedListNode<T, A>) -> ListSlot<T, A> {
+    pub fn link_back(&mut self, node: DetachedListNode<T>) -> ListSlot<T> {
         let key = node.key();
 
         // Set up links
         {
-            let n = unsafe { A::get_unchecked_mut(key) };
+            let n = unsafe { self.get_node_unchecked_mut(key) };
             n.prev = self.tail;
             n.next = Key::NONE;
             n.owner = self.id;
@@ -421,10 +446,10 @@ where
         // Update tail's next pointer
         if self.tail.is_some() {
             assert!(
-                A::contains_key(self.tail),
+                self.contains_key(self.tail),
                 "list tail is invalid (was a slot dropped without unlinking?)"
             );
-            unsafe { A::get_unchecked_mut(self.tail) }.next = key;
+            unsafe { self.get_node_unchecked_mut(self.tail) }.next = key;
         } else {
             self.head = key;
         }
@@ -439,12 +464,12 @@ where
     ///
     /// Consumes the `DetachedListNode` and returns a `ListSlot`.
     #[inline]
-    pub fn link_front(&mut self, node: DetachedListNode<T, A>) -> ListSlot<T, A> {
+    pub fn link_front(&mut self, node: DetachedListNode<T>) -> ListSlot<T> {
         let key = node.key();
 
         // Set up links
         {
-            let n = unsafe { A::get_unchecked_mut(key) };
+            let n = unsafe { self.get_node_unchecked_mut(key) };
             n.prev = Key::NONE;
             n.next = self.head;
             n.owner = self.id;
@@ -453,10 +478,10 @@ where
         // Update head's prev pointer
         if self.head.is_some() {
             assert!(
-                A::contains_key(self.head),
+                self.contains_key(self.head),
                 "list head is invalid (was a slot dropped without unlinking?)"
             );
-            unsafe { A::get_unchecked_mut(self.head) }.prev = key;
+            unsafe { self.get_node_unchecked_mut(self.head) }.prev = key;
         } else {
             self.tail = key;
         }
@@ -479,12 +504,13 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn unlink(&mut self, slot: ListSlot<T, A>) -> DetachedListNode<T, A> {
+    pub fn unlink(&mut self, slot: ListSlot<T>) -> DetachedListNode<T> {
         let key = slot.key();
 
         // Validate and get links
         let (prev, next) = {
-            let node = unsafe { A::get(key) }
+            let node = self
+                .get_node(key)
                 .expect("slot is invalid (was it dropped without unlinking?)");
             assert_eq!(node.owner, self.id, "slot belongs to different list");
             (node.prev, node.next)
@@ -493,32 +519,32 @@ where
         // Validate all neighbors upfront before any mutations.
         if prev.is_some() {
             assert!(
-                A::contains_key(prev),
+                self.contains_key(prev),
                 "prev neighbor is invalid (was a slot dropped without unlinking?)"
             );
         }
         if next.is_some() {
             assert!(
-                A::contains_key(next),
+                self.contains_key(next),
                 "next neighbor is invalid (was a slot dropped without unlinking?)"
             );
         }
 
         // All keys validated - now do mutations
         if prev.is_some() {
-            unsafe { A::get_unchecked_mut(prev) }.next = next;
+            unsafe { self.get_node_unchecked_mut(prev) }.next = next;
         } else {
             self.head = next;
         }
 
         if next.is_some() {
-            unsafe { A::get_unchecked_mut(next) }.prev = prev;
+            unsafe { self.get_node_unchecked_mut(next) }.prev = prev;
         } else {
             self.tail = prev;
         }
 
         // Clear ownership
-        unsafe { A::get_unchecked_mut(key) }.owner = Id::NONE;
+        unsafe { self.get_node_unchecked_mut(key) }.owner = Id::NONE;
 
         self.len -= 1;
 
@@ -535,12 +561,13 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn read<F, R>(&self, slot: &ListSlot<T, A>, f: F) -> R
+    pub fn read<F, R>(&self, slot: &ListSlot<T>, f: F) -> R
     where
         F: FnOnce(&T) -> R,
     {
         // SAFETY: Read-only access, no mutable refs exist to this slot
-        let node = unsafe { A::get(slot.key()) }
+        let node = self
+            .get_node(slot.key())
             .expect("slot is invalid (was it dropped without unlinking?)");
         assert_eq!(node.owner, self.id, "slot belongs to different list");
         f(&node.data)
@@ -556,8 +583,9 @@ where
             return None;
         }
         // SAFETY: Read-only access, no mutable refs exist; head is validated
-        let node =
-            unsafe { A::get(self.head) }.expect("list head is invalid (internal corruption)");
+        let node = self
+            .get_node(self.head)
+            .expect("list head is invalid (internal corruption)");
         Some(f(&node.data))
     }
 
@@ -571,8 +599,9 @@ where
             return None;
         }
         // SAFETY: Read-only access, no mutable refs exist; tail is validated
-        let node =
-            unsafe { A::get(self.tail) }.expect("list tail is invalid (internal corruption)");
+        let node = self
+            .get_node(self.tail)
+            .expect("list tail is invalid (internal corruption)");
         Some(f(&node.data))
     }
 
@@ -588,19 +617,20 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn write<F, R>(&mut self, slot: &mut ListSlot<T, A>, f: F) -> R
+    pub fn write<F, R>(&mut self, slot: &mut ListSlot<T>, f: F) -> R
     where
         F: FnOnce(&mut T) -> R,
     {
         let key = slot.key();
         // Validate first
         {
-            let node = unsafe { A::get(key) }
+            let node = self
+                .get_node(key)
                 .expect("slot is invalid (was it dropped without unlinking?)");
             assert_eq!(node.owner, self.id, "slot belongs to different list");
         }
         // SAFETY: Key is validated above, getting exclusive access
-        let node = unsafe { A::get_unchecked_mut(key) };
+        let node = unsafe { self.get_node_unchecked_mut(key) };
         f(&mut node.data)
     }
 
@@ -613,7 +643,7 @@ where
         if self.head.is_none() {
             return None;
         }
-        let node = unsafe { A::get_unchecked_mut(self.head) };
+        let node = unsafe { self.get_node_unchecked_mut(self.head) };
         Some(f(&mut node.data))
     }
 
@@ -626,7 +656,7 @@ where
         if self.tail.is_none() {
             return None;
         }
-        let node = unsafe { A::get_unchecked_mut(self.tail) };
+        let node = unsafe { self.get_node_unchecked_mut(self.tail) };
         Some(f(&mut node.data))
     }
 
@@ -640,11 +670,12 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn is_head(&self, slot: &ListSlot<T, A>) -> bool {
+    pub fn is_head(&self, slot: &ListSlot<T>) -> bool {
         let key = slot.key();
         // Validate ownership
-        let node =
-            unsafe { A::get(key) }.expect("slot is invalid (was it dropped without unlinking?)");
+        let node = self
+            .get_node(key)
+            .expect("slot is invalid (was it dropped without unlinking?)");
         assert_eq!(node.owner, self.id, "slot belongs to different list");
         key == self.head
     }
@@ -655,11 +686,12 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn is_tail(&self, slot: &ListSlot<T, A>) -> bool {
+    pub fn is_tail(&self, slot: &ListSlot<T>) -> bool {
         let key = slot.key();
         // Validate ownership
-        let node =
-            unsafe { A::get(key) }.expect("slot is invalid (was it dropped without unlinking?)");
+        let node = self
+            .get_node(key)
+            .expect("slot is invalid (was it dropped without unlinking?)");
         assert_eq!(node.owner, self.id, "slot belongs to different list");
         key == self.tail
     }
@@ -676,17 +708,14 @@ where
     ///
     /// Panics if `after` is invalid or doesn't belong to this list.
     #[inline]
-    pub fn link_after(
-        &mut self,
-        after: &ListSlot<T, A>,
-        node: DetachedListNode<T, A>,
-    ) -> ListSlot<T, A> {
+    pub fn link_after(&mut self, after: &ListSlot<T>, node: DetachedListNode<T>) -> ListSlot<T> {
         let after_key = after.key();
         let new_key = node.key();
 
         // Validate `after` and get its next pointer
         let next = {
-            let n = unsafe { A::get(after_key) }
+            let n = self
+                .get_node(after_key)
                 .expect("slot is invalid (was it dropped without unlinking?)");
             assert_eq!(n.owner, self.id, "slot belongs to different list");
             n.next
@@ -694,22 +723,22 @@ where
 
         // Set up new node's links
         {
-            let n = unsafe { A::get_unchecked_mut(new_key) };
+            let n = unsafe { self.get_node_unchecked_mut(new_key) };
             n.prev = after_key;
             n.next = next;
             n.owner = self.id;
         }
 
         // Update `after`'s next pointer
-        unsafe { A::get_unchecked_mut(after_key) }.next = new_key;
+        unsafe { self.get_node_unchecked_mut(after_key) }.next = new_key;
 
         // Update next's prev pointer (or tail if inserting at end)
         if next.is_some() {
             assert!(
-                A::contains_key(next),
+                self.contains_key(next),
                 "next neighbor is invalid (was a slot dropped without unlinking?)"
             );
-            unsafe { A::get_unchecked_mut(next) }.prev = new_key;
+            unsafe { self.get_node_unchecked_mut(next) }.prev = new_key;
         } else {
             self.tail = new_key;
         }
@@ -727,17 +756,14 @@ where
     ///
     /// Panics if `before` is invalid or doesn't belong to this list.
     #[inline]
-    pub fn link_before(
-        &mut self,
-        before: &ListSlot<T, A>,
-        node: DetachedListNode<T, A>,
-    ) -> ListSlot<T, A> {
+    pub fn link_before(&mut self, before: &ListSlot<T>, node: DetachedListNode<T>) -> ListSlot<T> {
         let before_key = before.key();
         let new_key = node.key();
 
         // Validate `before` and get its prev pointer
         let prev = {
-            let n = unsafe { A::get(before_key) }
+            let n = self
+                .get_node(before_key)
                 .expect("slot is invalid (was it dropped without unlinking?)");
             assert_eq!(n.owner, self.id, "slot belongs to different list");
             n.prev
@@ -745,22 +771,22 @@ where
 
         // Set up new node's links
         {
-            let n = unsafe { A::get_unchecked_mut(new_key) };
+            let n = unsafe { self.get_node_unchecked_mut(new_key) };
             n.prev = prev;
             n.next = before_key;
             n.owner = self.id;
         }
 
         // Update `before`'s prev pointer
-        unsafe { A::get_unchecked_mut(before_key) }.prev = new_key;
+        unsafe { self.get_node_unchecked_mut(before_key) }.prev = new_key;
 
         // Update prev's next pointer (or head if inserting at start)
         if prev.is_some() {
             assert!(
-                A::contains_key(prev),
+                self.contains_key(prev),
                 "prev neighbor is invalid (was a slot dropped without unlinking?)"
             );
-            unsafe { A::get_unchecked_mut(prev) }.next = new_key;
+            unsafe { self.get_node_unchecked_mut(prev) }.next = new_key;
         } else {
             self.head = new_key;
         }
@@ -783,12 +809,13 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn move_to_front(&mut self, slot: &ListSlot<T, A>) {
+    pub fn move_to_front(&mut self, slot: &ListSlot<T>) {
         let key = slot.key();
 
         // Validate slot and check if already at front
         let (prev, next) = {
-            let node = unsafe { A::get(key) }
+            let node = self
+                .get_node(key)
                 .expect("slot is invalid (was it dropped without unlinking?)");
             assert_eq!(node.owner, self.id, "slot belongs to different list");
             if node.prev.is_none() {
@@ -799,37 +826,37 @@ where
 
         // Validate all neighbors upfront before any mutations.
         assert!(
-            A::contains_key(prev),
+            self.contains_key(prev),
             "prev neighbor is invalid (was a slot dropped without unlinking?)"
         );
         if next.is_some() {
             assert!(
-                A::contains_key(next),
+                self.contains_key(next),
                 "next neighbor is invalid (was a slot dropped without unlinking?)"
             );
         }
         assert!(
-            A::contains_key(self.head),
+            self.contains_key(self.head),
             "list head is invalid (internal corruption)"
         );
 
         // All keys validated - now do mutations
 
         // Remove from current position
-        unsafe { A::get_unchecked_mut(prev) }.next = next;
+        unsafe { self.get_node_unchecked_mut(prev) }.next = next;
         if next.is_some() {
-            unsafe { A::get_unchecked_mut(next) }.prev = prev;
+            unsafe { self.get_node_unchecked_mut(next) }.prev = prev;
         } else {
             self.tail = prev;
         }
 
         // Insert at front
         {
-            let n = unsafe { A::get_unchecked_mut(key) };
+            let n = unsafe { self.get_node_unchecked_mut(key) };
             n.prev = Key::NONE;
             n.next = self.head;
         }
-        unsafe { A::get_unchecked_mut(self.head) }.prev = key;
+        unsafe { self.get_node_unchecked_mut(self.head) }.prev = key;
         self.head = key;
     }
 
@@ -842,12 +869,13 @@ where
     ///
     /// Panics if the slot is invalid or doesn't belong to this list.
     #[inline]
-    pub fn move_to_back(&mut self, slot: &ListSlot<T, A>) {
+    pub fn move_to_back(&mut self, slot: &ListSlot<T>) {
         let key = slot.key();
 
         // Validate slot and check if already at back
         let (prev, next) = {
-            let node = unsafe { A::get(key) }
+            let node = self
+                .get_node(key)
                 .expect("slot is invalid (was it dropped without unlinking?)");
             assert_eq!(node.owner, self.id, "slot belongs to different list");
             if node.next.is_none() {
@@ -858,37 +886,37 @@ where
 
         // Validate all neighbors upfront before any mutations.
         assert!(
-            A::contains_key(next),
+            self.contains_key(next),
             "next neighbor is invalid (was a slot dropped without unlinking?)"
         );
         if prev.is_some() {
             assert!(
-                A::contains_key(prev),
+                self.contains_key(prev),
                 "prev neighbor is invalid (was a slot dropped without unlinking?)"
             );
         }
         assert!(
-            A::contains_key(self.tail),
+            self.contains_key(self.tail),
             "list tail is invalid (internal corruption)"
         );
 
         // All keys validated - now do mutations
 
         // Remove from current position
-        unsafe { A::get_unchecked_mut(next) }.prev = prev;
+        unsafe { self.get_node_unchecked_mut(next) }.prev = prev;
         if prev.is_some() {
-            unsafe { A::get_unchecked_mut(prev) }.next = next;
+            unsafe { self.get_node_unchecked_mut(prev) }.next = next;
         } else {
             self.head = next;
         }
 
         // Insert at back
         {
-            let n = unsafe { A::get_unchecked_mut(key) };
+            let n = unsafe { self.get_node_unchecked_mut(key) };
             n.prev = self.tail;
             n.next = Key::NONE;
         }
-        unsafe { A::get_unchecked_mut(self.tail) }.next = key;
+        unsafe { self.get_node_unchecked_mut(self.tail) }.next = key;
         self.tail = key;
     }
 
@@ -901,7 +929,7 @@ where
     /// Returns a `Detached` guard. Call `take()` or `try_take()` to complete
     /// the transition and get your slot back.
     #[inline]
-    pub fn pop_front(&mut self) -> Option<Detached<'_, T, A>> {
+    pub fn pop_front(&mut self) -> Option<Detached<T>> {
         if self.head.is_none() {
             return None;
         }
@@ -909,31 +937,30 @@ where
         let key = self.head;
 
         // Get next before we modify
-        let node = unsafe { A::get(key) }.expect("list head is invalid (internal corruption)");
+        let node = self
+            .get_node(key)
+            .expect("list head is invalid (internal corruption)");
         let next = node.next;
 
         // Update head
         self.head = next;
         if next.is_some() {
             assert!(
-                A::contains_key(next),
+                self.contains_key(next),
                 "next neighbor is invalid (was a slot dropped without unlinking?)"
             );
-            unsafe { A::get_unchecked_mut(next) }.prev = Key::NONE;
+            unsafe { self.get_node_unchecked_mut(next) }.prev = Key::NONE;
         } else {
             self.tail = Key::NONE;
         }
 
         // Clear ownership (node is now detached)
-        unsafe { A::get_unchecked_mut(key) }.owner = Id::NONE;
+        unsafe { self.get_node_unchecked_mut(key) }.owner = Id::NONE;
 
         self.len -= 1;
 
-        Some(Detached {
-            list: self,
-            key,
-            _marker: PhantomData,
-        })
+        // SAFETY: key is valid and node is now unlinked
+        Some(unsafe { Detached::new(key, self.vtable) })
     }
 
     /// Pops the back element.
@@ -941,7 +968,7 @@ where
     /// Returns a `Detached` guard. Call `take()` or `try_take()` to complete
     /// the transition and get your slot back.
     #[inline]
-    pub fn pop_back(&mut self) -> Option<Detached<'_, T, A>> {
+    pub fn pop_back(&mut self) -> Option<Detached<T>> {
         if self.tail.is_none() {
             return None;
         }
@@ -949,39 +976,352 @@ where
         let key = self.tail;
 
         // Get prev before we modify
-        let node = unsafe { A::get(key) }.expect("list tail is invalid (internal corruption)");
+        let node = self
+            .get_node(key)
+            .expect("list tail is invalid (internal corruption)");
         let prev = node.prev;
 
         // Update tail
         self.tail = prev;
         if prev.is_some() {
             assert!(
-                A::contains_key(prev),
+                self.contains_key(prev),
                 "prev neighbor is invalid (was a slot dropped without unlinking?)"
             );
-            unsafe { A::get_unchecked_mut(prev) }.next = Key::NONE;
+            unsafe { self.get_node_unchecked_mut(prev) }.next = Key::NONE;
         } else {
             self.head = Key::NONE;
         }
 
         // Clear ownership (node is now detached)
-        unsafe { A::get_unchecked_mut(key) }.owner = Id::NONE;
+        unsafe { self.get_node_unchecked_mut(key) }.owner = Id::NONE;
 
         self.len -= 1;
 
-        Some(Detached {
+        // SAFETY: key is valid and node is now unlinked
+        Some(unsafe { Detached::new(key, self.vtable) })
+    }
+
+    // =========================================================================
+    // Cursor operations
+    // =========================================================================
+
+    /// Creates a cursor positioned before the first element.
+    ///
+    /// Call `cursor.next()` to get a guard to the first element.
+    #[inline]
+    pub fn cursor(&mut self) -> Cursor<'_, T> {
+        Cursor {
             list: self,
-            key,
-            _marker: PhantomData,
+            position: Position::BeforeStart,
+        }
+    }
+
+    /// Creates a cursor positioned after the last element.
+    ///
+    /// Call `cursor.prev()` to get a guard to the last element.
+    #[inline]
+    pub fn cursor_back(&mut self) -> Cursor<'_, T> {
+        Cursor {
+            list: self,
+            position: Position::AfterEnd,
+        }
+    }
+}
+
+// Note: Default impl removed - List requires vtable from list_allocator! macro
+
+// =============================================================================
+// Cursor - Positional traversal with modification support
+// =============================================================================
+
+/// Position state for cursor traversal.
+#[derive(Clone, Copy, Debug)]
+enum Position {
+    /// Before the first element. `next()` returns the head.
+    BeforeStart,
+    /// After the last element. `prev()` returns the tail.
+    AfterEnd,
+    /// At a specific element. `next()`/`prev()` follow links.
+    At(Key),
+    /// In a gap after removal. Stores neighbors for bidirectional traversal.
+    Gap { prev: Key, next: Key },
+}
+
+/// Cursor for list traversal with modification support.
+///
+/// A cursor provides positional iteration over the list with the ability to
+/// read, write, and remove elements. All guard operations consume the guard,
+/// requiring `next()` or `prev()` to continue iteration.
+///
+/// # Position States
+///
+/// - `BeforeStart`: Before the first element (initial state from `cursor()`)
+/// - `AfterEnd`: After the last element (initial state from `cursor_back()`)
+/// - `At(key)`: Positioned at an element
+/// - `Gap`: After removal, tracks neighbors for continued traversal
+///
+/// # Example
+///
+/// ```ignore
+/// let mut cursor = list.cursor();
+/// while let Some(guard) = cursor.next() {
+///     if let Some(detached) = guard.write_remove_if(|order| {
+///         order.qty -= fill_qty;
+///         order.qty == 0  // Remove if fully filled
+///     }) {
+///         let node = detached.take(|o| index.remove(&o.id).unwrap());
+///         process(node.take());
+///     }
+/// }
+/// ```
+pub struct Cursor<'a, T: 'static> {
+    list: &'a mut List<T>,
+    position: Position,
+}
+
+impl<'a, T: 'static> Cursor<'a, T> {
+    /// Move forward and return a guard to the new position.
+    ///
+    /// Returns `None` if at the end of the list.
+    #[inline]
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<CursorGuard<'_, 'a, T>> {
+        let next_key = match self.position {
+            Position::BeforeStart => self.list.head,
+            Position::AfterEnd => return None,
+            Position::At(key) => {
+                // Get next from current position
+                self.list.get_node(key)?.next
+            }
+            Position::Gap { next, .. } => next,
+        };
+
+        if next_key.is_none() {
+            self.position = Position::AfterEnd;
+            return None;
+        }
+
+        // Validate the key exists
+        if !self.list.contains_key(next_key) {
+            self.position = Position::AfterEnd;
+            return None;
+        }
+
+        self.position = Position::At(next_key);
+        Some(CursorGuard {
+            cursor: self,
+            key: next_key,
+        })
+    }
+
+    /// Move backward and return a guard to the new position.
+    ///
+    /// Returns `None` if at the start of the list.
+    #[inline]
+    pub fn prev(&mut self) -> Option<CursorGuard<'_, 'a, T>> {
+        let prev_key = match self.position {
+            Position::BeforeStart => return None,
+            Position::AfterEnd => self.list.tail,
+            Position::At(key) => {
+                // Get prev from current position
+                self.list.get_node(key)?.prev
+            }
+            Position::Gap { prev, .. } => prev,
+        };
+
+        if prev_key.is_none() {
+            self.position = Position::BeforeStart;
+            return None;
+        }
+
+        // Validate the key exists
+        if !self.list.contains_key(prev_key) {
+            self.position = Position::BeforeStart;
+            return None;
+        }
+
+        self.position = Position::At(prev_key);
+        Some(CursorGuard {
+            cursor: self,
+            key: prev_key,
         })
     }
 }
 
-impl<T: 'static, A> Default for List<T, A>
-where
-    A: ListStorage<T>,
-{
-    fn default() -> Self {
-        Self::new()
+/// Guard for cursor position.
+///
+/// All operations consume the guard. After any operation, call `cursor.next()`
+/// or `cursor.prev()` to continue iteration.
+///
+/// # User Invariant
+///
+/// You should consume this guard via one of its methods. Dropping without
+/// consuming leaves the cursor in an inconsistent state.
+pub struct CursorGuard<'cursor, 'list, T: 'static> {
+    cursor: &'cursor mut Cursor<'list, T>,
+    key: Key,
+}
+
+impl<T: 'static> CursorGuard<'_, '_, T> {
+    /// Read the element via closure. Cursor stays at current position.
+    #[inline]
+    pub fn read<F, R>(self, f: F) -> R
+    where
+        F: FnOnce(&T) -> R,
+    {
+        // Position stays At(key)
+        let node = self
+            .cursor
+            .list
+            .get_node(self.key)
+            .expect("cursor position is invalid");
+        f(&node.data)
+    }
+
+    /// Write to the element via closure. Cursor stays at current position.
+    #[inline]
+    pub fn write<F, R>(self, f: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        // Position stays At(key)
+        let node = unsafe { self.cursor.list.get_node_unchecked_mut(self.key) };
+        f(&mut node.data)
+    }
+
+    /// Skip without accessing. Cursor stays at current position.
+    #[inline]
+    pub fn skip(self) {
+        // Position stays At(key) - nothing to do
+    }
+
+    /// Remove the element. Cursor enters Gap state.
+    ///
+    /// Returns a `Detached` guard to complete index cleanup.
+    #[inline]
+    pub fn remove(self) -> Detached<T> {
+        let key = self.key;
+        let list = &mut *self.cursor.list;
+
+        // Get neighbors before unlinking
+        let node = list.get_node(key).expect("cursor position is invalid");
+        let prev = node.prev;
+        let next = node.next;
+
+        // Unlink the node (similar to unlink() but we update cursor position)
+        // Update prev's next pointer
+        if prev.is_some() {
+            unsafe { list.get_node_unchecked_mut(prev) }.next = next;
+        } else {
+            list.head = next;
+        }
+
+        // Update next's prev pointer
+        if next.is_some() {
+            unsafe { list.get_node_unchecked_mut(next) }.prev = prev;
+        } else {
+            list.tail = prev;
+        }
+
+        // Clear ownership
+        unsafe { list.get_node_unchecked_mut(key) }.owner = Id::NONE;
+
+        list.len -= 1;
+
+        // Update cursor to Gap state
+        self.cursor.position = Position::Gap { prev, next };
+
+        // SAFETY: key is valid and node is now unlinked
+        unsafe { Detached::new(key, list.vtable) }
+    }
+
+    /// Read, then remove if predicate returns true.
+    ///
+    /// If removed, cursor enters Gap state and returns `Some(Detached)`.
+    /// If not removed, cursor stays at current position and returns `None`.
+    #[inline]
+    pub fn read_remove_if<F>(self, f: F) -> Option<Detached<T>>
+    where
+        F: FnOnce(&T) -> bool,
+    {
+        let key = self.key;
+        let list = &mut *self.cursor.list;
+
+        let node = list.get_node(key).expect("cursor position is invalid");
+        let should_remove = f(&node.data);
+
+        if should_remove {
+            let prev = node.prev;
+            let next = node.next;
+
+            // Unlink
+            if prev.is_some() {
+                unsafe { list.get_node_unchecked_mut(prev) }.next = next;
+            } else {
+                list.head = next;
+            }
+
+            if next.is_some() {
+                unsafe { list.get_node_unchecked_mut(next) }.prev = prev;
+            } else {
+                list.tail = prev;
+            }
+
+            unsafe { list.get_node_unchecked_mut(key) }.owner = Id::NONE;
+            list.len -= 1;
+
+            self.cursor.position = Position::Gap { prev, next };
+            Some(unsafe { Detached::new(key, list.vtable) })
+        } else {
+            // Stay at current position
+            None
+        }
+    }
+
+    /// Write, then remove if predicate returns true.
+    ///
+    /// If removed, cursor enters Gap state and returns `Some(Detached)`.
+    /// If not removed, cursor stays at current position and returns `None`.
+    #[inline]
+    pub fn write_remove_if<F>(self, f: F) -> Option<Detached<T>>
+    where
+        F: FnOnce(&mut T) -> bool,
+    {
+        let key = self.key;
+        let list = &mut *self.cursor.list;
+
+        // Get neighbors first (need them if we remove)
+        let node = list.get_node(key).expect("cursor position is invalid");
+        let prev = node.prev;
+        let next = node.next;
+
+        // Write and check predicate
+        let node_mut = unsafe { list.get_node_unchecked_mut(key) };
+        let should_remove = f(&mut node_mut.data);
+
+        if should_remove {
+            // Unlink
+            if prev.is_some() {
+                unsafe { list.get_node_unchecked_mut(prev) }.next = next;
+            } else {
+                list.head = next;
+            }
+
+            if next.is_some() {
+                unsafe { list.get_node_unchecked_mut(next) }.prev = prev;
+            } else {
+                list.tail = prev;
+            }
+
+            unsafe { list.get_node_unchecked_mut(key) }.owner = Id::NONE;
+            list.len -= 1;
+
+            self.cursor.position = Position::Gap { prev, next };
+            Some(unsafe { Detached::new(key, list.vtable) })
+        } else {
+            // Stay at current position
+            None
+        }
     }
 }

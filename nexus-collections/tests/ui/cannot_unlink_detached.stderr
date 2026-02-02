@@ -2,14 +2,14 @@ error[E0308]: mismatched types
   --> tests/ui/cannot_unlink_detached.rs:15:17
    |
 15 |     list.unlink(detached);
-   |          ------ ^^^^^^^^ expected `ListSlot<u64, Storage>`, found `DetachedListNode<u64, Storage>`
+   |          ------ ^^^^^^^^ expected `ListSlot<u64>`, found `DetachedListNode<u64>`
    |          |
    |          arguments to this method are incorrect
    |
-   = note: expected struct `nexus_collections::ListSlot<u64, Storage>`
-              found struct `DetachedListNode<u64, Storage>`
+   = note: expected struct `nexus_collections::ListSlot<u64>`
+              found struct `DetachedListNode<u64>`
 note: method defined here
   --> src/list.rs
    |
-   |     pub fn unlink(&mut self, slot: ListSlot<T, A>) -> DetachedListNode<T, A> {
+   |     pub fn unlink(&mut self, slot: ListSlot<T>) -> DetachedListNode<T> {
    |            ^^^^^^

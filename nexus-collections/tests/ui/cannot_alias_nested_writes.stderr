@@ -1,0 +1,11 @@
+error[E0499]: cannot borrow `list` as mutable more than once at a time
+  --> tests/ui/cannot_alias_nested_writes.rs:19:28
+   |
+19 |     list.write(&mut slot1, |_data1| {
+   |     ---- -----             ^^^^^^^^ second mutable borrow occurs here
+   |     |    |
+   |     |    first borrow later used by call
+   |     first mutable borrow occurs here
+20 |         // ERROR: cannot borrow `list` as mutable more than once at a time
+21 |         list.write(&mut slot2, |_data2| {});
+   |         ---- second borrow occurs due to use of `list` in closure

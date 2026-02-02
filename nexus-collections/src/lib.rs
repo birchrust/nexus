@@ -13,13 +13,13 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use nexus_collections::create_list;
+//! use nexus_collections::list_allocator;
 //!
 //! #[derive(Debug)]
 //! struct Order { id: u64, price: f64 }
 //!
 //! // Create a typed list allocator
-//! create_list!(orders, Order);
+//! list_allocator!(orders, Order);
 //!
 //! fn main() {
 //!     // Initialize at startup
@@ -44,20 +44,16 @@
 
 #![warn(missing_docs)]
 
-// Internal module is public for macro usage
-#[doc(hidden)]
-pub mod internal;
 mod macros;
 
 pub mod list;
 
-// The create_list! macro is automatically exported via #[macro_export]
+// The list_allocator! macro is automatically exported via #[macro_export]
 
 // Re-export list types for use in macro-generated code and direct use
-pub use list::{Detached, DetachedListNode, Id as ListId, List, ListSlot, Node as ListNode};
-
-// Re-export the storage trait for advanced use
-pub use internal::ListStorage;
+pub use list::{
+    Cursor, CursorGuard, Detached, DetachedListNode, Id as ListId, List, ListSlot, Node as ListNode,
+};
 
 /// Private module for macro implementation details.
 ///
@@ -65,5 +61,5 @@ pub use internal::ListStorage;
 #[doc(hidden)]
 pub mod __private {
     // Re-export nexus_slab items needed by the macro
-    pub use nexus_slab::{Key, create_allocator};
+    pub use nexus_slab::{Key, SlotCell, VTable, create_allocator};
 }
