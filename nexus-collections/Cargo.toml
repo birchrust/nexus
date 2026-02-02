@@ -17,7 +17,7 @@ trybuild = "1.0"
 
 [dependencies]
 rand_core = "0.9.3"
-nexus-slab = "0.9.1"
+nexus-slab = "0.10.1"
 
 [lints]
 workspace = true

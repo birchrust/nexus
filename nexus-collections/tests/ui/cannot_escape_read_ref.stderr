@@ -1,35 +1,35 @@
 error[E0521]: borrowed data escapes outside of closure
-  --> tests/ui/cannot_escape_read_ref.rs:14:9
+  --> tests/ui/cannot_escape_read_ref.rs:16:9
    |
-12 |     let escaped: &u64;
+14 |     let escaped: &u64;
    |         ------- `escaped` declared here, outside of the closure body
-13 |     list.read(&slot, |data| {
+15 |     list.read(&slot, |data| {
    |                       ---- `data` is a reference that is only valid in the closure body
-14 |         escaped = data;  // ERROR: reference escapes closure
+16 |         escaped = data;  // ERROR: reference escapes closure
    |         ^^^^^^^^^^^^^^ `data` escapes the closure body here
 
 error[E0594]: cannot assign to `escaped`, as it is not declared as mutable
-  --> tests/ui/cannot_escape_read_ref.rs:14:9
+  --> tests/ui/cannot_escape_read_ref.rs:16:9
    |
-14 |         escaped = data;  // ERROR: reference escapes closure
+16 |         escaped = data;  // ERROR: reference escapes closure
    |         ^^^^^^^^^^^^^^ cannot assign
    |
 help: consider changing this to be mutable
    |
-12 |     let mut escaped: &u64;
+14 |     let mut escaped: &u64;
    |         +++
 
 error[E0381]: used binding `escaped` isn't initialized
-  --> tests/ui/cannot_escape_read_ref.rs:13:22
+  --> tests/ui/cannot_escape_read_ref.rs:15:22
    |
-12 |     let escaped: &u64;
+14 |     let escaped: &u64;
    |         ------- binding declared here but left uninitialized
-13 |     list.read(&slot, |data| {
+15 |     list.read(&slot, |data| {
    |                      ^^^^^^ `escaped` used here but it isn't initialized
-14 |         escaped = data;  // ERROR: reference escapes closure
+16 |         escaped = data;  // ERROR: reference escapes closure
    |         ------- borrow occurs due to use in closure
    |
 help: consider assigning a value
    |
-12 |     let escaped: &u64 = &42;
+14 |     let escaped: &u64 = &42;
    |                       +++++

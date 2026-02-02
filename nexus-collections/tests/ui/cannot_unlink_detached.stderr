@@ -1,15 +1,15 @@
 error[E0308]: mismatched types
-  --> tests/ui/cannot_unlink_detached.rs:13:17
+  --> tests/ui/cannot_unlink_detached.rs:15:17
    |
-13 |     list.unlink(detached);
-   |          ------ ^^^^^^^^ expected `ListSlot<u64, BoundedListSlab<u64>>`, found `DetachedListNode<u64, ...>`
+15 |     list.unlink(detached);
+   |          ------ ^^^^^^^^ expected `ListSlot<u64, Storage>`, found `DetachedListNode<u64, Storage>`
    |          |
    |          arguments to this method are incorrect
    |
-   = note: expected struct `ListSlot<u64, BoundedListSlab<u64>>`
-              found struct `DetachedListNode<u64, BoundedListSlab<u64>>`
+   = note: expected struct `nexus_collections::ListSlot<u64, Storage>`
+              found struct `DetachedListNode<u64, Storage>`
 note: method defined here
   --> src/list.rs
    |
-   |     pub fn unlink(&mut self, slot: ListSlot<T, S>) -> DetachedListNode<T, S> {
+   |     pub fn unlink(&mut self, slot: ListSlot<T, A>) -> DetachedListNode<T, A> {
    |            ^^^^^^
