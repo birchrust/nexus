@@ -126,6 +126,27 @@ macro_rules! create_allocator {
                     Key::new(self.slot().key_from_stamp())
                 }
 
+                /// Returns the raw pointer to the underlying `SlotCell`.
+                ///
+                /// This pointer remains valid as long as the slot is not freed.
+                /// Use with [`Slot::leak()`] to keep the slot alive while storing
+                /// the pointer for direct access.
+                ///
+                /// # Example
+                ///
+                /// ```ignore
+                /// let slot = my_alloc::try_insert(value)?;
+                /// let ptr = slot.slot_ptr();  // grab pointer
+                /// let key = slot.leak();       // keep alive
+                ///
+                /// // Later: direct access via pointer (no TLS lookup)
+                /// let value = unsafe { (*ptr).get_value() };
+                /// ```
+                #[inline]
+                pub fn slot_ptr(&self) -> *mut SlotCell<$T> {
+                    self.slot
+                }
+
                 /// Leaks the slot, keeping the data alive and returning its key.
                 ///
                 /// After calling `leak()`, the slot remains occupied but has no
@@ -198,10 +219,7 @@ macro_rules! create_allocator {
                         let vtable = v.get();
                         debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
                         // SAFETY: VTable is valid, slot was occupied
-                        unsafe {
-                            let vtable = &*vtable;
-                            (vtable.free_fn)(vtable.inner, key);
-                        }
+                        unsafe { (*vtable).free(key) };
                     });
 
                     std::mem::forget(self);
@@ -225,10 +243,7 @@ macro_rules! create_allocator {
                         let vtable = v.get();
                         debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
                         // SAFETY: VTable is valid
-                        unsafe {
-                            let vtable = &*vtable;
-                            (vtable.free_fn)(vtable.inner, key);
-                        }
+                        unsafe { (*vtable).free(key) };
                     });
                 }
             }
@@ -428,10 +443,9 @@ macro_rules! create_allocator {
                     // Debug builds: panic above. Release builds: null deref crash.
                     // We don't add a runtime check here to avoid hot path overhead.
                     // Use is_initialized() if you need to check at runtime.
-                    let vtable = unsafe { &*vtable };
 
                     // Try to claim a slot
-                    let claimed = unsafe { (vtable.try_claim_fn)(vtable.inner) }?;
+                    let claimed = unsafe { (*vtable).try_claim() }?;
 
                     // Write the value
                     let slot = claimed.slot_ptr as *mut SlotCell<$T>;
@@ -458,10 +472,7 @@ macro_rules! create_allocator {
                     debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
 
                     // SAFETY: VTable is valid (debug_assert guards this in debug, null deref in release)
-                    unsafe {
-                        let vtable = &*vtable;
-                        (vtable.contains_key_fn)(vtable.inner, key)
-                    }
+                    unsafe { (*vtable).contains_key(key) }
                 })
             }
 
@@ -507,10 +518,8 @@ macro_rules! create_allocator {
                 VTABLE.with(|v| {
                     let vtable = v.get();
                     debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    let vtable = unsafe { &*vtable };
-                    let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
-                    // SlotCell is repr(C): [stamp: 8][value: T]
-                    unsafe { &*((slot_ptr as *const u8).add(8) as *const $T) }
+                    let slot_cell = unsafe { (*vtable).slot_ptr(key) };
+                    unsafe { (*slot_cell).get_value() }
                 })
             }
 
@@ -526,10 +535,8 @@ macro_rules! create_allocator {
                 VTABLE.with(|v| {
                     let vtable = v.get();
                     debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    let vtable = unsafe { &*vtable };
-                    let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
-                    // SlotCell is repr(C): [stamp: 8][value: T]
-                    unsafe { &mut *((slot_ptr as *mut u8).add(8) as *mut $T) }
+                    let slot_cell = unsafe { (*vtable).slot_ptr(key) };
+                    unsafe { (*slot_cell).get_value_mut() }
                 })
             }
 
@@ -563,15 +570,13 @@ macro_rules! create_allocator {
                 VTABLE.with(|v| {
                     let vtable = v.get();
                     debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    let vtable = unsafe { &*vtable };
-                    let slot_ptr = unsafe { (vtable.slot_ptr_fn)(vtable.inner, key) };
+                    let slot_cell = unsafe { (*vtable).slot_ptr(key) };
 
-                    // Read the value out (SlotCell is repr(C): [stamp: 8][value: T])
-                    let value_ptr = (slot_ptr as *const u8).add(8) as *const $T;
-                    let value = unsafe { std::ptr::read(value_ptr) };
+                    // Read the value out
+                    let value = unsafe { std::ptr::read((*slot_cell).value_ptr()) };
 
                     // Free the slot
-                    unsafe { (vtable.free_fn)(vtable.inner, key) };
+                    unsafe { (*vtable).free(key) };
 
                     value
                 })
@@ -656,6 +661,38 @@ macro_rules! create_allocator {
             #[inline]
             pub fn is_initialized() -> bool {
                 VTABLE.with(|v| !v.get().is_null())
+            }
+
+            /// Returns the VTable pointer for this allocator.
+            ///
+            /// This allows storing the VTable pointer for direct access without
+            /// TLS lookup on every operation. The pointer remains valid for the
+            /// lifetime of the allocator (until shutdown).
+            ///
+            /// # Panics (debug builds)
+            ///
+            /// Panics if the allocator is not initialized.
+            ///
+            /// # Example
+            ///
+            /// ```ignore
+            /// // Grab vtable once at struct creation
+            /// let vtable = my_alloc::vtable_ptr();
+            ///
+            /// // Later: use vtable directly for operations (no TLS lookup)
+            /// unsafe {
+            ///     (*vtable).free(key);
+            ///     let slot = (*vtable).slot_ptr(key);
+            ///     let value = (*slot).get_value();
+            /// }
+            /// ```
+            #[inline]
+            pub fn vtable_ptr() -> *const VTable<$T> {
+                VTABLE.with(|v| {
+                    let vtable = v.get();
+                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
+                    vtable
+                })
             }
         }
     };
