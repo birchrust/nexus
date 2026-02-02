@@ -40,28 +40,28 @@ This eliminates:
 
 - **0-1 cycles**: Instruction-Level Parallelism (ILP) - CPU executes operation "for free" alongside other work
 - **2-3 cycles**: Single memory access, no dependent loads
-- **4-8 cycles**: Multiple dependent operations or TLS lookup
+- **4-8 cycles**: Multiple dependent operations
 - **8+ cycles**: Multiple indirections, cache misses, or complex operations
 
 ---
 
-## Summary (Macro API p50)
+## Summary (Allocator API p50)
 
 | Operation | Slot API | Key-based | slab crate | Notes |
 |-----------|----------|-----------|------------|-------|
-| GET (random) | **2** | 3 | 3 | Slot has direct pointer |
-| GET (hot) | **1** | - | 2 | ILP - CPU pipelines loads |
+| GET (random) | **2** | 2 | 3 | Slot has direct pointer |
+| GET (hot) | **0** | - | 1 | ILP - CPU pipelines loads |
 | GET_MUT | **2** | 2 | 3 | Slot/key tied |
-| CONTAINS | 2 | 3 | **2** | slot.is_valid() fastest |
-| INSERT | 8 | - | **4** | slab wins - no TLS |
-| REMOVE | 4 | - | **3** | slab slightly faster |
-| REPLACE | **2** | - | 4 | Slot has direct pointer |
+| CONTAINS | **2** | 3 | 2 | slot.is_valid() |
+| INSERT | 8 | - | **5** | slab crate has less indirection |
+| REMOVE | **4** | - | 4 | Tied |
+| REPLACE | **3** | - | 4 | Slot has direct pointer |
 
 **Key findings:**
 - Slot API wins for access patterns (GET, GET_MUT, REPLACE) - direct pointer avoids lookup
-- TLS lookup adds ~3-4 cycles to INSERT vs slab crate
-- Hot access shows ILP - CPU pipelines repeated loads to same address
-- 8-byte Slot size (vs 16+ for handle-based designs) improves cache efficiency
+- slab crate slightly faster for INSERT due to less indirection
+- Hot access shows ILP - CPU pipelines repeated loads (0 cycles at p50)
+- 16-byte Slot (with vtable pointer) enables RAII without TLS lookups
 
 ---
 
@@ -73,9 +73,9 @@ Accessing entries at random indices (realistic workload):
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `slot.get()` | **2** | **2** | **2** | 3 | 56 |
-| `get_unchecked()` [unsafe] | 3 | 3 | 3 | 4 | 67 |
-| slab crate | 3 | 4 | 4 | 5 | 48 |
+| `slot.get()` | **2** | **2** | **2** | 2 | 20 |
+| `get_unchecked()` [unsafe] | 2 | 3 | 3 | 6 | 99 |
+| slab crate | 3 | 3 | 5 | 7 | 84 |
 
 Slot's cached pointer saves index lookup.
 
@@ -85,18 +85,18 @@ Repeatedly accessing the same entry (measures ILP):
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `slot.get()` | **1** | **1** | **1** | **1** | 10 |
-| slab crate | 2 | 2 | 2 | 2 | 27 |
+| `slot.get()` | **0** | **0** | **0** | **1** | 10 |
+| slab crate | 1 | 2 | 2 | 2 | 24 |
 
-Slot achieves 1 cycle at p50 due to CPU pipelining repeated loads.
+Slot achieves 0 cycles at p50 due to CPU pipelining repeated loads.
 
 ### GET_MUT
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `slot.get_mut()` | **2** | **2** | **2** | **2** | 68 |
-| `get_unchecked_mut()` [unsafe] | **2** | 3 | 4 | 4 | 44 |
-| slab crate | 3 | 3 | 4 | 8 | 47 |
+| `slot.get_mut()` | **2** | **2** | **2** | **2** | 23 |
+| `get_unchecked_mut()` [unsafe] | 2 | 3 | 3 | 4 | 78 |
+| slab crate | 3 | 4 | 4 | 8 | 96 |
 
 Slot is fastest at all percentiles.
 
@@ -106,10 +106,10 @@ Slot is fastest at all percentiles.
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| Macro API | 8 | 11 | 16 | 20 | 77 |
-| slab crate | **4** | **5** | **6** | **9** | 115 |
+| Allocator API | 8 | 10 | 19 | 20 | 60 |
+| slab crate | **5** | **5** | **6** | **10** | 80 |
 
-Slab crate wins by ~4 cycles. The macro API has TLS lookup overhead (~3-4 cycles) that slab crate avoids with direct struct access. This is the tradeoff for 8-byte slots.
+Slab crate is faster for INSERT because it has less indirection (vtable call). The tradeoff is that nexus-slab provides RAII semantics via the Slot type.
 
 ---
 
@@ -117,10 +117,10 @@ Slab crate wins by ~4 cycles. The macro API has TLS lookup overhead (~3-4 cycles
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `slot.into_inner()` | 4 | 5 | 6 | 11 | 53 |
-| slab crate | **3** | **3** | 5 | 13 | 46 |
+| `slot.into_inner()` | **4** | **5** | 5 | 11 | 39 |
+| slab.remove() | **4** | **4** | 6 | 15 | 59 |
 
-Both fast. Slot drops value + frees via TLS; slab just marks vacant.
+Both fast. Slot drops value + frees via embedded vtable pointer.
 
 ---
 
@@ -128,10 +128,10 @@ Both fast. Slot drops value + frees via TLS; slab just marks vacant.
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `slot.replace()` | **2** | **3** | **3** | **4** | 33 |
-| slab get_mut+replace | 4 | 4 | 5 | 10 | 65 |
+| `slot.replace()` | **3** | **3** | **3** | **5** | 29 |
+| slab get_mut+replace | 4 | 4 | 5 | 11 | 82 |
 
-Slot's cached pointer saves ~2 cycles - no index lookup needed.
+Slot's cached pointer saves ~1 cycle - no index lookup needed.
 
 ---
 
@@ -139,24 +139,25 @@ Slot's cached pointer saves ~2 cycles - no index lookup needed.
 
 | Method | p50 | p90 | p99 | p99.9 | max |
 |--------|-----|-----|-----|-------|-----|
-| `slot.is_valid()` | **2** | **2** | **2** | **2** | 20 |
-| `contains_key()` | 3 | 3 | 3 | 4 | 42 |
-| slab crate | **2** | **2** | 3 | 6 | 43 |
+| `slot.is_valid()` | **2** | **2** | **3** | 6 | 23 |
+| `contains_key()` | 3 | 3 | 5 | 8 | 36 |
+| slab crate | **2** | 3 | 3 | 6 | 35 |
 
-`slot.is_valid()` is fastest - single stamp read, no TLS lookup.
+`slot.is_valid()` is fastest - single stamp read.
 
 ---
 
 ## When to Use What
 
-### Use Macro API + Slot when:
+### Use Allocator API + Slot when:
 - You hold slots for repeated access (GET, REPLACE)
-- Mutation patterns dominate (REPLACE is 2x faster)
-- You need 8-byte handles (cache efficiency, smaller data structures)
+- Mutation patterns dominate (REPLACE is faster)
+- You need RAII semantics (auto-deallocation on drop)
+- You want stable memory addresses
 
 ### Use slab crate when:
-- INSERT performance is critical (4 cycles vs 8)
-- You don't need Slot handles
+- INSERT performance is critical (4-6 cycles vs 9)
+- You don't need RAII/Slot handles
 - Vec reallocation stalls at p99.99 are acceptable
 
 ### Unbounded vs Bounded
@@ -166,7 +167,7 @@ The unbounded slab adds ~2-4 cycles per operation due to chunk indirection. The 
 | | Bounded | Unbounded |
 |---|---------|-----------|
 | GET overhead | +0 | +2-4 cycles |
-| Growth behavior | Fails when full | Adds chunks (no copy) |
+| Growth behavior | Panics when full | Adds chunks (no copy) |
 | Tail latency | Deterministic | No reallocation stalls |
 
 Use bounded when capacity is known. Use unbounded when growth is needed without `Vec` reallocation spikes.
@@ -185,12 +186,12 @@ Stress tests measuring 64-byte struct allocation under various conditions:
 
 | | p25 | p50 | p75 | p90 | p99 |
 |---|---|---|---|---|---|
-| Box alloc | 42 | 43 | 44 | 45 | 48 |
-| **Slab alloc** | **11** | **11** | **12** | **16** | **24** |
-| Box free | 15 | 15 | 16 | 16 | 18 |
-| **Slab free** | **4** | **4** | **5** | **7** | **10** |
+| Box alloc | 18 | 18 | 19 | 19 | 25 |
+| **Slab alloc** | **13** | **13** | **23** | **27** | **79** |
+| Box free | 12 | 12 | 13 | 13 | 16 |
+| **Slab free** | **5** | **5** | **5** | **5** | **7** |
 
-**Slab is 4x faster** for burst allocation/deallocation.
+**Slab deallocation is 2.4x faster**.
 
 #### Long-Running Churn (10M operations, 50% fill)
 
@@ -240,15 +241,15 @@ This is the killer test. After exhausting the thread cache with large allocation
 
 | | Box | Slab |
 |---|---|---|
-| Setup cost | None | `init()` required |
-| Allocation p50 | ~40 cycles | ~11 cycles |
-| Deallocation p50 | ~15 cycles | ~4 cycles |
+| Setup cost | None | `Allocator::builder().build()` required |
+| Allocation p50 | ~18 cycles | ~13 cycles |
+| Deallocation p50 | ~12 cycles | ~5 cycles |
 | Worst case | OS syscall (234K cycles) | Freelist pop (10K cycles) |
 | Memory overhead | Per-allocation metadata | 8 bytes/slot + stamp |
 | Fragmentation | Yes (over time) | No (fixed slots) |
 | Cache locality | Scattered | Contiguous |
 
-**Bottom line:** If you're allocating/deallocating the same type frequently and care about latency, slab wins decisively. The 4x faster allocation and 22x better worst-case make it the clear choice for performance-critical paths.
+**Bottom line:** If you're allocating/deallocating the same type frequently and care about latency, slab wins decisively. The 2.4x faster deallocation and 22x better worst-case make it the clear choice for performance-critical paths.
 
 ---
 
@@ -271,20 +272,20 @@ Steady-state performance with warm caches:
 
 | Size | Alloc | p25 | p50 | p75 | p90 | p99 | p99.9 |
 |------|-------|-----|-----|-----|-----|-----|-------|
-| 64B | Box | 12 | 12 | 13 | 14 | 20 | 48 |
-| 64B | **Slab** | **9** | **9** | **9** | **10** | **12** | **19** |
-| 256B | Box | 15 | 15 | 16 | 17 | 48 | 80 |
-| 256B | **Slab** | **16** | **16** | **16** | **16** | **25** | **50** |
-| 1024B | Box | 23 | 24 | 25 | 30 | 68 | 102 |
-| 1024B | **Slab** | **23** | **23** | **24** | **24** | **40** | **75** |
-| 4096B | Box | 101 | 105 | 111 | 126 | 149 | 209 |
-| 4096B | **Slab** | **61** | **62** | **62** | **64** | **71** | **129** |
+| 64B | Box | 12 | 13 | 14 | 15 | 19 | 29 |
+| 64B | **Slab** | **8** | **8** | **9** | **10** | **11** | **15** |
+| 256B | Box | 15 | 16 | 16 | 17 | 48 | 53 |
+| 256B | **Slab** | **16** | **16** | **17** | **17** | **20** | **49** |
+| 1024B | Box | 24 | 25 | 27 | 35 | 66 | 102 |
+| 1024B | **Slab** | **24** | **24** | **24** | **25** | **32** | **83** |
+| 4096B | Box | 101 | 108 | 114 | 130 | 162 | 229 |
+| 4096B | **Slab** | **59** | **59** | **60** | **62** | **81** | **152** |
 
 **Hot cache findings:**
-- **64B**: Slab 1.3x faster at p50 (9 vs 12), 1.7x better at p99 (12 vs 20)
-- **256B**: Tied at p50, but slab 1.9x better at p99 (25 vs 48)
-- **1024B**: Slab 1.04x faster at p50, 1.7x better at p99 (40 vs 68)
-- **4096B**: Slab **1.7x faster** at p50 (62 vs 105), 2.1x better at p99 (71 vs 149)
+- **64B**: Slab 1.6x faster at p50 (8 vs 13), 1.7x better at p99 (11 vs 19)
+- **256B**: Tied at p50, but slab 2.4x better at p99 (20 vs 48)
+- **1024B**: Tied at p50, 2.1x better at p99 (32 vs 66)
+- **4096B**: Slab **1.8x faster** at p50 (59 vs 108), 2.0x better at p99 (81 vs 162)
 
 ### Cold Cache Results
 
@@ -296,14 +297,14 @@ One alloc+free per cache eviction. Measures the **first operation** after cache 
 
 | Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
 |------|---------|----------|---------|----------|
-| 64B | 132 | **126** | 334 | **218** |
-| 256B | 166 | **122** | 336 | **230** |
+| 64B | 158 | **84** | 300 | **154** |
+| 256B | 168 | **108** | 314 | **176** |
 
 Note: Includes ~20-25 cycle rdtsc overhead.
 
 **Single-op findings:**
-- **64B**: Slab 5% faster at p50, **35% better** at p99
-- **256B**: Slab **27% faster** at p50, 31% better at p99
+- **64B**: Slab **1.9x faster** at p50, **1.9x better** at p99
+- **256B**: Slab **1.6x faster** at p50, **1.8x better** at p99
 
 #### Batched Cold (Burst After Cache Eviction)
 
@@ -401,7 +402,7 @@ echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
 ```bash
 cargo build --release --examples
 
-# Macro API vs slab crate (unrolled methodology)
+# Allocator API vs slab crate (unrolled methodology)
 taskset -c 0 ./target/release/examples/perf_full_distribution
 
 # Slab vs Box stress tests (churn, fragmentation, tail latency)

@@ -4,6 +4,7 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_vs_box`
 
+use nexus_slab::Allocator;
 use std::hint::black_box;
 
 // ============================================================================
@@ -77,14 +78,31 @@ impl TestValue {
 
 macro_rules! unroll_10 {
     ($op:expr) => {
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
     };
 }
 
 macro_rules! unroll_100 {
     ($op:expr) => {
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
     };
 }
 
@@ -118,9 +136,7 @@ fn bench_allocation() {
 
     // --- Slab allocation ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(bench_alloc, crate::TestValue);
-        bench_alloc::init().bounded(POOL_SIZE * 2).build();
+        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE * 2).build();
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -129,7 +145,7 @@ fn bench_allocation() {
             let val = TestValue::new(i as u64);
             let start = rdtsc_start();
             unroll_100!({
-                let s = bench_alloc::insert(val.clone());
+                let s = alloc.new_slot(val.clone());
                 black_box(&s);
                 drop(s); // Return to freelist immediately so we don't fill up
             });
@@ -157,7 +173,10 @@ fn bench_deallocation() {
             let mut idx = 0usize;
             let start = rdtsc_start();
             unroll_100!({
-                drop(black_box(std::mem::replace(&mut boxes.get(idx).map(|_| ()), None)));
+                drop(black_box(std::mem::replace(
+                    &mut boxes.get(idx).map(|_| ()),
+                    None,
+                )));
                 idx += 1;
             });
             let end = rdtsc_end();
@@ -183,16 +202,14 @@ fn bench_deallocation() {
 
     // --- Slab deallocation ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(bench_dealloc, crate::TestValue);
-        bench_dealloc::init().bounded(POOL_SIZE * 2).build();
+        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE * 2).build();
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
         for i in 0..SAMPLES {
             // Pre-allocate slots
             let slots: Vec<_> = (0..100)
-                .map(|j| bench_dealloc::insert(TestValue::new((i * 100 + j) as u64)))
+                .map(|j| alloc.new_slot(TestValue::new((i * 100 + j) as u64)))
                 .collect();
 
             let mut iter = slots.into_iter();
@@ -222,7 +239,9 @@ fn bench_access() {
 
         for _ in 0..SAMPLES {
             // LCG for deterministic "random" access
-            rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let base_idx = (rng_state as usize) % (POOL_SIZE - 100);
 
             let mut sum = 0u64;
@@ -241,19 +260,19 @@ fn bench_access() {
 
     // --- Slab access ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(bench_access, crate::TestValue);
-        bench_access::init().bounded(POOL_SIZE).build();
+        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE).build();
 
         let slots: Vec<_> = (0..POOL_SIZE)
-            .map(|i| bench_access::insert(TestValue::new(i as u64)))
+            .map(|i| alloc.new_slot(TestValue::new(i as u64)))
             .collect();
 
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut rng_state = 12345u64;
 
         for _ in 0..SAMPLES {
-            rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let base_idx = (rng_state as usize) % (POOL_SIZE - 100);
 
             let mut sum = 0u64;
@@ -303,13 +322,11 @@ fn bench_churn() {
 
     // --- Slab churn ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(bench_churn, crate::TestValue);
-        bench_churn::init().bounded(POOL_SIZE).build();
+        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE).build();
 
         // Pre-warm
         let warmup: Vec<_> = (0..POOL_SIZE / 2)
-            .map(|i| bench_churn::insert(TestValue::new(i as u64)))
+            .map(|i| alloc.new_slot(TestValue::new(i as u64)))
             .collect();
         drop(warmup);
 
@@ -319,7 +336,7 @@ fn bench_churn() {
             let val = TestValue::new(i as u64);
             let start = rdtsc_start();
             unroll_100!({
-                let s = bench_churn::insert(val.clone());
+                let s = alloc.new_slot(val.clone());
                 black_box(&*s);
                 drop(s);
             });
@@ -385,12 +402,10 @@ fn bench_realistic_workload() {
 
     // --- Slab workload ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(bench_workload, crate::TestValue);
-        bench_workload::init().bounded(WORKING_SET * 2).build();
+        let alloc: Allocator<TestValue> = Allocator::builder().bounded(WORKING_SET * 2).build();
 
         let mut slots: Vec<Option<_>> = (0..WORKING_SET)
-            .map(|i| Some(bench_workload::insert(TestValue::new(i as u64))))
+            .map(|i| Some(alloc.new_slot(TestValue::new(i as u64))))
             .collect();
 
         let mut rng = 12345u64;
@@ -412,7 +427,7 @@ fn bench_realistic_workload() {
                 6..=7 => {
                     // Insert (20%)
                     if slots[idx].is_none() {
-                        slots[idx] = Some(bench_workload::insert(TestValue::new(next_id)));
+                        slots[idx] = Some(alloc.new_slot(TestValue::new(next_id)));
                         next_id += 1;
                     }
                 }
@@ -436,7 +451,10 @@ fn bench_realistic_workload() {
 fn main() {
     println!("NEXUS-SLAB vs BOX - ALLOCATION COMPARISON");
     println!("==========================================");
-    println!("Value size: {} bytes (TestValue)", std::mem::size_of::<TestValue>());
+    println!(
+        "Value size: {} bytes (TestValue)",
+        std::mem::size_of::<TestValue>()
+    );
     println!("Pool size: {} items", POOL_SIZE);
     println!();
 

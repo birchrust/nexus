@@ -16,54 +16,39 @@ Think of `Slot<T>` as analogous to `Box<T>`: an owning handle that provides acce
 ## Quick Start
 
 ```rust
-use nexus_slab::create_allocator;
+use nexus_slab::Allocator;
 
-// Define an allocator for your type
-create_allocator!(order_alloc, Order);
+// Create an allocator for your type
+let alloc: Allocator<Order> = Allocator::builder()
+    .bounded(1024)
+    .build();
 
-// Initialize at startup (once per thread)
-order_alloc::init().bounded(1024).build();
-
-// Insert returns an 8-byte RAII Slot
-let slot = order_alloc::insert(Order::new());
+// Insert returns a 16-byte RAII Slot
+let mut slot = alloc.new_slot(Order::new());
 assert_eq!(slot.price, 100);
 
-// Modify through the slot
-slot.get_mut().quantity = 50;
+// Modify through the slot (implements DerefMut)
+slot.quantity = 50;
 
 // Slot auto-deallocates on drop
 drop(slot);
-assert_eq!(order_alloc::len(), 0);
 ```
 
 ## Performance
 
 All measurements in CPU cycles. See [BENCHMARKS.md](./BENCHMARKS.md) for methodology.
 
-### Macro API vs slab crate (p50)
+### Allocator API vs slab crate (p50)
 
 | Operation | Slot API | Key-based | slab crate | Notes |
 |-----------|----------|-----------|------------|-------|
-| GET | **2** | 3 | 3 | Direct pointer, no lookup |
-| GET (hot) | **1** | - | 2 | ILP - CPU pipelines loads |
+| GET | **2** | 2 | 3 | Direct pointer, no lookup |
+| GET (hot) | **0** | - | 1 | ILP - CPU pipelines loads |
 | GET_MUT | **2** | 2 | 3 | Direct pointer |
-| INSERT | 8 | - | **4** | +4 cycles TLS overhead |
-| REMOVE | 4 | - | **3** | TLS overhead |
-| REPLACE | **2** | - | 4 | Direct pointer, no lookup |
-| CONTAINS | **2** | 3 | 2 | slot.is_valid() fastest |
-
-**Key insight**: The TLS lookup adds ~4 cycles to INSERT/REMOVE, but access operations (GET/REPLACE) have zero overhead because `Slot` caches the pointer. For access-heavy workloads, this is a net win.
-
-### Full Lifecycle Cost
-
-| | Direct API | Macro API | Delta |
-|---|---|---|---|
-| INSERT | 7 | 11 | +4 |
-| GET | 2 | 2 | 0 |
-| REMOVE | 8 | 5 | -3 |
-| **Total** | **17** | **18** | **+1** |
-
-One cycle per object lifecycle for the ergonomics of a global allocator pattern.
+| INSERT | 8 | - | **5** | vtable indirection |
+| REMOVE | **4** | - | 4 | Direct vtable pointer |
+| REPLACE | **3** | - | 4 | Direct pointer, no lookup |
+| CONTAINS | **2** | 3 | 2 | slot.is_valid() |
 
 ### vs Box (Isolation Advantage)
 
@@ -73,30 +58,21 @@ The killer feature: **slab is isolated from the global allocator**. In productio
 
 | Size | Box p50 | Slab p50 | Box p99 | Slab p99 | Box p99.9 | Slab p99.9 |
 |------|---------|----------|---------|----------|-----------|------------|
-| 64B | 12 | **9** | 20 | **12** | 48 | **19** |
-| 256B | 15 | 16 | 48 | **25** | 80 | **50** |
-| 4096B | 105 | **62** | 149 | **71** | 209 | **129** |
+| 64B | 13 | **8** | 19 | **11** | 29 | **15** |
+| 256B | 16 | **16** | 48 | **20** | 53 | **49** |
+| 4096B | 108 | **59** | 162 | **81** | 229 | **152** |
 
 #### Cold Cache (single-op, true first-access latency)
 
 | Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
 |------|---------|----------|---------|----------|
-| 64B | 132 | **126** | 334 | **218** |
-| 256B | 166 | **122** | 336 | **230** |
-
-#### Cold Cache (batched burst pattern)
-
-| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
-|------|---------|----------|---------|----------|
-| 64B | 51 | 52 | 71 | **65** |
-| 256B | 58 | 62 | 94 | **80** |
-| 4096B | 181 | **120** | 270 | **166** |
+| 64B | 158 | **84** | 300 | **154** |
+| 256B | 168 | **108** | 314 | **176** |
 
 **Key findings:**
-- **Hot cache**: Slab **1.7x faster** at p50 for 4096B (62 vs 105 cycles)
-- **Cold single-op**: Slab **27% faster** at p50 for 256B (122 vs 166 cycles)
-- **Cold batched 4096B**: Slab **1.5x faster** at p50 (120 vs 181 cycles)
-- **Tail latency**: Slab consistently 1.5-2x better at p99
+- **Hot cache**: Slab **1.8x faster** at p50 for 4096B (59 vs 108 cycles)
+- **Cold single-op**: Slab **1.9x faster** at p50 for 64B (84 vs 158 cycles)
+- **Tail latency**: Slab consistently 1.7-2x better at p99
 
 See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and stress test results.
 
@@ -105,7 +81,7 @@ See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and stress test result
 ### Node-Based Data Structures
 
 ```rust
-use nexus_slab::{create_allocator, Key};
+use nexus_slab::{Allocator, Key};
 
 struct Node {
     value: i32,
@@ -113,47 +89,38 @@ struct Node {
     prev: Key,
 }
 
-create_allocator!(node_alloc, Node);
+let alloc: Allocator<Node> = Allocator::builder().bounded(1000).build();
 
-fn build_list() {
-    node_alloc::init().bounded(1000).build();
+let head = alloc.new_slot(Node {
+    value: 1,
+    next: Key::NONE,
+    prev: Key::NONE,
+});
 
-    let head = node_alloc::insert(Node {
-        value: 1,
-        next: Key::NONE,
-        prev: Key::NONE,
-    });
+// Keys are stable - safe to store in other nodes
+let head_key = head.key();
 
-    // Keys are stable - safe to store in other nodes
-    let head_key = head.key();
-
-    let tail = node_alloc::insert(Node {
-        value: 2,
-        next: Key::NONE,
-        prev: head_key,
-    });
-
-    head.get_mut().next = tail.key();
-}
+let mut tail = alloc.new_slot(Node {
+    value: 2,
+    next: Key::NONE,
+    prev: head_key,
+});
 ```
 
 ### Stable Memory Addresses
 
 ```rust
-create_allocator!(buffer_alloc, [u8; 4096]);
+use nexus_slab::Allocator;
 
-fn get_stable_buffer() -> *const u8 {
-    buffer_alloc::init().bounded(100).build();
+let alloc: Allocator<[u8; 4096]> = Allocator::builder().bounded(100).build();
 
-    let slot = buffer_alloc::insert([0u8; 4096]);
-    let ptr = slot.as_ptr() as *const u8;
+let slot = alloc.new_slot([0u8; 4096]);
+let ptr = slot.as_ptr() as *const u8;
 
-    // Pointer remains valid as long as slot exists
-    // No reallocation, no movement
+// Pointer remains valid as long as slot exists
+// No reallocation, no movement
 
-    let _ = slot.leak();  // Keep alive, return key for later cleanup
-    ptr
-}
+let key = slot.leak();  // Keep alive, return key for later cleanup
 ```
 
 ### Key Serialization
@@ -161,7 +128,11 @@ fn get_stable_buffer() -> *const u8 {
 Keys can be converted to/from `u32` for external storage:
 
 ```rust
-let slot = my_alloc::insert(value);
+use nexus_slab::{Allocator, Key};
+
+let alloc: Allocator<MyValue> = Allocator::builder().bounded(1000).build();
+
+let slot = alloc.new_slot(value);
 let key = slot.leak();
 
 // Serialize
@@ -173,38 +144,39 @@ let raw = load_from_somewhere();
 let key = Key::from_raw(raw);
 
 // Access (caller must ensure validity)
-let value = unsafe { my_alloc::get_unchecked(key) };
+let value = unsafe { alloc.get_unchecked(key) };
 ```
 
 **Warning**: Keys are simple indices with no generation counter. If you store keys externally (databases, wire protocols), you must ensure the key is still valid before use. For wire protocols, prefer authoritative external identifiers (exchange order IDs, database primary keys) and use the slab key only for internal indexing.
 
 ## API
 
-### Allocator Module (generated by `create_allocator!`)
-
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `init()` | `Builder` | Start configuring the allocator |
-| `insert(value)` | `Slot` | Insert, panics if full |
-| `try_insert(value)` | `Option<Slot>` | Insert, returns None if full |
-| `contains_key(key)` | `bool` | Check if key is valid |
-| `get_unchecked(key)` | `&'static T` | Get by key (unsafe) |
-| `get_unchecked_mut(key)` | `&'static mut T` | Get mut by key (unsafe) |
-| `len()` / `capacity()` | `usize` | Slot counts |
-| `is_empty()` | `bool` | Check if empty |
-| `is_initialized()` | `bool` | Check if init() was called |
-| `shutdown()` | `Result<(), SlotsRemaining>` | Shutdown (must be empty) |
-
-### Slot (8 bytes)
+### Allocator
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `get()` | `&T` | Borrow the value |
-| `get_mut()` | `&mut T` | Mutably borrow the value |
-| `replace(value)` | `T` | Swap value, return old |
-| `into_inner()` | `T` | Remove and return value |
+| `Allocator::builder()` | `Builder` | Start configuring an allocator |
+| `new_slot(value)` | `Slot` | Insert, panics if full |
+| `try_new_slot(value)` | `Option<Slot>` | Insert, returns None if full |
+| `contains_key(key)` | `bool` | Check if key is valid |
+| `get(key)` | `Option<&T>` | Get by key |
+| `get_mut(key)` | `Option<&mut T>` | Get mut by key |
+| `get_unchecked(key)` | `&T` | Get by key (unsafe) |
+| `get_unchecked_mut(key)` | `&mut T` | Get mut by key (unsafe) |
+| `remove_by_key(key)` | `T` | Remove by key (panics if invalid) |
+| `try_remove_by_key(key)` | `Option<T>` | Remove by key |
+| `len()` / `capacity()` | `usize` | Slot counts |
+
+`Allocator` is `Copy` - it's just a pointer to leaked storage.
+
+### Slot (16 bytes)
+
+| Method | Returns | Description |
+|--------|---------|-------------|
 | `key()` | `Key` | Get the key for this slot |
 | `leak()` | `Key` | Keep alive, return key |
+| `into_inner()` | `T` | Remove and return value |
+| `replace(value)` | `T` | Swap value, return old |
 | `is_valid()` | `bool` | Check if slot is still valid |
 | `as_ptr()` | `*const T` | Raw pointer to value |
 | `as_mut_ptr()` | `*mut T` | Mutable raw pointer |
@@ -225,16 +197,18 @@ let value = unsafe { my_alloc::get_unchecked(key) };
 ### Builder Pattern
 
 ```rust
-// Bounded: fixed capacity, returns None when full
-my_alloc::init()
+use nexus_slab::Allocator;
+
+// Bounded: fixed capacity, panics when full
+let alloc: Allocator<MyType> = Allocator::builder()
     .bounded(1024)
     .build();
 
 // Unbounded: grows by adding chunks (no copying)
-my_alloc::init()
+let alloc: Allocator<MyType> = Allocator::builder()
     .unbounded()
     .chunk_capacity(4096)  // slots per chunk
-    .capacity(10_000)      // pre-allocate
+    .prealloc(10_000)      // pre-allocate
     .build();
 ```
 
@@ -243,7 +217,7 @@ my_alloc::init()
 | | Bounded | Unbounded |
 |---|---------|-----------|
 | Growth | Fixed capacity | Adds chunks |
-| Full behavior | Returns `None` | Always succeeds |
+| Full behavior | Panics | Always succeeds |
 | Tail latency | Deterministic | +2-4 cycles chunk lookup |
 | Use case | Known capacity | Unknown/variable load |
 
@@ -255,24 +229,21 @@ Use **unbounded** when you need overflow headroom without `Vec` reallocation spi
 
 ### Slot Design
 
-Each `Slot` is **8 bytes** (single pointer). The VTable for slab operations is stored in thread-local storage:
+Each `Slot` is **16 bytes** (slot pointer + vtable pointer):
 
 ```
-Slot (8 bytes):
+Slot (16 bytes):
 ┌─────────────────────────┐
 │ *mut SlotCell<T>        │  ← Direct pointer to value
-└─────────────────────────┘
-
-TLS (per allocator):
-┌─────────────────────────┐
-│ *const VTable<T>        │  ← Cached for fast access
+├─────────────────────────┤
+│ &'static VTable<T>      │  ← Embedded vtable for deallocation
 └─────────────────────────┘
 ```
 
 This design gives:
-- **8-byte handles** (vs 16+ for pointer+vtable designs)
-- **Zero-cost access** (GET/REPLACE don't touch TLS)
-- **RAII semantics** (drop returns slot to freelist)
+- **Zero-cost access** (GET/REPLACE use direct pointer)
+- **RAII semantics** (drop returns slot to freelist via vtable)
+- **No TLS lookups** (vtable pointer embedded in Slot)
 
 ### Memory Layout
 
@@ -294,23 +265,16 @@ Keys are simple indices. This is intentional—see the [Key documentation](https
 
 ## Thread Safety
 
-Each thread has its own allocator instance. The allocator is `!Send` and `!Sync`.
-
-**Do not store `Slot` in `thread_local!`**. Rust drops stack variables before TLS, so stack slots drop correctly. But if both `Slot` and the slab are in TLS, drop order is unspecified.
-
-## Direct API (Advanced)
-
-For cases where the macro API doesn't fit (multiple slabs, dynamic creation), use the direct API:
+`Allocator` and `Slot` are `!Send` and `!Sync`. Each allocator must only be used from the thread that created it.
 
 ```rust
-use nexus_slab::bounded::BoundedSlab;
+use nexus_slab::Allocator;
 
-let slab = BoundedSlab::with_capacity(1024);
-let slot = slab.insert(42).unwrap();
-assert_eq!(*slot.get(), 42);
+// This won't compile:
+// std::thread::spawn(move || {
+//     let slot = alloc.new_slot(42);  // Error: Allocator is !Send
+// });
 ```
-
-See the [bounded](https://docs.rs/nexus-slab/latest/nexus_slab/bounded/) and [unbounded](https://docs.rs/nexus-slab/latest/nexus_slab/unbounded/) modules.
 
 ## License
 

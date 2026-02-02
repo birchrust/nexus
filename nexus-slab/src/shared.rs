@@ -188,7 +188,7 @@ pub type ContainsKeyFn = unsafe fn(inner: *const (), key: Key) -> bool;
 /// VTable for type-erased slab operations.
 ///
 /// Contains both the function pointers for slab operations and the pointer
-/// to the slab's inner state. This is what gets stored in TLS.
+/// to the slab's inner state.
 ///
 /// The type parameter `T` provides type safety - a `VTable<Order>` can only
 /// be used with `Order` values, even though the function pointers are
@@ -197,27 +197,29 @@ pub type ContainsKeyFn = unsafe fn(inner: *const (), key: Key) -> bool;
 /// # Usage
 ///
 /// ```ignore
-/// // Grab vtable pointer once (does TLS lookup)
-/// let vtable = my_alloc::vtable_ptr();
+/// let alloc: Allocator<Order> = Allocator::builder().bounded(1024).build();
+/// let vtable = alloc.vtable();
 ///
-/// // Use methods for operations (no TLS lookup)
+/// // Use methods for operations
 /// unsafe {
-///     let claimed = (*vtable).try_claim()?;
+///     let claimed = vtable.try_claim()?;
 ///     // ... write value ...
-///     (*vtable).free(key);
+///     vtable.free(key);
 /// }
 /// ```
 pub struct VTable<T> {
     /// Pointer to the slab's inner state (type-erased).
-    pub(crate) inner: *mut (),
+    inner: *mut (),
     /// Claims a slot from the slab.
-    pub(crate) try_claim_fn: TryClaimFn,
+    try_claim_fn: TryClaimFn,
     /// Frees a slot back to the slab.
-    pub(crate) free_fn: FreeFn,
+    free_fn: FreeFn,
     /// Gets slot pointer from key.
-    pub(crate) slot_ptr_fn: SlotPtrFn,
+    slot_ptr_fn: SlotPtrFn,
     /// Checks if key is valid and occupied.
-    pub(crate) contains_key_fn: ContainsKeyFn,
+    contains_key_fn: ContainsKeyFn,
+    /// Whether this is a bounded allocator.
+    bounded: bool,
     /// Marker for type safety.
     _marker: PhantomData<T>,
 }
@@ -239,6 +241,7 @@ impl<T> VTable<T> {
             free_fn,
             slot_ptr_fn,
             contains_key_fn,
+            bounded: false,
             _marker: PhantomData,
         }
     }
@@ -251,6 +254,24 @@ impl<T> VTable<T> {
     #[inline]
     pub unsafe fn set_inner(&mut self, inner: *mut ()) {
         self.inner = inner;
+    }
+
+    /// Returns the inner pointer.
+    #[inline]
+    pub fn inner(&self) -> *mut () {
+        self.inner
+    }
+
+    /// Sets whether this is a bounded allocator.
+    #[inline]
+    pub fn set_bounded(&mut self, bounded: bool) {
+        self.bounded = bounded;
+    }
+
+    /// Returns whether this is a bounded allocator.
+    #[inline]
+    pub fn is_bounded(&self) -> bool {
+        self.bounded
     }
 
     // =========================================================================

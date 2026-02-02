@@ -6,26 +6,41 @@
 //! - Interleaved Box/Slab measurements to avoid ordering bias
 //! - BATCH=10 amortizes rdtsc overhead while measuring cold-start behavior
 
+use nexus_slab::Allocator;
 use std::hint::black_box;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Pod64 { data: [u8; 64] }
-impl Default for Pod64 { fn default() -> Self { Self { data: [0; 64] } } }
+pub struct Pod64 {
+    data: [u8; 64],
+}
+impl Default for Pod64 {
+    fn default() -> Self {
+        Self { data: [0; 64] }
+    }
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Pod256 { data: [u8; 256] }
-impl Default for Pod256 { fn default() -> Self { Self { data: [0; 256] } } }
+pub struct Pod256 {
+    data: [u8; 256],
+}
+impl Default for Pod256 {
+    fn default() -> Self {
+        Self { data: [0; 256] }
+    }
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Pod4096 { data: [u8; 4096] }
-impl Default for Pod4096 { fn default() -> Self { Self { data: [0; 4096] } } }
-
-nexus_slab::create_allocator!(alloc64, crate::Pod64);
-nexus_slab::create_allocator!(alloc256, crate::Pod256);
-nexus_slab::create_allocator!(alloc4096, crate::Pod4096);
+pub struct Pod4096 {
+    data: [u8; 4096],
+}
+impl Default for Pod4096 {
+    fn default() -> Self {
+        Self { data: [0; 4096] }
+    }
+}
 
 const SAMPLES: usize = 5000;
 const BATCH: usize = 10;
@@ -87,77 +102,73 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 
 fn print_stats(name: &str, samples: &mut [u64]) {
     samples.sort_unstable();
-    println!("  {} p25={:3} p50={:3} p75={:3} p90={:3} p99={:4} p99.9={:5}",
+    println!(
+        "  {} p25={:3} p50={:3} p75={:3} p90={:3} p99={:4} p99.9={:5}",
         name,
         percentile(samples, 25.0),
         percentile(samples, 50.0),
         percentile(samples, 75.0),
         percentile(samples, 90.0),
         percentile(samples, 99.0),
-        percentile(samples, 99.9));
+        percentile(samples, 99.9)
+    );
 }
 
-macro_rules! cold_test {
-    ($name:literal, $pod:ty, $alloc:ident) => {{
-        println!("\n  ── {} (COLD) ──", $name);
+fn cold_test<T: Default + Clone>(name: &str, alloc: Allocator<T>) {
+    println!("\n  -- {} (COLD) --", name);
 
-        $alloc::init().bounded(SAMPLES * 2).build();
+    let mut box_samples = Vec::with_capacity(SAMPLES);
+    let mut slab_samples = Vec::with_capacity(SAMPLES);
 
-        let mut box_samples = Vec::with_capacity(SAMPLES);
-        let mut slab_samples = Vec::with_capacity(SAMPLES);
-
-        // Interleaved measurement - alternating Box/Slab to avoid ordering bias
-        for i in 0..SAMPLES {
-            if i % 2 == 0 {
-                // Box first this iteration
-                evict_cache();
-                let start = rdtsc_start();
-                for _ in 0..BATCH {
-                    let item = Box::new(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                }
-                let elapsed = rdtsc_end() - start;
-                box_samples.push(elapsed / BATCH as u64);
-
-                evict_cache();
-                let start = rdtsc_start();
-                for _ in 0..BATCH {
-                    let slot = $alloc::insert(<$pod>::default());
-                    black_box(&*slot);
-                    drop(slot);
-                }
-                let elapsed = rdtsc_end() - start;
-                slab_samples.push(elapsed / BATCH as u64);
-            } else {
-                // Slab first this iteration
-                evict_cache();
-                let start = rdtsc_start();
-                for _ in 0..BATCH {
-                    let slot = $alloc::insert(<$pod>::default());
-                    black_box(&*slot);
-                    drop(slot);
-                }
-                let elapsed = rdtsc_end() - start;
-                slab_samples.push(elapsed / BATCH as u64);
-
-                evict_cache();
-                let start = rdtsc_start();
-                for _ in 0..BATCH {
-                    let item = Box::new(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                }
-                let elapsed = rdtsc_end() - start;
-                box_samples.push(elapsed / BATCH as u64);
+    // Interleaved measurement - alternating Box/Slab to avoid ordering bias
+    for i in 0..SAMPLES {
+        if i % 2 == 0 {
+            // Box first this iteration
+            evict_cache();
+            let start = rdtsc_start();
+            for _ in 0..BATCH {
+                let item = Box::new(T::default());
+                black_box(&*item);
+                drop(item);
             }
+            let elapsed = rdtsc_end() - start;
+            box_samples.push(elapsed / BATCH as u64);
+
+            evict_cache();
+            let start = rdtsc_start();
+            for _ in 0..BATCH {
+                let slot = alloc.new_slot(T::default());
+                black_box(&*slot);
+                drop(slot);
+            }
+            let elapsed = rdtsc_end() - start;
+            slab_samples.push(elapsed / BATCH as u64);
+        } else {
+            // Slab first this iteration
+            evict_cache();
+            let start = rdtsc_start();
+            for _ in 0..BATCH {
+                let slot = alloc.new_slot(T::default());
+                black_box(&*slot);
+                drop(slot);
+            }
+            let elapsed = rdtsc_end() - start;
+            slab_samples.push(elapsed / BATCH as u64);
+
+            evict_cache();
+            let start = rdtsc_start();
+            for _ in 0..BATCH {
+                let item = Box::new(T::default());
+                black_box(&*item);
+                drop(item);
+            }
+            let elapsed = rdtsc_end() - start;
+            box_samples.push(elapsed / BATCH as u64);
         }
+    }
 
-        print_stats(&format!("Box  ({})", $name), &mut box_samples);
-        print_stats(&format!("Slab ({})", $name), &mut slab_samples);
-
-        let _ = $alloc::shutdown();
-    }};
+    print_stats(&format!("Box  ({})", name), &mut box_samples);
+    print_stats(&format!("Slab ({})", name), &mut slab_samples);
 }
 
 fn main() {
@@ -165,7 +176,12 @@ fn main() {
     println!("==========================");
     println!("  24MB eviction buffer (2x L3), strided access, interleaved measurement");
 
-    cold_test!("64B", Pod64, alloc64);
-    cold_test!("256B", Pod256, alloc256);
-    cold_test!("4096B", Pod4096, alloc4096);
+    let alloc64: Allocator<Pod64> = Allocator::builder().bounded(SAMPLES * 2).build();
+    cold_test("64B", alloc64);
+
+    let alloc256: Allocator<Pod256> = Allocator::builder().bounded(SAMPLES * 2).build();
+    cold_test("256B", alloc256);
+
+    let alloc4096: Allocator<Pod4096> = Allocator::builder().bounded(SAMPLES * 2).build();
+    cold_test("4096B", alloc4096);
 }

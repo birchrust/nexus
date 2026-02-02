@@ -5,11 +5,8 @@
 //! - contains_key() accurately reflects slot state
 //! - Freelist maintains integrity under arbitrary insert/remove sequences
 //! - Values are never corrupted
-//!
-//! Note: Due to TLS persistence, each proptest uses a uniquely named allocator
-//! to avoid reinitialization issues across test iterations.
 
-use nexus_slab::{Key, create_allocator};
+use nexus_slab::{Allocator, Key};
 use proptest::prelude::*;
 use std::collections::HashMap;
 
@@ -45,17 +42,15 @@ fn key_none_is_special() {
 
 // =============================================================================
 // Bounded Slab Properties
-// Each test creates a uniquely-named allocator to avoid TLS conflicts.
 // =============================================================================
 
 /// Test that len() always matches actual occupied slots
 #[test]
 fn bounded_len_invariant_random() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(50).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(50).build();
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha
+        proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
     let mut slots = Vec::new();
@@ -67,7 +62,7 @@ fn bounded_len_invariant_random() {
         match action {
             0..=5 => {
                 // Insert
-                if let Some(slot) = test_alloc::try_insert(rng.random()) {
+                if let Some(slot) = alloc.try_new_slot(rng.random()) {
                     slots.push(slot);
                 }
             }
@@ -95,18 +90,17 @@ fn bounded_len_invariant_random() {
         }
 
         // Invariant: len() == slots.len() + leaked_count
-        assert_eq!(test_alloc::len(), slots.len() + leaked_count);
+        assert_eq!(alloc.len(), slots.len() + leaked_count);
     }
 }
 
 /// Test that contains_key() accurately reflects slot state
 #[test]
 fn bounded_contains_key_invariant_random() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(50).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(50).build();
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha
+        proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
     let mut slots = Vec::new();
@@ -117,7 +111,7 @@ fn bounded_contains_key_invariant_random() {
 
         match action {
             0..=5 => {
-                if let Some(slot) = test_alloc::try_insert(rng.random()) {
+                if let Some(slot) = alloc.try_new_slot(rng.random()) {
                     slots.push(slot);
                 }
             }
@@ -142,12 +136,12 @@ fn bounded_contains_key_invariant_random() {
 
         // Invariant: contains_key returns true for all held slots
         for slot in &slots {
-            assert!(test_alloc::contains_key(slot.key()));
+            assert!(alloc.contains_key(slot.key()));
         }
 
         // Invariant: contains_key returns true for all leaked keys
         for &key in &leaked_keys {
-            assert!(test_alloc::contains_key(key));
+            assert!(alloc.contains_key(key));
         }
     }
 }
@@ -155,11 +149,10 @@ fn bounded_contains_key_invariant_random() {
 /// Test that values are never corrupted
 #[test]
 fn bounded_value_integrity_random() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(50).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(50).build();
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha
+        proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
     // Track expected values
@@ -171,7 +164,7 @@ fn bounded_value_integrity_random() {
         match action {
             0..=5 => {
                 let value: u64 = rng.random();
-                if let Some(slot) = test_alloc::try_insert(value) {
+                if let Some(slot) = alloc.try_new_slot(value) {
                     slots.push((slot, value));
                 }
             }
@@ -205,12 +198,11 @@ fn bounded_value_integrity_random() {
 /// Test capacity is never exceeded (separate tests for each capacity)
 #[test]
 fn bounded_capacity_never_exceeded_1() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(1).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(1).build();
 
     let mut slots = Vec::new();
     for i in 0..200 {
-        if let Some(slot) = test_alloc::try_insert(i) {
+        if let Some(slot) = alloc.try_new_slot(i) {
             slots.push(slot);
         }
     }
@@ -219,12 +211,11 @@ fn bounded_capacity_never_exceeded_1() {
 
 #[test]
 fn bounded_capacity_never_exceeded_10() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(10).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(10).build();
 
     let mut slots = Vec::new();
     for i in 0..200 {
-        if let Some(slot) = test_alloc::try_insert(i) {
+        if let Some(slot) = alloc.try_new_slot(i) {
             slots.push(slot);
         }
     }
@@ -233,12 +224,11 @@ fn bounded_capacity_never_exceeded_10() {
 
 #[test]
 fn bounded_capacity_never_exceeded_50() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(50).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(50).build();
 
     let mut slots = Vec::new();
     for i in 0..200 {
-        if let Some(slot) = test_alloc::try_insert(i) {
+        if let Some(slot) = alloc.try_new_slot(i) {
             slots.push(slot);
         }
     }
@@ -248,16 +238,15 @@ fn bounded_capacity_never_exceeded_50() {
 /// Test fill/drain cycles maintain integrity
 #[test]
 fn bounded_fill_drain_integrity() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(20).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(20).build();
 
     for cycle in 0..10 {
         // Fill
         let slots: Vec<_> = (0..20)
-            .map(|i| test_alloc::insert((cycle * 20 + i) as u64))
+            .map(|i| alloc.new_slot((cycle * 20 + i) as u64))
             .collect();
 
-        assert_eq!(test_alloc::len(), 20);
+        assert_eq!(alloc.len(), 20);
 
         // Verify values
         for (i, slot) in slots.iter().enumerate() {
@@ -266,7 +255,7 @@ fn bounded_fill_drain_integrity() {
 
         // Drain
         drop(slots);
-        assert_eq!(test_alloc::len(), 0);
+        assert_eq!(alloc.len(), 0);
     }
 }
 
@@ -276,11 +265,13 @@ fn bounded_fill_drain_integrity() {
 
 #[test]
 fn unbounded_len_invariant_random() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().unbounded().chunk_capacity(8).build();
+    let alloc: Allocator<u64> = Allocator::builder()
+        .unbounded()
+        .chunk_capacity(8)
+        .build();
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha
+        proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
     let mut slots = Vec::new();
@@ -291,7 +282,7 @@ fn unbounded_len_invariant_random() {
 
         match action {
             0..=5 => {
-                slots.push(test_alloc::insert(rng.random()));
+                slots.push(alloc.new_slot(rng.random()));
             }
             6..=7 => {
                 let _ = slots.pop();
@@ -313,17 +304,19 @@ fn unbounded_len_invariant_random() {
             _ => unreachable!(),
         }
 
-        assert_eq!(test_alloc::len(), slots.len() + leaked_count);
+        assert_eq!(alloc.len(), slots.len() + leaked_count);
     }
 }
 
 #[test]
 fn unbounded_value_integrity_random() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().unbounded().chunk_capacity(8).build();
+    let alloc: Allocator<u64> = Allocator::builder()
+        .unbounded()
+        .chunk_capacity(8)
+        .build();
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha
+        proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
     let mut slots: Vec<(_, u64)> = Vec::new();
@@ -334,7 +327,7 @@ fn unbounded_value_integrity_random() {
         match action {
             0..=5 => {
                 let value: u64 = rng.random();
-                slots.push((test_alloc::insert(value), value));
+                slots.push((alloc.new_slot(value), value));
             }
             6..=7 => {
                 let _ = slots.pop();
@@ -364,18 +357,22 @@ fn unbounded_value_integrity_random() {
 
 #[test]
 fn unbounded_growth_maintains_integrity() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().unbounded().chunk_capacity(8).build();
+    let alloc: Allocator<u64> = Allocator::builder()
+        .unbounded()
+        .chunk_capacity(8)
+        .build();
 
     // Test with increasing counts in a single allocator
     for count in [10, 50, 100, 200] {
-        let slots: Vec<_> = (0..count).map(|i| test_alloc::insert(i as u64)).collect();
+        let slots: Vec<_> = (0..count)
+            .map(|i| alloc.new_slot(i as u64))
+            .collect();
 
         for (i, slot) in slots.iter().enumerate() {
             assert_eq!(*slot.get(), i as u64);
         }
 
-        assert!(test_alloc::capacity() >= count);
+        assert!(alloc.capacity() >= count);
 
         // Clean up for next iteration
         drop(slots);
@@ -384,14 +381,18 @@ fn unbounded_growth_maintains_integrity() {
 
 #[test]
 fn unbounded_cross_chunk_contains_key() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().unbounded().chunk_capacity(8).build();
+    let alloc: Allocator<u64> = Allocator::builder()
+        .unbounded()
+        .chunk_capacity(8)
+        .build();
 
     let count = 100;
-    let slots: Vec<_> = (0..count).map(|i| test_alloc::insert(i as u64)).collect();
+    let slots: Vec<_> = (0..count)
+        .map(|i| alloc.new_slot(i as u64))
+        .collect();
 
     for slot in &slots {
-        assert!(test_alloc::contains_key(slot.key()));
+        assert!(alloc.contains_key(slot.key()));
     }
 
     // Leak every 3rd slot, keep the rest
@@ -407,11 +408,11 @@ fn unbounded_cross_chunk_contains_key() {
     }
 
     for &key in &leaked_keys {
-        assert!(test_alloc::contains_key(key));
+        assert!(alloc.contains_key(key));
     }
 
     for slot in &remaining_slots {
-        assert!(test_alloc::contains_key(slot.key()));
+        assert!(alloc.contains_key(slot.key()));
     }
 }
 
@@ -421,11 +422,10 @@ fn unbounded_cross_chunk_contains_key() {
 
 #[test]
 fn freelist_no_duplicates() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(20).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(20).build();
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha
+        proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
     let mut slots = Vec::new();
@@ -435,7 +435,7 @@ fn freelist_no_duplicates() {
         let should_insert = rng.random_bool(0.6) || slots.is_empty();
 
         if should_insert {
-            if let Some(slot) = test_alloc::try_insert(0) {
+            if let Some(slot) = alloc.try_new_slot(0) {
                 let key = slot.key();
                 // Key should not be a duplicate of any currently held slot
                 for (existing_key, _) in &slots {
@@ -453,8 +453,7 @@ fn freelist_no_duplicates() {
 
 #[test]
 fn freelist_reuses_freed_slots() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(10).build();
+    let alloc: Allocator<u64> = Allocator::builder().bounded(10).build();
 
     let mut slots = Vec::new();
     let mut freed_keys = Vec::new();
@@ -463,7 +462,7 @@ fn freelist_reuses_freed_slots() {
         let should_insert = i % 3 != 2 || slots.is_empty();
 
         if should_insert {
-            if let Some(slot) = test_alloc::try_insert(0) {
+            if let Some(slot) = alloc.try_new_slot(0) {
                 let key = slot.key();
                 // If we had freed slots, this should reuse one (LIFO)
                 if let Some(expected) = freed_keys.pop() {
@@ -508,12 +507,11 @@ fn get_counter() -> usize {
 fn drop_count_matches_inserts() {
     reset_counter();
 
-    create_allocator!(test_alloc, crate::Counted);
-    test_alloc::init().bounded(100).build();
+    let alloc: Allocator<Counted> = Allocator::builder().bounded(100).build();
 
     let count = 50;
     {
-        let _slots: Vec<_> = (0..count).map(|_| test_alloc::insert(crate::Counted)).collect();
+        let _slots: Vec<_> = (0..count).map(|_| alloc.new_slot(Counted)).collect();
     }
 
     assert_eq!(get_counter(), count);
@@ -523,11 +521,10 @@ fn drop_count_matches_inserts() {
 fn into_inner_prevents_drop() {
     reset_counter();
 
-    create_allocator!(test_alloc, crate::Counted);
-    test_alloc::init().bounded(100).build();
+    let alloc: Allocator<Counted> = Allocator::builder().bounded(100).build();
 
     let count = 20;
-    let slots: Vec<_> = (0..count).map(|_| test_alloc::insert(crate::Counted)).collect();
+    let slots: Vec<_> = (0..count).map(|_| alloc.new_slot(Counted)).collect();
 
     // Take half via into_inner
     let half = count / 2;

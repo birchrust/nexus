@@ -1,22 +1,20 @@
 //! Growable slab allocator internals.
 //!
 //! This module contains the internal implementation for unbounded (growable) slabs.
-//! Use the [`create_allocator!`](crate::create_allocator) macro to create
-//! a type-safe allocator with RAII slots.
+//! Use [`Allocator::builder().unbounded()`](crate::Allocator::builder) to create
+//! an unbounded allocator.
 //!
 //! # Example
 //!
 //! ```
-//! use nexus_slab::create_allocator;
+//! use nexus_slab::Allocator;
 //!
-//! create_allocator!(my_alloc, u64);
-//!
-//! my_alloc::init()
+//! let alloc: Allocator<u64> = Allocator::builder()
 //!     .unbounded()
 //!     .chunk_capacity(4096)
 //!     .build();
 //!
-//! let slot = my_alloc::insert(42);
+//! let slot = alloc.new_slot(42);
 //! assert_eq!(*slot, 42);
 //! // slot drops, storage freed
 //! ```
@@ -121,6 +119,7 @@ impl<T> SlabInner<T> {
     ///
     /// This scans chunks - O(chunks * slots). Use only for diagnostics/shutdown.
     #[doc(hidden)]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.chunks().iter().all(|c| c.inner.is_empty())
     }

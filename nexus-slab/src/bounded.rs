@@ -1,19 +1,17 @@
 //! Fixed-capacity slab allocator internals.
 //!
 //! This module contains the internal implementation for bounded slabs.
-//! Use the [`create_allocator!`](crate::create_allocator) macro to create
-//! a type-safe allocator with RAII slots.
+//! Use [`Allocator::builder().bounded()`](crate::Allocator::builder) to create
+//! a bounded allocator.
 //!
 //! # Example
 //!
 //! ```
-//! use nexus_slab::create_allocator;
+//! use nexus_slab::Allocator;
 //!
-//! create_allocator!(my_alloc, u64);
+//! let alloc: Allocator<u64> = Allocator::builder().bounded(1024).build();
 //!
-//! my_alloc::init().bounded(1024).build();
-//!
-//! let slot = my_alloc::insert(42);
+//! let slot = alloc.new_slot(42);
 //! assert_eq!(*slot, 42);
 //! // slot drops, storage freed
 //! ```
@@ -21,8 +19,8 @@
 use std::cell::Cell;
 use std::mem::ManuallyDrop;
 
-use crate::shared::{ClaimedSlot, SLOT_NONE, SlotCell, VTable};
 use crate::Key;
+use crate::shared::{ClaimedSlot, SLOT_NONE, SlotCell, VTable};
 
 // =============================================================================
 // BoundedSlabInner
@@ -77,12 +75,16 @@ impl<T> BoundedSlabInner<T> {
     ///
     /// This scans all slots - O(n). Use only for diagnostics/shutdown, not hot path.
     pub fn len(&self) -> u32 {
-        self.slots.iter().filter(|s| SlotCell::is_occupied(s)).count() as u32
+        self.slots
+            .iter()
+            .filter(|s| SlotCell::is_occupied(s))
+            .count() as u32
     }
 
     /// Returns true if no slots are occupied.
     ///
     /// This scans slots - O(n). Use only for diagnostics/shutdown, not hot path.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.slots.iter().all(SlotCell::is_vacant)
     }
