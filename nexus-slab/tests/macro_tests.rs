@@ -538,6 +538,142 @@ fn key_invalid_after_into_inner() {
 }
 
 #[test]
+fn get_returns_some_for_valid_key() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(4).build();
+
+    let slot = test_alloc::insert(42);
+    let key = slot.leak();
+
+    let value = unsafe { test_alloc::get(key) };
+    assert_eq!(value, Some(&42));
+}
+
+#[test]
+fn get_returns_none_for_invalid_key() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(4).build();
+
+    let _slot = test_alloc::insert(42);
+
+    // Invalid key
+    let value = unsafe { test_alloc::get(Key::new(99)) };
+    assert_eq!(value, None);
+
+    // Key::NONE
+    let value = unsafe { test_alloc::get(Key::NONE) };
+    assert_eq!(value, None);
+}
+
+#[test]
+fn get_mut_returns_some_and_allows_mutation() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(4).build();
+
+    let slot = test_alloc::insert(42);
+    let key = slot.leak();
+
+    if let Some(value) = unsafe { test_alloc::get_mut(key) } {
+        *value = 100;
+    }
+
+    let value = unsafe { test_alloc::get(key) };
+    assert_eq!(value, Some(&100));
+}
+
+#[test]
+fn get_mut_returns_none_for_invalid_key() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(4).build();
+
+    let _slot = test_alloc::insert(42);
+
+    let value = unsafe { test_alloc::get_mut(Key::new(99)) };
+    assert!(value.is_none());
+}
+
+#[test]
+fn try_remove_by_key_returns_some_for_valid() {
+    create_allocator!(test_alloc, String);
+    test_alloc::init().bounded(4).build();
+
+    let slot = test_alloc::insert("hello".to_string());
+    let key = slot.leak();
+
+    let value = unsafe { test_alloc::try_remove_by_key(key) };
+    assert_eq!(value, Some("hello".to_string()));
+    assert!(!test_alloc::contains_key(key));
+}
+
+#[test]
+fn try_remove_by_key_returns_none_for_invalid() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(4).build();
+
+    let _slot = test_alloc::insert(42);
+
+    let value = unsafe { test_alloc::try_remove_by_key(Key::new(99)) };
+    assert_eq!(value, None);
+
+    let value = unsafe { test_alloc::try_remove_by_key(Key::NONE) };
+    assert_eq!(value, None);
+}
+
+#[test]
+fn remove_by_key_returns_value() {
+    create_allocator!(test_alloc, String);
+    test_alloc::init().bounded(4).build();
+
+    let slot = test_alloc::insert("hello".to_string());
+    let key = slot.leak();
+
+    assert!(test_alloc::contains_key(key));
+    assert_eq!(test_alloc::len(), 1);
+
+    let value = unsafe { test_alloc::remove_by_key(key) };
+    assert_eq!(value, "hello");
+    assert!(!test_alloc::contains_key(key));
+    assert_eq!(test_alloc::len(), 0);
+}
+
+#[test]
+fn remove_by_key_drops_correctly() {
+    reset_drop_count();
+
+    create_allocator!(test_alloc, crate::DropTracker);
+    test_alloc::init().bounded(4).build();
+
+    let slot = test_alloc::insert(crate::DropTracker(42));
+    let key = slot.leak();
+
+    assert_eq!(get_drop_count(), 0);
+
+    let value = unsafe { test_alloc::remove_by_key(key) };
+    // Value returned, not dropped yet
+    assert_eq!(get_drop_count(), 0);
+
+    drop(value);
+    // Now dropped
+    assert_eq!(get_drop_count(), 1);
+}
+
+#[test]
+fn remove_by_key_slot_reused() {
+    create_allocator!(test_alloc, u64);
+    test_alloc::init().bounded(4).build();
+
+    let slot = test_alloc::insert(42);
+    let key = slot.leak();
+    let index = key.index();
+
+    unsafe { test_alloc::remove_by_key(key) };
+
+    // Insert again - should reuse the same slot
+    let new_slot = test_alloc::insert(100);
+    assert_eq!(new_slot.key().index(), index);
+}
+
+#[test]
 fn key_still_valid_after_leak() {
     create_allocator!(test_alloc, u64);
     test_alloc::init().bounded(4).build();
