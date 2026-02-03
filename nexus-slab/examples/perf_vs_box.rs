@@ -4,7 +4,7 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_vs_box`
 
-use nexus_slab::Allocator;
+use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
 // ============================================================================
@@ -136,7 +136,7 @@ fn bench_allocation() {
 
     // --- Slab allocation ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE * 2).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((POOL_SIZE * 2) as u32);
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -202,7 +202,7 @@ fn bench_deallocation() {
 
     // --- Slab deallocation ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE * 2).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((POOL_SIZE * 2) as u32);
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -260,7 +260,7 @@ fn bench_access() {
 
     // --- Slab access ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(POOL_SIZE as u32);
 
         let slots: Vec<_> = (0..POOL_SIZE)
             .map(|i| alloc.new_slot(TestValue::new(i as u64)))
@@ -322,7 +322,7 @@ fn bench_churn() {
 
     // --- Slab churn ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(POOL_SIZE).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(POOL_SIZE as u32);
 
         // Pre-warm
         let warmup: Vec<_> = (0..POOL_SIZE / 2)
@@ -402,7 +402,7 @@ fn bench_realistic_workload() {
 
     // --- Slab workload ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(WORKING_SET * 2).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((WORKING_SET * 2) as u32);
 
         let mut slots: Vec<Option<_>> = (0..WORKING_SET)
             .map(|i| Some(alloc.new_slot(TestValue::new(i as u64))))

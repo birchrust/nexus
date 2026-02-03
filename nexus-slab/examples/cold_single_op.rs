@@ -2,7 +2,7 @@
 //!
 //! Measures truly cold first operation, not amortized over batch
 
-use nexus_slab::Allocator;
+use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
 #[derive(Clone, Copy)]
@@ -98,7 +98,7 @@ fn main() {
     // 64B test
     {
         println!("\n  -- 64B SINGLE OP --");
-        let alloc64: Allocator<Pod64> = Allocator::builder().bounded(SAMPLES * 4).build();
+        let slab = BoundedSlab::<Pod64>::new((SAMPLES * 4) as u32);
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -117,7 +117,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc64.new_slot(Pod64::default());
+                let slot = slab.new_slot(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -126,7 +126,7 @@ fn main() {
                 // Slab first
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc64.new_slot(Pod64::default());
+                let slot = slab.new_slot(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -149,7 +149,7 @@ fn main() {
     // 256B test
     {
         println!("\n  -- 256B SINGLE OP --");
-        let alloc256: Allocator<Pod256> = Allocator::builder().bounded(SAMPLES * 4).build();
+        let slab = BoundedSlab::<Pod256>::new((SAMPLES * 4) as u32);
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -166,7 +166,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc256.new_slot(Pod256::default());
+                let slot = slab.new_slot(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -174,7 +174,7 @@ fn main() {
             } else {
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc256.new_slot(Pod256::default());
+                let slot = slab.new_slot(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;

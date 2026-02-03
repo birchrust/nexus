@@ -1,6 +1,6 @@
 //! Minimal isolated contention test - run this ALONE for accurate numbers
 
-use nexus_slab::Allocator;
+use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
 #[derive(Clone, Copy)]
@@ -89,7 +89,7 @@ fn print_stats(name: &str, samples: &mut [u64]) {
     );
 }
 
-fn contention_test<T: Default + Clone>(name: &str, alloc: Allocator<T>) {
+fn contention_test<T: Default + Clone>(name: &str, slab: BoundedSlab<T>) {
     println!("\n  -- {} --", name);
 
     let mut rng = 12345u64;
@@ -151,7 +151,7 @@ fn contention_test<T: Default + Clone>(name: &str, alloc: Allocator<T>) {
 
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let slot = alloc.new_slot(T::default());
+            let slot = slab.new_slot(T::default());
             black_box(&*slot);
             drop(slot);
         }
@@ -168,15 +168,15 @@ fn main() {
     println!("ISOLATED CONTENTION TEST");
     println!("========================");
 
-    let alloc64: Allocator<Pod64> = Allocator::builder().bounded(SAMPLES * 2).build();
-    contention_test("64B", alloc64);
+    let slab64 = BoundedSlab::<Pod64>::new((SAMPLES * 2) as u32);
+    contention_test("64B", slab64);
 
-    let alloc256: Allocator<Pod256> = Allocator::builder().bounded(SAMPLES * 2).build();
-    contention_test("256B", alloc256);
+    let slab256 = BoundedSlab::<Pod256>::new((SAMPLES * 2) as u32);
+    contention_test("256B", slab256);
 
-    let alloc1024: Allocator<Pod1024> = Allocator::builder().bounded(SAMPLES * 2).build();
-    contention_test("1024B", alloc1024);
+    let slab1024 = BoundedSlab::<Pod1024>::new((SAMPLES * 2) as u32);
+    contention_test("1024B", slab1024);
 
-    let alloc4096: Allocator<Pod4096> = Allocator::builder().bounded(SAMPLES * 2).build();
-    contention_test("4096B", alloc4096);
+    let slab4096 = BoundedSlab::<Pod4096>::new((SAMPLES * 2) as u32);
+    contention_test("4096B", slab4096);
 }

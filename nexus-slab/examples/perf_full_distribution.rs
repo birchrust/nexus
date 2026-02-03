@@ -8,7 +8,7 @@
 //!   taskset -c 0 ./target/release/examples/perf_full_distribution
 
 use hdrhistogram::Histogram;
-use nexus_slab::{Allocator, Slot};
+use nexus_slab::bounded::{Slab as BoundedSlab, Slot as BoundedSlot};
 use seq_macro::seq;
 use std::hint::black_box;
 
@@ -71,50 +71,50 @@ fn bench_get() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hot_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // Setup allocator
-    let alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
-    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| alloc.new_slot(i)).collect();
+    // Setup slab
+    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
 
     // Setup slab crate
-    let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.insert(i)).collect();
+    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
 
-    // slot.get() - random access
+    // slot deref - random access
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let entry = black_box(&entries[idx % NUM_SLOTS]);
-            black_box(entry.get());
+            black_box(&**entry);
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // slot.get() - hot (same slot)
+    // slot deref - hot (same slot)
     let hot_entry = &entries[0];
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let entry = black_box(hot_entry);
-            black_box(entry.get());
+            black_box(&**entry);
         });
         let end = rdtsc_end();
         let _ = entry_hot_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // get_unchecked() - random access (need separate allocator to leak keys)
-    let key_alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
+    // get_by_key() - random access (need separate slab to leak keys)
+    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
     let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_alloc.new_slot(i).leak())
+        .map(|i| key_slab.new_slot(i).leak())
         .collect();
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let key = black_box(keys2[idx % NUM_SLOTS]);
-            black_box(unsafe { key_alloc.get_by_key_unchecked(key) });
+            black_box(unsafe { key_slab.get_by_key(key) }.unwrap());
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
@@ -126,7 +126,7 @@ fn bench_get() {
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&slab);
+            let slab_ref = black_box(&ext_slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             black_box(slab_ref.get(key));
             idx = idx.wrapping_add(1);
@@ -140,7 +140,7 @@ fn bench_get() {
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&slab);
+            let slab_ref = black_box(&ext_slab);
             let key = black_box(hot_key);
             black_box(slab_ref.get(key));
         });
@@ -148,9 +148,9 @@ fn bench_get() {
         let _ = slab_hot_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("slot.get() random", &entry_hist);
-    print_hist("slot.get() hot", &entry_hot_hist);
-    print_hist("get_unchecked() [unsafe]", &key_hist);
+    print_hist("slot deref random", &entry_hist);
+    print_hist("slot deref hot", &entry_hot_hist);
+    print_hist("get_by_key() [unsafe]", &key_hist);
     print_hist("slab.get() random", &slab_hist);
     print_hist("slab.get() hot", &slab_hot_hist);
     println!();
@@ -168,38 +168,38 @@ fn bench_get_mut() {
     let mut key_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // Setup allocator
-    let alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
-    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| alloc.new_slot(i)).collect();
+    // Setup slab
+    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
 
     // Setup slab crate
-    let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.insert(i)).collect();
+    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
 
-    // slot.get_mut() - random access
+    // slot deref_mut - random access
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let entry = black_box(&mut entries[idx % NUM_SLOTS]);
-            black_box(entry.get_mut());
+            black_box(&mut **entry);
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // get_unchecked_mut() - random access
-    let key_alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
+    // get_by_key_mut() - random access
+    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
     let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_alloc.new_slot(i).leak())
+        .map(|i| key_slab.new_slot(i).leak())
         .collect();
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let key = black_box(keys2[idx % NUM_SLOTS]);
-            black_box(unsafe { key_alloc.get_by_key_unchecked_mut(key) });
+            black_box(unsafe { key_slab.get_by_key_mut(key) }.unwrap());
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
@@ -211,7 +211,7 @@ fn bench_get_mut() {
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&mut slab);
+            let slab_ref = black_box(&mut ext_slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             black_box(slab_ref.get_mut(key));
             idx = idx.wrapping_add(1);
@@ -220,8 +220,8 @@ fn bench_get_mut() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("slot.get_mut()", &entry_hist);
-    print_hist("get_unchecked_mut() [unsafe]", &key_hist);
+    print_hist("slot deref_mut()", &entry_hist);
+    print_hist("get_by_key_mut() [unsafe]", &key_hist);
     print_hist("slab.get_mut()", &slab_hist);
     println!();
 }
@@ -238,38 +238,38 @@ fn bench_contains() {
     let mut key_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // Setup allocator
-    let alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
-    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| alloc.new_slot(i)).collect();
+    // Setup slab
+    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
 
     // Setup slab crate
-    let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.insert(i)).collect();
+    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
 
-    // slot.is_valid() - random access
+    // slab.contains_key() via slot key - random access
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let entry = black_box(&entries[idx % NUM_SLOTS]);
-            black_box(entry.is_valid());
+            black_box(slab.contains_key(entry.key()));
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // contains_key() - random access
-    let key_alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
+    // contains_key() - random access (leaked keys)
+    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
     let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_alloc.new_slot(i).leak())
+        .map(|i| key_slab.new_slot(i).leak())
         .collect();
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let key = black_box(keys2[idx % NUM_SLOTS]);
-            black_box(key_alloc.contains_key(key));
+            black_box(key_slab.contains_key(key));
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
@@ -281,7 +281,7 @@ fn bench_contains() {
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&slab);
+            let slab_ref = black_box(&ext_slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             black_box(slab_ref.contains(key));
             idx = idx.wrapping_add(1);
@@ -290,7 +290,7 @@ fn bench_contains() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("slot.is_valid()", &entry_hist);
+    print_hist("contains_key(slot.key())", &entry_hist);
     print_hist("contains_key()", &key_hist);
     print_hist("slab.contains()", &slab_hist);
     println!();
@@ -310,14 +310,14 @@ fn bench_insert() {
     let mut entry_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // allocator insert - need to remove after each batch to make room
-    let alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
-    let mut temp_entries: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+    // slab insert - need to remove after each batch to make room
+    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let mut temp_entries: Vec<BoundedSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let entry = alloc.try_new_slot(black_box(42u64)).unwrap();
+            let entry = slab.try_new_slot(black_box(42u64)).unwrap();
             temp_entries.push(entry);
         });
         let end = rdtsc_end();
@@ -330,13 +330,13 @@ fn bench_insert() {
     }
 
     // slab crate insert
-    let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
     let mut temp_keys: Vec<usize> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&mut slab);
+            let slab_ref = black_box(&mut ext_slab);
             let key = slab_ref.insert(black_box(42u64));
             temp_keys.push(key);
         });
@@ -345,11 +345,11 @@ fn bench_insert() {
 
         // Cleanup batch
         for key in temp_keys.drain(..) {
-            slab.remove(key);
+            ext_slab.remove(key);
         }
     }
 
-    print_hist("allocator insert", &entry_hist);
+    print_hist("slab insert", &entry_hist);
     print_hist("slab crate insert", &slab_hist);
     println!();
 }
@@ -367,13 +367,13 @@ fn bench_remove() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slot.into_inner() - insert batch, then remove batch
-    let alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
+    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
-        let mut temp_entries: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp_entries: Vec<BoundedSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
-            temp_entries.push(alloc.new_slot(42u64));
+            temp_entries.push(slab.new_slot(42u64));
         }
 
         // Time the removes
@@ -387,16 +387,16 @@ fn bench_remove() {
     }
 
     // slab.remove()
-    let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
-        let temp_keys: Vec<_> = (0..BATCH_SIZE).map(|_| slab.insert(42u64)).collect();
+        let temp_keys: Vec<_> = (0..BATCH_SIZE).map(|_| ext_slab.insert(42u64)).collect();
 
         let mut idx = 0usize;
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&mut slab);
+            let slab_ref = black_box(&mut ext_slab);
             let key = black_box(temp_keys[idx]);
             black_box(slab_ref.remove(key));
             idx += 1;
@@ -421,13 +421,13 @@ fn bench_replace() {
     let mut entry_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // Setup allocator
-    let alloc: Allocator<u64> = Allocator::builder().bounded(NUM_SLOTS).build();
-    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| alloc.new_slot(i)).collect();
+    // Setup slab
+    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
 
     // Setup slab crate
-    let mut slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.insert(i)).collect();
+    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
 
     // slot.replace() - random access
     let mut idx = 0usize;
@@ -447,7 +447,7 @@ fn bench_replace() {
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let slab_ref = black_box(&mut slab);
+            let slab_ref = black_box(&mut ext_slab);
             let key = black_box(keys[idx % NUM_SLOTS]);
             if let Some(v) = slab_ref.get_mut(key) {
                 black_box(std::mem::replace(v, black_box(999u64)));
@@ -471,8 +471,8 @@ fn bench_replace() {
 // =============================================================================
 
 fn main() {
-    println!("ALLOCATOR API vs SLAB CRATE - CYCLE COUNTS");
-    println!("==========================================");
+    println!("SLAB API vs SLAB CRATE - CYCLE COUNTS");
+    println!("======================================");
     println!("Compare these results against BENCHMARKS.md");
     println!(
         "Unrolled {} ops per sample, {} total ops per benchmark",
@@ -481,8 +481,8 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "Slot size: {} bytes (16-byte handle with vtable pointer)",
-        std::mem::size_of::<Slot<u64>>()
+        "Slot size: {} bytes (16-byte handle with slab pointer)",
+        std::mem::size_of::<BoundedSlot<u64>>()
     );
     println!();
 
@@ -493,9 +493,9 @@ fn main() {
     bench_remove();
     bench_replace();
 
-    println!("==========================================");
+    println!("======================================");
     println!("Legend:");
-    println!("  slot.*()              Allocator Slot API (16-byte slot, no TLS lookup)");
-    println!("  *_unchecked() [unsafe] Key-based API");
+    println!("  slot.*()              BoundedSlot API (16-byte slot, no TLS lookup)");
+    println!("  *_by_key() [unsafe]   Key-based API");
     println!("  slab.*()              slab crate (baseline comparison)");
 }

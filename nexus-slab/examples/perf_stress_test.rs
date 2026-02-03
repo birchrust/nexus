@@ -8,7 +8,7 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_stress_test`
 
-use nexus_slab::Allocator;
+use nexus_slab::bounded::Slab as BoundedSlab;
 use std::collections::VecDeque;
 use std::hint::black_box;
 
@@ -151,7 +151,7 @@ fn test_long_running_churn() {
     // --- Slab test ---
     println!("\n  Slab<TestValue>:");
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(CAPACITY).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(CAPACITY as u32);
 
         let mut items: Vec<Option<_>> = (0..CAPACITY).map(|_| None).collect();
         let mut occupied = 0usize;
@@ -253,7 +253,7 @@ fn test_burst_allocation() {
 
     // --- Slab bursts ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(BURST_SIZE).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(BURST_SIZE as u32);
 
         let mut alloc_samples = Vec::with_capacity(BURSTS);
         let mut free_samples = Vec::with_capacity(BURSTS);
@@ -317,7 +317,7 @@ fn test_mixed_lifetimes() {
 
     // --- Slab mixed lifetimes ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(LONG_LIVED + 100).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((LONG_LIVED + 100) as u32);
 
         // Create long-lived items
         let _long_lived: Vec<_> = (0..LONG_LIVED)
@@ -385,7 +385,7 @@ fn test_fifo_queue() {
 
     // --- Slab queue ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(QUEUE_SIZE + 100).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((QUEUE_SIZE + 100) as u32);
 
         let mut queue: VecDeque<_> = VecDeque::with_capacity(QUEUE_SIZE);
 
@@ -444,7 +444,7 @@ fn test_tail_latency() {
 
     // --- Slab tail latency ---
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(100).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(100);
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -598,7 +598,7 @@ fn test_brutal_fragmentation() {
     // --- Slab (immune to fragmentation) ---
     println!();
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(1000).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(1000);
 
         let mut samples = Vec::with_capacity(MEASURE_COUNT);
 
@@ -667,7 +667,7 @@ fn test_sustained_pressure() {
     // --- Slab under pressure ---
     println!();
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(TARGET_COUNT).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(TARGET_COUNT as u32);
 
         // Build up pressure
         let mut items: Vec<Option<_>> = (0..TARGET_COUNT).map(|_| None).collect();
@@ -881,7 +881,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  10% fill");
         print_full_histogram_inline(&mut box_samples);
 
-        let alloc: Allocator<T> = Allocator::builder().bounded(SLAB_CAPACITY).build();
+        let alloc: BoundedSlab<T> = BoundedSlab::new(SLAB_CAPACITY as u32);
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.new_slot(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
         for _ in 0..SIZE_CHURN_OPS {
@@ -910,7 +910,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  25% fill");
         print_full_histogram_inline(&mut box_samples);
 
-        let alloc: Allocator<T> = Allocator::builder().bounded(SLAB_CAPACITY).build();
+        let alloc: BoundedSlab<T> = BoundedSlab::new(SLAB_CAPACITY as u32);
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.new_slot(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
         for _ in 0..SIZE_CHURN_OPS {
@@ -939,7 +939,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  50% fill");
         print_full_histogram_inline(&mut box_samples);
 
-        let alloc: Allocator<T> = Allocator::builder().bounded(SLAB_CAPACITY).build();
+        let alloc: BoundedSlab<T> = BoundedSlab::new(SLAB_CAPACITY as u32);
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.new_slot(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
         for _ in 0..SIZE_CHURN_OPS {
@@ -1057,9 +1057,7 @@ fn contention_test<T: Default + Clone + 'static>(name: &str) {
 
     // Slab - with same noise pattern (global allocator equally warm)
     {
-        let alloc: Allocator<T> = Allocator::builder()
-            .bounded(CONTENTION_BATCH + 100)
-            .build();
+        let alloc: BoundedSlab<T> = BoundedSlab::new((CONTENTION_BATCH + 100) as u32);
 
         let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
         let mut rng = 12345u64; // Same seed for fair comparison
@@ -1169,7 +1167,7 @@ fn test_first_allocation_latency() {
 
     // Slab - first allocation from pre-allocated pool
     {
-        let alloc: Allocator<TestValue> = Allocator::builder().bounded(1000).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(1000);
 
         let mut first_alloc_times = Vec::with_capacity(TRIALS);
 
