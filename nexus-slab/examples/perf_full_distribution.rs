@@ -67,7 +67,6 @@ fn bench_get() {
 
     let mut entry_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut entry_hot_hist: Histogram<u64> = Histogram::new(3).unwrap();
-    let mut key_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hot_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
@@ -104,23 +103,6 @@ fn bench_get() {
         let _ = entry_hot_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // get_by_key() - random access (need separate slab to leak keys)
-    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_slab.new_slot(i).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(keys2[idx % NUM_SLOTS]);
-            black_box(unsafe { key_slab.get_by_key(key) }.unwrap());
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = key_hist.record((end - start) / BATCH_SIZE);
-    }
-
     // slab.get() - random access
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -150,7 +132,6 @@ fn bench_get() {
 
     print_hist("slot deref random", &entry_hist);
     print_hist("slot deref hot", &entry_hot_hist);
-    print_hist("get_by_key() [unsafe]", &key_hist);
     print_hist("slab.get() random", &slab_hist);
     print_hist("slab.get() hot", &slab_hot_hist);
     println!();
@@ -165,7 +146,6 @@ fn bench_get_mut() {
     println!("------------------------------");
 
     let mut entry_hist: Histogram<u64> = Histogram::new(3).unwrap();
-    let mut key_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
@@ -189,23 +169,6 @@ fn bench_get_mut() {
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // get_by_key_mut() - random access
-    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_slab.new_slot(i).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(keys2[idx % NUM_SLOTS]);
-            black_box(unsafe { key_slab.get_by_key_mut(key) }.unwrap());
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = key_hist.record((end - start) / BATCH_SIZE);
-    }
-
     // slab.get_mut() - random access
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -221,82 +184,8 @@ fn bench_get_mut() {
     }
 
     print_hist("slot deref_mut()", &entry_hist);
-    print_hist("get_by_key_mut() [unsafe]", &key_hist);
     print_hist("slab.get_mut()", &slab_hist);
     println!();
-}
-
-// =============================================================================
-// CONTAINS Benchmarks
-// =============================================================================
-
-fn bench_contains() {
-    println!("CONTAINS (cycles per operation)");
-    println!("-------------------------------");
-
-    let mut entry_hist: Histogram<u64> = Histogram::new(3).unwrap();
-    let mut key_hist: Histogram<u64> = Histogram::new(3).unwrap();
-    let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
-
-    // Setup slab
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
-
-    // Setup slab crate
-    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
-
-    // slab.contains_key() via slot key - random access
-    let mut idx = 0usize;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let entry = black_box(&entries[idx % NUM_SLOTS]);
-            black_box(slab.contains_key(entry.key()));
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = entry_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    // contains_key() - random access (leaked keys)
-    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let keys2: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_slab.new_slot(i).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(keys2[idx % NUM_SLOTS]);
-            black_box(key_slab.contains_key(key));
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = key_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    // slab.contains() - random access
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let slab_ref = black_box(&ext_slab);
-            let key = black_box(keys[idx % NUM_SLOTS]);
-            black_box(slab_ref.contains(key));
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = slab_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    print_hist("contains_key(slot.key())", &entry_hist);
-    print_hist("contains_key()", &key_hist);
-    print_hist("slab.contains()", &slab_hist);
-    println!();
-
-    // Keep entries alive
-    drop(entries);
 }
 
 // =============================================================================
@@ -488,7 +377,6 @@ fn main() {
 
     bench_get();
     bench_get_mut();
-    bench_contains();
     bench_insert();
     bench_remove();
     bench_replace();
@@ -496,6 +384,5 @@ fn main() {
     println!("======================================");
     println!("Legend:");
     println!("  slot.*()              BoundedSlot API (16-byte slot, no TLS lookup)");
-    println!("  *_by_key() [unsafe]   Key-based API");
     println!("  slab.*()              slab crate (baseline comparison)");
 }

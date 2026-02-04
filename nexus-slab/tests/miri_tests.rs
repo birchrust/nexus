@@ -60,8 +60,6 @@ fn miri_bounded_basic() {
     let slot = slab.new_slot(42);
     assert_eq!(*slot, 42);
     drop(slot);
-
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -71,8 +69,6 @@ fn miri_unbounded_basic() {
     let slot = slab.new_slot(42);
     assert_eq!(*slot, 42);
     drop(slot);
-
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -114,7 +110,6 @@ fn miri_slot_into_inner() {
     let slot = slab.new_slot(42);
     let value = slot.into_inner();
     assert_eq!(value, 42);
-    assert_eq!(slab.len(), 0);
 }
 
 // =============================================================================
@@ -186,8 +181,6 @@ fn miri_string_insert_drop() {
     let slot = slab.new_slot("hello world".to_string());
     assert_eq!(*slot, "hello world");
     drop(slot);
-
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -197,8 +190,6 @@ fn miri_vec_insert_drop() {
     let slot = slab.new_slot(vec![1, 2, 3, 4, 5]);
     assert_eq!(slot.len(), 5);
     drop(slot);
-
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -208,8 +199,6 @@ fn miri_box_insert_drop() {
     let slot = slab.new_slot(Box::new([0u8; 1024]));
     assert_eq!(slot.len(), 1024);
     drop(slot);
-
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -286,7 +275,6 @@ fn miri_unbounded_growth() {
     // Fill multiple chunks
     let slots: Vec<_> = (0..12).map(|i| slab.new_slot(i)).collect();
 
-    assert_eq!(slab.len(), 12);
     assert!(slab.capacity() >= 12);
 
     for (i, slot) in slots.iter().enumerate() {
@@ -305,236 +293,6 @@ fn miri_unbounded_string_growth() {
     for (i, slot) in slots.iter().enumerate() {
         assert_eq!(**slot, format!("string_{}", i));
     }
-}
-
-// =============================================================================
-// Key Access
-// =============================================================================
-
-#[test]
-fn miri_get_by_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    let value = unsafe { slab.get_by_key(key) }.unwrap();
-    assert_eq!(*value, 42);
-}
-
-#[test]
-fn miri_get_by_key_mut() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    unsafe {
-        *slab.get_by_key_mut(key).unwrap() = 100;
-    }
-
-    let value = unsafe { slab.get_by_key(key) }.unwrap();
-    assert_eq!(*value, 100);
-}
-
-#[test]
-fn miri_get_by_key_string() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { slab.get_by_key(key) }.unwrap();
-    assert_eq!(*value, "hello");
-}
-
-#[test]
-fn miri_get_valid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value, Some(&42));
-}
-
-#[test]
-fn miri_get_invalid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.key();
-    drop(slot); // Slot is now vacant
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value, None);
-}
-
-#[test]
-fn miri_get_string() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello world".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value.map(|s| s.as_str()), Some("hello world"));
-}
-
-#[test]
-fn miri_get_mut_valid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    unsafe {
-        if let Some(v) = slab.get_by_key_mut(key) {
-            *v = 100;
-        }
-    }
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value, Some(&100));
-}
-
-#[test]
-fn miri_get_mut_invalid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.key();
-    drop(slot);
-
-    let value = unsafe { slab.get_by_key_mut(key) };
-    assert!(value.is_none());
-}
-
-#[test]
-fn miri_get_mut_string() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello".to_string());
-    let key = slot.leak();
-
-    unsafe {
-        if let Some(s) = slab.get_by_key_mut(key) {
-            s.push_str(" world");
-        }
-    }
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value.map(|s| s.as_str()), Some("hello world"));
-}
-
-#[test]
-fn miri_remove_by_key_valid() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    assert_eq!(slab.len(), 1);
-
-    let value = unsafe { slab.remove_by_key(key) };
-    assert_eq!(value, Some(42));
-    assert_eq!(slab.len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_invalid() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.key();
-    drop(slot);
-
-    let value = unsafe { slab.remove_by_key(key) };
-    assert_eq!(value, None);
-}
-
-#[test]
-fn miri_remove_by_key_string() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { slab.remove_by_key(key) };
-    assert_eq!(value, Some("hello".to_string()));
-    assert_eq!(slab.len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_basic() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    assert_eq!(value, 42);
-    assert_eq!(slab.len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_string_basic() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello world".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    assert_eq!(value, "hello world");
-    assert_eq!(slab.len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_drops_correctly() {
-    reset_drop_count();
-
-    let slab = BoundedSlab::<DropTracker>::new(4);
-
-    let slot = slab.new_slot(DropTracker(1));
-    let key = slot.leak();
-
-    assert_eq!(get_drop_count(), 0);
-
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    assert_eq!(get_drop_count(), 0); // Not dropped yet - we own it
-
-    drop(value);
-    assert_eq!(get_drop_count(), 1); // Now dropped
-}
-
-#[test]
-fn miri_remove_by_key_slot_reused() {
-    let slab = BoundedSlab::<String>::new(1);
-
-    let slot = slab.new_slot("first".to_string());
-    let key = slot.leak();
-
-    // Remove via key
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    assert_eq!(value, "first");
-
-    // Slot should be reusable
-    let slot2 = slab.new_slot("second".to_string());
-    assert_eq!(*slot2, "second");
-    assert_eq!(slot2.key().index(), key.index()); // Same slot reused
-}
-
-#[test]
-fn miri_remove_by_key_vec() {
-    let slab = BoundedSlab::<Vec<u64>>::new(4);
-
-    let slot = slab.new_slot(vec![1, 2, 3, 4, 5]);
-    let key = slot.leak();
-
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    assert_eq!(value, vec![1, 2, 3, 4, 5]);
-    assert_eq!(slab.len(), 0);
 }
 
 // =============================================================================
@@ -560,7 +318,6 @@ fn miri_zst() {
     let slot = slab.new_slot(ZeroSized);
     assert_eq!(*slot, ZeroSized);
     drop(slot);
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]

@@ -37,13 +37,34 @@ define_pod!(Pod4096, 4096);
 // Macro allocators
 // ============================================================================
 
-mod alloc_32  { use super::Pod32;   nexus_slab::bounded_allocator!(Pod32);   }
-mod alloc_64  { use super::Pod64;   nexus_slab::bounded_allocator!(Pod64);   }
-mod alloc_128 { use super::Pod128;  nexus_slab::bounded_allocator!(Pod128);  }
-mod alloc_256 { use super::Pod256;  nexus_slab::bounded_allocator!(Pod256);  }
-mod alloc_512 { use super::Pod512;  nexus_slab::bounded_allocator!(Pod512);  }
-mod alloc_1024{ use super::Pod1024; nexus_slab::bounded_allocator!(Pod1024); }
-mod alloc_4096{ use super::Pod4096; nexus_slab::bounded_allocator!(Pod4096); }
+mod alloc_32 {
+    use super::Pod32;
+    nexus_slab::bounded_allocator!(Pod32);
+}
+mod alloc_64 {
+    use super::Pod64;
+    nexus_slab::bounded_allocator!(Pod64);
+}
+mod alloc_128 {
+    use super::Pod128;
+    nexus_slab::bounded_allocator!(Pod128);
+}
+mod alloc_256 {
+    use super::Pod256;
+    nexus_slab::bounded_allocator!(Pod256);
+}
+mod alloc_512 {
+    use super::Pod512;
+    nexus_slab::bounded_allocator!(Pod512);
+}
+mod alloc_1024 {
+    use super::Pod1024;
+    nexus_slab::bounded_allocator!(Pod1024);
+}
+mod alloc_4096 {
+    use super::Pod4096;
+    nexus_slab::bounded_allocator!(Pod4096);
+}
 
 // ============================================================================
 // Timing
@@ -97,13 +118,32 @@ fn print_header() {
 // ============================================================================
 
 macro_rules! unroll_10 {
-    ($op:expr) => { $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; };
+    ($op:expr) => {
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+    };
 }
 
 macro_rules! unroll_100 {
     ($op:expr) => {
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
     };
 }
 
@@ -124,10 +164,14 @@ macro_rules! bench_size {
         {
             // Warmup both paths
             for _ in 0..1000 {
-                let b = Box::new(val); black_box(&*b); drop(b);
+                let b = Box::new(val);
+                black_box(&*b);
+                drop(b);
             }
             for _ in 0..1000 {
-                let s = $alloc_mod::Slot::new(val); black_box(&*s); drop(s);
+                let s = $alloc_mod::Slot::new(val);
+                black_box(&*s);
+                drop(s);
             }
 
             let mut box_samples = Vec::with_capacity(SAMPLES);
@@ -185,9 +229,8 @@ macro_rules! bench_size {
         {
             let count = 1000usize;
             let boxes: Vec<_> = (0..count).map(|_| Box::new(val)).collect();
-            let slots: Vec<$alloc_mod::Slot> = (0..count)
-                .map(|_| $alloc_mod::Slot::new(val))
-                .collect();
+            let slots: Vec<$alloc_mod::Slot> =
+                (0..count).map(|_| $alloc_mod::Slot::new(val)).collect();
 
             let mut rng = 12345u64;
             let mut box_samples = Vec::with_capacity(SAMPLES);
@@ -270,7 +313,10 @@ macro_rules! bench_batch {
                 drop(temp);
             }
 
-            println!("\n  ── {} BATCH ALLOC (100 sequential, no interleaved frees) ──", $name);
+            println!(
+                "\n  ── {} BATCH ALLOC (100 sequential, no interleaved frees) ──",
+                $name
+            );
             print_header();
             print_row("Box::new()", &mut box_samples);
             print_row("Macro Slot::new() [TLS]", &mut macro_samples);
@@ -293,9 +339,8 @@ macro_rules! bench_batch {
 
             let mut macro_samples = Vec::with_capacity(SAMPLES);
             for _ in 0..SAMPLES {
-                let slots: Vec<$alloc_mod::Slot> = (0..100)
-                    .map(|_| $alloc_mod::Slot::new(val))
-                    .collect();
+                let slots: Vec<$alloc_mod::Slot> =
+                    (0..100).map(|_| $alloc_mod::Slot::new(val)).collect();
                 let mut iter = slots.into_iter();
                 let start = rdtsc_start();
                 unroll_100!({
@@ -305,7 +350,10 @@ macro_rules! bench_batch {
                 macro_samples.push((end - start) / 100);
             }
 
-            println!("\n  ── {} BATCH DROP (pre-alloc 100, then free all) ──", $name);
+            println!(
+                "\n  ── {} BATCH DROP (pre-alloc 100, then free all) ──",
+                $name
+            );
             print_header();
             print_row("drop(Box)", &mut box_samples);
             print_row("drop(Slot) [TLS]", &mut macro_samples);
@@ -319,19 +367,42 @@ macro_rules! bench_batch {
 
 fn main() {
     let cap = 20_000;
-    alloc_32::Allocator::builder().capacity(cap).build().expect("init 32");
-    alloc_64::Allocator::builder().capacity(cap).build().expect("init 64");
-    alloc_128::Allocator::builder().capacity(cap).build().expect("init 128");
-    alloc_256::Allocator::builder().capacity(cap).build().expect("init 256");
-    alloc_512::Allocator::builder().capacity(cap).build().expect("init 512");
-    alloc_1024::Allocator::builder().capacity(cap).build().expect("init 1024");
-    alloc_4096::Allocator::builder().capacity(cap).build().expect("init 4096");
+    alloc_32::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 32");
+    alloc_64::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 64");
+    alloc_128::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 128");
+    alloc_256::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 256");
+    alloc_512::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 512");
+    alloc_1024::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 1024");
+    alloc_4096::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init 4096");
 
     println!("MACRO/TLS SLAB vs BOX — FULL SIZE × PERCENTILE MATRIX");
     println!("======================================================");
-    println!("Macro Slot: {} bytes | Box: {} bytes",
+    println!(
+        "Macro Slot: {} bytes | Box: {} bytes",
         std::mem::size_of::<alloc_64::Slot>(),
-        std::mem::size_of::<Box<Pod64>>());
+        std::mem::size_of::<Box<Pod64>>()
+    );
     println!("Samples: {}, 100 unrolled ops per sample", SAMPLES);
     println!("All times in CPU cycles (rdtsc)");
 
@@ -342,11 +413,11 @@ fn main() {
     println!("CHURN + ACCESS (per size)");
     println!("{}", "=".repeat(60));
 
-    bench_size!("32B",   Pod32,   alloc_32);
-    bench_size!("64B",   Pod64,   alloc_64);
-    bench_size!("128B",  Pod128,  alloc_128);
-    bench_size!("256B",  Pod256,  alloc_256);
-    bench_size!("512B",  Pod512,  alloc_512);
+    bench_size!("32B", Pod32, alloc_32);
+    bench_size!("64B", Pod64, alloc_64);
+    bench_size!("128B", Pod128, alloc_128);
+    bench_size!("256B", Pod256, alloc_256);
+    bench_size!("512B", Pod512, alloc_512);
     bench_size!("1024B", Pod1024, alloc_1024);
     bench_size!("4096B", Pod4096, alloc_4096);
 
@@ -360,11 +431,11 @@ fn main() {
     println!("  Drop:  pre-alloc 100, then free all sequentially.");
     println!("  malloc must manage 100 concurrent allocations (not LIFO).");
 
-    bench_batch!("32B",   Pod32,   alloc_32);
-    bench_batch!("64B",   Pod64,   alloc_64);
-    bench_batch!("128B",  Pod128,  alloc_128);
-    bench_batch!("256B",  Pod256,  alloc_256);
-    bench_batch!("512B",  Pod512,  alloc_512);
+    bench_batch!("32B", Pod32, alloc_32);
+    bench_batch!("64B", Pod64, alloc_64);
+    bench_batch!("128B", Pod128, alloc_128);
+    bench_batch!("256B", Pod256, alloc_256);
+    bench_batch!("512B", Pod512, alloc_512);
     bench_batch!("1024B", Pod1024, alloc_1024);
     bench_batch!("4096B", Pod4096, alloc_4096);
 

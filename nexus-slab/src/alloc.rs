@@ -8,6 +8,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::ptr;
 
 use crate::Key;
 use crate::shared::SlotCell;
@@ -74,6 +75,7 @@ pub unsafe trait Alloc: Sized + 'static {
     /// # Panics
     ///
     /// Panics with "out of memory" if the allocator is full.
+    #[inline]
     fn alloc(value: Self::Item) -> *mut SlotCell<Self::Item> {
         Self::try_alloc(value).expect("out of memory")
     }
@@ -108,9 +110,6 @@ pub unsafe trait Alloc: Sized + 'static {
     /// This is the inverse of `slot_cell`: given a pointer, compute the key.
     /// Used for lazy key computation in `Slot::key()`.
     fn slot_index(slot_ptr: *mut SlotCell<Self::Item>) -> Key;
-
-    /// Check if a key refers to an occupied slot.
-    fn contains_key(key: Key) -> bool;
 }
 
 /// Marker trait for bounded (fixed-capacity) allocators.
@@ -193,11 +192,8 @@ impl<A: Alloc> Slot<A> {
     ///
     /// This is analogous to `Box::into_inner`.
     pub fn into_inner(self) -> A::Item {
-        // SAFETY: We own the slot, value is valid
-        let value = unsafe {
-            let slot = &*self.slot_ptr;
-            std::ptr::read(slot.value_ptr())
-        };
+        // SAFETY: We own the slot, union field `value` is active
+        let value = unsafe { ptr::read((*self.slot_ptr).value.as_ptr()) };
 
         // SAFETY: Value has been moved out, slot_ptr is valid
         unsafe { A::dealloc_ptr(self.slot_ptr) };
@@ -209,20 +205,13 @@ impl<A: Alloc> Slot<A> {
     /// Replaces the value in the slot, returning the old value.
     #[inline]
     pub fn replace(&mut self, value: A::Item) -> A::Item {
-        // SAFETY: We own the slot exclusively (&mut self)
+        // SAFETY: We own the slot exclusively (&mut self), union field `value` is active
         unsafe {
-            let slot = &*self.slot_ptr;
-            let ptr = slot.value_ptr_mut();
-            let old = std::ptr::read(ptr);
-            std::ptr::write(ptr, value);
+            let val_ptr = (*(*self.slot_ptr).value).as_mut_ptr();
+            let old = ptr::read(val_ptr);
+            ptr::write(val_ptr, value);
             old
         }
-    }
-
-    /// Checks if a key refers to a valid, occupied slot.
-    #[inline]
-    pub fn contains_key(key: Key) -> bool {
-        A::contains_key(key)
     }
 
     /// Returns a reference to the value for the given key.
@@ -233,8 +222,9 @@ impl<A: Alloc> Slot<A> {
     #[inline]
     pub unsafe fn from_key(key: Key) -> &'static A::Item {
         // SAFETY: Caller guarantees key validity. TLS storage is 'static.
+        // Union field `value` is active because the slot is occupied.
         let cell = unsafe { A::slot_cell(key) };
-        unsafe { (*cell).get_value() }
+        unsafe { (*cell).value.assume_init_ref() }
     }
 
     /// Returns a mutable reference to the value for the given key.
@@ -245,8 +235,9 @@ impl<A: Alloc> Slot<A> {
     #[inline]
     pub unsafe fn from_key_mut(key: Key) -> &'static mut A::Item {
         // SAFETY: Caller guarantees key validity and exclusivity.
+        // Union field `value` is active because the slot is occupied.
         let cell = unsafe { A::slot_cell(key) };
-        unsafe { (*cell).get_value_mut() }
+        unsafe { (*(*cell).value).assume_init_mut() }
     }
 
     /// Removes and returns the value for the given key.
@@ -255,9 +246,10 @@ impl<A: Alloc> Slot<A> {
     ///
     /// The key must be valid and no references to this slot exist.
     pub unsafe fn remove_by_key(key: Key) -> A::Item {
-        // SAFETY: Caller guarantees key validity
+        // SAFETY: Caller guarantees key validity.
+        // Union field `value` is active because the slot is occupied.
         let cell = unsafe { A::slot_cell(key) };
-        let value = unsafe { std::ptr::read((*cell).value_ptr()) };
+        let value = unsafe { ptr::read((*cell).value.as_ptr()) };
 
         // SAFETY: Value moved out, key valid
         unsafe { A::dealloc(key) };
@@ -275,16 +267,16 @@ impl<A: Alloc> Deref for Slot<A> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        // SAFETY: Slot owns this slot cell, value is initialized
-        unsafe { (*self.slot_ptr).get_value() }
+        // SAFETY: Slot owns this slot cell, union field `value` is active
+        unsafe { (*self.slot_ptr).value.assume_init_ref() }
     }
 }
 
 impl<A: Alloc> DerefMut for Slot<A> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Slot owns this slot cell exclusively, value is initialized
-        unsafe { (*self.slot_ptr).get_value_mut() }
+        // SAFETY: Slot owns this slot cell exclusively, union field `value` is active
+        unsafe { (*(*self.slot_ptr).value).assume_init_mut() }
     }
 }
 
@@ -307,11 +299,12 @@ impl<A: Alloc> AsMut<A::Item> for Slot<A> {
 // impls where the concrete type is known.
 
 impl<A: Alloc> Drop for Slot<A> {
+    #[inline]
     fn drop(&mut self) {
         // Drop the value in place
-        // SAFETY: We own the slot, value is initialized
+        // SAFETY: We own the slot, union field `value` is active
         unsafe {
-            std::ptr::drop_in_place((*self.slot_ptr).value_ptr_mut());
+            ptr::drop_in_place((*(*self.slot_ptr).value).as_mut_ptr());
         }
 
         // Return slot to freelist by pointer (no key round-trip)

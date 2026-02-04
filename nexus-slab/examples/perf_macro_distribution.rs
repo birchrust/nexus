@@ -3,7 +3,7 @@
 //! Same structure as perf_full_distribution but adds the macro-generated
 //! allocator path to show actual TLS cost per operation.
 //!
-//! TLS is hit on: alloc, drop, into_inner, contains_key, from_key, from_key_mut
+//! TLS is hit on: alloc, drop, into_inner, from_key, from_key_mut
 //! TLS is NOT hit on: deref, deref_mut, replace, key()
 //!
 //! Run with:
@@ -75,8 +75,6 @@ fn bench_get() {
     let mut direct_hot_hist = Histogram::<u64>::new(3).unwrap();
     let mut macro_hist = Histogram::<u64>::new(3).unwrap();
     let mut macro_hot_hist = Histogram::<u64>::new(3).unwrap();
-    let mut macro_key_hist = Histogram::<u64>::new(3).unwrap();
-    let mut direct_key_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct slab
@@ -140,39 +138,6 @@ fn bench_get() {
         let _ = macro_hot_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // Direct get_by_key - random (leaked keys)
-    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let leaked_keys: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_slab.new_slot(i).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(leaked_keys[idx % NUM_SLOTS]);
-            black_box(unsafe { key_slab.get_by_key(key) }.unwrap());
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = direct_key_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    // Macro from_key - random (leaked keys — hits TLS via A::slot_cell)
-    let macro_leaked: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| macro_alloc::Slot::new(Val(i)).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(macro_leaked[idx % NUM_SLOTS]);
-            black_box(unsafe { macro_alloc::Slot::from_key(key) });
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = macro_key_hist.record((end - start) / BATCH_SIZE);
-    }
-
     // slab crate get - random
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -191,15 +156,9 @@ fn bench_get() {
     print_hist("Macro  deref random", &macro_hist);
     print_hist("Direct deref hot", &direct_hot_hist);
     print_hist("Macro  deref hot", &macro_hot_hist);
-    print_hist("Direct get_by_key [unsafe]", &direct_key_hist);
-    print_hist("Macro  from_key [unsafe,TLS]", &macro_key_hist);
     print_hist("slab crate get", &slab_hist);
     println!();
 
-    // Cleanup leaked macro keys
-    for key in macro_leaked {
-        unsafe { macro_alloc::Slot::remove_by_key(key) };
-    }
     drop(entries);
     drop(macro_slots);
 }
@@ -214,8 +173,6 @@ fn bench_get_mut() {
 
     let mut direct_hist = Histogram::<u64>::new(3).unwrap();
     let mut macro_hist = Histogram::<u64>::new(3).unwrap();
-    let mut direct_key_hist = Histogram::<u64>::new(3).unwrap();
-    let mut macro_key_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct slab
@@ -257,39 +214,6 @@ fn bench_get_mut() {
         let _ = macro_hist.record((end - start) / BATCH_SIZE);
     }
 
-    // Direct get_by_key_mut (leaked keys)
-    let key_slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let leaked_keys: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| key_slab.new_slot(i).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(leaked_keys[idx % NUM_SLOTS]);
-            black_box(unsafe { key_slab.get_by_key_mut(key) }.unwrap());
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = direct_key_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    // Macro from_key_mut (TLS via A::slot_cell)
-    let macro_leaked: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| macro_alloc::Slot::new(Val(i)).leak())
-        .collect();
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let key = black_box(macro_leaked[idx % NUM_SLOTS]);
-            black_box(unsafe { macro_alloc::Slot::from_key_mut(key) });
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = macro_key_hist.record((end - start) / BATCH_SIZE);
-    }
-
     // slab crate get_mut
     idx = 0;
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -306,86 +230,7 @@ fn bench_get_mut() {
 
     print_hist("Direct deref_mut", &direct_hist);
     print_hist("Macro  deref_mut", &macro_hist);
-    print_hist("Direct get_by_key_mut [unsafe]", &direct_key_hist);
-    print_hist("Macro  from_key_mut [unsafe,TLS]", &macro_key_hist);
     print_hist("slab crate get_mut", &slab_hist);
-    println!();
-
-    for key in macro_leaked {
-        unsafe { macro_alloc::Slot::remove_by_key(key) };
-    }
-    drop(entries);
-    drop(macro_slots);
-}
-
-// =============================================================================
-// CONTAINS
-// =============================================================================
-
-fn bench_contains() {
-    println!("CONTAINS (cycles per operation)");
-    println!("-------------------------------");
-
-    let mut direct_hist = Histogram::<u64>::new(3).unwrap();
-    let mut macro_hist = Histogram::<u64>::new(3).unwrap();
-    let mut slab_hist = Histogram::<u64>::new(3).unwrap();
-
-    // Direct slab
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
-
-    // Macro slab
-    let macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| macro_alloc::Slot::new(Val(i)))
-        .collect();
-
-    // slab crate
-    let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-    let ext_keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
-
-    // Direct contains_key
-    let mut idx = 0usize;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let entry = black_box(&entries[idx % NUM_SLOTS]);
-            black_box(slab.contains_key(entry.key()));
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = direct_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    // Macro contains_key (TLS via A::contains_key)
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let slot = black_box(&macro_slots[idx % NUM_SLOTS]);
-            black_box(macro_alloc::Slot::contains_key(slot.key()));
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = macro_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    // slab crate contains
-    idx = 0;
-    for _ in 0..OPS / BATCH_SIZE as usize {
-        let start = rdtsc_start();
-        unroll!(100, {
-            let s = black_box(&ext_slab);
-            let key = black_box(ext_keys[idx % NUM_SLOTS]);
-            black_box(s.contains(key));
-            idx = idx.wrapping_add(1);
-        });
-        let end = rdtsc_end();
-        let _ = slab_hist.record((end - start) / BATCH_SIZE);
-    }
-
-    print_hist("Direct contains_key", &direct_hist);
-    print_hist("Macro  contains_key [TLS]", &macro_hist);
-    print_hist("slab crate contains", &slab_hist);
     println!();
 
     drop(entries);
@@ -625,7 +470,6 @@ fn main() {
 
     bench_get();
     bench_get_mut();
-    bench_contains();
     bench_insert();
     bench_remove();
     bench_replace();
@@ -636,6 +480,6 @@ fn main() {
     println!("  Macro  [TLS]    alloc::Slot via bounded_allocator! (8B, TLS on marked ops)");
     println!("  slab crate      slab 0.4 crate (baseline)");
     println!();
-    println!("TLS operations: insert, drop/into_inner, contains_key, from_key, from_key_mut");
+    println!("TLS operations: insert, drop/into_inner, from_key, from_key_mut");
     println!("Non-TLS:        deref, deref_mut, replace, key()");
 }

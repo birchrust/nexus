@@ -1,14 +1,14 @@
 //! Property-based tests using proptest.
 //!
 //! These tests verify invariants hold under randomized inputs:
-//! - len() always matches actual occupied slots
-//! - contains_key() accurately reflects slot state
 //! - Freelist maintains integrity under arbitrary insert/remove sequences
 //! - Values are never corrupted
+//! - Capacity bounds are respected
+//! - Drop counting matches expectations
 
+use nexus_slab::Key;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
-use nexus_slab::Key;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
@@ -45,108 +45,6 @@ fn key_none_is_special() {
 // =============================================================================
 // Bounded Slab Properties
 // =============================================================================
-
-/// Test that len() always matches actual occupied slots
-#[test]
-fn bounded_len_invariant_random() {
-    let slab = BoundedSlab::<u64>::new(50);
-
-    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha,
-    );
-
-    let mut slots = Vec::new();
-    let mut leaked_count = 0usize;
-
-    for _ in 0..500 {
-        let action: u8 = rng.random_range(0..10);
-
-        match action {
-            0..=5 => {
-                // Insert
-                if let Ok(slot) = slab.try_new_slot(rng.random()) {
-                    slots.push(slot);
-                }
-            }
-            6..=7 => {
-                // Remove last
-                let _ = slots.pop();
-            }
-            8 => {
-                // Remove random
-                if !slots.is_empty() {
-                    let idx = rng.random_range(0..slots.len());
-                    let _ = slots.swap_remove(idx);
-                }
-            }
-            9 => {
-                // Leak random
-                if !slots.is_empty() {
-                    let idx = rng.random_range(0..slots.len());
-                    let slot = slots.swap_remove(idx);
-                    let _ = slot.leak();
-                    leaked_count += 1;
-                }
-            }
-            _ => unreachable!(),
-        }
-
-        // Invariant: len() == slots.len() + leaked_count
-        assert_eq!(slab.len(), slots.len() + leaked_count);
-    }
-}
-
-/// Test that contains_key() accurately reflects slot state
-#[test]
-fn bounded_contains_key_invariant_random() {
-    let slab = BoundedSlab::<u64>::new(50);
-
-    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha,
-    );
-
-    let mut slots = Vec::new();
-    let mut leaked_keys = Vec::new();
-
-    for _ in 0..500 {
-        let action: u8 = rng.random_range(0..10);
-
-        match action {
-            0..=5 => {
-                if let Ok(slot) = slab.try_new_slot(rng.random()) {
-                    slots.push(slot);
-                }
-            }
-            6..=7 => {
-                let _ = slots.pop();
-            }
-            8 => {
-                if !slots.is_empty() {
-                    let idx = rng.random_range(0..slots.len());
-                    let _ = slots.swap_remove(idx);
-                }
-            }
-            9 => {
-                if !slots.is_empty() {
-                    let idx = rng.random_range(0..slots.len());
-                    let slot = slots.swap_remove(idx);
-                    leaked_keys.push(slot.leak());
-                }
-            }
-            _ => unreachable!(),
-        }
-
-        // Invariant: contains_key returns true for all held slots
-        for slot in &slots {
-            assert!(slab.contains_key(slot.key()));
-        }
-
-        // Invariant: contains_key returns true for all leaked keys
-        for &key in &leaked_keys {
-            assert!(slab.contains_key(key));
-        }
-    }
-}
 
 /// Test that values are never corrupted
 #[test]
@@ -248,64 +146,19 @@ fn bounded_fill_drain_integrity() {
             .map(|i| slab.new_slot((cycle * 20 + i) as u64))
             .collect();
 
-        assert_eq!(slab.len(), 20);
-
         // Verify values
         for (i, slot) in slots.iter().enumerate() {
             assert_eq!(**slot, (cycle * 20 + i) as u64);
         }
 
-        // Drain
+        // Drain — all slots freed, ready for next cycle
         drop(slots);
-        assert_eq!(slab.len(), 0);
     }
 }
 
 // =============================================================================
 // Unbounded Slab Properties
 // =============================================================================
-
-#[test]
-fn unbounded_len_invariant_random() {
-    let slab = UnboundedSlab::<u64>::new(8);
-
-    let mut rng = proptest::test_runner::TestRng::deterministic_rng(
-        proptest::test_runner::RngAlgorithm::ChaCha,
-    );
-
-    let mut slots = Vec::new();
-    let mut leaked_count = 0usize;
-
-    for _ in 0..500 {
-        let action: u8 = rng.random_range(0..10);
-
-        match action {
-            0..=5 => {
-                slots.push(slab.new_slot(rng.random()));
-            }
-            6..=7 => {
-                let _ = slots.pop();
-            }
-            8 => {
-                if !slots.is_empty() {
-                    let idx = rng.random_range(0..slots.len());
-                    let _ = slots.swap_remove(idx);
-                }
-            }
-            9 => {
-                if !slots.is_empty() {
-                    let idx = rng.random_range(0..slots.len());
-                    let slot = slots.swap_remove(idx);
-                    let _ = slot.leak();
-                    leaked_count += 1;
-                }
-            }
-            _ => unreachable!(),
-        }
-
-        assert_eq!(slab.len(), slots.len() + leaked_count);
-    }
-}
 
 #[test]
 fn unbounded_value_integrity_random() {
@@ -357,9 +210,7 @@ fn unbounded_growth_maintains_integrity() {
 
     // Test with increasing counts in a single slab
     for count in [10, 50, 100, 200] {
-        let slots: Vec<_> = (0..count)
-            .map(|i| slab.new_slot(i as u64))
-            .collect();
+        let slots: Vec<_> = (0..count).map(|i| slab.new_slot(i as u64)).collect();
 
         for (i, slot) in slots.iter().enumerate() {
             assert_eq!(**slot, i as u64);
@@ -369,40 +220,6 @@ fn unbounded_growth_maintains_integrity() {
 
         // Clean up for next iteration
         drop(slots);
-    }
-}
-
-#[test]
-fn unbounded_cross_chunk_contains_key() {
-    let slab = UnboundedSlab::<u64>::new(8);
-
-    let count = 100;
-    let slots: Vec<_> = (0..count)
-        .map(|i| slab.new_slot(i as u64))
-        .collect();
-
-    for slot in &slots {
-        assert!(slab.contains_key(slot.key()));
-    }
-
-    // Leak every 3rd slot, keep the rest
-    let mut remaining_slots = Vec::new();
-    let mut leaked_keys = Vec::new();
-
-    for (i, slot) in slots.into_iter().enumerate() {
-        if i % 3 == 0 {
-            leaked_keys.push(slot.leak());
-        } else {
-            remaining_slots.push(slot);
-        }
-    }
-
-    for &key in &leaked_keys {
-        assert!(slab.contains_key(key));
-    }
-
-    for slot in &remaining_slots {
-        assert!(slab.contains_key(slot.key()));
     }
 }
 

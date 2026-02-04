@@ -20,7 +20,9 @@ mod bounded_alloc {
         pub data: [u8; 64],
     }
     impl Default for Pod64 {
-        fn default() -> Self { Self { data: [0; 64] } }
+        fn default() -> Self {
+            Self { data: [0; 64] }
+        }
     }
 
     nexus_slab::bounded_allocator!(Pod64);
@@ -34,7 +36,9 @@ mod unbounded_alloc {
         pub data: [u8; 64],
     }
     impl Default for Pod64 {
-        fn default() -> Self { Self { data: [0; 64] } }
+        fn default() -> Self {
+            Self { data: [0; 64] }
+        }
     }
 
     nexus_slab::unbounded_allocator!(Pod64);
@@ -47,7 +51,9 @@ pub struct Pod64 {
     pub data: [u8; 64],
 }
 impl Default for Pod64 {
-    fn default() -> Self { Self { data: [0; 64] } }
+    fn default() -> Self {
+        Self { data: [0; 64] }
+    }
 }
 
 // ============================================================================
@@ -95,14 +101,31 @@ fn print_stats(name: &str, samples: &mut [u64]) {
 
 macro_rules! unroll_10 {
     ($op:expr) => {
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
     };
 }
 
 macro_rules! unroll_100 {
     ($op:expr) => {
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
     };
 }
 
@@ -295,9 +318,7 @@ fn bench_unbounded() {
     {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let slots: Vec<_> = (0..100)
-                .map(|_| direct_slab.new_slot(val))
-                .collect();
+            let slots: Vec<_> = (0..100).map(|_| direct_slab.new_slot(val)).collect();
 
             let mut iter = slots.into_iter();
             let start = rdtsc_start();
@@ -401,8 +422,18 @@ fn bench_side_by_side() {
     let d99 = percentile(&direct_samples, 99.0);
     let m99 = percentile(&macro_samples, 99.0);
     println!();
-    println!("  TLS tax (p50):  {} cycles/op  ({} direct → {} macro)", m50 as i64 - d50 as i64, d50, m50);
-    println!("  TLS tax (p99):  {} cycles/op  ({} direct → {} macro)", m99 as i64 - d99 as i64, d99, m99);
+    println!(
+        "  TLS tax (p50):  {} cycles/op  ({} direct → {} macro)",
+        m50 as i64 - d50 as i64,
+        d50,
+        m50
+    );
+    println!(
+        "  TLS tax (p99):  {} cycles/op  ({} direct → {} macro)",
+        m99 as i64 - d99 as i64,
+        d99,
+        m99
+    );
     println!("  Note: TLS is hit twice per churn cycle (alloc + drop)");
 }
 

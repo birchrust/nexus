@@ -6,11 +6,10 @@
 //! - Stress tests and freelist integrity
 //! - Edge cases and boundary conditions
 //! - Complex types (String, Vec, ZST, large)
-//! - Key validity and contains_key behavior
 
+use nexus_slab::Key;
 use nexus_slab::bounded::{Slab as BoundedSlab, Slot as BoundedSlot};
 use nexus_slab::unbounded::Slab as UnboundedSlab;
-use nexus_slab::Key;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,39 +66,12 @@ impl Drop for OrderedDrop {
 fn bounded_basic_insert_drop() {
     let slab = BoundedSlab::<u64>::new(16);
 
-    assert_eq!(slab.len(), 0);
-    assert!(slab.is_empty());
     assert_eq!(slab.capacity(), 16);
 
     {
         let slot = slab.new_slot(42);
         assert_eq!(*slot, 42);
-        assert_eq!(slab.len(), 1);
-        assert!(!slab.is_empty());
     }
-
-    assert_eq!(slab.len(), 0);
-}
-
-#[test]
-fn bounded_leak_and_key_access() {
-    let slab = BoundedSlab::<u64>::new(16);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    assert!(slab.contains_key(key));
-    assert_eq!(slab.len(), 1);
-
-    let value = unsafe { slab.get_by_key(key) }.unwrap();
-    assert_eq!(*value, 42);
-
-    // Modify via mutable access
-    unsafe {
-        *slab.get_by_key_mut(key).unwrap() = 100;
-    }
-    let value = unsafe { slab.get_by_key(key) }.unwrap();
-    assert_eq!(*value, 100);
 }
 
 #[test]
@@ -108,7 +80,6 @@ fn bounded_fill_to_capacity() {
 
     let slots: Vec<_> = (0..8).map(|i| slab.new_slot(i)).collect();
 
-    assert_eq!(slab.len(), 8);
     assert_eq!(slab.capacity(), 8);
     assert!(slab.try_new_slot(100).is_err());
 
@@ -128,10 +99,8 @@ fn bounded_capacity_one() {
 
     let key = slot.key();
     assert_eq!(key.index(), 0);
-    assert!(slab.contains_key(key));
 
     drop(slot);
-    assert!(!slab.contains_key(key));
 
     let slot2 = slab.new_slot(100);
     assert_eq!(*slot2, 100);
@@ -146,15 +115,10 @@ fn bounded_capacity_one() {
 fn unbounded_basic_insert_drop() {
     let slab = UnboundedSlab::<u64>::new(8);
 
-    assert_eq!(slab.len(), 0);
-
     {
         let slot = slab.new_slot(100);
         assert_eq!(*slot, 100);
-        assert_eq!(slab.len(), 1);
     }
-
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -166,45 +130,12 @@ fn unbounded_grows_automatically() {
     // Insert more than initial chunk
     let slots: Vec<_> = (0..20).map(|i| slab.new_slot(i)).collect();
 
-    assert_eq!(slab.len(), 20);
     assert!(slab.capacity() >= 20);
     assert!(slab.capacity() > initial_cap);
 
     for (i, slot) in slots.iter().enumerate() {
         assert_eq!(**slot, i as u64);
     }
-}
-
-#[test]
-fn unbounded_cross_chunk_access() {
-    let slab = UnboundedSlab::<u64>::new(4);
-
-    // Fill multiple chunks
-    let mut slots: Vec<_> = (0..16).map(|i| slab.new_slot(i)).collect();
-
-    // Verify all values accessible
-    for (i, slot) in slots.iter().enumerate() {
-        assert_eq!(**slot, i as u64);
-    }
-
-    // Leak some from different chunks (remove in reverse order to maintain indices)
-    let key12 = slots.remove(12).leak(); // Chunk 3
-    let key8 = slots.remove(8).leak(); // Chunk 2
-    let key4 = slots.remove(4).leak(); // Chunk 1
-    let key0 = slots.remove(0).leak(); // Chunk 0
-
-    assert!(slab.contains_key(key0));
-    assert!(slab.contains_key(key4));
-    assert!(slab.contains_key(key8));
-    assert!(slab.contains_key(key12));
-
-    assert_eq!(*unsafe { slab.get_by_key(key0) }.unwrap(), 0);
-    assert_eq!(*unsafe { slab.get_by_key(key4) }.unwrap(), 4);
-    assert_eq!(*unsafe { slab.get_by_key(key8) }.unwrap(), 8);
-    assert_eq!(*unsafe { slab.get_by_key(key12) }.unwrap(), 12);
-
-    // Drop the rest
-    drop(slots);
 }
 
 // =============================================================================
@@ -227,12 +158,9 @@ fn slot_into_inner() {
     let slab = BoundedSlab::<String>::new(4);
 
     let slot = slab.new_slot("hello".to_string());
-    let key = slot.key();
     let value = slot.into_inner();
 
     assert_eq!(value, "hello");
-    assert_eq!(slab.len(), 0);
-    assert!(!slab.contains_key(key));
 }
 
 #[test]
@@ -258,7 +186,6 @@ fn slot_key_matches_after_leak() {
     let key_after = slot.leak();
 
     assert_eq!(key_before, key_after);
-    assert!(slab.contains_key(key_after));
 }
 
 #[test]
@@ -290,7 +217,6 @@ fn multiple_slots_same_slab() {
     let slot2 = slab.new_slot(2);
     let slot3 = slab.new_slot(3);
 
-    assert_eq!(slab.len(), 3);
     assert_eq!(*slot1, 1);
     assert_eq!(*slot2, 2);
     assert_eq!(*slot3, 3);
@@ -301,11 +227,9 @@ fn multiple_slots_same_slab() {
     assert_ne!(slot1.key(), slot3.key());
 
     drop(slot2);
-    assert_eq!(slab.len(), 2);
 
     // Insert again - should reuse slot2's slot
     let slot4 = slab.new_slot(4);
-    assert_eq!(slab.len(), 3);
     assert_eq!(*slot4, 4);
 }
 
@@ -317,215 +241,8 @@ fn multiple_slabs_independent() {
     let slot_a = slab_a.new_slot(1);
     let slot_b = slab_b.new_slot(2);
 
-    assert_eq!(slab_a.len(), 1);
-    assert_eq!(slab_b.len(), 1);
-
     assert_eq!(*slot_a, 1);
     assert_eq!(*slot_b, 2);
-
-    drop(slot_a);
-    assert_eq!(slab_a.len(), 0);
-    assert_eq!(slab_b.len(), 1);
-}
-
-// =============================================================================
-// Key Validity and contains_key
-// =============================================================================
-
-#[test]
-fn key_none_never_valid() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let _slot = slab.new_slot(42);
-    assert!(!slab.contains_key(Key::NONE));
-}
-
-#[test]
-fn key_out_of_bounds_not_valid() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let _slot = slab.new_slot(42);
-
-    // Index beyond capacity
-    assert!(!slab.contains_key(Key::new(100)));
-    assert!(!slab.contains_key(Key::new(4)));
-    assert!(!slab.contains_key(Key::new(1000)));
-}
-
-#[test]
-fn key_invalid_after_drop() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.key();
-    assert!(slab.contains_key(key));
-
-    drop(slot);
-    assert!(!slab.contains_key(key));
-}
-
-#[test]
-fn key_invalid_after_into_inner() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello".to_string());
-    let key = slot.key();
-    assert!(slab.contains_key(key));
-
-    let _value = slot.into_inner();
-    assert!(!slab.contains_key(key));
-}
-
-#[test]
-fn get_returns_some_for_valid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value, Some(&42));
-}
-
-#[test]
-fn get_returns_none_for_invalid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let _slot = slab.new_slot(42);
-
-    // Invalid key
-    let value = unsafe { slab.get_by_key(Key::new(99)) };
-    assert_eq!(value, None);
-
-    // Key::NONE
-    let value = unsafe { slab.get_by_key(Key::NONE) };
-    assert_eq!(value, None);
-}
-
-#[test]
-fn get_mut_returns_some_and_allows_mutation() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-
-    if let Some(value) = unsafe { slab.get_by_key_mut(key) } {
-        *value = 100;
-    }
-
-    let value = unsafe { slab.get_by_key(key) };
-    assert_eq!(value, Some(&100));
-}
-
-#[test]
-fn get_mut_returns_none_for_invalid_key() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let _slot = slab.new_slot(42);
-
-    let value = unsafe { slab.get_by_key_mut(Key::new(99)) };
-    assert!(value.is_none());
-}
-
-#[test]
-fn try_remove_by_key_returns_some_for_valid() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { slab.remove_by_key(key) };
-    assert_eq!(value, Some("hello".to_string()));
-    assert!(!slab.contains_key(key));
-}
-
-#[test]
-fn try_remove_by_key_returns_none_for_invalid() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let _slot = slab.new_slot(42);
-
-    let value = unsafe { slab.remove_by_key(Key::new(99)) };
-    assert_eq!(value, None);
-
-    let value = unsafe { slab.remove_by_key(Key::NONE) };
-    assert_eq!(value, None);
-}
-
-#[test]
-fn remove_by_key_returns_value() {
-    let slab = BoundedSlab::<String>::new(4);
-
-    let slot = slab.new_slot("hello".to_string());
-    let key = slot.leak();
-
-    assert!(slab.contains_key(key));
-    assert_eq!(slab.len(), 1);
-
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    assert_eq!(value, "hello");
-    assert!(!slab.contains_key(key));
-    assert_eq!(slab.len(), 0);
-}
-
-#[test]
-fn remove_by_key_drops_correctly() {
-    reset_drop_count();
-
-    let slab = BoundedSlab::<DropTracker>::new(4);
-
-    let slot = slab.new_slot(DropTracker(42));
-    let key = slot.leak();
-
-    assert_eq!(get_drop_count(), 0);
-
-    let value = unsafe { slab.remove_by_key(key) }.unwrap();
-    // Value returned, not dropped yet
-    assert_eq!(get_drop_count(), 0);
-
-    drop(value);
-    // Now dropped
-    assert_eq!(get_drop_count(), 1);
-}
-
-#[test]
-fn remove_by_key_slot_reused() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-    let index = key.index();
-
-    unsafe { slab.remove_by_key(key) };
-
-    // Insert again - should reuse the same slot
-    let new_slot = slab.new_slot(100);
-    assert_eq!(new_slot.key().index(), index);
-}
-
-#[test]
-fn key_still_valid_after_leak() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    let slot = slab.new_slot(42);
-    let key = slot.leak();
-    assert!(slab.contains_key(key));
-    // Leaked - stays valid
-}
-
-#[test]
-fn contains_key_vacant_slot() {
-    let slab = BoundedSlab::<u64>::new(4);
-
-    // Slot 0 exists but is vacant
-    assert!(!slab.contains_key(Key::new(0)));
-
-    let slot = slab.new_slot(42);
-    assert!(slab.contains_key(Key::new(0)));
-
-    drop(slot);
-    // Back to vacant
-    assert!(!slab.contains_key(Key::new(0)));
 }
 
 // =============================================================================
@@ -656,10 +373,7 @@ fn stress_fill_drain_cycle() {
 
     for cycle in 0..10 {
         // Fill
-        let slots: Vec<_> = (0..100)
-            .map(|i| slab.new_slot(i + cycle * 100))
-            .collect();
-        assert_eq!(slab.len(), 100);
+        let slots: Vec<_> = (0..100).map(|i| slab.new_slot(i + cycle * 100)).collect();
 
         // Verify values
         for (i, slot) in slots.iter().enumerate() {
@@ -668,7 +382,6 @@ fn stress_fill_drain_cycle() {
 
         // Drain
         drop(slots);
-        assert_eq!(slab.len(), 0);
     }
 }
 
@@ -681,7 +394,7 @@ fn stress_interleaved_insert_remove() {
     for i in 0..1000 {
         if i % 2 == 0 || slots.is_empty() {
             // Insert
-            if slab.len() < 50 {
+            if slots.len() < 50 {
                 slots.push(slab.new_slot(i));
             }
         } else {
@@ -689,8 +402,6 @@ fn stress_interleaved_insert_remove() {
             slots.pop();
         }
     }
-
-    assert_eq!(slab.len(), slots.len());
 }
 
 #[test]
@@ -710,7 +421,6 @@ fn stress_unbounded_growth() {
 
     let slots: Vec<_> = (0..1000).map(|i| slab.new_slot(i)).collect();
 
-    assert_eq!(slab.len(), 1000);
     assert!(slab.capacity() >= 1000);
 
     for (i, slot) in slots.iter().enumerate() {
@@ -737,8 +447,6 @@ fn stress_unbounded_churn() {
             }
         }
     }
-
-    assert_eq!(slab.len(), slots.len());
 }
 
 #[test]
@@ -780,10 +488,8 @@ fn type_string() {
     let slot = slab.new_slot("hello world".to_string());
     assert_eq!(*slot, "hello world");
 
-    let key = slot.key();
     let value = slot.into_inner();
     assert_eq!(value, "hello world");
-    assert!(!slab.contains_key(key));
 }
 
 #[test]
@@ -860,11 +566,6 @@ fn type_zst() {
 
     let slot = slab.new_slot(ZeroSized);
     assert_eq!(*slot, ZeroSized);
-
-    // Can still track it
-    assert_eq!(slab.len(), 1);
-    drop(slot);
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -886,10 +587,8 @@ fn large_capacity() {
     assert_eq!(slab.capacity(), 100_000);
 
     let slots: Vec<_> = (0..1000).map(|i| slab.new_slot(i)).collect();
-    assert_eq!(slab.len(), 1000);
 
     drop(slots);
-    assert_eq!(slab.len(), 0);
 }
 
 #[test]
@@ -911,7 +610,6 @@ fn key_roundtrip_raw() {
     let restored = Key::from_raw(raw);
 
     assert_eq!(key, restored);
-    assert!(slab.contains_key(restored));
 }
 
 #[test]
@@ -927,18 +625,11 @@ fn key_debug_format() {
 #[test]
 fn slab_is_copy() {
     let slab = BoundedSlab::<u64>::new(10);
-    let slab2 = slab; // Copy
-    let slab3 = slab; // Copy again
+    let _slab2 = slab; // Copy
+    let _slab3 = slab; // Copy again
 
     // All refer to same underlying storage
-    let slot = slab.new_slot(42);
-    assert_eq!(slab.len(), 1);
-    assert_eq!(slab2.len(), 1);
-    assert_eq!(slab3.len(), 1);
-
-    drop(slot);
-    assert_eq!(slab.len(), 0);
-    assert_eq!(slab2.len(), 0);
+    let _slot = slab.new_slot(42);
 }
 
 #[test]
@@ -946,6 +637,5 @@ fn slab_debug_format() {
     let slab = BoundedSlab::<u64>::new(10);
     let debug = format!("{:?}", slab);
     assert!(debug.contains("Slab"));
-    assert!(debug.contains("len"));
     assert!(debug.contains("capacity"));
 }

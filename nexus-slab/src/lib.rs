@@ -78,12 +78,17 @@
 //!              [slots]   [slots]     Slab 1 (full, not on freelist)
 //! ```
 //!
-//! ## Slot State
+//! ## Slot State (SLUB-style union)
 //!
-//! Each slot contains a `next_free` pointer that doubles as a state flag:
+//! Each slot is a `repr(C)` union — either a freelist pointer or a value:
 //!
-//! - **Occupied**: `next_free == 0x1` (sentinel — invalid due to alignment >= 8)
-//! - **Vacant**: `next_free` is null (end of freelist) or a valid pointer to the next free slot
+//! - **Occupied**: `value` field is active — contains the user's `T`
+//! - **Vacant**: `next_free` field is active — points to next free slot (or null)
+//!
+//! Writing a value implicitly transitions the slot from vacant to occupied
+//! (overwrites the freelist pointer). Writing a freelist link transitions it
+//! back. There is no tag, no sentinel — the Slot RAII handle is the proof
+//! of occupancy. Zero bookkeeping on the hot path.
 //!
 //! Freelists are **intra-slab only** — chains never cross slab boundaries.
 
@@ -106,7 +111,6 @@ pub use shared::SLOT_NONE;
 
 // Re-export SlotCell for direct slot access (used by nexus-collections and macros)
 pub use shared::SlotCell;
-
 
 // =============================================================================
 // Key

@@ -41,18 +41,6 @@ impl fmt::Display for AlreadyInitialized {
 
 impl Error for AlreadyInitialized {}
 
-/// Error returned when attempting to shutdown with outstanding slots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SlotsRemaining(pub usize);
-
-impl fmt::Display for SlotsRemaining {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} slots still allocated", self.0)
-    }
-}
-
-impl Error for SlotsRemaining {}
-
 // =============================================================================
 // Builder Types
 // =============================================================================
@@ -183,10 +171,10 @@ impl Default for UnboundedBuilder {
 #[macro_export]
 macro_rules! bounded_allocator {
     ($ty:ty) => {
-        use $crate::bounded::SlabInner as BoundedSlabInner;
-        use $crate::macros::{AlreadyInitialized, SlotsRemaining};
-        use $crate::SlotCell;
         use $crate::Key;
+        use $crate::SlotCell;
+        use $crate::bounded::SlabInner as BoundedSlabInner;
+        use $crate::macros::AlreadyInitialized;
 
         thread_local! {
             static INNER: BoundedSlabInner<$ty> = const { BoundedSlabInner::new() };
@@ -242,110 +230,75 @@ macro_rules! bounded_allocator {
                 INNER.with(|inner| inner.is_initialized())
             }
 
-            /// Shuts down the allocator.
-            ///
-            /// # Errors
-            ///
-            /// Returns `SlotsRemaining` if any slots are still allocated.
-            ///
-            /// # Note
-            ///
-            /// This does not deallocate the underlying storage (TLS cleanup
-            /// handles that). It validates that no slots are leaked.
-            pub fn shutdown() -> Result<(), SlotsRemaining> {
-                INNER.with(|inner| {
-                    let len = inner.len() as usize;
-                    if len > 0 {
-                        return Err(SlotsRemaining(len));
-                    }
-                    Ok(())
-                })
-            }
-
-            /// Returns the number of currently allocated slots.
-            #[inline]
-            pub fn len() -> usize {
-                INNER.with(|inner| inner.len() as usize)
-            }
-
-            /// Returns true if no slots are allocated.
-            #[inline]
-            pub fn is_empty() -> bool {
-                Self::len() == 0
-            }
-
             /// Returns the total capacity.
             #[inline]
             pub fn capacity() -> usize {
                 INNER.with(|inner| inner.capacity() as usize)
             }
-
-            /// Returns true if the allocator is at capacity.
-            #[inline]
-            pub fn is_full() -> bool {
-                Self::len() >= Self::capacity()
-            }
         }
 
-        // SAFETY: try_alloc claims from the TLS freelist, writes value, marks occupied.
-        // dealloc/dealloc_ptr return the slot to the TLS freelist.
+        // SAFETY: try_alloc claims from the TLS freelist, writes value via union.
+        // dealloc/dealloc_ptr return the slot to the TLS freelist via union field write.
         // slot_cell returns a valid pointer for any key within capacity.
         // All operations are single-threaded (TLS).
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
 
-            fn try_alloc(value: Self::Item) -> Result<*mut SlotCell<$ty>, $crate::alloc::Full<$ty>> {
-                INNER.with(|inner| {
-                    assert!(inner.is_initialized(), "allocator not initialized");
-
+            #[inline]
+            fn try_alloc(
+                value: Self::Item,
+            ) -> Result<*mut SlotCell<$ty>, $crate::alloc::Full<$ty>> {
+                // Pop from freelist — value stays on caller's stack, not captured
+                let slot = INNER.with(|inner| {
                     let slot_ptr = inner.free_head.get();
-                    if slot_ptr.is_null() {
-                        return Err($crate::alloc::Full(value));
-                    }
-
-                    // Pop from freelist
-                    let slot = unsafe { &*slot_ptr };
-                    let next_free = slot.next_free();
+                    // SAFETY: slot_ptr came from the freelist. Slot is vacant,
+                    // so next_free is the active union field.
+                    let slot_nn = std::ptr::NonNull::new(slot_ptr)?;
+                    let next_free = unsafe { (*slot_nn.as_ptr()).next_free };
                     inner.free_head.set(next_free);
+                    Some(slot_nn)
+                });
 
-                    // Mark occupied
-                    slot.set_occupied();
-
-                    // Write the value
-                    unsafe {
-                        slot.value.get().cast::<$ty>().write(value);
+                match slot {
+                    Some(slot_nn) => {
+                        let slot_ptr = slot_nn.as_ptr();
+                        // Write value outside closure — single memcpy from stack to slot
+                        // SAFETY: Slot is claimed from freelist, we have exclusive access
+                        unsafe {
+                            (*slot_ptr).value =
+                                std::mem::ManuallyDrop::new(std::mem::MaybeUninit::new(value));
+                        }
+                        Ok(slot_ptr)
                     }
-
-                    Ok(slot_ptr)
-                })
+                    None => Err($crate::alloc::Full(value)),
+                }
             }
 
             unsafe fn dealloc(key: Key) {
                 INNER.with(|inner| {
                     let slot_ptr = inner.slots_ptr().add(key.index() as usize);
-                    let slot = unsafe { &*slot_ptr };
 
+                    // Write freelist link — overwrites value bytes (union semantics)
                     let free_head = inner.free_head.get();
-                    slot.set_vacant(free_head);
+                    (*slot_ptr).next_free = free_head;
                     inner.free_head.set(slot_ptr);
                 });
             }
 
+            #[inline]
             unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<$ty>) {
                 INNER.with(|inner| {
+                    // Write freelist link — overwrites value bytes (union semantics)
                     // SAFETY: Caller guarantees slot_ptr is valid and within this slab
-                    let slot = unsafe { &*slot_ptr };
-
                     let free_head = inner.free_head.get();
-                    slot.set_vacant(free_head);
+                    (*slot_ptr).next_free = free_head;
                     inner.free_head.set(slot_ptr);
                 });
             }
 
+            #[inline]
             unsafe fn slot_cell(key: Key) -> *mut SlotCell<$ty> {
-                INNER.with(|inner| {
-                    inner.slots_ptr().add(key.index() as usize)
-                })
+                INNER.with(|inner| inner.slots_ptr().add(key.index() as usize))
             }
 
             fn slot_index(slot_ptr: *mut SlotCell<$ty>) -> Key {
@@ -353,16 +306,6 @@ macro_rules! bounded_allocator {
                     // SAFETY: slot_ptr came from this slab's allocation
                     let index = unsafe { inner.slot_to_index(slot_ptr) };
                     Key::new(index)
-                })
-            }
-
-            fn contains_key(key: Key) -> bool {
-                INNER.with(|inner| {
-                    let index = key.index();
-                    if index >= inner.capacity() {
-                        return false;
-                    }
-                    inner.slot(index).is_occupied()
                 })
             }
         }
@@ -422,10 +365,10 @@ macro_rules! bounded_allocator {
 #[macro_export]
 macro_rules! unbounded_allocator {
     ($ty:ty) => {
-        use $crate::unbounded::SlabInner;
-        use $crate::macros::{AlreadyInitialized, SlotsRemaining};
-        use $crate::SlotCell;
         use $crate::Key;
+        use $crate::SlotCell;
+        use $crate::macros::AlreadyInitialized;
+        use $crate::unbounded::SlabInner;
 
         /// Default chunk size (4096 slots per chunk).
         const DEFAULT_CHUNK_SIZE: usize = 4096;
@@ -473,45 +416,15 @@ macro_rules! unbounded_allocator {
             /// Returns a builder for configuring the allocator.
             #[inline]
             pub fn builder() -> Builder {
-                Builder { chunk_size: DEFAULT_CHUNK_SIZE }
+                Builder {
+                    chunk_size: DEFAULT_CHUNK_SIZE,
+                }
             }
 
             /// Returns true if the allocator has been initialized.
             #[inline]
             pub fn is_initialized() -> bool {
                 INNER.with(|inner| inner.is_initialized())
-            }
-
-            /// Shuts down the allocator.
-            ///
-            /// # Errors
-            ///
-            /// Returns `SlotsRemaining` if any slots are still allocated.
-            ///
-            /// # Note
-            ///
-            /// This does not deallocate the underlying storage (TLS cleanup
-            /// handles that). It validates that no slots are leaked.
-            pub fn shutdown() -> Result<(), SlotsRemaining> {
-                INNER.with(|inner| {
-                    let len = inner.len();
-                    if len > 0 {
-                        return Err(SlotsRemaining(len));
-                    }
-                    Ok(())
-                })
-            }
-
-            /// Returns the number of currently allocated slots.
-            #[inline]
-            pub fn len() -> usize {
-                INNER.with(|inner| inner.len())
-            }
-
-            /// Returns true if no slots are allocated.
-            #[inline]
-            pub fn is_empty() -> bool {
-                Self::len() == 0
             }
 
             /// Returns the total capacity across all chunks.
@@ -522,18 +435,17 @@ macro_rules! unbounded_allocator {
         }
 
         // SAFETY: try_alloc grows the slab if needed, claims from chunk freelist,
-        // writes value, marks occupied. dealloc/dealloc_ptr return slot to correct
-        // chunk freelist and handle chunk availability tracking.
+        // writes value via union. dealloc/dealloc_ptr return slot to correct
+        // chunk freelist via union field write and handle chunk availability tracking.
         // slot_cell decodes the key and returns a valid pointer.
         // All operations are single-threaded (TLS).
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
 
-            #[allow(clippy::unnecessary_wraps)]
-            fn try_alloc(value: Self::Item) -> Result<*mut SlotCell<$ty>, $crate::alloc::Full<$ty>> {
-                INNER.with(|inner| {
-                    assert!(inner.is_initialized(), "allocator not initialized");
-
+            #[inline]
+            fn alloc(value: Self::Item) -> *mut SlotCell<$ty> {
+                // Pop from freelist — value stays on caller's stack, not captured
+                let slot_ptr = INNER.with(|inner| {
                     // Grow if needed (unbounded always succeeds)
                     if inner.head_with_space_is_none() {
                         inner.grow();
@@ -546,16 +458,9 @@ macro_rules! unbounded_allocator {
                     let slot_ptr = chunk_inner.free_head.get();
                     debug_assert!(!slot_ptr.is_null(), "chunk on freelist has no free slots");
 
-                    let slot = unsafe { &*slot_ptr };
-                    let next_free = slot.next_free();
-
-                    // Mark slot as occupied
-                    slot.set_occupied();
-
-                    // Write the value
-                    unsafe {
-                        slot.value.get().cast::<$ty>().write(value);
-                    }
+                    // SAFETY: slot_ptr came from the freelist. Slot is vacant,
+                    // so next_free is the active union field.
+                    let next_free = unsafe { (*slot_ptr).next_free };
 
                     // Update chunk's freelist head
                     chunk_inner.free_head.set(next_free);
@@ -565,8 +470,24 @@ macro_rules! unbounded_allocator {
                         inner.pop_head_chunk();
                     }
 
-                    Ok(slot_ptr)
-                })
+                    slot_ptr
+                });
+
+                // Write value outside closure — single memcpy from stack to slot
+                // SAFETY: Slot is claimed from freelist, we have exclusive access
+                unsafe {
+                    (*slot_ptr).value =
+                        std::mem::ManuallyDrop::new(std::mem::MaybeUninit::new(value));
+                }
+                slot_ptr
+            }
+
+            #[allow(clippy::unnecessary_wraps)]
+            #[inline]
+            fn try_alloc(
+                value: Self::Item,
+            ) -> Result<*mut SlotCell<$ty>, $crate::alloc::Full<$ty>> {
+                Ok(Self::alloc(value))
             }
 
             unsafe fn dealloc(key: Key) {
@@ -576,12 +497,12 @@ macro_rules! unbounded_allocator {
                     let chunk_inner = chunk.inner_ref();
 
                     let slot_ptr = chunk_inner.slots_ptr().add(local_idx as usize);
-                    let slot = unsafe { &*slot_ptr };
 
                     let free_head = chunk_inner.free_head.get();
                     let was_full = free_head.is_null();
 
-                    slot.set_vacant(free_head);
+                    // Write freelist link — overwrites value bytes (union semantics)
+                    (*slot_ptr).next_free = free_head;
                     chunk_inner.free_head.set(slot_ptr);
 
                     if was_full {
@@ -590,6 +511,7 @@ macro_rules! unbounded_allocator {
                 });
             }
 
+            #[inline]
             unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<$ty>) {
                 INNER.with(|inner| {
                     // SAFETY: Caller guarantees slot_ptr is valid and within this slab
@@ -597,6 +519,7 @@ macro_rules! unbounded_allocator {
                 });
             }
 
+            #[inline]
             unsafe fn slot_cell(key: Key) -> *mut SlotCell<$ty> {
                 INNER.with(|inner| {
                     let (chunk_idx, local_idx) = inner.decode(key.index());
@@ -609,20 +532,6 @@ macro_rules! unbounded_allocator {
                 INNER.with(|inner| {
                     // SAFETY: slot_ptr came from this slab's allocation
                     unsafe { inner.slot_to_index_global(slot_ptr) }
-                })
-            }
-
-            fn contains_key(key: Key) -> bool {
-                INNER.with(|inner| {
-                    let (chunk_idx, local_idx) = inner.decode(key.index());
-                    if !inner.chunk_exists(chunk_idx) {
-                        return false;
-                    }
-                    let chunk = inner.chunk(chunk_idx);
-                    if local_idx >= chunk.inner_ref().capacity() {
-                        return false;
-                    }
-                    chunk.inner_ref().slot(local_idx).is_occupied()
                 })
             }
         }

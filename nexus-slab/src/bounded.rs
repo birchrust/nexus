@@ -14,8 +14,9 @@
 //! ```
 
 use std::borrow::{Borrow, BorrowMut};
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
 use std::fmt;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
@@ -48,7 +49,7 @@ use crate::shared::{SLOT_NONE, SlotCell};
 #[doc(hidden)]
 pub struct SlabInner<T> {
     /// Slot storage. Wrapped in UnsafeCell for interior mutability during init.
-    slots: UnsafeCell<Vec<SlotCell<T>>>,
+    slots: std::cell::UnsafeCell<Vec<SlotCell<T>>>,
     /// Capacity. Wrapped in Cell so it can be set during init.
     capacity: Cell<u32>,
     /// Head of freelist - raw pointer for fast allocation.
@@ -74,7 +75,7 @@ impl<T> SlabInner<T> {
     #[inline]
     pub const fn new() -> Self {
         Self {
-            slots: UnsafeCell::new(Vec::new()),
+            slots: std::cell::UnsafeCell::new(Vec::new()),
             capacity: Cell::new(0),
             free_head: Cell::new(ptr::null_mut()),
         }
@@ -91,10 +92,7 @@ impl<T> SlabInner<T> {
     /// - Panics if capacity is zero
     /// - Panics if capacity exceeds maximum (SLOT_NONE)
     pub fn init(&self, capacity: u32) {
-        assert!(
-            self.capacity.get() == 0,
-            "SlabInner already initialized"
-        );
+        assert!(self.capacity.get() == 0, "SlabInner already initialized");
         assert!(capacity > 0, "capacity must be non-zero");
         assert!(capacity < SLOT_NONE, "capacity exceeds maximum");
 
@@ -102,23 +100,22 @@ impl<T> SlabInner<T> {
         // can be accessing slots. This is the only mutation point.
         let slots = unsafe { &mut *self.slots.get() };
 
-        // Allocate slots - initially all vacant
+        // Allocate slots — all initially vacant
         slots.reserve_exact(capacity as usize);
         for _ in 0..capacity {
-            slots.push(SlotCell::new_vacant(ptr::null_mut()));
+            slots.push(SlotCell::vacant(ptr::null_mut()));
         }
 
-        // Wire up the freelist with actual pointers
-        // Each slot points to the next slot, last slot points to NULL
+        // Wire up the freelist: each slot's next_free points to the next slot
         for i in 0..(capacity as usize - 1) {
             let next_ptr = slots.as_mut_ptr().wrapping_add(i + 1);
-            slots[i].set_vacant(next_ptr);
+            // Slot is vacant, we're building the freelist during init.
+            // Writing to a union field is safe when we own the value.
+            slots[i].next_free = next_ptr;
         }
-        // Last slot points to NULL (end of freelist)
-        slots[capacity as usize - 1].set_vacant(ptr::null_mut());
+        // Last slot points to NULL (end of freelist) — already null from vacant()
 
         let free_head = slots.as_mut_ptr(); // First slot
-
         self.capacity.set(capacity);
         self.free_head.set(free_head);
     }
@@ -139,59 +136,21 @@ impl<T> SlabInner<T> {
         inner
     }
 
-    /// Returns the current length (number of occupied slots).
-    ///
-    /// This scans all slots - O(n). Use only for diagnostics/shutdown, not hot path.
-    pub fn len(&self) -> u32 {
-        // SAFETY: We only read the slots, no mutation
-        let slots = unsafe { &*self.slots.get() };
-        slots
-            .iter()
-            .filter(|s| SlotCell::is_occupied(s))
-            .count() as u32
-    }
-
-    /// Returns true if no slots are occupied.
-    ///
-    /// This scans slots - O(n). Use only for diagnostics/shutdown, not hot path.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        // SAFETY: We only read the slots, no mutation
-        let slots = unsafe { &*self.slots.get() };
-        slots.iter().all(SlotCell::is_vacant)
-    }
-
     /// Returns the capacity.
     #[inline]
     pub fn capacity(&self) -> u32 {
         self.capacity.get()
     }
 
-    /// Returns true if the slab is full.
-    #[inline]
-    pub fn is_full(&self) -> bool {
-        self.free_head.get().is_null()
-    }
-
     /// Returns the base pointer to the slots array.
     ///
-    /// Returns mutable pointer because slot mutation uses `Cell` interior mutability.
+    /// Returns mutable pointer because slot mutation uses raw pointer access.
     #[doc(hidden)]
     #[inline]
     pub fn slots_ptr(&self) -> *mut SlotCell<T> {
-        // SAFETY: We're returning a pointer for use with Cell-based interior mutability
+        // SAFETY: We're returning a pointer for use with raw pointer access
         let slots = unsafe { &*self.slots.get() };
         slots.as_ptr().cast_mut()
-    }
-
-    /// Gets a slot by index. Used for key-based operations.
-    #[doc(hidden)]
-    #[inline]
-    pub fn slot(&self, index: u32) -> &SlotCell<T> {
-        debug_assert!(index < self.capacity.get());
-        // SAFETY: We only read the slot, bounds checked by debug_assert
-        let slots = unsafe { &*self.slots.get() };
-        unsafe { slots.get_unchecked(index as usize) }
     }
 
     /// Converts a slot pointer to its index (key).
@@ -214,7 +173,7 @@ impl<T> SlabInner<T> {
     // Allocation methods
     // =========================================================================
 
-    /// Claims a slot, writes the value, and marks it occupied.
+    /// Claims a slot and writes the value.
     ///
     /// Returns `Err(Full(value))` if the slab is full.
     pub fn try_alloc(&self, value: T) -> Result<*mut SlotCell<T>, Full<T>> {
@@ -224,17 +183,14 @@ impl<T> SlabInner<T> {
             return Err(Full(value));
         }
 
-        // SAFETY: slot_ptr came from the freelist within this slab
-        let slot = unsafe { &*slot_ptr };
-        let next_free = slot.next_free();
+        // SAFETY: slot_ptr came from the freelist within this slab.
+        // The slot is vacant, so next_free is the active union field.
+        let next_free = unsafe { (*slot_ptr).next_free };
 
-        // Mark slot as occupied
-        slot.set_occupied();
-
-        // Write the value
-        // SAFETY: Slot is claimed, value area is uninitialized
+        // Write the value — this overwrites next_free (union semantics)
+        // SAFETY: Slot is claimed from freelist, we have exclusive access
         unsafe {
-            slot.value.get().cast::<T>().write(value);
+            (*slot_ptr).value = ManuallyDrop::new(MaybeUninit::new(value));
         }
 
         // Update freelist head
@@ -254,10 +210,12 @@ impl<T> SlabInner<T> {
     pub unsafe fn dealloc(&self, key: Key) {
         let index = key.index();
         let slot_ptr = unsafe { self.slots_ptr().add(index as usize) };
-        let slot = unsafe { &*slot_ptr };
 
+        // Write freelist link — overwrites value bytes (union semantics)
         let free_head = self.free_head.get();
-        slot.set_vacant(free_head);
+        unsafe {
+            (*slot_ptr).next_free = free_head;
+        }
         self.free_head.set(slot_ptr);
     }
 
@@ -272,11 +230,11 @@ impl<T> SlabInner<T> {
     /// - Value must already be dropped or moved out
     #[doc(hidden)]
     pub unsafe fn dealloc_ptr(&self, slot_ptr: *mut SlotCell<T>) {
-        // SAFETY: Caller guarantees slot_ptr is valid and within this slab
-        let slot = unsafe { &*slot_ptr };
-
+        // Write freelist link — overwrites value bytes (union semantics)
         let free_head = self.free_head.get();
-        slot.set_vacant(free_head);
+        unsafe {
+            (*slot_ptr).next_free = free_head;
+        }
         self.free_head.set(slot_ptr);
     }
 
@@ -289,15 +247,6 @@ impl<T> SlabInner<T> {
     #[inline]
     pub unsafe fn slot_cell(&self, key: Key) -> *mut SlotCell<T> {
         unsafe { self.slots_ptr().add(key.index() as usize) }
-    }
-
-    /// Checks if a key refers to an occupied slot.
-    pub fn contains_key(&self, key: Key) -> bool {
-        let index = key.index();
-        if index >= self.capacity.get() {
-            return false;
-        }
-        self.slot(index).is_occupied()
     }
 }
 
@@ -380,93 +329,16 @@ impl<T: 'static> Slab<T> {
         })
     }
 
-    /// Returns the number of occupied slots.
-    ///
-    /// O(n) scan. Use for diagnostics, not hot path.
-    pub fn len(&self) -> usize {
-        self.inner.len() as usize
-    }
-
-    /// Returns true if no slots are occupied.
-    ///
-    /// O(n) scan.
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
     /// Returns the capacity.
     #[inline]
     pub fn capacity(&self) -> usize {
         self.inner.capacity() as usize
-    }
-
-    /// Returns true if the slab is full.
-    #[inline]
-    pub fn is_full(&self) -> bool {
-        self.inner.is_full()
-    }
-
-    /// Checks if a key refers to an occupied slot.
-    #[inline]
-    pub fn contains_key(&self, key: Key) -> bool {
-        self.inner.contains_key(key)
-    }
-
-    /// Gets a reference to a value by key.
-    ///
-    /// Returns `None` if the key is invalid or the slot is vacant.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure no mutable references to this slot exist.
-    #[inline]
-    pub unsafe fn get_by_key(&self, key: Key) -> Option<&T> {
-        if !self.contains_key(key) {
-            return None;
-        }
-        let slot_cell = unsafe { self.inner.slot_cell(key) };
-        Some(unsafe { (*slot_cell).get_value() })
-    }
-
-    /// Gets a mutable reference to a value by key.
-    ///
-    /// Returns `None` if the key is invalid or the slot is vacant.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure no other references to this slot exist.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_by_key_mut(&self, key: Key) -> Option<&mut T> {
-        if !self.contains_key(key) {
-            return None;
-        }
-        let slot_cell = unsafe { self.inner.slot_cell(key) };
-        Some(unsafe { (*slot_cell).get_value_mut() })
-    }
-
-    /// Removes a value by key, returning it.
-    ///
-    /// Returns `None` if the key is invalid or the slot is vacant.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure no references to this slot exist.
-    pub unsafe fn remove_by_key(&self, key: Key) -> Option<T> {
-        if !self.contains_key(key) {
-            return None;
-        }
-        let slot_cell = unsafe { self.inner.slot_cell(key) };
-        let value = unsafe { ptr::read((*slot_cell).value_ptr()) };
-        unsafe { self.inner.dealloc(key) };
-        Some(value)
     }
 }
 
 impl<T: 'static> fmt::Debug for Slab<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Slab")
-            .field("len", &self.inner.len())
             .field("capacity", &self.inner.capacity())
             .finish()
     }
@@ -504,7 +376,7 @@ impl<T: 'static> Slot<T> {
     /// Leaks the slot, keeping the data alive and returning its key.
     ///
     /// After calling `leak()`, the slot remains occupied but has no
-    /// Slot owner. Access the data via the slab's key-based methods.
+    /// Slot owner. Access the data via key-based methods on the allocator.
     #[inline]
     pub fn leak(self) -> Key {
         let key = self.key();
@@ -514,11 +386,8 @@ impl<T: 'static> Slot<T> {
 
     /// Consumes the slot, returning the value and deallocating.
     pub fn into_inner(self) -> T {
-        // SAFETY: Slot owns the value
-        let value = unsafe {
-            let slot = &*self.slot_ptr;
-            ptr::read(slot.value_ptr())
-        };
+        // SAFETY: Slot owns the value, union field `value` is active
+        let value = unsafe { ptr::read((*self.slot_ptr).value.as_ptr()) };
 
         // SAFETY: Value moved out, slot_ptr valid
         unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
@@ -530,30 +399,22 @@ impl<T: 'static> Slot<T> {
     /// Replaces the value, returning the old one.
     #[inline]
     pub fn replace(&mut self, value: T) -> T {
-        // SAFETY: We own the slot exclusively (&mut self)
+        // SAFETY: We own the slot exclusively (&mut self), union field `value` is active
         unsafe {
-            let slot = &*self.slot_ptr;
-            let ptr = slot.value_ptr_mut();
-            let old = ptr::read(ptr);
-            ptr::write(ptr, value);
+            let val_ptr = (*(*self.slot_ptr).value).as_mut_ptr();
+            let old = ptr::read(val_ptr);
+            ptr::write(val_ptr, value);
             old
         }
-    }
-
-    #[inline]
-    fn slot_cell(&self) -> &SlotCell<T> {
-        // SAFETY: Slot holds a valid slot pointer
-        unsafe { &*self.slot_ptr }
     }
 }
 
 impl<T: 'static> Drop for Slot<T> {
     fn drop(&mut self) {
         // Drop the value
-        // SAFETY: We own the slot, value is initialized
+        // SAFETY: We own the slot, union field `value` is active (slot is occupied)
         unsafe {
-            let slot = &*self.slot_ptr;
-            ptr::drop_in_place(slot.value_ptr_mut());
+            ptr::drop_in_place((*(*self.slot_ptr).value).as_mut_ptr());
         }
 
         // Return slot to freelist by pointer (no key round-trip)
@@ -567,16 +428,16 @@ impl<T: 'static> Deref for Slot<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        // SAFETY: Slot owns the slot, value is initialized
-        unsafe { self.slot_cell().get_value() }
+        // SAFETY: Slot owns this slot, union field `value` is active
+        unsafe { (*self.slot_ptr).value.assume_init_ref() }
     }
 }
 
 impl<T: 'static> DerefMut for Slot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Slot owns the slot, &mut ensures exclusivity
-        unsafe { self.slot_cell().get_value_mut() }
+        // SAFETY: Slot owns this slot exclusively, union field `value` is active
+        unsafe { (*(*self.slot_ptr).value).assume_init_mut() }
     }
 }
 
@@ -628,16 +489,10 @@ mod tests {
     #[test]
     fn slab_basic() {
         let slab = Slab::<u64>::new(100);
-        assert_eq!(slab.len(), 0);
         assert_eq!(slab.capacity(), 100);
-        assert!(slab.is_empty());
 
         let slot = slab.new_slot(42);
         assert_eq!(*slot, 42);
-        assert_eq!(slab.len(), 1);
-
-        drop(slot);
-        assert_eq!(slab.len(), 0);
     }
 
     #[test]
@@ -645,7 +500,6 @@ mod tests {
         let slab = Slab::<u64>::new(2);
         let _s1 = slab.new_slot(1);
         let _s2 = slab.new_slot(2);
-        assert!(slab.is_full());
 
         let result = slab.try_new_slot(3);
         assert!(result.is_err());
@@ -670,23 +524,15 @@ mod tests {
 
         let leaked_key = slot.leak();
         assert_eq!(key, leaked_key);
-        assert_eq!(slab.len(), 1);
-
-        // Clean up via key
-        let value = unsafe { slab.remove_by_key(leaked_key) };
-        assert_eq!(value, Some(42));
-        assert_eq!(slab.len(), 0);
     }
 
     #[test]
     fn slot_into_inner() {
         let slab = Slab::<String>::new(10);
         let slot = slab.new_slot("hello".to_string());
-        assert_eq!(slab.len(), 1);
 
         let value = slot.into_inner();
         assert_eq!(value, "hello");
-        assert_eq!(slab.len(), 0);
     }
 
     #[test]
@@ -699,29 +545,12 @@ mod tests {
     }
 
     #[test]
-    fn key_based_access() {
-        let slab = Slab::<u64>::new(10);
-        let slot = slab.new_slot(42);
-        let key = slot.leak();
-
-        assert!(slab.contains_key(key));
-        assert_eq!(unsafe { slab.get_by_key(key) }, Some(&42));
-
-        let value = unsafe { slab.remove_by_key(key) };
-        assert_eq!(value, Some(42));
-        assert!(!slab.contains_key(key));
-    }
-
-    #[test]
     fn slab_is_copy() {
         let slab = Slab::<u64>::new(10);
-        let slab2 = slab; // Copy
-        let slab3 = slab; // Copy again
+        let _slab2 = slab; // Copy
+        let _slab3 = slab; // Copy again
 
-        let slot = slab.new_slot(42);
-        assert_eq!(slab2.len(), 1);
-        assert_eq!(slab3.len(), 1);
-        drop(slot);
+        let _slot = slab.new_slot(42);
     }
 
     #[test]
@@ -735,7 +564,6 @@ mod tests {
         let _s = slab.new_slot(42);
         let debug = format!("{:?}", slab);
         assert!(debug.contains("Slab"));
-        assert!(debug.contains("len"));
         assert!(debug.contains("capacity"));
     }
 

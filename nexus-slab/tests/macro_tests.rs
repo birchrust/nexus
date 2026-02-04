@@ -16,7 +16,6 @@ impl Order {
     }
 }
 
-
 // =============================================================================
 // Create test allocator modules
 // =============================================================================
@@ -24,7 +23,6 @@ impl Order {
 mod order_alloc {
     nexus_slab::bounded_allocator!(super::Order);
 }
-
 
 // =============================================================================
 // Tests
@@ -39,19 +37,14 @@ fn test_basic_alloc_dealloc() {
 
     assert!(order_alloc::Allocator::is_initialized());
     assert_eq!(order_alloc::Allocator::capacity(), 10);
-    assert_eq!(order_alloc::Allocator::len(), 0);
 
     let slot = order_alloc::Slot::new(Order::new(1, 100.0));
-    assert_eq!(order_alloc::Allocator::len(), 1);
 
     // Deref works
     assert_eq!(slot.id, 1);
     assert_eq!(slot.price, 100.0);
 
     drop(slot);
-    assert_eq!(order_alloc::Allocator::len(), 0);
-
-    order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -68,7 +61,6 @@ fn test_deref_mut() {
     assert_eq!(slot.price, 200.0);
 
     drop(slot);
-    order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -79,16 +71,10 @@ fn test_into_inner() {
         .expect("init should succeed");
 
     let slot = order_alloc::Slot::new(Order::new(42, 99.99));
-    assert_eq!(order_alloc::Allocator::len(), 1);
 
     let order = slot.into_inner();
     assert_eq!(order.id, 42);
     assert_eq!(order.price, 99.99);
-
-    // Slot should be deallocated
-    assert_eq!(order_alloc::Allocator::len(), 0);
-
-    order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -101,14 +87,8 @@ fn test_leak_and_key_access() {
     let slot = order_alloc::Slot::new(Order::new(123, 456.78));
     let key = slot.key();
 
-    assert!(order_alloc::Slot::contains_key(key));
-
     let leaked_key = slot.leak();
     assert_eq!(key, leaked_key);
-
-    // Still valid after leak
-    assert!(order_alloc::Slot::contains_key(key));
-    assert_eq!(order_alloc::Allocator::len(), 1);
 
     // Access via key
     let order = unsafe { order_alloc::Slot::from_key(key) };
@@ -117,9 +97,6 @@ fn test_leak_and_key_access() {
     // Remove by key
     let order = unsafe { order_alloc::Slot::remove_by_key(key) };
     assert_eq!(order.id, 123);
-    assert_eq!(order_alloc::Allocator::len(), 0);
-
-    order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 // Each drop-tracking test gets its own module to avoid global counter races
@@ -135,8 +112,12 @@ mod drop_called_test {
         }
     }
 
-    pub fn reset() { COUNT.store(0, Ordering::SeqCst); }
-    pub fn count() -> usize { COUNT.load(Ordering::SeqCst) }
+    pub fn reset() {
+        COUNT.store(0, Ordering::SeqCst);
+    }
+    pub fn count() -> usize {
+        COUNT.load(Ordering::SeqCst)
+    }
 
     pub mod alloc {
         nexus_slab::bounded_allocator!(super::Tracker);
@@ -155,8 +136,12 @@ mod drop_leak_test {
         }
     }
 
-    pub fn reset() { COUNT.store(0, Ordering::SeqCst); }
-    pub fn count() -> usize { COUNT.load(Ordering::SeqCst) }
+    pub fn reset() {
+        COUNT.store(0, Ordering::SeqCst);
+    }
+    pub fn count() -> usize {
+        COUNT.load(Ordering::SeqCst)
+    }
 
     pub mod alloc {
         nexus_slab::bounded_allocator!(super::Tracker);
@@ -178,8 +163,6 @@ fn test_drop_called() {
     }
 
     assert_eq!(drop_called_test::count(), 1);
-
-    drop_called_test::alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -199,8 +182,6 @@ fn test_drop_not_called_after_leak() {
     // Manual cleanup
     let _ = unsafe { drop_leak_test::alloc::Slot::remove_by_key(key) };
     assert_eq!(drop_leak_test::count(), 1); // Dropped when remove_by_key returns
-
-    drop_leak_test::alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -213,8 +194,6 @@ fn test_capacity_full() {
     let slot1 = order_alloc::Slot::new(Order::new(1, 1.0));
     let slot2 = order_alloc::Slot::new(Order::new(2, 2.0));
 
-    assert!(order_alloc::Allocator::is_full());
-
     // Should fail - use try_new to get Full(value) back
     let result = order_alloc::Slot::try_new(Order::new(3, 3.0));
     assert!(result.is_err());
@@ -222,7 +201,6 @@ fn test_capacity_full() {
     assert_eq!(recovered.id, 3);
 
     drop(slot1);
-    assert!(!order_alloc::Allocator::is_full());
 
     // Now should succeed
     let slot3 = order_alloc::Slot::new(Order::new(3, 3.0));
@@ -230,8 +208,6 @@ fn test_capacity_full() {
 
     drop(slot2);
     drop(slot3);
-
-    order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -249,29 +225,6 @@ fn test_already_initialized_error() {
     let result = local_alloc::Allocator::builder().capacity(20).build();
 
     assert!(result.is_err());
-
-    local_alloc::Allocator::shutdown().expect("shutdown should succeed");
-}
-
-#[test]
-fn test_shutdown_with_outstanding_slots() {
-    mod local_alloc {
-        nexus_slab::bounded_allocator!(super::Order);
-    }
-
-    local_alloc::Allocator::builder()
-        .capacity(10)
-        .build()
-        .expect("init should succeed");
-
-    let _slot = local_alloc::Slot::new(Order::new(1, 1.0));
-
-    let result = local_alloc::Allocator::shutdown();
-    assert!(result.is_err());
-
-    // Cleanup
-    drop(_slot);
-    local_alloc::Allocator::shutdown().expect("shutdown should succeed after cleanup");
 }
 
 #[test]
@@ -299,7 +252,6 @@ fn test_borrow_traits() {
     assert_eq!(as_ref.id, 1);
 
     drop(slot);
-    order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 // =============================================================================
@@ -309,7 +261,6 @@ fn test_borrow_traits() {
 mod unbounded_order_alloc {
     nexus_slab::unbounded_allocator!(super::Order);
 }
-
 
 // =============================================================================
 // Unbounded allocator tests
@@ -322,20 +273,15 @@ fn test_unbounded_basic_alloc_dealloc() {
         .expect("init should succeed");
 
     assert!(unbounded_order_alloc::Allocator::is_initialized());
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 0);
 
     // Unbounded Slot::new always succeeds (no Option)
     let slot = unbounded_order_alloc::Slot::new(Order::new(1, 100.0));
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 1);
 
     // Deref works
     assert_eq!(slot.id, 1);
     assert_eq!(slot.price, 100.0);
 
     drop(slot);
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 0);
-
-    unbounded_order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -351,7 +297,6 @@ fn test_unbounded_deref_mut() {
     assert_eq!(slot.price, 200.0);
 
     drop(slot);
-    unbounded_order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -361,16 +306,10 @@ fn test_unbounded_into_inner() {
         .expect("init should succeed");
 
     let slot = unbounded_order_alloc::Slot::new(Order::new(42, 99.99));
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 1);
 
     let order = slot.into_inner();
     assert_eq!(order.id, 42);
     assert_eq!(order.price, 99.99);
-
-    // Slot should be deallocated
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 0);
-
-    unbounded_order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -382,14 +321,8 @@ fn test_unbounded_leak_and_key_access() {
     let slot = unbounded_order_alloc::Slot::new(Order::new(123, 456.78));
     let key = slot.key();
 
-    assert!(unbounded_order_alloc::Slot::contains_key(key));
-
     let leaked_key = slot.leak();
     assert_eq!(key, leaked_key);
-
-    // Still valid after leak
-    assert!(unbounded_order_alloc::Slot::contains_key(key));
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 1);
 
     // Access via key
     let order = unsafe { unbounded_order_alloc::Slot::from_key(key) };
@@ -398,9 +331,6 @@ fn test_unbounded_leak_and_key_access() {
     // Remove by key
     let order = unsafe { unbounded_order_alloc::Slot::remove_by_key(key) };
     assert_eq!(order.id, 123);
-    assert_eq!(unbounded_order_alloc::Allocator::len(), 0);
-
-    unbounded_order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 mod unbounded_drop_test {
@@ -415,8 +345,12 @@ mod unbounded_drop_test {
         }
     }
 
-    pub fn reset() { COUNT.store(0, Ordering::SeqCst); }
-    pub fn count() -> usize { COUNT.load(Ordering::SeqCst) }
+    pub fn reset() {
+        COUNT.store(0, Ordering::SeqCst);
+    }
+    pub fn count() -> usize {
+        COUNT.load(Ordering::SeqCst)
+    }
 
     pub mod alloc {
         nexus_slab::unbounded_allocator!(super::Tracker);
@@ -437,8 +371,6 @@ fn test_unbounded_drop_called() {
     }
 
     assert_eq!(unbounded_drop_test::count(), 1);
-
-    unbounded_drop_test::alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -459,15 +391,11 @@ fn test_unbounded_grows_automatically() {
         slots.push(slot);
     }
 
-    assert_eq!(local_alloc::Allocator::len(), 10);
     // Capacity should have grown (at least 3 chunks of 4 = 12)
     assert!(local_alloc::Allocator::capacity() >= 10);
 
     // Drop all slots
     slots.clear();
-    assert_eq!(local_alloc::Allocator::len(), 0);
-
-    local_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -487,21 +415,15 @@ fn test_unbounded_chunk_freelist_maintenance() {
     // This should trigger growth to second chunk
     let slot3 = local_alloc::Slot::new(Order::new(3, 3.0));
 
-    assert_eq!(local_alloc::Allocator::len(), 3);
-
     // Free slot from first chunk - should add it back to available list
     drop(slot1);
-    assert_eq!(local_alloc::Allocator::len(), 2);
 
     // Next allocation should reuse the freed slot in first chunk
     let slot4 = local_alloc::Slot::new(Order::new(4, 4.0));
-    assert_eq!(local_alloc::Allocator::len(), 3);
 
     drop(slot2);
     drop(slot3);
     drop(slot4);
-
-    local_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -516,8 +438,6 @@ fn test_unbounded_already_initialized_error() {
 
     let result = local_alloc::Allocator::builder().build();
     assert!(result.is_err());
-
-    local_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 #[test]
@@ -544,7 +464,6 @@ fn test_unbounded_borrow_traits() {
     assert_eq!(as_ref.id, 1);
 
     drop(slot);
-    unbounded_order_alloc::Allocator::shutdown().expect("shutdown should succeed");
 }
 
 // =============================================================================
