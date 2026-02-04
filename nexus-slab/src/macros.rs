@@ -312,26 +312,70 @@ macro_rules! bounded_allocator {
 
         impl $crate::BoundedAlloc for Allocator {}
 
-        // Borrow/BorrowMut must be implemented here (not generically) because
-        // the blanket `impl<T> Borrow<T> for T` conflicts with generic impls.
-        impl std::borrow::Borrow<$ty> for $crate::alloc::Slot<Allocator> {
-            #[inline]
-            fn borrow(&self) -> &$ty {
-                self
-            }
-        }
-
-        impl std::borrow::BorrowMut<$ty> for $crate::alloc::Slot<Allocator> {
-            #[inline]
-            fn borrow_mut(&mut self) -> &mut $ty {
-                self
-            }
-        }
-
         /// RAII handle to a slab-allocated value.
         ///
         /// Type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot).
         pub type Slot = $crate::alloc::Slot<Allocator>;
+    };
+}
+
+/// Generates a bounded (fixed-capacity) reference-counted slab allocator.
+///
+/// Wraps [`bounded_allocator!`] with `RcInner<$ty>` and adds `RcSlot`/`WeakSlot`
+/// type aliases.
+///
+/// # Example
+///
+/// ```ignore
+/// mod order_alloc {
+///     nexus_slab::bounded_rc_allocator!(super::Order);
+/// }
+///
+/// order_alloc::Allocator::builder().capacity(10_000).build()?;
+/// let rc = order_alloc::RcSlot::new(Order { id: 1, price: 100.0 });
+/// let weak = rc.downgrade();
+/// let rc2 = rc.clone();
+/// ```
+#[macro_export]
+macro_rules! bounded_rc_allocator {
+    ($ty:ty) => {
+        $crate::bounded_allocator!($crate::RcInner<$ty>);
+
+        /// Strong reference-counted handle to a slab-allocated value.
+        pub type RcSlot = $crate::alloc::RcSlot<Allocator, $ty>;
+        /// Weak reference to a slab-allocated value.
+        pub type WeakSlot = $crate::alloc::WeakSlot<Allocator, $ty>;
+        /// Permanent reference to a leaked slab-allocated value.
+        pub type LocalStatic = $crate::alloc::LocalStatic<$ty>;
+    };
+}
+
+/// Generates an unbounded (growable) reference-counted slab allocator.
+///
+/// Wraps [`unbounded_allocator!`] with `RcInner<$ty>` and adds `RcSlot`/`WeakSlot`
+/// type aliases.
+///
+/// # Example
+///
+/// ```ignore
+/// mod order_alloc {
+///     nexus_slab::unbounded_rc_allocator!(super::Order);
+/// }
+///
+/// order_alloc::Allocator::builder().chunk_size(4096).build()?;
+/// let rc = order_alloc::RcSlot::new(Order { id: 1, price: 100.0 });
+/// ```
+#[macro_export]
+macro_rules! unbounded_rc_allocator {
+    ($ty:ty) => {
+        $crate::unbounded_allocator!($crate::RcInner<$ty>);
+
+        /// Strong reference-counted handle to a slab-allocated value.
+        pub type RcSlot = $crate::alloc::RcSlot<Allocator, $ty>;
+        /// Weak reference to a slab-allocated value.
+        pub type WeakSlot = $crate::alloc::WeakSlot<Allocator, $ty>;
+        /// Permanent reference to a leaked slab-allocated value.
+        pub type LocalStatic = $crate::alloc::LocalStatic<$ty>;
     };
 }
 
@@ -537,22 +581,6 @@ macro_rules! unbounded_allocator {
         }
 
         impl $crate::UnboundedAlloc for Allocator {}
-
-        // Borrow/BorrowMut must be implemented here (not generically) because
-        // the blanket `impl<T> Borrow<T> for T` conflicts with generic impls.
-        impl std::borrow::Borrow<$ty> for $crate::alloc::Slot<Allocator> {
-            #[inline]
-            fn borrow(&self) -> &$ty {
-                self
-            }
-        }
-
-        impl std::borrow::BorrowMut<$ty> for $crate::alloc::Slot<Allocator> {
-            #[inline]
-            fn borrow_mut(&mut self) -> &mut $ty {
-                self
-            }
-        }
 
         /// RAII handle to a slab-allocated value.
         ///
