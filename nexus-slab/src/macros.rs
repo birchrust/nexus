@@ -1,702 +1,562 @@
-//! Macro for creating TLS-based global allocators.
+//! Allocator macros and builder types.
 //!
-//! The `create_allocator!` macro generates a module with thread-local slab
-//! storage and a lightweight `Slot` handle (8 bytes).
+//! This module provides:
+//! - [`bounded_allocator!`] - generates a bounded (fixed-capacity) allocator
+//! - [`unbounded_allocator!`] - generates an unbounded (growable) allocator
 //!
-//! # Example
+//! # Usage Pattern
 //!
 //! ```ignore
-//! use nexus_slab::create_allocator;
+//! // In your types module, create an allocator submodule
+//! pub mod alloc {
+//!     nexus_slab::bounded_allocator!(super::Order);
+//! }
 //!
-//! // Create an allocator for the Order type
-//! create_allocator!(order_alloc, Order);
+//! // Initialize at startup
+//! alloc::Allocator::builder()
+//!     .capacity(10_000)
+//!     .build()?;
 //!
-//! // Initialize at boot time
-//! order_alloc::init().bounded(1024).build();
-//!
-//! // Use the allocator
-//! let slot = order_alloc::insert(Order::new());
-//! let key = slot.key();
+//! // Use like Box
+//! let slot = alloc::Slot::new(Order { ... })?;
+//! println!("{}", slot.price);  // Deref
 //! ```
 
-/// Creates a TLS-based allocator module for a specific type.
+use std::error::Error;
+use std::fmt;
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// Error returned when attempting to initialize an already-initialized allocator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlreadyInitialized;
+
+impl fmt::Display for AlreadyInitialized {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "allocator already initialized")
+    }
+}
+
+impl Error for AlreadyInitialized {}
+
+// =============================================================================
+// Builder Types
+// =============================================================================
+
+/// Builder for bounded allocator configuration.
 ///
-/// # Syntax
+/// Created by `Allocator::builder()` in macro-generated code.
+#[derive(Debug)]
+pub struct BoundedBuilder {
+    capacity: Option<usize>,
+}
+
+impl BoundedBuilder {
+    /// Creates a new builder.
+    #[inline]
+    pub const fn new() -> Self {
+        Self { capacity: None }
+    }
+
+    /// Sets the capacity (required).
+    ///
+    /// # Panics
+    ///
+    /// `build()` will panic if capacity is not set.
+    #[inline]
+    pub const fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = Some(capacity);
+        self
+    }
+
+    /// Returns the configured capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if capacity was not set.
+    #[inline]
+    pub fn get_capacity(&self) -> usize {
+        self.capacity.expect("capacity must be set before build()")
+    }
+}
+
+impl Default for BoundedBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Builder for unbounded allocator configuration.
+///
+/// Created by `Allocator::builder()` in macro-generated code.
+#[derive(Debug)]
+pub struct UnboundedBuilder {
+    chunk_size: usize,
+}
+
+impl UnboundedBuilder {
+    /// Default chunk size (4096 slots per chunk).
+    pub const DEFAULT_CHUNK_SIZE: usize = 4096;
+
+    /// Creates a new builder with default settings.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            chunk_size: Self::DEFAULT_CHUNK_SIZE,
+        }
+    }
+
+    /// Sets the chunk size (optional, defaults to 4096).
+    ///
+    /// Chunks are allocated when the allocator grows. Larger chunks
+    /// mean fewer allocations but more memory per growth step.
+    #[inline]
+    pub const fn chunk_size(mut self, size: usize) -> Self {
+        self.chunk_size = size;
+        self
+    }
+
+    /// Returns the configured chunk size.
+    #[inline]
+    pub const fn get_chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+}
+
+impl Default for UnboundedBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// Macros
+// =============================================================================
+
+/// Generates a bounded (fixed-capacity) slab allocator for a type.
+///
+/// This macro creates a module with:
+/// - `Allocator` - unit struct with static methods for lifecycle management
+/// - `Slot` - type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot)
+///
+/// # Example
 ///
 /// ```ignore
-/// create_allocator!(module_name, Type);
+/// // Define your type
+/// pub struct Order {
+///     pub id: u64,
+///     pub price: f64,
+/// }
+///
+/// // Create allocator module
+/// pub mod alloc {
+///     nexus_slab::bounded_allocator!(super::Order);
+/// }
+///
+/// // Initialize at startup
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     alloc::Allocator::builder()
+///         .capacity(10_000)
+///         .build()?;
+///
+///     // Use
+///     let slot = alloc::Slot::new(Order { id: 1, price: 100.0 });
+///     println!("Order price: {}", slot.price);  // Deref
+///
+///     Ok(())
+/// }
 /// ```
-///
-/// # Generated API
-///
-/// The macro generates a module with:
-///
-/// - `init() -> UnconfiguredBuilder` - Start configuring the allocator
-/// - `insert(value: T) -> Slot` - Insert a value (panics if not initialized or full)
-/// - `try_insert(value: T) -> Option<Slot>` - Insert a value (returns None if full)
-/// - `contains_key(key: Key) -> bool` - Check if key is valid
-/// - `unsafe fn get(key: Key) -> Option<&'static T>` - Get reference (checked)
-/// - `unsafe fn get_mut(key: Key) -> Option<&'static mut T>` - Get mutable reference (checked)
-/// - `unsafe fn get_unchecked(key: Key) -> &'static T` - Get reference (unchecked)
-/// - `unsafe fn get_unchecked_mut(key: Key) -> &'static mut T` - Get mutable reference (unchecked)
-/// - `unsafe fn try_remove_by_key(key: Key) -> Option<T>` - Remove and return value (checked)
-/// - `unsafe fn remove_by_key(key: Key) -> T` - Remove and return value (unchecked)
-/// - `shutdown() -> Result<(), SlotsRemaining>` - Shutdown the allocator
-/// - `Slot` - RAII handle (8 bytes)
-///
-/// # Builder Pattern
-///
-/// ```ignore
-/// // Bounded slab (fixed capacity)
-/// my_alloc::init()
-///     .bounded(1024)
-///     .build();
-///
-/// // Unbounded slab (growable)
-/// my_alloc::init()
-///     .unbounded()
-///     .chunk_capacity(4096)
-///     .capacity(10_000)  // pre-allocate
-///     .build();
-/// ```
-///
-/// # Safety
-///
-/// **Do not store `Slot` in `thread_local!`**. Rust drops stack variables before
-/// TLS, so slots on the stack will drop correctly. But if both Slot and the slab
-/// are in TLS, drop order is unspecified and may cause UB.
-///
-/// # Thread Safety
-///
-/// Each thread has its own allocator instance. The allocator is `!Send` and `!Sync`.
 #[macro_export]
-macro_rules! create_allocator {
-    ($name:ident, $T:ty) => {
-        pub mod $name {
-            use std::cell::{Cell, RefCell};
+macro_rules! bounded_allocator {
+    ($ty:ty) => {
+        use $crate::Key;
+        use $crate::SlotCell;
+        use $crate::bounded::SlabInner as BoundedSlabInner;
+        use $crate::macros::AlreadyInitialized;
 
-            use $crate::shared::{ClaimedSlot, SlotCell, VTable, VACANT_BIT};
-            use $crate::Key;
+        thread_local! {
+            static INNER: BoundedSlabInner<$ty> = const { BoundedSlabInner::new() };
+        }
 
-            // =================================================================
-            // TLS Storage
-            // =================================================================
+        /// Unit struct providing static methods for allocator lifecycle.
+        pub struct Allocator;
 
-            /// Internal storage enum for bounded vs unbounded.
-            enum SlabStorage {
-                Bounded($crate::bounded::BoundedSlabInner<$T>),
-                Unbounded(Box<$crate::unbounded::SlabInner<$T>>),
-            }
+        /// Builder for configuring this allocator.
+        pub struct Builder {
+            capacity: Option<usize>,
+        }
 
-            thread_local! {
-                /// The slab storage. Only touched during init/shutdown.
-                static SLAB: RefCell<Option<SlabStorage>> = const { RefCell::new(None) };
-
-                /// Cached VTable pointer for fast hot-path access.
-                static VTABLE: Cell<*const VTable<$T>> = const { Cell::new(std::ptr::null()) };
-            }
-
-            // =================================================================
-            // Slot (8 bytes)
-            // =================================================================
-
-            /// RAII handle to an occupied slot.
-            ///
-            /// When dropped, the slot is returned to the freelist.
-            /// Use [`leak()`](Self::leak) to keep the data alive.
-            ///
-            /// # Size
-            ///
-            /// 8 bytes (single pointer). The VTable is looked up from TLS.
-            #[must_use = "dropping Slot deallocates the slot"]
-            pub struct Slot {
-                slot: *mut SlotCell<$T>,
-            }
-
-            impl Slot {
-                #[inline]
-                fn slot(&self) -> &SlotCell<$T> {
-                    // SAFETY: Slot holds a valid slot pointer
-                    unsafe { &*self.slot }
-                }
-
-                /// Returns the key for this slot.
-                #[inline]
-                pub fn key(&self) -> Key {
-                    Key::new(self.slot().key_from_stamp())
-                }
-
-                /// Returns the raw pointer to the underlying `SlotCell`.
-                ///
-                /// This pointer remains valid as long as the slot is not freed.
-                /// Use with [`Slot::leak()`] to keep the slot alive while storing
-                /// the pointer for direct access.
-                ///
-                /// # Example
-                ///
-                /// ```ignore
-                /// let slot = my_alloc::try_insert(value)?;
-                /// let ptr = slot.slot_ptr();  // grab pointer
-                /// let key = slot.leak();       // keep alive
-                ///
-                /// // Later: direct access via pointer (no TLS lookup)
-                /// let value = unsafe { (*ptr).get_value() };
-                /// ```
-                #[inline]
-                pub fn slot_ptr(&self) -> *mut SlotCell<$T> {
-                    self.slot
-                }
-
-                /// Leaks the slot, keeping the data alive and returning its key.
-                ///
-                /// After calling `leak()`, the slot remains occupied but has no
-                /// Slot owner. Access the data via key-based functions.
-                #[inline]
-                pub fn leak(self) -> Key {
-                    let key = self.key();
-                    std::mem::forget(self);
-                    key
-                }
-
-                /// Returns a reference to the value.
-                #[inline]
-                pub fn get(&self) -> &$T {
-                    // SAFETY: Slot owns the slot. SlotCell is repr(C): [stamp: 8][value: T]
-                    unsafe { &*((self.slot as *const u8).add(8) as *const $T) }
-                }
-
-                /// Returns a mutable reference to the value.
-                ///
-                /// Requires `&mut Slot` for exclusive access.
-                #[inline]
-                pub fn get_mut(&mut self) -> &mut $T {
-                    // SAFETY: Slot owns the slot, &mut ensures exclusivity.
-                    unsafe { &mut *((self.slot as *mut u8).add(8) as *mut $T) }
-                }
-
-                /// Returns a raw pointer to the value.
-                #[inline]
-                pub fn as_ptr(&self) -> *const $T {
-                    unsafe { (self.slot as *const u8).add(8) as *const $T }
-                }
-
-                /// Returns a mutable raw pointer to the value.
-                #[inline]
-                pub fn as_mut_ptr(&mut self) -> *mut $T {
-                    unsafe { (self.slot as *mut u8).add(8) as *mut $T }
-                }
-
-                /// Returns `true` if the slot is still occupied.
-                #[inline]
-                pub fn is_valid(&self) -> bool {
-                    let stamp = unsafe { *(self.slot as *const u64) };
-                    stamp & VACANT_BIT == 0
-                }
-
-                /// Replaces the value, returning the old one.
-                #[inline]
-                pub fn replace(&mut self, value: $T) -> $T {
-                    let value_ptr = unsafe { (self.slot as *mut u8).add(8) as *mut $T };
-                    let old = unsafe { value_ptr.read() };
-                    unsafe { value_ptr.write(value) };
-                    old
-                }
-
-                /// Consumes the slot, returning the value and deallocating.
-                #[inline]
-                pub fn into_inner(self) -> $T {
-                    let slot = self.slot();
-                    let key = Key::new(slot.key_from_stamp());
-
-                    // SAFETY: Slot owns the slot
-                    let value = unsafe {
-                        let value_ptr = (self.slot as *const u8).add(8) as *const $T;
-                        std::ptr::read(value_ptr)
-                    };
-
-                    // Free the slot
-                    VTABLE.with(|v| {
-                        let vtable = v.get();
-                        debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                        // SAFETY: VTable is valid, slot was occupied
-                        unsafe { (*vtable).free(key) };
-                    });
-
-                    std::mem::forget(self);
-                    value
-                }
-            }
-
-            impl Drop for Slot {
-                fn drop(&mut self) {
-                    let slot = self.slot();
-                    let key = Key::new(slot.key_from_stamp());
-
-                    // Drop the value
-                    unsafe {
-                        let value_ptr = (self.slot as *mut u8).add(8) as *mut $T;
-                        std::ptr::drop_in_place(value_ptr);
-                    }
-
-                    // Free the slot via VTable
-                    VTABLE.with(|v| {
-                        let vtable = v.get();
-                        debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                        // SAFETY: VTable is valid
-                        unsafe { (*vtable).free(key) };
-                    });
-                }
-            }
-
-            impl std::ops::Deref for Slot {
-                type Target = $T;
-
-                #[inline]
-                fn deref(&self) -> &Self::Target {
-                    self.get()
-                }
-            }
-
-            impl std::ops::DerefMut for Slot {
-                #[inline]
-                fn deref_mut(&mut self) -> &mut Self::Target {
-                    self.get_mut()
-                }
-            }
-
-            impl std::fmt::Debug for Slot {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.debug_struct("Slot").field("key", &self.key()).finish()
-                }
-            }
-
-            // =================================================================
-            // Builder Pattern
-            // =================================================================
-
-            /// Builder in unconfigured state.
-            pub struct UnconfiguredBuilder {
-                _private: (),
-            }
-
-            impl UnconfiguredBuilder {
-                /// Configure for a bounded (fixed capacity) slab.
-                #[inline]
-                pub fn bounded(self, capacity: usize) -> BoundedBuilder {
-                    BoundedBuilder { capacity }
-                }
-
-                /// Configure for an unbounded (growable) slab.
-                #[inline]
-                pub fn unbounded(self) -> UnboundedBuilder {
-                    UnboundedBuilder {
-                        chunk_capacity: 4096,
-                        initial_capacity: 0,
-                    }
-                }
-            }
-
-            /// Builder for bounded slab.
-            pub struct BoundedBuilder {
-                capacity: usize,
-            }
-
-            impl BoundedBuilder {
-                /// Build and install the allocator.
-                ///
-                /// # Panics
-                ///
-                /// Panics if allocator is already initialized.
-                pub fn build(self) {
-                    SLAB.with(|s| {
-                        let mut slab = s.borrow_mut();
-                        assert!(slab.is_none(), "allocator already initialized");
-
-                        // Create the bounded slab inner
-                        let inner = $crate::bounded::BoundedSlabInner::<$T>::with_capacity(
-                            self.capacity as u32,
-                        );
-
-                        // Create and leak the VTable
-                        let mut vtable = $crate::bounded::BoundedSlabInner::<$T>::vtable();
-
-                        // Store the slab
-                        *slab = Some(SlabStorage::Bounded(inner));
-
-                        // Get pointer to inner and set it in vtable
-                        if let Some(SlabStorage::Bounded(ref inner)) = *slab {
-                            let inner_ptr = inner as *const _ as *mut ();
-                            // SAFETY: Setting inner pointer
-                            unsafe { vtable.set_inner(inner_ptr) };
-                        }
-
-                        // Leak the vtable and store pointer
-                        let vtable_ptr = Box::leak(Box::new(vtable));
-                        VTABLE.with(|v| v.set(vtable_ptr));
-                    });
-                }
-            }
-
-            /// Builder for unbounded slab.
-            pub struct UnboundedBuilder {
-                chunk_capacity: usize,
-                initial_capacity: usize,
-            }
-
-            impl UnboundedBuilder {
-                /// Set chunk capacity (default: 4096, rounded to power of 2).
-                #[inline]
-                pub fn chunk_capacity(mut self, cap: usize) -> Self {
-                    self.chunk_capacity = cap;
-                    self
-                }
-
-                /// Pre-allocate space for this many items (default: 0).
-                #[inline]
-                pub fn capacity(mut self, cap: usize) -> Self {
-                    self.initial_capacity = cap;
-                    self
-                }
-
-                /// Build and install the allocator.
-                ///
-                /// # Panics
-                ///
-                /// Panics if allocator is already initialized.
-                pub fn build(self) {
-                    SLAB.with(|s| {
-                        let mut slab = s.borrow_mut();
-                        assert!(slab.is_none(), "allocator already initialized");
-
-                        // Create the unbounded slab inner
-                        let inner = Box::new($crate::unbounded::SlabInner::<$T>::with_chunk_capacity(
-                            self.chunk_capacity,
-                        ));
-
-                        // Pre-allocate if requested
-                        if self.initial_capacity > 0 {
-                            while inner.capacity() < self.initial_capacity {
-                                inner.grow();
-                            }
-                        }
-
-                        // Store the slab FIRST (before getting pointer)
-                        *slab = Some(SlabStorage::Unbounded(inner));
-
-                        // Create VTable and get pointer from stored location
-                        let mut vtable = $crate::unbounded::SlabInner::<$T>::vtable();
-
-                        // Get pointer to inner from stored location
-                        if let Some(SlabStorage::Unbounded(ref inner)) = *slab {
-                            let inner_ptr = &**inner as *const _ as *mut ();
-                            // SAFETY: Setting inner pointer to stable heap location
-                            unsafe { vtable.set_inner(inner_ptr) };
-                        }
-
-                        // Leak the vtable and store pointer
-                        let vtable_ptr = Box::leak(Box::new(vtable));
-                        VTABLE.with(|v| v.set(vtable_ptr));
-                    });
-                }
-            }
-
-            // =================================================================
-            // Public API
-            // =================================================================
-
-            /// Start configuring the allocator.
-            ///
-            /// # Example
-            ///
-            /// ```ignore
-            /// my_alloc::init().bounded(1024).build();
-            /// ```
+        impl Builder {
+            /// Sets the capacity (required).
             #[inline]
-            pub fn init() -> UnconfiguredBuilder {
-                UnconfiguredBuilder { _private: () }
+            pub fn capacity(mut self, capacity: usize) -> Self {
+                self.capacity = Some(capacity);
+                self
             }
 
-            /// Insert a value, returning an RAII Slot.
+            /// Builds and initializes the allocator.
+            ///
+            /// # Errors
+            ///
+            /// Returns `AlreadyInitialized` if the allocator was already initialized.
             ///
             /// # Panics
             ///
-            /// Panics if the allocator is not initialized or is full (bounded only).
-            #[inline]
-            pub fn insert(value: $T) -> Slot {
-                try_insert(value).expect("allocator full or not initialized")
-            }
-
-            /// Try to insert a value.
-            ///
-            /// Returns `None` if the allocator is full.
-            ///
-            /// # Panics (debug builds)
-            ///
-            /// Panics if the allocator is not initialized.
-            #[inline]
-            pub fn try_insert(value: $T) -> Option<Slot> {
-                VTABLE.with(|v| {
-                    let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-
-                    // SAFETY: Caller must have called init().build() before any operations.
-                    // Debug builds: panic above. Release builds: null deref crash.
-                    // We don't add a runtime check here to avoid hot path overhead.
-                    // Use is_initialized() if you need to check at runtime.
-
-                    // Try to claim a slot
-                    let claimed = unsafe { (*vtable).try_claim() }?;
-
-                    // Write the value
-                    let slot = claimed.slot_ptr as *mut SlotCell<$T>;
-                    unsafe {
-                        let value_ptr = (slot as *mut u8).add(8) as *mut $T;
-                        std::ptr::write(value_ptr, value);
-                        // Mark as occupied
-                        (*slot).set_key_occupied(claimed.key.index());
+            /// Panics if capacity was not set.
+            pub fn build(self) -> Result<(), AlreadyInitialized> {
+                let capacity = self.capacity.expect("capacity must be set before build()");
+                INNER.with(|inner| {
+                    if inner.is_initialized() {
+                        return Err(AlreadyInitialized);
                     }
-
-                    Some(Slot { slot })
-                })
-            }
-
-            /// Check if a key refers to a valid, occupied slot.
-            ///
-            /// # Panics (debug builds)
-            ///
-            /// Panics if the allocator is not initialized.
-            #[inline]
-            pub fn contains_key(key: Key) -> bool {
-                VTABLE.with(|v| {
-                    let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-
-                    // SAFETY: VTable is valid (debug_assert guards this in debug, null deref in release)
-                    unsafe { (*vtable).contains_key(key) }
-                })
-            }
-
-            /// Get a reference to a value by key.
-            ///
-            /// Returns `None` if the key is invalid or the slot is vacant.
-            ///
-            /// # Safety
-            ///
-            /// Caller must ensure no mutable references to this slot exist.
-            #[inline]
-            pub unsafe fn get(key: Key) -> Option<&'static $T> {
-                if !contains_key(key) {
-                    return None;
-                }
-                Some(unsafe { get_unchecked(key) })
-            }
-
-            /// Get a mutable reference to a value by key.
-            ///
-            /// Returns `None` if the key is invalid or the slot is vacant.
-            ///
-            /// # Safety
-            ///
-            /// Caller must ensure no other references to this slot exist.
-            #[inline]
-            #[allow(clippy::mut_from_ref)]
-            pub unsafe fn get_mut(key: Key) -> Option<&'static mut $T> {
-                if !contains_key(key) {
-                    return None;
-                }
-                Some(unsafe { get_unchecked_mut(key) })
-            }
-
-            /// Get a reference to a value by key without checking validity.
-            ///
-            /// # Safety
-            ///
-            /// - Key must refer to an occupied slot
-            /// - No mutable references may exist to this slot
-            #[inline]
-            pub unsafe fn get_unchecked(key: Key) -> &'static $T {
-                VTABLE.with(|v| {
-                    let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    let slot_cell = unsafe { (*vtable).slot_ptr(key) };
-                    unsafe { (*slot_cell).get_value() }
-                })
-            }
-
-            /// Get a mutable reference to a value by key without checking validity.
-            ///
-            /// # Safety
-            ///
-            /// - Key must refer to an occupied slot
-            /// - No other references may exist to this slot
-            #[inline]
-            #[allow(clippy::mut_from_ref)]
-            pub unsafe fn get_unchecked_mut(key: Key) -> &'static mut $T {
-                VTABLE.with(|v| {
-                    let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    let slot_cell = unsafe { (*vtable).slot_ptr(key) };
-                    unsafe { (*slot_cell).get_value_mut() }
-                })
-            }
-
-            /// Try to remove a value by key, returning the value if present.
-            ///
-            /// Returns `None` if the key is invalid or the slot is vacant.
-            /// This is the safe version of [`remove_by_key`].
-            ///
-            /// # Safety
-            ///
-            /// Caller must ensure no references to this slot exist.
-            #[inline]
-            pub unsafe fn try_remove_by_key(key: Key) -> Option<$T> {
-                if !contains_key(key) {
-                    return None;
-                }
-                Some(unsafe { remove_by_key(key) })
-            }
-
-            /// Remove a value by key, returning the value.
-            ///
-            /// This is the key-based equivalent of [`Slot::into_inner()`].
-            ///
-            /// # Safety
-            ///
-            /// - Key must refer to an occupied slot
-            /// - No references may exist to this slot
-            /// - The key must not be used after this call
-            #[inline]
-            pub unsafe fn remove_by_key(key: Key) -> $T {
-                VTABLE.with(|v| {
-                    let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    let slot_cell = unsafe { (*vtable).slot_ptr(key) };
-
-                    // Read the value out
-                    let value = unsafe { std::ptr::read((*slot_cell).value_ptr()) };
-
-                    // Free the slot
-                    unsafe { (*vtable).free(key) };
-
-                    value
-                })
-            }
-
-            /// Error returned when shutdown is called with slots still in use.
-            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-            pub struct SlotsRemaining(pub usize);
-
-            impl std::fmt::Display for SlotsRemaining {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    write!(f, "{} slots still in use", self.0)
-                }
-            }
-
-            impl std::error::Error for SlotsRemaining {}
-
-            /// Shutdown the allocator.
-            ///
-            /// Returns an error if any slots are still in use.
-            pub fn shutdown() -> Result<(), SlotsRemaining> {
-                SLAB.with(|s| {
-                    let mut slab = s.borrow_mut();
-                    if slab.is_none() {
-                        return Ok(());
-                    }
-
-                    // Check if any slots are in use
-                    let len = match &*slab {
-                        Some(SlabStorage::Bounded(inner)) => inner.len() as usize,
-                        Some(SlabStorage::Unbounded(inner)) => inner.len(),
-                        None => 0,
-                    };
-
-                    if len > 0 {
-                        return Err(SlotsRemaining(len));
-                    }
-
-                    // Clear the slab
-                    *slab = None;
-
-                    // Clear the vtable pointer (but don't deallocate - it's leaked)
-                    VTABLE.with(|v| v.set(std::ptr::null()));
-
+                    inner.init(capacity as u32);
                     Ok(())
                 })
             }
+        }
 
-            /// Returns the number of occupied slots.
+        impl Allocator {
+            /// Returns a builder for configuring the allocator.
             #[inline]
-            pub fn len() -> usize {
-                SLAB.with(|s| {
-                    let slab = s.borrow();
-                    match &*slab {
-                        Some(SlabStorage::Bounded(inner)) => inner.len() as usize,
-                        Some(SlabStorage::Unbounded(inner)) => inner.len(),
-                        None => 0,
-                    }
-                })
+            pub fn builder() -> Builder {
+                Builder { capacity: None }
             }
 
-            /// Returns true if no slots are occupied.
-            #[inline]
-            pub fn is_empty() -> bool {
-                len() == 0
-            }
-
-            /// Returns the current capacity.
-            #[inline]
-            pub fn capacity() -> usize {
-                SLAB.with(|s| {
-                    let slab = s.borrow();
-                    match &*slab {
-                        Some(SlabStorage::Bounded(inner)) => inner.capacity() as usize,
-                        Some(SlabStorage::Unbounded(inner)) => inner.capacity(),
-                        None => 0,
-                    }
-                })
-            }
-
-            /// Returns true if the allocator is initialized.
+            /// Returns true if the allocator has been initialized.
             #[inline]
             pub fn is_initialized() -> bool {
-                VTABLE.with(|v| !v.get().is_null())
+                INNER.with(|inner| inner.is_initialized())
             }
 
-            /// Returns the VTable pointer for this allocator.
-            ///
-            /// This allows storing the VTable pointer for direct access without
-            /// TLS lookup on every operation. The pointer remains valid for the
-            /// lifetime of the allocator (until shutdown).
-            ///
-            /// # Panics (debug builds)
-            ///
-            /// Panics if the allocator is not initialized.
-            ///
-            /// # Example
-            ///
-            /// ```ignore
-            /// // Grab vtable once at struct creation
-            /// let vtable = my_alloc::vtable_ptr();
-            ///
-            /// // Later: use vtable directly for operations (no TLS lookup)
-            /// unsafe {
-            ///     (*vtable).free(key);
-            ///     let slot = (*vtable).slot_ptr(key);
-            ///     let value = (*slot).get_value();
-            /// }
-            /// ```
+            /// Returns the total capacity.
             #[inline]
-            pub fn vtable_ptr() -> *const VTable<$T> {
-                VTABLE.with(|v| {
-                    let vtable = v.get();
-                    debug_assert!(!vtable.is_null(), "allocator not initialized - call init().build() first");
-                    vtable
+            pub fn capacity() -> usize {
+                INNER.with(|inner| inner.capacity() as usize)
+            }
+        }
+
+        // SAFETY: try_alloc claims from the TLS freelist, writes value via union.
+        // dealloc/dealloc_ptr return the slot to the TLS freelist via union field write.
+        // slot_cell returns a valid pointer for any key within capacity.
+        // All operations are single-threaded (TLS).
+        unsafe impl $crate::Alloc for Allocator {
+            type Item = $ty;
+
+            #[inline]
+            fn try_alloc(
+                value: Self::Item,
+            ) -> Result<*mut SlotCell<$ty>, $crate::alloc::Full<$ty>> {
+                // Pop from freelist — value stays on caller's stack, not captured
+                let slot = INNER.with(|inner| {
+                    let slot_ptr = inner.free_head.get();
+                    // SAFETY: slot_ptr came from the freelist. Slot is vacant,
+                    // so next_free is the active union field.
+                    let slot_nn = std::ptr::NonNull::new(slot_ptr)?;
+                    let next_free = unsafe { (*slot_nn.as_ptr()).next_free };
+                    inner.free_head.set(next_free);
+                    Some(slot_nn)
+                });
+
+                match slot {
+                    Some(slot_nn) => {
+                        let slot_ptr = slot_nn.as_ptr();
+                        // Write value outside closure — single memcpy from stack to slot
+                        // SAFETY: Slot is claimed from freelist, we have exclusive access
+                        unsafe {
+                            (*slot_ptr).value =
+                                std::mem::ManuallyDrop::new(std::mem::MaybeUninit::new(value));
+                        }
+                        Ok(slot_ptr)
+                    }
+                    None => Err($crate::alloc::Full(value)),
+                }
+            }
+
+            unsafe fn dealloc(key: Key) {
+                INNER.with(|inner| {
+                    let slot_ptr = inner.slots_ptr().add(key.index() as usize);
+
+                    // Write freelist link — overwrites value bytes (union semantics)
+                    let free_head = inner.free_head.get();
+                    (*slot_ptr).next_free = free_head;
+                    inner.free_head.set(slot_ptr);
+                });
+            }
+
+            #[inline]
+            unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<$ty>) {
+                INNER.with(|inner| {
+                    // Write freelist link — overwrites value bytes (union semantics)
+                    // SAFETY: Caller guarantees slot_ptr is valid and within this slab
+                    let free_head = inner.free_head.get();
+                    (*slot_ptr).next_free = free_head;
+                    inner.free_head.set(slot_ptr);
+                });
+            }
+
+            #[inline]
+            unsafe fn slot_cell(key: Key) -> *mut SlotCell<$ty> {
+                INNER.with(|inner| inner.slots_ptr().add(key.index() as usize))
+            }
+
+            fn slot_index(slot_ptr: *mut SlotCell<$ty>) -> Key {
+                INNER.with(|inner| {
+                    // SAFETY: slot_ptr came from this slab's allocation
+                    let index = unsafe { inner.slot_to_index(slot_ptr) };
+                    Key::new(index)
                 })
             }
         }
+
+        impl $crate::BoundedAlloc for Allocator {}
+
+        // Borrow/BorrowMut must be implemented here (not generically) because
+        // the blanket `impl<T> Borrow<T> for T` conflicts with generic impls.
+        impl std::borrow::Borrow<$ty> for $crate::alloc::Slot<Allocator> {
+            #[inline]
+            fn borrow(&self) -> &$ty {
+                self
+            }
+        }
+
+        impl std::borrow::BorrowMut<$ty> for $crate::alloc::Slot<Allocator> {
+            #[inline]
+            fn borrow_mut(&mut self) -> &mut $ty {
+                self
+            }
+        }
+
+        /// RAII handle to a slab-allocated value.
+        ///
+        /// Type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot).
+        pub type Slot = $crate::alloc::Slot<Allocator>;
     };
 }
 
-// Tests are in tests/macro_tests.rs to avoid visibility issues with macro-generated modules
+/// Generates an unbounded (growable) slab allocator for a type.
+///
+/// This macro creates a module with:
+/// - `Allocator` - unit struct with static methods for lifecycle management
+/// - `Slot` - type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot)
+///
+/// Unlike `bounded_allocator!`, `Slot::new()` always succeeds by growing
+/// the allocator as needed.
+///
+/// # Example
+///
+/// ```ignore
+/// pub mod alloc {
+///     nexus_slab::unbounded_allocator!(super::Quote);
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     alloc::Allocator::builder()
+///         .chunk_size(4096)
+///         .build()?;
+///
+///     // Always succeeds - grows as needed
+///     let slot = alloc::Slot::new(Quote { ... });
+///
+///     Ok(())
+/// }
+/// ```
+#[macro_export]
+macro_rules! unbounded_allocator {
+    ($ty:ty) => {
+        use $crate::Key;
+        use $crate::SlotCell;
+        use $crate::macros::AlreadyInitialized;
+        use $crate::unbounded::SlabInner;
 
+        /// Default chunk size (4096 slots per chunk).
+        const DEFAULT_CHUNK_SIZE: usize = 4096;
+
+        thread_local! {
+            static INNER: SlabInner<$ty> = const { SlabInner::new() };
+        }
+
+        /// Unit struct providing static methods for allocator lifecycle.
+        pub struct Allocator;
+
+        /// Builder for configuring this allocator.
+        pub struct Builder {
+            chunk_size: usize,
+        }
+
+        impl Builder {
+            /// Sets the chunk size (optional, defaults to 4096).
+            ///
+            /// Chunks are allocated when the allocator grows. Larger chunks
+            /// mean fewer allocations but more memory per growth step.
+            #[inline]
+            pub fn chunk_size(mut self, size: usize) -> Self {
+                self.chunk_size = size;
+                self
+            }
+
+            /// Builds and initializes the allocator.
+            ///
+            /// # Errors
+            ///
+            /// Returns `AlreadyInitialized` if the allocator was already initialized.
+            pub fn build(self) -> Result<(), AlreadyInitialized> {
+                INNER.with(|inner| {
+                    if inner.is_initialized() {
+                        return Err(AlreadyInitialized);
+                    }
+                    inner.init(self.chunk_size as u32);
+                    Ok(())
+                })
+            }
+        }
+
+        impl Allocator {
+            /// Returns a builder for configuring the allocator.
+            #[inline]
+            pub fn builder() -> Builder {
+                Builder {
+                    chunk_size: DEFAULT_CHUNK_SIZE,
+                }
+            }
+
+            /// Returns true if the allocator has been initialized.
+            #[inline]
+            pub fn is_initialized() -> bool {
+                INNER.with(|inner| inner.is_initialized())
+            }
+
+            /// Returns the total capacity across all chunks.
+            #[inline]
+            pub fn capacity() -> usize {
+                INNER.with(|inner| inner.capacity())
+            }
+        }
+
+        // SAFETY: try_alloc grows the slab if needed, claims from chunk freelist,
+        // writes value via union. dealloc/dealloc_ptr return slot to correct
+        // chunk freelist via union field write and handle chunk availability tracking.
+        // slot_cell decodes the key and returns a valid pointer.
+        // All operations are single-threaded (TLS).
+        unsafe impl $crate::Alloc for Allocator {
+            type Item = $ty;
+
+            #[inline]
+            fn alloc(value: Self::Item) -> *mut SlotCell<$ty> {
+                // Pop from freelist — value stays on caller's stack, not captured
+                let slot_ptr = INNER.with(|inner| {
+                    // Grow if needed (unbounded always succeeds)
+                    if inner.head_with_space_is_none() {
+                        inner.grow();
+                    }
+
+                    let (_chunk_idx, chunk) = inner.head_chunk();
+                    let chunk_inner = chunk.inner_ref();
+
+                    // Pop from chunk's freelist
+                    let slot_ptr = chunk_inner.free_head.get();
+                    debug_assert!(!slot_ptr.is_null(), "chunk on freelist has no free slots");
+
+                    // SAFETY: slot_ptr came from the freelist. Slot is vacant,
+                    // so next_free is the active union field.
+                    let next_free = unsafe { (*slot_ptr).next_free };
+
+                    // Update chunk's freelist head
+                    chunk_inner.free_head.set(next_free);
+
+                    // If chunk is now full, remove from available-chunk list
+                    if next_free.is_null() {
+                        inner.pop_head_chunk();
+                    }
+
+                    slot_ptr
+                });
+
+                // Write value outside closure — single memcpy from stack to slot
+                // SAFETY: Slot is claimed from freelist, we have exclusive access
+                unsafe {
+                    (*slot_ptr).value =
+                        std::mem::ManuallyDrop::new(std::mem::MaybeUninit::new(value));
+                }
+                slot_ptr
+            }
+
+            #[allow(clippy::unnecessary_wraps)]
+            #[inline]
+            fn try_alloc(
+                value: Self::Item,
+            ) -> Result<*mut SlotCell<$ty>, $crate::alloc::Full<$ty>> {
+                Ok(Self::alloc(value))
+            }
+
+            unsafe fn dealloc(key: Key) {
+                INNER.with(|inner| {
+                    let (chunk_idx, local_idx) = inner.decode(key.index());
+                    let chunk = inner.chunk(chunk_idx);
+                    let chunk_inner = chunk.inner_ref();
+
+                    let slot_ptr = chunk_inner.slots_ptr().add(local_idx as usize);
+
+                    let free_head = chunk_inner.free_head.get();
+                    let was_full = free_head.is_null();
+
+                    // Write freelist link — overwrites value bytes (union semantics)
+                    (*slot_ptr).next_free = free_head;
+                    chunk_inner.free_head.set(slot_ptr);
+
+                    if was_full {
+                        inner.push_chunk_to_available(chunk_idx);
+                    }
+                });
+            }
+
+            #[inline]
+            unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<$ty>) {
+                INNER.with(|inner| {
+                    // SAFETY: Caller guarantees slot_ptr is valid and within this slab
+                    unsafe { inner.dealloc_ptr(slot_ptr) };
+                });
+            }
+
+            #[inline]
+            unsafe fn slot_cell(key: Key) -> *mut SlotCell<$ty> {
+                INNER.with(|inner| {
+                    let (chunk_idx, local_idx) = inner.decode(key.index());
+                    let chunk = inner.chunk(chunk_idx);
+                    chunk.inner_ref().slots_ptr().add(local_idx as usize)
+                })
+            }
+
+            fn slot_index(slot_ptr: *mut SlotCell<$ty>) -> Key {
+                INNER.with(|inner| {
+                    // SAFETY: slot_ptr came from this slab's allocation
+                    unsafe { inner.slot_to_index_global(slot_ptr) }
+                })
+            }
+        }
+
+        impl $crate::UnboundedAlloc for Allocator {}
+
+        // Borrow/BorrowMut must be implemented here (not generically) because
+        // the blanket `impl<T> Borrow<T> for T` conflicts with generic impls.
+        impl std::borrow::Borrow<$ty> for $crate::alloc::Slot<Allocator> {
+            #[inline]
+            fn borrow(&self) -> &$ty {
+                self
+            }
+        }
+
+        impl std::borrow::BorrowMut<$ty> for $crate::alloc::Slot<Allocator> {
+            #[inline]
+            fn borrow_mut(&mut self) -> &mut $ty {
+                self
+            }
+        }
+
+        /// RAII handle to a slab-allocated value.
+        ///
+        /// Type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot).
+        pub type Slot = $crate::alloc::Slot<Allocator>;
+    };
+}

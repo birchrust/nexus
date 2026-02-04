@@ -2,22 +2,32 @@
 //!
 //! Measures truly cold first operation, not amortized over batch
 
+use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Pod64 { data: [u8; 64] }
-impl Default for Pod64 { fn default() -> Self { Self { data: [0; 64] } } }
+pub struct Pod64 {
+    data: [u8; 64],
+}
+impl Default for Pod64 {
+    fn default() -> Self {
+        Self { data: [0; 64] }
+    }
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Pod256 { data: [u8; 256] }
-impl Default for Pod256 { fn default() -> Self { Self { data: [0; 256] } } }
+pub struct Pod256 {
+    data: [u8; 256],
+}
+impl Default for Pod256 {
+    fn default() -> Self {
+        Self { data: [0; 256] }
+    }
+}
 
-nexus_slab::create_allocator!(alloc64, crate::Pod64);
-nexus_slab::create_allocator!(alloc256, crate::Pod256);
-
-const SAMPLES: usize = 2000;  // Fewer samples since we evict each time
+const SAMPLES: usize = 2000; // Fewer samples since we evict each time
 
 use std::cell::UnsafeCell;
 struct EvictBuffer(UnsafeCell<[u8; 24 * 1024 * 1024]>);
@@ -69,13 +79,15 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 
 fn print_stats(name: &str, samples: &mut [u64]) {
     samples.sort_unstable();
-    println!("  {} p25={:3} p50={:3} p75={:3} p90={:3} p99={:4}",
+    println!(
+        "  {} p25={:3} p50={:3} p75={:3} p90={:3} p99={:4}",
         name,
         percentile(samples, 25.0),
         percentile(samples, 50.0),
         percentile(samples, 75.0),
         percentile(samples, 90.0),
-        percentile(samples, 99.0));
+        percentile(samples, 99.0)
+    );
 }
 
 fn main() {
@@ -85,8 +97,8 @@ fn main() {
 
     // 64B test
     {
-        println!("\n  ── 64B SINGLE OP ──");
-        alloc64::init().bounded(SAMPLES * 4).build();
+        println!("\n  -- 64B SINGLE OP --");
+        let slab = BoundedSlab::<Pod64>::new((SAMPLES * 4) as u32);
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -105,7 +117,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc64::insert(Pod64::default());
+                let slot = slab.new_slot(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -114,7 +126,7 @@ fn main() {
                 // Slab first
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc64::insert(Pod64::default());
+                let slot = slab.new_slot(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -132,14 +144,12 @@ fn main() {
 
         print_stats("Box  (alloc+free)", &mut box_samples);
         print_stats("Slab (alloc+free)", &mut slab_samples);
-
-        let _ = alloc64::shutdown();
     }
 
     // 256B test
     {
-        println!("\n  ── 256B SINGLE OP ──");
-        alloc256::init().bounded(SAMPLES * 4).build();
+        println!("\n  -- 256B SINGLE OP --");
+        let slab = BoundedSlab::<Pod256>::new((SAMPLES * 4) as u32);
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -156,7 +166,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc256::insert(Pod256::default());
+                let slot = slab.new_slot(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -164,7 +174,7 @@ fn main() {
             } else {
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = alloc256::insert(Pod256::default());
+                let slot = slab.new_slot(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -182,7 +192,5 @@ fn main() {
 
         print_stats("Box  (alloc+free)", &mut box_samples);
         print_stats("Slab (alloc+free)", &mut slab_samples);
-
-        let _ = alloc256::shutdown();
     }
 }

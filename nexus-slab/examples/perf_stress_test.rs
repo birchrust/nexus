@@ -8,8 +8,9 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_stress_test`
 
-use std::hint::black_box;
+use nexus_slab::bounded::Slab as BoundedSlab;
 use std::collections::VecDeque;
+use std::hint::black_box;
 
 // ============================================================================
 // Timing Infrastructure
@@ -69,10 +70,7 @@ pub struct TestValue {
 
 impl TestValue {
     fn new(id: u64) -> Self {
-        Self {
-            id,
-            data: [id; 7],
-        }
+        Self { id, data: [id; 7] }
     }
 }
 
@@ -153,9 +151,7 @@ fn test_long_running_churn() {
     // --- Slab test ---
     println!("\n  Slab<TestValue>:");
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(stress_alloc, crate::TestValue);
-        stress_alloc::init().bounded(CAPACITY).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(CAPACITY as u32);
 
         let mut items: Vec<Option<_>> = (0..CAPACITY).map(|_| None).collect();
         let mut occupied = 0usize;
@@ -164,7 +160,7 @@ fn test_long_running_churn() {
 
         // Pre-fill to 50%
         for i in 0..CAPACITY / 2 {
-            items[i] = Some(stress_alloc::insert(TestValue::new(next_id)));
+            items[i] = Some(alloc.new_slot(TestValue::new(next_id)));
             next_id += 1;
             occupied += 1;
         }
@@ -183,7 +179,7 @@ fn test_long_running_churn() {
                     black_box(items[idx].take());
                     occupied -= 1;
                 } else {
-                    items[idx] = Some(stress_alloc::insert(TestValue::new(next_id)));
+                    items[idx] = Some(alloc.new_slot(TestValue::new(next_id)));
                     next_id += 1;
                     occupied += 1;
                 }
@@ -207,6 +203,8 @@ fn test_long_running_churn() {
                 samples.last().copied().unwrap_or(0),
             );
         }
+
+        let _ = occupied;
     }
 }
 
@@ -255,9 +253,7 @@ fn test_burst_allocation() {
 
     // --- Slab bursts ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(burst_alloc, crate::TestValue);
-        burst_alloc::init().bounded(BURST_SIZE).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(BURST_SIZE as u32);
 
         let mut alloc_samples = Vec::with_capacity(BURSTS);
         let mut free_samples = Vec::with_capacity(BURSTS);
@@ -266,7 +262,7 @@ fn test_burst_allocation() {
             // Allocate burst
             let start = rdtsc_start();
             let items: Vec<_> = (0..BURST_SIZE)
-                .map(|i| burst_alloc::insert(TestValue::new(i as u64)))
+                .map(|i| alloc.new_slot(TestValue::new(i as u64)))
                 .collect();
             let alloc_time = rdtsc_end() - start;
             alloc_samples.push(alloc_time / BURST_SIZE as u64);
@@ -321,20 +317,18 @@ fn test_mixed_lifetimes() {
 
     // --- Slab mixed lifetimes ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(mixed_alloc, crate::TestValue);
-        mixed_alloc::init().bounded(LONG_LIVED + 100).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((LONG_LIVED + 100) as u32);
 
         // Create long-lived items
         let _long_lived: Vec<_> = (0..LONG_LIVED)
-            .map(|i| mixed_alloc::insert(TestValue::new(i as u64)))
+            .map(|i| alloc.new_slot(TestValue::new(i as u64)))
             .collect();
 
         let mut samples = Vec::with_capacity(SHORT_CYCLES);
 
         for i in 0..SHORT_CYCLES {
             let start = rdtsc_start();
-            let short = mixed_alloc::insert(TestValue::new((LONG_LIVED + i) as u64));
+            let short = alloc.new_slot(TestValue::new((LONG_LIVED + i) as u64));
             black_box(&*short);
             drop(short);
             samples.push(rdtsc_end() - start);
@@ -391,15 +385,13 @@ fn test_fifo_queue() {
 
     // --- Slab queue ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(queue_alloc, crate::TestValue);
-        queue_alloc::init().bounded(QUEUE_SIZE + 100).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((QUEUE_SIZE + 100) as u32);
 
         let mut queue: VecDeque<_> = VecDeque::with_capacity(QUEUE_SIZE);
 
         // Pre-fill
         for i in 0..QUEUE_SIZE {
-            queue.push_back(queue_alloc::insert(TestValue::new(i as u64)));
+            queue.push_back(alloc.new_slot(TestValue::new(i as u64)));
         }
 
         let mut push_samples = Vec::with_capacity(OPERATIONS);
@@ -414,7 +406,7 @@ fn test_fifo_queue() {
 
             // Push
             let start = rdtsc_start();
-            queue.push_back(queue_alloc::insert(TestValue::new((QUEUE_SIZE + i) as u64)));
+            queue.push_back(alloc.new_slot(TestValue::new((QUEUE_SIZE + i) as u64)));
             push_samples.push(rdtsc_end() - start);
         }
 
@@ -452,15 +444,13 @@ fn test_tail_latency() {
 
     // --- Slab tail latency ---
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(tail_alloc, crate::TestValue);
-        tail_alloc::init().bounded(100).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(100);
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
         for i in 0..SAMPLES {
             let start = rdtsc_start();
-            let item = tail_alloc::insert(TestValue::new(i as u64));
+            let item = alloc.new_slot(TestValue::new(i as u64));
             black_box(&*item);
             drop(item);
             samples.push(rdtsc_end() - start);
@@ -518,33 +508,55 @@ fn test_brutal_fragmentation() {
 
         for i in 0..FRAGMENT_COUNT {
             match i % 4 {
-                0 => smalls.push(Box::new(Small { data: [i as u8; 32] })),
-                1 => mediums.push(Box::new(Medium { data: [i as u8; 128] })),
-                2 => larges.push(Box::new(Large { data: [i as u8; 512] })),
-                _ => xlarges.push(Box::new(XLarge { data: [i as u8; 2048] })),
+                0 => smalls.push(Box::new(Small {
+                    data: [i as u8; 32],
+                })),
+                1 => mediums.push(Box::new(Medium {
+                    data: [i as u8; 128],
+                })),
+                2 => larges.push(Box::new(Large {
+                    data: [i as u8; 512],
+                })),
+                _ => xlarges.push(Box::new(XLarge {
+                    data: [i as u8; 2048],
+                })),
             }
         }
 
-        println!("    Allocated {} mixed-size objects to fragment heap", FRAGMENT_COUNT);
+        println!(
+            "    Allocated {} mixed-size objects to fragment heap",
+            FRAGMENT_COUNT
+        );
 
         // Phase 2: Create swiss cheese by freeing every 3rd
-        let smalls: Vec<_> = smalls.into_iter().enumerate()
+        let smalls: Vec<_> = smalls
+            .into_iter()
+            .enumerate()
             .filter(|(i, _)| i % 3 != 0)
             .map(|(_, v)| v)
             .collect();
-        let mediums: Vec<_> = mediums.into_iter().enumerate()
+        let mediums: Vec<_> = mediums
+            .into_iter()
+            .enumerate()
             .filter(|(i, _)| i % 3 != 1)
             .map(|(_, v)| v)
             .collect();
-        let larges: Vec<_> = larges.into_iter().enumerate()
+        let larges: Vec<_> = larges
+            .into_iter()
+            .enumerate()
             .filter(|(i, _)| i % 3 != 2)
             .map(|(_, v)| v)
             .collect();
         // Keep all xlarges to block coalescing
 
         println!("    Created swiss cheese pattern (freed ~33% of small/medium/large)");
-        println!("    Remaining: {} small, {} medium, {} large, {} xlarge",
-                 smalls.len(), mediums.len(), larges.len(), xlarges.len());
+        println!(
+            "    Remaining: {} small, {} medium, {} large, {} xlarge",
+            smalls.len(),
+            mediums.len(),
+            larges.len(),
+            xlarges.len()
+        );
 
         // Phase 3: Measure 64-byte allocations in fragmented heap
         let mut samples = Vec::with_capacity(MEASURE_COUNT);
@@ -586,15 +598,13 @@ fn test_brutal_fragmentation() {
     // --- Slab (immune to fragmentation) ---
     println!();
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(frag_alloc, crate::TestValue);
-        frag_alloc::init().bounded(1000).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(1000);
 
         let mut samples = Vec::with_capacity(MEASURE_COUNT);
 
         for i in 0..MEASURE_COUNT {
             let start = rdtsc_start();
-            let item = frag_alloc::insert(TestValue::new(i as u64));
+            let item = alloc.new_slot(TestValue::new(i as u64));
             black_box(&*item);
             drop(item);
             samples.push(rdtsc_end() - start);
@@ -621,7 +631,10 @@ fn test_sustained_pressure() {
     const CHURN_OPS: usize = 500_000;
 
     // --- Box under pressure ---
-    println!("  Box under {}MB pressure ({} allocations):", TARGET_MB, TARGET_COUNT);
+    println!(
+        "  Box under {}MB pressure ({} allocations):",
+        TARGET_MB, TARGET_COUNT
+    );
     {
         // Build up pressure
         let mut items: Vec<Option<Box<TestValue>>> = Vec::with_capacity(TARGET_COUNT);
@@ -654,17 +667,13 @@ fn test_sustained_pressure() {
     // --- Slab under pressure ---
     println!();
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(pressure_alloc, crate::TestValue);
-        pressure_alloc::init().bounded(TARGET_COUNT).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(TARGET_COUNT as u32);
 
         // Build up pressure
-        let mut items: Vec<Option<_>> = (0..TARGET_COUNT)
-            .map(|_| None)
-            .collect();
+        let mut items: Vec<Option<_>> = (0..TARGET_COUNT).map(|_| None).collect();
 
         for i in 0..TARGET_COUNT {
-            items[i] = Some(pressure_alloc::insert(TestValue::new(i as u64)));
+            items[i] = Some(alloc.new_slot(TestValue::new(i as u64)));
         }
         println!("    Allocated {}MB in slab", TARGET_MB);
 
@@ -680,7 +689,7 @@ fn test_sustained_pressure() {
             if items[idx].is_some() {
                 items[idx] = None;
             } else {
-                items[idx] = Some(pressure_alloc::insert(TestValue::new(rng)));
+                items[idx] = Some(alloc.new_slot(TestValue::new(rng)));
             }
             samples.push(rdtsc_end() - start);
         }
@@ -695,22 +704,78 @@ fn test_sustained_pressure() {
 // ============================================================================
 
 // POD types of various sizes
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod64 { data: [u8; 64] }
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod128 { data: [u8; 128] }
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod256 { data: [u8; 256] }
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod512 { data: [u8; 512] }
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod1024 { data: [u8; 1024] }
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod2048 { data: [u8; 2048] }
-#[derive(Clone, Copy)] #[repr(C)] pub struct Pod4096 { data: [u8; 4096] }
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod64 {
+    data: [u8; 64],
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod128 {
+    data: [u8; 128],
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod256 {
+    data: [u8; 256],
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod512 {
+    data: [u8; 512],
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod1024 {
+    data: [u8; 1024],
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod2048 {
+    data: [u8; 2048],
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Pod4096 {
+    data: [u8; 4096],
+}
 
 // Manual Default impls (array Default only works up to 32 elements)
-impl Default for Pod64 { fn default() -> Self { Self { data: [0; 64] } } }
-impl Default for Pod128 { fn default() -> Self { Self { data: [0; 128] } } }
-impl Default for Pod256 { fn default() -> Self { Self { data: [0; 256] } } }
-impl Default for Pod512 { fn default() -> Self { Self { data: [0; 512] } } }
-impl Default for Pod1024 { fn default() -> Self { Self { data: [0; 1024] } } }
-impl Default for Pod2048 { fn default() -> Self { Self { data: [0; 2048] } } }
-impl Default for Pod4096 { fn default() -> Self { Self { data: [0; 4096] } } }
+impl Default for Pod64 {
+    fn default() -> Self {
+        Self { data: [0; 64] }
+    }
+}
+impl Default for Pod128 {
+    fn default() -> Self {
+        Self { data: [0; 128] }
+    }
+}
+impl Default for Pod256 {
+    fn default() -> Self {
+        Self { data: [0; 256] }
+    }
+}
+impl Default for Pod512 {
+    fn default() -> Self {
+        Self { data: [0; 512] }
+    }
+}
+impl Default for Pod1024 {
+    fn default() -> Self {
+        Self { data: [0; 1024] }
+    }
+}
+impl Default for Pod2048 {
+    fn default() -> Self {
+        Self { data: [0; 2048] }
+    }
+}
+impl Default for Pod4096 {
+    fn default() -> Self {
+        Self { data: [0; 4096] }
+    }
+}
 
 /// Fragment the global allocator with mixed-size allocations
 fn fragment_global_allocator() -> Vec<Box<[u8]>> {
@@ -731,7 +796,9 @@ fn fragment_global_allocator() -> Vec<Box<[u8]>> {
     }
 
     // Free every 3rd to create holes (swiss cheese)
-    let fragments: Vec<_> = fragments.into_iter().enumerate()
+    let fragments: Vec<_> = fragments
+        .into_iter()
+        .enumerate()
         .filter(|(i, _)| i % 3 != 0)
         .map(|(_, v)| v)
         .collect();
@@ -768,7 +835,7 @@ fn test_size_classes() {
     let _fragments = fragment_global_allocator();
     println!("  Global allocator fragmented with ~6,666 mixed-size allocations\n");
 
-    // Run all tests - each uses unique allocator names
+    // Run all tests
     test_size_64();
     test_size_128();
     test_size_256();
@@ -794,117 +861,122 @@ fn print_full_histogram_inline(samples: &mut [u64]) {
 }
 
 const SLAB_CAPACITY: usize = 10_000;
-const CHURN_OPS: usize = 50_000;
+const SIZE_CHURN_OPS: usize = 50_000;
 
-macro_rules! size_test {
-    ($name:ident, $pod:ty, $size:expr, $alloc10:ident, $alloc25:ident, $alloc50:ident) => {
-        fn $name() {
-            use nexus_slab::create_allocator;
+fn size_test<T: Default + Clone + 'static>(name: &str) {
+    println!("  ── {} ──", name);
 
-            println!("  ── {}B ──", $size);
-
-            // 10% fill
-            {
-                let fill = SLAB_CAPACITY / 10;
-                let _box_long: Vec<Box<$pod>> = (0..fill).map(|_| Box::new(<$pod>::default())).collect();
-                let mut box_samples = Vec::with_capacity(CHURN_OPS);
-                for _ in 0..CHURN_OPS {
-                    let start = rdtsc_start();
-                    let item = Box::new(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                    box_samples.push(rdtsc_end() - start);
-                }
-                print!("  Box  10% fill");
-                print_full_histogram_inline(&mut box_samples);
-
-                create_allocator!($alloc10, $pod);
-                $alloc10::init().bounded(SLAB_CAPACITY).build();
-                let _slab_long: Vec<_> = (0..fill).map(|_| $alloc10::insert(<$pod>::default())).collect();
-                let mut slab_samples = Vec::with_capacity(CHURN_OPS);
-                for _ in 0..CHURN_OPS {
-                    let start = rdtsc_start();
-                    let item = $alloc10::insert(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                    slab_samples.push(rdtsc_end() - start);
-                }
-                print!("  Slab 10% fill");
-                print_full_histogram_inline(&mut slab_samples);
-            }
-
-            // 25% fill
-            {
-                let fill = SLAB_CAPACITY / 4;
-                let _box_long: Vec<Box<$pod>> = (0..fill).map(|_| Box::new(<$pod>::default())).collect();
-                let mut box_samples = Vec::with_capacity(CHURN_OPS);
-                for _ in 0..CHURN_OPS {
-                    let start = rdtsc_start();
-                    let item = Box::new(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                    box_samples.push(rdtsc_end() - start);
-                }
-                print!("  Box  25% fill");
-                print_full_histogram_inline(&mut box_samples);
-
-                create_allocator!($alloc25, $pod);
-                $alloc25::init().bounded(SLAB_CAPACITY).build();
-                let _slab_long: Vec<_> = (0..fill).map(|_| $alloc25::insert(<$pod>::default())).collect();
-                let mut slab_samples = Vec::with_capacity(CHURN_OPS);
-                for _ in 0..CHURN_OPS {
-                    let start = rdtsc_start();
-                    let item = $alloc25::insert(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                    slab_samples.push(rdtsc_end() - start);
-                }
-                print!("  Slab 25% fill");
-                print_full_histogram_inline(&mut slab_samples);
-            }
-
-            // 50% fill
-            {
-                let fill = SLAB_CAPACITY / 2;
-                let _box_long: Vec<Box<$pod>> = (0..fill).map(|_| Box::new(<$pod>::default())).collect();
-                let mut box_samples = Vec::with_capacity(CHURN_OPS);
-                for _ in 0..CHURN_OPS {
-                    let start = rdtsc_start();
-                    let item = Box::new(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                    box_samples.push(rdtsc_end() - start);
-                }
-                print!("  Box  50% fill");
-                print_full_histogram_inline(&mut box_samples);
-
-                create_allocator!($alloc50, $pod);
-                $alloc50::init().bounded(SLAB_CAPACITY).build();
-                let _slab_long: Vec<_> = (0..fill).map(|_| $alloc50::insert(<$pod>::default())).collect();
-                let mut slab_samples = Vec::with_capacity(CHURN_OPS);
-                for _ in 0..CHURN_OPS {
-                    let start = rdtsc_start();
-                    let item = $alloc50::insert(<$pod>::default());
-                    black_box(&*item);
-                    drop(item);
-                    slab_samples.push(rdtsc_end() - start);
-                }
-                print!("  Slab 50% fill");
-                print_full_histogram_inline(&mut slab_samples);
-            }
-
-            println!();
+    // 10% fill
+    {
+        let fill = SLAB_CAPACITY / 10;
+        let _box_long: Vec<Box<T>> = (0..fill).map(|_| Box::new(T::default())).collect();
+        let mut box_samples = Vec::with_capacity(SIZE_CHURN_OPS);
+        for _ in 0..SIZE_CHURN_OPS {
+            let start = rdtsc_start();
+            let item = Box::new(T::default());
+            black_box(&*item);
+            drop(item);
+            box_samples.push(rdtsc_end() - start);
         }
-    };
+        print!("  Box  10% fill");
+        print_full_histogram_inline(&mut box_samples);
+
+        let alloc: BoundedSlab<T> = BoundedSlab::new(SLAB_CAPACITY as u32);
+        let _slab_long: Vec<_> = (0..fill).map(|_| alloc.new_slot(T::default())).collect();
+        let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
+        for _ in 0..SIZE_CHURN_OPS {
+            let start = rdtsc_start();
+            let item = alloc.new_slot(T::default());
+            black_box(&*item);
+            drop(item);
+            slab_samples.push(rdtsc_end() - start);
+        }
+        print!("  Slab 10% fill");
+        print_full_histogram_inline(&mut slab_samples);
+    }
+
+    // 25% fill
+    {
+        let fill = SLAB_CAPACITY / 4;
+        let _box_long: Vec<Box<T>> = (0..fill).map(|_| Box::new(T::default())).collect();
+        let mut box_samples = Vec::with_capacity(SIZE_CHURN_OPS);
+        for _ in 0..SIZE_CHURN_OPS {
+            let start = rdtsc_start();
+            let item = Box::new(T::default());
+            black_box(&*item);
+            drop(item);
+            box_samples.push(rdtsc_end() - start);
+        }
+        print!("  Box  25% fill");
+        print_full_histogram_inline(&mut box_samples);
+
+        let alloc: BoundedSlab<T> = BoundedSlab::new(SLAB_CAPACITY as u32);
+        let _slab_long: Vec<_> = (0..fill).map(|_| alloc.new_slot(T::default())).collect();
+        let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
+        for _ in 0..SIZE_CHURN_OPS {
+            let start = rdtsc_start();
+            let item = alloc.new_slot(T::default());
+            black_box(&*item);
+            drop(item);
+            slab_samples.push(rdtsc_end() - start);
+        }
+        print!("  Slab 25% fill");
+        print_full_histogram_inline(&mut slab_samples);
+    }
+
+    // 50% fill
+    {
+        let fill = SLAB_CAPACITY / 2;
+        let _box_long: Vec<Box<T>> = (0..fill).map(|_| Box::new(T::default())).collect();
+        let mut box_samples = Vec::with_capacity(SIZE_CHURN_OPS);
+        for _ in 0..SIZE_CHURN_OPS {
+            let start = rdtsc_start();
+            let item = Box::new(T::default());
+            black_box(&*item);
+            drop(item);
+            box_samples.push(rdtsc_end() - start);
+        }
+        print!("  Box  50% fill");
+        print_full_histogram_inline(&mut box_samples);
+
+        let alloc: BoundedSlab<T> = BoundedSlab::new(SLAB_CAPACITY as u32);
+        let _slab_long: Vec<_> = (0..fill).map(|_| alloc.new_slot(T::default())).collect();
+        let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
+        for _ in 0..SIZE_CHURN_OPS {
+            let start = rdtsc_start();
+            let item = alloc.new_slot(T::default());
+            black_box(&*item);
+            drop(item);
+            slab_samples.push(rdtsc_end() - start);
+        }
+        print!("  Slab 50% fill");
+        print_full_histogram_inline(&mut slab_samples);
+    }
+
+    println!();
 }
 
-size_test!(test_size_64, crate::Pod64, 64, slab64_10, slab64_25, slab64_50);
-size_test!(test_size_128, crate::Pod128, 128, slab128_10, slab128_25, slab128_50);
-size_test!(test_size_256, crate::Pod256, 256, slab256_10, slab256_25, slab256_50);
-size_test!(test_size_512, crate::Pod512, 512, slab512_10, slab512_25, slab512_50);
-size_test!(test_size_1024, crate::Pod1024, 1024, slab1024_10, slab1024_25, slab1024_50);
-size_test!(test_size_2048, crate::Pod2048, 2048, slab2048_10, slab2048_25, slab2048_50);
-size_test!(test_size_4096, crate::Pod4096, 4096, slab4096_10, slab4096_25, slab4096_50);
+fn test_size_64() {
+    size_test::<Pod64>("64B");
+}
+fn test_size_128() {
+    size_test::<Pod128>("128B");
+}
+fn test_size_256() {
+    size_test::<Pod256>("256B");
+}
+fn test_size_512() {
+    size_test::<Pod512>("512B");
+}
+fn test_size_1024() {
+    size_test::<Pod1024>("1024B");
+}
+fn test_size_2048() {
+    size_test::<Pod2048>("2048B");
+}
+fn test_size_4096() {
+    size_test::<Pod4096>("4096B");
+}
 
 // ============================================================================
 // Test 9: Active contention - Box shares allocator, Slab is isolated
@@ -928,129 +1000,130 @@ fn test_active_contention() {
 const CONTENTION_SAMPLES: usize = 5000;
 const CONTENTION_BATCH: usize = 100;
 
-macro_rules! contention_test {
-    ($name:ident, $pod:ty, $size:expr, $alloc_name:ident) => {
-        fn $name() {
-            use nexus_slab::create_allocator;
+fn contention_test<T: Default + Clone + 'static>(name: &str) {
+    println!("  ── {} ──", name);
 
-            println!("  ── {}B ──", $size);
+    // Box with randomized active contention
+    {
+        let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
+        let mut rng = 12345u64;
 
-            // Box with randomized active contention
-            {
-                let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
-                let mut rng = 12345u64;
+        for _ in 0..CONTENTION_SAMPLES {
+            // Randomized background noise (NOT timed)
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let noise_count = 20 + (rng % 60) as usize; // 20-80 allocations
 
-                for _ in 0..CONTENTION_SAMPLES {
-                    // Randomized background noise (NOT timed)
-                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                    let noise_count = 20 + (rng % 60) as usize; // 20-80 allocations
-
-                    let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
-                    for _ in 0..noise_count {
-                        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                        let size = match rng % 7 {
-                            0 => 32,
-                            1 => 64,
-                            2 => 128,
-                            3 => 256,
-                            4 => 512,
-                            5 => 1024,
-                            _ => 2048,
-                        };
-                        noise.push(vec![0u8; size as usize].into_boxed_slice());
-                    }
-
-                    // Free random subset (swiss cheese within noise)
-                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                    let keep_mod = (rng % 3) + 2; // keep all except every 2nd, 3rd, or 4th
-                    let noise: Vec<_> = noise
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(i, _)| i % keep_mod as usize != 0)
-                        .map(|(_, v)| v)
-                        .collect();
-
-                    // Time a BATCH of allocations
-                    let start = rdtsc_start();
-                    for _ in 0..CONTENTION_BATCH {
-                        let item = Box::new(<$pod>::default());
-                        black_box(&*item);
-                        drop(item);
-                    }
-                    let elapsed = rdtsc_end() - start;
-                    samples.push(elapsed / CONTENTION_BATCH as u64);
-
-                    drop(noise); // Free remaining after measurement
-                }
-
-                print!("  Box  (contended)");
-                print_full_histogram_inline(&mut samples);
+            let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
+            for _ in 0..noise_count {
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let size = match rng % 7 {
+                    0 => 32,
+                    1 => 64,
+                    2 => 128,
+                    3 => 256,
+                    4 => 512,
+                    5 => 1024,
+                    _ => 2048,
+                };
+                noise.push(vec![0u8; size as usize].into_boxed_slice());
             }
 
-            // Slab - with same noise pattern (global allocator equally warm)
-            {
-                create_allocator!($alloc_name, $pod);
-                $alloc_name::init().bounded(CONTENTION_BATCH + 100).build();
+            // Free random subset (swiss cheese within noise)
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let keep_mod = (rng % 3) + 2; // keep all except every 2nd, 3rd, or 4th
+            let noise: Vec<_> = noise
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| i % keep_mod as usize != 0)
+                .map(|(_, v)| v)
+                .collect();
 
-                let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
-                let mut rng = 12345u64; // Same seed for fair comparison
-
-                for _ in 0..CONTENTION_SAMPLES {
-                    // SAME background noise as Box - keeps global allocator equally warm
-                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                    let noise_count = 20 + (rng % 60) as usize;
-
-                    let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
-                    for _ in 0..noise_count {
-                        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                        let size = match rng % 7 {
-                            0 => 32,
-                            1 => 64,
-                            2 => 128,
-                            3 => 256,
-                            4 => 512,
-                            5 => 1024,
-                            _ => 2048,
-                        };
-                        noise.push(vec![0u8; size as usize].into_boxed_slice());
-                    }
-
-                    rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                    let keep_mod = (rng % 3) + 2;
-                    let noise: Vec<_> = noise
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(i, _)| i % keep_mod as usize != 0)
-                        .map(|(_, v)| v)
-                        .collect();
-
-                    // Time a BATCH of slab allocations
-                    // (slab doesn't use global allocator, but global allocator is equally warm)
-                    let start = rdtsc_start();
-                    for _ in 0..CONTENTION_BATCH {
-                        let item = $alloc_name::insert(<$pod>::default());
-                        black_box(&*item);
-                        drop(item);
-                    }
-                    let elapsed = rdtsc_end() - start;
-                    samples.push(elapsed / CONTENTION_BATCH as u64);
-
-                    drop(noise);
-                }
-
-                print!("  Slab (same noise)");
-                print_full_histogram_inline(&mut samples);
+            // Time a BATCH of allocations
+            let start = rdtsc_start();
+            for _ in 0..CONTENTION_BATCH {
+                let item = Box::new(T::default());
+                black_box(&*item);
+                drop(item);
             }
+            let elapsed = rdtsc_end() - start;
+            samples.push(elapsed / CONTENTION_BATCH as u64);
 
-            println!();
+            drop(noise); // Free remaining after measurement
         }
-    };
+
+        print!("  Box  (contended)");
+        print_full_histogram_inline(&mut samples);
+    }
+
+    // Slab - with same noise pattern (global allocator equally warm)
+    {
+        let alloc: BoundedSlab<T> = BoundedSlab::new((CONTENTION_BATCH + 100) as u32);
+
+        let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
+        let mut rng = 12345u64; // Same seed for fair comparison
+
+        for _ in 0..CONTENTION_SAMPLES {
+            // SAME background noise as Box - keeps global allocator equally warm
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let noise_count = 20 + (rng % 60) as usize;
+
+            let mut noise: Vec<Box<[u8]>> = Vec::with_capacity(noise_count);
+            for _ in 0..noise_count {
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let size = match rng % 7 {
+                    0 => 32,
+                    1 => 64,
+                    2 => 128,
+                    3 => 256,
+                    4 => 512,
+                    5 => 1024,
+                    _ => 2048,
+                };
+                noise.push(vec![0u8; size as usize].into_boxed_slice());
+            }
+
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let keep_mod = (rng % 3) + 2;
+            let noise: Vec<_> = noise
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| i % keep_mod as usize != 0)
+                .map(|(_, v)| v)
+                .collect();
+
+            // Time a BATCH of slab allocations
+            // (slab doesn't use global allocator, but global allocator is equally warm)
+            let start = rdtsc_start();
+            for _ in 0..CONTENTION_BATCH {
+                let item = alloc.new_slot(T::default());
+                black_box(&*item);
+                drop(item);
+            }
+            let elapsed = rdtsc_end() - start;
+            samples.push(elapsed / CONTENTION_BATCH as u64);
+
+            drop(noise);
+        }
+
+        print!("  Slab (same noise)");
+        print_full_histogram_inline(&mut samples);
+    }
+
+    println!();
 }
 
-contention_test!(test_contention_64, crate::Pod64, 64, contention_slab_64);
-contention_test!(test_contention_256, crate::Pod256, 256, contention_slab_256);
-contention_test!(test_contention_1024, crate::Pod1024, 1024, contention_slab_1024);
-contention_test!(test_contention_4096, crate::Pod4096, 4096, contention_slab_4096);
+fn test_contention_64() {
+    contention_test::<Pod64>("64B");
+}
+fn test_contention_256() {
+    contention_test::<Pod256>("256B");
+}
+fn test_contention_1024() {
+    contention_test::<Pod1024>("1024B");
+}
+fn test_contention_4096() {
+    contention_test::<Pod4096>("4096B");
+}
 
 // ============================================================================
 // Test 10: First allocation latency (cold start)
@@ -1078,9 +1151,7 @@ fn test_first_allocation_latency() {
 
         for _ in 0..TRIALS {
             // Allocate a bunch of large objects to push out any cached memory
-            let _flush: Vec<Box<[u8; 65536]>> = (0..100)
-                .map(|_| Box::new([0u8; 65536]))
-                .collect();
+            let _flush: Vec<Box<[u8; 65536]>> = (0..100).map(|_| Box::new([0u8; 65536])).collect();
 
             // Now time the first 64-byte allocation
             let start = rdtsc_start();
@@ -1096,22 +1167,20 @@ fn test_first_allocation_latency() {
 
     // Slab - first allocation from pre-allocated pool
     {
-        use nexus_slab::create_allocator;
-        create_allocator!(cold_alloc, crate::TestValue);
-        cold_alloc::init().bounded(1000).build();
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(1000);
 
         let mut first_alloc_times = Vec::with_capacity(TRIALS);
 
         for _ in 0..TRIALS {
             // Drain and refill to simulate "first" allocation
             let items: Vec<_> = (0..1000)
-                .map(|i| cold_alloc::insert(TestValue::new(i as u64)))
+                .map(|i| alloc.new_slot(TestValue::new(i as u64)))
                 .collect();
             drop(items);
 
             // Now time the first allocation
             let start = rdtsc_start();
-            let item = cold_alloc::insert(TestValue::new(0));
+            let item = alloc.new_slot(TestValue::new(0));
             let elapsed = rdtsc_end() - start;
             black_box(&*item);
             drop(item);
@@ -1130,7 +1199,10 @@ fn main() {
     println!("╔═══════════════════════════════════════════════════════════════════╗");
     println!("║           NEXUS-SLAB vs BOX - STRESS TEST SUITE                   ║");
     println!("╠═══════════════════════════════════════════════════════════════════╣");
-    println!("║  Value size: {} bytes                                              ║", std::mem::size_of::<TestValue>());
+    println!(
+        "║  Value size: {} bytes                                              ║",
+        std::mem::size_of::<TestValue>()
+    );
     println!("║  Tests: Churn, Bursts, Fragmentation, Contention, Tail latency    ║");
     println!("╚═══════════════════════════════════════════════════════════════════╝");
 

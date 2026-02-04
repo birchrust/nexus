@@ -1,103 +1,75 @@
 //! # nexus-slab
 //!
-//! A high-performance slab allocator for **stable memory addresses** without heap
+//! Thread-local slab allocators for **stable memory addresses** without heap
 //! allocation overhead.
 //!
 //! # What Is This?
 //!
-//! `nexus-slab` is a **custom allocator pattern**—not a replacement for Rust's global
-//! allocator, but a specialized allocator for:
+//! `nexus-slab` provides **macro-generated, thread-local slab allocators** with
+//! 8-byte RAII slot handles. Each allocator is a ZST backed by `thread_local!`
+//! storage — no runtime dispatch, no heap allocation on the hot path.
 //!
-//! - **Stable memory addresses** - pointers remain valid until explicitly freed
-//! - **Box-like semantics without Box** - RAII ownership with pre-allocated storage
-//! - **Node-based data structures** - linked lists, trees, graphs with internal pointers
-//! - **Predictable tail latency** - no reallocation spikes during growth
+//! Use this when you need:
+//! - **Stable memory addresses** — pointers remain valid until explicitly freed
+//! - **Box-like semantics without Box** — RAII ownership with pre-allocated storage
+//! - **Predictable tail latency** — no reallocation spikes, no allocator contention
+//! - **8-byte handles** — half the size of `Box`, key-based access for external storage
 //!
-//! Think of `Slot<T>` as analogous to `Box<T>`: an owning handle that provides access
-//! to a value and deallocates on drop. The difference is that `Box` allocates from the
-//! heap on every call, while `Slot` allocates from a pre-allocated slab—O(1) with no
-//! syscalls.
+//! If you need a general-purpose slab data structure (insert, get by key, iterate),
+//! use the [`slab`](https://crates.io/crates/slab) crate instead.
 //!
 //! # Quick Start
 //!
-//! Use [`create_allocator!`] to create a type-safe allocator with 8-byte RAII slots:
+//! ```ignore
+//! mod order_alloc {
+//!     nexus_slab::bounded_allocator!(super::Order);
+//! }
 //!
+//! // Initialize once per thread
+//! order_alloc::Allocator::builder().capacity(10_000).build()?;
+//!
+//! // 8-byte RAII slot — drops automatically, returns to freelist
+//! let slot = order_alloc::Slot::new(Order { id: 1, price: 100.0 });
+//! assert_eq!(slot.id, 1); // Deref to &Order
+//!
+//! // Leak for key-based access
+//! let key = slot.leak();
+//! let order = unsafe { order_alloc::Slot::from_key(key) };
 //! ```
-//! use nexus_slab::create_allocator;
 //!
-//! // Define an allocator for your type
-//! create_allocator!(order_alloc, u64);
+//! # Bounded vs Unbounded
 //!
-//! // Initialize at startup (bounded = fixed capacity)
-//! order_alloc::init().bounded(1024).build();
-//!
-//! // Insert returns an RAII Slot (8 bytes)
-//! let slot = order_alloc::insert(42);
-//! assert_eq!(*slot, 42);
-//!
-//! // Slot auto-deallocates on drop
-//! drop(slot);
-//! assert_eq!(order_alloc::len(), 0);
-//! ```
+//! - **[`bounded_allocator!`]**: Fixed capacity, returns `Err(Full)` when full.
+//!   ~20-24 cycle operations, zero allocation after init.
+//! - **[`unbounded_allocator!`]**: Grows via independent chunks (no copying).
+//!   ~40 cycle p999 during growth.
 //!
 //! # Performance
 //!
 //! All measurements in CPU cycles (see `BENCHMARKS.md` for methodology):
 //!
-//! | Operation | Slot API | slab crate | Notes |
-//! |-----------|----------|------------|-------|
+//! | Operation | nexus-slab | slab crate | Notes |
+//! |-----------|------------|------------|-------|
 //! | GET p50 | **2** | 3 | Direct pointer, no lookup |
 //! | GET_MUT p50 | **2** | 3 | Direct pointer |
-//! | INSERT p50 | 8 | **4** | +4 cycles TLS overhead |
-//! | REMOVE p50 | 4 | **3** | TLS overhead |
+//! | INSERT p50 | **4** | 4 | No TLS overhead |
+//! | REMOVE p50 | **3** | 3 | No TLS overhead |
 //! | REPLACE p50 | **2** | 4 | Direct pointer, no lookup |
 //!
-//! The TLS lookup adds ~4 cycles to INSERT/REMOVE, but access operations have zero
-//! overhead because `Slot` caches the pointer. For access-heavy workloads, this is
-//! a net win. Full lifecycle cost is +1 cycle vs direct API.
+//! # The [`Alloc`] Trait
 //!
-//! # Bounded vs Unbounded
+//! All macro-generated allocators implement [`Alloc`], enabling generic code
+//! over any slab allocator:
 //!
-//! ```
-//! use nexus_slab::create_allocator;
-//!
-//! create_allocator!(bounded_alloc, u64);
-//! create_allocator!(unbounded_alloc, u64);
-//!
-//! // Bounded: fixed capacity, returns None when full
-//! bounded_alloc::init().bounded(100).build();
-//!
-//! // Unbounded: grows by adding chunks (no copying)
-//! unbounded_alloc::init()
-//!     .unbounded()
-//!     .chunk_capacity(4096)
-//!     .capacity(10_000)  // pre-allocate
-//!     .build();
-//! ```
-//!
-//! # Key-based Access
-//!
-//! Leak a slot to get a [`Key`] for external storage:
-//!
-//! ```
-//! use nexus_slab::create_allocator;
-//!
-//! create_allocator!(my_alloc, String);
-//! my_alloc::init().bounded(100).build();
-//!
-//! let slot = my_alloc::insert("hello".to_string());
-//! let key = slot.leak();  // Slot forgotten, data stays alive
-//!
-//! assert!(my_alloc::contains_key(key));
-//!
-//! // Access via key (unsafe - caller ensures validity)
-//! let value = unsafe { my_alloc::get_unchecked(key) };
-//! assert_eq!(value, "hello");
+//! ```ignore
+//! fn process<A: nexus_slab::Alloc<Item = Order>>(slot: nexus_slab::alloc::Slot<A>) {
+//!     // Works with any bounded or unbounded allocator for Order
+//! }
 //! ```
 //!
 //! # Architecture
 //!
-//! ## Two-Level Freelist
+//! ## Two-Level Freelist (Unbounded)
 //!
 //! ```text
 //! slabs_head ─► Slab 2 ─► Slab 0 ─► NONE
@@ -106,49 +78,39 @@
 //!              [slots]   [slots]     Slab 1 (full, not on freelist)
 //! ```
 //!
-//! - **Slab freelist**: Which slabs have available space (O(1) lookup)
-//! - **Slot freelist**: Which slots within a slab are free (per-slab, LIFO)
+//! ## Slot State (SLUB-style union)
 //!
-//! ## Slot Design
+//! Each slot is a `repr(C)` union — either a freelist pointer or a value:
 //!
-//! Each slot is 8 bytes (single pointer). The VTable for slab operations
-//! is stored in thread-local storage, enabling:
+//! - **Occupied**: `value` field is active — contains the user's `T`
+//! - **Vacant**: `next_free` field is active — points to next free slot (or null)
 //!
-//! - Minimal slot size (cache-friendly)
-//! - RAII semantics (drop returns slot to freelist)
-//! - Type safety via macro-generated modules
+//! Writing a value implicitly transitions the slot from vacant to occupied
+//! (overwrites the freelist pointer). Writing a freelist link transitions it
+//! back. There is no tag, no sentinel — the Slot RAII handle is the proof
+//! of occupancy. Zero bookkeeping on the hot path.
 //!
-//! ## Stamp Encoding
-//!
-//! Each slot has a `stamp: u64` that encodes state and key:
-//!
-//! - **Bits 63-32**: State (vacant flag + next_free index)
-//! - **Bits 31-0**: Key (valid regardless of state)
-//!
-//! Freelists are **intra-slab only** - chains never cross slab boundaries.
+//! Freelists are **intra-slab only** — chains never cross slab boundaries.
 
 #![warn(missing_docs)]
 
+pub mod alloc;
 #[doc(hidden)]
 pub mod bounded;
 #[doc(hidden)]
-pub mod shared;
+pub mod macros;
+pub(crate) mod shared;
 #[doc(hidden)]
 pub mod unbounded;
 
-#[doc(hidden)]
-pub mod macros;
-
-// Note: create_allocator! is automatically exported at crate root via #[macro_export]
+// Re-export trait + markers + error
+pub use alloc::{Alloc, BoundedAlloc, Full, UnboundedAlloc};
 
 // Re-export sentinel for Key::NONE
 pub use shared::SLOT_NONE;
 
-// Re-export SlotCell for direct slot access (used by nexus-collections)
+// Re-export SlotCell for direct slot access (used by nexus-collections and macros)
 pub use shared::SlotCell;
-
-// Re-export VTable for direct vtable access (used by nexus-collections)
-pub use shared::VTable;
 
 // =============================================================================
 // Key
@@ -210,7 +172,7 @@ impl Key {
 
     /// Creates a new key from an index.
     ///
-    /// This is primarily for internal use by the allocator macro.
+    /// This is primarily for internal use by the allocator.
     #[doc(hidden)]
     #[inline]
     pub const fn new(index: u32) -> Self {
@@ -266,6 +228,10 @@ impl std::fmt::Debug for Key {
         }
     }
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {

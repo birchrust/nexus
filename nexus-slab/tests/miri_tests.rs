@@ -1,9 +1,9 @@
 //! Miri-specific tests for memory safety verification.
 //!
-//! Run with: `cargo +nightly miri test --test miri_tests -- -Zmiri-ignore-leaks`
+//! Run with: `MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test --test miri_tests`
 //!
 //! The `-Zmiri-ignore-leaks` flag is required because:
-//! - VTables are intentionally leaked (Box::leak for stable addresses)
+//! - Slabs are intentionally leaked (Box::leak for stable addresses)
 //! - Leaked slots (via `slot.leak()`) are intentionally not freed
 //!
 //! These tests verify:
@@ -13,11 +13,12 @@
 //! - No invalid pointer arithmetic
 //! - Correct drop ordering
 
-use nexus_slab::create_allocator;
+use nexus_slab::bounded::Slab as BoundedSlab;
+use nexus_slab::unbounded::Slab as UnboundedSlab;
 use std::cell::Cell;
 
 // =============================================================================
-// Helper Types (at module level for macro visibility)
+// Helper Types
 // =============================================================================
 
 thread_local! {
@@ -54,36 +55,29 @@ pub struct Large {
 
 #[test]
 fn miri_bounded_basic() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(8).build();
+    let slab = BoundedSlab::<u64>::new(8);
 
-    let slot = test_alloc::insert(42);
+    let slot = slab.new_slot(42);
     assert_eq!(*slot, 42);
     drop(slot);
-
-    assert_eq!(test_alloc::len(), 0);
 }
 
 #[test]
 fn miri_unbounded_basic() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().unbounded().chunk_capacity(4).build();
+    let slab = UnboundedSlab::<u64>::new(4);
 
-    let slot = test_alloc::insert(42);
+    let slot = slab.new_slot(42);
     assert_eq!(*slot, 42);
     drop(slot);
-
-    assert_eq!(test_alloc::len(), 0);
 }
 
 #[test]
 fn miri_multiple_inserts() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(8).build();
+    let slab = BoundedSlab::<u64>::new(8);
 
-    let s1 = test_alloc::insert(1);
-    let s2 = test_alloc::insert(2);
-    let s3 = test_alloc::insert(3);
+    let s1 = slab.new_slot(1);
+    let s2 = slab.new_slot(2);
+    let s3 = slab.new_slot(3);
 
     assert_eq!(*s1, 1);
     assert_eq!(*s2, 2);
@@ -92,20 +86,18 @@ fn miri_multiple_inserts() {
 
 #[test]
 fn miri_slot_deref_mut() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<u64>::new(4);
 
-    let mut slot = test_alloc::insert(42);
+    let mut slot = slab.new_slot(42);
     *slot = 100;
     assert_eq!(*slot, 100);
 }
 
 #[test]
 fn miri_slot_replace() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<u64>::new(4);
 
-    let mut slot = test_alloc::insert(1);
+    let mut slot = slab.new_slot(1);
     let old = slot.replace(2);
     assert_eq!(old, 1);
     assert_eq!(*slot, 2);
@@ -113,13 +105,11 @@ fn miri_slot_replace() {
 
 #[test]
 fn miri_slot_into_inner() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<u64>::new(4);
 
-    let slot = test_alloc::insert(42);
+    let slot = slab.new_slot(42);
     let value = slot.into_inner();
     assert_eq!(value, 42);
-    assert_eq!(test_alloc::len(), 0);
 }
 
 // =============================================================================
@@ -130,11 +120,10 @@ fn miri_slot_into_inner() {
 fn miri_drop_on_slot_drop() {
     reset_drop_count();
 
-    create_allocator!(test_alloc, crate::DropTracker);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<DropTracker>::new(4);
 
     {
-        let _slot = test_alloc::insert(crate::DropTracker(1));
+        let _slot = slab.new_slot(DropTracker(1));
     }
 
     assert_eq!(get_drop_count(), 1);
@@ -144,10 +133,9 @@ fn miri_drop_on_slot_drop() {
 fn miri_drop_on_into_inner() {
     reset_drop_count();
 
-    create_allocator!(test_alloc, crate::DropTracker);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<DropTracker>::new(4);
 
-    let slot = test_alloc::insert(crate::DropTracker(1));
+    let slot = slab.new_slot(DropTracker(1));
     let value = slot.into_inner();
     assert_eq!(get_drop_count(), 0);
 
@@ -159,10 +147,9 @@ fn miri_drop_on_into_inner() {
 fn miri_drop_on_replace() {
     reset_drop_count();
 
-    create_allocator!(test_alloc, crate::DropTracker);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<DropTracker>::new(4);
 
-    let mut slot = test_alloc::insert(crate::DropTracker(1));
+    let mut slot = slab.new_slot(DropTracker(1));
     let old = slot.replace(DropTracker(2));
     drop(old);
     assert_eq!(get_drop_count(), 1);
@@ -175,10 +162,9 @@ fn miri_drop_on_replace() {
 fn miri_no_drop_after_leak() {
     reset_drop_count();
 
-    create_allocator!(test_alloc, crate::DropTracker);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<DropTracker>::new(4);
 
-    let slot = test_alloc::insert(crate::DropTracker(1));
+    let slot = slab.new_slot(DropTracker(1));
     let _key = slot.leak();
 
     assert_eq!(get_drop_count(), 0);
@@ -190,56 +176,45 @@ fn miri_no_drop_after_leak() {
 
 #[test]
 fn miri_string_insert_drop() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<String>::new(4);
 
-    let slot = test_alloc::insert("hello world".to_string());
+    let slot = slab.new_slot("hello world".to_string());
     assert_eq!(*slot, "hello world");
     drop(slot);
-
-    assert_eq!(test_alloc::len(), 0);
 }
 
 #[test]
 fn miri_vec_insert_drop() {
-    create_allocator!(test_alloc, Vec<u64>);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<Vec<u64>>::new(4);
 
-    let slot = test_alloc::insert(vec![1, 2, 3, 4, 5]);
+    let slot = slab.new_slot(vec![1, 2, 3, 4, 5]);
     assert_eq!(slot.len(), 5);
     drop(slot);
-
-    assert_eq!(test_alloc::len(), 0);
 }
 
 #[test]
 fn miri_box_insert_drop() {
-    create_allocator!(test_alloc, Box<[u8; 1024]>);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<Box<[u8; 1024]>>::new(4);
 
-    let slot = test_alloc::insert(Box::new([0u8; 1024]));
+    let slot = slab.new_slot(Box::new([0u8; 1024]));
     assert_eq!(slot.len(), 1024);
     drop(slot);
-
-    assert_eq!(test_alloc::len(), 0);
 }
 
 #[test]
 fn miri_string_into_inner() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<String>::new(4);
 
-    let slot = test_alloc::insert("hello".to_string());
+    let slot = slab.new_slot("hello".to_string());
     let value = slot.into_inner();
     assert_eq!(value, "hello");
 }
 
 #[test]
 fn miri_vec_replace() {
-    create_allocator!(test_alloc, Vec<u64>);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<Vec<u64>>::new(4);
 
-    let mut slot = test_alloc::insert(vec![1, 2, 3]);
+    let mut slot = slab.new_slot(vec![1, 2, 3]);
     let old = slot.replace(vec![4, 5, 6, 7]);
 
     assert_eq!(old, vec![1, 2, 3]);
@@ -252,12 +227,11 @@ fn miri_vec_replace() {
 
 #[test]
 fn miri_slot_reuse_bounded() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(2).build();
+    let slab = BoundedSlab::<String>::new(2);
 
     // Fill
-    let s1 = test_alloc::insert("one".to_string());
-    let s2 = test_alloc::insert("two".to_string());
+    let s1 = slab.new_slot("one".to_string());
+    let s2 = slab.new_slot("two".to_string());
 
     let k1 = s1.key();
     let k2 = s2.key();
@@ -266,7 +240,7 @@ fn miri_slot_reuse_bounded() {
     drop(s1);
 
     // Reuse
-    let s3 = test_alloc::insert("three".to_string());
+    let s3 = slab.new_slot("three".to_string());
     assert_eq!(*s3, "three");
     assert_eq!(s3.key(), k1); // Reused slot 1
 
@@ -274,18 +248,17 @@ fn miri_slot_reuse_bounded() {
     drop(s2);
 
     // Reuse again
-    let s4 = test_alloc::insert("four".to_string());
+    let s4 = slab.new_slot("four".to_string());
     assert_eq!(*s4, "four");
     assert_eq!(s4.key(), k2); // Reused slot 2
 }
 
 #[test]
 fn miri_slot_reuse_single() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(1).build();
+    let slab = BoundedSlab::<String>::new(1);
 
     for i in 0..10 {
-        let slot = test_alloc::insert(format!("value_{}", i));
+        let slot = slab.new_slot(format!("value_{}", i));
         assert_eq!(*slot, format!("value_{}", i));
         assert_eq!(slot.key().index(), 0);
     }
@@ -297,304 +270,29 @@ fn miri_slot_reuse_single() {
 
 #[test]
 fn miri_unbounded_growth() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().unbounded().chunk_capacity(4).build();
+    let slab = UnboundedSlab::<u64>::new(4);
 
     // Fill multiple chunks
-    let slots: Vec<_> = (0..12).map(|i| test_alloc::insert(i)).collect();
+    let slots: Vec<_> = (0..12).map(|i| slab.new_slot(i)).collect();
 
-    assert_eq!(test_alloc::len(), 12);
-    assert!(test_alloc::capacity() >= 12);
+    assert!(slab.capacity() >= 12);
 
     for (i, slot) in slots.iter().enumerate() {
-        assert_eq!(*slot.get(), i as u64);
+        assert_eq!(**slot, i as u64);
     }
 }
 
 #[test]
 fn miri_unbounded_string_growth() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().unbounded().chunk_capacity(4).build();
+    let slab = UnboundedSlab::<String>::new(4);
 
     let slots: Vec<_> = (0..12)
-        .map(|i| test_alloc::insert(format!("string_{}", i)))
+        .map(|i| slab.new_slot(format!("string_{}", i)))
         .collect();
 
     for (i, slot) in slots.iter().enumerate() {
-        assert_eq!(*slot.get(), format!("string_{}", i));
+        assert_eq!(**slot, format!("string_{}", i));
     }
-}
-
-// =============================================================================
-// Key Access
-// =============================================================================
-
-#[test]
-fn miri_get_unchecked() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::get_unchecked(key) };
-    assert_eq!(*value, 42);
-}
-
-#[test]
-fn miri_get_unchecked_mut() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.leak();
-
-    unsafe {
-        *test_alloc::get_unchecked_mut(key) = 100;
-    }
-
-    let value = unsafe { test_alloc::get_unchecked(key) };
-    assert_eq!(*value, 100);
-}
-
-#[test]
-fn miri_get_unchecked_string() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert("hello".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::get_unchecked(key) };
-    assert_eq!(*value, "hello");
-}
-
-#[test]
-fn miri_get_valid_key() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::get(key) };
-    assert_eq!(value, Some(&42));
-}
-
-#[test]
-fn miri_get_invalid_key() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.key();
-    drop(slot); // Slot is now vacant
-
-    let value = unsafe { test_alloc::get(key) };
-    assert_eq!(value, None);
-}
-
-#[test]
-fn miri_get_string() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert("hello world".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::get(key) };
-    assert_eq!(value.map(|s| s.as_str()), Some("hello world"));
-}
-
-#[test]
-fn miri_get_mut_valid_key() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.leak();
-
-    unsafe {
-        if let Some(v) = test_alloc::get_mut(key) {
-            *v = 100;
-        }
-    }
-
-    let value = unsafe { test_alloc::get(key) };
-    assert_eq!(value, Some(&100));
-}
-
-#[test]
-fn miri_get_mut_invalid_key() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.key();
-    drop(slot);
-
-    let value = unsafe { test_alloc::get_mut(key) };
-    assert!(value.is_none());
-}
-
-#[test]
-fn miri_get_mut_string() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert("hello".to_string());
-    let key = slot.leak();
-
-    unsafe {
-        if let Some(s) = test_alloc::get_mut(key) {
-            s.push_str(" world");
-        }
-    }
-
-    let value = unsafe { test_alloc::get(key) };
-    assert_eq!(value.map(|s| s.as_str()), Some("hello world"));
-}
-
-#[test]
-fn miri_try_remove_by_key_valid() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.leak();
-
-    assert_eq!(test_alloc::len(), 1);
-
-    let value = unsafe { test_alloc::try_remove_by_key(key) };
-    assert_eq!(value, Some(42));
-    assert_eq!(test_alloc::len(), 0);
-}
-
-#[test]
-fn miri_try_remove_by_key_invalid() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.key();
-    drop(slot);
-
-    let value = unsafe { test_alloc::try_remove_by_key(key) };
-    assert_eq!(value, None);
-}
-
-#[test]
-fn miri_try_remove_by_key_string() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert("hello".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::try_remove_by_key(key) };
-    assert_eq!(value, Some("hello".to_string()));
-    assert_eq!(test_alloc::len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_basic() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::remove_by_key(key) };
-    assert_eq!(value, 42);
-    assert_eq!(test_alloc::len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_string() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert("hello world".to_string());
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::remove_by_key(key) };
-    assert_eq!(value, "hello world");
-    assert_eq!(test_alloc::len(), 0);
-}
-
-#[test]
-fn miri_remove_by_key_drops_correctly() {
-    reset_drop_count();
-
-    create_allocator!(test_alloc, crate::DropTracker);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(crate::DropTracker(1));
-    let key = slot.leak();
-
-    assert_eq!(get_drop_count(), 0);
-
-    let value = unsafe { test_alloc::remove_by_key(key) };
-    assert_eq!(get_drop_count(), 0); // Not dropped yet - we own it
-
-    drop(value);
-    assert_eq!(get_drop_count(), 1); // Now dropped
-}
-
-#[test]
-fn miri_remove_by_key_slot_reused() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(1).build();
-
-    let slot = test_alloc::insert("first".to_string());
-    let key = slot.leak();
-
-    // Remove via key
-    let value = unsafe { test_alloc::remove_by_key(key) };
-    assert_eq!(value, "first");
-
-    // Slot should be reusable
-    let slot2 = test_alloc::insert("second".to_string());
-    assert_eq!(*slot2, "second");
-    assert_eq!(slot2.key().index(), key.index()); // Same slot reused
-}
-
-#[test]
-fn miri_remove_by_key_vec() {
-    create_allocator!(test_alloc, Vec<u64>);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(vec![1, 2, 3, 4, 5]);
-    let key = slot.leak();
-
-    let value = unsafe { test_alloc::remove_by_key(key) };
-    assert_eq!(value, vec![1, 2, 3, 4, 5]);
-    assert_eq!(test_alloc::len(), 0);
-}
-
-// =============================================================================
-// Pointer Methods
-// =============================================================================
-
-#[test]
-fn miri_as_ptr() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let slot = test_alloc::insert(42);
-    let ptr = slot.as_ptr();
-    assert_eq!(unsafe { *ptr }, 42);
-}
-
-#[test]
-fn miri_as_mut_ptr() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    let mut slot = test_alloc::insert(42);
-    let ptr = slot.as_mut_ptr();
-    unsafe { *ptr = 100 };
-    assert_eq!(*slot, 100);
 }
 
 // =============================================================================
@@ -603,79 +301,35 @@ fn miri_as_mut_ptr() {
 
 #[test]
 fn miri_capacity_one() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(1).build();
+    let slab = BoundedSlab::<u64>::new(1);
 
-    let slot = test_alloc::insert(42);
-    assert!(test_alloc::try_insert(100).is_none());
+    let slot = slab.new_slot(42);
+    assert!(slab.try_new_slot(100).is_err());
     drop(slot);
 
-    let slot2 = test_alloc::insert(100);
+    let slot2 = slab.new_slot(100);
     assert_eq!(*slot2, 100);
 }
 
 #[test]
 fn miri_zst() {
-    create_allocator!(test_alloc, crate::ZeroSized);
-    test_alloc::init().bounded(10).build();
+    let slab = BoundedSlab::<ZeroSized>::new(10);
 
-    let slot = test_alloc::insert(crate::ZeroSized);
-    assert_eq!(*slot, crate::ZeroSized);
+    let slot = slab.new_slot(ZeroSized);
+    assert_eq!(*slot, ZeroSized);
     drop(slot);
-    assert_eq!(test_alloc::len(), 0);
 }
 
 #[test]
 fn miri_large_struct() {
-    create_allocator!(test_alloc, crate::Large);
-    test_alloc::init().bounded(4).build();
+    let slab = BoundedSlab::<Large>::new(4);
 
     let mut data = [0u64; 128];
     for (i, d) in data.iter_mut().enumerate() {
         *d = i as u64;
     }
 
-    let slot = test_alloc::insert(crate::Large { data });
+    let slot = slab.new_slot(Large { data });
     assert_eq!(slot.data[0], 0);
     assert_eq!(slot.data[127], 127);
-}
-
-// =============================================================================
-// Shutdown
-// =============================================================================
-
-#[test]
-fn miri_shutdown_empty() {
-    create_allocator!(test_alloc, u64);
-    test_alloc::init().bounded(4).build();
-
-    assert!(test_alloc::shutdown().is_ok());
-    assert!(!test_alloc::is_initialized());
-}
-
-#[test]
-fn miri_shutdown_after_drops() {
-    create_allocator!(test_alloc, String);
-    test_alloc::init().bounded(4).build();
-
-    {
-        let _s1 = test_alloc::insert("one".to_string());
-        let _s2 = test_alloc::insert("two".to_string());
-    }
-
-    assert!(test_alloc::shutdown().is_ok());
-}
-
-#[test]
-fn miri_reinit_after_shutdown() {
-    create_allocator!(test_alloc, u64);
-
-    test_alloc::init().bounded(4).build();
-    let slot = test_alloc::insert(1);
-    drop(slot);
-    assert!(test_alloc::shutdown().is_ok());
-
-    test_alloc::init().bounded(8).build();
-    let slot = test_alloc::insert(2);
-    assert_eq!(*slot, 2);
 }
