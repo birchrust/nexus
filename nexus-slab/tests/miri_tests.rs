@@ -333,3 +333,159 @@ fn miri_large_struct() {
     assert_eq!(slot.data[0], 0);
     assert_eq!(slot.data[127], 127);
 }
+
+// =============================================================================
+// RC + Weak Miri Tests
+// =============================================================================
+
+mod miri_rc_alloc {
+    nexus_slab::bounded_rc_allocator!(super::DropTracker);
+}
+
+mod miri_rc_u64 {
+    nexus_slab::bounded_rc_allocator!(u64);
+}
+
+mod miri_rc_string {
+    nexus_slab::bounded_rc_allocator!(String);
+}
+
+fn init_miri_rc_u64() {
+    let _ = miri_rc_u64::Allocator::builder().capacity(16).build();
+}
+
+fn init_miri_rc_alloc() {
+    let _ = miri_rc_alloc::Allocator::builder().capacity(16).build();
+}
+
+fn init_miri_rc_string() {
+    let _ = miri_rc_string::Allocator::builder().capacity(16).build();
+}
+
+#[test]
+fn miri_rc_basic_cycle() {
+    init_miri_rc_u64();
+
+    let rc = miri_rc_u64::RcSlot::new(42);
+    assert_eq!(*rc, 42);
+    let rc2 = rc.clone();
+    assert_eq!(*rc2, 42);
+    drop(rc);
+    drop(rc2);
+}
+
+#[test]
+fn miri_rc_drop_tracker() {
+    init_miri_rc_alloc();
+    reset_drop_count();
+
+    let rc = miri_rc_alloc::RcSlot::new(DropTracker(1));
+    let rc2 = rc.clone();
+    drop(rc);
+    assert_eq!(get_drop_count(), 0);
+    drop(rc2);
+    assert_eq!(get_drop_count(), 1);
+}
+
+#[test]
+fn miri_rc_weak_upgrade_downgrade() {
+    init_miri_rc_u64();
+
+    let rc = miri_rc_u64::RcSlot::new(99);
+    let weak = rc.downgrade();
+    let upgraded = weak.upgrade().unwrap();
+    assert_eq!(*upgraded, 99);
+    drop(upgraded);
+    drop(rc);
+    assert!(weak.upgrade().is_none());
+    drop(weak);
+}
+
+#[test]
+fn miri_rc_zombie_slot() {
+    init_miri_rc_alloc();
+    reset_drop_count();
+
+    let rc = miri_rc_alloc::RcSlot::new(DropTracker(2));
+    let weak = rc.downgrade();
+    drop(rc);
+    assert_eq!(get_drop_count(), 1);
+
+    // Zombie: value dropped, slot alive via weak
+    assert!(weak.upgrade().is_none());
+    drop(weak); // Slot freed
+}
+
+#[test]
+fn miri_rc_string_type() {
+    init_miri_rc_string();
+
+    let rc = miri_rc_string::RcSlot::new("hello world".to_string());
+    assert_eq!(&**rc, "hello world");
+    let rc2 = rc.clone();
+    drop(rc);
+    assert_eq!(&**rc2, "hello world");
+    drop(rc2);
+}
+
+#[test]
+fn miri_rc_multiple_weaks_dealloc() {
+    init_miri_rc_u64();
+
+    let rc = miri_rc_u64::RcSlot::new(7);
+    let w1 = rc.downgrade();
+    let w2 = rc.downgrade();
+    let w3 = w1.clone();
+
+    drop(rc);
+    drop(w1);
+    drop(w3);
+    drop(w2); // Last weak — slot freed
+}
+
+#[test]
+fn miri_rc_slot_reuse_after_weak() {
+    init_miri_rc_u64();
+
+    let rc = miri_rc_u64::RcSlot::new(10);
+    let weak = rc.downgrade();
+    drop(rc);
+    drop(weak);
+
+    // Slot should be reusable — if not, this would fail on bounded allocator
+    let rc2 = miri_rc_u64::RcSlot::new(20);
+    assert_eq!(*rc2, 20);
+    drop(rc2);
+}
+
+#[test]
+fn miri_rc_leak_local_static() {
+    init_miri_rc_u64();
+
+    let rc = miri_rc_u64::RcSlot::new(42);
+    let leaked = rc.leak();
+
+    // LocalStatic dereferences correctly
+    assert_eq!(*leaked, 42);
+
+    // LocalStatic is Copy
+    let leaked2 = leaked;
+    assert_eq!(*leaked, *leaked2);
+}
+
+#[test]
+fn miri_rc_get_mut() {
+    init_miri_rc_u64();
+
+    let mut rc = miri_rc_u64::RcSlot::new(100);
+
+    // get_mut succeeds when unique
+    if let Some(val) = rc.get_mut() {
+        *val = 200;
+    }
+    assert_eq!(*rc, 200);
+
+    // get_mut fails when cloned
+    let _rc2 = rc.clone();
+    assert!(rc.get_mut().is_none());
+}

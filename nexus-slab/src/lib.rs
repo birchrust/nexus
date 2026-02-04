@@ -103,14 +103,17 @@ pub(crate) mod shared;
 #[doc(hidden)]
 pub mod unbounded;
 
-// Re-export trait + markers + error
-pub use alloc::{Alloc, BoundedAlloc, Full, UnboundedAlloc};
+// Re-export trait + markers + error + LocalStatic
+pub use alloc::{Alloc, BoundedAlloc, Full, LocalStatic, UnboundedAlloc};
 
 // Re-export sentinel for Key::NONE
 pub use shared::SLOT_NONE;
 
 // Re-export SlotCell for direct slot access (used by nexus-collections and macros)
 pub use shared::SlotCell;
+
+// Re-export RcInner for macro expansion (bounded_rc_allocator! / unbounded_rc_allocator!)
+pub use shared::RcInner;
 
 // =============================================================================
 // Key
