@@ -1,423 +1,356 @@
 # nexus-slab Benchmarks
 
-All measurements in CPU cycles using batched unrolled timing (see Methodology below).
+All measurements in CPU cycles (`rdtsc`), pinned to a single core (`taskset -c 0`).
+Best of 5 runs per percentile unless noted otherwise.
 
-**Test conditions:** `taskset -c 0` pinning, best of 5 runs per percentile.
+**Platform:** AMD Ryzen / Intel Core, Linux, glibc malloc. Non-Copy types.
 
 ---
 
 ## Methodology
 
-### The Problem with Single-Operation Timing
+### Batched Unrolled Measurement
 
-The `rdtsc`/`rdtscp` instructions have ~20-25 cycles of inherent overhead. When measuring operations that complete in 2-8 cycles, single-operation timing gives misleading results—everything appears to take ~22-24 cycles (the measurement floor).
-
-### Solution: Batched Unrolled Measurement
-
-We measure 100 operations per sample using a manually unrolled macro:
+`rdtsc`/`rdtscp` have ~20-25 cycles of inherent overhead. We measure 100
+operations per sample using a manually unrolled macro to amortize this:
 
 ```rust
 macro_rules! unroll_100 {
     ($op:expr) => {
         $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 10
-        $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; // 20
         // ... 100 total
     };
 }
 
 let start = rdtsc_start();
-unroll_100!({ black_box(entry.get()); });
+unroll_100!({ black_box(slot.deref()); });
 let end = rdtsc_end();
 let cycles_per_op = (end - start) / 100;
 ```
 
-This eliminates:
-- **Timing overhead**: Amortized across 100 ops
-- **Loop overhead**: No branches, just straight-line code
-- **Compiler optimization**: `black_box()` prevents hoisting
+Eliminates timing overhead, loop branches, and compiler hoisting (`black_box`).
 
-### Interpreting Results
+### Cold Churn Measurement
 
-- **0-1 cycles**: Instruction-Level Parallelism (ILP) - CPU executes operation "for free" alongside other work
-- **2-3 cycles**: Single memory access, no dependent loads
-- **4-8 cycles**: Multiple dependent operations
-- **8+ cycles**: Multiple indirections, cache misses, or complex operations
+Single operations with 8MB cache polluter traversal between each measurement.
+Simulates real-world conditions where allocator state isn't in L1/L2.
 
----
+### Interpreting Cycle Counts
 
-## Summary (Allocator API p50)
-
-| Operation | Slot API | Key-based | slab crate | Notes |
-|-----------|----------|-----------|------------|-------|
-| GET (random) | **2** | 2 | 3 | Slot has direct pointer |
-| GET (hot) | **0** | - | 1 | ILP - CPU pipelines loads |
-| GET_MUT | **2** | 2 | 3 | Slot/key tied |
-| CONTAINS | **2** | 3 | 2 | slot.is_valid() |
-| INSERT | 8 | - | **5** | slab crate has less indirection |
-| REMOVE | **4** | - | 4 | Tied |
-| REPLACE | **3** | - | 4 | Slot has direct pointer |
-
-**Key findings:**
-- Slot API wins for access patterns (GET, GET_MUT, REPLACE) - direct pointer avoids lookup
-- slab crate slightly faster for INSERT due to less indirection
-- Hot access shows ILP - CPU pipelines repeated loads (0 cycles at p50)
-- 16-byte Slot (with vtable pointer) enables RAII without TLS lookups
+- **0-1 cycles**: ILP -- CPU executes the operation alongside other work
+- **2-5 cycles**: Single TLS lookup + pointer chase
+- **6-12 cycles**: Alloc (freelist pop + value write) for small types
+- **25-90 cycles**: Alloc for larger types (memcpy dominates)
+- **100+ cycles**: Cache misses, OS interaction, or large copies
 
 ---
 
-## GET Operations
+## Slot vs Box -- Isolated Benchmarks
 
-### Random Access Pattern
+Slot: `bounded_allocator!` macro, TLS-backed slab, 8-byte RAII handle.
+Box: Standard `Box::new()` / `drop()` through glibc malloc.
 
-Accessing entries at random indices (realistic workload):
+### CHURN (alloc + deref + drop, LIFO single-slot)
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| `slot.get()` | **2** | **2** | **2** | 2 | 20 |
-| `get_unchecked()` [unsafe] | 2 | 3 | 3 | 6 | 99 |
-| slab crate | 3 | 3 | 5 | 7 | 84 |
+| Size | | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|------|------|-----|-----|-----|-------|--------|-----|
+| 32B | **Slot** | **6** | **6** | **9** | **13** | 82 | 147 |
+| 32B | Box | 17 | 19 | 21 | 41 | 124 | 228 |
+| 64B | **Slot** | **8** | **8** | **11** | **22** | 82 | 134 |
+| 64B | Box | 18 | 20 | 29 | 66 | 107 | 143 |
+| 128B | **Slot** | **11** | **12** | **14** | **27** | **77** | 255 |
+| 128B | Box | 23 | 25 | 29 | 64 | 111 | 159 |
+| 256B | **Slot** | **25** | **27** | **29** | **79** | **107** | **155** |
+| 256B | Box | 27 | 28 | 34 | 87 | 119 | 355 |
+| 512B | **Slot** | **40** | **42** | 59 | **110** | 170 | **225** |
+| 512B | Box | 45 | 46 | **52** | 115 | **163** | 344 |
+| 1024B | Slot | 67 | 68 | 81 | 136 | 194 | **272** |
+| 1024B | Box | **60** | **61** | **72** | **136** | **177** | 371 |
+| 4096B | **Slot** | **168** | **173** | **232** | **279** | **402** | **568** |
+| 4096B | Box | 188 | 194 | 271 | 335 | 442 | 673 |
 
-Slot's cached pointer saves index lookup.
+**Slot is 2.8x faster at 32B** (6 vs 17 cycles). Tied or faster at all sizes
+except 1024B where Box's placement-new optimization gives it a ~10% edge on
+p50. At 4096B, Slot wins again as memcpy dominates and Box's malloc overhead
+shows.
 
-### Hot Access Pattern
+### BATCH ALLOC (100 sequential allocations, no interleaved frees)
 
-Repeatedly accessing the same entry (measures ILP):
+| Size | | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|------|------|-----|-----|-----|-------|--------|-----|
+| 32B | **Slot** | **6** | **7** | **8** | **13** | **68** | 119 |
+| 32B | Box | 17 | 17 | 22 | 53 | 102 | **114** |
+| 64B | **Slot** | **8** | **8** | **10** | **16** | **71** | **115** |
+| 64B | Box | 19 | 20 | 23 | 63 | 99 | 465 |
+| 128B | **Slot** | **12** | **12** | **14** | **32** | **85** | **327** |
+| 128B | Box | 38 | 40 | 44 | 96 | 137 | 423 |
+| 256B | **Slot** | **27** | **28** | **30** | **78** | **101** | **125** |
+| 256B | Box | 45 | 47 | 53 | 113 | 174 | 431 |
+| 512B | **Slot** | **43** | **44** | **59** | **109** | **143** | **318** |
+| 512B | Box | 58 | 60 | 80 | 133 | 188 | 465 |
+| 1024B | Slot | 87 | 89 | **98** | **152** | **195** | **391** |
+| 1024B | Box | **81** | **83** | 114 | 163 | 213 | 940 |
+| 4096B | Slot | 263 | 271 | **313** | **377** | **547** | **690** |
+| 4096B | Box | **258** | **265** | 322 | 383 | 562 | 2660 |
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| `slot.get()` | **0** | **0** | **0** | **1** | 10 |
-| slab crate | 1 | 2 | 2 | 2 | 24 |
+**Slot dominates small sizes** (2.8x at 32B, 3.2x at 128B). At 1024B+, p50 is
+tied but **Slot has significantly better tails** -- no OS interaction means no
+multi-thousand-cycle spikes.
 
-Slot achieves 0 cycles at p50 due to CPU pipelining repeated loads.
+### BATCH DROP (pre-alloc 100, then free all)
 
-### GET_MUT
+| Size | | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|------|------|-----|-----|-----|-------|--------|-----|
+| 32B | **Slot** | **2** | **2** | **2** | **5** | **58** | **70** |
+| 32B | Box | 11 | 13 | 14 | 46 | 90 | 129 |
+| 64B | **Slot** | **2** | **2** | **3** | **6** | **32** | **72** |
+| 64B | Box | 11 | 12 | 17 | 34 | 83 | 113 |
+| 128B | **Slot** | **2** | **2** | **3** | **6** | **38** | **89** |
+| 128B | Box | 24 | 26 | 30 | 80 | 103 | 121 |
+| 256B | **Slot** | **2** | **2** | **3** | **8** | **41** | **63** |
+| 256B | Box | 25 | 27 | 31 | 73 | 115 | 172 |
+| 512B | **Slot** | **4** | **4** | **5** | **9** | **58** | **71** |
+| 512B | Box | 25 | 27 | 34 | 84 | 114 | 142 |
+| 1024B | **Slot** | **5** | **5** | **6** | **9** | **66** | **94** |
+| 1024B | Box | 25 | 27 | 35 | 85 | 150 | 156 |
+| 4096B | **Slot** | **13** | **14** | **15** | **24** | **81** | **139** |
+| 4096B | Box | 27 | 28 | 44 | 85 | 121 | 192 |
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| `slot.get_mut()` | **2** | **2** | **2** | **2** | 23 |
-| `get_unchecked_mut()` [unsafe] | 2 | 3 | 3 | 4 | 78 |
-| slab crate | 3 | 4 | 4 | 8 | 96 |
+**Slot deallocation is 5.5x faster** at small sizes (2 vs 11 cycles at 32B).
+A slab free is a single pointer write to the freelist head. `free()` must
+update bin metadata, potentially coalesce, and interact with tcache.
 
-Slot is fastest at all percentiles.
+### ACCESS (random deref from pool of 1000)
+
+| Size | | p50 | p90 | p99 | p99.9 | p99.99 | max |
+|------|------|-----|-----|-----|-------|--------|-----|
+| 32B | Slot | 0 | 1 | 1 | 1 | 1 | **12** |
+| 32B | Box | 1 | 1 | 1 | 1 | 10 | 51 |
+| 64B | Slot | 1 | 1 | 1 | 1 | **4** | **35** |
+| 64B | Box | 1 | 1 | 1 | 1 | 5 | 62 |
+| 256B | Slot | 2 | 2 | 2 | 2 | 20 | 58 |
+| 256B | Box | 1 | 1 | 1 | 1 | 1 | **37** |
+| 4096B | Slot | 3 | 5 | 10 | 18 | 66 | 76 |
+| 4096B | Box | 1 | 1 | 1 | 1 | 5 | 77 |
+
+Both are single-pointer deref. Box is slightly faster at larger sizes because
+`Box<T>` points directly to the value, while `Slot` dereferences through a
+`*mut SlotCell<T>` union. At 32-64B both achieve ILP (0-1 cycles). The
+difference is negligible in practice -- both are sub-cache-line access.
+
+### COLD CHURN (cache-evicted, single alloc+deref+drop)
+
+8MB polluter traversal between each operation. Simulates allocator state
+evicted from cache (context switches, competing workloads).
+
+| Size | | p50 | p90 | p99 | p99.9 |
+|------|------|-----|-----|-----|-------|
+| 32B | **Slot** | **36** | **48** | **68** | **90** |
+| 32B | Box | 68 | 82 | 138 | 192 |
+| 64B | **Slot** | **44** | **60** | **70** | **114** |
+| 64B | Box | 100 | 124 | 176 | 286 |
+| 128B | **Slot** | **140** | **378** | **682** | **1290** |
+| 128B | Box | 306 | 578 | 1020 | 1522 |
+| 256B | **Slot** | **298** | 668 | **1080** | **1646** |
+| 256B | Box | 330 | **660** | 1184 | 2004 |
+| 512B | Slot | 424 | 792 | 1400 | 2024 |
+| 512B | Box | **398** | **754** | **1258** | **1982** |
+| 1024B | Slot | 542 | 902 | **1366** | **1856** |
+| 1024B | Box | **524** | **816** | 1412 | 2188 |
+| 4096B | **Slot** | **626** | **890** | **1584** | **2296** |
+| 4096B | Box | 776 | 1128 | 1856 | 2952 |
+
+**Slot is 1.9x faster at 32B cold** (36 vs 68). At 64B, **2.3x faster** (44
+vs 100). At mid sizes (512-1024B), memcpy dominates and both converge. At
+4096B, Slot pulls ahead again -- fewer cache lines to fetch for allocator
+metadata.
 
 ---
 
-## INSERT
+## Stress Tests
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| Allocator API | 8 | 10 | 19 | 20 | 60 |
-| slab crate | **5** | **5** | **6** | **10** | 80 |
+Real-world allocation patterns. 64-byte values unless noted.
 
-Slab crate is faster for INSERT because it has less indirection (vtable call). The tradeoff is that nexus-slab provides RAII semantics via the Slot type.
+### Active Contention (Isolation Advantage)
+
+Both allocators see identical "noise" (mixed-size global allocator traffic
+between measurements). Box goes through the contested global allocator; Slab
+bypasses it entirely.
+
+| Size | | p50 | p90 | p99 | p99.9 |
+|------|------|-----|-----|-----|-------|
+| 64B | Box | 14 | 15 | 18 | 58 |
+| 64B | **Slab** | **4** | **4** | **6** | **8** |
+| 256B | Box | 16 | 17 | 22 | 56 |
+| 256B | **Slab** | **8** | **9** | **25** | **49** |
+| 1024B | Box | 25 | 28 | 56 | 88 |
+| 1024B | **Slab** | **19** | **20** | **31** | **71** |
+| 4096B | Box | 123 | 139 | 193 | 251 |
+| 4096B | **Slab** | **52** | **54** | **62** | **139** |
+
+**Slab is 3.5x faster at 64B** under contention. At 4096B, **2.4x faster**.
+This is the primary reason to use a dedicated slab: isolation from the global
+allocator means your hot path doesn't pay for someone else's allocations.
+
+### Long-Running Churn (10M ops, 50% fill)
+
+10 phases of 1M operations each. Looking for degradation over time:
+
+| Phase | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|-------|---------|----------|---------|----------|
+| 1 | 56 | **42** | 128 | **60** |
+| 5 | 56 | **44** | 118 | **60** |
+| 10 | 56 | **42** | 124 | **60** |
+
+**No degradation for either.** Slab is consistently 1.3x faster at p50 and
+**2x better at p99**. Neither shows fragmentation effects over 10M operations.
+
+### Fragmentation Resistance
+
+#### Mixed Lifetimes (90% long-lived, 10% short-lived)
+
+| | p50 | p99 | p99.9 | p99.99 |
+|---|-----|-----|-------|--------|
+| Box (fragmented) | 38 | 42 | 52 | 646 |
+| **Slab (no frag)** | **20** | **22** | **24** | **172** |
+
+**Slab is 1.9x faster** with 3.8x better p99.99.
+
+#### Brutal Fragmentation (Swiss-cheese heap)
+
+50K mixed-size allocations, free every 3rd, measure in fragmented heap:
+
+| | p50 | p99 | p99.9 | p99.99 |
+|---|-----|-----|-------|--------|
+| Box (fragmented) | 32 | 36 | 38 | 166 |
+| Box (clean) | 32 | 36 | 60 | 210 |
+| **Slab** | **22** | **24** | **26** | **52** |
+
+Box doesn't degrade much under fragmentation (glibc's tcache handles same-size
+well), but Slab is still **1.5x faster** and has **3.2x better p99.99**.
+
+### Burst Allocation (5000 items, repeated 100x)
+
+| | p50 | p90 | p99 |
+|---|-----|-----|-----|
+| Box alloc | 39 | 41 | 46 |
+| **Slab alloc** | **4** | **5** | **6** |
+| Box free | 11 | 12 | 15 |
+| **Slab free** | **3** | **4** | **12** |
+
+**Slab alloc is 10x faster.** Slab free is 3.7x faster.
+
+### Sustained Memory Pressure (100MB, 1.6M allocations)
+
+| | p50 | p90 | p99 | p99.9 |
+|---|-----|-----|-----|-------|
+| Box (100MB) | 820 | 886 | 1216 | 1548 |
+| **Slab (100MB)** | **416** | **490** | **888** | **1306** |
+
+**Slab is 2x faster at p50** under 100MB pressure. Both degrade at this scale
+due to TLB pressure, but Slab's contiguous layout helps.
+
+### First Allocation Latency (Cold Start)
+
+Cache flushed between each measurement. Measures true first-access cost:
+
+| | p50 | p90 | p99 |
+|---|-----|-----|-----|
+| Box | 588 | 1058 | 2528 |
+| **Slab** | **24** | **24** | **26** |
+
+**Slab is 25x faster.** Box's first allocation may trigger heap management
+overhead. Slab is always a freelist pop.
+
+### Size Class Comparison (Fragmented Global Allocator)
+
+Churn (alloc+free) with global allocator pre-fragmented:
+
+| Size | Fill | Box p50 | Slab p50 | Box p99 | Slab p99 |
+|------|------|---------|----------|---------|----------|
+| 64B | 10% | 34 | **22** | 38 | **24** |
+| 64B | 50% | 36 | **22** | 38 | **34** |
+| 256B | 10% | 38 | **22** | 42 | **26** |
+| 256B | 50% | 36 | **22** | 38 | **26** |
+| 1024B | 10% | 40 | **32** | 66 | **34** |
+| 1024B | 50% | 46 | **36** | 68 | **56** |
+| 4096B | 10% | 162 | **78** | 278 | **82** |
+| 4096B | 50% | 118 | **76** | 124 | **82** |
+
+**Slab is consistently 1.5-2x faster** across all sizes and fill levels.
+Performance is stable regardless of slab occupancy.
 
 ---
 
-## REMOVE
+## Why Use a Slab?
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| `slot.into_inner()` | **4** | **5** | 5 | 11 | 39 |
-| slab.remove() | **4** | **4** | 6 | 15 | 59 |
+The slab is purpose-built for **constant churn of same-type objects** -- the
+pattern where you repeatedly allocate, use, and free the same struct. Orders
+in a matching engine. Connections in a server. Nodes in a graph. Timers in a
+wheel.
 
-Both fast. Slot drops value + frees via embedded vtable pointer.
+### Predictable latency under churn
 
----
+Every `Box::new()` goes through the global allocator. That allocator is shared
+with every other allocation in your process -- string formatting, logging,
+collection resizing, serialization buffers. Under load, these compete for the
+same tcache bins, the same arenas, the same locks. A slab is yours alone.
+Your hot path doesn't spike because a logger allocated.
 
-## REPLACE
+### Reduce pressure on the global allocator
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| `slot.replace()` | **3** | **3** | **3** | **5** | 29 |
-| slab get_mut+replace | 4 | 4 | 5 | 11 | 82 |
+Taking high-frequency same-type allocations off the global allocator isn't
+just faster for your hot path -- it's faster for everything else. Fewer
+tcache evictions, less arena contention, fewer size-class collisions. If your
+process allocates millions of 64-byte structs per second through `Box`, that
+traffic competes with every other 64-byte allocation. Moving it to a slab
+means the global allocator handles less volume and serves the rest of your
+process better.
 
-Slot's cached pointer saves ~1 cycle - no index lookup needed.
+### Stable pointers, zero fragmentation
 
----
+Slab-allocated objects don't move. Pointers remain valid until explicitly
+freed. There's no reallocation, no compaction, no address instability. And
+because every slot is the same size, there's no fragmentation -- freed slots
+are immediately reusable without coalescing.
 
-## CONTAINS
+### The tradeoff
 
-| Method | p50 | p90 | p99 | p99.9 | max |
-|--------|-----|-----|-----|-------|-----|
-| `slot.is_valid()` | **2** | **2** | **3** | 6 | 23 |
-| `contains_key()` | 3 | 3 | 5 | 8 | 36 |
-| slab crate | **2** | 3 | 3 | 6 | 35 |
-
-`slot.is_valid()` is fastest - single stamp read.
-
----
-
-## When to Use What
-
-### Use Allocator API + Slot when:
-- You hold slots for repeated access (GET, REPLACE)
-- Mutation patterns dominate (REPLACE is faster)
-- You need RAII semantics (auto-deallocation on drop)
-- You want stable memory addresses
-
-### Use slab crate when:
-- INSERT performance is critical (4-6 cycles vs 9)
-- You don't need RAII/Slot handles
-- Vec reallocation stalls at p99.99 are acceptable
-
-### Unbounded vs Bounded
-
-The unbounded slab adds ~2-4 cycles per operation due to chunk indirection. The tradeoff:
-
-| | Bounded | Unbounded |
-|---|---------|-----------|
-| GET overhead | +0 | +2-4 cycles |
-| Growth behavior | Panics when full | Adds chunks (no copy) |
-| Tail latency | Deterministic | No reallocation stalls |
-
-Use bounded when capacity is known. Use unbounded when growth is needed without `Vec` reallocation spikes.
-
----
-
-## vs Box (Heap Allocation)
-
-The real comparison for many use cases isn't slab crate vs nexus-slab—it's **pre-allocated slab vs heap allocation**. When should you use `Slot<T>` instead of `Box<T>`?
-
-### Full Distribution Comparison
-
-Stress tests measuring 64-byte struct allocation under various conditions:
-
-#### Burst Allocation (5000 items, repeated 100x)
-
-| | p25 | p50 | p75 | p90 | p99 |
-|---|---|---|---|---|---|
-| Box alloc | 18 | 18 | 19 | 19 | 25 |
-| **Slab alloc** | **13** | **13** | **23** | **27** | **79** |
-| Box free | 12 | 12 | 13 | 13 | 16 |
-| **Slab free** | **5** | **5** | **5** | **5** | **7** |
-
-**Slab deallocation is 2.4x faster**.
-
-#### Long-Running Churn (10M operations, 50% fill)
-
-| | p25 | p50 | p75 | p90 | p99 | p99.9 |
-|---|---|---|---|---|---|---|
-| Box | 46 | 62 | 72 | 80 | 136 | 214 |
-| **Slab** | **44** | **58** | **66** | **72** | **82** | **110** |
-
-**Slab has 1.7x better p99 and 2x better p99.9** under sustained churn.
-
-#### First Allocation Latency (Cold Start)
-
-This is the killer test. After exhausting the thread cache with large allocations, measure the first 64-byte allocation:
-
-| | p25 | p50 | p75 | p90 | p99 |
-|---|---|---|---|---|---|
-| Box | 176 | 196 | 250 | 868 | 1656 |
-| **Slab** | **28** | **32** | **32** | **34** | **42** |
-
-**Slab is 6x faster at p50, 39x faster at p99** when the heap allocator has to do real work.
-
-#### Tail Latency (1M samples)
-
-| | p25 | p50 | p75 | p90 | p99 | p99.9 | p99.99 | max |
-|---|---|---|---|---|---|---|---|---|
-| Box | 38 | 38 | 40 | 42 | 46 | 74 | 296 | 234,206 |
-| **Slab** | **32** | **32** | **34** | **34** | **40** | **62** | **96** | **10,714** |
-
-**Slab's worst case is 22x better** (no OS interaction after init).
-
-### When to Use Slab vs Box
-
-**Use Slab when:**
-- You have **churning data** (frequent insert/remove cycles)
-- **Tail latency matters** (trading, games, real-time systems)
-- You need **stable memory addresses** (node-based data structures)
-- You want **predictable worst-case** (no mmap/brk syscalls after init)
-- Memory is **pre-allocatable** at startup
-
-**Use Box when:**
-- Allocation is **infrequent** (one-time setup)
-- You need **dynamic sizing** (different types, unknown sizes)
-- **Simplicity** is more important than performance
-- You're **not latency-sensitive**
-
-### The Tradeoff
-
-| | Box | Slab |
+| | Box | Slot |
 |---|---|---|
-| Setup cost | None | `Allocator::builder().build()` required |
-| Allocation p50 | ~18 cycles | ~13 cycles |
-| Deallocation p50 | ~12 cycles | ~5 cycles |
-| Worst case | OS syscall (234K cycles) | Freelist pop (10K cycles) |
-| Memory overhead | Per-allocation metadata | 8 bytes/slot + stamp |
-| Fragmentation | Yes (over time) | No (fixed slots) |
+| Setup cost | None | `Allocator::builder().build()` |
+| Handle size | 8 bytes | 8 bytes |
+| Alloc p50 (32B) | 17 cycles | **6 cycles** |
+| Alloc p50 (1024B) | **60 cycles** | 67 cycles |
+| Dealloc p50 (32B) | 11 cycles | **2 cycles** |
+| Cold alloc p50 (32B) | 68 cycles | **36 cycles** |
+| First alloc p50 | 588 cycles | **24 cycles** |
+| Worst case | OS syscall | Freelist pop |
+| Fragmentation | Yes | No (fixed slots) |
 | Cache locality | Scattered | Contiguous |
 
-**Bottom line:** If you're allocating/deallocating the same type frequently and care about latency, slab wins decisively. The 2.4x faster deallocation and 22x better worst-case make it the clear choice for performance-critical paths.
-
----
-
-## Allocator Isolation (Active Contention)
-
-The most important advantage of a dedicated slab is **isolation from the global allocator**. In production, `Box::new()` shares malloc with every other allocation in your process. The slab is yours alone.
-
-### Test Design
-
-Both Box and Slab run with identical "noise" between measurements:
-- 20-80 mixed-size allocations (32B-2KB) to the global allocator
-- Swiss-cheese free pattern (keep 50-75%)
-- Then measure a batch of 10-100 allocations
-
-Box goes through the (equally warm) global allocator. Slab bypasses it entirely.
-
-### Hot Cache Results (Best of 5 isolated runs)
-
-Steady-state performance with warm caches:
-
-| Size | Alloc | p25 | p50 | p75 | p90 | p99 | p99.9 |
-|------|-------|-----|-----|-----|-----|-----|-------|
-| 64B | Box | 12 | 13 | 14 | 15 | 19 | 29 |
-| 64B | **Slab** | **8** | **8** | **9** | **10** | **11** | **15** |
-| 256B | Box | 15 | 16 | 16 | 17 | 48 | 53 |
-| 256B | **Slab** | **16** | **16** | **17** | **17** | **20** | **49** |
-| 1024B | Box | 24 | 25 | 27 | 35 | 66 | 102 |
-| 1024B | **Slab** | **24** | **24** | **24** | **25** | **32** | **83** |
-| 4096B | Box | 101 | 108 | 114 | 130 | 162 | 229 |
-| 4096B | **Slab** | **59** | **59** | **60** | **62** | **81** | **152** |
-
-**Hot cache findings:**
-- **64B**: Slab 1.6x faster at p50 (8 vs 13), 1.7x better at p99 (11 vs 19)
-- **256B**: Tied at p50, but slab 2.4x better at p99 (20 vs 48)
-- **1024B**: Tied at p50, 2.1x better at p99 (32 vs 66)
-- **4096B**: Slab **1.8x faster** at p50 (59 vs 108), 2.0x better at p99 (81 vs 162)
-
-### Cold Cache Results
-
-Two scenarios measured with 24MB eviction buffer (2x L3), strided access pattern, interleaved measurement:
-
-#### Single-Op Cold (True First-Access Latency)
-
-One alloc+free per cache eviction. Measures the **first operation** after cache pressure—what you pay after a context switch or when allocator state has been evicted.
-
-| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
-|------|---------|----------|---------|----------|
-| 64B | 158 | **84** | 300 | **154** |
-| 256B | 168 | **108** | 314 | **176** |
-
-Note: Includes ~20-25 cycle rdtsc overhead.
-
-**Single-op findings:**
-- **64B**: Slab **1.9x faster** at p50, **1.9x better** at p99
-- **256B**: Slab **1.6x faster** at p50, **1.8x better** at p99
-
-#### Batched Cold (Burst After Cache Eviction)
-
-10 operations per cache eviction. Measures burst allocation patterns where only the first op is truly cold.
-
-| Size | Alloc | p25 | p50 | p75 | p90 | p99 | p99.9 |
-|------|-------|-----|-----|-----|-----|-----|-------|
-| 64B | Box | 48 | 51 | 54 | 57 | 71 | 140 |
-| 64B | Slab | 48 | 52 | 54 | 57 | **65** | **117** |
-| 256B | Box | 55 | 58 | 61 | 65 | 94 | 247 |
-| 256B | Slab | 59 | 62 | 65 | 68 | **80** | **186** |
-| 4096B | Box | 177 | 181 | 186 | 193 | 270 | 568 |
-| 4096B | **Slab** | **116** | **120** | **124** | **128** | **166** | **227** |
-
-**Batched findings:**
-- **64B/256B**: Roughly tied at p50 (first op cold, rest warm). Slab wins at p99.
-- **4096B**: Slab **1.5x faster** at p50, **1.6x better** at p99
-
-#### Why the Difference?
-
-In batched measurement, ops 2-10 run with warm metadata from op 1. Box's tcache is highly optimized for warm small-object free, which masks Slab's cold-start advantage.
-
-Single-op measurement shows true cold performance where Slab's simpler data structures (fewer cache lines to fetch) win consistently.
-
-### Why Slab Wins
-
-The global allocator (glibc malloc, jemalloc, etc.) must:
-- Handle any size class
-- Maintain per-thread caches that other code touches
-- Occasionally interact with the OS (mmap, brk)
-
-The slab:
-- Is dedicated to one type
-- Has its own freelist that nothing else touches
-- Never interacts with the OS after init
-
-**The cold cache advantage is particularly important**: In real systems, your allocator state won't always be in L1/L2 cache. The slab's simpler data structures mean fewer cache lines to fetch on the critical path.
-
-### Benchmark Isolation Warning
-
-**Important**: Run benchmarks in isolation or as the first test in a suite. Memory-intensive tests that run before can pollute cache/TLB state and skew results.
-
-For accurate comparisons:
-```bash
-# Hot cache (steady-state performance)
-taskset -c 0 ./target/release/examples/minimal_contention
-
-# Cold cache - batched (burst allocation pattern)
-taskset -c 0 ./target/release/examples/minimal_contention_cold
-
-# Cold cache - single-op (true first-access latency)
-taskset -c 0 ./target/release/examples/cold_single_op
-```
-
----
-
-## Warming the Global Allocator
-
-If you're comparing against Box fairly, warm the global allocator first to avoid cold-start penalties:
-
-```rust
-/// Warm the global allocator by pre-faulting pages across size classes
-fn warm_allocator() {
-    for size in [64, 128, 256, 512, 1024, 2048, 4096] {
-        let chunks: Vec<Vec<u8>> = (0..1000)
-            .map(|_| vec![0u8; size])
-            .collect();
-        // Touch each allocation to fault pages
-        for chunk in &chunks {
-            std::hint::black_box(&chunk[0]);
-        }
-        drop(chunks);
-    }
-}
-```
-
-This pre-faults pages and warms tcache for common size classes. Without warming, Box's first allocations may trigger mmap syscalls.
+**Use Slot when** you churn same-type objects and care about latency or
+tail behavior. **Use Box when** allocation is infrequent, types vary, or
+simplicity matters more than performance.
 
 ---
 
 ## Running Benchmarks
 
-### Prerequisites
-
 ```bash
-# Disable turbo boost (Intel)
-echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+# Build
+cargo build --release --examples -p nexus-slab
 
-# Or for AMD
-echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
-```
+# Isolated benchmark (all percentiles, multiple sizes)
+taskset -c 0 ./target/release/examples/bench_isolated slot
+taskset -c 0 ./target/release/examples/bench_isolated box
 
-### Run Benchmarks
-
-```bash
-cargo build --release --examples
-
-# Allocator API vs slab crate (unrolled methodology)
-taskset -c 0 ./target/release/examples/perf_full_distribution
-
-# Slab vs Box stress tests (churn, fragmentation, tail latency)
+# Stress tests (fragmentation, contention, sustained load)
 taskset -c 0 ./target/release/examples/perf_stress_test
-
-# Quick Box comparison
-taskset -c 0 ./target/release/examples/perf_vs_box
 ```
 
-### Re-enable Turbo Boost
-
-```bash
-# Intel
-echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
-
-# AMD
-echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost
-```
+For accurate results:
+- Pin to a single physical core (`taskset -c 0`)
+- Disable turbo boost (`echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo`)
+- Run in isolation (no other CPU-intensive processes)
+- Take best of 5 runs to minimize noise

@@ -16,7 +16,7 @@ use std::hint::black_box;
 
 macro_rules! define_pod {
     ($name:ident, $size:expr) => {
-        #[derive(Clone, Copy)]
+        #[derive(Clone)]
         #[repr(C)]
         pub struct $name {
             pub data: [u8; $size],
@@ -144,7 +144,7 @@ macro_rules! box_churn {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP {
-            let b = Box::new(val);
+            let b = Box::new(val.clone());
             black_box(b.data[0]);
             drop(b);
         }
@@ -153,7 +153,7 @@ macro_rules! box_churn {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let b = black_box(Box::new(val));
+                let b = black_box(Box::new(val.clone()));
                 black_box(b.data[0]);
                 drop(b);
             });
@@ -169,7 +169,7 @@ macro_rules! box_batch_alloc {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<Box<$pod>> = (0..100).map(|_| Box::new(val)).collect();
+            let temp: Vec<Box<$pod>> = (0..100).map(|_| Box::new(val.clone())).collect();
             drop(temp);
         }
 
@@ -178,7 +178,7 @@ macro_rules! box_batch_alloc {
             let mut temp: Vec<Box<$pod>> = Vec::with_capacity(100);
             let start = rdtsc_start();
             unroll_100!({
-                temp.push(black_box(Box::new(val)));
+                temp.push(black_box(Box::new(val.clone())));
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -193,13 +193,13 @@ macro_rules! box_batch_drop {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<Box<$pod>> = (0..100).map(|_| Box::new(val)).collect();
+            let temp: Vec<Box<$pod>> = (0..100).map(|_| Box::new(val.clone())).collect();
             drop(temp);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let boxes: Vec<Box<$pod>> = (0..100).map(|_| Box::new(val)).collect();
+            let boxes: Vec<Box<$pod>> = (0..100).map(|_| Box::new(val.clone())).collect();
             let mut iter = boxes.into_iter();
             let start = rdtsc_start();
             unroll_100!({
@@ -215,7 +215,7 @@ macro_rules! box_batch_drop {
 macro_rules! box_access {
     ($name:expr, $pod:ty) => {{
         let val = <$pod>::default();
-        let pool: Vec<Box<$pod>> = (0..1000).map(|_| Box::new(val)).collect();
+        let pool: Vec<Box<$pod>> = (0..1000).map(|_| Box::new(val.clone())).collect();
 
         // Warmup: touch every element
         for p in &pool {
@@ -252,7 +252,7 @@ macro_rules! slot_churn {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP {
-            let s = $alloc::Slot::new(val);
+            let s = $alloc::Slot::new(val.clone());
             black_box(s.data[0]);
             drop(s);
         }
@@ -261,7 +261,7 @@ macro_rules! slot_churn {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let s = black_box($alloc::Slot::new(val));
+                let s = black_box($alloc::Slot::new(val.clone()));
                 black_box(s.data[0]);
                 drop(s);
             });
@@ -277,7 +277,7 @@ macro_rules! slot_batch_alloc {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val)).collect();
+            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
             drop(temp);
         }
 
@@ -286,7 +286,7 @@ macro_rules! slot_batch_alloc {
             let mut temp: Vec<$alloc::Slot> = Vec::with_capacity(100);
             let start = rdtsc_start();
             unroll_100!({
-                temp.push(black_box($alloc::Slot::new(val)));
+                temp.push(black_box($alloc::Slot::new(val.clone())));
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -301,14 +301,14 @@ macro_rules! slot_batch_drop {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val)).collect();
+            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
             drop(temp);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let slots: Vec<$alloc::Slot> =
-                (0..100).map(|_| $alloc::Slot::new(val)).collect();
+                (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
             let mut iter = slots.into_iter();
             let start = rdtsc_start();
             unroll_100!({
@@ -324,7 +324,7 @@ macro_rules! slot_batch_drop {
 macro_rules! slot_access {
     ($name:expr, $pod:ty, $alloc:ident) => {{
         let val = <$pod>::default();
-        let pool: Vec<$alloc::Slot> = (0..1000).map(|_| $alloc::Slot::new(val)).collect();
+        let pool: Vec<$alloc::Slot> = (0..1000).map(|_| $alloc::Slot::new(val.clone())).collect();
 
         // Warmup: touch every element
         for p in &pool {
@@ -349,6 +349,79 @@ macro_rules! slot_access {
         }
         print_row($name, &mut samples);
         drop(pool);
+    }};
+}
+
+// ============================================================================
+// Cold benchmarks (cache-evicted between every single measurement)
+// ============================================================================
+
+const COLD_SAMPLES: usize = 10_000;
+const POLLUTER_SIZE: usize = 8 * 1024 * 1024; // 8MB > most L3 caches
+
+#[inline(never)]
+fn evict_cache(polluter: &[u8]) {
+    let ptr = polluter.as_ptr();
+    let len = polluter.len();
+    for i in (0..len).step_by(64) {
+        unsafe { std::ptr::read_volatile(ptr.add(i)); }
+    }
+    unsafe { std::arch::x86_64::_mm_lfence(); }
+}
+
+macro_rules! box_cold_churn {
+    ($name:expr, $pod:ty) => {{
+        let val = <$pod>::default();
+        let polluter = vec![0u8; POLLUTER_SIZE];
+
+        // Warmup
+        for _ in 0..100 {
+            evict_cache(&polluter);
+            let b = Box::new(val.clone());
+            black_box(b.data[0]);
+            drop(b);
+        }
+
+        let mut samples = Vec::with_capacity(COLD_SAMPLES);
+        for _ in 0..COLD_SAMPLES {
+            evict_cache(&polluter);
+
+            let start = rdtsc_start();
+            let b = black_box(Box::new(val.clone()));
+            black_box(b.data[0]);
+            drop(b);
+            let end = rdtsc_end();
+            samples.push(end - start);
+        }
+        print_row($name, &mut samples);
+    }};
+}
+
+macro_rules! slot_cold_churn {
+    ($name:expr, $pod:ty, $alloc:ident) => {{
+        let val = <$pod>::default();
+        let polluter = vec![0u8; POLLUTER_SIZE];
+
+        // Warmup
+        for _ in 0..100 {
+            evict_cache(&polluter);
+            let s = $alloc::Slot::new(val.clone());
+            black_box(s.data[0]);
+            drop(s);
+        }
+
+        let mut samples = Vec::with_capacity(COLD_SAMPLES);
+        for _ in 0..COLD_SAMPLES {
+            evict_cache(&polluter);
+
+            let start = rdtsc_start();
+            let s = black_box($alloc::Slot::new(val.clone()));
+            black_box(s.data[0]);
+            drop(s);
+            let end = rdtsc_end();
+            samples.push(end - start);
+        }
+        print_row($name, &mut samples);
     }};
 }
 
@@ -392,6 +465,7 @@ fn run_box() {
     run_all_sizes_box!(box_batch_alloc, "BATCH ALLOC (100 sequential, no interleaved frees)");
     run_all_sizes_box!(box_batch_drop, "BATCH DROP (pre-alloc 100, then free all)");
     run_all_sizes_box!(box_access, "ACCESS (random deref from pool of 1000)");
+    run_all_sizes_box!(box_cold_churn, "COLD CHURN (cache-evicted between each op, single alloc+deref+drop)");
 }
 
 fn run_slot() {
@@ -412,6 +486,7 @@ fn run_slot() {
     run_all_sizes_slot!(slot_batch_alloc, "BATCH ALLOC (100 sequential, no interleaved frees)");
     run_all_sizes_slot!(slot_batch_drop, "BATCH DROP (pre-alloc 100, then free all)");
     run_all_sizes_slot!(slot_access, "ACCESS (random deref from pool of 1000)");
+    run_all_sizes_slot!(slot_cold_churn, "COLD CHURN (cache-evicted between each op, single alloc+deref+drop)");
 }
 
 // ============================================================================
