@@ -288,8 +288,9 @@ macro_rules! bounded_allocator {
         }
 
         // SAFETY: try_alloc claims from the TLS freelist, writes value, marks occupied.
-        // dealloc returns the slot to the TLS freelist. slot_cell returns a valid pointer
-        // for any key within capacity. All operations are single-threaded (TLS).
+        // dealloc/dealloc_ptr return the slot to the TLS freelist.
+        // slot_cell returns a valid pointer for any key within capacity.
+        // All operations are single-threaded (TLS).
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
 
@@ -307,10 +308,8 @@ macro_rules! bounded_allocator {
                     let next_free = slot.next_free();
                     inner.free_head.set(next_free);
 
-                    // Compute key and mark occupied
-                    // SAFETY: slot_ptr came from the freelist within this slab
-                    let key = unsafe { inner.slot_to_index(slot_ptr) };
-                    slot.set_key_occupied(key);
+                    // Mark occupied
+                    slot.set_occupied();
 
                     // Write the value
                     unsafe {
@@ -332,9 +331,28 @@ macro_rules! bounded_allocator {
                 });
             }
 
+            unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<$ty>) {
+                INNER.with(|inner| {
+                    // SAFETY: Caller guarantees slot_ptr is valid and within this slab
+                    let slot = unsafe { &*slot_ptr };
+
+                    let free_head = inner.free_head.get();
+                    slot.set_vacant(free_head);
+                    inner.free_head.set(slot_ptr);
+                });
+            }
+
             unsafe fn slot_cell(key: Key) -> *mut SlotCell<$ty> {
                 INNER.with(|inner| {
                     inner.slots_ptr().add(key.index() as usize)
+                })
+            }
+
+            fn slot_index(slot_ptr: *mut SlotCell<$ty>) -> Key {
+                INNER.with(|inner| {
+                    // SAFETY: slot_ptr came from this slab's allocation
+                    let index = unsafe { inner.slot_to_index(slot_ptr) };
+                    Key::new(index)
                 })
             }
 
@@ -504,9 +522,10 @@ macro_rules! unbounded_allocator {
         }
 
         // SAFETY: try_alloc grows the slab if needed, claims from chunk freelist,
-        // writes value, marks occupied. dealloc returns slot to correct chunk freelist
-        // and handles chunk availability tracking. slot_cell decodes the key and returns
-        // a valid pointer. All operations are single-threaded (TLS).
+        // writes value, marks occupied. dealloc/dealloc_ptr return slot to correct
+        // chunk freelist and handle chunk availability tracking.
+        // slot_cell decodes the key and returns a valid pointer.
+        // All operations are single-threaded (TLS).
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
 
@@ -520,7 +539,7 @@ macro_rules! unbounded_allocator {
                         inner.grow();
                     }
 
-                    let (chunk_idx, chunk) = inner.head_chunk();
+                    let (_chunk_idx, chunk) = inner.head_chunk();
                     let chunk_inner = chunk.inner_ref();
 
                     // Pop from chunk's freelist
@@ -530,13 +549,8 @@ macro_rules! unbounded_allocator {
                     let slot = unsafe { &*slot_ptr };
                     let next_free = slot.next_free();
 
-                    // Compute local index and global key
-                    // SAFETY: slot_ptr came from the freelist within this chunk
-                    let local_idx = unsafe { chunk_inner.slot_to_index(slot_ptr) };
-                    let key = inner.encode_key(chunk_idx, local_idx);
-
-                    // Mark slot as occupied with global key
-                    slot.set_key_occupied(key.index());
+                    // Mark slot as occupied
+                    slot.set_occupied();
 
                     // Write the value
                     unsafe {
@@ -576,11 +590,25 @@ macro_rules! unbounded_allocator {
                 });
             }
 
+            unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<$ty>) {
+                INNER.with(|inner| {
+                    // SAFETY: Caller guarantees slot_ptr is valid and within this slab
+                    unsafe { inner.dealloc_ptr(slot_ptr) };
+                });
+            }
+
             unsafe fn slot_cell(key: Key) -> *mut SlotCell<$ty> {
                 INNER.with(|inner| {
                     let (chunk_idx, local_idx) = inner.decode(key.index());
                     let chunk = inner.chunk(chunk_idx);
                     chunk.inner_ref().slots_ptr().add(local_idx as usize)
+                })
+            }
+
+            fn slot_index(slot_ptr: *mut SlotCell<$ty>) -> Key {
+                INNER.with(|inner| {
+                    // SAFETY: slot_ptr came from this slab's allocation
+                    unsafe { inner.slot_to_index_global(slot_ptr) }
                 })
             }
 

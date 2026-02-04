@@ -21,7 +21,7 @@ use std::ptr;
 
 use crate::Key;
 use crate::alloc::Full;
-use crate::shared::{SLOT_NONE, SlotCell, VALUE_OFFSET};
+use crate::shared::{SLOT_NONE, SlotCell};
 
 // =============================================================================
 // SlabInner
@@ -211,7 +211,7 @@ impl<T> SlabInner<T> {
     }
 
     // =========================================================================
-    // Allocation methods (previously standalone VTable fns)
+    // Allocation methods
     // =========================================================================
 
     /// Claims a slot, writes the value, and marks it occupied.
@@ -228,18 +228,13 @@ impl<T> SlabInner<T> {
         let slot = unsafe { &*slot_ptr };
         let next_free = slot.next_free();
 
-        // Compute key from pointer offset
-        // SAFETY: slot_ptr came from the freelist within this slab
-        let key = unsafe { self.slot_to_index(slot_ptr) };
-
         // Mark slot as occupied
-        slot.set_key_occupied(key);
+        slot.set_occupied();
 
         // Write the value
         // SAFETY: Slot is claimed, value area is uninitialized
         unsafe {
-            let value_ptr = (slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T;
-            ptr::write(value_ptr, value);
+            slot.value.get().cast::<T>().write(value);
         }
 
         // Update freelist head
@@ -248,7 +243,7 @@ impl<T> SlabInner<T> {
         Ok(slot_ptr)
     }
 
-    /// Returns a slot to the freelist.
+    /// Returns a slot to the freelist by key.
     ///
     /// Does NOT drop the value — caller must drop before calling.
     ///
@@ -259,6 +254,25 @@ impl<T> SlabInner<T> {
     pub unsafe fn dealloc(&self, key: Key) {
         let index = key.index();
         let slot_ptr = unsafe { self.slots_ptr().add(index as usize) };
+        let slot = unsafe { &*slot_ptr };
+
+        let free_head = self.free_head.get();
+        slot.set_vacant(free_head);
+        self.free_head.set(slot_ptr);
+    }
+
+    /// Returns a slot to the freelist by pointer.
+    ///
+    /// Does NOT drop the value — caller must drop before calling.
+    /// This is the hot-path variant that avoids the key→pointer round-trip.
+    ///
+    /// # Safety
+    ///
+    /// - `slot_ptr` must point to a previously claimed slot within this slab
+    /// - Value must already be dropped or moved out
+    #[doc(hidden)]
+    pub unsafe fn dealloc_ptr(&self, slot_ptr: *mut SlotCell<T>) {
+        // SAFETY: Caller guarantees slot_ptr is valid and within this slab
         let slot = unsafe { &*slot_ptr };
 
         let free_head = self.free_head.get();
@@ -478,9 +492,13 @@ pub struct Slot<T: 'static> {
 
 impl<T: 'static> Slot<T> {
     /// Returns the key for this slot.
+    ///
+    /// Lazily computed from pointer offset. This is a cold-path operation.
     #[inline]
     pub fn key(&self) -> Key {
-        Key::new(self.slot_cell().key_from_stamp())
+        // SAFETY: slot_ptr is valid and within the slab's storage
+        let index = unsafe { self.inner.slot_to_index(self.slot_ptr) };
+        Key::new(index)
     }
 
     /// Leaks the slot, keeping the data alive and returning its key.
@@ -496,16 +514,14 @@ impl<T: 'static> Slot<T> {
 
     /// Consumes the slot, returning the value and deallocating.
     pub fn into_inner(self) -> T {
-        let key = self.key();
-
         // SAFETY: Slot owns the value
         let value = unsafe {
-            let value_ptr = (self.slot_ptr as *const u8).add(VALUE_OFFSET) as *const T;
-            ptr::read(value_ptr)
+            let slot = &*self.slot_ptr;
+            ptr::read(slot.value_ptr())
         };
 
-        // SAFETY: Value moved out, key valid
-        unsafe { self.inner.dealloc(key) };
+        // SAFETY: Value moved out, slot_ptr valid
+        unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
 
         std::mem::forget(self);
         value
@@ -514,10 +530,14 @@ impl<T: 'static> Slot<T> {
     /// Replaces the value, returning the old one.
     #[inline]
     pub fn replace(&mut self, value: T) -> T {
-        let value_ptr = unsafe { (self.slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T };
-        let old = unsafe { value_ptr.read() };
-        unsafe { value_ptr.write(value) };
-        old
+        // SAFETY: We own the slot exclusively (&mut self)
+        unsafe {
+            let slot = &*self.slot_ptr;
+            let ptr = slot.value_ptr_mut();
+            let old = ptr::read(ptr);
+            ptr::write(ptr, value);
+            old
+        }
     }
 
     #[inline]
@@ -529,16 +549,16 @@ impl<T: 'static> Slot<T> {
 
 impl<T: 'static> Drop for Slot<T> {
     fn drop(&mut self) {
-        let key = self.key();
-
         // Drop the value
+        // SAFETY: We own the slot, value is initialized
         unsafe {
-            let value_ptr = (self.slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T;
-            ptr::drop_in_place(value_ptr);
+            let slot = &*self.slot_ptr;
+            ptr::drop_in_place(slot.value_ptr_mut());
         }
 
-        // SAFETY: Value dropped, key valid
-        unsafe { self.inner.dealloc(key) };
+        // Return slot to freelist by pointer (no key round-trip)
+        // SAFETY: Value dropped, slot_ptr valid
+        unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
     }
 }
 
@@ -547,16 +567,16 @@ impl<T: 'static> Deref for Slot<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        // SAFETY: Slot owns the slot. Value is at VALUE_OFFSET in SlotCell.
-        unsafe { &*((self.slot_ptr as *const u8).add(VALUE_OFFSET) as *const T) }
+        // SAFETY: Slot owns the slot, value is initialized
+        unsafe { self.slot_cell().get_value() }
     }
 }
 
 impl<T: 'static> DerefMut for Slot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Slot owns the slot, &mut ensures exclusivity.
-        unsafe { &mut *((self.slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T) }
+        // SAFETY: Slot owns the slot, &mut ensures exclusivity
+        unsafe { self.slot_cell().get_value_mut() }
     }
 }
 

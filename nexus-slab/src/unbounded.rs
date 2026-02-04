@@ -22,7 +22,7 @@ use std::ptr;
 
 use crate::Key;
 use crate::bounded::SlabInner as BoundedSlabInner;
-use crate::shared::{SlotCell, VALUE_OFFSET};
+use crate::shared::SlotCell;
 
 // =============================================================================
 // Constants
@@ -295,7 +295,7 @@ impl<T> SlabInner<T> {
     }
 
     // =========================================================================
-    // Allocation methods (previously standalone VTable fns)
+    // Allocation methods
     // =========================================================================
 
     /// Claims a slot, writes the value, and marks it occupied.
@@ -321,21 +321,13 @@ impl<T> SlabInner<T> {
         let slot = unsafe { &*slot_ptr };
         let next_free = slot.next_free();
 
-        // Compute local index from pointer offset within chunk
-        // SAFETY: slot_ptr came from the freelist within this chunk
-        let local_idx = unsafe { chunk_inner.slot_to_index(slot_ptr) };
-
-        // Compute global key
-        let global_idx = self.encode(chunk_idx, local_idx);
-
-        // Mark slot as occupied with global key
-        slot.set_key_occupied(global_idx);
+        // Mark slot as occupied
+        slot.set_occupied();
 
         // Write the value
         // SAFETY: Slot is claimed, value area is uninitialized
         unsafe {
-            let value_ptr = (slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T;
-            ptr::write(value_ptr, value);
+            slot.value.get().cast::<T>().write(value);
         }
 
         // Update chunk's freelist head
@@ -349,7 +341,7 @@ impl<T> SlabInner<T> {
         slot_ptr
     }
 
-    /// Returns a slot to the freelist.
+    /// Returns a slot to the freelist by key.
     ///
     /// Does NOT drop the value — caller must drop before calling.
     ///
@@ -376,6 +368,79 @@ impl<T> SlabInner<T> {
             chunk.next_with_space.set(self.head_with_space.get());
             self.head_with_space.set(chunk_idx);
         }
+    }
+
+    /// Returns a slot to the freelist by pointer.
+    ///
+    /// Does NOT drop the value — caller must drop before calling.
+    /// This is the hot-path variant that avoids the key→pointer round-trip.
+    /// Finds the owning chunk via linear scan (typically 1-5 chunks).
+    ///
+    /// # Safety
+    ///
+    /// - `slot_ptr` must point to a previously claimed slot within this slab
+    /// - Value must already be dropped or moved out
+    #[doc(hidden)]
+    pub unsafe fn dealloc_ptr(&self, slot_ptr: *mut SlotCell<T>) {
+        let chunks = self.chunks();
+        let cap = self.chunk_capacity.get() as usize;
+
+        // Find which chunk owns this pointer
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            let chunk_inner = &*chunk.inner;
+            let base = chunk_inner.slots_ptr();
+            let end = base.wrapping_add(cap);
+
+            if slot_ptr >= base && slot_ptr < end {
+                // SAFETY: slot_ptr is within this chunk
+                let slot = unsafe { &*slot_ptr };
+
+                let free_head = chunk_inner.free_head.get();
+                let was_full = free_head.is_null();
+
+                slot.set_vacant(free_head);
+                chunk_inner.free_head.set(slot_ptr);
+
+                if was_full {
+                    chunk.next_with_space.set(self.head_with_space.get());
+                    self.head_with_space.set(chunk_idx as u32);
+                }
+                return;
+            }
+        }
+
+        // Should never reach here if slot_ptr is valid
+        debug_assert!(false, "dealloc_ptr: slot_ptr not found in any chunk");
+    }
+
+    /// Computes the global key for a slot pointer.
+    ///
+    /// Finds the owning chunk via linear scan, then encodes chunk_idx + local_idx.
+    /// This is a cold-path operation for lazy key computation.
+    ///
+    /// # Safety
+    ///
+    /// `slot_ptr` must point to a valid slot within this slab.
+    #[doc(hidden)]
+    pub unsafe fn slot_to_index_global(&self, slot_ptr: *const SlotCell<T>) -> Key {
+        let chunks = self.chunks();
+        let cap = self.chunk_capacity.get() as usize;
+
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            let chunk_inner = &*chunk.inner;
+            let base = chunk_inner.slots_ptr().cast_const();
+            let end = base.wrapping_add(cap);
+
+            if slot_ptr >= base && slot_ptr < end {
+                // SAFETY: slot_ptr is within this chunk
+                let local_idx = unsafe { chunk_inner.slot_to_index(slot_ptr) };
+                return Key::new(self.encode(chunk_idx as u32, local_idx));
+            }
+        }
+
+        // Should never reach here if slot_ptr is valid
+        debug_assert!(false, "slot_to_index_global: slot_ptr not found in any chunk");
+        Key::NONE
     }
 
     /// Gets the slot cell pointer for a key.
@@ -586,9 +651,12 @@ pub struct Slot<T: 'static> {
 
 impl<T: 'static> Slot<T> {
     /// Returns the key for this slot.
+    ///
+    /// Lazily computed from pointer via chunk scan. This is a cold-path operation.
     #[inline]
     pub fn key(&self) -> Key {
-        Key::new(self.slot_cell().key_from_stamp())
+        // SAFETY: slot_ptr is valid and within the slab's storage
+        unsafe { self.inner.slot_to_index_global(self.slot_ptr) }
     }
 
     /// Leaks the slot, keeping the data alive and returning its key.
@@ -604,16 +672,14 @@ impl<T: 'static> Slot<T> {
 
     /// Consumes the slot, returning the value and deallocating.
     pub fn into_inner(self) -> T {
-        let key = self.key();
-
         // SAFETY: Slot owns the value
         let value = unsafe {
-            let value_ptr = (self.slot_ptr as *const u8).add(VALUE_OFFSET) as *const T;
-            ptr::read(value_ptr)
+            let slot = &*self.slot_ptr;
+            ptr::read(slot.value_ptr())
         };
 
-        // SAFETY: Value moved out, key valid
-        unsafe { self.inner.dealloc(key) };
+        // SAFETY: Value moved out, slot_ptr valid
+        unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
 
         std::mem::forget(self);
         value
@@ -622,10 +688,14 @@ impl<T: 'static> Slot<T> {
     /// Replaces the value, returning the old one.
     #[inline]
     pub fn replace(&mut self, value: T) -> T {
-        let value_ptr = unsafe { (self.slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T };
-        let old = unsafe { value_ptr.read() };
-        unsafe { value_ptr.write(value) };
-        old
+        // SAFETY: We own the slot exclusively (&mut self)
+        unsafe {
+            let slot = &*self.slot_ptr;
+            let ptr = slot.value_ptr_mut();
+            let old = ptr::read(ptr);
+            ptr::write(ptr, value);
+            old
+        }
     }
 
     #[inline]
@@ -637,16 +707,16 @@ impl<T: 'static> Slot<T> {
 
 impl<T: 'static> Drop for Slot<T> {
     fn drop(&mut self) {
-        let key = self.key();
-
         // Drop the value
+        // SAFETY: We own the slot, value is initialized
         unsafe {
-            let value_ptr = (self.slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T;
-            ptr::drop_in_place(value_ptr);
+            let slot = &*self.slot_ptr;
+            ptr::drop_in_place(slot.value_ptr_mut());
         }
 
-        // SAFETY: Value dropped, key valid
-        unsafe { self.inner.dealloc(key) };
+        // Return slot to freelist by pointer (no key round-trip)
+        // SAFETY: Value dropped, slot_ptr valid
+        unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
     }
 }
 
@@ -655,16 +725,16 @@ impl<T: 'static> Deref for Slot<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        // SAFETY: Slot owns the slot. Value is at VALUE_OFFSET in SlotCell.
-        unsafe { &*((self.slot_ptr as *const u8).add(VALUE_OFFSET) as *const T) }
+        // SAFETY: Slot owns the slot, value is initialized
+        unsafe { self.slot_cell().get_value() }
     }
 }
 
 impl<T: 'static> DerefMut for Slot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Slot owns the slot, &mut ensures exclusivity.
-        unsafe { &mut *((self.slot_ptr as *mut u8).add(VALUE_OFFSET) as *mut T) }
+        // SAFETY: Slot owns the slot, &mut ensures exclusivity
+        unsafe { self.slot_cell().get_value_mut() }
     }
 }
 

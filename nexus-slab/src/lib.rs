@@ -78,12 +78,12 @@
 //!              [slots]   [slots]     Slab 1 (full, not on freelist)
 //! ```
 //!
-//! ## Stamp Encoding
+//! ## Slot State
 //!
-//! Each slot has a `stamp: u32` that encodes state and key:
+//! Each slot contains a `next_free` pointer that doubles as a state flag:
 //!
-//! - **Bit 31**: Vacant flag
-//! - **Bits 30-0**: Key
+//! - **Occupied**: `next_free == 0x1` (sentinel — invalid due to alignment >= 8)
+//! - **Vacant**: `next_free` is null (end of freelist) or a valid pointer to the next free slot
 //!
 //! Freelists are **intra-slab only** — chains never cross slab boundaries.
 
@@ -107,8 +107,6 @@ pub use shared::SLOT_NONE;
 // Re-export SlotCell for direct slot access (used by nexus-collections and macros)
 pub use shared::SlotCell;
 
-// Re-export VALUE_OFFSET for pointer arithmetic
-pub use shared::VALUE_OFFSET;
 
 // =============================================================================
 // Key
