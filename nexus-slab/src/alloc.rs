@@ -12,6 +12,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
 use std::ptr;
 
 use crate::shared::{RcInner, Slot, SlotCell};
@@ -202,6 +203,43 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
         }
     }
 
+    /// Returns a pinned reference to the value.
+    ///
+    /// Slab-allocated values have stable addresses — they never move while
+    /// the slot is occupied. This makes `Pin` safe without any `Unpin` bound.
+    ///
+    /// Useful for async code that requires `Pin<&mut Self>` for polling futures.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut slot = order_alloc::BoxSlot::try_new(MyFuture::new())?;
+    /// let pinned: Pin<&mut MyFuture> = slot.pin_mut();
+    /// pinned.poll(cx);
+    /// ```
+    #[inline]
+    pub fn pin(&self) -> Pin<&T> {
+        // SAFETY: Slab values have stable addresses — they don't move until
+        // the slot is explicitly freed. The BoxSlot owns the slot, so the
+        // value cannot be freed while this reference exists.
+        unsafe { Pin::new_unchecked(&**self) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// Slab-allocated values have stable addresses — they never move while
+    /// the slot is occupied. This makes `Pin` safe without any `Unpin` bound.
+    ///
+    /// Useful for async code that requires `Pin<&mut Self>` for polling futures.
+    #[inline]
+    pub fn pin_mut(&mut self) -> Pin<&mut T> {
+        // SAFETY: Slab values have stable addresses — they don't move until
+        // the slot is explicitly freed. The BoxSlot owns the slot exclusively
+        // (&mut self), so the value cannot be freed or moved while this
+        // mutable reference exists.
+        unsafe { Pin::new_unchecked(&mut **self) }
+    }
+
     /// Wraps a raw slot in an RAII handle.
     ///
     /// # Safety
@@ -373,6 +411,16 @@ impl<T> LocalStatic<T> {
     pub fn as_ptr(&self) -> *const T {
         self.ptr
     }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// Leaked slab values have stable addresses — they never move for the
+    /// lifetime of the program. This makes `Pin` safe without any `Unpin` bound.
+    #[inline]
+    pub fn pin(&self) -> Pin<&T> {
+        // SAFETY: Leaked values have stable addresses forever.
+        unsafe { Pin::new_unchecked(&**self) }
+    }
 }
 
 impl<T> Deref for LocalStatic<T> {
@@ -474,6 +522,32 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     pub fn weak_count(&self) -> u32 {
         let rc_inner: &RcInner<T> = &self.inner;
         rc_inner.weak().saturating_sub(1)
+    }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// Slab-allocated values have stable addresses — they never move while
+    /// the slot is occupied. This makes `Pin` safe without any `Unpin` bound.
+    #[inline]
+    pub fn pin(&self) -> Pin<&T> {
+        // SAFETY: Slab values have stable addresses. The RcSlot keeps the
+        // value alive, so the reference is valid.
+        unsafe { Pin::new_unchecked(&**self) }
+    }
+
+    /// Returns a pinned mutable reference if this is the only reference.
+    ///
+    /// Returns `None` if there are other strong or weak references.
+    ///
+    /// Slab-allocated values have stable addresses — they never move while
+    /// the slot is occupied. This makes `Pin` safe without any `Unpin` bound.
+    #[inline]
+    pub fn pin_get_mut(&mut self) -> Option<Pin<&mut T>> {
+        self.get_mut().map(|r| {
+            // SAFETY: Slab values have stable addresses. We verified exclusive
+            // access via get_mut().
+            unsafe { Pin::new_unchecked(r) }
+        })
     }
 
     /// Returns a mutable reference if this is the only reference.

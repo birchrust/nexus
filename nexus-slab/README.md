@@ -31,6 +31,16 @@ Your hot path doesn't compete with logging, serialization, or background tasks f
 
 The `Claim` API enables true placement construction — values are written directly into the slot without intermediate copies. Combined with `#[inline]`, LLVM can construct your struct in-place, eliminating memcpy overhead.
 
+### 5. Pin Support for Async
+
+Because slab values have stable addresses, `BoxSlot` provides `pin()` and `pin_mut()` without requiring `T: Unpin`. This makes slab allocation ideal for storing futures and other self-referential types:
+
+```rust
+let mut slot = order_alloc::BoxSlot::try_new(MyFuture::new())?;
+let pinned: Pin<&mut MyFuture> = slot.pin_mut();
+pinned.poll(cx);  // Safe — value won't move until slot is freed
+```
+
 ## Quick Start
 
 ```rust
@@ -117,6 +127,10 @@ let slot = BoxSlot::new(value);       // Unbounded: always succeeds
 // Access (Deref + DerefMut)
 let x = slot.field;
 slot.field = new_value;
+
+// Pinned access (stable addresses — no Unpin bound required)
+let pinned: Pin<&T> = slot.pin();
+let pinned_mut: Pin<&mut T> = slot.pin_mut();
 
 // Consumption
 let value = BoxSlot::into_inner(slot);  // Extract value, free slot
@@ -221,7 +235,8 @@ For cross-thread scenarios, use `RcSlot` with `into_slot_unchecked()` for contro
 - You churn same-type objects (orders, connections, timers, nodes)
 - You need predictable tail latency
 - Your hot path competes with background allocations
-- You want stable pointers without `Pin`
+- You need `Pin` for async futures or self-referential types
+- You want stable pointers without `Box::pin()` overhead
 
 **Use Box when:**
 - Allocation is infrequent
