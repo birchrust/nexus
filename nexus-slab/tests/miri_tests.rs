@@ -55,27 +55,27 @@ pub struct Large {
 
 #[test]
 fn miri_bounded_basic() {
-    let slab = BoundedSlab::<u64>::new(8);
+    let slab = unsafe { BoundedSlab::<u64>::new(8) };
 
     let slot = slab.alloc(42);
     assert_eq!(*slot, 42);
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_unbounded_basic() {
-    let slab = UnboundedSlab::<u64>::new(4);
+    let slab = unsafe { UnboundedSlab::<u64>::new(4) };
 
     let slot = slab.alloc(42);
     assert_eq!(*slot, 42);
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_multiple_inserts() {
-    let slab = BoundedSlab::<u64>::new(8);
+    let slab = unsafe { BoundedSlab::<u64>::new(8) };
 
     let s1 = slab.alloc(1);
     let s2 = slab.alloc(2);
@@ -87,27 +87,27 @@ fn miri_multiple_inserts() {
 
     // SAFETY: slots were allocated from this slab
     unsafe {
-        slab.free(s1);
-        slab.free(s2);
-        slab.free(s3);
+        slab.dealloc(s1);
+        slab.dealloc(s2);
+        slab.dealloc(s3);
     }
 }
 
 #[test]
 fn miri_slot_deref_mut() {
-    let slab = BoundedSlab::<u64>::new(4);
+    let slab = unsafe { BoundedSlab::<u64>::new(4) };
 
     let mut slot = slab.alloc(42);
     *slot = 100;
     assert_eq!(*slot, 100);
 
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_slot_replace() {
-    let slab = BoundedSlab::<u64>::new(4);
+    let slab = unsafe { BoundedSlab::<u64>::new(4) };
 
     let mut slot = slab.alloc(1);
     let old = std::mem::replace(&mut *slot, 2);
@@ -115,16 +115,16 @@ fn miri_slot_replace() {
     assert_eq!(*slot, 2);
 
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_slot_into_inner() {
-    let slab = BoundedSlab::<u64>::new(4);
+    let slab = unsafe { BoundedSlab::<u64>::new(4) };
 
     let slot = slab.alloc(42);
     // SAFETY: slot was allocated from this slab
-    let value = unsafe { slab.free_take(slot) };
+    let value = unsafe { slab.dealloc_take(slot) };
     assert_eq!(value, 42);
 }
 
@@ -136,12 +136,12 @@ fn miri_slot_into_inner() {
 fn miri_drop_on_slot_drop() {
     reset_drop_count();
 
-    let slab = BoundedSlab::<DropTracker>::new(4);
+    let slab = unsafe { BoundedSlab::<DropTracker>::new(4) };
 
     {
         let slot = slab.alloc(DropTracker(1));
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 
     assert_eq!(get_drop_count(), 1);
@@ -151,11 +151,11 @@ fn miri_drop_on_slot_drop() {
 fn miri_drop_on_into_inner() {
     reset_drop_count();
 
-    let slab = BoundedSlab::<DropTracker>::new(4);
+    let slab = unsafe { BoundedSlab::<DropTracker>::new(4) };
 
     let slot = slab.alloc(DropTracker(1));
     // SAFETY: slot was allocated from this slab
-    let value = unsafe { slab.free_take(slot) };
+    let value = unsafe { slab.dealloc_take(slot) };
     assert_eq!(get_drop_count(), 0);
 
     drop(value);
@@ -166,7 +166,7 @@ fn miri_drop_on_into_inner() {
 fn miri_drop_on_replace() {
     reset_drop_count();
 
-    let slab = BoundedSlab::<DropTracker>::new(4);
+    let slab = unsafe { BoundedSlab::<DropTracker>::new(4) };
 
     let mut slot = slab.alloc(DropTracker(1));
     let old = std::mem::replace(&mut *slot, DropTracker(2));
@@ -174,7 +174,7 @@ fn miri_drop_on_replace() {
     assert_eq!(get_drop_count(), 1);
 
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
     assert_eq!(get_drop_count(), 2);
 }
 
@@ -182,11 +182,10 @@ fn miri_drop_on_replace() {
 fn miri_no_drop_after_leak() {
     reset_drop_count();
 
-    let slab = BoundedSlab::<DropTracker>::new(4);
+    let slab = unsafe { BoundedSlab::<DropTracker>::new(4) };
 
-    let slot = slab.alloc(DropTracker(1));
-    let _key = slab.slot_key(&slot);
-    // Intentionally leak - don't free the slot
+    let _slot = slab.alloc(DropTracker(1));
+    // Intentionally leak - don't dealloc the slot
 
     assert_eq!(get_drop_count(), 0);
 }
@@ -197,47 +196,50 @@ fn miri_no_drop_after_leak() {
 
 #[test]
 fn miri_string_insert_drop() {
-    let slab = BoundedSlab::<String>::new(4);
+    let slab = unsafe { BoundedSlab::<String>::new(4) };
 
     let slot = slab.alloc("hello world".to_string());
     assert_eq!(*slot, "hello world");
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_vec_insert_drop() {
-    let slab = BoundedSlab::<Vec<u64>>::new(4);
+    // SAFETY: slab outlives all slots
+    let slab = unsafe { BoundedSlab::<Vec<u64>>::new(4) };
 
     let slot = slab.alloc(vec![1, 2, 3, 4, 5]);
     assert_eq!(slot.len(), 5);
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_box_insert_drop() {
-    let slab = BoundedSlab::<Box<[u8; 1024]>>::new(4);
+    // SAFETY: slab outlives all slots
+    let slab = unsafe { BoundedSlab::<Box<[u8; 1024]>>::new(4) };
 
     let slot = slab.alloc(Box::new([0u8; 1024]));
     assert_eq!(slot.len(), 1024);
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_string_into_inner() {
-    let slab = BoundedSlab::<String>::new(4);
+    let slab = unsafe { BoundedSlab::<String>::new(4) };
 
     let slot = slab.alloc("hello".to_string());
     // SAFETY: slot was allocated from this slab
-    let value = unsafe { slab.free_take(slot) };
+    let value = unsafe { slab.dealloc_take(slot) };
     assert_eq!(value, "hello");
 }
 
 #[test]
 fn miri_vec_replace() {
-    let slab = BoundedSlab::<Vec<u64>>::new(4);
+    // SAFETY: slab outlives all slots
+    let slab = unsafe { BoundedSlab::<Vec<u64>>::new(4) };
 
     let mut slot = slab.alloc(vec![1, 2, 3]);
     let old = std::mem::replace(&mut *slot, vec![4, 5, 6, 7]);
@@ -246,7 +248,7 @@ fn miri_vec_replace() {
     assert_eq!(*slot, vec![4, 5, 6, 7]);
 
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 // =============================================================================
@@ -255,51 +257,56 @@ fn miri_vec_replace() {
 
 #[test]
 fn miri_slot_reuse_bounded() {
-    let slab = BoundedSlab::<String>::new(2);
+    let slab = unsafe { BoundedSlab::<String>::new(2) };
 
     // Fill
     let s1 = slab.alloc("one".to_string());
     let s2 = slab.alloc("two".to_string());
 
-    let k1 = slab.slot_key(&s1);
-    let k2 = slab.slot_key(&s2);
+    let p1 = s1.as_ptr();
+    let p2 = s2.as_ptr();
 
-    // Free one
+    // Dealloc one
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(s1) };
+    unsafe { slab.dealloc(s1) };
 
     // Reuse
     let s3 = slab.alloc("three".to_string());
     assert_eq!(*s3, "three");
-    assert_eq!(slab.slot_key(&s3), k1); // Reused slot 1
+    assert_eq!(s3.as_ptr(), p1); // Reused slot 1
 
-    // Free other
+    // Dealloc other
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(s2) };
+    unsafe { slab.dealloc(s2) };
 
     // Reuse again
     let s4 = slab.alloc("four".to_string());
     assert_eq!(*s4, "four");
-    assert_eq!(slab.slot_key(&s4), k2); // Reused slot 2
+    assert_eq!(s4.as_ptr(), p2); // Reused slot 2
 
     // Clean up
     // SAFETY: slots were allocated from this slab
     unsafe {
-        slab.free(s3);
-        slab.free(s4);
+        slab.dealloc(s3);
+        slab.dealloc(s4);
     }
 }
 
 #[test]
 fn miri_slot_reuse_single() {
-    let slab = BoundedSlab::<String>::new(1);
+    let slab = unsafe { BoundedSlab::<String>::new(1) };
 
+    let mut last_ptr = std::ptr::null_mut();
     for i in 0..10 {
         let slot = slab.alloc(format!("value_{}", i));
         assert_eq!(*slot, format!("value_{}", i));
-        assert_eq!(slab.slot_key(&slot).index(), 0);
+        // After first iteration, should always reuse same slot
+        if i > 0 {
+            assert_eq!(slot.as_ptr(), last_ptr);
+        }
+        last_ptr = slot.as_ptr();
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
@@ -309,7 +316,7 @@ fn miri_slot_reuse_single() {
 
 #[test]
 fn miri_unbounded_growth() {
-    let slab = UnboundedSlab::<u64>::new(4);
+    let slab = unsafe { UnboundedSlab::<u64>::new(4) };
 
     // Fill multiple chunks
     let slots: Vec<_> = (0..12).map(|i| slab.alloc(i)).collect();
@@ -323,13 +330,13 @@ fn miri_unbounded_growth() {
     // Clean up
     for slot in slots {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 #[test]
 fn miri_unbounded_string_growth() {
-    let slab = UnboundedSlab::<String>::new(4);
+    let slab = unsafe { UnboundedSlab::<String>::new(4) };
 
     let slots: Vec<_> = (0..12)
         .map(|i| slab.alloc(format!("string_{}", i)))
@@ -342,7 +349,7 @@ fn miri_unbounded_string_growth() {
     // Clean up
     for slot in slots {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
@@ -352,32 +359,32 @@ fn miri_unbounded_string_growth() {
 
 #[test]
 fn miri_capacity_one() {
-    let slab = BoundedSlab::<u64>::new(1);
+    let slab = unsafe { BoundedSlab::<u64>::new(1) };
 
     let slot = slab.alloc(42);
     assert!(slab.try_alloc(100).is_err());
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 
     let slot2 = slab.alloc(100);
     assert_eq!(*slot2, 100);
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot2) };
+    unsafe { slab.dealloc(slot2) };
 }
 
 #[test]
 fn miri_zst() {
-    let slab = BoundedSlab::<ZeroSized>::new(10);
+    let slab = unsafe { BoundedSlab::<ZeroSized>::new(10) };
 
     let slot = slab.alloc(ZeroSized);
     assert_eq!(*slot, ZeroSized);
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 #[test]
 fn miri_large_struct() {
-    let slab = BoundedSlab::<Large>::new(4);
+    let slab = unsafe { BoundedSlab::<Large>::new(4) };
 
     let mut data = [0u64; 128];
     for (i, d) in data.iter_mut().enumerate() {
@@ -389,7 +396,7 @@ fn miri_large_struct() {
     assert_eq!(slot.data[127], 127);
 
     // SAFETY: slot was allocated from this slab
-    unsafe { slab.free(slot) };
+    unsafe { slab.dealloc(slot) };
 }
 
 // =============================================================================

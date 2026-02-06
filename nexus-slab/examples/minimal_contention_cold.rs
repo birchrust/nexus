@@ -141,7 +141,7 @@ fn cold_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
                 let slot: Slot<T> = slab.alloc(T::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
-                unsafe { slab.free(slot) };
+                unsafe { slab.dealloc(slot) };
             }
             let elapsed = rdtsc_end() - start;
             slab_samples.push(elapsed / BATCH as u64);
@@ -153,7 +153,7 @@ fn cold_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
                 let slot: Slot<T> = slab.alloc(T::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
-                unsafe { slab.free(slot) };
+                unsafe { slab.dealloc(slot) };
             }
             let elapsed = rdtsc_end() - start;
             slab_samples.push(elapsed / BATCH as u64);
@@ -179,12 +179,12 @@ fn main() {
     println!("==========================");
     println!("  24MB eviction buffer (2x L3), strided access, interleaved measurement");
 
-    let slab64 = BoundedSlab::<Pod64>::new((SAMPLES * 2) as u32);
+    let slab64 = unsafe { BoundedSlab::<Pod64>::new((SAMPLES * 2) as u32) };
     cold_test("64B", &slab64);
 
-    let slab256 = BoundedSlab::<Pod256>::new((SAMPLES * 2) as u32);
+    let slab256 = unsafe { BoundedSlab::<Pod256>::new((SAMPLES * 2) as u32) };
     cold_test("256B", &slab256);
 
-    let slab4096 = BoundedSlab::<Pod4096>::new((SAMPLES * 2) as u32);
+    let slab4096 = unsafe { BoundedSlab::<Pod4096>::new((SAMPLES * 2) as u32) };
     cold_test("4096B", &slab4096);
 }

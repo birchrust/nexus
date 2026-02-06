@@ -13,10 +13,7 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-use crate::shared::{RcInner, Slot};
-
-use crate::Key;
-use crate::shared::SlotCell;
+use crate::shared::{RcInner, Slot, SlotCell};
 
 // =============================================================================
 // Full<T>
@@ -60,63 +57,28 @@ impl<T> fmt::Display for Full<T> {
 /// # Safety
 ///
 /// Implementors must guarantee:
-/// - `try_alloc` returns a valid, claimed slot pointer with value written
-/// - `dealloc` correctly returns the slot to the freelist (by key)
-/// - `dealloc_ptr` correctly returns the slot to the freelist (by pointer)
-/// - `slot_cell` returns a valid pointer for any key returned by `try_alloc`
+/// - `try_alloc` returns a valid, occupied `Slot` with the value written
+/// - `free` correctly drops the value and returns the slot to the freelist
+/// - `take` correctly moves the value out and returns the slot to the freelist
 /// - All operations are single-threaded (TLS-backed)
 pub unsafe trait Alloc: Sized + 'static {
     /// The type stored in each slot.
-    type Item: 'static;
+    type Item;
 
-    /// Claim a slot, write the value, and mark it occupied.
+    /// Claim a slot and write the value.
     ///
     /// Returns `Err(Full(value))` if the allocator is full, giving the
     /// value back to the caller.
-    fn try_alloc(value: Self::Item) -> Result<*mut SlotCell<Self::Item>, Full<Self::Item>>;
+    fn try_alloc(value: Self::Item) -> Result<Slot<Self::Item>, Full<Self::Item>>;
 
-    /// Claim a slot, write the value, and mark it occupied.
+    /// Claim a slot and write the value.
     ///
     /// # Panics
     ///
     /// Panics with "out of memory" if the allocator is full.
-    #[inline]
-    fn alloc(value: Self::Item) -> *mut SlotCell<Self::Item> {
-        Self::try_alloc(value).expect("out of memory")
-    }
+    fn alloc(value: Self::Item) -> Slot<Self::Item>;
 
-    /// Return a slot to the freelist by key (cold path).
-    ///
-    /// # Safety
-    ///
-    /// - `key` must refer to a previously allocated, occupied slot
-    /// - The value must already be dropped or moved out
-    unsafe fn dealloc(key: Key);
-
-    /// Return a slot to the freelist by pointer (hot path).
-    ///
-    /// This avoids the key→pointer round-trip that `dealloc` requires.
-    ///
-    /// # Safety
-    ///
-    /// - `slot_ptr` must point to a previously allocated, occupied slot
-    /// - The value must already be dropped or moved out
-    unsafe fn dealloc_ptr(slot_ptr: *mut SlotCell<Self::Item>);
-
-    /// Get the slot cell pointer for a key.
-    ///
-    /// # Safety
-    ///
-    /// `key` must refer to a valid slot within the slab.
-    unsafe fn slot_cell(key: Key) -> *mut SlotCell<Self::Item>;
-
-    /// Compute the key for a slot pointer (cold path).
-    ///
-    /// This is the inverse of `slot_cell`: given a pointer, compute the key.
-    /// Used for lazy key computation in `BoxSlot::key()`.
-    fn slot_index(slot_ptr: *mut SlotCell<Self::Item>) -> Key;
-
-    /// Frees a raw slot, dropping the value and returning to freelist.
+    /// Drops the value and returns the slot to the freelist.
     ///
     /// This is for manual memory management after calling `BoxSlot::into_slot()`.
     ///
@@ -126,20 +88,10 @@ pub unsafe trait Alloc: Sized + 'static {
     /// - No references to the slot's value may exist
     ///
     /// Note: Double-free is prevented at compile time (`Slot` is move-only).
-    #[inline]
     #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    unsafe fn free_slot(slot: Slot<Self::Item>) {
-        // Drop the value in place
-        // SAFETY: Caller guarantees slot is valid and occupied
-        unsafe {
-            ptr::drop_in_place((*(*slot.as_ptr()).value).as_mut_ptr());
-        }
-        // Return to freelist
-        // SAFETY: Value dropped, slot valid
-        unsafe { Self::dealloc_ptr(slot.as_ptr()) };
-    }
+    unsafe fn free(slot: Slot<Self::Item>);
 
-    /// Takes the value from a raw slot, returning it and deallocating the slot.
+    /// Takes the value from a slot, returning it and deallocating the slot.
     ///
     /// This is for manual memory management after calling `BoxSlot::into_slot()`.
     ///
@@ -149,17 +101,8 @@ pub unsafe trait Alloc: Sized + 'static {
     /// - No references to the slot's value may exist
     ///
     /// Note: Double-free is prevented at compile time (`Slot` is move-only).
-    #[inline]
     #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    unsafe fn take_slot(slot: Slot<Self::Item>) -> Self::Item {
-        // Move the value out
-        // SAFETY: Caller guarantees slot is valid and occupied
-        let value = unsafe { ptr::read((*slot.as_ptr()).value.as_ptr()) };
-        // Return to freelist
-        // SAFETY: Value moved out, slot valid
-        unsafe { Self::dealloc_ptr(slot.as_ptr()) };
-        value
-    }
+    unsafe fn take(slot: Slot<Self::Item>) -> Self::Item;
 }
 
 /// Marker trait for bounded (fixed-capacity) allocators.
@@ -174,8 +117,7 @@ pub trait UnboundedAlloc: Alloc {}
 
 /// RAII handle to a slab-allocated value, generic over allocator.
 ///
-/// `BoxSlot<T, A>` is 8 bytes (one pointer). The key is computed lazily from
-/// the pointer when needed.
+/// `BoxSlot<T, A>` is 8 bytes (one pointer).
 ///
 /// This is the slot type generated by `bounded_allocator!` and
 /// `unbounded_allocator!` macros via `type BoxSlot = alloc::BoxSlot<T, Allocator>`.
@@ -190,14 +132,14 @@ pub trait UnboundedAlloc: Alloc {}
 /// `BoxSlot` is `!Send` and `!Sync` (via `PhantomData<*const ()>` inside the
 /// marker). It must only be used from the thread that created it.
 #[must_use = "dropping BoxSlot returns it to the allocator"]
-pub struct BoxSlot<T: 'static, A: Alloc<Item = T>> {
+pub struct BoxSlot<T, A: Alloc<Item = T>> {
     slot: Slot<T>,
     // PhantomData carries the allocator type AND makes BoxSlot !Send + !Sync
     // (*mut is !Send + !Sync, and PhantomData<A> ties the type)
     _marker: PhantomData<(A, *const ())>,
 }
 
-impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// Creates a new slot containing the given value.
     ///
     /// # Panics
@@ -205,10 +147,8 @@ impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// Panics with "out of memory" if the allocator is full (bounded only).
     #[inline]
     pub fn new(value: T) -> Self {
-        let slot_ptr = A::alloc(value);
-        // SAFETY: alloc returns a valid, occupied slot pointer
         BoxSlot {
-            slot: unsafe { Slot::from_ptr(slot_ptr) },
+            slot: A::alloc(value),
             _marker: PhantomData,
         }
     }
@@ -219,20 +159,10 @@ impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// giving the value back to the caller.
     #[inline]
     pub fn try_new(value: T) -> Result<Self, Full<T>> {
-        let slot_ptr = A::try_alloc(value)?;
-        // SAFETY: try_alloc returns a valid, occupied slot pointer
         Ok(BoxSlot {
-            slot: unsafe { Slot::from_ptr(slot_ptr) },
+            slot: A::try_alloc(value)?,
             _marker: PhantomData,
         })
-    }
-
-    /// Returns the key for this slot.
-    ///
-    /// Lazily computed from pointer offset. This is a cold-path operation.
-    #[inline]
-    pub fn key(&self) -> Key {
-        A::slot_index(self.slot.as_ptr())
     }
 
     /// Leaks the slot permanently, returning an immutable reference.
@@ -255,8 +185,8 @@ impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// Converts to a raw slot for manual memory management.
     ///
     /// The slot is NOT deallocated. Caller must eventually:
-    /// - Call `Allocator::free_slot()` to drop and deallocate
-    /// - Call `Allocator::take_slot()` to extract value and deallocate
+    /// - Call `Allocator::free()` to drop and deallocate
+    /// - Call `Allocator::take()` to extract value and deallocate
     /// - Wrap in another `BoxSlot` via `from_slot()`
     #[inline]
     pub fn into_slot(self) -> Slot<T> {
@@ -269,15 +199,15 @@ impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// Extracts the value from the slot, deallocating the slot.
     ///
     /// This is analogous to `Box::into_inner`.
+    #[inline]
     pub fn into_inner(self) -> T {
-        // SAFETY: We own the slot, union field `value` is active
-        let value = unsafe { ptr::read((*self.slot.as_ptr()).value.as_ptr()) };
-
-        // SAFETY: Value has been moved out, slot_ptr is valid
-        unsafe { A::dealloc_ptr(self.slot.as_ptr()) };
-
+        // Extract slot before forget
+        // SAFETY: We're about to forget self, so reading slot is safe
+        let slot = unsafe { ptr::read(&raw const self.slot) };
         std::mem::forget(self);
-        value
+
+        // SAFETY: We owned the slot, no other references exist
+        unsafe { A::take(slot) }
     }
 
     /// Replaces the value in the slot, returning the old value.
@@ -306,49 +236,6 @@ impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
         }
     }
 
-    /// Returns a reference to the value for the given key.
-    ///
-    /// # Safety
-    ///
-    /// The key must be valid (from `leak()` or `key()`, not yet removed).
-    #[inline]
-    pub unsafe fn from_key(key: Key) -> &'static T {
-        // SAFETY: Caller guarantees key validity. TLS storage is 'static.
-        // Union field `value` is active because the slot is occupied.
-        let cell = unsafe { A::slot_cell(key) };
-        unsafe { (*cell).value.assume_init_ref() }
-    }
-
-    /// Returns a mutable reference to the value for the given key.
-    ///
-    /// # Safety
-    ///
-    /// The key must be valid and no other references to this slot exist.
-    #[inline]
-    pub unsafe fn from_key_mut(key: Key) -> &'static mut T {
-        // SAFETY: Caller guarantees key validity and exclusivity.
-        // Union field `value` is active because the slot is occupied.
-        let cell = unsafe { A::slot_cell(key) };
-        unsafe { (*(*cell).value).assume_init_mut() }
-    }
-
-    /// Removes and returns the value for the given key.
-    ///
-    /// # Safety
-    ///
-    /// The key must be valid and no references to this slot exist.
-    pub unsafe fn remove_by_key(key: Key) -> T {
-        // SAFETY: Caller guarantees key validity.
-        // Union field `value` is active because the slot is occupied.
-        let cell = unsafe { A::slot_cell(key) };
-        let value = unsafe { ptr::read((*cell).value.as_ptr()) };
-
-        // SAFETY: Value moved out, key valid
-        unsafe { A::dealloc(key) };
-
-        value
-    }
-
     /// Returns the raw slot cell pointer.
     ///
     /// Used by `RcSlot` to clone handles without going through the allocator.
@@ -375,7 +262,7 @@ impl<T: 'static, A: Alloc<Item = T>> BoxSlot<T, A> {
 // Trait Implementations for BoxSlot
 // =============================================================================
 
-impl<T: 'static, A: Alloc<Item = T>> Deref for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> Deref for BoxSlot<T, A> {
     type Target = T;
 
     #[inline]
@@ -384,62 +271,55 @@ impl<T: 'static, A: Alloc<Item = T>> Deref for BoxSlot<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = T>> DerefMut for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> DerefMut for BoxSlot<T, A> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.slot
     }
 }
 
-impl<T: 'static, A: Alloc<Item = T>> AsRef<T> for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> AsRef<T> for BoxSlot<T, A> {
     #[inline]
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T: 'static, A: Alloc<Item = T>> AsMut<T> for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> AsMut<T> for BoxSlot<T, A> {
     #[inline]
     fn as_mut(&mut self) -> &mut T {
         self
     }
 }
 
-impl<T: 'static, A: Alloc<Item = T>> Borrow<T> for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> Borrow<T> for BoxSlot<T, A> {
     #[inline]
     fn borrow(&self) -> &T {
         self
     }
 }
 
-impl<T: 'static, A: Alloc<Item = T>> BorrowMut<T> for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> BorrowMut<T> for BoxSlot<T, A> {
     #[inline]
     fn borrow_mut(&mut self) -> &mut T {
         self
     }
 }
 
-impl<T: 'static, A: Alloc<Item = T>> Drop for BoxSlot<T, A> {
+impl<T, A: Alloc<Item = T>> Drop for BoxSlot<T, A> {
     #[inline]
     fn drop(&mut self) {
-        // Drop the value in place
-        // SAFETY: We own the slot, union field `value` is active
-        unsafe {
-            ptr::drop_in_place((*(*self.slot.as_ptr()).value).as_mut_ptr());
-        }
-
-        // Return slot to freelist by pointer (no key round-trip)
-        // SAFETY: Value dropped, slot_ptr valid
-        unsafe { A::dealloc_ptr(self.slot.as_ptr()) };
+        // Read slot via raw ptr because we're in drop and can't move out of &mut self
+        // SAFETY: We own the slot, this is the destructor
+        let slot = unsafe { ptr::read(&raw const self.slot) };
+        // SAFETY: We own the slot, no other references exist
+        unsafe { A::free(slot) };
     }
 }
 
-impl<T: 'static + fmt::Debug, A: Alloc<Item = T>> fmt::Debug for BoxSlot<T, A> {
+impl<T: fmt::Debug, A: Alloc<Item = T>> fmt::Debug for BoxSlot<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BoxSlot")
-            .field("key", &self.key())
-            .field("value", &**self)
-            .finish()
+        f.debug_struct("BoxSlot").field("value", &**self).finish()
     }
 }
 
@@ -449,13 +329,13 @@ impl<T: 'static + fmt::Debug, A: Alloc<Item = T>> fmt::Debug for BoxSlot<T, A> {
 
 /// A `'static` reference to a thread-local slab-allocated value.
 ///
-/// Returned by [`RcSlot::leak()`]. The reference is valid for the lifetime of
+/// Returned by [`BoxSlot::leak()`]. The reference is valid for the lifetime of
 /// the program, but cannot be sent to other threads because the backing slab
 /// is thread-local.
 ///
 /// Once leaked, the slot is permanently occupied — there is no way to reclaim it.
 #[repr(transparent)]
-pub struct LocalStatic<T: 'static> {
+pub struct LocalStatic<T> {
     ptr: *const T,
     _marker: PhantomData<*const ()>, // !Send + !Sync
 }
@@ -468,7 +348,7 @@ impl<T> LocalStatic<T> {
     /// The pointer must point to a valid, permanently-leaked value in a
     /// thread-local slab.
     #[inline]
-    unsafe fn new(ptr: *const T) -> Self {
+    pub(crate) unsafe fn new(ptr: *const T) -> Self {
         LocalStatic {
             ptr,
             _marker: PhantomData,
@@ -487,7 +367,7 @@ impl<T> Deref for LocalStatic<T> {
 
     #[inline]
     fn deref(&self) -> &T {
-        // SAFETY: ptr came from a leaked RcSlot, value is alive forever,
+        // SAFETY: ptr came from a leaked BoxSlot, value is alive forever,
         // and we're on the same thread (enforced by !Send)
         unsafe { &*self.ptr }
     }
@@ -533,12 +413,12 @@ impl<T: fmt::Debug> fmt::Debug for LocalStatic<T> {
 /// `RcSlot` is `!Send` and `!Sync` (same as `BoxSlot`). All access must be from
 /// the thread that created the allocator.
 #[must_use = "dropping RcSlot decrements the strong count"]
-pub struct RcSlot<T: 'static, A: Alloc<Item = RcInner<T>>> {
+pub struct RcSlot<T, A: Alloc<Item = RcInner<T>>> {
     inner: ManuallyDrop<BoxSlot<RcInner<T>, A>>,
     _phantom: PhantomData<T>,
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     /// Creates a new `RcSlot` containing the given value.
     ///
     /// # Panics
@@ -570,7 +450,8 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     #[inline]
     pub fn downgrade(&self) -> WeakSlot<T, A> {
         let rc_inner: &RcInner<T> = &self.inner;
-        rc_inner.set_weak(rc_inner.weak() + 1);
+        let new_weak = rc_inner.weak().checked_add(1).expect("weak count overflow");
+        rc_inner.set_weak(new_weak);
         // SAFETY: We hold a strong ref, slot is alive. Duplicate the pointer.
         let weak_slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
         WeakSlot {
@@ -590,7 +471,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     #[inline]
     pub fn weak_count(&self) -> u32 {
         let rc_inner: &RcInner<T> = &self.inner;
-        rc_inner.weak() - 1
+        rc_inner.weak().saturating_sub(1)
     }
 
     /// Returns a mutable reference if this is the only reference.
@@ -658,30 +539,21 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
 
     /// Converts to a raw slot without checking refcounts.
     ///
-    /// The strong count is decremented but the value is NOT dropped even
-    /// if strong hits 0. Caller takes ownership via the raw slot.
+    /// Caller takes full ownership of the slot. Refcounts are NOT modified —
+    /// the caller is responsible for ensuring no other references exist or
+    /// for handling the consequences.
     ///
     /// # Safety
     ///
-    /// - Caller must ensure no other strong references will try to access
-    ///   or drop the value after this call
-    /// - If weak references exist, they will fail to upgrade (strong == 0)
-    ///   but may still try to deallocate when they drop
+    /// - Caller takes ownership of the slot and the value within
+    /// - If other strong references exist, they will see stale refcounts
+    ///   and may double-free or access dropped memory
+    /// - If weak references exist, they will fail to upgrade (this is safe)
+    ///   but may attempt deallocation based on stale counts
     #[inline]
     pub unsafe fn into_slot_unchecked(self) -> Slot<RcInner<T>> {
-        let rc_inner: &RcInner<T> = &self.inner;
-
-        // Decrement strong count
-        let old_strong = rc_inner.strong();
-        rc_inner.set_strong(old_strong.saturating_sub(1));
-
-        // If strong hit 0, also decrement implicit weak
-        if old_strong == 1 {
-            let old_weak = rc_inner.weak();
-            rc_inner.set_weak(old_weak.saturating_sub(1));
-        }
-
-        // DON'T drop the value - caller owns it via raw Slot
+        // DON'T touch refcounts - caller takes full ownership
+        // Any other refs will see stale counts, but that's caller's problem
 
         // Extract the raw slot pointer
         let slot_ptr = self.inner.as_ptr();
@@ -693,7 +565,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     }
 }
 
-impl<T: 'static + Clone, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
+impl<T: Clone, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     /// Makes a mutable reference to the value, cloning if necessary.
     ///
     /// If this is the only reference (strong == 1, weak == 0), returns a
@@ -714,11 +586,15 @@ impl<T: 'static + Clone, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> Clone for RcSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> Clone for RcSlot<T, A> {
     #[inline]
     fn clone(&self) -> Self {
         let rc_inner: &RcInner<T> = &self.inner;
-        rc_inner.set_strong(rc_inner.strong() + 1);
+        let new_strong = rc_inner
+            .strong()
+            .checked_add(1)
+            .expect("RcSlot strong count overflow");
+        rc_inner.set_strong(new_strong);
         // SAFETY: We hold a strong ref, slot is alive
         let cloned_slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
         RcSlot {
@@ -728,7 +604,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> Clone for RcSlot<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> Drop for RcSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> Drop for RcSlot<T, A> {
     #[inline]
     fn drop(&mut self) {
         // All refcount access goes through raw pointers to avoid Stacked
@@ -759,10 +635,10 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> Drop for RcSlot<T, A> {
         // ManuallyDrop<T> is dropped but the storage is still there)
         let weak = unsafe { (*cell_ptr).value.assume_init_ref().weak() };
         if weak == 1 {
-            // No outstanding weaks — dealloc the slot.
+            // No outstanding weaks — free the slot.
             // SAFETY: Value is dropped. Slot's drop_in_place on RcInner is
             // a no-op (ManuallyDrop<T> already dropped, Cell<u32> is Copy).
-            // BoxSlot's Drop will call dealloc_ptr to return slot to freelist.
+            // BoxSlot's Drop will call A::free() to return slot to freelist.
             unsafe { ManuallyDrop::drop(&mut self.inner) };
         } else {
             // SAFETY: same as weak read above
@@ -772,7 +648,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> Drop for RcSlot<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> Deref for RcSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> Deref for RcSlot<T, A> {
     type Target = T;
 
     #[inline]
@@ -782,14 +658,14 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> Deref for RcSlot<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> AsRef<T> for RcSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> AsRef<T> for RcSlot<T, A> {
     #[inline]
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T: 'static + fmt::Debug, A: Alloc<Item = RcInner<T>>> fmt::Debug for RcSlot<T, A> {
+impl<T: fmt::Debug, A: Alloc<Item = RcInner<T>>> fmt::Debug for RcSlot<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RcSlot")
             .field("strong", &self.strong_count())
@@ -810,12 +686,12 @@ impl<T: 'static + fmt::Debug, A: Alloc<Item = RcInner<T>>> fmt::Debug for RcSlot
 /// and strong references are dropped.
 ///
 /// 8 bytes — same as `BoxSlot`.
-pub struct WeakSlot<T: 'static, A: Alloc<Item = RcInner<T>>> {
+pub struct WeakSlot<T, A: Alloc<Item = RcInner<T>>> {
     inner: ManuallyDrop<BoxSlot<RcInner<T>, A>>,
     _phantom: PhantomData<T>,
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> WeakSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> WeakSlot<T, A> {
     /// Attempts to upgrade to a strong reference.
     ///
     /// Returns `Some(RcSlot)` if the value is still alive (strong > 0),
@@ -827,7 +703,8 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> WeakSlot<T, A> {
         if strong == 0 {
             return None;
         }
-        rc_inner.set_strong(strong + 1);
+        let new_strong = strong.checked_add(1).expect("RcSlot strong count overflow");
+        rc_inner.set_strong(new_strong);
         // SAFETY: strong > 0 means slot is alive and value is valid
         let slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
         Some(RcSlot {
@@ -851,18 +728,22 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> WeakSlot<T, A> {
         // If strong > 0, subtract the implicit weak. If strong == 0,
         // the implicit weak was already decremented.
         if rc_inner.strong() > 0 {
-            weak - 1
+            weak.saturating_sub(1)
         } else {
             weak
         }
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> Clone for WeakSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> Clone for WeakSlot<T, A> {
     #[inline]
     fn clone(&self) -> Self {
         let rc_inner: &RcInner<T> = &self.inner;
-        rc_inner.set_weak(rc_inner.weak() + 1);
+        let new_weak = rc_inner
+            .weak()
+            .checked_add(1)
+            .expect("WeakSlot weak count overflow");
+        rc_inner.set_weak(new_weak);
         // SAFETY: We hold a weak ref, slot memory is alive
         let cloned_slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
         WeakSlot {
@@ -872,29 +753,29 @@ impl<T: 'static, A: Alloc<Item = RcInner<T>>> Clone for WeakSlot<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> Drop for WeakSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> Drop for WeakSlot<T, A> {
     #[inline]
     fn drop(&mut self) {
         let rc_inner: &RcInner<T> = &self.inner;
         let weak = rc_inner.weak();
-        if weak > 1 {
-            rc_inner.set_weak(weak - 1);
-            return;
-        }
-        // Last weak reference (weak == 1)
-        if rc_inner.strong() == 0 {
+
+        // Always decrement weak count
+        rc_inner.set_weak(weak.saturating_sub(1));
+
+        // Dealloc only if this was the last weak AND value already dropped (strong==0)
+        if weak == 1 && rc_inner.strong() == 0 {
             // Zombie slot — value already dropped, dealloc the slot.
             // SAFETY: RcInner's ManuallyDrop<T> is already dropped.
             // BoxSlot's drop_in_place on RcInner is a no-op. Dealloc returns
             // the slot to the freelist.
             unsafe { ManuallyDrop::drop(&mut self.inner) };
         }
-        // If strong > 0, this shouldn't happen (strong holder holds implicit weak).
-        // But if it does, the strong holder's drop will handle dealloc.
+        // If strong > 0, strong holder's drop will handle dealloc.
+        // If weak > 1, other weak refs still hold the slot alive.
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<T>>> fmt::Debug for WeakSlot<T, A> {
+impl<T, A: Alloc<Item = RcInner<T>>> fmt::Debug for WeakSlot<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WeakSlot")
             .field("strong", &self.strong_count())

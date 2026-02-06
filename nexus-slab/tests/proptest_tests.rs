@@ -6,42 +6,11 @@
 //! - Capacity bounds are respected
 //! - Drop counting matches expectations
 
-use nexus_slab::Key;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 use nexus_slab::Slot;
 use proptest::prelude::*;
-use std::collections::HashMap;
-
-// =============================================================================
-// Key Properties (stateless, no slab needed)
-// =============================================================================
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
-
-    #[test]
-    fn key_roundtrip(raw in 0u32..nexus_slab::SLOT_NONE) {
-        let key = Key::from_raw(raw);
-        prop_assert_eq!(key.into_raw(), raw);
-        prop_assert_eq!(key.index(), raw);
-    }
-
-    #[test]
-    fn key_valid_is_some(raw in 0u32..nexus_slab::SLOT_NONE) {
-        let key = Key::from_raw(raw);
-        prop_assert!(key.is_some());
-        prop_assert!(!key.is_none());
-    }
-}
-
-#[test]
-fn key_none_is_special() {
-    let key = Key::NONE;
-    assert!(key.is_none());
-    assert!(!key.is_some());
-    assert_eq!(key.index(), nexus_slab::SLOT_NONE);
-}
+use std::collections::HashSet;
 
 // =============================================================================
 // Bounded Slab Properties
@@ -50,7 +19,7 @@ fn key_none_is_special() {
 /// Test that values are never corrupted
 #[test]
 fn bounded_value_integrity_random() {
-    let slab = BoundedSlab::<u64>::new(50);
+    let slab = unsafe { BoundedSlab::<u64>::new(50) };
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
         proptest::test_runner::RngAlgorithm::ChaCha,
@@ -72,7 +41,7 @@ fn bounded_value_integrity_random() {
             6..=7 => {
                 if let Some((slot, _)) = slots.pop() {
                     // SAFETY: slot was allocated from this slab
-                    unsafe { slab.free(slot) };
+                    unsafe { slab.dealloc(slot) };
                 }
             }
             8 => {
@@ -80,7 +49,7 @@ fn bounded_value_integrity_random() {
                     let idx = rng.random_range(0..slots.len());
                     let (slot, _) = slots.swap_remove(idx);
                     // SAFETY: slot was allocated from this slab
-                    unsafe { slab.free(slot) };
+                    unsafe { slab.dealloc(slot) };
                 }
             }
             9 => {
@@ -103,14 +72,14 @@ fn bounded_value_integrity_random() {
     // Clean up remaining slots
     for (slot, _) in slots {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 /// Test capacity is never exceeded (separate tests for each capacity)
 #[test]
 fn bounded_capacity_never_exceeded_1() {
-    let slab = BoundedSlab::<u64>::new(1);
+    let slab = unsafe { BoundedSlab::<u64>::new(1) };
 
     let mut slots = Vec::new();
     for i in 0..200 {
@@ -122,13 +91,13 @@ fn bounded_capacity_never_exceeded_1() {
 
     // Clean up
     for slot in slots {
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 #[test]
 fn bounded_capacity_never_exceeded_10() {
-    let slab = BoundedSlab::<u64>::new(10);
+    let slab = unsafe { BoundedSlab::<u64>::new(10) };
 
     let mut slots = Vec::new();
     for i in 0..200 {
@@ -140,13 +109,13 @@ fn bounded_capacity_never_exceeded_10() {
 
     // Clean up
     for slot in slots {
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 #[test]
 fn bounded_capacity_never_exceeded_50() {
-    let slab = BoundedSlab::<u64>::new(50);
+    let slab = unsafe { BoundedSlab::<u64>::new(50) };
 
     let mut slots = Vec::new();
     for i in 0..200 {
@@ -158,14 +127,14 @@ fn bounded_capacity_never_exceeded_50() {
 
     // Clean up
     for slot in slots {
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 /// Test fill/drain cycles maintain integrity
 #[test]
 fn bounded_fill_drain_integrity() {
-    let slab = BoundedSlab::<u64>::new(20);
+    let slab = unsafe { BoundedSlab::<u64>::new(20) };
 
     for cycle in 0..10 {
         // Fill
@@ -178,10 +147,10 @@ fn bounded_fill_drain_integrity() {
             assert_eq!(**slot, (cycle * 20 + i) as u64);
         }
 
-        // Drain — explicitly free all slots
+        // Drain — explicitly dealloc all slots
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(slot) };
+            unsafe { slab.dealloc(slot) };
         }
     }
 }
@@ -192,7 +161,7 @@ fn bounded_fill_drain_integrity() {
 
 #[test]
 fn unbounded_value_integrity_random() {
-    let slab = UnboundedSlab::<u64>::new(8);
+    let slab = unsafe { UnboundedSlab::<u64>::new(8) };
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
         proptest::test_runner::RngAlgorithm::ChaCha,
@@ -211,7 +180,7 @@ fn unbounded_value_integrity_random() {
             6..=7 => {
                 if let Some((slot, _)) = slots.pop() {
                     // SAFETY: slot was allocated from this slab
-                    unsafe { slab.free(slot) };
+                    unsafe { slab.dealloc(slot) };
                 }
             }
             8 => {
@@ -219,7 +188,7 @@ fn unbounded_value_integrity_random() {
                     let idx = rng.random_range(0..slots.len());
                     let (slot, _) = slots.swap_remove(idx);
                     // SAFETY: slot was allocated from this slab
-                    unsafe { slab.free(slot) };
+                    unsafe { slab.dealloc(slot) };
                 }
             }
             9 => {
@@ -240,13 +209,13 @@ fn unbounded_value_integrity_random() {
 
     // Clean up remaining slots
     for (slot, _) in slots {
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 #[test]
 fn unbounded_growth_maintains_integrity() {
-    let slab = UnboundedSlab::<u64>::new(8);
+    let slab = unsafe { UnboundedSlab::<u64>::new(8) };
 
     // Test with increasing counts in a single slab
     for count in [10, 50, 100, 200] {
@@ -261,7 +230,7 @@ fn unbounded_growth_maintains_integrity() {
         // Clean up for next iteration
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(slot) };
+            unsafe { slab.dealloc(slot) };
         }
     }
 }
@@ -272,72 +241,72 @@ fn unbounded_growth_maintains_integrity() {
 
 #[test]
 fn freelist_no_duplicates() {
-    let slab = BoundedSlab::<u64>::new(20);
+    let slab = unsafe { BoundedSlab::<u64>::new(20) };
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
         proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
-    let mut slots: Vec<(Key, Slot<u64>)> = Vec::new();
-    let mut seen_keys = HashMap::new();
+    let mut slots: Vec<Slot<u64>> = Vec::new();
+    let mut seen_ptrs = HashSet::new();
 
     for _ in 0..200 {
         let should_insert = rng.random_bool(0.6) || slots.is_empty();
 
         if should_insert {
             if let Ok(slot) = slab.try_alloc(0) {
-                let key = slab.slot_key(&slot);
-                // Key should not be a duplicate of any currently held slot
-                for (existing_key, _) in &slots {
-                    assert_ne!(key, *existing_key, "Duplicate key returned!");
+                let ptr = slot.as_ptr();
+                // Pointer should not be a duplicate of any currently held slot
+                for existing in &slots {
+                    assert_ne!(ptr, existing.as_ptr(), "Duplicate slot returned!");
                 }
-                slots.push((key, slot));
-                *seen_keys.entry(key.index()).or_insert(0) += 1;
+                slots.push(slot);
+                seen_ptrs.insert(ptr as usize);
             }
         } else if !slots.is_empty() {
             let idx = rng.random_range(0..slots.len());
-            let (_, slot) = slots.swap_remove(idx);
+            let slot = slots.swap_remove(idx);
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(slot) };
+            unsafe { slab.dealloc(slot) };
         }
     }
 
     // Clean up remaining slots
-    for (_, slot) in slots {
-        unsafe { slab.free(slot) };
+    for slot in slots {
+        unsafe { slab.dealloc(slot) };
     }
 }
 
 #[test]
 fn freelist_reuses_freed_slots() {
-    let slab = BoundedSlab::<u64>::new(10);
+    let slab = unsafe { BoundedSlab::<u64>::new(10) };
 
-    let mut slots: Vec<(Key, Slot<u64>)> = Vec::new();
-    let mut freed_keys: Vec<Key> = Vec::new();
+    let mut slots: Vec<Slot<u64>> = Vec::new();
+    let mut freed_ptrs: Vec<*mut nexus_slab::SlotCell<u64>> = Vec::new();
 
     for i in 0..100 {
         let should_insert = i % 3 != 2 || slots.is_empty();
 
         if should_insert {
             if let Ok(slot) = slab.try_alloc(0) {
-                let key = slab.slot_key(&slot);
+                let ptr = slot.as_ptr();
                 // If we had freed slots, this should reuse one (LIFO)
-                if let Some(expected) = freed_keys.pop() {
-                    assert_eq!(key, expected, "Expected LIFO reuse");
+                if let Some(expected) = freed_ptrs.pop() {
+                    assert_eq!(ptr, expected, "Expected LIFO reuse");
                 }
-                slots.push((key, slot));
+                slots.push(slot);
             }
         } else if !slots.is_empty() {
-            let (key, slot) = slots.pop().unwrap();
-            freed_keys.push(key);
+            let slot = slots.pop().unwrap();
+            freed_ptrs.push(slot.as_ptr());
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(slot) };
+            unsafe { slab.dealloc(slot) };
         }
     }
 
     // Clean up remaining slots
-    for (_, slot) in slots {
-        unsafe { slab.free(slot) };
+    for slot in slots {
+        unsafe { slab.dealloc(slot) };
     }
 }
 
@@ -371,7 +340,7 @@ fn get_counter() -> usize {
 fn drop_count_matches_inserts() {
     reset_counter();
 
-    let slab = BoundedSlab::<Counted>::new(100);
+    let slab = unsafe { BoundedSlab::<Counted>::new(100) };
 
     let count = 50;
     {
@@ -379,7 +348,7 @@ fn drop_count_matches_inserts() {
         // Free all slots - this drops the values
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(slot) };
+            unsafe { slab.dealloc(slot) };
         }
     }
 
@@ -390,7 +359,7 @@ fn drop_count_matches_inserts() {
 fn into_inner_prevents_drop() {
     reset_counter();
 
-    let slab = BoundedSlab::<Counted>::new(100);
+    let slab = unsafe { BoundedSlab::<Counted>::new(100) };
 
     let count = 20;
     let slots: Vec<_> = (0..count).map(|_| slab.alloc(Counted)).collect();
@@ -403,7 +372,7 @@ fn into_inner_prevents_drop() {
     for (i, slot) in slots.into_iter().enumerate() {
         if i < half {
             // SAFETY: slot was allocated from this slab
-            let value = unsafe { slab.free_take(slot) };
+            let value = unsafe { slab.dealloc_take(slot) };
             values.push(value);
         } else {
             remaining_slots.push(slot);
@@ -416,7 +385,7 @@ fn into_inner_prevents_drop() {
     // Free the rest
     for slot in remaining_slots {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 
     // Half dropped via free, half still in values vec

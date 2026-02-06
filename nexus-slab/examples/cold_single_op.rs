@@ -98,7 +98,8 @@ fn main() {
     // 64B test
     {
         println!("\n  -- 64B SINGLE OP --");
-        let slab = BoundedSlab::<Pod64>::new((SAMPLES * 4) as u32);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { BoundedSlab::<Pod64>::new((SAMPLES * 4) as u32) };
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -149,7 +150,8 @@ fn main() {
     // 256B test
     {
         println!("\n  -- 256B SINGLE OP --");
-        let slab = BoundedSlab::<Pod256>::new((SAMPLES * 4) as u32);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { BoundedSlab::<Pod256>::new((SAMPLES * 4) as u32) };
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);

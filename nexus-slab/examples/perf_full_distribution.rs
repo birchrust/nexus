@@ -72,7 +72,7 @@ fn bench_get() {
     let mut slab_hot_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
@@ -140,7 +140,7 @@ fn bench_get() {
     // Cleanup - free all slots
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
@@ -156,7 +156,7 @@ fn bench_get_mut() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
@@ -197,7 +197,7 @@ fn bench_get_mut() {
     // Cleanup
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
@@ -213,7 +213,7 @@ fn bench_insert() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slab insert - need to remove after each batch to make room
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let mut temp_entries: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -228,7 +228,7 @@ fn bench_insert() {
         // Cleanup batch
         for entry in temp_entries.drain(..) {
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(entry) };
+            unsafe { slab.dealloc(entry) };
         }
     }
 
@@ -270,7 +270,7 @@ fn bench_remove() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slot free_take - insert batch, then remove batch
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
@@ -284,7 +284,7 @@ fn bench_remove() {
         unroll!(100, {
             let entry = temp_entries.pop().unwrap();
             // SAFETY: slot was allocated from this slab
-            black_box(unsafe { slab.free_take(entry) });
+            black_box(unsafe { slab.dealloc_take(entry) });
         });
         let end = rdtsc_end();
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
@@ -309,7 +309,7 @@ fn bench_remove() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("slab.free_take()", &entry_hist);
+    print_hist("slab.dealloc_take()", &entry_hist);
     print_hist("slab.remove()", &slab_hist);
     println!();
 }
@@ -326,7 +326,7 @@ fn bench_replace() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
@@ -369,7 +369,7 @@ fn bench_replace() {
     // Cleanup
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 

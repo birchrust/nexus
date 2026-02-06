@@ -141,7 +141,7 @@ fn bench_bounded() {
     println!("─────────────────────────────────────────────────────────────────");
 
     let capacity = 20_000u32;
-    let direct_slab = BoundedSlab::<Pod64>::new(capacity);
+    let direct_slab = unsafe { BoundedSlab::<Pod64>::new(capacity) };
     bounded_alloc::Allocator::builder()
         .capacity(capacity as usize)
         .build()
@@ -159,7 +159,7 @@ fn bench_bounded() {
                 let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.free(s) };
+                unsafe { direct_slab.dealloc(s) };
             });
             let end = rdtsc_end();
             // This measures alloc+drop, we'll isolate below
@@ -208,7 +208,7 @@ fn bench_bounded() {
         // Cleanup
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { direct_slab.free(slot) };
+            unsafe { direct_slab.dealloc(slot) };
         }
     }
     {
@@ -248,7 +248,7 @@ fn bench_bounded() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.free(slot) };
+                unsafe { direct_slab.dealloc(slot) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -283,7 +283,7 @@ fn bench_unbounded() {
     println!("─────────────────────────────────────────────────────────────────");
 
     let chunk_size = 4096u32;
-    let direct_slab = UnboundedSlab::<Pod64>::new(chunk_size);
+    let direct_slab = unsafe { UnboundedSlab::<Pod64>::new(chunk_size) };
     unbounded_alloc::Allocator::builder()
         .chunk_size(chunk_size as usize)
         .build()
@@ -301,7 +301,7 @@ fn bench_unbounded() {
                 let s: Slot<Pod64> = direct_slab.alloc(val);
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.free(s) };
+                unsafe { direct_slab.dealloc(s) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -335,7 +335,7 @@ fn bench_unbounded() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.free(slot) };
+                unsafe { direct_slab.dealloc(slot) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -374,7 +374,7 @@ fn bench_side_by_side() {
 
     // Direct path uses the already-created slab from bench_bounded,
     // but we create a fresh one to be fair
-    let direct_slab = BoundedSlab::<Pod64>::new(capacity);
+    let direct_slab = unsafe { BoundedSlab::<Pod64>::new(capacity) };
     let val = Pod64::default();
 
     // Interleaved to avoid ordering bias
@@ -389,7 +389,7 @@ fn bench_side_by_side() {
                 let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.free(s) };
+                unsafe { direct_slab.dealloc(s) };
             });
             let end = rdtsc_end();
             direct_samples.push((end - start) / 100);
@@ -418,7 +418,7 @@ fn bench_side_by_side() {
                 let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.free(s) };
+                unsafe { direct_slab.dealloc(s) };
             });
             let end = rdtsc_end();
             direct_samples.push((end - start) / 100);

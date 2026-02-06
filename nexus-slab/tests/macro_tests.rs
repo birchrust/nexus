@@ -78,29 +78,29 @@ fn test_into_inner() {
 }
 
 #[test]
-fn test_into_slot_and_key_access() {
+fn test_into_slot_and_from_slot() {
     order_alloc::Allocator::builder()
         .capacity(10)
         .build()
         .expect("init should succeed");
 
     let slot = order_alloc::BoxSlot::new(Order::new(123, 456.78));
-    let key = slot.key();
 
     // into_slot() returns the raw Slot<T> for manual management
     let raw_slot = slot.into_slot();
+    let ptr = raw_slot.as_ptr();
 
     // Access via from_slot (reconstructs RAII handle from raw slot)
     let order = unsafe { order_alloc::BoxSlot::from_slot(raw_slot) };
     assert_eq!(order.id, 123);
-    assert_eq!(order.key(), key); // Verify it's the same slot
 
-    // Now remove by key to clean up
+    // Verify it's the same slot by going through into_slot again
     let raw_slot2 = order.into_slot();
-    let removed_order = unsafe { order_alloc::BoxSlot::remove_by_key(key) };
-    assert_eq!(removed_order.id, 123);
-    // Note: raw_slot2 is now dangling, don't use it
-    let _ = raw_slot2;
+    assert_eq!(raw_slot2.as_ptr(), ptr);
+
+    // Restore and drop
+    let restored = unsafe { order_alloc::BoxSlot::from_slot(raw_slot2) };
+    drop(restored);
 }
 
 #[test]
@@ -200,14 +200,14 @@ fn test_drop_not_called_after_into_slot() {
         .expect("init should succeed");
 
     let slot = drop_leak_test::alloc::BoxSlot::new(drop_leak_test::Tracker(1));
-    let key = slot.key(); // Get key before into_slot
-    let _raw_slot = slot.into_slot(); // into_slot() returns raw Slot<T>, discarding RAII
+    let raw_slot = slot.into_slot(); // into_slot() returns raw Slot<T>, discarding RAII
 
     assert_eq!(drop_leak_test::count(), 0);
 
-    // Manual cleanup using key
-    let _ = unsafe { drop_leak_test::alloc::BoxSlot::remove_by_key(key) };
-    assert_eq!(drop_leak_test::count(), 1); // Dropped when remove_by_key returns
+    // Manual cleanup using from_slot to reconstruct RAII handle
+    let restored = unsafe { drop_leak_test::alloc::BoxSlot::from_slot(raw_slot) };
+    drop(restored);
+    assert_eq!(drop_leak_test::count(), 1); // Dropped when restored is dropped
 }
 
 #[test]
@@ -339,28 +339,28 @@ fn test_unbounded_into_inner() {
 }
 
 #[test]
-fn test_unbounded_into_slot_and_key_access() {
+fn test_unbounded_into_slot_and_from_slot() {
     unbounded_order_alloc::Allocator::builder()
         .build()
         .expect("init should succeed");
 
     let slot = unbounded_order_alloc::BoxSlot::new(Order::new(123, 456.78));
-    let key = slot.key();
 
     // into_slot() returns the raw Slot<T> for manual management
     let raw_slot = slot.into_slot();
+    let ptr = raw_slot.as_ptr();
 
     // Access via from_slot (reconstructs RAII handle from raw slot)
     let order = unsafe { unbounded_order_alloc::BoxSlot::from_slot(raw_slot) };
     assert_eq!(order.id, 123);
-    assert_eq!(order.key(), key); // Verify it's the same slot
 
-    // Now remove by key to clean up
+    // Verify it's the same slot by going through into_slot again
     let raw_slot2 = order.into_slot();
-    let removed_order = unsafe { unbounded_order_alloc::BoxSlot::remove_by_key(key) };
-    assert_eq!(removed_order.id, 123);
-    // Note: raw_slot2 is now dangling, don't use it
-    let _ = raw_slot2;
+    assert_eq!(raw_slot2.as_ptr(), ptr);
+
+    // Restore and drop
+    let restored = unsafe { unbounded_order_alloc::BoxSlot::from_slot(raw_slot2) };
+    drop(restored);
 }
 
 #[test]

@@ -79,7 +79,7 @@ fn bench_get() {
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct slab (raw API)
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Macro slab (RAII BoxSlot)
@@ -163,7 +163,7 @@ fn bench_get() {
     // Cleanup raw slots
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
     // macro_slots drop automatically via RAII
 }
@@ -181,7 +181,7 @@ fn bench_get_mut() {
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct slab (raw API)
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Macro slab (RAII BoxSlot)
@@ -241,7 +241,7 @@ fn bench_get_mut() {
     // Cleanup raw slots
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 
@@ -258,7 +258,7 @@ fn bench_insert() {
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct slab insert (raw API)
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let mut temp: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -270,7 +270,7 @@ fn bench_insert() {
         let _ = direct_hist.record((end - start) / BATCH_SIZE);
         for entry in temp.drain(..) {
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(entry) };
+            unsafe { slab.dealloc(entry) };
         }
     }
 
@@ -324,7 +324,7 @@ fn bench_remove() {
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct free_take (raw API)
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     for _ in 0..OPS / BATCH_SIZE as usize {
         let mut temp: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
@@ -333,7 +333,7 @@ fn bench_remove() {
         let start = rdtsc_start();
         unroll!(100, {
             // SAFETY: slot was allocated from this slab
-            black_box(unsafe { slab.free_take(temp.pop().unwrap()) });
+            black_box(unsafe { slab.dealloc_take(temp.pop().unwrap()) });
         });
         let end = rdtsc_end();
         let _ = direct_hist.record((end - start) / BATCH_SIZE);
@@ -387,7 +387,7 @@ fn bench_replace() {
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
     // Direct slab (raw API)
-    let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
+    let slab = unsafe { BoundedSlab::<u64>::new(NUM_SLOTS as u32) };
     let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Macro slab (RAII BoxSlot)
@@ -449,7 +449,7 @@ fn bench_replace() {
     // Cleanup raw slots
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 }
 

@@ -137,7 +137,7 @@ fn bench_allocation() {
 
     // --- Slab allocation ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((POOL_SIZE * 2) as u32);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new((POOL_SIZE * 2) as u32) };
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -149,7 +149,7 @@ fn bench_allocation() {
                 let s = alloc.alloc(val.clone());
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.free(s) };
+                unsafe { alloc.dealloc(s) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -204,7 +204,7 @@ fn bench_deallocation() {
 
     // --- Slab deallocation ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((POOL_SIZE * 2) as u32);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new((POOL_SIZE * 2) as u32) };
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -219,12 +219,12 @@ fn bench_deallocation() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                black_box(unsafe { alloc.free(slot) });
+                black_box(unsafe { alloc.dealloc(slot) });
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
         }
-        print_stats("slab.free(Slot)", &mut samples);
+        print_stats("slab.dealloc(Slot)", &mut samples);
     }
 }
 
@@ -264,7 +264,7 @@ fn bench_access() {
 
     // --- Slab access ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(POOL_SIZE as u32);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(POOL_SIZE as u32) };
 
         let slots: Vec<Slot<TestValue>> = (0..POOL_SIZE)
             .map(|i| alloc.alloc(TestValue::new(i as u64)))
@@ -295,7 +295,7 @@ fn bench_access() {
         // Cleanup
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.free(slot) };
+            unsafe { alloc.dealloc(slot) };
         }
     }
 }
@@ -330,7 +330,7 @@ fn bench_churn() {
 
     // --- Slab churn ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::new(POOL_SIZE as u32);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(POOL_SIZE as u32) };
 
         // Pre-warm
         let warmup: Vec<Slot<TestValue>> = (0..POOL_SIZE / 2)
@@ -338,7 +338,7 @@ fn bench_churn() {
             .collect();
         for slot in warmup {
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.free(slot) };
+            unsafe { alloc.dealloc(slot) };
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -350,7 +350,7 @@ fn bench_churn() {
                 let s = alloc.alloc(val.clone());
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.free(s) };
+                unsafe { alloc.dealloc(s) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -414,7 +414,7 @@ fn bench_realistic_workload() {
 
     // --- Slab workload ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::new((WORKING_SET * 2) as u32);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new((WORKING_SET * 2) as u32) };
 
         let mut slots: Vec<Option<Slot<TestValue>>> = (0..WORKING_SET)
             .map(|i| Some(alloc.alloc(TestValue::new(i as u64))))
@@ -447,7 +447,7 @@ fn bench_realistic_workload() {
                     // Remove (20%)
                     if let Some(slot) = slots[idx].take() {
                         // SAFETY: slot was allocated from this slab
-                        unsafe { alloc.free(slot) };
+                        unsafe { alloc.dealloc(slot) };
                     }
                 }
             }
@@ -460,7 +460,7 @@ fn bench_realistic_workload() {
         // Cleanup remaining slots
         for slot in slots.into_iter().flatten() {
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.free(slot) };
+            unsafe { alloc.dealloc(slot) };
         }
     }
 }

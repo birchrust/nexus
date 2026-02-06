@@ -168,15 +168,15 @@ fn main() {
     println!("ISOLATED CONTENTION TEST");
     println!("========================");
 
-    let slab64 = BoundedSlab::<Pod64>::new((SAMPLES * 2) as u32);
+    let slab64 = unsafe { BoundedSlab::<Pod64>::new((SAMPLES * 2) as u32) };
     contention_test("64B", slab64);
 
-    let slab256 = BoundedSlab::<Pod256>::new((SAMPLES * 2) as u32);
+    let slab256 = unsafe { BoundedSlab::<Pod256>::new((SAMPLES * 2) as u32) };
     contention_test("256B", slab256);
 
-    let slab1024 = BoundedSlab::<Pod1024>::new((SAMPLES * 2) as u32);
+    let slab1024 = unsafe { BoundedSlab::<Pod1024>::new((SAMPLES * 2) as u32) };
     contention_test("1024B", slab1024);
 
-    let slab4096 = BoundedSlab::<Pod4096>::new((SAMPLES * 2) as u32);
+    let slab4096 = unsafe { BoundedSlab::<Pod4096>::new((SAMPLES * 2) as u32) };
     contention_test("4096B", slab4096);
 }

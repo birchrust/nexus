@@ -1,18 +1,19 @@
 //! Fixed-capacity slab allocator.
 //!
-//! This module provides a bounded (fixed-capacity) slab with leaked storage.
+//! This module provides a bounded (fixed-capacity) slab allocator.
 //!
 //! # Example
 //!
 //! ```
 //! use nexus_slab::bounded::Slab;
 //!
-//! let slab = Slab::new(1024);
+//! // SAFETY: slab must outlive all allocated Slots
+//! let slab = unsafe { Slab::new(1024) };
 //! let slot = slab.alloc(42u64);
 //! assert_eq!(*slot, 42);
 //! // Raw slot - must explicitly free
 //! // SAFETY: slot was allocated from this slab
-//! unsafe { slab.free(slot) };
+//! unsafe { slab.dealloc(slot) };
 //! ```
 
 use std::cell::Cell;
@@ -20,7 +21,6 @@ use std::fmt;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr;
 
-use crate::Key;
 use crate::alloc::Full;
 use crate::shared::{SLOT_NONE, Slot, SlotCell};
 
@@ -153,22 +153,6 @@ impl<T> SlabInner<T> {
         slots.as_ptr().cast_mut()
     }
 
-    /// Converts a slot pointer to its index (key).
-    ///
-    /// # Safety
-    ///
-    /// `slot` must be a valid pointer to a slot within this slab's storage.
-    #[doc(hidden)]
-    #[inline]
-    pub unsafe fn slot_to_index(&self, slot: *const SlotCell<T>) -> u32 {
-        // SAFETY: We only read the base pointer
-        let slots = unsafe { &*self.slots.get() };
-        let base = slots.as_ptr();
-        let offset = unsafe { slot.offset_from(base) };
-        debug_assert!(offset >= 0 && (offset as u32) < self.capacity.get());
-        offset as u32
-    }
-
     // =========================================================================
     // Allocation methods
     // =========================================================================
@@ -199,26 +183,6 @@ impl<T> SlabInner<T> {
         Ok(slot_ptr)
     }
 
-    /// Returns a slot to the freelist by key.
-    ///
-    /// Does NOT drop the value — caller must drop before calling.
-    ///
-    /// # Safety
-    ///
-    /// - `key` must refer to a previously claimed slot
-    /// - Value must already be dropped or moved out
-    pub unsafe fn dealloc(&self, key: Key) {
-        let index = key.index();
-        let slot_ptr = unsafe { self.slots_ptr().add(index as usize) };
-
-        // Write freelist link — overwrites value bytes (union semantics)
-        let free_head = self.free_head.get();
-        unsafe {
-            (*slot_ptr).next_free = free_head;
-        }
-        self.free_head.set(slot_ptr);
-    }
-
     /// Returns a slot to the freelist by pointer.
     ///
     /// Does NOT drop the value — caller must drop before calling.
@@ -229,6 +193,7 @@ impl<T> SlabInner<T> {
     /// - `slot_ptr` must point to a previously claimed slot within this slab
     /// - Value must already be dropped or moved out
     #[doc(hidden)]
+    #[inline]
     pub unsafe fn dealloc_ptr(&self, slot_ptr: *mut SlotCell<T>) {
         // Write freelist link — overwrites value bytes (union semantics)
         let free_head = self.free_head.get();
@@ -236,17 +201,6 @@ impl<T> SlabInner<T> {
             (*slot_ptr).next_free = free_head;
         }
         self.free_head.set(slot_ptr);
-    }
-
-    /// Gets the slot cell pointer for a key.
-    ///
-    /// # Safety
-    ///
-    /// `key` must refer to a valid slot within the slab.
-    #[doc(hidden)]
-    #[inline]
-    pub unsafe fn slot_cell(&self, key: Key) -> *mut SlotCell<T> {
-        unsafe { self.slots_ptr().add(key.index() as usize) }
     }
 }
 
@@ -262,8 +216,7 @@ impl<T> Default for SlabInner<T> {
 
 /// Pre-allocated fixed-capacity slab.
 ///
-/// `Slab<T>` wraps a leaked `SlabInner<T>` for stable `'static` storage.
-/// The storage lives for the lifetime of the program.
+/// `Slab<T>` owns its storage via a `Box<SlabInner<T>>`.
 ///
 /// # Thread Safety
 ///
@@ -274,37 +227,32 @@ impl<T> Default for SlabInner<T> {
 /// ```
 /// use nexus_slab::bounded::Slab;
 ///
-/// let slab = Slab::new(1024);
+/// // SAFETY: slab must outlive all allocated Slots
+/// let slab = unsafe { Slab::new(1024) };
 /// let slot = slab.alloc(42u64);
 /// assert_eq!(*slot, 42);
 /// // SAFETY: slot was allocated from this slab
-/// unsafe { slab.free(slot) };
+/// unsafe { slab.dealloc(slot) };
 /// ```
-pub struct Slab<T: 'static> {
-    inner: &'static SlabInner<T>,
+pub struct Slab<T> {
+    inner: Box<SlabInner<T>>,
 }
 
-// Manual Copy/Clone to avoid requiring T: Copy/Clone
-impl<T: 'static> Clone for Slab<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T: 'static> Copy for Slab<T> {}
-
-impl<T: 'static> Slab<T> {
+impl<T> Slab<T> {
     /// Creates a new bounded slab with the given capacity.
     ///
-    /// The storage is leaked and lives for the lifetime of the program.
+    /// # Safety
+    ///
+    /// The caller must ensure this `Slab` outlives all [`Slot`]s allocated from it.
+    /// Dropping the `Slab` while `Slot`s are outstanding results in use-after-free.
     ///
     /// # Panics
     ///
     /// - Panics if capacity is zero
     /// - Panics if capacity exceeds maximum
-    pub fn new(capacity: u32) -> Self {
-        let inner = Box::leak(Box::new(SlabInner::with_capacity(capacity)));
+    #[inline]
+    pub unsafe fn new(capacity: u32) -> Self {
+        let inner = Box::new(SlabInner::with_capacity(capacity));
         Self { inner }
     }
 
@@ -338,7 +286,7 @@ impl<T: 'static> Slab<T> {
         Ok(unsafe { Slot::from_ptr(slot_ptr) })
     }
 
-    /// Frees a slot, dropping the value and returning storage to the freelist.
+    /// Deallocates a slot, dropping the value and returning storage to the freelist.
     ///
     /// # Safety
     ///
@@ -348,7 +296,7 @@ impl<T: 'static> Slab<T> {
     /// Note: Double-free is prevented at compile time (`Slot` is move-only).
     #[inline]
     #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    pub unsafe fn free(&self, slot: Slot<T>) {
+    pub unsafe fn dealloc(&self, slot: Slot<T>) {
         // Drop the value in place
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
@@ -359,7 +307,7 @@ impl<T: 'static> Slab<T> {
         unsafe { self.inner.dealloc_ptr(slot.as_ptr()) };
     }
 
-    /// Frees a slot and returns the value without dropping it.
+    /// Deallocates a slot and returns the value without dropping it.
     ///
     /// # Safety
     ///
@@ -369,7 +317,7 @@ impl<T: 'static> Slab<T> {
     /// Note: Double-free is prevented at compile time (`Slot` is move-only).
     #[inline]
     #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    pub unsafe fn free_take(&self, slot: Slot<T>) -> T {
+    pub unsafe fn dealloc_take(&self, slot: Slot<T>) -> T {
         // Move the value out
         // SAFETY: Caller guarantees slot is valid and occupied
         let value = unsafe { ptr::read((*slot.as_ptr()).value.as_ptr()) };
@@ -378,19 +326,9 @@ impl<T: 'static> Slab<T> {
         unsafe { self.inner.dealloc_ptr(slot.as_ptr()) };
         value
     }
-
-    /// Computes the key for a raw slot.
-    ///
-    /// This is a cold-path operation for lazy key computation.
-    #[inline]
-    pub fn slot_key(&self, slot: &Slot<T>) -> Key {
-        // SAFETY: slot came from this slab
-        let index = unsafe { self.inner.slot_to_index(slot.as_ptr()) };
-        Key::new(index)
-    }
 }
 
-impl<T: 'static> fmt::Debug for Slab<T> {
+impl<T> fmt::Debug for Slab<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Slab")
             .field("capacity", &self.inner.capacity())
@@ -409,18 +347,20 @@ mod tests {
 
     #[test]
     fn slab_basic() {
-        let slab = Slab::<u64>::new(100);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<u64>::new(100) };
         assert_eq!(slab.capacity(), 100);
 
         let slot = slab.alloc(42);
         assert_eq!(*slot, 42);
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 
     #[test]
     fn slab_full() {
-        let slab = Slab::<u64>::new(2);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<u64>::new(2) };
         let s1 = slab.alloc(1);
         let s2 = slab.alloc(2);
 
@@ -431,49 +371,31 @@ mod tests {
 
         // SAFETY: slots were allocated from this slab
         unsafe {
-            slab.free(s1);
-            slab.free(s2);
+            slab.dealloc(s1);
+            slab.dealloc(s2);
         }
     }
 
     #[test]
     fn slot_deref_mut() {
-        let slab = Slab::<String>::new(10);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<String>::new(10) };
         let mut slot = slab.alloc("hello".to_string());
         slot.push_str(" world");
         assert_eq!(&*slot, "hello world");
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
     }
 
     #[test]
-    fn slot_key() {
-        let slab = Slab::<u64>::new(10);
-        let slot = slab.alloc(42);
-        let key = slab.slot_key(&slot);
-        assert!(key.is_some());
-        // Leak intentionally - no free needed
-    }
-
-    #[test]
-    fn slot_free_take() {
-        let slab = Slab::<String>::new(10);
+    fn slot_dealloc_take() {
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<String>::new(10) };
         let slot = slab.alloc("hello".to_string());
 
         // SAFETY: slot was allocated from this slab
-        let value = unsafe { slab.free_take(slot) };
+        let value = unsafe { slab.dealloc_take(slot) };
         assert_eq!(value, "hello");
-    }
-
-    #[test]
-    fn slab_is_copy() {
-        let slab = Slab::<u64>::new(10);
-        let _slab2 = slab; // Copy
-        let _slab3 = slab; // Copy again
-
-        let slot = slab.alloc(42);
-        // SAFETY: slot was allocated from slab
-        unsafe { slab.free(slot) };
     }
 
     #[test]
@@ -484,18 +406,20 @@ mod tests {
 
     #[test]
     fn slab_debug() {
-        let slab = Slab::<u64>::new(10);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<u64>::new(10) };
         let s = slab.alloc(42);
         let debug = format!("{:?}", slab);
         assert!(debug.contains("Slab"));
         assert!(debug.contains("capacity"));
         // SAFETY: slot was allocated from slab
-        unsafe { slab.free(s) };
+        unsafe { slab.dealloc(s) };
     }
 
     #[test]
     fn borrow_traits() {
-        let slab = Slab::<u64>::new(10);
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<u64>::new(10) };
         let mut slot = slab.alloc(42);
 
         let borrowed: &u64 = slot.borrow();
@@ -506,6 +430,25 @@ mod tests {
         assert_eq!(*slot, 100);
 
         // SAFETY: slot was allocated from slab
-        unsafe { slab.free(slot) };
+        unsafe { slab.dealloc(slot) };
+    }
+
+    #[test]
+    fn capacity_one() {
+        // SAFETY: slab outlives all slots
+        let slab = unsafe { Slab::<u64>::new(1) };
+
+        assert_eq!(slab.capacity(), 1);
+
+        let slot = slab.alloc(42);
+        assert!(slab.try_alloc(100).is_err());
+
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.dealloc(slot) };
+
+        let slot2 = slab.alloc(100);
+        assert_eq!(*slot2, 100);
+        // SAFETY: slot2 was allocated from this slab
+        unsafe { slab.dealloc(slot2) };
     }
 }
