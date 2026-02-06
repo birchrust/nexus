@@ -178,29 +178,6 @@ fn downgrade_upgrade_roundtrip() {
 }
 
 // =============================================================================
-// leak returns LocalStatic
-// =============================================================================
-
-#[test]
-fn leak_returns_local_static() {
-    init_bounded_rc();
-
-    let rc = bounded_rc::RcSlot::new(Order { id: 10, price: 42.0 });
-    let leaked: bounded_rc::LocalStatic = rc.leak();
-
-    // LocalStatic derefs to &T
-    assert_eq!(leaked.id, 10);
-    assert_eq!(leaked.price, 42.0);
-
-    // LocalStatic is Copy
-    let leaked2 = leaked;
-    assert_eq!(leaked.id, leaked2.id);
-
-    // Can't reclaim — slot is permanently leaked
-    // (no assertion, just documenting behavior)
-}
-
-// =============================================================================
 // get_mut returns Some when unique
 // =============================================================================
 
@@ -518,15 +495,25 @@ fn debug_format() {
 }
 
 // =============================================================================
-// LocalStatic Debug
+// LocalStatic Debug (via BoxSlot, not RcSlot)
 // =============================================================================
+
+mod boxslot_for_local_static {
+    nexus_slab::bounded_allocator!(super::Order);
+}
+
+fn init_boxslot() {
+    let _ = boxslot_for_local_static::Allocator::builder()
+        .capacity(16)
+        .build();
+}
 
 #[test]
 fn local_static_debug() {
-    init_bounded_rc();
+    init_boxslot();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 23, price: 9.0 });
-    let leaked = rc.leak();
+    let slot = boxslot_for_local_static::BoxSlot::new(Order { id: 23, price: 9.0 });
+    let leaked = slot.leak();
 
     let debug = format!("{:?}", leaked);
     assert!(debug.contains("LocalStatic"));

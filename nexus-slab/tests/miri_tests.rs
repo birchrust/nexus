@@ -57,58 +57,74 @@ pub struct Large {
 fn miri_bounded_basic() {
     let slab = BoundedSlab::<u64>::new(8);
 
-    let slot = slab.new_slot(42);
+    let slot = slab.alloc(42);
     assert_eq!(*slot, 42);
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_unbounded_basic() {
     let slab = UnboundedSlab::<u64>::new(4);
 
-    let slot = slab.new_slot(42);
+    let slot = slab.alloc(42);
     assert_eq!(*slot, 42);
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_multiple_inserts() {
     let slab = BoundedSlab::<u64>::new(8);
 
-    let s1 = slab.new_slot(1);
-    let s2 = slab.new_slot(2);
-    let s3 = slab.new_slot(3);
+    let s1 = slab.alloc(1);
+    let s2 = slab.alloc(2);
+    let s3 = slab.alloc(3);
 
     assert_eq!(*s1, 1);
     assert_eq!(*s2, 2);
     assert_eq!(*s3, 3);
+
+    // SAFETY: slots were allocated from this slab
+    unsafe {
+        slab.free(s1);
+        slab.free(s2);
+        slab.free(s3);
+    }
 }
 
 #[test]
 fn miri_slot_deref_mut() {
     let slab = BoundedSlab::<u64>::new(4);
 
-    let mut slot = slab.new_slot(42);
+    let mut slot = slab.alloc(42);
     *slot = 100;
     assert_eq!(*slot, 100);
+
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_slot_replace() {
     let slab = BoundedSlab::<u64>::new(4);
 
-    let mut slot = slab.new_slot(1);
-    let old = slot.replace(2);
+    let mut slot = slab.alloc(1);
+    let old = std::mem::replace(&mut *slot, 2);
     assert_eq!(old, 1);
     assert_eq!(*slot, 2);
+
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_slot_into_inner() {
     let slab = BoundedSlab::<u64>::new(4);
 
-    let slot = slab.new_slot(42);
-    let value = slot.into_inner();
+    let slot = slab.alloc(42);
+    // SAFETY: slot was allocated from this slab
+    let value = unsafe { slab.free_take(slot) };
     assert_eq!(value, 42);
 }
 
@@ -123,7 +139,9 @@ fn miri_drop_on_slot_drop() {
     let slab = BoundedSlab::<DropTracker>::new(4);
 
     {
-        let _slot = slab.new_slot(DropTracker(1));
+        let slot = slab.alloc(DropTracker(1));
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
     }
 
     assert_eq!(get_drop_count(), 1);
@@ -135,8 +153,9 @@ fn miri_drop_on_into_inner() {
 
     let slab = BoundedSlab::<DropTracker>::new(4);
 
-    let slot = slab.new_slot(DropTracker(1));
-    let value = slot.into_inner();
+    let slot = slab.alloc(DropTracker(1));
+    // SAFETY: slot was allocated from this slab
+    let value = unsafe { slab.free_take(slot) };
     assert_eq!(get_drop_count(), 0);
 
     drop(value);
@@ -149,12 +168,13 @@ fn miri_drop_on_replace() {
 
     let slab = BoundedSlab::<DropTracker>::new(4);
 
-    let mut slot = slab.new_slot(DropTracker(1));
-    let old = slot.replace(DropTracker(2));
+    let mut slot = slab.alloc(DropTracker(1));
+    let old = std::mem::replace(&mut *slot, DropTracker(2));
     drop(old);
     assert_eq!(get_drop_count(), 1);
 
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
     assert_eq!(get_drop_count(), 2);
 }
 
@@ -164,8 +184,9 @@ fn miri_no_drop_after_leak() {
 
     let slab = BoundedSlab::<DropTracker>::new(4);
 
-    let slot = slab.new_slot(DropTracker(1));
-    let _key = slot.leak();
+    let slot = slab.alloc(DropTracker(1));
+    let _key = slab.slot_key(&slot);
+    // Intentionally leak - don't free the slot
 
     assert_eq!(get_drop_count(), 0);
 }
@@ -178,35 +199,39 @@ fn miri_no_drop_after_leak() {
 fn miri_string_insert_drop() {
     let slab = BoundedSlab::<String>::new(4);
 
-    let slot = slab.new_slot("hello world".to_string());
+    let slot = slab.alloc("hello world".to_string());
     assert_eq!(*slot, "hello world");
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_vec_insert_drop() {
     let slab = BoundedSlab::<Vec<u64>>::new(4);
 
-    let slot = slab.new_slot(vec![1, 2, 3, 4, 5]);
+    let slot = slab.alloc(vec![1, 2, 3, 4, 5]);
     assert_eq!(slot.len(), 5);
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_box_insert_drop() {
     let slab = BoundedSlab::<Box<[u8; 1024]>>::new(4);
 
-    let slot = slab.new_slot(Box::new([0u8; 1024]));
+    let slot = slab.alloc(Box::new([0u8; 1024]));
     assert_eq!(slot.len(), 1024);
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
 fn miri_string_into_inner() {
     let slab = BoundedSlab::<String>::new(4);
 
-    let slot = slab.new_slot("hello".to_string());
-    let value = slot.into_inner();
+    let slot = slab.alloc("hello".to_string());
+    // SAFETY: slot was allocated from this slab
+    let value = unsafe { slab.free_take(slot) };
     assert_eq!(value, "hello");
 }
 
@@ -214,11 +239,14 @@ fn miri_string_into_inner() {
 fn miri_vec_replace() {
     let slab = BoundedSlab::<Vec<u64>>::new(4);
 
-    let mut slot = slab.new_slot(vec![1, 2, 3]);
-    let old = slot.replace(vec![4, 5, 6, 7]);
+    let mut slot = slab.alloc(vec![1, 2, 3]);
+    let old = std::mem::replace(&mut *slot, vec![4, 5, 6, 7]);
 
     assert_eq!(old, vec![1, 2, 3]);
     assert_eq!(*slot, vec![4, 5, 6, 7]);
+
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 // =============================================================================
@@ -230,27 +258,36 @@ fn miri_slot_reuse_bounded() {
     let slab = BoundedSlab::<String>::new(2);
 
     // Fill
-    let s1 = slab.new_slot("one".to_string());
-    let s2 = slab.new_slot("two".to_string());
+    let s1 = slab.alloc("one".to_string());
+    let s2 = slab.alloc("two".to_string());
 
-    let k1 = s1.key();
-    let k2 = s2.key();
+    let k1 = slab.slot_key(&s1);
+    let k2 = slab.slot_key(&s2);
 
     // Free one
-    drop(s1);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(s1) };
 
     // Reuse
-    let s3 = slab.new_slot("three".to_string());
+    let s3 = slab.alloc("three".to_string());
     assert_eq!(*s3, "three");
-    assert_eq!(s3.key(), k1); // Reused slot 1
+    assert_eq!(slab.slot_key(&s3), k1); // Reused slot 1
 
     // Free other
-    drop(s2);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(s2) };
 
     // Reuse again
-    let s4 = slab.new_slot("four".to_string());
+    let s4 = slab.alloc("four".to_string());
     assert_eq!(*s4, "four");
-    assert_eq!(s4.key(), k2); // Reused slot 2
+    assert_eq!(slab.slot_key(&s4), k2); // Reused slot 2
+
+    // Clean up
+    // SAFETY: slots were allocated from this slab
+    unsafe {
+        slab.free(s3);
+        slab.free(s4);
+    }
 }
 
 #[test]
@@ -258,9 +295,11 @@ fn miri_slot_reuse_single() {
     let slab = BoundedSlab::<String>::new(1);
 
     for i in 0..10 {
-        let slot = slab.new_slot(format!("value_{}", i));
+        let slot = slab.alloc(format!("value_{}", i));
         assert_eq!(*slot, format!("value_{}", i));
-        assert_eq!(slot.key().index(), 0);
+        assert_eq!(slab.slot_key(&slot).index(), 0);
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
     }
 }
 
@@ -273,12 +312,18 @@ fn miri_unbounded_growth() {
     let slab = UnboundedSlab::<u64>::new(4);
 
     // Fill multiple chunks
-    let slots: Vec<_> = (0..12).map(|i| slab.new_slot(i)).collect();
+    let slots: Vec<_> = (0..12).map(|i| slab.alloc(i)).collect();
 
     assert!(slab.capacity() >= 12);
 
     for (i, slot) in slots.iter().enumerate() {
         assert_eq!(**slot, i as u64);
+    }
+
+    // Clean up
+    for slot in slots {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
     }
 }
 
@@ -287,11 +332,17 @@ fn miri_unbounded_string_growth() {
     let slab = UnboundedSlab::<String>::new(4);
 
     let slots: Vec<_> = (0..12)
-        .map(|i| slab.new_slot(format!("string_{}", i)))
+        .map(|i| slab.alloc(format!("string_{}", i)))
         .collect();
 
     for (i, slot) in slots.iter().enumerate() {
         assert_eq!(**slot, format!("string_{}", i));
+    }
+
+    // Clean up
+    for slot in slots {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
     }
 }
 
@@ -303,21 +354,25 @@ fn miri_unbounded_string_growth() {
 fn miri_capacity_one() {
     let slab = BoundedSlab::<u64>::new(1);
 
-    let slot = slab.new_slot(42);
-    assert!(slab.try_new_slot(100).is_err());
-    drop(slot);
+    let slot = slab.alloc(42);
+    assert!(slab.try_alloc(100).is_err());
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 
-    let slot2 = slab.new_slot(100);
+    let slot2 = slab.alloc(100);
     assert_eq!(*slot2, 100);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot2) };
 }
 
 #[test]
 fn miri_zst() {
     let slab = BoundedSlab::<ZeroSized>::new(10);
 
-    let slot = slab.new_slot(ZeroSized);
+    let slot = slab.alloc(ZeroSized);
     assert_eq!(*slot, ZeroSized);
-    drop(slot);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 #[test]
@@ -329,9 +384,12 @@ fn miri_large_struct() {
         *d = i as u64;
     }
 
-    let slot = slab.new_slot(Large { data });
+    let slot = slab.alloc(Large { data });
     assert_eq!(slot.data[0], 0);
     assert_eq!(slot.data[127], 127);
+
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }
 
 // =============================================================================
@@ -456,21 +514,6 @@ fn miri_rc_slot_reuse_after_weak() {
     let rc2 = miri_rc_u64::RcSlot::new(20);
     assert_eq!(*rc2, 20);
     drop(rc2);
-}
-
-#[test]
-fn miri_rc_leak_local_static() {
-    init_miri_rc_u64();
-
-    let rc = miri_rc_u64::RcSlot::new(42);
-    let leaked = rc.leak();
-
-    // LocalStatic dereferences correctly
-    assert_eq!(*leaked, 42);
-
-    // LocalStatic is Copy
-    let leaked2 = leaked;
-    assert_eq!(*leaked, *leaked2);
 }
 
 #[test]

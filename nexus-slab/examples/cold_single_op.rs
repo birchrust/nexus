@@ -117,7 +117,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod64::default());
+                let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -126,7 +126,7 @@ fn main() {
                 // Slab first
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod64::default());
+                let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -166,7 +166,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod256::default());
+                let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -174,7 +174,7 @@ fn main() {
             } else {
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod256::default());
+                let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;

@@ -99,12 +99,16 @@ pub mod alloc;
 pub mod bounded;
 #[doc(hidden)]
 pub mod macros;
-pub(crate) mod shared;
+#[doc(hidden)]
+pub mod shared;
 #[doc(hidden)]
 pub mod unbounded;
 
-// Re-export trait + markers + error + LocalStatic
-pub use alloc::{Alloc, BoundedAlloc, Full, LocalStatic, UnboundedAlloc};
+// Re-export trait + markers + error + LocalStatic + BoxSlot
+pub use alloc::{Alloc, BoundedAlloc, BoxSlot, Full, LocalStatic, UnboundedAlloc};
+
+// Re-export raw Slot from shared
+pub use shared::Slot;
 
 // Re-export sentinel for Key::NONE
 pub use shared::SLOT_NONE;

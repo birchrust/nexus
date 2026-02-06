@@ -252,7 +252,7 @@ macro_rules! slot_churn {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP {
-            let s = $alloc::Slot::new(val.clone());
+            let s = $alloc::BoxSlot::new(val.clone());
             black_box(s.data[0]);
             drop(s);
         }
@@ -261,7 +261,7 @@ macro_rules! slot_churn {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let s = black_box($alloc::Slot::new(val.clone()));
+                let s = black_box($alloc::BoxSlot::new(val.clone()));
                 black_box(s.data[0]);
                 drop(s);
             });
@@ -277,16 +277,16 @@ macro_rules! slot_batch_alloc {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
+            let temp: Vec<$alloc::BoxSlot> = (0..100).map(|_| $alloc::BoxSlot::new(val.clone())).collect();
             drop(temp);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let mut temp: Vec<$alloc::Slot> = Vec::with_capacity(100);
+            let mut temp: Vec<$alloc::BoxSlot> = Vec::with_capacity(100);
             let start = rdtsc_start();
             unroll_100!({
-                temp.push(black_box($alloc::Slot::new(val.clone())));
+                temp.push(black_box($alloc::BoxSlot::new(val.clone())));
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -301,14 +301,14 @@ macro_rules! slot_batch_drop {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
+            let temp: Vec<$alloc::BoxSlot> = (0..100).map(|_| $alloc::BoxSlot::new(val.clone())).collect();
             drop(temp);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let slots: Vec<$alloc::Slot> =
-                (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
+            let slots: Vec<$alloc::BoxSlot> =
+                (0..100).map(|_| $alloc::BoxSlot::new(val.clone())).collect();
             let mut iter = slots.into_iter();
             let start = rdtsc_start();
             unroll_100!({
@@ -324,7 +324,7 @@ macro_rules! slot_batch_drop {
 macro_rules! slot_access {
     ($name:expr, $pod:ty, $alloc:ident) => {{
         let val = <$pod>::default();
-        let pool: Vec<$alloc::Slot> = (0..1000).map(|_| $alloc::Slot::new(val.clone())).collect();
+        let pool: Vec<$alloc::BoxSlot> = (0..1000).map(|_| $alloc::BoxSlot::new(val.clone())).collect();
 
         // Warmup: touch every element
         for p in &pool {
@@ -405,7 +405,7 @@ macro_rules! slot_cold_churn {
         // Warmup
         for _ in 0..100 {
             evict_cache(&polluter);
-            let s = $alloc::Slot::new(val.clone());
+            let s = $alloc::BoxSlot::new(val.clone());
             black_box(s.data[0]);
             drop(s);
         }
@@ -415,7 +415,7 @@ macro_rules! slot_cold_churn {
             evict_cache(&polluter);
 
             let start = rdtsc_start();
-            let s = black_box($alloc::Slot::new(val.clone()));
+            let s = black_box($alloc::BoxSlot::new(val.clone()));
             black_box(s.data[0]);
             drop(s);
             let end = rdtsc_end();
@@ -479,7 +479,7 @@ fn run_slot() {
     alloc_4096::Allocator::builder().capacity(cap).build().expect("init");
 
     println!("TARGET: Slot (bounded_allocator!, TLS-backed slab)");
-    println!("Slot handle: {} bytes", std::mem::size_of::<alloc_64::Slot>());
+    println!("Slot handle: {} bytes", std::mem::size_of::<alloc_64::BoxSlot>());
     println!("{}", "=".repeat(66));
 
     run_all_sizes_slot!(slot_churn, "CHURN (alloc + deref + drop, LIFO single-slot)");

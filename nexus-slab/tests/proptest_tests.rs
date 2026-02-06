@@ -9,6 +9,7 @@
 use nexus_slab::Key;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
+use nexus_slab::Slot;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
@@ -56,7 +57,7 @@ fn bounded_value_integrity_random() {
     );
 
     // Track expected values
-    let mut slots: Vec<(_, u64)> = Vec::new();
+    let mut slots: Vec<(Slot<u64>, u64)> = Vec::new();
 
     for _ in 0..500 {
         let action: u8 = rng.random_range(0..10);
@@ -64,24 +65,29 @@ fn bounded_value_integrity_random() {
         match action {
             0..=5 => {
                 let value: u64 = rng.random();
-                if let Ok(slot) = slab.try_new_slot(value) {
+                if let Ok(slot) = slab.try_alloc(value) {
                     slots.push((slot, value));
                 }
             }
             6..=7 => {
-                let _ = slots.pop();
+                if let Some((slot, _)) = slots.pop() {
+                    // SAFETY: slot was allocated from this slab
+                    unsafe { slab.free(slot) };
+                }
             }
             8 => {
                 if !slots.is_empty() {
                     let idx = rng.random_range(0..slots.len());
-                    let _ = slots.swap_remove(idx);
+                    let (slot, _) = slots.swap_remove(idx);
+                    // SAFETY: slot was allocated from this slab
+                    unsafe { slab.free(slot) };
                 }
             }
             9 => {
                 if !slots.is_empty() {
                     let idx = rng.random_range(0..slots.len());
                     let new_value: u64 = rng.random();
-                    slots[idx].0.replace(new_value);
+                    *slots[idx].0 = new_value;
                     slots[idx].1 = new_value;
                 }
             }
@@ -93,6 +99,12 @@ fn bounded_value_integrity_random() {
             assert_eq!(**slot, *expected);
         }
     }
+
+    // Clean up remaining slots
+    for (slot, _) in slots {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
 }
 
 /// Test capacity is never exceeded (separate tests for each capacity)
@@ -102,11 +114,16 @@ fn bounded_capacity_never_exceeded_1() {
 
     let mut slots = Vec::new();
     for i in 0..200 {
-        if let Ok(slot) = slab.try_new_slot(i) {
+        if let Ok(slot) = slab.try_alloc(i) {
             slots.push(slot);
         }
     }
     assert!(slots.len() <= 1);
+
+    // Clean up
+    for slot in slots {
+        unsafe { slab.free(slot) };
+    }
 }
 
 #[test]
@@ -115,11 +132,16 @@ fn bounded_capacity_never_exceeded_10() {
 
     let mut slots = Vec::new();
     for i in 0..200 {
-        if let Ok(slot) = slab.try_new_slot(i) {
+        if let Ok(slot) = slab.try_alloc(i) {
             slots.push(slot);
         }
     }
     assert!(slots.len() <= 10);
+
+    // Clean up
+    for slot in slots {
+        unsafe { slab.free(slot) };
+    }
 }
 
 #[test]
@@ -128,11 +150,16 @@ fn bounded_capacity_never_exceeded_50() {
 
     let mut slots = Vec::new();
     for i in 0..200 {
-        if let Ok(slot) = slab.try_new_slot(i) {
+        if let Ok(slot) = slab.try_alloc(i) {
             slots.push(slot);
         }
     }
     assert!(slots.len() <= 50);
+
+    // Clean up
+    for slot in slots {
+        unsafe { slab.free(slot) };
+    }
 }
 
 /// Test fill/drain cycles maintain integrity
@@ -143,7 +170,7 @@ fn bounded_fill_drain_integrity() {
     for cycle in 0..10 {
         // Fill
         let slots: Vec<_> = (0..20)
-            .map(|i| slab.new_slot((cycle * 20 + i) as u64))
+            .map(|i| slab.alloc((cycle * 20 + i) as u64))
             .collect();
 
         // Verify values
@@ -151,8 +178,11 @@ fn bounded_fill_drain_integrity() {
             assert_eq!(**slot, (cycle * 20 + i) as u64);
         }
 
-        // Drain — all slots freed, ready for next cycle
-        drop(slots);
+        // Drain — explicitly free all slots
+        for slot in slots {
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(slot) };
+        }
     }
 }
 
@@ -168,7 +198,7 @@ fn unbounded_value_integrity_random() {
         proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
-    let mut slots: Vec<(_, u64)> = Vec::new();
+    let mut slots: Vec<(Slot<u64>, u64)> = Vec::new();
 
     for _ in 0..500 {
         let action: u8 = rng.random_range(0..10);
@@ -176,22 +206,27 @@ fn unbounded_value_integrity_random() {
         match action {
             0..=5 => {
                 let value: u64 = rng.random();
-                slots.push((slab.new_slot(value), value));
+                slots.push((slab.alloc(value), value));
             }
             6..=7 => {
-                let _ = slots.pop();
+                if let Some((slot, _)) = slots.pop() {
+                    // SAFETY: slot was allocated from this slab
+                    unsafe { slab.free(slot) };
+                }
             }
             8 => {
                 if !slots.is_empty() {
                     let idx = rng.random_range(0..slots.len());
-                    let _ = slots.swap_remove(idx);
+                    let (slot, _) = slots.swap_remove(idx);
+                    // SAFETY: slot was allocated from this slab
+                    unsafe { slab.free(slot) };
                 }
             }
             9 => {
                 if !slots.is_empty() {
                     let idx = rng.random_range(0..slots.len());
                     let new_value: u64 = rng.random();
-                    slots[idx].0.replace(new_value);
+                    *slots[idx].0 = new_value;
                     slots[idx].1 = new_value;
                 }
             }
@@ -202,6 +237,11 @@ fn unbounded_value_integrity_random() {
             assert_eq!(**slot, *expected);
         }
     }
+
+    // Clean up remaining slots
+    for (slot, _) in slots {
+        unsafe { slab.free(slot) };
+    }
 }
 
 #[test]
@@ -210,7 +250,7 @@ fn unbounded_growth_maintains_integrity() {
 
     // Test with increasing counts in a single slab
     for count in [10, 50, 100, 200] {
-        let slots: Vec<_> = (0..count).map(|i| slab.new_slot(i as u64)).collect();
+        let slots: Vec<_> = (0..count).map(|i| slab.alloc(i as u64)).collect();
 
         for (i, slot) in slots.iter().enumerate() {
             assert_eq!(**slot, i as u64);
@@ -219,7 +259,10 @@ fn unbounded_growth_maintains_integrity() {
         assert!(slab.capacity() >= count);
 
         // Clean up for next iteration
-        drop(slots);
+        for slot in slots {
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(slot) };
+        }
     }
 }
 
@@ -235,15 +278,15 @@ fn freelist_no_duplicates() {
         proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
-    let mut slots = Vec::new();
+    let mut slots: Vec<(Key, Slot<u64>)> = Vec::new();
     let mut seen_keys = HashMap::new();
 
     for _ in 0..200 {
         let should_insert = rng.random_bool(0.6) || slots.is_empty();
 
         if should_insert {
-            if let Ok(slot) = slab.try_new_slot(0) {
-                let key = slot.key();
+            if let Ok(slot) = slab.try_alloc(0) {
+                let key = slab.slot_key(&slot);
                 // Key should not be a duplicate of any currently held slot
                 for (existing_key, _) in &slots {
                     assert_ne!(key, *existing_key, "Duplicate key returned!");
@@ -253,8 +296,15 @@ fn freelist_no_duplicates() {
             }
         } else if !slots.is_empty() {
             let idx = rng.random_range(0..slots.len());
-            let _ = slots.swap_remove(idx);
+            let (_, slot) = slots.swap_remove(idx);
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(slot) };
         }
+    }
+
+    // Clean up remaining slots
+    for (_, slot) in slots {
+        unsafe { slab.free(slot) };
     }
 }
 
@@ -262,25 +312,32 @@ fn freelist_no_duplicates() {
 fn freelist_reuses_freed_slots() {
     let slab = BoundedSlab::<u64>::new(10);
 
-    let mut slots = Vec::new();
-    let mut freed_keys = Vec::new();
+    let mut slots: Vec<(Key, Slot<u64>)> = Vec::new();
+    let mut freed_keys: Vec<Key> = Vec::new();
 
     for i in 0..100 {
         let should_insert = i % 3 != 2 || slots.is_empty();
 
         if should_insert {
-            if let Ok(slot) = slab.try_new_slot(0) {
-                let key = slot.key();
+            if let Ok(slot) = slab.try_alloc(0) {
+                let key = slab.slot_key(&slot);
                 // If we had freed slots, this should reuse one (LIFO)
                 if let Some(expected) = freed_keys.pop() {
                     assert_eq!(key, expected, "Expected LIFO reuse");
                 }
-                slots.push(slot);
+                slots.push((key, slot));
             }
         } else if !slots.is_empty() {
-            let slot = slots.pop().unwrap();
-            freed_keys.push(slot.key());
+            let (key, slot) = slots.pop().unwrap();
+            freed_keys.push(key);
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(slot) };
         }
+    }
+
+    // Clean up remaining slots
+    for (_, slot) in slots {
+        unsafe { slab.free(slot) };
     }
 }
 
@@ -318,7 +375,12 @@ fn drop_count_matches_inserts() {
 
     let count = 50;
     {
-        let _slots: Vec<_> = (0..count).map(|_| slab.new_slot(Counted)).collect();
+        let slots: Vec<_> = (0..count).map(|_| slab.alloc(Counted)).collect();
+        // Free all slots - this drops the values
+        for slot in slots {
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(slot) };
+        }
     }
 
     assert_eq!(get_counter(), count);
@@ -331,16 +393,33 @@ fn into_inner_prevents_drop() {
     let slab = BoundedSlab::<Counted>::new(100);
 
     let count = 20;
-    let slots: Vec<_> = (0..count).map(|_| slab.new_slot(Counted)).collect();
+    let slots: Vec<_> = (0..count).map(|_| slab.alloc(Counted)).collect();
 
-    // Take half via into_inner
+    // Take half via free_take (into_inner equivalent)
     let half = count / 2;
     let mut values = Vec::new();
-    for slot in slots.into_iter().take(half) {
-        values.push(slot.into_inner());
+    let mut remaining_slots = Vec::new();
+
+    for (i, slot) in slots.into_iter().enumerate() {
+        if i < half {
+            // SAFETY: slot was allocated from this slab
+            let value = unsafe { slab.free_take(slot) };
+            values.push(value);
+        } else {
+            remaining_slots.push(slot);
+        }
     }
 
-    // Rest are dropped, but into_inner ones are not
+    // Remaining slots not dropped yet
+    assert_eq!(get_counter(), 0);
+
+    // Free the rest
+    for slot in remaining_slots {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
+
+    // Half dropped via free, half still in values vec
     assert_eq!(get_counter(), count - half);
 
     // Now drop the values

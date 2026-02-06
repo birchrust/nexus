@@ -314,8 +314,8 @@ macro_rules! bounded_allocator {
 
         /// RAII handle to a slab-allocated value.
         ///
-        /// Type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot).
-        pub type Slot = $crate::alloc::Slot<Allocator>;
+        /// Type alias for [`alloc::BoxSlot<T, Allocator>`](crate::alloc::BoxSlot).
+        pub type BoxSlot = $crate::alloc::BoxSlot<$ty, Allocator>;
     };
 }
 
@@ -342,9 +342,9 @@ macro_rules! bounded_rc_allocator {
         $crate::bounded_allocator!($crate::RcInner<$ty>);
 
         /// Strong reference-counted handle to a slab-allocated value.
-        pub type RcSlot = $crate::alloc::RcSlot<Allocator, $ty>;
+        pub type RcSlot = $crate::alloc::RcSlot<$ty, Allocator>;
         /// Weak reference to a slab-allocated value.
-        pub type WeakSlot = $crate::alloc::WeakSlot<Allocator, $ty>;
+        pub type WeakSlot = $crate::alloc::WeakSlot<$ty, Allocator>;
         /// Permanent reference to a leaked slab-allocated value.
         pub type LocalStatic = $crate::alloc::LocalStatic<$ty>;
     };
@@ -371,9 +371,9 @@ macro_rules! unbounded_rc_allocator {
         $crate::unbounded_allocator!($crate::RcInner<$ty>);
 
         /// Strong reference-counted handle to a slab-allocated value.
-        pub type RcSlot = $crate::alloc::RcSlot<Allocator, $ty>;
+        pub type RcSlot = $crate::alloc::RcSlot<$ty, Allocator>;
         /// Weak reference to a slab-allocated value.
-        pub type WeakSlot = $crate::alloc::WeakSlot<Allocator, $ty>;
+        pub type WeakSlot = $crate::alloc::WeakSlot<$ty, Allocator>;
         /// Permanent reference to a leaked slab-allocated value.
         pub type LocalStatic = $crate::alloc::LocalStatic<$ty>;
     };
@@ -584,7 +584,7 @@ macro_rules! unbounded_allocator {
 
         /// RAII handle to a slab-allocated value.
         ///
-        /// Type alias for [`alloc::Slot<Allocator>`](crate::alloc::Slot).
-        pub type Slot = $crate::alloc::Slot<Allocator>;
+        /// Type alias for [`alloc::BoxSlot<T, Allocator>`](crate::alloc::BoxSlot).
+        pub type BoxSlot = $crate::alloc::BoxSlot<$ty, Allocator>;
     };
 }

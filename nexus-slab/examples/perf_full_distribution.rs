@@ -8,7 +8,8 @@
 //!   taskset -c 0 ./target/release/examples/perf_full_distribution
 
 use hdrhistogram::Histogram;
-use nexus_slab::bounded::{Slab as BoundedSlab, Slot as BoundedSlot};
+use nexus_slab::bounded::Slab as BoundedSlab;
+use nexus_slab::Slot;
 use seq_macro::seq;
 use std::hint::black_box;
 
@@ -72,7 +73,7 @@ fn bench_get() {
 
     // Setup slab
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
+    let entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
     let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
@@ -135,6 +136,12 @@ fn bench_get() {
     print_hist("slab.get() random", &slab_hist);
     print_hist("slab.get() hot", &slab_hot_hist);
     println!();
+
+    // Cleanup - free all slots
+    for slot in entries {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
 }
 
 // =============================================================================
@@ -150,7 +157,7 @@ fn bench_get_mut() {
 
     // Setup slab
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
+    let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
     let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
@@ -186,6 +193,12 @@ fn bench_get_mut() {
     print_hist("slot deref_mut()", &entry_hist);
     print_hist("slab.get_mut()", &slab_hist);
     println!();
+
+    // Cleanup
+    for slot in entries {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
 }
 
 // =============================================================================
@@ -201,12 +214,12 @@ fn bench_insert() {
 
     // slab insert - need to remove after each batch to make room
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let mut temp_entries: Vec<BoundedSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+    let mut temp_entries: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            let entry = slab.try_new_slot(black_box(42u64)).unwrap();
+            let entry = slab.try_alloc(black_box(42u64)).unwrap();
             temp_entries.push(entry);
         });
         let end = rdtsc_end();
@@ -214,7 +227,8 @@ fn bench_insert() {
 
         // Cleanup batch
         for entry in temp_entries.drain(..) {
-            entry.into_inner();
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(entry) };
         }
     }
 
@@ -255,21 +269,22 @@ fn bench_remove() {
     let mut entry_hist: Histogram<u64> = Histogram::new(3).unwrap();
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
-    // slot.into_inner() - insert batch, then remove batch
+    // slot free_take - insert batch, then remove batch
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
-        let mut temp_entries: Vec<BoundedSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp_entries: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
-            temp_entries.push(slab.new_slot(42u64));
+            temp_entries.push(slab.alloc(42u64));
         }
 
         // Time the removes
         let start = rdtsc_start();
         unroll!(100, {
             let entry = temp_entries.pop().unwrap();
-            black_box(entry.into_inner());
+            // SAFETY: slot was allocated from this slab
+            black_box(unsafe { slab.free_take(entry) });
         });
         let end = rdtsc_end();
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
@@ -294,7 +309,7 @@ fn bench_remove() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("slot.into_inner()", &entry_hist);
+    print_hist("slab.free_take()", &entry_hist);
     print_hist("slab.remove()", &slab_hist);
     println!();
 }
@@ -312,19 +327,19 @@ fn bench_replace() {
 
     // Setup slab
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
+    let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
     let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
     let keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| ext_slab.insert(i)).collect();
 
-    // slot.replace() - random access
+    // slot replace via deref_mut
     let mut idx = 0usize;
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
             let entry = black_box(&mut entries[idx % NUM_SLOTS]);
-            black_box(entry.replace(black_box(999u64)));
+            black_box(std::mem::replace(&mut **entry, black_box(999u64)));
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
@@ -347,12 +362,15 @@ fn bench_replace() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("slot.replace()", &entry_hist);
+    print_hist("slot replace via *slot", &entry_hist);
     print_hist("slab get_mut+replace", &slab_hist);
     println!();
 
     // Cleanup
-    drop(entries);
+    for slot in entries {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
 }
 
 // =============================================================================
@@ -360,8 +378,8 @@ fn bench_replace() {
 // =============================================================================
 
 fn main() {
-    println!("SLAB API vs SLAB CRATE - CYCLE COUNTS");
-    println!("======================================");
+    println!("RAW SLAB API vs SLAB CRATE - CYCLE COUNTS");
+    println!("=========================================");
     println!("Compare these results against BENCHMARKS.md");
     println!(
         "Unrolled {} ops per sample, {} total ops per benchmark",
@@ -370,8 +388,8 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "Slot size: {} bytes (16-byte handle with slab pointer)",
-        std::mem::size_of::<BoundedSlot<u64>>()
+        "Raw Slot<T> size: {} bytes (pointer wrapper, no RAII)",
+        std::mem::size_of::<Slot<u64>>()
     );
     println!();
 
@@ -381,8 +399,8 @@ fn main() {
     bench_remove();
     bench_replace();
 
-    println!("======================================");
+    println!("=========================================");
     println!("Legend:");
-    println!("  slot.*()              BoundedSlot API (16-byte slot, no TLS lookup)");
+    println!("  slot.*()              Raw Slot<T> API (8-byte ptr, explicit free)");
     println!("  slab.*()              slab crate (baseline comparison)");
 }

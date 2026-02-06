@@ -1,9 +1,9 @@
-//! Full latency distribution: Direct Slot vs Macro/TLS Slot vs slab crate.
+//! Full latency distribution: Raw Slot vs Macro/TLS BoxSlot vs slab crate.
 //!
 //! Same structure as perf_full_distribution but adds the macro-generated
 //! allocator path to show actual TLS cost per operation.
 //!
-//! TLS is hit on: alloc, drop, into_inner, from_key, from_key_mut
+//! TLS is hit on: alloc, drop, into_inner, from_slot
 //! TLS is NOT hit on: deref, deref_mut, replace, key()
 //!
 //! Run with:
@@ -11,7 +11,8 @@
 //!   taskset -c 0 ./target/release/examples/perf_macro_distribution
 
 use hdrhistogram::Histogram;
-use nexus_slab::bounded::{Slab as BoundedSlab, Slot as BoundedSlot};
+use nexus_slab::bounded::Slab as BoundedSlab;
+use nexus_slab::Slot;
 use seq_macro::seq;
 use std::hint::black_box;
 
@@ -77,13 +78,13 @@ fn bench_get() {
     let mut macro_hot_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
-    // Direct slab
+    // Direct slab (raw API)
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
+    let entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
-    // Macro slab
+    // Macro slab (RAII BoxSlot)
     let macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| macro_alloc::Slot::new(Val(i)))
+        .map(|i| macro_alloc::BoxSlot::new(Val(i)))
         .collect();
 
     // slab crate
@@ -152,15 +153,19 @@ fn bench_get() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("Direct deref random", &direct_hist);
-    print_hist("Macro  deref random", &macro_hist);
-    print_hist("Direct deref hot", &direct_hot_hist);
-    print_hist("Macro  deref hot", &macro_hot_hist);
+    print_hist("Raw    deref random", &direct_hist);
+    print_hist("BoxSlot deref random", &macro_hist);
+    print_hist("Raw    deref hot", &direct_hot_hist);
+    print_hist("BoxSlot deref hot", &macro_hot_hist);
     print_hist("slab crate get", &slab_hist);
     println!();
 
-    drop(entries);
-    drop(macro_slots);
+    // Cleanup raw slots
+    for slot in entries {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
+    // macro_slots drop automatically via RAII
 }
 
 // =============================================================================
@@ -175,13 +180,13 @@ fn bench_get_mut() {
     let mut macro_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
-    // Direct slab
+    // Direct slab (raw API)
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
+    let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
-    // Macro slab
+    // Macro slab (RAII BoxSlot)
     let mut macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| macro_alloc::Slot::new(Val(i)))
+        .map(|i| macro_alloc::BoxSlot::new(Val(i)))
         .collect();
 
     // slab crate
@@ -228,13 +233,16 @@ fn bench_get_mut() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("Direct deref_mut", &direct_hist);
-    print_hist("Macro  deref_mut", &macro_hist);
+    print_hist("Raw    deref_mut", &direct_hist);
+    print_hist("BoxSlot deref_mut", &macro_hist);
     print_hist("slab crate get_mut", &slab_hist);
     println!();
 
-    drop(entries);
-    drop(macro_slots);
+    // Cleanup raw slots
+    for slot in entries {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
 }
 
 // =============================================================================
@@ -249,29 +257,30 @@ fn bench_insert() {
     let mut macro_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
-    // Direct slab insert
+    // Direct slab insert (raw API)
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let mut temp: Vec<BoundedSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+    let mut temp: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            temp.push(slab.try_new_slot(black_box(42u64)).unwrap());
+            temp.push(slab.try_alloc(black_box(42u64)).unwrap());
         });
         let end = rdtsc_end();
         let _ = direct_hist.record((end - start) / BATCH_SIZE);
         for entry in temp.drain(..) {
-            entry.into_inner();
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(entry) };
         }
     }
 
     // Macro insert (TLS on alloc)
-    let mut macro_temp: Vec<macro_alloc::Slot> = Vec::with_capacity(BATCH_SIZE as usize);
+    let mut macro_temp: Vec<macro_alloc::BoxSlot> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
         unroll!(100, {
-            macro_temp.push(macro_alloc::Slot::new(black_box(Val(42))));
+            macro_temp.push(macro_alloc::BoxSlot::new(black_box(Val(42))));
         });
         let end = rdtsc_end();
         let _ = macro_hist.record((end - start) / BATCH_SIZE);
@@ -295,8 +304,8 @@ fn bench_insert() {
         }
     }
 
-    print_hist("Direct insert", &direct_hist);
-    print_hist("Macro  insert [TLS]", &macro_hist);
+    print_hist("Raw    insert", &direct_hist);
+    print_hist("BoxSlot insert [TLS]", &macro_hist);
     print_hist("slab crate insert", &slab_hist);
     println!();
 }
@@ -314,16 +323,17 @@ fn bench_remove() {
     let mut macro_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
-    // Direct into_inner
+    // Direct free_take (raw API)
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
     for _ in 0..OPS / BATCH_SIZE as usize {
-        let mut temp: Vec<BoundedSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
-            temp.push(slab.new_slot(42u64));
+            temp.push(slab.alloc(42u64));
         }
         let start = rdtsc_start();
         unroll!(100, {
-            black_box(temp.pop().unwrap().into_inner());
+            // SAFETY: slot was allocated from this slab
+            black_box(unsafe { slab.free_take(temp.pop().unwrap()) });
         });
         let end = rdtsc_end();
         let _ = direct_hist.record((end - start) / BATCH_SIZE);
@@ -331,9 +341,9 @@ fn bench_remove() {
 
     // Macro into_inner (TLS on dealloc)
     for _ in 0..OPS / BATCH_SIZE as usize {
-        let mut temp: Vec<macro_alloc::Slot> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp: Vec<macro_alloc::BoxSlot> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
-            temp.push(macro_alloc::Slot::new(Val(42)));
+            temp.push(macro_alloc::BoxSlot::new(Val(42)));
         }
         let start = rdtsc_start();
         unroll!(100, {
@@ -358,8 +368,8 @@ fn bench_remove() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("Direct into_inner", &direct_hist);
-    print_hist("Macro  into_inner [TLS]", &macro_hist);
+    print_hist("Raw    free_take", &direct_hist);
+    print_hist("BoxSlot into_inner [TLS]", &macro_hist);
     print_hist("slab crate remove", &slab_hist);
     println!();
 }
@@ -376,13 +386,13 @@ fn bench_replace() {
     let mut macro_hist = Histogram::<u64>::new(3).unwrap();
     let mut slab_hist = Histogram::<u64>::new(3).unwrap();
 
-    // Direct slab
+    // Direct slab (raw API)
     let slab = BoundedSlab::<u64>::new(NUM_SLOTS as u32);
-    let mut entries: Vec<_> = (0..NUM_SLOTS as u64).map(|i| slab.new_slot(i)).collect();
+    let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
-    // Macro slab
+    // Macro slab (RAII BoxSlot)
     let mut macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
-        .map(|i| macro_alloc::Slot::new(Val(i)))
+        .map(|i| macro_alloc::BoxSlot::new(Val(i)))
         .collect();
 
     // slab crate
@@ -395,7 +405,7 @@ fn bench_replace() {
         let start = rdtsc_start();
         unroll!(100, {
             let entry = black_box(&mut entries[idx % NUM_SLOTS]);
-            black_box(entry.replace(black_box(999u64)));
+            black_box(std::mem::replace(&mut **entry, black_box(999u64)));
             idx = idx.wrapping_add(1);
         });
         let end = rdtsc_end();
@@ -431,13 +441,16 @@ fn bench_replace() {
         let _ = slab_hist.record((end - start) / BATCH_SIZE);
     }
 
-    print_hist("Direct replace", &direct_hist);
-    print_hist("Macro  replace", &macro_hist);
+    print_hist("Raw    replace", &direct_hist);
+    print_hist("BoxSlot replace", &macro_hist);
     print_hist("slab crate get_mut+replace", &slab_hist);
     println!();
 
-    drop(entries);
-    drop(macro_slots);
+    // Cleanup raw slots
+    for slot in entries {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
 }
 
 // =============================================================================
@@ -450,8 +463,8 @@ fn main() {
         .build()
         .expect("init macro allocator");
 
-    println!("DIRECT vs MACRO/TLS vs SLAB CRATE — FULL DISTRIBUTION");
-    println!("======================================================");
+    println!("RAW vs BOXSLOT/TLS vs SLAB CRATE — FULL DISTRIBUTION");
+    println!("====================================================");
     println!(
         "Unrolled {} ops per sample, {} total ops per benchmark",
         BATCH_SIZE, OPS
@@ -459,12 +472,12 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "Direct Slot size: {} bytes  (bounded::Slot — slot_ptr + slab ref)",
-        std::mem::size_of::<BoundedSlot<u64>>()
+        "Raw Slot<T>   size: {} bytes  (pointer wrapper, explicit free)",
+        std::mem::size_of::<Slot<u64>>()
     );
     println!(
-        "Macro  Slot size: {} bytes  (alloc::Slot  — slot_ptr only, TLS for slab ref)",
-        std::mem::size_of::<macro_alloc::Slot>()
+        "BoxSlot<T,A>  size: {} bytes  (RAII handle, TLS for slab ref)",
+        std::mem::size_of::<macro_alloc::BoxSlot>()
     );
     println!();
 
@@ -474,12 +487,12 @@ fn main() {
     bench_remove();
     bench_replace();
 
-    println!("======================================================");
+    println!("====================================================");
     println!("Legend:");
-    println!("  Direct          bounded::Slot (16B, no TLS)");
-    println!("  Macro  [TLS]    alloc::Slot via bounded_allocator! (8B, TLS on marked ops)");
+    println!("  Raw             Slot<T> via raw slab API (8B, explicit free)");
+    println!("  BoxSlot [TLS]   BoxSlot<T,A> via bounded_allocator! (8B, TLS on marked ops)");
     println!("  slab crate      slab 0.4 crate (baseline)");
     println!();
-    println!("TLS operations: insert, drop/into_inner, from_key, from_key_mut");
+    println!("TLS operations: insert, drop/into_inner, from_slot");
     println!("Non-TLS:        deref, deref_mut, replace, key()");
 }

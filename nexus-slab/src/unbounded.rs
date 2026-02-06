@@ -9,21 +9,21 @@
 //! use nexus_slab::unbounded::Slab;
 //!
 //! let slab = Slab::new(4096);
-//! let slot = slab.new_slot(42u64);
+//! let slot = slab.alloc(42u64);
 //! assert_eq!(*slot, 42);
-//! // slot drops, storage freed back to slab
+//! // Raw slot - must explicitly free
+//! // SAFETY: slot was allocated from this slab
+//! unsafe { slab.free(slot) };
 //! ```
 
-use std::borrow::{Borrow, BorrowMut};
 use std::cell::Cell;
 use std::fmt;
 use std::mem::{ManuallyDrop, MaybeUninit};
-use std::ops::{Deref, DerefMut};
 use std::ptr;
 
 use crate::Key;
 use crate::bounded::SlabInner as BoundedSlabInner;
-use crate::shared::SlotCell;
+use crate::shared::{Slot, SlotCell};
 
 // =============================================================================
 // Constants
@@ -468,8 +468,10 @@ impl<T> Default for SlabInner<T> {
 /// use nexus_slab::unbounded::Slab;
 ///
 /// let slab = Slab::new(4096);
-/// let slot = slab.new_slot(42u64);
+/// let slot = slab.alloc(42u64);
 /// assert_eq!(*slot, 42);
+/// // SAFETY: slot was allocated from this slab
+/// unsafe { slab.free(slot) };
 /// ```
 pub struct Slab<T: 'static> {
     inner: &'static SlabInner<T>,
@@ -502,22 +504,74 @@ impl<T: 'static> Slab<T> {
         Self { inner }
     }
 
-    /// Creates a new slot containing the given value.
-    ///
-    /// Always succeeds — grows the slab if needed.
-    #[inline]
-    pub fn new_slot(&self, value: T) -> Slot<T> {
-        let slot_ptr = self.inner.try_alloc(value);
-        Slot {
-            slot_ptr,
-            inner: self.inner,
-        }
-    }
-
     /// Returns the total capacity across all chunks.
     #[inline]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
+    }
+
+    // =========================================================================
+    // Raw API (Layer 1)
+    // =========================================================================
+
+    /// Allocates a slot and writes the value. Returns a raw slot handle.
+    ///
+    /// Always succeeds — grows the slab if needed.
+    #[inline]
+    pub fn alloc(&self, value: T) -> Slot<T> {
+        let slot_ptr = self.inner.try_alloc(value);
+        // SAFETY: try_alloc returns a valid, occupied slot pointer
+        unsafe { Slot::from_ptr(slot_ptr) }
+    }
+
+    /// Frees a slot, dropping the value and returning storage to the freelist.
+    ///
+    /// # Safety
+    ///
+    /// - `slot` must have been allocated from **this** slab (not a different slab)
+    /// - No references to the slot's value may exist
+    ///
+    /// Note: Double-free is prevented at compile time (`Slot` is move-only).
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
+    pub unsafe fn free(&self, slot: Slot<T>) {
+        // Drop the value in place
+        // SAFETY: Caller guarantees slot is valid and occupied
+        unsafe {
+            ptr::drop_in_place((*(*slot.as_ptr()).value).as_mut_ptr());
+        }
+        // Return to freelist
+        // SAFETY: Value dropped, slot valid
+        unsafe { self.inner.dealloc_ptr(slot.as_ptr()) };
+    }
+
+    /// Frees a slot and returns the value without dropping it.
+    ///
+    /// # Safety
+    ///
+    /// - `slot` must have been allocated from **this** slab (not a different slab)
+    /// - No references to the slot's value may exist
+    ///
+    /// Note: Double-free is prevented at compile time (`Slot` is move-only).
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
+    pub unsafe fn free_take(&self, slot: Slot<T>) -> T {
+        // Move the value out
+        // SAFETY: Caller guarantees slot is valid and occupied
+        let value = unsafe { ptr::read((*slot.as_ptr()).value.as_ptr()) };
+        // Return to freelist
+        // SAFETY: Value moved out, slot valid
+        unsafe { self.inner.dealloc_ptr(slot.as_ptr()) };
+        value
+    }
+
+    /// Computes the key for a raw slot.
+    ///
+    /// This is a cold-path operation for lazy key computation.
+    #[inline]
+    pub fn slot_key(&self, slot: &Slot<T>) -> Key {
+        // SAFETY: slot came from this slab
+        unsafe { self.inner.slot_to_index_global(slot.as_ptr()) }
     }
 }
 
@@ -530,152 +584,22 @@ impl<T: 'static> fmt::Debug for Slab<T> {
 }
 
 // =============================================================================
-// Slot
-// =============================================================================
-
-/// RAII handle to a slot in an unbounded slab.
-///
-/// Analogous to `Box<T>`: owns the value and deallocates on drop.
-/// The backing storage is a leaked `SlabInner<T>` with a `'static` lifetime.
-///
-/// # Size
-///
-/// 16 bytes (slot pointer + inner pointer).
-#[must_use = "dropping Slot returns it to the slab"]
-pub struct Slot<T: 'static> {
-    slot_ptr: *mut SlotCell<T>,
-    inner: &'static SlabInner<T>,
-}
-
-impl<T: 'static> Slot<T> {
-    /// Returns the key for this slot.
-    ///
-    /// Lazily computed from pointer via chunk scan. This is a cold-path operation.
-    #[inline]
-    pub fn key(&self) -> Key {
-        // SAFETY: slot_ptr is valid and within the slab's storage
-        unsafe { self.inner.slot_to_index_global(self.slot_ptr) }
-    }
-
-    /// Leaks the slot, keeping the data alive and returning its key.
-    ///
-    /// After calling `leak()`, the slot remains occupied but has no
-    /// Slot owner. Access the data via key-based methods on the allocator.
-    #[inline]
-    pub fn leak(self) -> Key {
-        let key = self.key();
-        std::mem::forget(self);
-        key
-    }
-
-    /// Consumes the slot, returning the value and deallocating.
-    pub fn into_inner(self) -> T {
-        // SAFETY: Slot owns the value, union field `value` is active
-        let value = unsafe { ptr::read((*self.slot_ptr).value.as_ptr()) };
-
-        // SAFETY: Value moved out, slot_ptr valid
-        unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
-
-        std::mem::forget(self);
-        value
-    }
-
-    /// Replaces the value, returning the old one.
-    #[inline]
-    pub fn replace(&mut self, value: T) -> T {
-        // SAFETY: We own the slot exclusively (&mut self), union field `value` is active
-        unsafe {
-            let val_ptr = (*(*self.slot_ptr).value).as_mut_ptr();
-            let old = ptr::read(val_ptr);
-            ptr::write(val_ptr, value);
-            old
-        }
-    }
-}
-
-impl<T: 'static> Drop for Slot<T> {
-    fn drop(&mut self) {
-        // Drop the value
-        // SAFETY: We own the slot, union field `value` is active (slot is occupied)
-        unsafe {
-            ptr::drop_in_place((*(*self.slot_ptr).value).as_mut_ptr());
-        }
-
-        // Return slot to freelist by pointer (no key round-trip)
-        // SAFETY: Value dropped, slot_ptr valid
-        unsafe { self.inner.dealloc_ptr(self.slot_ptr) };
-    }
-}
-
-impl<T: 'static> Deref for Slot<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: Slot owns this slot, union field `value` is active
-        unsafe { (*self.slot_ptr).value.assume_init_ref() }
-    }
-}
-
-impl<T: 'static> DerefMut for Slot<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Slot owns this slot exclusively, union field `value` is active
-        unsafe { (*(*self.slot_ptr).value).assume_init_mut() }
-    }
-}
-
-impl<T: 'static> AsRef<T> for Slot<T> {
-    #[inline]
-    fn as_ref(&self) -> &T {
-        self
-    }
-}
-
-impl<T: 'static> AsMut<T> for Slot<T> {
-    #[inline]
-    fn as_mut(&mut self) -> &mut T {
-        self
-    }
-}
-
-impl<T: 'static> Borrow<T> for Slot<T> {
-    #[inline]
-    fn borrow(&self) -> &T {
-        self
-    }
-}
-
-impl<T: 'static> BorrowMut<T> for Slot<T> {
-    #[inline]
-    fn borrow_mut(&mut self) -> &mut T {
-        self
-    }
-}
-
-impl<T: 'static + fmt::Debug> fmt::Debug for Slot<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Slot")
-            .field("key", &self.key())
-            .field("value", &**self)
-            .finish()
-    }
-}
-
-// =============================================================================
 // Tests
 // =============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::borrow::{Borrow, BorrowMut};
 
     #[test]
     fn slab_basic() {
         let slab = Slab::<u64>::new(16);
 
-        let slot = slab.new_slot(42);
+        let slot = slab.alloc(42);
         assert_eq!(*slot, 42);
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
     }
 
     #[test]
@@ -684,49 +608,45 @@ mod tests {
 
         let mut slots = Vec::new();
         for i in 0..10 {
-            slots.push(slab.new_slot(i));
+            slots.push(slab.alloc(i));
         }
 
         assert!(slab.capacity() >= 10);
 
-        slots.clear();
+        // Free all slots
+        for slot in slots {
+            // SAFETY: each slot was allocated from this slab
+            unsafe { slab.free(slot) };
+        }
     }
 
     #[test]
     fn slot_deref_mut() {
         let slab = Slab::<String>::new(16);
-        let mut slot = slab.new_slot("hello".to_string());
+        let mut slot = slab.alloc("hello".to_string());
         slot.push_str(" world");
         assert_eq!(&*slot, "hello world");
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
     }
 
     #[test]
-    fn slot_key_and_leak() {
+    fn slot_key() {
         let slab = Slab::<u64>::new(16);
-        let slot = slab.new_slot(42);
-        let key = slot.key();
+        let slot = slab.alloc(42);
+        let key = slab.slot_key(&slot);
         assert!(key.is_some());
-
-        let leaked_key = slot.leak();
-        assert_eq!(key, leaked_key);
+        // Leak intentionally - no free needed
     }
 
     #[test]
-    fn slot_into_inner() {
+    fn slot_free_take() {
         let slab = Slab::<String>::new(16);
-        let slot = slab.new_slot("hello".to_string());
+        let slot = slab.alloc("hello".to_string());
 
-        let value = slot.into_inner();
+        // SAFETY: slot was allocated from this slab
+        let value = unsafe { slab.free_take(slot) };
         assert_eq!(value, "hello");
-    }
-
-    #[test]
-    fn slot_replace() {
-        let slab = Slab::<u64>::new(16);
-        let mut slot = slab.new_slot(42);
-        let old = slot.replace(100);
-        assert_eq!(old, 42);
-        assert_eq!(*slot, 100);
     }
 
     #[test]
@@ -735,7 +655,9 @@ mod tests {
         let _slab2 = slab; // Copy
         let _slab3 = slab; // Copy again
 
-        let _slot = slab.new_slot(42);
+        let slot = slab.alloc(42);
+        // SAFETY: slot was allocated from slab
+        unsafe { slab.free(slot) };
     }
 
     #[test]
@@ -743,33 +665,36 @@ mod tests {
         let slab = Slab::<u64>::new(2);
 
         // Fill first chunk
-        let s1 = slab.new_slot(1);
-        let s2 = slab.new_slot(2);
+        let s1 = slab.alloc(1);
+        let s2 = slab.alloc(2);
         // Triggers growth
-        let s3 = slab.new_slot(3);
+        let s3 = slab.alloc(3);
 
         // Free from first chunk — should add it back to available list
-        drop(s1);
+        // SAFETY: s1 was allocated from this slab
+        unsafe { slab.free(s1) };
 
         // Should reuse the freed slot
-        let _s4 = slab.new_slot(4);
+        let s4 = slab.alloc(4);
 
-        drop(s2);
-        drop(s3);
-        drop(_s4);
+        // SAFETY: all slots were allocated from this slab
+        unsafe {
+            slab.free(s2);
+            slab.free(s3);
+            slab.free(s4);
+        }
     }
 
     #[test]
     fn slot_size() {
-        assert_eq!(std::mem::size_of::<Slot<u64>>(), 16);
+        // Raw Slot<T> is 8 bytes (one pointer)
+        assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
     }
 
     #[test]
     fn borrow_traits() {
-        use std::borrow::{Borrow, BorrowMut};
-
         let slab = Slab::<u64>::new(16);
-        let mut slot = slab.new_slot(42);
+        let mut slot = slab.alloc(42);
 
         let borrowed: &u64 = slot.borrow();
         assert_eq!(*borrowed, 42);
@@ -777,5 +702,8 @@ mod tests {
         let borrowed_mut: &mut u64 = slot.borrow_mut();
         *borrowed_mut = 100;
         assert_eq!(*slot, 100);
+
+        // SAFETY: slot was allocated from slab
+        unsafe { slab.free(slot) };
     }
 }
