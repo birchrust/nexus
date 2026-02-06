@@ -8,91 +8,143 @@
 //! ```
 //! use nexus_slab::unbounded::Slab;
 //!
-//! // SAFETY: slab must outlive all allocated Slots
-//! let slab = unsafe { Slab::new(4096) };
+//! let slab = Slab::with_chunk_capacity(4096);
 //! let slot = slab.alloc(42u64);
 //! assert_eq!(*slot, 42);
-//! // Raw slot - must explicitly free
 //! // SAFETY: slot was allocated from this slab
-//! unsafe { slab.dealloc(slot) };
+//! unsafe { slab.free(slot) };
 //! ```
 
 use std::cell::Cell;
 use std::fmt;
-use std::mem::{ManuallyDrop, MaybeUninit};
+use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::ptr;
 
-use crate::bounded::SlabInner as BoundedSlabInner;
+use crate::bounded::Slab as BoundedSlab;
 use crate::shared::{Slot, SlotCell};
+
+// =============================================================================
+// Claim
+// =============================================================================
+
+/// A claimed slot that has not yet been written to.
+///
+/// Created by [`Slab::claim()`]. Must be consumed via [`write()`](Self::write)
+/// to complete the allocation. If dropped without calling `write()`, the slot
+/// is returned to the freelist.
+///
+/// The `write()` method is `#[inline]`, enabling the compiler to potentially
+/// optimize the value write as a placement new (constructing directly into
+/// the slot memory).
+pub struct Claim<'a, T> {
+    slot_ptr: *mut SlotCell<T>,
+    slab: &'a Slab<T>,
+    chunk_idx: usize,
+}
+
+impl<T> Claim<'_, T> {
+    /// Writes the value to the claimed slot and returns the [`Slot`] handle.
+    ///
+    /// This consumes the claim. The value is written directly to the slot's
+    /// memory, which may enable placement new optimization.
+    #[inline]
+    pub fn write(self, value: T) -> Slot<T> {
+        let slot_ptr = self.slot_ptr;
+        // SAFETY: We own this slot from claim(), it's valid and vacant
+        unsafe {
+            (*slot_ptr).value = ManuallyDrop::new(MaybeUninit::new(value));
+        }
+        // Don't run Drop - we're completing the allocation
+        mem::forget(self);
+        // SAFETY: slot_ptr is valid and now occupied
+        unsafe { Slot::from_ptr(slot_ptr) }
+    }
+}
+
+impl<T> Drop for Claim<'_, T> {
+    fn drop(&mut self) {
+        // Abandoned claim - return slot to the correct chunk's freelist
+        let chunk = self.slab.chunk(self.chunk_idx);
+        let chunk_slab = &*chunk.inner;
+
+        let free_head = chunk_slab.free_head.get();
+        let was_full = free_head.is_null();
+
+        // SAFETY: slot_ptr is valid and still vacant (never written to)
+        unsafe {
+            (*self.slot_ptr).next_free = free_head;
+        }
+        chunk_slab.free_head.set(self.slot_ptr);
+
+        // If chunk was full, add it back to the available-space list
+        if was_full {
+            chunk.next_with_space.set(self.slab.head_with_space.get());
+            self.slab.head_with_space.set(self.chunk_idx);
+        }
+    }
+}
 
 // =============================================================================
 // Constants
 // =============================================================================
 
 /// Sentinel for chunk freelist
-const CHUNK_NONE: u32 = u32::MAX;
+const CHUNK_NONE: usize = usize::MAX;
 
 // =============================================================================
 // ChunkEntry
 // =============================================================================
 
 /// Internal wrapper for a chunk in the growable slab.
-#[doc(hidden)]
-pub struct ChunkEntry<T> {
-    pub(crate) inner: Box<BoundedSlabInner<T>>,
-    pub(crate) next_with_space: Cell<u32>,
-}
-
-impl<T> ChunkEntry<T> {
-    /// Returns a reference to the inner BoundedSlabInner.
-    #[doc(hidden)]
-    #[inline]
-    pub fn inner_ref(&self) -> &BoundedSlabInner<T> {
-        &self.inner
-    }
+struct ChunkEntry<T> {
+    inner: Box<BoundedSlab<T>>,
+    next_with_space: Cell<usize>,
 }
 
 // =============================================================================
-// SlabInner
+// Slab
 // =============================================================================
 
-/// Internal state for a growable slab.
+/// Growable slab allocator.
 ///
-/// This is the storage backend for unbounded allocators.
+/// Uses independent chunks for growth — no copying when the slab grows.
 ///
 /// # Const Construction
 ///
-/// This type supports const construction via [`new()`](Self::new) followed by
+/// Supports const construction via [`new()`](Self::new) followed by
 /// runtime initialization via [`init()`](Self::init). This enables use with
 /// `thread_local!` using the `const { }` block syntax for zero-overhead TLS access.
 ///
 /// ```ignore
 /// thread_local! {
-///     static SLAB: SlabInner<MyType> = const { SlabInner::new() };
+///     static SLAB: Slab<MyType> = const { Slab::new() };
 /// }
 ///
 /// // Later, at runtime:
 /// SLAB.with(|s| s.init(4096));
 /// ```
-#[doc(hidden)]
-pub struct SlabInner<T> {
+///
+/// For direct usage, prefer [`with_chunk_capacity()`](Self::with_chunk_capacity).
+pub struct Slab<T> {
     chunks: std::cell::UnsafeCell<Vec<ChunkEntry<T>>>,
-    chunk_capacity: Cell<u32>,
-    head_with_space: Cell<u32>,
+    chunk_capacity: Cell<usize>,
+    head_with_space: Cell<usize>,
 }
 
-impl<T> SlabInner<T> {
+impl<T> Slab<T> {
     /// Creates an empty, uninitialized slab.
     ///
     /// This is a const function that performs no allocation. Call [`init()`](Self::init)
     /// to configure chunk capacity before use.
+    ///
+    /// For direct usage, prefer [`with_chunk_capacity()`](Self::with_chunk_capacity).
     ///
     /// # Example
     ///
     /// ```ignore
     /// // For use with thread_local! const initialization
     /// thread_local! {
-    ///     static SLAB: SlabInner<u64> = const { SlabInner::new() };
+    ///     static SLAB: Slab<u64> = const { Slab::new() };
     /// }
     /// ```
     #[inline]
@@ -104,6 +156,20 @@ impl<T> SlabInner<T> {
         }
     }
 
+    /// Creates a new slab with the given chunk capacity.
+    ///
+    /// Chunks are allocated on-demand when slots are requested.
+    ///
+    /// # Panics
+    ///
+    /// Panics if chunk_capacity is zero.
+    #[inline]
+    pub fn with_chunk_capacity(chunk_capacity: usize) -> Self {
+        let slab = Self::new();
+        slab.init(chunk_capacity);
+        slab
+    }
+
     /// Initializes the slab with the given chunk capacity.
     ///
     /// This configures the chunk parameters. Chunks are allocated on-demand
@@ -113,33 +179,29 @@ impl<T> SlabInner<T> {
     ///
     /// - Panics if the slab is already initialized (chunk_capacity > 0)
     /// - Panics if chunk_capacity is zero
-    /// - Panics if chunk_capacity exceeds maximum (2^30)
-    pub fn init(&self, chunk_capacity: u32) {
-        assert!(
-            self.chunk_capacity.get() == 0,
-            "SlabInner already initialized"
-        );
+    pub fn init(&self, chunk_capacity: usize) {
+        assert!(self.chunk_capacity.get() == 0, "Slab already initialized");
         assert!(chunk_capacity > 0, "chunk_capacity must be non-zero");
-        assert!(chunk_capacity <= 1 << 30, "chunk_capacity exceeds maximum");
 
         self.chunk_capacity.set(chunk_capacity);
     }
 
     /// Returns true if the slab has been initialized.
     #[inline]
-    #[allow(dead_code)]
     pub fn is_initialized(&self) -> bool {
         self.chunk_capacity.get() > 0
     }
 
-    /// Creates a new SlabInner with the given chunk capacity.
-    ///
-    /// This is a convenience method equivalent to `new()` followed by `init()`.
-    #[doc(hidden)]
-    pub fn with_chunk_capacity(chunk_capacity: usize) -> Self {
-        let inner = Self::new();
-        inner.init(chunk_capacity as u32);
-        inner
+    /// Returns the total capacity across all chunks.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.chunks().len() * self.chunk_capacity.get()
+    }
+
+    /// Returns the chunk capacity.
+    #[inline]
+    pub fn chunk_capacity(&self) -> usize {
+        self.chunk_capacity.get()
     }
 
     #[inline]
@@ -155,21 +217,17 @@ impl<T> SlabInner<T> {
         unsafe { &mut *self.chunks.get() }
     }
 
-    /// Returns a reference to the chunk at the given index.
-    #[doc(hidden)]
-    #[inline]
-    pub fn chunk(&self, chunk_idx: u32) -> &ChunkEntry<T> {
+    fn chunk(&self, chunk_idx: usize) -> &ChunkEntry<T> {
         let chunks = self.chunks();
-        debug_assert!((chunk_idx as usize) < chunks.len());
-        unsafe { chunks.get_unchecked(chunk_idx as usize) }
+        debug_assert!(chunk_idx < chunks.len());
+        unsafe { chunks.get_unchecked(chunk_idx) }
     }
 
     /// Grows the slab by adding a new chunk.
-    #[doc(hidden)]
-    pub fn grow(&self) {
+    pub(crate) fn grow(&self) {
         let chunks = self.chunks_mut();
-        let chunk_idx = chunks.len() as u32;
-        let inner = Box::new(BoundedSlabInner::with_capacity(self.chunk_capacity.get()));
+        let chunk_idx = chunks.len();
+        let inner = Box::new(BoundedSlab::with_capacity(self.chunk_capacity.get()));
 
         let entry = ChunkEntry {
             inner,
@@ -180,74 +238,53 @@ impl<T> SlabInner<T> {
         self.head_with_space.set(chunk_idx);
     }
 
-    /// Returns the total capacity across all chunks.
-    #[doc(hidden)]
-    pub fn capacity(&self) -> usize {
-        self.chunks().len() * self.chunk_capacity.get() as usize
-    }
-
-    /// Returns the chunk capacity.
-    #[doc(hidden)]
-    #[inline]
-    pub fn chunk_capacity(&self) -> u32 {
-        self.chunk_capacity.get()
-    }
-
     // =========================================================================
-    // Helper methods for macro-generated code
+    // Allocation API
     // =========================================================================
 
-    /// Returns true if no chunk has available space.
-    #[doc(hidden)]
+    /// Claims a slot from the freelist without writing a value.
+    ///
+    /// Always succeeds — grows the slab if needed. The returned [`Claim`]
+    /// must be consumed via [`Claim::write()`] to complete the allocation.
+    ///
+    /// This two-phase allocation enables placement new optimization: the
+    /// value can be constructed directly into the slot memory.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_slab::unbounded::Slab;
+    ///
+    /// let slab = Slab::with_chunk_capacity(16);
+    /// let claim = slab.claim();
+    /// let slot = claim.write(42u64);
+    /// assert_eq!(*slot, 42);
+    /// // SAFETY: slot was allocated from this slab
+    /// unsafe { slab.free(slot) };
+    /// ```
     #[inline]
-    pub fn head_with_space_is_none(&self) -> bool {
-        self.head_with_space.get() == CHUNK_NONE
+    pub fn claim(&self) -> Claim<'_, T> {
+        let (slot_ptr, chunk_idx) = self.claim_ptr();
+        Claim {
+            slot_ptr,
+            slab: self,
+            chunk_idx,
+        }
     }
 
-    /// Returns the chunk index and reference to the chunk with available space.
+    /// Claims a slot from the freelist, returning the raw pointer and chunk index.
     ///
-    /// # Panics
+    /// Always succeeds — grows the slab if needed. This is a low-level API for
+    /// macro-generated code that needs to escape TLS closures.
     ///
-    /// Panics if no chunk has space (call `grow()` first if needed).
+    /// # Safety Contract
+    ///
+    /// The caller MUST either:
+    /// - Write a value to the slot and use it as an allocated slot, OR
+    /// - Return the pointer to the freelist via `free_ptr()` if abandoning
     #[doc(hidden)]
     #[inline]
-    pub fn head_chunk(&self) -> (u32, &ChunkEntry<T>) {
-        let chunk_idx = self.head_with_space.get();
-        debug_assert!(chunk_idx != CHUNK_NONE, "no chunk with space");
-        (chunk_idx, self.chunk(chunk_idx))
-    }
-
-    /// Removes the head chunk from the available-space list.
-    ///
-    /// Called when the head chunk becomes full.
-    #[doc(hidden)]
-    #[inline]
-    pub fn pop_head_chunk(&self) {
-        let chunk_idx = self.head_with_space.get();
-        debug_assert!(chunk_idx != CHUNK_NONE);
-        let chunk = self.chunk(chunk_idx);
-        self.head_with_space.set(chunk.next_with_space.get());
-    }
-
-    /// Adds a chunk to the available-space list.
-    ///
-    /// Called when a previously-full chunk has a slot freed.
-    #[doc(hidden)]
-    #[inline]
-    pub fn push_chunk_to_available(&self, chunk_idx: u32) {
-        let chunk = self.chunk(chunk_idx);
-        chunk.next_with_space.set(self.head_with_space.get());
-        self.head_with_space.set(chunk_idx);
-    }
-
-    // =========================================================================
-    // Allocation methods
-    // =========================================================================
-
-    /// Claims a slot and writes the value.
-    ///
-    /// Grows automatically if needed (always succeeds unless OOM).
-    pub fn try_alloc(&self, value: T) -> *mut SlotCell<T> {
+    pub fn claim_ptr(&self) -> (*mut SlotCell<T>, usize) {
         // Ensure we have space (grow if needed)
         if self.head_with_space.get() == CHUNK_NONE {
             self.grow();
@@ -256,10 +293,43 @@ impl<T> SlabInner<T> {
         // Get the chunk with space
         let chunk_idx = self.head_with_space.get();
         let chunk = self.chunk(chunk_idx);
-        let chunk_inner = &*chunk.inner;
+        let chunk_slab = &*chunk.inner;
 
         // Load freelist head pointer from chunk
-        let slot_ptr = chunk_inner.free_head.get();
+        let slot_ptr = chunk_slab.free_head.get();
+        debug_assert!(!slot_ptr.is_null(), "chunk on freelist has no free slots");
+
+        // SAFETY: slot_ptr came from the freelist. Slot is vacant, so next_free is active.
+        let next_free = unsafe { (*slot_ptr).next_free };
+
+        // Update chunk's freelist head
+        chunk_slab.free_head.set(next_free);
+
+        // If chunk is now full, remove from slab's available-chunk list
+        if next_free.is_null() {
+            self.head_with_space.set(chunk.next_with_space.get());
+        }
+
+        (slot_ptr, chunk_idx)
+    }
+
+    /// Allocates a slot and writes the value.
+    ///
+    /// Always succeeds — grows the slab if needed.
+    #[inline]
+    pub fn alloc(&self, value: T) -> Slot<T> {
+        // Ensure we have space (grow if needed)
+        if self.head_with_space.get() == CHUNK_NONE {
+            self.grow();
+        }
+
+        // Get the chunk with space
+        let chunk_idx = self.head_with_space.get();
+        let chunk = self.chunk(chunk_idx);
+        let chunk_slab = &*chunk.inner;
+
+        // Load freelist head pointer from chunk
+        let slot_ptr = chunk_slab.free_head.get();
         debug_assert!(!slot_ptr.is_null(), "chunk on freelist has no free slots");
 
         // SAFETY: slot_ptr came from the freelist. Slot is vacant, so next_free is active.
@@ -272,195 +342,112 @@ impl<T> SlabInner<T> {
         }
 
         // Update chunk's freelist head
-        chunk_inner.free_head.set(next_free);
+        chunk_slab.free_head.set(next_free);
 
         // If chunk is now full, remove from slab's available-chunk list
         if next_free.is_null() {
             self.head_with_space.set(chunk.next_with_space.get());
         }
 
-        slot_ptr
+        // SAFETY: slot_ptr is valid and occupied
+        unsafe { Slot::from_ptr(slot_ptr) }
+    }
+
+    /// Frees a slot, dropping the value and returning storage to the freelist.
+    ///
+    /// # Performance
+    ///
+    /// O(n) where n = chunk count, due to chunk lookup. Typically 1-5 chunks.
+    ///
+    /// # Safety
+    ///
+    /// - `slot` must have been allocated from **this** slab
+    /// - No references to the slot's value may exist
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)]
+    pub unsafe fn free(&self, slot: Slot<T>) {
+        let slot_ptr = slot.as_ptr();
+        // SAFETY: Caller guarantees slot is valid and occupied
+        unsafe {
+            ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
+            self.free_ptr(slot_ptr);
+        }
+    }
+
+    /// Frees a slot and returns the value without dropping it.
+    ///
+    /// # Performance
+    ///
+    /// O(n) where n = chunk count, due to chunk lookup. Typically 1-5 chunks.
+    ///
+    /// # Safety
+    ///
+    /// - `slot` must have been allocated from **this** slab
+    /// - No references to the slot's value may exist
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)]
+    pub unsafe fn take(&self, slot: Slot<T>) -> T {
+        let slot_ptr = slot.as_ptr();
+        // SAFETY: Caller guarantees slot is valid and occupied
+        unsafe {
+            let value = ptr::read((*slot_ptr).value.as_ptr());
+            self.free_ptr(slot_ptr);
+            value
+        }
     }
 
     /// Returns a slot to the freelist by pointer.
     ///
     /// Does NOT drop the value — caller must drop before calling.
-    /// This is the hot-path variant that avoids the key→pointer round-trip.
     /// Finds the owning chunk via linear scan (typically 1-5 chunks).
-    ///
-    /// # Performance
-    ///
-    /// O(n) where n = chunk count. Typically 1-5 chunks in practice.
-    /// For bounded slabs, use `bounded::Slab` which has O(1) deallocation.
     ///
     /// # Safety
     ///
-    /// - `slot_ptr` must point to a previously claimed slot within this slab
+    /// - `slot_ptr` must point to a slot within this slab
     /// - Value must already be dropped or moved out
     #[doc(hidden)]
-    pub unsafe fn dealloc_ptr(&self, slot_ptr: *mut SlotCell<T>) {
+    pub unsafe fn free_ptr(&self, slot_ptr: *mut SlotCell<T>) {
         let chunks = self.chunks();
-        let cap = self.chunk_capacity.get() as usize;
+        let cap = self.chunk_capacity.get();
 
         // Find which chunk owns this pointer
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            let chunk_inner = &*chunk.inner;
-            let base = chunk_inner.slots_ptr();
+            let chunk_slab = &*chunk.inner;
+            let base = chunk_slab.slots_ptr();
             let end = base.wrapping_add(cap);
 
             if slot_ptr >= base && slot_ptr < end {
-                let free_head = chunk_inner.free_head.get();
+                let free_head = chunk_slab.free_head.get();
                 let was_full = free_head.is_null();
 
-                // Write freelist link — overwrites value bytes (union semantics)
-                // SAFETY: slot_ptr is within this chunk
+                // SAFETY: slot_ptr is within this chunk's range
                 unsafe {
                     (*slot_ptr).next_free = free_head;
                 }
-                chunk_inner.free_head.set(slot_ptr);
+                chunk_slab.free_head.set(slot_ptr);
 
                 if was_full {
                     chunk.next_with_space.set(self.head_with_space.get());
-                    self.head_with_space.set(chunk_idx as u32);
+                    self.head_with_space.set(chunk_idx);
                 }
                 return;
             }
         }
 
-        // Should never reach here if slot_ptr is valid
-        debug_assert!(false, "dealloc_ptr: slot_ptr not found in any chunk");
+        debug_assert!(false, "free_ptr: slot_ptr not found in any chunk");
     }
 }
 
-impl<T> Default for SlabInner<T> {
+impl<T> Default for Slab<T> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// =============================================================================
-// Slab
-// =============================================================================
-
-/// Pre-allocated growable slab.
-///
-/// `Slab<T>` owns its storage via a `Box<SlabInner<T>>`. Growth happens by
-/// adding independent chunks — no copying.
-///
-/// # Thread Safety
-///
-/// `Slab` is `!Send` and `!Sync`. Each slab must be used from a single thread.
-///
-/// # Example
-///
-/// ```
-/// use nexus_slab::unbounded::Slab;
-///
-/// // SAFETY: slab must outlive all allocated Slots
-/// let slab = unsafe { Slab::new(4096) };
-/// let slot = slab.alloc(42u64);
-/// assert_eq!(*slot, 42);
-/// // SAFETY: slot was allocated from this slab
-/// unsafe { slab.dealloc(slot) };
-/// ```
-pub struct Slab<T> {
-    inner: Box<SlabInner<T>>,
-}
-
-impl<T> Slab<T> {
-    /// Creates a new unbounded slab with the given chunk capacity.
-    ///
-    /// Chunks are allocated on-demand when slots are requested.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure this `Slab` outlives all [`Slot`]s allocated from it.
-    /// Dropping the `Slab` while `Slot`s are outstanding results in use-after-free.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if chunk_capacity is zero
-    /// - Panics if chunk_capacity exceeds maximum (2^30)
-    #[inline]
-    pub unsafe fn new(chunk_capacity: u32) -> Self {
-        let inner = Box::new(SlabInner::with_chunk_capacity(chunk_capacity as usize));
-        Self { inner }
-    }
-
-    /// Returns the total capacity across all chunks.
-    #[inline]
-    pub fn capacity(&self) -> usize {
-        self.inner.capacity()
-    }
-
-    // =========================================================================
-    // Raw API (Layer 1)
-    // =========================================================================
-
-    /// Allocates a slot and writes the value. Returns a raw slot handle.
-    ///
-    /// Always succeeds — grows the slab if needed.
-    #[inline]
-    pub fn alloc(&self, value: T) -> Slot<T> {
-        let slot_ptr = self.inner.try_alloc(value);
-        // SAFETY: try_alloc returns a valid, occupied slot pointer
-        unsafe { Slot::from_ptr(slot_ptr) }
-    }
-
-    /// Deallocates a slot, dropping the value and returning storage to the freelist.
-    ///
-    /// # Performance
-    ///
-    /// O(n) where n = chunk count, due to chunk lookup. Typically 1-5 chunks.
-    ///
-    /// # Safety
-    ///
-    /// - `slot` must have been allocated from **this** slab (not a different slab)
-    /// - No references to the slot's value may exist
-    ///
-    /// Note: Double-free is prevented at compile time (`Slot` is move-only).
-    #[inline]
-    #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    pub unsafe fn dealloc(&self, slot: Slot<T>) {
-        // Drop the value in place
-        // SAFETY: Caller guarantees slot is valid and occupied
-        unsafe {
-            ptr::drop_in_place((*(*slot.as_ptr()).value).as_mut_ptr());
-        }
-        // Return to freelist
-        // SAFETY: Value dropped, slot valid
-        unsafe { self.inner.dealloc_ptr(slot.as_ptr()) };
-    }
-
-    /// Deallocates a slot and returns the value without dropping it.
-    ///
-    /// # Performance
-    ///
-    /// O(n) where n = chunk count, due to chunk lookup. Typically 1-5 chunks.
-    ///
-    /// # Safety
-    ///
-    /// - `slot` must have been allocated from **this** slab (not a different slab)
-    /// - No references to the slot's value may exist
-    ///
-    /// Note: Double-free is prevented at compile time (`Slot` is move-only).
-    #[inline]
-    #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    pub unsafe fn dealloc_take(&self, slot: Slot<T>) -> T {
-        // Move the value out
-        // SAFETY: Caller guarantees slot is valid and occupied
-        let value = unsafe { ptr::read((*slot.as_ptr()).value.as_ptr()) };
-        // Return to freelist
-        // SAFETY: Value moved out, slot valid
-        unsafe { self.inner.dealloc_ptr(slot.as_ptr()) };
-        value
     }
 }
 
 impl<T> fmt::Debug for Slab<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Slab")
-            .field("capacity", &self.inner.capacity())
+            .field("capacity", &self.capacity())
             .finish()
     }
 }
@@ -476,19 +463,17 @@ mod tests {
 
     #[test]
     fn slab_basic() {
-        // SAFETY: slab outlives all slots
-        let slab = unsafe { Slab::<u64>::new(16) };
+        let slab = Slab::<u64>::with_chunk_capacity(16);
 
         let slot = slab.alloc(42);
         assert_eq!(*slot, 42);
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.dealloc(slot) };
+        unsafe { slab.free(slot) };
     }
 
     #[test]
     fn slab_grows() {
-        // SAFETY: slab outlives all slots
-        let slab = unsafe { Slab::<u64>::new(4) };
+        let slab = Slab::<u64>::with_chunk_capacity(4);
 
         let mut slots = Vec::new();
         for i in 0..10 {
@@ -500,36 +485,33 @@ mod tests {
         // Free all slots
         for slot in slots {
             // SAFETY: each slot was allocated from this slab
-            unsafe { slab.dealloc(slot) };
+            unsafe { slab.free(slot) };
         }
     }
 
     #[test]
     fn slot_deref_mut() {
-        // SAFETY: slab outlives all slots
-        let slab = unsafe { Slab::<String>::new(16) };
+        let slab = Slab::<String>::with_chunk_capacity(16);
         let mut slot = slab.alloc("hello".to_string());
         slot.push_str(" world");
         assert_eq!(&*slot, "hello world");
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.dealloc(slot) };
+        unsafe { slab.free(slot) };
     }
 
     #[test]
     fn slot_dealloc_take() {
-        // SAFETY: slab outlives all slots
-        let slab = unsafe { Slab::<String>::new(16) };
+        let slab = Slab::<String>::with_chunk_capacity(16);
         let slot = slab.alloc("hello".to_string());
 
         // SAFETY: slot was allocated from this slab
-        let value = unsafe { slab.dealloc_take(slot) };
+        let value = unsafe { slab.take(slot) };
         assert_eq!(value, "hello");
     }
 
     #[test]
     fn chunk_freelist_maintenance() {
-        // SAFETY: slab outlives all slots
-        let slab = unsafe { Slab::<u64>::new(2) };
+        let slab = Slab::<u64>::with_chunk_capacity(2);
 
         // Fill first chunk
         let s1 = slab.alloc(1);
@@ -539,29 +521,27 @@ mod tests {
 
         // Free from first chunk — should add it back to available list
         // SAFETY: s1 was allocated from this slab
-        unsafe { slab.dealloc(s1) };
+        unsafe { slab.free(s1) };
 
         // Should reuse the freed slot
         let s4 = slab.alloc(4);
 
         // SAFETY: all slots were allocated from this slab
         unsafe {
-            slab.dealloc(s2);
-            slab.dealloc(s3);
-            slab.dealloc(s4);
+            slab.free(s2);
+            slab.free(s3);
+            slab.free(s4);
         }
     }
 
     #[test]
     fn slot_size() {
-        // Raw Slot<T> is 8 bytes (one pointer)
         assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
     }
 
     #[test]
     fn borrow_traits() {
-        // SAFETY: slab outlives all slots
-        let slab = unsafe { Slab::<u64>::new(16) };
+        let slab = Slab::<u64>::with_chunk_capacity(16);
         let mut slot = slab.alloc(42);
 
         let borrowed: &u64 = slot.borrow();
@@ -572,6 +552,6 @@ mod tests {
         assert_eq!(*slot, 100);
 
         // SAFETY: slot was allocated from slab
-        unsafe { slab.dealloc(slot) };
+        unsafe { slab.free(slot) };
     }
 }

@@ -151,7 +151,7 @@ fn test_long_running_churn() {
     // --- Slab test ---
     println!("\n  Slab<TestValue>:");
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(CAPACITY as u32) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(CAPACITY);
 
         let mut items: Vec<Option<_>> = (0..CAPACITY).map(|_| None).collect();
         let mut occupied = 0usize;
@@ -177,7 +177,7 @@ fn test_long_running_churn() {
 
                 if let Some(slot) = items[idx].take() {
                     // SAFETY: slot was allocated from this slab
-                    unsafe { alloc.dealloc(slot) };
+                    unsafe { alloc.free(slot) };
                     occupied -= 1;
                 } else {
                     items[idx] = Some(alloc.alloc(TestValue::new(next_id)));
@@ -254,7 +254,7 @@ fn test_burst_allocation() {
 
     // --- Slab bursts ---
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(BURST_SIZE as u32) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(BURST_SIZE);
 
         let mut alloc_samples = Vec::with_capacity(BURSTS);
         let mut free_samples = Vec::with_capacity(BURSTS);
@@ -274,7 +274,7 @@ fn test_burst_allocation() {
             let start = rdtsc_start();
             for slot in items {
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.dealloc(slot) };
+                unsafe { alloc.free(slot) };
             }
             let free_time = rdtsc_end() - start;
             free_samples.push(free_time / BURST_SIZE as u64);
@@ -321,7 +321,7 @@ fn test_mixed_lifetimes() {
 
     // --- Slab mixed lifetimes ---
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new((LONG_LIVED + 100) as u32) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(LONG_LIVED + 100);
 
         // Create long-lived items
         let _long_lived: Vec<_> = (0..LONG_LIVED)
@@ -335,7 +335,7 @@ fn test_mixed_lifetimes() {
             let short = alloc.alloc(TestValue::new((LONG_LIVED + i) as u64));
             black_box(&*short);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(short) };
+            unsafe { alloc.free(short) };
             samples.push(rdtsc_end() - start);
         }
 
@@ -390,7 +390,7 @@ fn test_fifo_queue() {
 
     // --- Slab queue ---
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new((QUEUE_SIZE + 100) as u32) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(QUEUE_SIZE + 100);
 
         let mut queue: VecDeque<_> = VecDeque::with_capacity(QUEUE_SIZE);
 
@@ -409,7 +409,7 @@ fn test_fifo_queue() {
             pop_samples.push(rdtsc_end() - start);
             if let Some(slot) = item {
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.dealloc(slot) };
+                unsafe { alloc.free(slot) };
             }
 
             // Push
@@ -420,7 +420,7 @@ fn test_fifo_queue() {
 
         // Clean up remaining queue
         while let Some(slot) = queue.pop_front() {
-            unsafe { alloc.dealloc(slot) };
+            unsafe { alloc.free(slot) };
         }
 
         print_histogram("Slab push", &mut push_samples);
@@ -457,7 +457,7 @@ fn test_tail_latency() {
 
     // --- Slab tail latency ---
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(100) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(100);
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -466,7 +466,7 @@ fn test_tail_latency() {
             let item = alloc.alloc(TestValue::new(i as u64));
             black_box(&*item);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
             samples.push(rdtsc_end() - start);
         }
 
@@ -612,7 +612,7 @@ fn test_brutal_fragmentation() {
     // --- Slab (immune to fragmentation) ---
     println!();
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(1000) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(1000);
 
         let mut samples = Vec::with_capacity(MEASURE_COUNT);
 
@@ -621,7 +621,7 @@ fn test_brutal_fragmentation() {
             let item = alloc.alloc(TestValue::new(i as u64));
             black_box(&*item);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
             samples.push(rdtsc_end() - start);
         }
 
@@ -682,7 +682,7 @@ fn test_sustained_pressure() {
     // --- Slab under pressure ---
     println!();
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(TARGET_COUNT as u32) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(TARGET_COUNT);
 
         // Build up pressure
         let mut items: Vec<Option<_>> = (0..TARGET_COUNT).map(|_| None).collect();
@@ -703,7 +703,7 @@ fn test_sustained_pressure() {
             let start = rdtsc_start();
             if let Some(slot) = items[idx].take() {
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.dealloc(slot) };
+                unsafe { alloc.free(slot) };
             } else {
                 items[idx] = Some(alloc.alloc(TestValue::new(rng)));
             }
@@ -713,7 +713,7 @@ fn test_sustained_pressure() {
         print_histogram("Slab (100MB)", &mut samples);
         // Clean up remaining items
         for item in items.into_iter().flatten() {
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
         }
     }
 }
@@ -900,7 +900,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  10% fill");
         print_full_histogram_inline(&mut box_samples);
 
-        let alloc: BoundedSlab<T> = unsafe { BoundedSlab::new(SLAB_CAPACITY as u32) };
+        let alloc: BoundedSlab<T> = BoundedSlab::with_capacity(SLAB_CAPACITY);
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.alloc(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
         for _ in 0..SIZE_CHURN_OPS {
@@ -908,7 +908,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
             let item = alloc.alloc(T::default());
             black_box(&*item);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
             slab_samples.push(rdtsc_end() - start);
         }
         print!("  Slab 10% fill");
@@ -930,7 +930,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  25% fill");
         print_full_histogram_inline(&mut box_samples);
 
-        let alloc: BoundedSlab<T> = unsafe { BoundedSlab::new(SLAB_CAPACITY as u32) };
+        let alloc: BoundedSlab<T> = BoundedSlab::with_capacity(SLAB_CAPACITY);
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.alloc(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
         for _ in 0..SIZE_CHURN_OPS {
@@ -938,7 +938,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
             let item = alloc.alloc(T::default());
             black_box(&*item);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
             slab_samples.push(rdtsc_end() - start);
         }
         print!("  Slab 25% fill");
@@ -960,7 +960,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  50% fill");
         print_full_histogram_inline(&mut box_samples);
 
-        let alloc: BoundedSlab<T> = unsafe { BoundedSlab::new(SLAB_CAPACITY as u32) };
+        let alloc: BoundedSlab<T> = BoundedSlab::with_capacity(SLAB_CAPACITY);
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.alloc(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
         for _ in 0..SIZE_CHURN_OPS {
@@ -968,7 +968,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
             let item = alloc.alloc(T::default());
             black_box(&*item);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
             slab_samples.push(rdtsc_end() - start);
         }
         print!("  Slab 50% fill");
@@ -1079,7 +1079,7 @@ fn contention_test<T: Default + Clone + 'static>(name: &str) {
 
     // Slab - with same noise pattern (global allocator equally warm)
     {
-        let alloc: BoundedSlab<T> = unsafe { BoundedSlab::new((CONTENTION_BATCH + 100) as u32) };
+        let alloc: BoundedSlab<T> = BoundedSlab::with_capacity(CONTENTION_BATCH + 100);
 
         let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
         let mut rng = 12345u64; // Same seed for fair comparison
@@ -1120,7 +1120,7 @@ fn contention_test<T: Default + Clone + 'static>(name: &str) {
                 let item = alloc.alloc(T::default());
                 black_box(&*item);
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.dealloc(item) };
+                unsafe { alloc.free(item) };
             }
             let elapsed = rdtsc_end() - start;
             samples.push(elapsed / CONTENTION_BATCH as u64);
@@ -1190,7 +1190,7 @@ fn test_first_allocation_latency() {
 
     // Slab - first allocation from pre-allocated pool
     {
-        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::new(1000) };
+        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(1000);
 
         let mut first_alloc_times = Vec::with_capacity(TRIALS);
 
@@ -1202,7 +1202,7 @@ fn test_first_allocation_latency() {
             // Free all items
             for item in items {
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.dealloc(item) };
+                unsafe { alloc.free(item) };
             }
 
             // Now time the first allocation
@@ -1211,7 +1211,7 @@ fn test_first_allocation_latency() {
             let elapsed = rdtsc_end() - start;
             black_box(&*item);
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.dealloc(item) };
+            unsafe { alloc.free(item) };
 
             first_alloc_times.push(elapsed);
         }

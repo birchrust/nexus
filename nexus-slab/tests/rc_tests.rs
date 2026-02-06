@@ -67,7 +67,11 @@ fn init_unbounded_rc() {
 fn basic_alloc_deref_drop() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 1, price: 100.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order {
+        id: 1,
+        price: 100.0,
+    })
+    .unwrap();
     assert_eq!(rc.id, 1);
     assert_eq!(rc.price, 100.0);
     assert_eq!(rc.strong_count(), 1);
@@ -83,7 +87,7 @@ fn basic_alloc_deref_drop() {
 fn clone_bumps_strong() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 2, price: 50.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 2, price: 50.0 }).unwrap();
     assert_eq!(rc.strong_count(), 1);
 
     let rc2 = rc.clone();
@@ -105,7 +109,7 @@ fn last_strong_with_weak_value_dropped_slot_held() {
     init_drop_rc();
     reset_drop_count();
 
-    let rc = drop_rc::RcSlot::new(DropTracker(1));
+    let rc = drop_rc::RcSlot::try_new(DropTracker(1)).unwrap();
     let weak = rc.downgrade();
 
     assert_eq!(rc.strong_count(), 1);
@@ -128,7 +132,7 @@ fn last_strong_with_weak_value_dropped_slot_held() {
 fn weak_upgrade_succeeds() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 5, price: 75.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 5, price: 75.0 }).unwrap();
     let weak = rc.downgrade();
 
     let upgraded = weak.upgrade().expect("should succeed");
@@ -148,7 +152,7 @@ fn weak_upgrade_succeeds() {
 fn weak_upgrade_returns_none() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 6, price: 30.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 6, price: 30.0 }).unwrap();
     let weak = rc.downgrade();
 
     drop(rc);
@@ -164,7 +168,7 @@ fn weak_upgrade_returns_none() {
 fn downgrade_upgrade_roundtrip() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 9, price: 99.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 9, price: 99.0 }).unwrap();
     let weak = rc.downgrade();
     let rc2 = weak.upgrade().unwrap();
 
@@ -185,7 +189,7 @@ fn downgrade_upgrade_roundtrip() {
 fn get_mut_when_unique() {
     init_bounded_rc();
 
-    let mut rc = bounded_rc::RcSlot::new(Order { id: 11, price: 1.0 });
+    let mut rc = bounded_rc::RcSlot::try_new(Order { id: 11, price: 1.0 }).unwrap();
     assert_eq!(rc.strong_count(), 1);
     assert_eq!(rc.weak_count(), 0);
 
@@ -205,7 +209,7 @@ fn get_mut_when_unique() {
 fn get_mut_returns_none_when_cloned() {
     init_bounded_rc();
 
-    let mut rc = bounded_rc::RcSlot::new(Order { id: 12, price: 1.0 });
+    let mut rc = bounded_rc::RcSlot::try_new(Order { id: 12, price: 1.0 }).unwrap();
     let _rc2 = rc.clone();
 
     assert_eq!(rc.strong_count(), 2);
@@ -220,7 +224,7 @@ fn get_mut_returns_none_when_cloned() {
 fn get_mut_returns_none_when_weak_exists() {
     init_bounded_rc();
 
-    let mut rc = bounded_rc::RcSlot::new(Order { id: 13, price: 1.0 });
+    let mut rc = bounded_rc::RcSlot::try_new(Order { id: 13, price: 1.0 }).unwrap();
     let _weak = rc.downgrade();
 
     assert_eq!(rc.strong_count(), 1);
@@ -236,10 +240,10 @@ fn get_mut_returns_none_when_weak_exists() {
 fn make_mut_when_unique() {
     init_bounded_rc();
 
-    let mut rc = bounded_rc::RcSlot::new(Order { id: 14, price: 1.0 });
+    let mut rc = bounded_rc::RcSlot::try_new(Order { id: 14, price: 1.0 }).unwrap();
 
     {
-        let val = rc.make_mut();
+        let val = rc.try_make_mut().unwrap();
         val.price = 500.0;
     }
 
@@ -255,14 +259,14 @@ fn make_mut_when_unique() {
 fn make_mut_clones_when_shared() {
     init_bounded_rc();
 
-    let mut rc = bounded_rc::RcSlot::new(Order { id: 15, price: 1.0 });
+    let mut rc = bounded_rc::RcSlot::try_new(Order { id: 15, price: 1.0 }).unwrap();
     let rc2 = rc.clone();
 
     assert_eq!(rc.strong_count(), 2);
 
     // make_mut should clone into new slot
     {
-        let val = rc.make_mut();
+        let val = rc.try_make_mut().unwrap();
         val.price = 777.0;
     }
 
@@ -283,7 +287,7 @@ fn make_mut_clones_when_shared() {
 fn make_mut_clones_when_weak_exists() {
     init_bounded_rc();
 
-    let mut rc = bounded_rc::RcSlot::new(Order { id: 16, price: 1.0 });
+    let mut rc = bounded_rc::RcSlot::try_new(Order { id: 16, price: 1.0 }).unwrap();
     let weak = rc.downgrade();
 
     assert_eq!(rc.strong_count(), 1);
@@ -291,7 +295,7 @@ fn make_mut_clones_when_weak_exists() {
 
     // make_mut should clone because weak exists
     {
-        let val = rc.make_mut();
+        let val = rc.try_make_mut().unwrap();
         val.price = 888.0;
     }
 
@@ -312,7 +316,7 @@ fn make_mut_clones_when_weak_exists() {
 fn get_mut_unchecked_mutation() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 17, price: 1.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 17, price: 1.0 }).unwrap();
     assert_eq!(rc.strong_count(), 1);
 
     // SAFETY: strong_count == 1, weak_count == 0
@@ -337,8 +341,8 @@ fn try_new_returns_full() {
 
     let _ = small_rc::Allocator::builder().capacity(2).build();
 
-    let rc1 = small_rc::RcSlot::new(1u64);
-    let rc2 = small_rc::RcSlot::new(2u64);
+    let rc1 = small_rc::RcSlot::try_new(1u64).unwrap();
+    let rc2 = small_rc::RcSlot::try_new(2u64).unwrap();
 
     let result = small_rc::RcSlot::try_new(3u64);
     assert!(result.is_err());
@@ -365,7 +369,7 @@ fn drop_order_independence() {
     init_drop_rc();
     reset_drop_count();
 
-    let rc1 = drop_rc::RcSlot::new(DropTracker(100));
+    let rc1 = drop_rc::RcSlot::try_new(DropTracker(100)).unwrap();
     let rc2 = rc1.clone();
     let rc3 = rc1.clone();
     let weak = rc1.downgrade();
@@ -392,7 +396,7 @@ fn drop_order_independence() {
 fn nested_clones() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 18, price: 1.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 18, price: 1.0 }).unwrap();
     let rc2 = rc.clone();
     let rc3 = rc2.clone();
     let rc4 = rc3.clone();
@@ -419,7 +423,10 @@ fn nested_clones() {
 fn unbounded_basic() {
     init_unbounded_rc();
 
-    let rc = unbounded_rc::RcSlot::new(Order { id: 20, price: 200.0 });
+    let rc = unbounded_rc::RcSlot::new(Order {
+        id: 20,
+        price: 200.0,
+    });
     assert_eq!(rc.id, 20);
 
     let weak = rc.downgrade();
@@ -441,7 +448,7 @@ fn unbounded_basic() {
 fn multiple_weaks() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 19, price: 5.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 19, price: 5.0 }).unwrap();
     let w1 = rc.downgrade();
     let w2 = rc.downgrade();
     let w3 = w1.clone();
@@ -467,7 +474,7 @@ fn multiple_weaks() {
 fn as_ref_works() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 21, price: 7.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 21, price: 7.0 }).unwrap();
     let r: &Order = rc.as_ref();
     assert_eq!(r.id, 21);
     drop(rc);
@@ -481,7 +488,7 @@ fn as_ref_works() {
 fn debug_format() {
     init_bounded_rc();
 
-    let rc = bounded_rc::RcSlot::new(Order { id: 22, price: 8.0 });
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 22, price: 8.0 }).unwrap();
     let debug = format!("{:?}", rc);
     assert!(debug.contains("RcSlot"));
     assert!(debug.contains("strong"));
@@ -512,7 +519,7 @@ fn init_boxslot() {
 fn local_static_debug() {
     init_boxslot();
 
-    let slot = boxslot_for_local_static::BoxSlot::new(Order { id: 23, price: 9.0 });
+    let slot = boxslot_for_local_static::BoxSlot::try_new(Order { id: 23, price: 9.0 }).unwrap();
     let leaked = slot.leak();
 
     let debug = format!("{:?}", leaked);

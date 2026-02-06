@@ -38,7 +38,7 @@ fn test_basic_alloc_dealloc() {
     assert!(order_alloc::Allocator::is_initialized());
     assert_eq!(order_alloc::Allocator::capacity(), 10);
 
-    let slot = order_alloc::BoxSlot::new(Order::new(1, 100.0));
+    let slot = order_alloc::BoxSlot::try_new(Order::new(1, 100.0)).unwrap();
 
     // Deref works
     assert_eq!(slot.id, 1);
@@ -54,7 +54,7 @@ fn test_deref_mut() {
         .build()
         .expect("init should succeed");
 
-    let mut slot = order_alloc::BoxSlot::new(Order::new(1, 100.0));
+    let mut slot = order_alloc::BoxSlot::try_new(Order::new(1, 100.0)).unwrap();
 
     // Mutate through DerefMut
     slot.price = 200.0;
@@ -70,7 +70,7 @@ fn test_into_inner() {
         .build()
         .expect("init should succeed");
 
-    let slot = order_alloc::BoxSlot::new(Order::new(42, 99.99));
+    let slot = order_alloc::BoxSlot::try_new(Order::new(42, 99.99)).unwrap();
 
     let order = slot.into_inner();
     assert_eq!(order.id, 42);
@@ -84,7 +84,7 @@ fn test_into_slot_and_from_slot() {
         .build()
         .expect("init should succeed");
 
-    let slot = order_alloc::BoxSlot::new(Order::new(123, 456.78));
+    let slot = order_alloc::BoxSlot::try_new(Order::new(123, 456.78)).unwrap();
 
     // into_slot() returns the raw Slot<T> for manual management
     let raw_slot = slot.into_slot();
@@ -110,7 +110,7 @@ fn test_leak_returns_local_static() {
         .build()
         .expect("init should succeed");
 
-    let slot = order_alloc::BoxSlot::new(Order::new(42, 99.99));
+    let slot = order_alloc::BoxSlot::try_new(Order::new(42, 99.99)).unwrap();
 
     // leak() returns LocalStatic<T> - immutable, permanent reference
     let leaked: nexus_slab::LocalStatic<Order> = slot.leak();
@@ -183,7 +183,8 @@ fn test_drop_called() {
         .expect("init should succeed");
 
     {
-        let _slot = drop_called_test::alloc::BoxSlot::new(drop_called_test::Tracker(1));
+        let _slot =
+            drop_called_test::alloc::BoxSlot::try_new(drop_called_test::Tracker(1)).unwrap();
         assert_eq!(drop_called_test::count(), 0);
     }
 
@@ -199,7 +200,7 @@ fn test_drop_not_called_after_into_slot() {
         .build()
         .expect("init should succeed");
 
-    let slot = drop_leak_test::alloc::BoxSlot::new(drop_leak_test::Tracker(1));
+    let slot = drop_leak_test::alloc::BoxSlot::try_new(drop_leak_test::Tracker(1)).unwrap();
     let raw_slot = slot.into_slot(); // into_slot() returns raw Slot<T>, discarding RAII
 
     assert_eq!(drop_leak_test::count(), 0);
@@ -217,8 +218,8 @@ fn test_capacity_full() {
         .build()
         .expect("init should succeed");
 
-    let slot1 = order_alloc::BoxSlot::new(Order::new(1, 1.0));
-    let slot2 = order_alloc::BoxSlot::new(Order::new(2, 2.0));
+    let slot1 = order_alloc::BoxSlot::try_new(Order::new(1, 1.0)).unwrap();
+    let slot2 = order_alloc::BoxSlot::try_new(Order::new(2, 2.0)).unwrap();
 
     // Should fail - use try_new to get Full(value) back
     let result = order_alloc::BoxSlot::try_new(Order::new(3, 3.0));
@@ -229,7 +230,7 @@ fn test_capacity_full() {
     drop(slot1);
 
     // Now should succeed
-    let slot3 = order_alloc::BoxSlot::new(Order::new(3, 3.0));
+    let slot3 = order_alloc::BoxSlot::try_new(Order::new(3, 3.0)).unwrap();
     assert_eq!(slot3.id, 3);
 
     drop(slot2);
@@ -262,7 +263,7 @@ fn test_borrow_traits() {
         .build()
         .expect("init should succeed");
 
-    let mut slot = order_alloc::BoxSlot::new(Order::new(1, 100.0));
+    let mut slot = order_alloc::BoxSlot::try_new(Order::new(1, 100.0)).unwrap();
 
     // Borrow
     let borrowed: &Order = slot.borrow();

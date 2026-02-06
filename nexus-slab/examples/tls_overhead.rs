@@ -9,9 +9,9 @@
 
 use std::hint::black_box;
 
+use nexus_slab::Slot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
-use nexus_slab::Slot;
 
 // Macro-generated bounded allocator
 mod bounded_alloc {
@@ -140,10 +140,10 @@ fn bench_bounded() {
     println!("\nBOUNDED: Direct Slab vs Macro (TLS) Path");
     println!("─────────────────────────────────────────────────────────────────");
 
-    let capacity = 20_000u32;
-    let direct_slab = unsafe { BoundedSlab::<Pod64>::new(capacity) };
+    let capacity = 20_000usize;
+    let direct_slab = BoundedSlab::<Pod64>::with_capacity(capacity);
     bounded_alloc::Allocator::builder()
-        .capacity(capacity as usize)
+        .capacity(capacity)
         .build()
         .expect("init bounded");
 
@@ -159,7 +159,7 @@ fn bench_bounded() {
                 let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.dealloc(s) };
+                unsafe { direct_slab.free(s) };
             });
             let end = rdtsc_end();
             // This measures alloc+drop, we'll isolate below
@@ -172,7 +172,7 @@ fn bench_bounded() {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let s = bounded_alloc::BoxSlot::new(bounded_alloc::Pod64::default());
+                let s = bounded_alloc::BoxSlot::try_new(bounded_alloc::Pod64::default()).unwrap();
                 black_box(&*s);
                 drop(s);
             });
@@ -208,12 +208,12 @@ fn bench_bounded() {
         // Cleanup
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { direct_slab.dealloc(slot) };
+            unsafe { direct_slab.free(slot) };
         }
     }
     {
         let slots: Vec<_> = (0..100)
-            .map(|_| bounded_alloc::BoxSlot::new(bounded_alloc::Pod64::default()))
+            .map(|_| bounded_alloc::BoxSlot::try_new(bounded_alloc::Pod64::default()).unwrap())
             .collect();
 
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -248,7 +248,7 @@ fn bench_bounded() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.dealloc(slot) };
+                unsafe { direct_slab.free(slot) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -259,7 +259,7 @@ fn bench_bounded() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let slots: Vec<_> = (0..100)
-                .map(|_| bounded_alloc::BoxSlot::new(bounded_alloc::Pod64::default()))
+                .map(|_| bounded_alloc::BoxSlot::try_new(bounded_alloc::Pod64::default()).unwrap())
                 .collect();
 
             let mut iter = slots.into_iter();
@@ -282,10 +282,10 @@ fn bench_unbounded() {
     println!("\n\nUNBOUNDED: Direct Slab vs Macro (TLS) Path");
     println!("─────────────────────────────────────────────────────────────────");
 
-    let chunk_size = 4096u32;
-    let direct_slab = unsafe { UnboundedSlab::<Pod64>::new(chunk_size) };
+    let chunk_size = 4096usize;
+    let direct_slab = UnboundedSlab::<Pod64>::with_chunk_capacity(chunk_size);
     unbounded_alloc::Allocator::builder()
-        .chunk_size(chunk_size as usize)
+        .chunk_size(chunk_size)
         .build()
         .expect("init unbounded");
 
@@ -301,7 +301,7 @@ fn bench_unbounded() {
                 let s: Slot<Pod64> = direct_slab.alloc(val);
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.dealloc(s) };
+                unsafe { direct_slab.free(s) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -335,7 +335,7 @@ fn bench_unbounded() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.dealloc(slot) };
+                unsafe { direct_slab.free(slot) };
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -370,11 +370,11 @@ fn bench_side_by_side() {
     println!("─────────────────────────────────────────────────────────────────");
     println!("  Pattern: alloc Pod64, read one byte, drop. 100 unrolled ops/sample.");
 
-    let capacity = 20_000u32;
+    let capacity = 20_000usize;
 
     // Direct path uses the already-created slab from bench_bounded,
     // but we create a fresh one to be fair
-    let direct_slab = unsafe { BoundedSlab::<Pod64>::new(capacity) };
+    let direct_slab = BoundedSlab::<Pod64>::with_capacity(capacity);
     let val = Pod64::default();
 
     // Interleaved to avoid ordering bias
@@ -389,14 +389,14 @@ fn bench_side_by_side() {
                 let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.dealloc(s) };
+                unsafe { direct_slab.free(s) };
             });
             let end = rdtsc_end();
             direct_samples.push((end - start) / 100);
 
             let start = rdtsc_start();
             unroll_100!({
-                let s = bounded_alloc::BoxSlot::new(bounded_alloc::Pod64::default());
+                let s = bounded_alloc::BoxSlot::try_new(bounded_alloc::Pod64::default()).unwrap();
                 black_box(s.data[0]);
                 drop(s);
             });
@@ -406,7 +406,7 @@ fn bench_side_by_side() {
             // Macro first
             let start = rdtsc_start();
             unroll_100!({
-                let s = bounded_alloc::BoxSlot::new(bounded_alloc::Pod64::default());
+                let s = bounded_alloc::BoxSlot::try_new(bounded_alloc::Pod64::default()).unwrap();
                 black_box(s.data[0]);
                 drop(s);
             });
@@ -418,7 +418,7 @@ fn bench_side_by_side() {
                 let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
-                unsafe { direct_slab.dealloc(s) };
+                unsafe { direct_slab.free(s) };
             });
             let end = rdtsc_end();
             direct_samples.push((end - start) / 100);

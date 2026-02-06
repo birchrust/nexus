@@ -169,7 +169,7 @@ macro_rules! bench_size {
                 drop(b);
             }
             for _ in 0..1000 {
-                let s = $alloc_mod::BoxSlot::new(val);
+                let s = $alloc_mod::BoxSlot::try_new(val).unwrap();
                 black_box(&*s);
                 drop(s);
             }
@@ -191,7 +191,7 @@ macro_rules! bench_size {
 
                     let start = rdtsc_start();
                     unroll_100!({
-                        let s = black_box($alloc_mod::BoxSlot::new(val));
+                        let s = black_box($alloc_mod::BoxSlot::try_new(val).unwrap());
                         black_box(s.data[0]);
                         drop(s);
                     });
@@ -200,7 +200,7 @@ macro_rules! bench_size {
                 } else {
                     let start = rdtsc_start();
                     unroll_100!({
-                        let s = black_box($alloc_mod::BoxSlot::new(val));
+                        let s = black_box($alloc_mod::BoxSlot::try_new(val).unwrap());
                         black_box(s.data[0]);
                         drop(s);
                     });
@@ -229,8 +229,9 @@ macro_rules! bench_size {
         {
             let count = 1000usize;
             let boxes: Vec<_> = (0..count).map(|_| Box::new(val)).collect();
-            let slots: Vec<$alloc_mod::BoxSlot> =
-                (0..count).map(|_| $alloc_mod::BoxSlot::new(val)).collect();
+            let slots: Vec<$alloc_mod::BoxSlot> = (0..count)
+                .map(|_| $alloc_mod::BoxSlot::try_new(val).unwrap())
+                .collect();
 
             let mut rng = 12345u64;
             let mut box_samples = Vec::with_capacity(SAMPLES);
@@ -306,7 +307,7 @@ macro_rules! bench_batch {
                 let mut temp: Vec<$alloc_mod::BoxSlot> = Vec::with_capacity(100);
                 let start = rdtsc_start();
                 unroll_100!({
-                    temp.push(black_box($alloc_mod::BoxSlot::new(val)));
+                    temp.push(black_box($alloc_mod::BoxSlot::try_new(val).unwrap()));
                 });
                 let end = rdtsc_end();
                 macro_samples.push((end - start) / 100);
@@ -339,8 +340,9 @@ macro_rules! bench_batch {
 
             let mut macro_samples = Vec::with_capacity(SAMPLES);
             for _ in 0..SAMPLES {
-                let slots: Vec<$alloc_mod::BoxSlot> =
-                    (0..100).map(|_| $alloc_mod::BoxSlot::new(val)).collect();
+                let slots: Vec<$alloc_mod::BoxSlot> = (0..100)
+                    .map(|_| $alloc_mod::BoxSlot::try_new(val).unwrap())
+                    .collect();
                 let mut iter = slots.into_iter();
                 let start = rdtsc_start();
                 unroll_100!({

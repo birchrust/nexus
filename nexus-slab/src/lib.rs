@@ -29,7 +29,7 @@
 //! order_alloc::Allocator::builder().capacity(10_000).build()?;
 //!
 //! // 8-byte RAII slot — drops automatically, returns to freelist
-//! let slot = order_alloc::BoxSlot::new(Order { id: 1, price: 100.0 });
+//! let slot = order_alloc::BoxSlot::try_new(Order { id: 1, price: 100.0 })?;
 //! assert_eq!(slot.id, 1); // Deref to &Order
 //!
 //! // Leak for permanent storage
@@ -108,10 +108,6 @@ pub use alloc::{Alloc, BoundedAlloc, BoxSlot, Full, LocalStatic, UnboundedAlloc}
 
 // Re-export raw Slot from shared
 pub use shared::Slot;
-
-// Re-export sentinel for internal use (chunk freelists)
-#[doc(hidden)]
-pub use shared::SLOT_NONE;
 
 // Re-export SlotCell for direct slot access (used by nexus-collections and macros)
 pub use shared::SlotCell;
