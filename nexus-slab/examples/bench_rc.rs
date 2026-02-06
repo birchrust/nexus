@@ -102,7 +102,7 @@ const ITERATIONS: usize = 10000;
 fn bench_clone_rcslot() -> Vec<u64> {
     init_allocator();
 
-    let rc = order_alloc::RcSlot::new(Order::new(1));
+    let rc = order_alloc::RcSlot::try_new(Order::new(1)).unwrap();
     let mut samples = Vec::with_capacity(ITERATIONS);
 
     // Warmup
@@ -150,7 +150,7 @@ fn bench_clone_std_rc() -> Vec<u64> {
 fn bench_drop_not_last_rcslot() -> Vec<u64> {
     init_allocator();
 
-    let rc = order_alloc::RcSlot::new(Order::new(1));
+    let rc = order_alloc::RcSlot::try_new(Order::new(1)).unwrap();
     let mut samples = Vec::with_capacity(ITERATIONS);
 
     // Warmup
@@ -208,7 +208,7 @@ fn bench_drop_last_rcslot() -> Vec<u64> {
 
     // Warmup
     for i in 0..WARMUP {
-        let rc = order_alloc::RcSlot::new(Order::new(i as u64));
+        let rc = order_alloc::RcSlot::try_new(Order::new(i as u64)).unwrap();
         let start = rdtsc_start();
         drop(black_box(rc));
         let end = rdtsc_end();
@@ -217,7 +217,7 @@ fn bench_drop_last_rcslot() -> Vec<u64> {
 
     // Measure
     for i in 0..ITERATIONS {
-        let rc = order_alloc::RcSlot::new(Order::new(i as u64));
+        let rc = order_alloc::RcSlot::try_new(Order::new(i as u64)).unwrap();
         let start = rdtsc_start();
         drop(black_box(rc));
         let end = rdtsc_end();
@@ -256,7 +256,7 @@ fn bench_drop_last_std_rc() -> Vec<u64> {
 fn bench_deref_rcslot() -> Vec<u64> {
     init_allocator();
 
-    let rc = order_alloc::RcSlot::new(Order::new(42));
+    let rc = order_alloc::RcSlot::try_new(Order::new(42)).unwrap();
     let mut samples = Vec::with_capacity(ITERATIONS);
 
     // Warmup
@@ -304,7 +304,7 @@ fn bench_deref_std_rc() -> Vec<u64> {
 fn bench_downgrade_upgrade_rcslot() -> Vec<u64> {
     init_allocator();
 
-    let rc = order_alloc::RcSlot::new(Order::new(1));
+    let rc = order_alloc::RcSlot::try_new(Order::new(1)).unwrap();
     let mut samples = Vec::with_capacity(ITERATIONS);
 
     // Warmup
@@ -358,7 +358,7 @@ fn bench_new_rcslot() -> Vec<u64> {
 
     // Pre-warm the freelist by allocating and freeing
     for i in 0..WARMUP {
-        let rc = order_alloc::RcSlot::new(Order::new(i as u64));
+        let rc = order_alloc::RcSlot::try_new(Order::new(i as u64)).unwrap();
         drop(rc);
     }
 
@@ -367,7 +367,7 @@ fn bench_new_rcslot() -> Vec<u64> {
     // Measure allocation from warm freelist
     for i in 0..ITERATIONS {
         let start = rdtsc_start();
-        let rc = order_alloc::RcSlot::new(Order::new(i as u64));
+        let rc = order_alloc::RcSlot::try_new(Order::new(i as u64)).unwrap();
         let end = rdtsc_end();
         samples.push(end - start);
         drop(black_box(rc)); // Return to freelist for next iteration
@@ -414,11 +414,9 @@ fn print_comparison(name: &str, rcslot: &[u64], std_rc: &[u64]) {
 
     let speedup_p50 = std_p50 as f64 / rc_p50 as f64;
 
-    println!("{:<25} {:>8} {:>8} {:>8}    {:>8} {:>8} {:>8}    {:>5.2}x",
-        name,
-        rc_p50, rc_p99, rc_p999,
-        std_p50, std_p99, std_p999,
-        speedup_p50
+    println!(
+        "{:<25} {:>8} {:>8} {:>8}    {:>8} {:>8} {:>8}    {:>5.2}x",
+        name, rc_p50, rc_p99, rc_p999, std_p50, std_p99, std_p999, speedup_p50
     );
 }
 
@@ -428,10 +426,14 @@ fn main() {
     println!("Type: Order (32 bytes)");
     println!("Iterations: {}", ITERATIONS);
     println!();
-    println!("{:<25} {:>8} {:>8} {:>8}    {:>8} {:>8} {:>8}    {:>6}",
-        "Operation", "p50", "p99", "p999", "p50", "p99", "p999", "Speedup");
-    println!("{:<25} {:>8} {:>8} {:>8}    {:>8} {:>8} {:>8}    {:>6}",
-        "", "RcSlot", "", "", "std::Rc", "", "", "(p50)");
+    println!(
+        "{:<25} {:>8} {:>8} {:>8}    {:>8} {:>8} {:>8}    {:>6}",
+        "Operation", "p50", "p99", "p999", "p50", "p99", "p999", "Speedup"
+    );
+    println!(
+        "{:<25} {:>8} {:>8} {:>8}    {:>8} {:>8} {:>8}    {:>6}",
+        "", "RcSlot", "", "", "std::Rc", "", "", "(p50)"
+    );
     println!("{}", "-".repeat(95));
 
     let rcslot = bench_new_rcslot();

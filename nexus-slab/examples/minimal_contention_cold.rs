@@ -6,6 +6,7 @@
 //! - Interleaved Box/Slab measurements to avoid ordering bias
 //! - BATCH=10 amortizes rdtsc overhead while measuring cold-start behavior
 
+use nexus_slab::Slot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
@@ -114,7 +115,7 @@ fn print_stats(name: &str, samples: &mut [u64]) {
     );
 }
 
-fn cold_test<T: Default + Clone>(name: &str, slab: BoundedSlab<T>) {
+fn cold_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
     println!("\n  -- {} (COLD) --", name);
 
     let mut box_samples = Vec::with_capacity(SAMPLES);
@@ -137,9 +138,10 @@ fn cold_test<T: Default + Clone>(name: &str, slab: BoundedSlab<T>) {
             evict_cache();
             let start = rdtsc_start();
             for _ in 0..BATCH {
-                let slot = slab.new_slot(T::default());
+                let slot: Slot<T> = slab.alloc(T::default());
                 black_box(&*slot);
-                drop(slot);
+                // SAFETY: slot was allocated from this slab
+                unsafe { slab.free(slot) };
             }
             let elapsed = rdtsc_end() - start;
             slab_samples.push(elapsed / BATCH as u64);
@@ -148,9 +150,10 @@ fn cold_test<T: Default + Clone>(name: &str, slab: BoundedSlab<T>) {
             evict_cache();
             let start = rdtsc_start();
             for _ in 0..BATCH {
-                let slot = slab.new_slot(T::default());
+                let slot: Slot<T> = slab.alloc(T::default());
                 black_box(&*slot);
-                drop(slot);
+                // SAFETY: slot was allocated from this slab
+                unsafe { slab.free(slot) };
             }
             let elapsed = rdtsc_end() - start;
             slab_samples.push(elapsed / BATCH as u64);
@@ -176,12 +179,12 @@ fn main() {
     println!("==========================");
     println!("  24MB eviction buffer (2x L3), strided access, interleaved measurement");
 
-    let slab64 = BoundedSlab::<Pod64>::new((SAMPLES * 2) as u32);
-    cold_test("64B", slab64);
+    let slab64 = BoundedSlab::<Pod64>::with_capacity(SAMPLES * 2);
+    cold_test("64B", &slab64);
 
-    let slab256 = BoundedSlab::<Pod256>::new((SAMPLES * 2) as u32);
-    cold_test("256B", slab256);
+    let slab256 = BoundedSlab::<Pod256>::with_capacity(SAMPLES * 2);
+    cold_test("256B", &slab256);
 
-    let slab4096 = BoundedSlab::<Pod4096>::new((SAMPLES * 2) as u32);
-    cold_test("4096B", slab4096);
+    let slab4096 = BoundedSlab::<Pod4096>::with_capacity(SAMPLES * 2);
+    cold_test("4096B", &slab4096);
 }

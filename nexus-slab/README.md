@@ -1,215 +1,162 @@
 # nexus-slab
 
-A high-performance slab allocator for **stable memory addresses** without heap allocation overhead.
+A SLUB-style slab allocator for **predictable latency** and **cache-friendly allocation patterns**.
 
-## What Is This?
+## Why SLUB?
 
-`nexus-slab` is a **custom allocator pattern**—not a replacement for Rust's global allocator, but a specialized allocator for specific use cases where you need:
+SLUB (the Linux kernel's default allocator) uses a simple but powerful design: **per-type freelists with LIFO allocation order**. This gives you:
 
-- **Stable memory addresses** - pointers remain valid until explicitly freed
-- **Box-like semantics without Box** - RAII ownership with pre-allocated backing storage
-- **Node-based data structures** - linked lists, trees, graphs with internal pointers
-- **Predictable tail latency** - no reallocation spikes during growth
+### 1. LIFO Cache Locality
 
-Think of `Slot<T>` as analogous to `Box<T>`: an owning handle that provides access to a value and deallocates on drop. The difference is that `Box` allocates from the heap on every call, while `Slot` allocates from a pre-allocated slab—making allocation O(1) with no syscalls.
+When you free a slot and immediately allocate again, you get the same slot back — still hot in L1 cache. This is the common pattern in request handlers, event loops, and state machines: allocate, process, free, repeat.
+
+```
+Free slot A → A goes to head of freelist
+Alloc       → Get A back, still in cache (5-8 cycles)
+
+vs heap allocation:
+Free A → tcache/arena bookkeeping
+Alloc  → possibly different address, cold cache (40-60+ cycles)
+```
+
+### 2. Zero Fragmentation
+
+Every slot is the same size. No external fragmentation, no coalescing, no compaction. A freed slot is immediately reusable by any allocation of that type.
+
+### 3. Global Allocator Isolation
+
+Your hot path doesn't compete with logging, serialization, or background tasks for the same allocator. The slab is yours alone — no lock contention, no tcache evictions from unrelated allocations.
+
+### 4. Placement-New Optimization
+
+The `Claim` API enables true placement construction — values are written directly into the slot without intermediate copies. Combined with `#[inline]`, LLVM can construct your struct in-place, eliminating memcpy overhead.
+
+### 5. Pin Support for Async
+
+Because slab values have stable addresses, `BoxSlot` provides `pin()` and `pin_mut()` without requiring `T: Unpin`. This makes slab allocation ideal for storing futures and other self-referential types:
+
+```rust
+let mut slot = order_alloc::BoxSlot::try_new(MyFuture::new())?;
+let pinned: Pin<&mut MyFuture> = slot.pin_mut();
+pinned.poll(cx);  // Safe — value won't move until slot is freed
+```
 
 ## Quick Start
 
 ```rust
-use nexus_slab::Allocator;
+// Define a type-specific allocator via macro
+mod order_alloc {
+    nexus_slab::bounded_allocator!(super::Order);
+}
 
-// Create an allocator for your type
-let alloc: Allocator<Order> = Allocator::builder()
-    .bounded(1024)
-    .build();
+// Initialize once per thread (slab is thread-local)
+order_alloc::Allocator::builder()
+    .capacity(10_000)
+    .build()?;
 
-// Insert returns a 16-byte RAII Slot
-let mut slot = alloc.new_slot(Order::new());
-assert_eq!(slot.price, 100);
+// 8-byte RAII handle — half the size of Box
+let slot = order_alloc::BoxSlot::try_new(Order { id: 1, price: 100.0 })?;
+assert_eq!(slot.id, 1);  // Deref to &Order
 
-// Modify through the slot (implements DerefMut)
-slot.quantity = 50;
-
-// Slot auto-deallocates on drop
-drop(slot);
+// Slot drops automatically, returns to freelist head (LIFO)
 ```
 
 ## Performance
 
 All measurements in CPU cycles. See [BENCHMARKS.md](./BENCHMARKS.md) for methodology.
 
-### Allocator API vs slab crate (p50)
+### Slot vs Box — Churn (alloc + deref + drop)
 
-| Operation | Slot API | Key-based | slab crate | Notes |
-|-----------|----------|-----------|------------|-------|
-| GET | **2** | 2 | 3 | Direct pointer, no lookup |
-| GET (hot) | **0** | - | 1 | ILP - CPU pipelines loads |
-| GET_MUT | **2** | 2 | 3 | Direct pointer |
-| INSERT | 8 | - | **5** | vtable indirection |
-| REMOVE | **4** | - | 4 | Direct vtable pointer |
-| REPLACE | **3** | - | 4 | Direct pointer, no lookup |
-| CONTAINS | **2** | 3 | 2 | slot.is_valid() |
+| Size | Slot p50 | Box p50 | Slot p99.9 | Box p99.9 |
+|------|----------|---------|------------|-----------|
+| 32B | **5** | 14 | **8** | 49 |
+| 64B | **7** | 16 | **16** | 63 |
+| 128B | **11** | 21 | **35** | 75 |
+| 4096B | **157** | 175 | **264** | 329 |
 
-### vs Box (Isolation Advantage)
+**Slot is 2.8x faster at 32B.** The gap widens at tail latencies — Slot has no syscall path, no lock contention, no allocator state to maintain.
 
-The killer feature: **slab is isolated from the global allocator**. In production, `Box::new()` shares malloc with everything else. Your slab is yours alone.
+### Deallocation
 
-#### Hot Cache (realistic steady-state)
+| Size | Slot p50 | Box p50 |
+|------|----------|---------|
+| 32B | **2** | 12 |
+| 64B | **2** | 12 |
+| 1024B | **4** | 24 |
 
-| Size | Box p50 | Slab p50 | Box p99 | Slab p99 | Box p99.9 | Slab p99.9 |
-|------|---------|----------|---------|----------|-----------|------------|
-| 64B | 13 | **8** | 19 | **11** | 29 | **15** |
-| 256B | 16 | **16** | 48 | **20** | 53 | **49** |
-| 4096B | 108 | **59** | 162 | **81** | 229 | **152** |
+**Slot deallocation is 6x faster.** A slab free is a single pointer write to the freelist head. `free()` must update bin metadata, potentially coalesce, and manage tcache.
 
-#### Cold Cache (single-op, true first-access latency)
+### Under Contention (Global Allocator Traffic)
 
-| Size | Box p50 | Slab p50 | Box p99 | Slab p99 |
-|------|---------|----------|---------|----------|
-| 64B | 158 | **84** | 300 | **154** |
-| 256B | 168 | **108** | 314 | **176** |
+| Size | Slab p50 | Box p50 | Slab p99.9 | Box p99.9 |
+|------|----------|---------|------------|-----------|
+| 64B | **2** | 18 | **16** | 106 |
+| 4096B | **52** | 112 | **367** | 809 |
 
-**Key findings:**
-- **Hot cache**: Slab **1.8x faster** at p50 for 4096B (59 vs 108 cycles)
-- **Cold single-op**: Slab **1.9x faster** at p50 for 64B (84 vs 158 cycles)
-- **Tail latency**: Slab consistently 1.7-2x better at p99
-
-See [BENCHMARKS.md](./BENCHMARKS.md) for full methodology and stress test results.
-
-## Use Cases
-
-### Node-Based Data Structures
-
-```rust
-use nexus_slab::{Allocator, Key};
-
-struct Node {
-    value: i32,
-    next: Key,  // 4 bytes, not 8 for Option<Box<Node>>
-    prev: Key,
-}
-
-let alloc: Allocator<Node> = Allocator::builder().bounded(1000).build();
-
-let head = alloc.new_slot(Node {
-    value: 1,
-    next: Key::NONE,
-    prev: Key::NONE,
-});
-
-// Keys are stable - safe to store in other nodes
-let head_key = head.key();
-
-let mut tail = alloc.new_slot(Node {
-    value: 2,
-    next: Key::NONE,
-    prev: head_key,
-});
-```
-
-### Stable Memory Addresses
-
-```rust
-use nexus_slab::Allocator;
-
-let alloc: Allocator<[u8; 4096]> = Allocator::builder().bounded(100).build();
-
-let slot = alloc.new_slot([0u8; 4096]);
-let ptr = slot.as_ptr() as *const u8;
-
-// Pointer remains valid as long as slot exists
-// No reallocation, no movement
-
-let key = slot.leak();  // Keep alive, return key for later cleanup
-```
-
-### Key Serialization
-
-Keys can be converted to/from `u32` for external storage:
-
-```rust
-use nexus_slab::{Allocator, Key};
-
-let alloc: Allocator<MyValue> = Allocator::builder().bounded(1000).build();
-
-let slot = alloc.new_slot(value);
-let key = slot.leak();
-
-// Serialize
-let raw: u32 = key.into_raw();
-store_somewhere(raw);
-
-// Deserialize
-let raw = load_from_somewhere();
-let key = Key::from_raw(raw);
-
-// Access (caller must ensure validity)
-let value = unsafe { alloc.get_unchecked(key) };
-```
-
-**Warning**: Keys are simple indices with no generation counter. If you store keys externally (databases, wire protocols), you must ensure the key is still valid before use. For wire protocols, prefer authoritative external identifiers (exchange order IDs, database primary keys) and use the slab key only for internal indexing.
+**Slab is 9x faster at 64B** when the global allocator is busy. This is the real-world advantage: your hot path stays fast even when background tasks are allocating.
 
 ## API
 
-### Allocator
+### Macros
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `Allocator::builder()` | `Builder` | Start configuring an allocator |
-| `new_slot(value)` | `Slot` | Insert, panics if full |
-| `try_new_slot(value)` | `Option<Slot>` | Insert, returns None if full |
-| `contains_key(key)` | `bool` | Check if key is valid |
-| `get(key)` | `Option<&T>` | Get by key |
-| `get_mut(key)` | `Option<&mut T>` | Get mut by key |
-| `get_unchecked(key)` | `&T` | Get by key (unsafe) |
-| `get_unchecked_mut(key)` | `&mut T` | Get mut by key (unsafe) |
-| `remove_by_key(key)` | `T` | Remove by key (panics if invalid) |
-| `try_remove_by_key(key)` | `Option<T>` | Remove by key |
-| `len()` / `capacity()` | `usize` | Slot counts |
+| Macro | Description |
+|-------|-------------|
+| `bounded_allocator!(Type)` | Fixed capacity, returns `Err(Full)` when exhausted |
+| `unbounded_allocator!(Type)` | Grows via chunks, never fails |
+| `bounded_rc_allocator!(Type)` | Bounded + reference counting (`RcSlot`, `WeakSlot`) |
+| `unbounded_rc_allocator!(Type)` | Unbounded + reference counting |
 
-`Allocator` is `Copy` - it's just a pointer to leaked storage.
+### Generated Types
 
-### Slot (16 bytes)
+Each macro generates:
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `key()` | `Key` | Get the key for this slot |
-| `leak()` | `Key` | Keep alive, return key |
-| `into_inner()` | `T` | Remove and return value |
-| `replace(value)` | `T` | Swap value, return old |
-| `is_valid()` | `bool` | Check if slot is still valid |
-| `as_ptr()` | `*const T` | Raw pointer to value |
-| `as_mut_ptr()` | `*mut T` | Mutable raw pointer |
+| Type | Description |
+|------|-------------|
+| `Allocator` | Unit struct with `builder()` and `is_initialized()` |
+| `BoxSlot` | 8-byte RAII handle (like `Box`, but from the slab) |
+| `RcSlot` | Reference-counted handle (rc macros only) |
+| `WeakSlot` | Weak reference (rc macros only) |
 
-`Slot` implements `Deref` and `DerefMut` for ergonomic access.
-
-### Key (4 bytes)
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `index()` | `u32` | The slot index |
-| `into_raw()` | `u32` | For serialization |
-| `from_raw(u32)` | `Key` | From serialized value |
-| `is_none()` | `bool` | Check if sentinel |
-| `is_some()` | `bool` | Check if valid |
-| `Key::NONE` | `Key` | Sentinel value |
-
-### Builder Pattern
+### BoxSlot API
 
 ```rust
-use nexus_slab::Allocator;
+// Construction
+let slot = BoxSlot::try_new(value)?;  // Bounded: returns Result
+let slot = BoxSlot::new(value);       // Unbounded: always succeeds
 
-// Bounded: fixed capacity, panics when full
-let alloc: Allocator<MyType> = Allocator::builder()
-    .bounded(1024)
-    .build();
+// Access (Deref + DerefMut)
+let x = slot.field;
+slot.field = new_value;
 
-// Unbounded: grows by adding chunks (no copying)
-let alloc: Allocator<MyType> = Allocator::builder()
-    .unbounded()
-    .chunk_capacity(4096)  // slots per chunk
-    .prealloc(10_000)      // pre-allocate
-    .build();
+// Pinned access (stable addresses — no Unpin bound required)
+let pinned: Pin<&T> = slot.pin();
+let pinned_mut: Pin<&mut T> = slot.pin_mut();
+
+// Consumption
+let value = BoxSlot::into_inner(slot);  // Extract value, free slot
+let leaked = slot.leak();               // Leak to LocalStatic (permanent)
+
+// Drop: automatic, returns slot to freelist
+```
+
+### Builder API
+
+```rust
+// Bounded: fixed capacity, fail-fast
+mod order_alloc {
+    nexus_slab::bounded_allocator!(super::Order);
+}
+order_alloc::Allocator::builder()
+    .capacity(10_000)
+    .build()?;
+
+// Unbounded: grows in chunks
+mod quote_alloc {
+    nexus_slab::unbounded_allocator!(super::Quote);
+}
+quote_alloc::Allocator::builder()
+    .chunk_size(4096)  // slots per chunk (default: 4096)
+    .build()?;
 ```
 
 ## Bounded vs Unbounded
@@ -217,64 +164,88 @@ let alloc: Allocator<MyType> = Allocator::builder()
 | | Bounded | Unbounded |
 |---|---------|-----------|
 | Growth | Fixed capacity | Adds chunks |
-| Full behavior | Panics | Always succeeds |
-| Tail latency | Deterministic | +2-4 cycles chunk lookup |
-| Use case | Known capacity | Unknown/variable load |
+| Full behavior | Returns `Err(Full)` | Always succeeds |
+| Allocation | ~5-8 cycles | ~7-10 cycles (chunk lookup) |
+| Use case | Known capacity | Variable load |
 
-Use **bounded** when capacity is known—it's faster and fully deterministic.
+**Use bounded** when you know your capacity — it's faster and fully deterministic.
 
-Use **unbounded** when you need overflow headroom without `Vec` reallocation spikes.
+**Use unbounded** when you need overflow headroom. Growth adds chunks without copying existing data (unlike `Vec` reallocation).
 
 ## Architecture
 
-### Slot Design
+### SlotCell Union (SLUB-style)
 
-Each `Slot` is **16 bytes** (slot pointer + vtable pointer):
+Each slot is a `repr(C)` union — either a freelist pointer or a value:
+
+```rust
+#[repr(C)]
+pub union SlotCell<T> {
+    pub next_free: *mut SlotCell<T>,
+    pub value: ManuallyDrop<MaybeUninit<T>>,
+}
+```
+
+- **Vacant**: `next_free` points to next free slot (or null for end of list)
+- **Occupied**: `value` contains the user's `T`
+
+No tag, no metadata — writing a value overwrites the freelist pointer. The `Slot` RAII handle is the proof of occupancy.
+
+### Freelist Layout
 
 ```
-Slot (16 bytes):
+Bounded:
+  free_head → SlotCell[2] → SlotCell[7] → SlotCell[4] → null
+              (most recently freed, hottest in cache)
+
+Unbounded:
+  free_head → SlotCell in Chunk 1 → SlotCell in Chunk 0 → null
+              (freelists are intra-chunk, chunk lookup on access)
+```
+
+### 8-Byte Handle
+
+`BoxSlot` is 8 bytes — just a pointer to the `SlotCell`:
+
+```
+BoxSlot (8 bytes):
 ┌─────────────────────────┐
 │ *mut SlotCell<T>        │  ← Direct pointer to value
-├─────────────────────────┤
-│ &'static VTable<T>      │  ← Embedded vtable for deallocation
 └─────────────────────────┘
 ```
 
-This design gives:
-- **Zero-cost access** (GET/REPLACE use direct pointer)
-- **RAII semantics** (drop returns slot to freelist via vtable)
-- **No TLS lookups** (vtable pointer embedded in Slot)
-
-### Memory Layout
-
-```
-Slab (contiguous allocation):
-┌──────────────────────────────────────────┐
-│ SlotCell 0: [stamp: u64][value: T]       │
-│ SlotCell 1: [stamp: u64][value: T]       │
-│ ...                                       │
-│ SlotCell N: [stamp: u64][value: T]       │
-└──────────────────────────────────────────┘
-```
-
-### No Generational Indices
-
-Keys are simple indices. This is intentional—see the [Key documentation](https://docs.rs/nexus-slab/latest/nexus_slab/struct.Key.html) for rationale.
-
-**TL;DR**: Your data has authoritative external identifiers (exchange order IDs, database keys). You validate against those anyway. Generational indices add ~8 cycles to catch bugs that domain validation already catches.
+Compare to `Box<T>` at 8 bytes but with heap allocation overhead, or `Rc<T>` at 8 bytes with atomic refcount overhead.
 
 ## Thread Safety
 
-`Allocator` and `Slot` are `!Send` and `!Sync`. Each allocator must only be used from the thread that created it.
+Allocators are **thread-local** and `!Send + !Sync`. Each thread gets its own slab — no locking, no contention.
 
 ```rust
-use nexus_slab::Allocator;
-
 // This won't compile:
-// std::thread::spawn(move || {
-//     let slot = alloc.new_slot(42);  // Error: Allocator is !Send
-// });
+std::thread::spawn(move || {
+    let slot = order_alloc::BoxSlot::try_new(order);  // Error: !Send
+});
 ```
+
+For cross-thread scenarios, use `RcSlot` with `into_slot_unchecked()` for controlled ownership transfer (unsafe).
+
+## When to Use This
+
+**Use nexus-slab when:**
+- You churn same-type objects (orders, connections, timers, nodes)
+- You need predictable tail latency
+- Your hot path competes with background allocations
+- You need `Pin` for async futures or self-referential types
+- You want stable pointers without `Box::pin()` overhead
+
+**Use Box when:**
+- Allocation is infrequent
+- Types vary widely
+- Simplicity matters more than performance
+
+**Use the `slab` crate when:**
+- You need key-based access and iteration
+- You need a general-purpose slab data structure
 
 ## License
 

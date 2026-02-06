@@ -98,7 +98,7 @@ fn main() {
     // 64B test
     {
         println!("\n  -- 64B SINGLE OP --");
-        let slab = BoundedSlab::<Pod64>::new((SAMPLES * 4) as u32);
+        let slab = BoundedSlab::<Pod64>::with_capacity(SAMPLES * 4);
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -117,7 +117,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod64::default());
+                let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -126,7 +126,7 @@ fn main() {
                 // Slab first
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod64::default());
+                let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -149,7 +149,7 @@ fn main() {
     // 256B test
     {
         println!("\n  -- 256B SINGLE OP --");
-        let slab = BoundedSlab::<Pod256>::new((SAMPLES * 4) as u32);
+        let slab = BoundedSlab::<Pod256>::with_capacity(SAMPLES * 4);
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -166,7 +166,7 @@ fn main() {
 
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod256::default());
+                let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;
@@ -174,7 +174,7 @@ fn main() {
             } else {
                 evict_cache();
                 let start = rdtsc_start();
-                let slot = slab.new_slot(Pod256::default());
+                let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
                 drop(slot);
                 let elapsed = rdtsc_end() - start;

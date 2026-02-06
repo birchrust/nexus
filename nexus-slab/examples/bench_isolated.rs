@@ -125,13 +125,32 @@ const WARMUP: usize = 5_000;
 // ============================================================================
 
 macro_rules! unroll_10 {
-    ($op:expr) => { $op; $op; $op; $op; $op; $op; $op; $op; $op; $op; };
+    ($op:expr) => {
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+    };
 }
 
 macro_rules! unroll_100 {
     ($op:expr) => {
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
-        unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op); unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
+        unroll_10!($op);
     };
 }
 
@@ -252,7 +271,7 @@ macro_rules! slot_churn {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP {
-            let s = $alloc::Slot::new(val.clone());
+            let s = $alloc::BoxSlot::try_new(val.clone()).unwrap();
             black_box(s.data[0]);
             drop(s);
         }
@@ -261,7 +280,7 @@ macro_rules! slot_churn {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let s = black_box($alloc::Slot::new(val.clone()));
+                let s = black_box($alloc::BoxSlot::try_new(val.clone()).unwrap());
                 black_box(s.data[0]);
                 drop(s);
             });
@@ -277,16 +296,18 @@ macro_rules! slot_batch_alloc {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
+            let temp: Vec<$alloc::BoxSlot> = (0..100)
+                .map(|_| $alloc::BoxSlot::try_new(val.clone()).unwrap())
+                .collect();
             drop(temp);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let mut temp: Vec<$alloc::Slot> = Vec::with_capacity(100);
+            let mut temp: Vec<$alloc::BoxSlot> = Vec::with_capacity(100);
             let start = rdtsc_start();
             unroll_100!({
-                temp.push(black_box($alloc::Slot::new(val.clone())));
+                temp.push(black_box($alloc::BoxSlot::try_new(val.clone()).unwrap()));
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -301,14 +322,17 @@ macro_rules! slot_batch_drop {
         let val = <$pod>::default();
 
         for _ in 0..WARMUP / 10 {
-            let temp: Vec<$alloc::Slot> = (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
+            let temp: Vec<$alloc::BoxSlot> = (0..100)
+                .map(|_| $alloc::BoxSlot::try_new(val.clone()).unwrap())
+                .collect();
             drop(temp);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let slots: Vec<$alloc::Slot> =
-                (0..100).map(|_| $alloc::Slot::new(val.clone())).collect();
+            let slots: Vec<$alloc::BoxSlot> = (0..100)
+                .map(|_| $alloc::BoxSlot::try_new(val.clone()).unwrap())
+                .collect();
             let mut iter = slots.into_iter();
             let start = rdtsc_start();
             unroll_100!({
@@ -324,7 +348,9 @@ macro_rules! slot_batch_drop {
 macro_rules! slot_access {
     ($name:expr, $pod:ty, $alloc:ident) => {{
         let val = <$pod>::default();
-        let pool: Vec<$alloc::Slot> = (0..1000).map(|_| $alloc::Slot::new(val.clone())).collect();
+        let pool: Vec<$alloc::BoxSlot> = (0..1000)
+            .map(|_| $alloc::BoxSlot::try_new(val.clone()).unwrap())
+            .collect();
 
         // Warmup: touch every element
         for p in &pool {
@@ -364,9 +390,13 @@ fn evict_cache(polluter: &[u8]) {
     let ptr = polluter.as_ptr();
     let len = polluter.len();
     for i in (0..len).step_by(64) {
-        unsafe { std::ptr::read_volatile(ptr.add(i)); }
+        unsafe {
+            std::ptr::read_volatile(ptr.add(i));
+        }
     }
-    unsafe { std::arch::x86_64::_mm_lfence(); }
+    unsafe {
+        std::arch::x86_64::_mm_lfence();
+    }
 }
 
 macro_rules! box_cold_churn {
@@ -405,7 +435,7 @@ macro_rules! slot_cold_churn {
         // Warmup
         for _ in 0..100 {
             evict_cache(&polluter);
-            let s = $alloc::Slot::new(val.clone());
+            let s = $alloc::BoxSlot::try_new(val.clone()).unwrap();
             black_box(s.data[0]);
             drop(s);
         }
@@ -415,7 +445,7 @@ macro_rules! slot_cold_churn {
             evict_cache(&polluter);
 
             let start = rdtsc_start();
-            let s = black_box($alloc::Slot::new(val.clone()));
+            let s = black_box($alloc::BoxSlot::try_new(val.clone()).unwrap());
             black_box(s.data[0]);
             drop(s);
             let end = rdtsc_end();
@@ -462,31 +492,67 @@ fn run_box() {
     println!("{}", "=".repeat(66));
 
     run_all_sizes_box!(box_churn, "CHURN (alloc + deref + drop, LIFO single-slot)");
-    run_all_sizes_box!(box_batch_alloc, "BATCH ALLOC (100 sequential, no interleaved frees)");
+    run_all_sizes_box!(
+        box_batch_alloc,
+        "BATCH ALLOC (100 sequential, no interleaved frees)"
+    );
     run_all_sizes_box!(box_batch_drop, "BATCH DROP (pre-alloc 100, then free all)");
     run_all_sizes_box!(box_access, "ACCESS (random deref from pool of 1000)");
-    run_all_sizes_box!(box_cold_churn, "COLD CHURN (cache-evicted between each op, single alloc+deref+drop)");
+    run_all_sizes_box!(
+        box_cold_churn,
+        "COLD CHURN (cache-evicted between each op, single alloc+deref+drop)"
+    );
 }
 
 fn run_slot() {
     let cap = 20_000;
-    alloc_32::Allocator::builder().capacity(cap).build().expect("init");
-    alloc_64::Allocator::builder().capacity(cap).build().expect("init");
-    alloc_128::Allocator::builder().capacity(cap).build().expect("init");
-    alloc_256::Allocator::builder().capacity(cap).build().expect("init");
-    alloc_512::Allocator::builder().capacity(cap).build().expect("init");
-    alloc_1024::Allocator::builder().capacity(cap).build().expect("init");
-    alloc_4096::Allocator::builder().capacity(cap).build().expect("init");
+    alloc_32::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
+    alloc_64::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
+    alloc_128::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
+    alloc_256::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
+    alloc_512::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
+    alloc_1024::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
+    alloc_4096::Allocator::builder()
+        .capacity(cap)
+        .build()
+        .expect("init");
 
     println!("TARGET: Slot (bounded_allocator!, TLS-backed slab)");
-    println!("Slot handle: {} bytes", std::mem::size_of::<alloc_64::Slot>());
+    println!(
+        "Slot handle: {} bytes",
+        std::mem::size_of::<alloc_64::BoxSlot>()
+    );
     println!("{}", "=".repeat(66));
 
     run_all_sizes_slot!(slot_churn, "CHURN (alloc + deref + drop, LIFO single-slot)");
-    run_all_sizes_slot!(slot_batch_alloc, "BATCH ALLOC (100 sequential, no interleaved frees)");
+    run_all_sizes_slot!(
+        slot_batch_alloc,
+        "BATCH ALLOC (100 sequential, no interleaved frees)"
+    );
     run_all_sizes_slot!(slot_batch_drop, "BATCH DROP (pre-alloc 100, then free all)");
     run_all_sizes_slot!(slot_access, "ACCESS (random deref from pool of 1000)");
-    run_all_sizes_slot!(slot_cold_churn, "COLD CHURN (cache-evicted between each op, single alloc+deref+drop)");
+    run_all_sizes_slot!(
+        slot_cold_churn,
+        "COLD CHURN (cache-evicted between each op, single alloc+deref+drop)"
+    );
 }
 
 // ============================================================================
