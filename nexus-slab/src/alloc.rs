@@ -254,21 +254,37 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
         }
     }
 
-    /// Returns the raw slot cell pointer.
+    /// Returns a raw pointer to the underlying slot cell.
     ///
-    /// Used by `RcSlot` to clone handles without going through the allocator.
+    /// The pointer is valid as long as the `BoxSlot` (or any handle derived
+    /// from the same slab slot) is alive.
     #[inline]
-    pub(crate) fn as_ptr(&self) -> *mut SlotCell<T> {
+    pub fn as_ptr(&self) -> *mut SlotCell<T> {
         self.slot.as_ptr()
     }
 
-    /// Constructs a `BoxSlot` from a raw pointer.
+    /// Consumes the `BoxSlot` and returns a raw pointer to the slot cell.
+    ///
+    /// The slot is NOT deallocated. The caller takes ownership and must
+    /// eventually:
+    /// - Call [`from_raw`](Self::from_raw) to reconstruct the `BoxSlot`
+    /// - Or call [`Alloc::free`] / [`Alloc::take`] on the underlying [`Slot`]
+    #[inline]
+    pub fn into_raw(self) -> *mut SlotCell<T> {
+        let ptr = self.slot.as_ptr();
+        std::mem::forget(self);
+        ptr
+    }
+
+    /// Reconstructs a `BoxSlot` from a raw pointer.
     ///
     /// # Safety
     ///
-    /// `ptr` must point to a valid, occupied slot cell within an allocator of type `A`.
+    /// - `ptr` must point to a valid, occupied slot cell within an allocator
+    ///   of type `A`
+    /// - The caller must own the slot (no other `BoxSlot` wrapping it)
     #[inline]
-    pub(crate) unsafe fn from_ptr(ptr: *mut SlotCell<T>) -> Self {
+    pub unsafe fn from_raw(ptr: *mut SlotCell<T>) -> Self {
         BoxSlot {
             slot: unsafe { Slot::from_ptr(ptr) },
             _marker: PhantomData,
@@ -503,7 +519,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
         let new_weak = rc_inner.weak().checked_add(1).expect("weak count overflow");
         rc_inner.set_weak(new_weak);
         // SAFETY: We hold a strong ref, slot is alive. Duplicate the pointer.
-        let weak_slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
+        let weak_slot = unsafe { BoxSlot::from_raw(self.inner.as_ptr()) };
         WeakSlot {
             inner: ManuallyDrop::new(weak_slot),
             _phantom: PhantomData,
@@ -639,6 +655,80 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
 
         unsafe { Slot::from_ptr(slot_ptr) }
     }
+
+    // =========================================================================
+    // Raw pointer API (mirrors std::rc::Rc)
+    // =========================================================================
+
+    /// Returns a raw pointer to the underlying slot cell.
+    ///
+    /// The pointer is valid as long as any strong reference exists.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut SlotCell<RcInner<T>> {
+        self.inner.as_ptr()
+    }
+
+    /// Consumes the `RcSlot` without decrementing the strong count.
+    ///
+    /// The caller takes responsibility for the strong count and must
+    /// eventually call [`from_raw`](Self::from_raw) (to reconstruct and
+    /// drop) or [`decrement_strong_count`](Self::decrement_strong_count).
+    #[inline]
+    pub fn into_raw(self) -> *mut SlotCell<RcInner<T>> {
+        let ptr = self.inner.as_ptr();
+        std::mem::forget(self);
+        ptr
+    }
+
+    /// Reconstructs an `RcSlot` from a raw pointer without incrementing
+    /// the strong count.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a valid, occupied `SlotCell<RcInner<T>>` within
+    ///   an allocator of type `A`
+    /// - The caller must own a strong count for this handle (e.g., obtained
+    ///   via [`into_raw`](Self::into_raw) or
+    ///   [`increment_strong_count`](Self::increment_strong_count))
+    #[inline]
+    pub unsafe fn from_raw(ptr: *mut SlotCell<RcInner<T>>) -> Self {
+        RcSlot {
+            inner: ManuallyDrop::new(unsafe { BoxSlot::from_raw(ptr) }),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Increments the strong count via a raw pointer.
+    ///
+    /// Use this when a data structure needs to acquire an additional strong
+    /// reference from a raw pointer without holding an `RcSlot`.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a live `RcInner<T>` (strong > 0)
+    #[inline]
+    pub unsafe fn increment_strong_count(ptr: *mut SlotCell<RcInner<T>>) {
+        // SAFETY: Caller guarantees ptr points to a live RcInner
+        let rc_inner = unsafe { (*ptr).value.assume_init_ref() };
+        let strong = rc_inner.strong();
+        rc_inner.set_strong(strong + 1);
+    }
+
+    /// Decrements the strong count via a raw pointer.
+    ///
+    /// If the strong count reaches zero, the value is dropped. If both
+    /// strong and weak counts reach zero, the slab slot is freed.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a valid `RcInner<T>`
+    /// - The caller must own a strong count to decrement
+    /// - After this call, `ptr` may be invalid if the slot was freed
+    #[inline]
+    pub unsafe fn decrement_strong_count(ptr: *mut SlotCell<RcInner<T>>) {
+        // Reconstruct and drop — reuses existing Drop logic
+        drop(unsafe { Self::from_raw(ptr) });
+    }
 }
 
 impl<T, A: BoundedAlloc<Item = RcInner<T>>> RcSlot<T, A> {
@@ -717,7 +807,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> Clone for RcSlot<T, A> {
             .expect("RcSlot strong count overflow");
         rc_inner.set_strong(new_strong);
         // SAFETY: We hold a strong ref, slot is alive
-        let cloned_slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
+        let cloned_slot = unsafe { BoxSlot::from_raw(self.inner.as_ptr()) };
         RcSlot {
             inner: ManuallyDrop::new(cloned_slot),
             _phantom: PhantomData,
@@ -827,7 +917,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> WeakSlot<T, A> {
         let new_strong = strong.checked_add(1).expect("RcSlot strong count overflow");
         rc_inner.set_strong(new_strong);
         // SAFETY: strong > 0 means slot is alive and value is valid
-        let slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
+        let slot = unsafe { BoxSlot::from_raw(self.inner.as_ptr()) };
         Some(RcSlot {
             inner: ManuallyDrop::new(slot),
             _phantom: PhantomData,
@@ -866,7 +956,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> Clone for WeakSlot<T, A> {
             .expect("WeakSlot weak count overflow");
         rc_inner.set_weak(new_weak);
         // SAFETY: We hold a weak ref, slot memory is alive
-        let cloned_slot = unsafe { BoxSlot::from_ptr(self.inner.as_ptr()) };
+        let cloned_slot = unsafe { BoxSlot::from_raw(self.inner.as_ptr()) };
         WeakSlot {
             inner: ManuallyDrop::new(cloned_slot),
             _phantom: PhantomData,
