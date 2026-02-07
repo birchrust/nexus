@@ -1,5 +1,0 @@
-error[E0599]: no method named `get` found for struct `nexus_collections::ListSlot<T>` in the current scope
-  --> tests/ui/slot_is_opaque.rs:16:18
-   |
-16 |     let _ = slot.get();
-   |                  ^^^ method not found in `nexus_collections::ListSlot<u64>`

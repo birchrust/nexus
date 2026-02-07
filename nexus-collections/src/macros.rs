@@ -1,183 +1,121 @@
-//! Macros for creating typed collection allocators.
-//!
-//! The `list_allocator!` macro generates a module with TLS-based storage
-//! for list nodes, providing a clean API without visible generics.
+//! Macros for creating typed list allocators.
 
-/// Creates a TLS-based list allocator module for a specific type.
+/// Creates a bounded list allocator module for a specific type.
 ///
-/// # Syntax
-///
-/// ```ignore
-/// list_allocator!(module_name, Type);
-/// ```
-///
-/// The type must be visible from the scope where the macro is invoked.
-/// For types defined in the same module, just use the type name.
-/// For types from other modules, use a path (e.g., `crate::Order`).
+/// Generates a module with TLS-backed slab storage for list nodes,
+/// providing a clean API without visible generics.
 ///
 /// # Generated API
 ///
-/// The macro generates a module with:
-///
-/// - `init() -> UnconfiguredBuilder` - Start configuring the allocator
-/// - `shutdown()` - Shutdown the allocator
-/// - `is_initialized() -> bool` - Check if initialized
-/// - `len() -> usize` - Number of nodes in the slab
-/// - `capacity() -> usize` - Total capacity
-/// - `create_node(value: T) -> Option<DetachedNode>` - Create a detached node
-/// - `List` - Wrapper type for creating lists
-/// - `ListSlot` - Handle to a linked node (type alias)
-/// - `DetachedNode` - Handle to an unlinked node (type alias)
+/// - `Allocator` — unit struct, call `Allocator::builder().capacity(N).build()`
+/// - `Builder` — configuration builder
+/// - `Handle` — `RcSlot<ListNode<T>, Allocator>` (strong handle)
+/// - `WeakHandle` — `WeakSlot<ListNode<T>, Allocator>` (weak handle)
+/// - `List` — `list::List<T, Allocator>`
+/// - `create_node(value) -> Result<Handle, Full<T>>` — allocate a detached node
+/// - `create_node_or_panic(value) -> Handle` — allocate or panic
 ///
 /// # Example
 ///
 /// ```ignore
 /// use nexus_collections::list_allocator;
 ///
-/// #[derive(Debug)]
 /// struct Order { id: u64, price: f64 }
 ///
-/// // Create the allocator module
 /// list_allocator!(orders, Order);
 ///
-/// fn main() {
-///     // Initialize at startup
-///     orders::init().bounded(1000).build();
+/// orders::Allocator::builder().capacity(1000).build().unwrap();
 ///
-///     // Create and use the list
-///     let mut list = orders::List::new();
-///
-///     if let Some(detached) = orders::create_node(Order { id: 1, price: 100.0 }) {
-///         let slot = list.link_back(detached);
-///         let price = list.read(&slot, |o| o.price);
-///         println!("Price: {}", price);
-///     }
-/// }
+/// let mut list = orders::List::new();
+/// let handle = orders::create_node(Order { id: 1, price: 100.0 }).unwrap();
+/// list.link_back(&handle);
+/// assert_eq!(handle.exclusive().price, 100.0);
 /// ```
 #[macro_export]
 macro_rules! list_allocator {
     ($name:ident, $T:ty) => {
-        /// TLS-based list storage for the specified type.
         #[allow(dead_code)]
         pub mod $name {
-            // Bring parent scope items into this module so $T resolves
             #[allow(unused_imports)]
             use super::*;
 
-            // Re-export the user type for internal use.
-            // We use a public type alias so it's accessible from nested modules.
-            pub type __T = $T;
+            type __T = $T;
 
-            // Re-export types for internal use
-            #[doc(hidden)]
-            pub use $crate::__private::Key as __Key;
-            #[doc(hidden)]
-            pub use $crate::__private::VTable as __VTable;
-            #[doc(hidden)]
-            pub use $crate::list::Node;
+            mod __alloc {
+                nexus_slab::bounded_rc_allocator!($crate::list::ListNode<super::__T>);
+            }
 
-            // Create the underlying slab allocator for Node<T>
-            // Note: The slab module will use super::__T to access the type
-            $crate::__private::create_allocator!(__slab, $crate::list::Node<super::__T>);
+            pub use __alloc::{Allocator, Builder};
 
-            // Re-export initialization and lifecycle functions
-            pub use __slab::{capacity, init, is_initialized, len, shutdown};
-
-            // =================================================================
-            // Type aliases (no generics visible to users)
-            // =================================================================
-
-            /// Handle to a linked node in the list.
-            pub type ListSlot = $crate::list::ListSlot<__T>;
-
-            /// Handle to an unlinked node (not in any list).
-            pub type DetachedNode = $crate::list::DetachedListNode<__T>;
-
-            /// Transitionary guard for pop operations.
-            pub type Detached = $crate::list::Detached<__T>;
-
+            /// Strong reference handle to a list node.
+            pub type Handle = __alloc::RcSlot;
+            /// Weak reference to a list node.
+            pub type WeakHandle = __alloc::WeakSlot;
+            /// The list type for this allocator.
+            pub type List = $crate::list::List<__T, __alloc::Allocator>;
             /// Cursor for list traversal.
-            pub type Cursor<'a> = $crate::list::Cursor<'a, __T>;
-
-            /// Guard for cursor position.
-            pub type CursorGuard<'cursor, 'list> = $crate::list::CursorGuard<'cursor, 'list, __T>;
-
-            // =================================================================
-            // List wrapper (newtype for orphan rule compliance)
-            // =================================================================
-
-            /// A doubly-linked list for this type.
-            ///
-            /// This is a thin wrapper around `nexus_collections::List<T>` that
-            /// provides module-local construction via `new()`.
-            #[repr(transparent)]
-            pub struct List {
-                inner: $crate::list::List<__T>,
-            }
-
-            impl List {
-                /// Creates a new empty list.
-                ///
-                /// # Panics
-                ///
-                /// Panics in debug builds if the allocator is not initialized.
-                #[inline]
-                pub fn new() -> Self {
-                    let vtable = __slab::vtable_ptr();
-                    // SAFETY: vtable_ptr returns a valid pointer when initialized
-                    Self {
-                        inner: unsafe { $crate::list::List::with_vtable(vtable) },
-                    }
-                }
-            }
-
-            impl Default for List {
-                fn default() -> Self {
-                    Self::new()
-                }
-            }
-
-            impl core::ops::Deref for List {
-                type Target = $crate::list::List<__T>;
-
-                #[inline]
-                fn deref(&self) -> &Self::Target {
-                    &self.inner
-                }
-            }
-
-            impl core::ops::DerefMut for List {
-                #[inline]
-                fn deref_mut(&mut self) -> &mut Self::Target {
-                    &mut self.inner
-                }
-            }
-
-            // =================================================================
-            // Node creation
-            // =================================================================
+            pub type Cursor<'a> = $crate::list::Cursor<'a, __T, __alloc::Allocator>;
 
             /// Creates a new detached list node.
             ///
-            /// The node is allocated in the slab but not linked to any list.
-            /// Returns `None` if the slab is full (bounded) or allocation fails.
+            /// Returns `Err(Full(value))` if the allocator is at capacity.
             #[inline]
-            pub fn create_node(data: __T) -> Option<DetachedNode> {
-                let slot = __slab::try_insert(Node::detached(data))?;
-                let vtable = __slab::vtable_ptr();
-                let key = slot.leak();
-                // SAFETY: We just created this node, it's valid and detached
-                Some(unsafe { $crate::list::DetachedListNode::from_key_vtable(key, vtable) })
+            pub fn create_node(value: __T) -> Result<Handle, nexus_slab::Full<__T>> {
+                Handle::try_new($crate::list::ListNode::new(value))
+                    .map_err(|full| nexus_slab::Full(full.into_inner().into_data()))
             }
 
             /// Creates a new detached list node, panicking if full.
             ///
             /// # Panics
             ///
-            /// Panics if the slab is full.
+            /// Panics if the allocator is at capacity.
             #[inline]
-            pub fn create_node_or_panic(data: __T) -> DetachedNode {
-                create_node(data).expect("slab is full")
+            pub fn create_node_or_panic(value: __T) -> Handle {
+                create_node(value).expect("allocator is full")
+            }
+        }
+    };
+}
+
+/// Creates an unbounded list allocator module for a specific type.
+///
+/// Same as [`list_allocator!`] but the allocator grows as needed — allocation
+/// never fails.
+///
+/// # Generated API
+///
+/// Same as `list_allocator!` except `create_node` always succeeds (returns
+/// `Handle` directly, not `Result`).
+#[macro_export]
+macro_rules! unbounded_list_allocator {
+    ($name:ident, $T:ty) => {
+        #[allow(dead_code)]
+        pub mod $name {
+            #[allow(unused_imports)]
+            use super::*;
+
+            type __T = $T;
+
+            mod __alloc {
+                nexus_slab::unbounded_rc_allocator!($crate::list::ListNode<super::__T>);
+            }
+
+            pub use __alloc::{Allocator, Builder};
+
+            /// Strong reference handle to a list node.
+            pub type Handle = __alloc::RcSlot;
+            /// Weak reference to a list node.
+            pub type WeakHandle = __alloc::WeakSlot;
+            /// The list type for this allocator.
+            pub type List = $crate::list::List<__T, __alloc::Allocator>;
+            /// Cursor for list traversal.
+            pub type Cursor<'a> = $crate::list::Cursor<'a, __T, __alloc::Allocator>;
+
+            /// Creates a new detached list node. Always succeeds.
+            #[inline]
+            pub fn create_node(value: __T) -> Handle {
+                Handle::new($crate::list::ListNode::new(value))
             }
         }
     };

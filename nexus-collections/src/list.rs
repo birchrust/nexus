@@ -1,1016 +1,809 @@
-//! Doubly-linked list with TLS-based storage.
+//! Doubly-linked list with `RcSlot`-based ownership.
 //!
-//! # Design Overview
+//! # Design
 //!
-//! - **Slab owns data** - All node data lives in a TLS slab
-//! - **List manages links** - Just prev/next pointer bookkeeping
-//! - **Slots are opaque** - No data access methods, just identity
-//! - **Access via closures** - `list.read(&slot, f)`, `list.write(&mut slot, f)`
-//! - **Borrow checker enforces safety** - `write(&mut self, &mut slot, f)` signature
+//! - **User holds `RcSlot<ListNode<T>, A>`** — their ownership token + data access
+//! - **List stores raw pointers** and maintains its own strong reference per node
+//! - **Guard-based data access** via [`ExclusiveCell`] — no closures needed
 //!
-//! # Creating a List
+//! # Ownership Model
 //!
-//! Use the [`list_allocator!`](crate::create_list) macro to create a typed list:
+//! Every linked node has `strong_count >= 2`:
+//! - One from the user's `RcSlot` handle
+//! - One from the list's internal bookkeeping
+//!
+//! Unlinking releases the list's ref. The user's handle remains valid.
+//! Dropping the list releases all its refs. If the user already dropped
+//! their handle, the node is cleaned up. If not, the user still has access.
+//!
+//! # Example
 //!
 //! ```ignore
-//! use nexus_collections::create_list;
+//! use nexus_collections::list_allocator;
 //!
-//! // Define an allocator for Order lists
+//! struct Order { id: u64, price: f64 }
 //! list_allocator!(orders, Order);
 //!
-//! // Initialize at startup
-//! orders::init().bounded(1000).build();
+//! orders::Allocator::builder().capacity(1000).build().unwrap();
 //!
-//! // Create and use the list
 //! let mut list = orders::List::new();
-//! let detached = orders::create_node(Order { id: 1, price: 100.0 })?;
-//! let slot = list.link_back(detached);
-//! let price = list.read(&slot, |o| o.price);
+//! let handle = orders::create_node(Order { id: 1, price: 100.0 }).unwrap();
+//! list.link_back(&handle);
+//!
+//! // Read via auto-deref: RcSlot → ListNode → exclusive()
+//! assert_eq!(handle.exclusive().price, 100.0);
+//!
+//! // Write
+//! handle.exclusive_mut().price = 200.0;
 //! ```
-//!
-//! # User Invariants
-//!
-//! You must uphold these invariants for correct behavior:
-//!
-//! 1. **Consume all guards** - `Detached` must call `take()` or `try_take()`
-//! 2. **Unlink slots before dropping** - Don't drop `ListSlot` while linked
-//! 3. **Return correct slot from `take()`** - Match the popped element
-//! 4. **Keep your index in sync** - Track slots in your HashMap
-//!
-//! Violations with safe API → panic with clear message.
-//! Violations with unchecked API → undefined behavior.
 
-use core::cell::Cell;
-use core::mem::ManuallyDrop;
+use std::cell::Cell;
+use std::marker::PhantomData;
+use std::ptr;
 
-use nexus_slab::{Key, VTable};
+use nexus_slab::alloc::{Alloc, RcSlot};
+use nexus_slab::{RcInner, SlotCell};
+
+use crate::ExclusiveCell;
+use crate::exclusive::{ExMut, ExRef};
 
 // =============================================================================
-// Id - Unique list identifier
+// ListId
 // =============================================================================
 
 thread_local! {
-    static NEXT_ID: Cell<u32> = const { Cell::new(0) };
+    static NEXT_LIST_ID: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Unique identifier for a list instance.
 ///
 /// Each list gets a unique ID on creation. Nodes track which list owns them
-/// to catch cross-list operations.
+/// to catch cross-list operations at runtime.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Id(u32);
+pub struct ListId(usize);
 
-impl Id {
+impl ListId {
     /// Sentinel value indicating no owner (detached state).
-    pub const NONE: Id = Id(u32::MAX);
+    pub const NONE: ListId = ListId(usize::MAX);
 
     /// Returns `true` if this is the NONE sentinel.
     #[inline]
     pub fn is_none(self) -> bool {
-        self.0 == u32::MAX
+        self.0 == usize::MAX
     }
 
     /// Returns `true` if this is not the NONE sentinel.
     #[inline]
     pub fn is_some(self) -> bool {
-        self.0 != u32::MAX
+        self.0 != usize::MAX
     }
 }
 
-fn next_id() -> Id {
-    NEXT_ID.with(|c| {
+fn next_list_id() -> ListId {
+    NEXT_LIST_ID.with(|c| {
         let id = c.get();
         c.set(id.wrapping_add(1));
-        Id(id)
+        ListId(id)
     })
 }
 
 // =============================================================================
-// Node - Internal linked list node
+// NodePtr
 // =============================================================================
 
-/// A node in the linked list.
+/// Raw pointer to a slab-allocated list node.
 ///
-/// Wraps user data with prev/next links and ownership tracking.
-/// This type is exposed for slab typing but internals are not public.
-#[derive(Debug)]
-pub struct Node<T> {
-    /// The user data.
-    pub data: T,
-    /// Previous node key (Key::NONE if head).
-    pub prev: Key,
-    /// Next node key (Key::NONE if tail).
-    pub next: Key,
-    /// List owner ID (Id::NONE if detached).
-    pub owner: Id,
+/// Stored in prev/next links. Raw pointers because `RcSlot` is not `Copy`
+/// and cannot be stored in `Cell`.
+type NodePtr<T> = *mut SlotCell<RcInner<ListNode<T>>>;
+
+// =============================================================================
+// ListNode<T>
+// =============================================================================
+
+/// A node in a doubly-linked list.
+///
+/// Contains `Cell`-based prev/next/owner links for interior mutability
+/// and an [`ExclusiveCell`] for user data access.
+///
+/// # Data Access
+///
+/// Access user data through the convenience methods, reachable via
+/// `RcSlot`'s auto-deref:
+///
+/// ```ignore
+/// handle.exclusive().price       // shared borrow
+/// handle.exclusive_mut().price = 5.0  // mutable borrow
+/// ```
+pub struct ListNode<T> {
+    prev: Cell<NodePtr<T>>,
+    next: Cell<NodePtr<T>>,
+    owner: Cell<ListId>,
+    data: ExclusiveCell<T>,
 }
 
-impl<T> Node<T> {
-    /// Creates a new detached node with no owner.
+impl<T> ListNode<T> {
+    /// Creates a new detached node wrapping the given value.
     #[inline]
-    pub fn detached(data: T) -> Self {
-        Self {
-            data,
-            prev: Key::NONE,
-            next: Key::NONE,
-            owner: Id::NONE,
+    pub fn new(value: T) -> Self {
+        ListNode {
+            prev: Cell::new(ptr::null_mut()),
+            next: Cell::new(ptr::null_mut()),
+            owner: Cell::new(ListId::NONE),
+            data: ExclusiveCell::new(value),
         }
     }
-}
 
-// =============================================================================
-// DetachedListNode - Unlinked handle
-// =============================================================================
+    /// Returns `true` if this node is linked to a list.
+    #[inline]
+    pub fn is_linked(&self) -> bool {
+        self.owner.get().is_some()
+    }
 
-/// Handle to data in slab, NOT linked to any list.
-///
-/// This is the "unlinked" state. You can:
-/// - Link it to a list via `list.link_back()` / `list.link_front()`
-/// - Extract the data via `take()`
-///
-/// Dropping this removes the data from the slab (correct cleanup).
-pub struct DetachedListNode<T: 'static> {
-    key: Key,
-    vtable: *const VTable<Node<T>>,
-}
+    /// Returns a reference to the underlying [`ExclusiveCell`].
+    #[inline]
+    pub fn data(&self) -> &ExclusiveCell<T> {
+        &self.data
+    }
 
-impl<T: 'static> DetachedListNode<T> {
-    /// Creates a new detached node from a key and vtable pointer.
+    /// Consumes the node, returning the user data.
     ///
-    /// # Safety
-    ///
-    /// - The key must be valid and point to an occupied slot containing
-    ///   a detached node (owner == Id::NONE).
-    /// - The vtable pointer must be valid for the lifetime of the allocator.
+    /// Used internally by the `list_allocator!` macro's error path to recover
+    /// the value from a `Full<ListNode<T>>` into `Full<T>`. Not intended for
+    /// direct use.
     #[doc(hidden)]
     #[inline]
-    pub unsafe fn from_key_vtable(key: Key, vtable: *const VTable<Node<T>>) -> Self {
-        Self { key, vtable }
+    pub fn into_data(self) -> T {
+        // Only callable with an owned ListNode<T> — not reachable through
+        // RcSlot (which derefs to &ListNode<T>). The sole call site is the
+        // list_allocator! macro's Full error path, where allocation failed
+        // and no RcSlot was ever created.
+        self.data.into_inner()
     }
 
-    /// Extracts the owned data, removing from slab. Consumes handle.
+    /// Exclusive shared borrow of user data.
     #[inline]
-    pub fn take(self) -> T {
-        // Use ManuallyDrop to prevent Drop from running (which would double-free)
-        let this = ManuallyDrop::new(self);
-        // SAFETY: Key is valid, vtable is valid
-        let slot_cell = unsafe { (*this.vtable).slot_ptr(this.key) };
-        let node = unsafe { std::ptr::read((*slot_cell).value_ptr()) };
-        unsafe { (*this.vtable).free(this.key) };
-        node.data
+    pub fn exclusive(&self) -> ExRef<'_, T> {
+        self.data.borrow()
     }
 
-    /// Returns the key for internal use.
+    /// Exclusive mutable borrow of user data.
     #[inline]
-    pub(crate) fn key(&self) -> Key {
-        self.key
+    pub fn exclusive_mut(&self) -> ExMut<'_, T> {
+        self.data.borrow_mut()
     }
 
-    /// Converts to a linked slot. Internal use only.
+    /// Try exclusive shared borrow.
     #[inline]
-    pub(crate) fn into_slot(self) -> ListSlot<T> {
-        let this = ManuallyDrop::new(self);
-        ListSlot {
-            key: this.key,
-            vtable: this.vtable,
-        }
+    pub fn try_exclusive(&self) -> Option<ExRef<'_, T>> {
+        self.data.try_borrow()
     }
-}
 
-impl<T: 'static> Drop for DetachedListNode<T> {
-    fn drop(&mut self) {
-        // Remove from slab on drop (correct cleanup for detached node)
-        // Check if key is valid first
-        if unsafe { (*self.vtable).contains_key(self.key) } {
-            // Read and drop the value
-            let slot_cell = unsafe { (*self.vtable).slot_ptr(self.key) };
-            unsafe { std::ptr::drop_in_place((*slot_cell).value_ptr_mut()) };
-            unsafe { (*self.vtable).free(self.key) };
-        }
-    }
-}
-
-// =============================================================================
-// ListSlot - Linked handle (OPAQUE)
-// =============================================================================
-
-/// Handle to data in slab, linked to a list.
-///
-/// **OPAQUE** - This type has NO data access methods.
-/// Access data via `list.read(&slot, f)` or `list.write(&mut slot, f)`.
-///
-/// # User Invariant
-///
-/// You must unlink this slot before dropping it. Dropping while linked
-/// removes the slab entry, creating dangling prev/next pointers in the list.
-/// The safe API will panic on subsequent access; the unchecked API has UB.
-pub struct ListSlot<T: 'static> {
-    key: Key,
-    vtable: *const VTable<Node<T>>,
-}
-
-impl<T: 'static> ListSlot<T> {
-    /// Returns the key for internal use.
+    /// Try exclusive mutable borrow.
     #[inline]
-    pub(crate) fn key(&self) -> Key {
-        self.key
+    pub fn try_exclusive_mut(&self) -> Option<ExMut<'_, T>> {
+        self.data.try_borrow_mut()
     }
 
-    /// Converts to detached. Internal use only (after unlink).
+    // Internal accessors for list operations
+
     #[inline]
-    pub(crate) fn into_detached(self) -> DetachedListNode<T> {
-        let this = ManuallyDrop::new(self);
-        DetachedListNode {
-            key: this.key,
-            vtable: this.vtable,
-        }
+    fn prev_ptr(&self) -> NodePtr<T> {
+        self.prev.get()
     }
-}
 
-impl<T: 'static> Drop for ListSlot<T> {
-    fn drop(&mut self) {
-        // Slot owns the slab entry - dropping removes it.
-        // If still linked, this creates dangling prev/next pointers in the list.
-        // Safe API will catch this on next access via get() returning None.
-        // This is a user invariant violation, not a bug in our code.
-        if unsafe { (*self.vtable).contains_key(self.key) } {
-            // Read and drop the value
-            let slot_cell = unsafe { (*self.vtable).slot_ptr(self.key) };
-            unsafe { std::ptr::drop_in_place((*slot_cell).value_ptr_mut()) };
-            unsafe { (*self.vtable).free(self.key) };
-        }
+    #[inline]
+    fn next_ptr(&self) -> NodePtr<T> {
+        self.next.get()
+    }
+
+    #[inline]
+    fn owner_id(&self) -> ListId {
+        self.owner.get()
+    }
+
+    #[inline]
+    fn set_prev(&self, ptr: NodePtr<T>) {
+        self.prev.set(ptr);
+    }
+
+    #[inline]
+    fn set_next(&self, ptr: NodePtr<T>) {
+        self.next.set(ptr);
+    }
+
+    #[inline]
+    fn set_owner(&self, id: ListId) {
+        self.owner.set(id);
     }
 }
 
 // =============================================================================
-// Detached - Transitionary guard for pop operations
+// node_ref — navigate raw pointer to &ListNode<T>
 // =============================================================================
 
-/// Transitionary guard for popped elements.
+/// Dereferences a `NodePtr<T>` to get `&ListNode<T>`.
 ///
-/// Holds a reference to the popped data so you can identify which slot
-/// to return from your index. Call `take()` or `try_take()` to complete
-/// the type-state transition.
+/// # Safety
 ///
-/// # User Invariant
-///
-/// You must consume this guard via `take()` or `try_take()`.
-/// Dropping without consuming orphans the popped node in the slab.
-pub struct Detached<T: 'static> {
-    key: Key,
-    vtable: *const VTable<Node<T>>,
-}
-
-impl<T: 'static> Detached<T> {
-    /// Creates a new Detached guard.
-    ///
-    /// # Safety
-    ///
-    /// - The key must point to a valid, unlinked node in the slab.
-    /// - The vtable pointer must be valid.
-    #[inline]
-    pub(crate) unsafe fn new(key: Key, vtable: *const VTable<Node<T>>) -> Self {
-        Self { key, vtable }
-    }
-
-    /// Take the slot back using the reference to identify it.
-    ///
-    /// The closure receives `&T` to identify which slot to retrieve.
-    /// Return your `ListSlot` (removed from your HashMap).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the closure panics. Use `try_take` for fallible lookups.
-    #[inline]
-    pub fn take<F>(self, f: F) -> DetachedListNode<T>
-    where
-        F: FnOnce(&T) -> ListSlot<T>,
-    {
-        let this = ManuallyDrop::new(self);
-        // SAFETY: Read-only access, no mutable refs exist to this slot
-        let slot_cell = unsafe { (*this.vtable).slot_ptr(this.key) };
-        assert!(
-            unsafe { (*slot_cell).is_occupied() },
-            "detached node was removed from slab"
-        );
-        let node = unsafe { (*slot_cell).get_value() };
-        let slot = f(&node.data);
-        slot.into_detached()
-    }
-
-    /// Fallible version for when the slot lookup might fail.
-    ///
-    /// Returns `None` if the closure returns `None` (slot not found).
-    ///
-    /// # Warning
-    ///
-    /// If this returns `None`, the popped node is orphaned in the slab.
-    /// This is a memory leak and indicates a bug in your index tracking.
-    #[inline]
-    pub fn try_take<F>(self, f: F) -> Option<DetachedListNode<T>>
-    where
-        F: FnOnce(&T) -> Option<ListSlot<T>>,
-    {
-        let this = ManuallyDrop::new(self);
-        // SAFETY: Read-only access, no mutable refs exist to this slot
-        if !unsafe { (*this.vtable).contains_key(this.key) } {
-            return None;
-        }
-        let slot_cell = unsafe { (*this.vtable).slot_ptr(this.key) };
-        let node = unsafe { (*slot_cell).get_value() };
-        f(&node.data).map(ListSlot::into_detached)
-    }
-}
-
-impl<T: 'static> Drop for Detached<T> {
-    fn drop(&mut self) {
-        // Trivial drop - no panic.
-        // If not consumed, the popped node is orphaned in slab (leak).
-        // We don't remove it here because take()/try_take() might still work.
-    }
+/// - `ptr` must be non-null and point to an occupied `SlotCell` with `strong > 0`.
+/// - The returned `'static` lifetime is a lie — the reference is only valid as
+///   long as the caller (or the list) holds a strong reference to the node.
+///   Slab addresses are stable (never moved/freed while strong > 0), so the
+///   pointer remains valid, but the caller MUST maintain a strong ref for the
+///   duration of use.
+#[inline]
+unsafe fn node_ref<T>(ptr: NodePtr<T>) -> &'static ListNode<T> {
+    // SlotCell.value: ManuallyDrop<MaybeUninit<RcInner<ListNode<T>>>>
+    // → assume_init_ref() → &RcInner<ListNode<T>>
+    // → .value() → &ListNode<T>
+    //
+    // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot
+    // with strong > 0. The lifetime is 'static because slab addresses are
+    // stable — the actual borrow is bounded by the caller's usage.
+    unsafe { (*ptr).value.assume_init_ref() }.value()
 }
 
 // =============================================================================
-// List
+// List<T, A>
 // =============================================================================
 
-/// A doubly-linked list backed by a TLS slab allocator.
+/// A doubly-linked list backed by slab-allocated `RcSlot` nodes.
+///
+/// # Ownership Model
+///
+/// - User holds `RcSlot<ListNode<T>, A>` handles — their ownership token
+/// - List stores raw pointers and maintains its own strong reference per node
+/// - Every linked node has `strong_count >= 2` (user + list)
+/// - Unlinking decrements the list's ref; the user's handle remains valid
 ///
 /// # Type Parameters
 ///
-/// - `T`: Element type
-///
-/// # Access Pattern
-///
-/// All data access goes through closures:
-///
-/// ```ignore
-/// list.read(&slot, |data| data.field);      // Shared access
-/// list.write(&mut slot, |data| data.x = 1); // Exclusive access
-/// ```
-///
-/// This ensures the borrow checker prevents aliasing.
-pub struct List<T: 'static> {
-    head: Key,
-    tail: Key,
+/// - `T`: Element type stored in nodes
+/// - `A`: Allocator type (from `bounded_rc_allocator!` or `unbounded_rc_allocator!`)
+pub struct List<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> {
+    head: NodePtr<T>,
+    tail: NodePtr<T>,
     len: usize,
-    id: Id,
-    vtable: *const VTable<Node<T>>,
+    id: ListId,
+    _marker: PhantomData<A>,
 }
 
-impl<T: 'static> List<T> {
-    /// Creates a new empty list with the given vtable.
-    ///
-    /// # Safety
-    ///
-    /// The vtable pointer must be valid for the lifetime of the allocator.
-    #[doc(hidden)]
+impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
+    /// Creates a new empty list.
     #[inline]
-    pub unsafe fn with_vtable(vtable: *const VTable<Node<T>>) -> Self {
-        Self {
-            head: Key::NONE,
-            tail: Key::NONE,
+    pub fn new() -> Self {
+        List {
+            head: ptr::null_mut(),
+            tail: ptr::null_mut(),
             len: 0,
-            id: next_id(),
-            vtable,
+            id: next_list_id(),
+            _marker: PhantomData,
         }
     }
 
     /// Returns the unique ID of this list.
     #[inline]
-    pub fn id(&self) -> Id {
+    pub fn id(&self) -> ListId {
         self.id
     }
 
-    /// Returns the number of elements in the list.
+    /// Returns the number of linked elements.
     #[inline]
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns `true` if the list is empty.
+    /// Returns `true` if the list has no linked elements.
     #[inline]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     // =========================================================================
-    // Internal helpers
+    // Link operations
     // =========================================================================
 
-    /// Gets a reference to a node by key (checked).
-    #[inline]
-    fn get_node(&self, key: Key) -> Option<&Node<T>> {
-        if !unsafe { (*self.vtable).contains_key(key) } {
-            return None;
-        }
-        let slot_cell = unsafe { (*self.vtable).slot_ptr(key) };
-        Some(unsafe { (*slot_cell).get_value() })
-    }
-
-    /// Gets a mutable reference to a node by key (unchecked).
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn get_node_unchecked_mut(&self, key: Key) -> &mut Node<T> {
-        unsafe {
-            let slot_cell = (*self.vtable).slot_ptr(key);
-            (*slot_cell).get_value_mut()
-        }
-    }
-
-    /// Checks if a key is valid.
-    #[inline]
-    fn contains_key(&self, key: Key) -> bool {
-        unsafe { (*self.vtable).contains_key(key) }
-    }
-
-    // =========================================================================
-    // Link operations (DetachedListNode -> ListSlot)
-    // =========================================================================
-
-    /// Links a detached node to the back of the list.
+    /// Links a node to the back of the list.
     ///
-    /// Consumes the `DetachedListNode` and returns a `ListSlot`.
-    #[inline]
-    pub fn link_back(&mut self, node: DetachedListNode<T>) -> ListSlot<T> {
-        let key = node.key();
-
-        // Set up links
-        {
-            let n = unsafe { self.get_node_unchecked_mut(key) };
-            n.prev = self.tail;
-            n.next = Key::NONE;
-            n.owner = self.id;
-        }
-
-        // Update tail's next pointer
-        if self.tail.is_some() {
-            assert!(
-                self.contains_key(self.tail),
-                "list tail is invalid (was a slot dropped without unlinking?)"
-            );
-            unsafe { self.get_node_unchecked_mut(self.tail) }.next = key;
-        } else {
-            self.head = key;
-        }
-
-        self.tail = key;
-        self.len += 1;
-
-        node.into_slot()
-    }
-
-    /// Links a detached node to the front of the list.
-    ///
-    /// Consumes the `DetachedListNode` and returns a `ListSlot`.
-    #[inline]
-    pub fn link_front(&mut self, node: DetachedListNode<T>) -> ListSlot<T> {
-        let key = node.key();
-
-        // Set up links
-        {
-            let n = unsafe { self.get_node_unchecked_mut(key) };
-            n.prev = Key::NONE;
-            n.next = self.head;
-            n.owner = self.id;
-        }
-
-        // Update head's prev pointer
-        if self.head.is_some() {
-            assert!(
-                self.contains_key(self.head),
-                "list head is invalid (was a slot dropped without unlinking?)"
-            );
-            unsafe { self.get_node_unchecked_mut(self.head) }.prev = key;
-        } else {
-            self.tail = key;
-        }
-
-        self.head = key;
-        self.len += 1;
-
-        node.into_slot()
-    }
-
-    // =========================================================================
-    // Unlink operations (ListSlot -> DetachedListNode)
-    // =========================================================================
-
-    /// Unlinks a slot from the list.
-    ///
-    /// Consumes the `ListSlot` and returns a `DetachedListNode`.
+    /// The list acquires its own strong reference to the node.
     ///
     /// # Panics
     ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
+    /// In debug builds, panics if the node is already linked to a list.
+    /// In release builds, this is an unchecked precondition.
     #[inline]
-    pub fn unlink(&mut self, slot: ListSlot<T>) -> DetachedListNode<T> {
-        let key = slot.key();
+    pub fn link_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert!(!node.is_linked(), "node is already linked to a list");
 
-        // Validate and get links
-        let (prev, next) = {
-            let node = self
-                .get_node(key)
-                .expect("slot is invalid (was it dropped without unlinking?)");
-            assert_eq!(node.owner, self.id, "slot belongs to different list");
-            (node.prev, node.next)
-        };
+        node.set_prev(self.tail);
+        node.set_next(ptr::null_mut());
+        node.set_owner(self.id);
 
-        // Validate all neighbors upfront before any mutations.
-        if prev.is_some() {
-            assert!(
-                self.contains_key(prev),
-                "prev neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-        }
-        if next.is_some() {
-            assert!(
-                self.contains_key(next),
-                "next neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-        }
-
-        // All keys validated - now do mutations
-        if prev.is_some() {
-            unsafe { self.get_node_unchecked_mut(prev) }.next = next;
+        if self.tail.is_null() {
+            self.head = ptr;
         } else {
+            // SAFETY: tail is non-null (checked above), list holds strong ref
+            unsafe { node_ref(self.tail) }.set_next(ptr);
+        }
+
+        self.tail = ptr;
+        self.len += 1;
+
+        // SAFETY: ptr from a live RcSlot, strong >= 1; list acquires its own ref
+        unsafe { RcSlot::<ListNode<T>, A>::increment_strong_count(ptr) };
+    }
+
+    /// Links a node to the front of the list.
+    ///
+    /// The list acquires its own strong reference to the node.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the node is already linked to a list.
+    /// In release builds, this is an unchecked precondition.
+    #[inline]
+    pub fn link_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert!(!node.is_linked(), "node is already linked to a list");
+
+        node.set_prev(ptr::null_mut());
+        node.set_next(self.head);
+        node.set_owner(self.id);
+
+        if self.head.is_null() {
+            self.tail = ptr;
+        } else {
+            // SAFETY: head is non-null (checked above), list holds strong ref
+            unsafe { node_ref(self.head) }.set_prev(ptr);
+        }
+
+        self.head = ptr;
+        self.len += 1;
+
+        // SAFETY: ptr from a live RcSlot, strong >= 1; list acquires its own ref
+        unsafe { RcSlot::<ListNode<T>, A>::increment_strong_count(ptr) };
+    }
+
+    /// Links a node immediately after an existing node.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `handle` is already linked or `after` is
+    /// not in this list. In release builds, these are unchecked preconditions.
+    #[inline]
+    pub fn link_after(&mut self, after: &RcSlot<ListNode<T>, A>, handle: &RcSlot<ListNode<T>, A>) {
+        let after_ptr = after.as_ptr();
+        // SAFETY: after is a live RcSlot, strong >= 1
+        let after_node = unsafe { node_ref(after_ptr) };
+        debug_assert_eq!(
+            after_node.owner_id(),
+            self.id,
+            "anchor node does not belong to this list"
+        );
+
+        let new_ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let new_node = unsafe { node_ref(new_ptr) };
+        debug_assert!(!new_node.is_linked(), "node is already linked to a list");
+
+        let next_ptr = after_node.next_ptr();
+
+        new_node.set_prev(after_ptr);
+        new_node.set_next(next_ptr);
+        new_node.set_owner(self.id);
+
+        after_node.set_next(new_ptr);
+
+        if next_ptr.is_null() {
+            self.tail = new_ptr;
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(next_ptr) }.set_prev(new_ptr);
+        }
+
+        self.len += 1;
+        // SAFETY: ptr from a live RcSlot, strong >= 1; list acquires its own ref
+        unsafe { RcSlot::<ListNode<T>, A>::increment_strong_count(new_ptr) };
+    }
+
+    /// Links a node immediately before an existing node.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `handle` is already linked or `before` is
+    /// not in this list. In release builds, these are unchecked preconditions.
+    #[inline]
+    pub fn link_before(
+        &mut self,
+        before: &RcSlot<ListNode<T>, A>,
+        handle: &RcSlot<ListNode<T>, A>,
+    ) {
+        let before_ptr = before.as_ptr();
+        // SAFETY: before is a live RcSlot, strong >= 1
+        let before_node = unsafe { node_ref(before_ptr) };
+        debug_assert_eq!(
+            before_node.owner_id(),
+            self.id,
+            "anchor node does not belong to this list"
+        );
+
+        let new_ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let new_node = unsafe { node_ref(new_ptr) };
+        debug_assert!(!new_node.is_linked(), "node is already linked to a list");
+
+        let prev_ptr = before_node.prev_ptr();
+
+        new_node.set_prev(prev_ptr);
+        new_node.set_next(before_ptr);
+        new_node.set_owner(self.id);
+
+        before_node.set_prev(new_ptr);
+
+        if prev_ptr.is_null() {
+            self.head = new_ptr;
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(prev_ptr) }.set_next(new_ptr);
+        }
+
+        self.len += 1;
+        // SAFETY: ptr from a live RcSlot, strong >= 1; list acquires its own ref
+        unsafe { RcSlot::<ListNode<T>, A>::increment_strong_count(new_ptr) };
+    }
+
+    // =========================================================================
+    // Unlink
+    // =========================================================================
+
+    /// Unlinks a node from the list.
+    ///
+    /// The user's handle remains valid. The list releases its strong reference.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the node is not linked to this list.
+    /// In release builds, this is an unchecked precondition.
+    #[inline]
+    pub fn unlink(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert_eq!(
+            node.owner_id(),
+            self.id,
+            "node does not belong to this list"
+        );
+
+        self.unlink_ptr(ptr);
+    }
+
+    /// Internal: unlink by raw pointer. Clears node metadata and decrements
+    /// the list's strong reference.
+    ///
+    /// # Preconditions
+    ///
+    /// - `ptr` must be non-null
+    /// - `ptr` must point to a node currently linked to this list
+    /// - The list holds a strong reference to this node
+    #[inline]
+    fn unlink_ptr(&mut self, ptr: NodePtr<T>) {
+        // SAFETY: caller guarantees ptr is non-null and points to a linked node;
+        // list holds a strong ref for all linked nodes
+        let node = unsafe { node_ref(ptr) };
+        let prev = node.prev_ptr();
+        let next = node.next_ptr();
+
+        if prev.is_null() {
             self.head = next;
-        }
-
-        if next.is_some() {
-            unsafe { self.get_node_unchecked_mut(next) }.prev = prev;
         } else {
-            self.tail = prev;
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(prev) }.set_next(next);
         }
 
-        // Clear ownership
-        unsafe { self.get_node_unchecked_mut(key) }.owner = Id::NONE;
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(next) }.set_prev(prev);
+        }
+
+        node.set_prev(ptr::null_mut());
+        node.set_next(ptr::null_mut());
+        node.set_owner(ListId::NONE);
 
         self.len -= 1;
 
-        slot.into_detached()
+        // SAFETY: list owns a strong ref from link time; ptr is valid
+        unsafe { RcSlot::<ListNode<T>, A>::decrement_strong_count(ptr) };
+    }
+
+    /// Unlinks all nodes from the list.
+    ///
+    /// Each node is detached and the list's strong reference is released.
+    /// User handles remain valid.
+    #[inline]
+    pub fn clear(&mut self) {
+        let mut current = self.head;
+        while !current.is_null() {
+            // SAFETY: current is non-null, list holds strong ref for all linked nodes
+            let node = unsafe { node_ref(current) };
+            let next = node.next_ptr();
+
+            node.set_prev(ptr::null_mut());
+            node.set_next(ptr::null_mut());
+            node.set_owner(ListId::NONE);
+
+            // SAFETY: list owns a strong ref for each linked node
+            unsafe { RcSlot::<ListNode<T>, A>::decrement_strong_count(current) };
+
+            current = next;
+        }
+
+        self.head = ptr::null_mut();
+        self.tail = ptr::null_mut();
+        self.len = 0;
     }
 
     // =========================================================================
-    // Read access (closure-based)
+    // Pop
     // =========================================================================
 
-    /// Reads the data at the slot via closure.
+    /// Removes and returns the front node as an `RcSlot`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
+    /// The returned handle carries the list's strong reference — no net
+    /// refcount change. The node is detached.
     #[inline]
-    pub fn read<F, R>(&self, slot: &ListSlot<T>, f: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
-        // SAFETY: Read-only access, no mutable refs exist to this slot
-        let node = self
-            .get_node(slot.key())
-            .expect("slot is invalid (was it dropped without unlinking?)");
-        assert_eq!(node.owner, self.id, "slot belongs to different list");
-        f(&node.data)
-    }
-
-    /// Reads the front element via closure.
-    #[inline]
-    pub fn front<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&T) -> R,
-    {
-        if self.head.is_none() {
+    pub fn pop_front(&mut self) -> Option<RcSlot<ListNode<T>, A>> {
+        if self.head.is_null() {
             return None;
         }
-        // SAFETY: Read-only access, no mutable refs exist; head is validated
-        let node = self
-            .get_node(self.head)
-            .expect("list head is invalid (internal corruption)");
-        Some(f(&node.data))
+
+        let ptr = self.head;
+        // SAFETY: head is non-null (checked above), list holds strong ref
+        let node = unsafe { node_ref(ptr) };
+        let next = node.next_ptr();
+
+        self.head = next;
+        if next.is_null() {
+            self.tail = ptr::null_mut();
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(next) }.set_prev(ptr::null_mut());
+        }
+
+        node.set_prev(ptr::null_mut());
+        node.set_next(ptr::null_mut());
+        node.set_owner(ListId::NONE);
+
+        self.len -= 1;
+
+        // SAFETY: transferring list's strong ref into the returned RcSlot;
+        // ptr is valid, list owned this ref since link time
+        Some(unsafe { RcSlot::from_raw(ptr) })
     }
 
-    /// Reads the back element via closure.
+    /// Removes and returns the back node as an `RcSlot`.
     #[inline]
-    pub fn back<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&T) -> R,
-    {
-        if self.tail.is_none() {
+    pub fn pop_back(&mut self) -> Option<RcSlot<ListNode<T>, A>> {
+        if self.tail.is_null() {
             return None;
         }
-        // SAFETY: Read-only access, no mutable refs exist; tail is validated
-        let node = self
-            .get_node(self.tail)
-            .expect("list tail is invalid (internal corruption)");
-        Some(f(&node.data))
+
+        let ptr = self.tail;
+        // SAFETY: tail is non-null (checked above), list holds strong ref
+        let node = unsafe { node_ref(ptr) };
+        let prev = node.prev_ptr();
+
+        self.tail = prev;
+        if prev.is_null() {
+            self.head = ptr::null_mut();
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(prev) }.set_next(ptr::null_mut());
+        }
+
+        node.set_prev(ptr::null_mut());
+        node.set_next(ptr::null_mut());
+        node.set_owner(ListId::NONE);
+
+        self.len -= 1;
+
+        // SAFETY: transferring list's strong ref into the returned RcSlot;
+        // ptr is valid, list owned this ref since link time
+        Some(unsafe { RcSlot::from_raw(ptr) })
     }
 
     // =========================================================================
-    // Write access (closure-based)
+    // Peek
     // =========================================================================
 
-    /// Writes to the data at the slot via closure.
+    /// Returns a reference to the front node, or `None` if empty.
     ///
-    /// Takes `&mut slot` to emphasize mutation and prevent aliasing.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
+    /// Call `.exclusive()` on the node to access user data.
     #[inline]
-    pub fn write<F, R>(&mut self, slot: &mut ListSlot<T>, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        let key = slot.key();
-        // Validate first
-        {
-            let node = self
-                .get_node(key)
-                .expect("slot is invalid (was it dropped without unlinking?)");
-            assert_eq!(node.owner, self.id, "slot belongs to different list");
-        }
-        // SAFETY: Key is validated above, getting exclusive access
-        let node = unsafe { self.get_node_unchecked_mut(key) };
-        f(&mut node.data)
-    }
-
-    /// Writes to the front element via closure.
-    #[inline]
-    pub fn front_mut<F, R>(&mut self, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        if self.head.is_none() {
+    pub fn front(&self) -> Option<&ListNode<T>> {
+        if self.head.is_null() {
             return None;
         }
-        let node = unsafe { self.get_node_unchecked_mut(self.head) };
-        Some(f(&mut node.data))
+        // SAFETY: head is non-null (checked above), list holds strong ref
+        Some(unsafe { node_ref(self.head) })
     }
 
-    /// Writes to the back element via closure.
+    /// Returns a reference to the back node, or `None` if empty.
+    ///
+    /// Call `.exclusive()` on the node to access user data.
     #[inline]
-    pub fn back_mut<F, R>(&mut self, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        if self.tail.is_none() {
+    pub fn back(&self) -> Option<&ListNode<T>> {
+        if self.tail.is_null() {
             return None;
         }
-        let node = unsafe { self.get_node_unchecked_mut(self.tail) };
-        Some(f(&mut node.data))
+        // SAFETY: tail is non-null (checked above), list holds strong ref
+        Some(unsafe { node_ref(self.tail) })
     }
 
     // =========================================================================
     // Position checks
     // =========================================================================
 
-    /// Returns `true` if the slot is at the head of the list.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
+    /// Returns `true` if the handle is linked to this list.
     #[inline]
-    pub fn is_head(&self, slot: &ListSlot<T>) -> bool {
-        let key = slot.key();
-        // Validate ownership
-        let node = self
-            .get_node(key)
-            .expect("slot is invalid (was it dropped without unlinking?)");
-        assert_eq!(node.owner, self.id, "slot belongs to different list");
-        key == self.head
+    pub fn contains(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(handle.as_ptr()) };
+        node.owner_id() == self.id
     }
 
-    /// Returns `true` if the slot is at the tail of the list.
+    /// Returns `true` if the handle is at the head of this list.
     ///
     /// # Panics
     ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
+    /// In debug builds, panics if the node is not in this list.
+    /// In release builds, this is an unchecked precondition.
     #[inline]
-    pub fn is_tail(&self, slot: &ListSlot<T>) -> bool {
-        let key = slot.key();
-        // Validate ownership
-        let node = self
-            .get_node(key)
-            .expect("slot is invalid (was it dropped without unlinking?)");
-        assert_eq!(node.owner, self.id, "slot belongs to different list");
-        key == self.tail
-    }
-
-    // =========================================================================
-    // Relative link operations (insert relative to existing slot)
-    // =========================================================================
-
-    /// Links a detached node immediately after an existing slot.
-    ///
-    /// Consumes the `DetachedListNode` and returns a `ListSlot`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `after` is invalid or doesn't belong to this list.
-    #[inline]
-    pub fn link_after(&mut self, after: &ListSlot<T>, node: DetachedListNode<T>) -> ListSlot<T> {
-        let after_key = after.key();
-        let new_key = node.key();
-
-        // Validate `after` and get its next pointer
-        let next = {
-            let n = self
-                .get_node(after_key)
-                .expect("slot is invalid (was it dropped without unlinking?)");
-            assert_eq!(n.owner, self.id, "slot belongs to different list");
-            n.next
-        };
-
-        // Set up new node's links
-        {
-            let n = unsafe { self.get_node_unchecked_mut(new_key) };
-            n.prev = after_key;
-            n.next = next;
-            n.owner = self.id;
-        }
-
-        // Update `after`'s next pointer
-        unsafe { self.get_node_unchecked_mut(after_key) }.next = new_key;
-
-        // Update next's prev pointer (or tail if inserting at end)
-        if next.is_some() {
-            assert!(
-                self.contains_key(next),
-                "next neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-            unsafe { self.get_node_unchecked_mut(next) }.prev = new_key;
-        } else {
-            self.tail = new_key;
-        }
-
-        self.len += 1;
-
-        node.into_slot()
-    }
-
-    /// Links a detached node immediately before an existing slot.
-    ///
-    /// Consumes the `DetachedListNode` and returns a `ListSlot`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `before` is invalid or doesn't belong to this list.
-    #[inline]
-    pub fn link_before(&mut self, before: &ListSlot<T>, node: DetachedListNode<T>) -> ListSlot<T> {
-        let before_key = before.key();
-        let new_key = node.key();
-
-        // Validate `before` and get its prev pointer
-        let prev = {
-            let n = self
-                .get_node(before_key)
-                .expect("slot is invalid (was it dropped without unlinking?)");
-            assert_eq!(n.owner, self.id, "slot belongs to different list");
-            n.prev
-        };
-
-        // Set up new node's links
-        {
-            let n = unsafe { self.get_node_unchecked_mut(new_key) };
-            n.prev = prev;
-            n.next = before_key;
-            n.owner = self.id;
-        }
-
-        // Update `before`'s prev pointer
-        unsafe { self.get_node_unchecked_mut(before_key) }.prev = new_key;
-
-        // Update prev's next pointer (or head if inserting at start)
-        if prev.is_some() {
-            assert!(
-                self.contains_key(prev),
-                "prev neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-            unsafe { self.get_node_unchecked_mut(prev) }.next = new_key;
-        } else {
-            self.head = new_key;
-        }
-
-        self.len += 1;
-
-        node.into_slot()
-    }
-
-    // =========================================================================
-    // Move operations (reposition without unlinking)
-    // =========================================================================
-
-    /// Moves a linked slot to the front of the list.
-    ///
-    /// This is more efficient than unlink + link_front as it doesn't
-    /// change ownership or require type-state transitions.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
-    #[inline]
-    pub fn move_to_front(&mut self, slot: &ListSlot<T>) {
-        let key = slot.key();
-
-        // Validate slot and check if already at front
-        let (prev, next) = {
-            let node = self
-                .get_node(key)
-                .expect("slot is invalid (was it dropped without unlinking?)");
-            assert_eq!(node.owner, self.id, "slot belongs to different list");
-            if node.prev.is_none() {
-                return; // Already at front
-            }
-            (node.prev, node.next)
-        };
-
-        // Validate all neighbors upfront before any mutations.
-        assert!(
-            self.contains_key(prev),
-            "prev neighbor is invalid (was a slot dropped without unlinking?)"
+    pub fn is_head(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert_eq!(
+            node.owner_id(),
+            self.id,
+            "node does not belong to this list"
         );
-        if next.is_some() {
-            assert!(
-                self.contains_key(next),
-                "next neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-        }
-        assert!(
-            self.contains_key(self.head),
-            "list head is invalid (internal corruption)"
+        ptr == self.head
+    }
+
+    /// Returns `true` if the handle is at the tail of this list.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the node is not in this list.
+    /// In release builds, this is an unchecked precondition.
+    #[inline]
+    pub fn is_tail(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert_eq!(
+            node.owner_id(),
+            self.id,
+            "node does not belong to this list"
+        );
+        ptr == self.tail
+    }
+
+    // =========================================================================
+    // Move operations
+    // =========================================================================
+
+    /// Moves a node to the front without changing ownership or refcounts.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the node is not in this list.
+    /// In release builds, this is an unchecked precondition.
+    #[inline]
+    pub fn move_to_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert_eq!(
+            node.owner_id(),
+            self.id,
+            "node does not belong to this list"
         );
 
-        // All keys validated - now do mutations
+        if ptr == self.head {
+            return;
+        }
+
+        let prev = node.prev_ptr();
+        let next = node.next_ptr();
 
         // Remove from current position
-        unsafe { self.get_node_unchecked_mut(prev) }.next = next;
-        if next.is_some() {
-            unsafe { self.get_node_unchecked_mut(next) }.prev = prev;
-        } else {
+        if !prev.is_null() {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(prev) }.set_next(next);
+        }
+        if next.is_null() {
             self.tail = prev;
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(next) }.set_prev(prev);
         }
 
         // Insert at front
-        {
-            let n = unsafe { self.get_node_unchecked_mut(key) };
-            n.prev = Key::NONE;
-            n.next = self.head;
+        node.set_prev(ptr::null_mut());
+        node.set_next(self.head);
+        if !self.head.is_null() {
+            // SAFETY: head is non-null (checked), list holds strong ref
+            unsafe { node_ref(self.head) }.set_prev(ptr);
         }
-        unsafe { self.get_node_unchecked_mut(self.head) }.prev = key;
-        self.head = key;
+        self.head = ptr;
     }
 
-    /// Moves a linked slot to the back of the list.
-    ///
-    /// This is more efficient than unlink + link_back as it doesn't
-    /// change ownership or require type-state transitions.
+    /// Moves a node to the back without changing ownership or refcounts.
     ///
     /// # Panics
     ///
-    /// Panics if the slot is invalid or doesn't belong to this list.
+    /// In debug builds, panics if the node is not in this list.
+    /// In release builds, this is an unchecked precondition.
     #[inline]
-    pub fn move_to_back(&mut self, slot: &ListSlot<T>) {
-        let key = slot.key();
-
-        // Validate slot and check if already at back
-        let (prev, next) = {
-            let node = self
-                .get_node(key)
-                .expect("slot is invalid (was it dropped without unlinking?)");
-            assert_eq!(node.owner, self.id, "slot belongs to different list");
-            if node.next.is_none() {
-                return; // Already at back
-            }
-            (node.prev, node.next)
-        };
-
-        // Validate all neighbors upfront before any mutations.
-        assert!(
-            self.contains_key(next),
-            "next neighbor is invalid (was a slot dropped without unlinking?)"
+    pub fn move_to_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { node_ref(ptr) };
+        debug_assert_eq!(
+            node.owner_id(),
+            self.id,
+            "node does not belong to this list"
         );
-        if prev.is_some() {
-            assert!(
-                self.contains_key(prev),
-                "prev neighbor is invalid (was a slot dropped without unlinking?)"
-            );
+
+        if ptr == self.tail {
+            return;
         }
-        assert!(
-            self.contains_key(self.tail),
-            "list tail is invalid (internal corruption)"
-        );
 
-        // All keys validated - now do mutations
+        let prev = node.prev_ptr();
+        let next = node.next_ptr();
 
         // Remove from current position
-        unsafe { self.get_node_unchecked_mut(next) }.prev = prev;
-        if prev.is_some() {
-            unsafe { self.get_node_unchecked_mut(prev) }.next = next;
-        } else {
+        if !next.is_null() {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(next) }.set_prev(prev);
+        }
+        if prev.is_null() {
             self.head = next;
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(prev) }.set_next(next);
         }
 
         // Insert at back
-        {
-            let n = unsafe { self.get_node_unchecked_mut(key) };
-            n.prev = self.tail;
-            n.next = Key::NONE;
+        node.set_next(ptr::null_mut());
+        node.set_prev(self.tail);
+        if !self.tail.is_null() {
+            // SAFETY: tail is non-null (checked), list holds strong ref
+            unsafe { node_ref(self.tail) }.set_next(ptr);
         }
-        unsafe { self.get_node_unchecked_mut(self.tail) }.next = key;
-        self.tail = key;
+        self.tail = ptr;
     }
 
     // =========================================================================
-    // Pop operations (returns Detached guard)
-    // =========================================================================
-
-    /// Pops the front element.
-    ///
-    /// Returns a `Detached` guard. Call `take()` or `try_take()` to complete
-    /// the transition and get your slot back.
-    #[inline]
-    pub fn pop_front(&mut self) -> Option<Detached<T>> {
-        if self.head.is_none() {
-            return None;
-        }
-
-        let key = self.head;
-
-        // Get next before we modify
-        let node = self
-            .get_node(key)
-            .expect("list head is invalid (internal corruption)");
-        let next = node.next;
-
-        // Update head
-        self.head = next;
-        if next.is_some() {
-            assert!(
-                self.contains_key(next),
-                "next neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-            unsafe { self.get_node_unchecked_mut(next) }.prev = Key::NONE;
-        } else {
-            self.tail = Key::NONE;
-        }
-
-        // Clear ownership (node is now detached)
-        unsafe { self.get_node_unchecked_mut(key) }.owner = Id::NONE;
-
-        self.len -= 1;
-
-        // SAFETY: key is valid and node is now unlinked
-        Some(unsafe { Detached::new(key, self.vtable) })
-    }
-
-    /// Pops the back element.
-    ///
-    /// Returns a `Detached` guard. Call `take()` or `try_take()` to complete
-    /// the transition and get your slot back.
-    #[inline]
-    pub fn pop_back(&mut self) -> Option<Detached<T>> {
-        if self.tail.is_none() {
-            return None;
-        }
-
-        let key = self.tail;
-
-        // Get prev before we modify
-        let node = self
-            .get_node(key)
-            .expect("list tail is invalid (internal corruption)");
-        let prev = node.prev;
-
-        // Update tail
-        self.tail = prev;
-        if prev.is_some() {
-            assert!(
-                self.contains_key(prev),
-                "prev neighbor is invalid (was a slot dropped without unlinking?)"
-            );
-            unsafe { self.get_node_unchecked_mut(prev) }.next = Key::NONE;
-        } else {
-            self.head = Key::NONE;
-        }
-
-        // Clear ownership (node is now detached)
-        unsafe { self.get_node_unchecked_mut(key) }.owner = Id::NONE;
-
-        self.len -= 1;
-
-        // SAFETY: key is valid and node is now unlinked
-        Some(unsafe { Detached::new(key, self.vtable) })
-    }
-
-    // =========================================================================
-    // Cursor operations
+    // Cursor entry points
     // =========================================================================
 
     /// Creates a cursor positioned before the first element.
     ///
-    /// Call `cursor.next()` to get a guard to the first element.
+    /// Call `advance()` to move to the head, or `advance_back()` to move to
+    /// the tail.
     #[inline]
-    pub fn cursor(&mut self) -> Cursor<'_, T> {
+    pub fn cursor(&mut self) -> Cursor<'_, T, A> {
         Cursor {
             list: self,
             position: Position::BeforeStart,
@@ -1019,9 +812,10 @@ impl<T: 'static> List<T> {
 
     /// Creates a cursor positioned after the last element.
     ///
-    /// Call `cursor.prev()` to get a guard to the last element.
+    /// Call `advance_back()` to move to the tail, or `advance()` to stay
+    /// at `AfterEnd`.
     #[inline]
-    pub fn cursor_back(&mut self) -> Cursor<'_, T> {
+    pub fn cursor_back(&mut self) -> Cursor<'_, T, A> {
         Cursor {
             list: self,
             position: Position::AfterEnd,
@@ -1029,299 +823,225 @@ impl<T: 'static> List<T> {
     }
 }
 
-// Note: Default impl removed - List requires vtable from list_allocator! macro
+impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Default for List<T, A> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Drop for List<T, A> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
 
 // =============================================================================
-// Cursor - Positional traversal with modification support
+// Cursor
 // =============================================================================
 
 /// Position state for cursor traversal.
-#[derive(Clone, Copy, Debug)]
-enum Position {
-    /// Before the first element. `next()` returns the head.
+///
+/// # Invariants
+///
+/// - `At(ptr)`: `ptr` is non-null and points to a node linked to the cursor's
+///   list. The list holds a strong ref for all linked nodes, and `&mut List`
+///   prevents concurrent mutation, so the pointer is valid for the cursor's
+///   lifetime.
+/// - `BeforeStart` / `AfterEnd`: sentinel states with no pointer.
+enum Position<T> {
+    /// Before the first element.
     BeforeStart,
-    /// After the last element. `prev()` returns the tail.
+    /// After the last element.
     AfterEnd,
-    /// At a specific element. `next()`/`prev()` follow links.
-    At(Key),
-    /// In a gap after removal. Stores neighbors for bidirectional traversal.
-    Gap { prev: Key, next: Key },
+    /// At a specific node.
+    At(NodePtr<T>),
 }
 
-/// Cursor for list traversal with modification support.
-///
-/// A cursor provides positional iteration over the list with the ability to
-/// read, write, and remove elements. All guard operations consume the guard,
-/// requiring `next()` or `prev()` to continue iteration.
+#[cold]
+#[inline(never)]
+fn panic_cursor_not_at_node() -> ! {
+    panic!("cursor is not positioned at a node")
+}
+
+/// Cursor for positional traversal with modification support.
 ///
 /// # Position States
 ///
-/// - `BeforeStart`: Before the first element (initial state from `cursor()`)
-/// - `AfterEnd`: After the last element (initial state from `cursor_back()`)
-/// - `At(key)`: Positioned at an element
-/// - `Gap`: After removal, tracks neighbors for continued traversal
+/// - `BeforeStart`: Before the first element (from `list.cursor()`)
+/// - `AfterEnd`: After the last element (from `list.cursor_back()`)
+/// - `At(ptr)`: Positioned at an element
+///
+/// # Traversal API
+///
+/// - `advance()` / `advance_back()`: Move forward/backward, return `bool`
+/// - `current()`: Peek at the current node without refcount traffic
+/// - `remove()`: Remove the current node, auto-advance to next
 ///
 /// # Example
 ///
 /// ```ignore
 /// let mut cursor = list.cursor();
-/// while let Some(guard) = cursor.next() {
-///     if let Some(detached) = guard.write_remove_if(|order| {
-///         order.qty -= fill_qty;
-///         order.qty == 0  // Remove if fully filled
-///     }) {
-///         let node = detached.take(|o| index.remove(&o.id).unwrap());
-///         process(node.take());
+/// cursor.advance(); // move to head
+/// loop {
+///     match cursor.current() {
+///         None => break,
+///         Some(node) if node.exclusive().price > 100.0 => {
+///             cursor.remove(); // auto-advances to next
+///         }
+///         Some(_) => {
+///             cursor.advance();
+///         }
 ///     }
 /// }
 /// ```
-pub struct Cursor<'a, T: 'static> {
-    list: &'a mut List<T>,
-    position: Position,
+pub struct Cursor<'a, T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> {
+    // T: 'static is required because node_ref dereferences slab-allocated
+    // TLS data and returns a 'static reference.
+    list: &'a mut List<T, A>,
+    position: Position<T>,
 }
 
-impl<'a, T: 'static> Cursor<'a, T> {
-    /// Move forward and return a guard to the new position.
+impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
+    /// Moves the cursor forward to the next node.
     ///
-    /// Returns `None` if at the end of the list.
+    /// Returns `true` if the cursor is now at a valid node, `false` if it
+    /// moved past the end.
     #[inline]
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<CursorGuard<'_, 'a, T>> {
-        let next_key = match self.position {
+    pub fn advance(&mut self) -> bool {
+        let next_ptr = match self.position {
             Position::BeforeStart => self.list.head,
-            Position::AfterEnd => return None,
-            Position::At(key) => {
-                // Get next from current position
-                self.list.get_node(key)?.next
+            Position::AfterEnd => return false,
+            Position::At(ptr) => {
+                // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
+                unsafe { node_ref(ptr) }.next_ptr()
             }
-            Position::Gap { next, .. } => next,
         };
 
-        if next_key.is_none() {
+        if next_ptr.is_null() {
             self.position = Position::AfterEnd;
-            return None;
+            return false;
         }
 
-        // Validate the key exists
-        if !self.list.contains_key(next_key) {
-            self.position = Position::AfterEnd;
-            return None;
-        }
-
-        self.position = Position::At(next_key);
-        Some(CursorGuard {
-            cursor: self,
-            key: next_key,
-        })
+        self.position = Position::At(next_ptr);
+        true
     }
 
-    /// Move backward and return a guard to the new position.
+    /// Moves the cursor backward to the previous node.
     ///
-    /// Returns `None` if at the start of the list.
+    /// Returns `true` if the cursor is now at a valid node, `false` if it
+    /// moved before the start.
     #[inline]
-    pub fn prev(&mut self) -> Option<CursorGuard<'_, 'a, T>> {
-        let prev_key = match self.position {
-            Position::BeforeStart => return None,
+    pub fn advance_back(&mut self) -> bool {
+        let prev_ptr = match self.position {
+            Position::BeforeStart => return false,
             Position::AfterEnd => self.list.tail,
-            Position::At(key) => {
-                // Get prev from current position
-                self.list.get_node(key)?.prev
+            Position::At(ptr) => {
+                // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
+                unsafe { node_ref(ptr) }.prev_ptr()
             }
-            Position::Gap { prev, .. } => prev,
         };
 
-        if prev_key.is_none() {
+        if prev_ptr.is_null() {
             self.position = Position::BeforeStart;
-            return None;
+            return false;
         }
 
-        // Validate the key exists
-        if !self.list.contains_key(prev_key) {
-            self.position = Position::BeforeStart;
-            return None;
-        }
-
-        self.position = Position::At(prev_key);
-        Some(CursorGuard {
-            cursor: self,
-            key: prev_key,
-        })
-    }
-}
-
-/// Guard for cursor position.
-///
-/// All operations consume the guard. After any operation, call `cursor.next()`
-/// or `cursor.prev()` to continue iteration.
-///
-/// # User Invariant
-///
-/// You should consume this guard via one of its methods. Dropping without
-/// consuming leaves the cursor in an inconsistent state.
-pub struct CursorGuard<'cursor, 'list, T: 'static> {
-    cursor: &'cursor mut Cursor<'list, T>,
-    key: Key,
-}
-
-impl<T: 'static> CursorGuard<'_, '_, T> {
-    /// Read the element via closure. Cursor stays at current position.
-    #[inline]
-    pub fn read<F, R>(self, f: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
-        // Position stays At(key)
-        let node = self
-            .cursor
-            .list
-            .get_node(self.key)
-            .expect("cursor position is invalid");
-        f(&node.data)
+        self.position = Position::At(prev_ptr);
+        true
     }
 
-    /// Write to the element via closure. Cursor stays at current position.
-    #[inline]
-    pub fn write<F, R>(self, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        // Position stays At(key)
-        let node = unsafe { self.cursor.list.get_node_unchecked_mut(self.key) };
-        f(&mut node.data)
-    }
-
-    /// Skip without accessing. Cursor stays at current position.
-    #[inline]
-    pub fn skip(self) {
-        // Position stays At(key) - nothing to do
-    }
-
-    /// Remove the element. Cursor enters Gap state.
+    /// Returns a reference to the current node, or `None` if the cursor is
+    /// at `BeforeStart` or `AfterEnd`.
     ///
-    /// Returns a `Detached` guard to complete index cleanup.
+    /// No refcount traffic — borrows directly from the cursor.
     #[inline]
-    pub fn remove(self) -> Detached<T> {
-        let key = self.key;
-        let list = &mut *self.cursor.list;
-
-        // Get neighbors before unlinking
-        let node = list.get_node(key).expect("cursor position is invalid");
-        let prev = node.prev;
-        let next = node.next;
-
-        // Unlink the node (similar to unlink() but we update cursor position)
-        // Update prev's next pointer
-        if prev.is_some() {
-            unsafe { list.get_node_unchecked_mut(prev) }.next = next;
-        } else {
-            list.head = next;
-        }
-
-        // Update next's prev pointer
-        if next.is_some() {
-            unsafe { list.get_node_unchecked_mut(next) }.prev = prev;
-        } else {
-            list.tail = prev;
-        }
-
-        // Clear ownership
-        unsafe { list.get_node_unchecked_mut(key) }.owner = Id::NONE;
-
-        list.len -= 1;
-
-        // Update cursor to Gap state
-        self.cursor.position = Position::Gap { prev, next };
-
-        // SAFETY: key is valid and node is now unlinked
-        unsafe { Detached::new(key, list.vtable) }
-    }
-
-    /// Read, then remove if predicate returns true.
-    ///
-    /// If removed, cursor enters Gap state and returns `Some(Detached)`.
-    /// If not removed, cursor stays at current position and returns `None`.
-    #[inline]
-    pub fn read_remove_if<F>(self, f: F) -> Option<Detached<T>>
-    where
-        F: FnOnce(&T) -> bool,
-    {
-        let key = self.key;
-        let list = &mut *self.cursor.list;
-
-        let node = list.get_node(key).expect("cursor position is invalid");
-        let should_remove = f(&node.data);
-
-        if should_remove {
-            let prev = node.prev;
-            let next = node.next;
-
-            // Unlink
-            if prev.is_some() {
-                unsafe { list.get_node_unchecked_mut(prev) }.next = next;
-            } else {
-                list.head = next;
+    pub fn current(&self) -> Option<&ListNode<T>> {
+        match self.position {
+            Position::At(ptr) => {
+                // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
+                Some(unsafe { node_ref(ptr) })
             }
-
-            if next.is_some() {
-                unsafe { list.get_node_unchecked_mut(next) }.prev = prev;
-            } else {
-                list.tail = prev;
-            }
-
-            unsafe { list.get_node_unchecked_mut(key) }.owner = Id::NONE;
-            list.len -= 1;
-
-            self.cursor.position = Position::Gap { prev, next };
-            Some(unsafe { Detached::new(key, list.vtable) })
-        } else {
-            // Stay at current position
-            None
+            _ => None,
         }
     }
 
-    /// Write, then remove if predicate returns true.
+    /// Removes the current node from the list. The cursor auto-advances to
+    /// the next node (or `AfterEnd` if the removed node was the tail).
     ///
-    /// If removed, cursor enters Gap state and returns `Some(Detached)`.
-    /// If not removed, cursor stays at current position and returns `None`.
+    /// Returns the removed node as an `RcSlot` (transfers the list's strong
+    /// reference — no net refcount change).
+    ///
+    /// After removal, `current()` returns the next node. For backward
+    /// scan-and-remove, use `advance_back()` instead of `advance()` after
+    /// removal, since `advance()` would skip the node that `remove()` landed on.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cursor is not positioned at a node.
     #[inline]
-    pub fn write_remove_if<F>(self, f: F) -> Option<Detached<T>>
-    where
-        F: FnOnce(&mut T) -> bool,
-    {
-        let key = self.key;
-        let list = &mut *self.cursor.list;
+    pub fn remove(&mut self) -> RcSlot<ListNode<T>, A> {
+        let Position::At(ptr) = self.position else {
+            panic_cursor_not_at_node();
+        };
 
-        // Get neighbors first (need them if we remove)
-        let node = list.get_node(key).expect("cursor position is invalid");
-        let prev = node.prev;
-        let next = node.next;
+        // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
+        let node = unsafe { node_ref(ptr) };
+        let prev = node.prev_ptr();
+        let next = node.next_ptr();
 
-        // Write and check predicate
-        let node_mut = unsafe { list.get_node_unchecked_mut(key) };
-        let should_remove = f(&mut node_mut.data);
-
-        if should_remove {
-            // Unlink
-            if prev.is_some() {
-                unsafe { list.get_node_unchecked_mut(prev) }.next = next;
-            } else {
-                list.head = next;
-            }
-
-            if next.is_some() {
-                unsafe { list.get_node_unchecked_mut(next) }.prev = prev;
-            } else {
-                list.tail = prev;
-            }
-
-            unsafe { list.get_node_unchecked_mut(key) }.owner = Id::NONE;
-            list.len -= 1;
-
-            self.cursor.position = Position::Gap { prev, next };
-            Some(unsafe { Detached::new(key, list.vtable) })
+        if prev.is_null() {
+            self.list.head = next;
         } else {
-            // Stay at current position
-            None
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(prev) }.set_next(next);
         }
+
+        if next.is_null() {
+            self.list.tail = prev;
+        } else {
+            // SAFETY: linked node, list holds strong ref for all linked nodes
+            unsafe { node_ref(next) }.set_prev(prev);
+        }
+
+        node.set_prev(ptr::null_mut());
+        node.set_next(ptr::null_mut());
+        node.set_owner(ListId::NONE);
+        self.list.len -= 1;
+
+        // Auto-advance to next node (std semantics)
+        if next.is_null() {
+            self.position = Position::AfterEnd;
+        } else {
+            self.position = Position::At(next);
+        }
+
+        // SAFETY: transferring list's strong ref into returned RcSlot;
+        // list owned this ref since link time
+        unsafe { RcSlot::from_raw(ptr) }
+    }
+
+    /// Removes the current node if the predicate returns `true`.
+    ///
+    /// The predicate receives `&ListNode<T>` — call `.exclusive()` to read data.
+    ///
+    /// If removed: returns `Some(RcSlot)`, cursor auto-advances to next node.
+    /// If not removed: returns `None`, cursor stays at the current node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cursor is not positioned at a node.
+    #[inline]
+    pub fn remove_if(
+        &mut self,
+        f: impl FnOnce(&ListNode<T>) -> bool,
+    ) -> Option<RcSlot<ListNode<T>, A>> {
+        let Position::At(ptr) = self.position else {
+            panic_cursor_not_at_node();
+        };
+
+        // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
+        let node = unsafe { node_ref(ptr) };
+        if f(node) { Some(self.remove()) } else { None }
     }
 }
