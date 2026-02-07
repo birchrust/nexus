@@ -38,6 +38,7 @@
 #![warn(missing_docs)]
 
 pub mod exclusive;
+pub mod heap;
 pub mod list;
 mod macros;
 

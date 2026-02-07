@@ -135,6 +135,15 @@ impl<T: ?Sized> ExclusiveCell<T> {
         self.borrowed.get()
     }
 
+    /// Returns a raw pointer to the underlying data.
+    ///
+    /// No borrow tracking is performed. The caller must ensure
+    /// no `ExRef`/`ExMut` guards are active when dereferencing.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut T {
+        self.value.get()
+    }
+
     /// Returns a mutable reference to the underlying data.
     ///
     /// Since this takes `&mut self`, no borrows can be active.

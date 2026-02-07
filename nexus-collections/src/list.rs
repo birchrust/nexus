@@ -223,29 +223,25 @@ impl<T> ListNode<T> {
 }
 
 // =============================================================================
-// node_ref — navigate raw pointer to &ListNode<T>
+// node_deref — navigate raw pointer to *const ListNode<T>
 // =============================================================================
 
-/// Dereferences a `NodePtr<T>` to get `&ListNode<T>`.
+/// Dereferences a `NodePtr<T>` to get `*const ListNode<T>`.
 ///
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to an occupied `SlotCell` with `strong > 0`.
-/// - The returned `'static` lifetime is a lie — the reference is only valid as
-///   long as the caller (or the list) holds a strong reference to the node.
-///   Slab addresses are stable (never moved/freed while strong > 0), so the
-///   pointer remains valid, but the caller MUST maintain a strong ref for the
-///   duration of use.
+/// - The returned pointer is only valid as long as the caller (or the list)
+///   holds a strong reference to the node.
 #[inline]
-unsafe fn node_ref<T>(ptr: NodePtr<T>) -> &'static ListNode<T> {
+unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const ListNode<T> {
     // SlotCell.value: ManuallyDrop<MaybeUninit<RcInner<ListNode<T>>>>
     // → assume_init_ref() → &RcInner<ListNode<T>>
-    // → .value() → &ListNode<T>
+    // → .value() → &ListNode<T> → cast to raw pointer
     //
     // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot
-    // with strong > 0. The lifetime is 'static because slab addresses are
-    // stable — the actual borrow is bounded by the caller's usage.
-    unsafe { (*ptr).value.assume_init_ref() }.value()
+    // with strong > 0.
+    unsafe { (*ptr).value.assume_init_ref() }.value() as *const ListNode<T>
 }
 
 // =============================================================================
@@ -320,7 +316,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn link_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert!(!node.is_linked(), "node is already linked to a list");
 
         node.set_prev(self.tail);
@@ -331,7 +327,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.head = ptr;
         } else {
             // SAFETY: tail is non-null (checked above), list holds strong ref
-            unsafe { node_ref(self.tail) }.set_next(ptr);
+            unsafe { (*node_deref(self.tail)).set_next(ptr) };
         }
 
         self.tail = ptr;
@@ -353,7 +349,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn link_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert!(!node.is_linked(), "node is already linked to a list");
 
         node.set_prev(ptr::null_mut());
@@ -364,7 +360,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.tail = ptr;
         } else {
             // SAFETY: head is non-null (checked above), list holds strong ref
-            unsafe { node_ref(self.head) }.set_prev(ptr);
+            unsafe { (*node_deref(self.head)).set_prev(ptr) };
         }
 
         self.head = ptr;
@@ -384,7 +380,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn link_after(&mut self, after: &RcSlot<ListNode<T>, A>, handle: &RcSlot<ListNode<T>, A>) {
         let after_ptr = after.as_ptr();
         // SAFETY: after is a live RcSlot, strong >= 1
-        let after_node = unsafe { node_ref(after_ptr) };
+        let after_node = unsafe { &*node_deref(after_ptr) };
         debug_assert_eq!(
             after_node.owner_id(),
             self.id,
@@ -393,7 +389,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         let new_ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let new_node = unsafe { node_ref(new_ptr) };
+        let new_node = unsafe { &*node_deref(new_ptr) };
         debug_assert!(!new_node.is_linked(), "node is already linked to a list");
 
         let next_ptr = after_node.next_ptr();
@@ -408,7 +404,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.tail = new_ptr;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(next_ptr) }.set_prev(new_ptr);
+            unsafe { (*node_deref(next_ptr)).set_prev(new_ptr) };
         }
 
         self.len += 1;
@@ -430,7 +426,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ) {
         let before_ptr = before.as_ptr();
         // SAFETY: before is a live RcSlot, strong >= 1
-        let before_node = unsafe { node_ref(before_ptr) };
+        let before_node = unsafe { &*node_deref(before_ptr) };
         debug_assert_eq!(
             before_node.owner_id(),
             self.id,
@@ -439,7 +435,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         let new_ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let new_node = unsafe { node_ref(new_ptr) };
+        let new_node = unsafe { &*node_deref(new_ptr) };
         debug_assert!(!new_node.is_linked(), "node is already linked to a list");
 
         let prev_ptr = before_node.prev_ptr();
@@ -454,7 +450,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.head = new_ptr;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(prev_ptr) }.set_next(new_ptr);
+            unsafe { (*node_deref(prev_ptr)).set_next(new_ptr) };
         }
 
         self.len += 1;
@@ -478,7 +474,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn unlink(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert_eq!(
             node.owner_id(),
             self.id,
@@ -500,7 +496,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     fn unlink_ptr(&mut self, ptr: NodePtr<T>) {
         // SAFETY: caller guarantees ptr is non-null and points to a linked node;
         // list holds a strong ref for all linked nodes
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         let prev = node.prev_ptr();
         let next = node.next_ptr();
 
@@ -508,14 +504,14 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.head = next;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(prev) }.set_next(next);
+            unsafe { (*node_deref(prev)).set_next(next) };
         }
 
         if next.is_null() {
             self.tail = prev;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(next) }.set_prev(prev);
+            unsafe { (*node_deref(next)).set_prev(prev) };
         }
 
         node.set_prev(ptr::null_mut());
@@ -537,7 +533,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         let mut current = self.head;
         while !current.is_null() {
             // SAFETY: current is non-null, list holds strong ref for all linked nodes
-            let node = unsafe { node_ref(current) };
+            let node = unsafe { &*node_deref(current) };
             let next = node.next_ptr();
 
             node.set_prev(ptr::null_mut());
@@ -571,7 +567,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         let ptr = self.head;
         // SAFETY: head is non-null (checked above), list holds strong ref
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         let next = node.next_ptr();
 
         self.head = next;
@@ -579,7 +575,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.tail = ptr::null_mut();
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(next) }.set_prev(ptr::null_mut());
+            unsafe { (*node_deref(next)).set_prev(ptr::null_mut()) };
         }
 
         node.set_prev(ptr::null_mut());
@@ -602,7 +598,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         let ptr = self.tail;
         // SAFETY: tail is non-null (checked above), list holds strong ref
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         let prev = node.prev_ptr();
 
         self.tail = prev;
@@ -610,7 +606,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
             self.head = ptr::null_mut();
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(prev) }.set_next(ptr::null_mut());
+            unsafe { (*node_deref(prev)).set_next(ptr::null_mut()) };
         }
 
         node.set_prev(ptr::null_mut());
@@ -636,8 +632,9 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         if self.head.is_null() {
             return None;
         }
-        // SAFETY: head is non-null (checked above), list holds strong ref
-        Some(unsafe { node_ref(self.head) })
+        // SAFETY: head is non-null (checked above), list holds strong ref.
+        // Reference lifetime bounded by &self.
+        Some(unsafe { &*node_deref(self.head) })
     }
 
     /// Returns a reference to the back node, or `None` if empty.
@@ -648,8 +645,9 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         if self.tail.is_null() {
             return None;
         }
-        // SAFETY: tail is non-null (checked above), list holds strong ref
-        Some(unsafe { node_ref(self.tail) })
+        // SAFETY: tail is non-null (checked above), list holds strong ref.
+        // Reference lifetime bounded by &self.
+        Some(unsafe { &*node_deref(self.tail) })
     }
 
     // =========================================================================
@@ -660,7 +658,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     #[inline]
     pub fn contains(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(handle.as_ptr()) };
+        let node = unsafe { &*node_deref(handle.as_ptr()) };
         node.owner_id() == self.id
     }
 
@@ -674,7 +672,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn is_head(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert_eq!(
             node.owner_id(),
             self.id,
@@ -693,7 +691,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn is_tail(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert_eq!(
             node.owner_id(),
             self.id,
@@ -716,7 +714,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn move_to_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert_eq!(
             node.owner_id(),
             self.id,
@@ -733,13 +731,13 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         // Remove from current position
         if !prev.is_null() {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(prev) }.set_next(next);
+            unsafe { (*node_deref(prev)).set_next(next) };
         }
         if next.is_null() {
             self.tail = prev;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(next) }.set_prev(prev);
+            unsafe { (*node_deref(next)).set_prev(prev) };
         }
 
         // Insert at front
@@ -747,7 +745,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         node.set_next(self.head);
         if !self.head.is_null() {
             // SAFETY: head is non-null (checked), list holds strong ref
-            unsafe { node_ref(self.head) }.set_prev(ptr);
+            unsafe { (*node_deref(self.head)).set_prev(ptr) };
         }
         self.head = ptr;
     }
@@ -762,7 +760,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     pub fn move_to_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         debug_assert_eq!(
             node.owner_id(),
             self.id,
@@ -779,13 +777,13 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         // Remove from current position
         if !next.is_null() {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(next) }.set_prev(prev);
+            unsafe { (*node_deref(next)).set_prev(prev) };
         }
         if prev.is_null() {
             self.head = next;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(prev) }.set_next(next);
+            unsafe { (*node_deref(prev)).set_next(next) };
         }
 
         // Insert at back
@@ -793,7 +791,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         node.set_prev(self.tail);
         if !self.tail.is_null() {
             // SAFETY: tail is non-null (checked), list holds strong ref
-            unsafe { node_ref(self.tail) }.set_next(ptr);
+            unsafe { (*node_deref(self.tail)).set_next(ptr) };
         }
         self.tail = ptr;
     }
@@ -900,8 +898,6 @@ fn panic_cursor_not_at_node() -> ! {
 /// }
 /// ```
 pub struct Cursor<'a, T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> {
-    // T: 'static is required because node_ref dereferences slab-allocated
-    // TLS data and returns a 'static reference.
     list: &'a mut List<T, A>,
     position: Position<T>,
 }
@@ -918,7 +914,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
             Position::AfterEnd => return false,
             Position::At(ptr) => {
                 // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
-                unsafe { node_ref(ptr) }.next_ptr()
+                unsafe { (*node_deref(ptr)).next_ptr() }
             }
         };
 
@@ -942,7 +938,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
             Position::AfterEnd => self.list.tail,
             Position::At(ptr) => {
                 // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
-                unsafe { node_ref(ptr) }.prev_ptr()
+                unsafe { (*node_deref(ptr)).prev_ptr() }
             }
         };
 
@@ -963,8 +959,9 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     pub fn current(&self) -> Option<&ListNode<T>> {
         match self.position {
             Position::At(ptr) => {
-                // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
-                Some(unsafe { node_ref(ptr) })
+                // SAFETY: At(ptr) invariant — node is linked, list holds strong ref.
+                // Reference lifetime bounded by &self.
+                Some(unsafe { &*node_deref(ptr) })
             }
             _ => None,
         }
@@ -990,7 +987,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
         };
 
         // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         let prev = node.prev_ptr();
         let next = node.next_ptr();
 
@@ -998,14 +995,14 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
             self.list.head = next;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(prev) }.set_next(next);
+            unsafe { (*node_deref(prev)).set_next(next) };
         }
 
         if next.is_null() {
             self.list.tail = prev;
         } else {
             // SAFETY: linked node, list holds strong ref for all linked nodes
-            unsafe { node_ref(next) }.set_prev(prev);
+            unsafe { (*node_deref(next)).set_prev(prev) };
         }
 
         node.set_prev(ptr::null_mut());
@@ -1045,7 +1042,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
         };
 
         // SAFETY: At(ptr) invariant — node is linked, list holds strong ref
-        let node = unsafe { node_ref(ptr) };
+        let node = unsafe { &*node_deref(ptr) };
         if f(node) { Some(self.remove()) } else { None }
     }
 }
