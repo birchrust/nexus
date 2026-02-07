@@ -22,7 +22,11 @@
 //! use nexus_collections::list_allocator;
 //!
 //! struct Order { id: u64, price: f64 }
-//! list_allocator!(orders, Order);
+//!
+//! mod orders {
+//!     use super::*;
+//!     list_allocator!(Order, bounded);
+//! }
 //!
 //! orders::Allocator::builder().capacity(1000).build().unwrap();
 //!

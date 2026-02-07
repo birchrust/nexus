@@ -17,7 +17,10 @@
 //!
 //! struct Order { id: u64, price: f64 }
 //!
-//! list_allocator!(orders, Order);
+//! mod orders {
+//!     use super::*;
+//!     list_allocator!(Order, bounded);
+//! }
 //!
 //! fn main() {
 //!     orders::Allocator::builder().capacity(1000).build().unwrap();

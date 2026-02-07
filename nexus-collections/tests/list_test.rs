@@ -8,7 +8,11 @@ pub struct Order {
     price: f64,
 }
 
-list_allocator!(orders, Order);
+#[allow(dead_code)]
+mod orders {
+    use super::*;
+    list_allocator!(Order, bounded);
+}
 
 fn init() {
     let _ = orders::Allocator::builder().capacity(100).build();
