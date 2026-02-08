@@ -1,203 +1,56 @@
-//! High-performance collections with external storage.
+//! High-performance collections with slab-backed storage.
 //!
-//! This crate provides data structures optimized for latency-critical systems
-//! like trading infrastructure. The key insight: separate storage from structure.
+//! Collections use thread-local slab allocators for O(1) insert/remove with
+//! stable handles and no allocation on the hot path.
 //!
-//! # Design Philosophy
+//! # Collections
 //!
-//! Traditional collections own their data:
+//! - **List** — Doubly-linked list with `RcSlot` handles and external allocation
+//! - **Heap** — Pairing heap with `RcSlot` handles and external allocation
+//! - **SkipList** — Sorted map with internal allocation (user sees only K/V)
 //!
-//! ```text
-//! Vec<Order>     - owns orders, indices unstable on removal
-//! BTreeMap<K,V>  - owns values, allocates on insert
-//! LinkedList<T>  - owns nodes, pointer chasing, poor cache locality
-//! ```
+//! # Quick Start (SkipList)
 //!
-//! This crate inverts the model:
-//!
-//! ```text
-//! Storage (Slab)     - owns data, provides stable keys
-//! List/Heap/SkipList - coordinate keys, don't own data
-//! ```
-//!
-//! Benefits:
-//! - **Stable keys**: Remove from middle without invalidating other keys
-//! - **Zero allocation on hot path**: Pre-allocate storage at startup
-//! - **O(1) operations**: Internal links enable O(1) removal from lists
-//! - **Shared storage**: Multiple data structures can reference the same pool
-//! - **Cache-friendly**: Slab-backed storage has good locality
-//!
-//! # Quick Start
-//!
-//! ```
-//! use nexus_collections::{List, ListStorage};
-//!
-//! // Storage owns the data (wrapped in ListNode internally)
-//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(1000);
-//!
-//! // List coordinates keys into storage
-//! let mut queue: List<u64, ListStorage<u64>> = List::new();
-//!
-//! // Insert returns stable key for O(1) access later
-//! let key = queue.try_push_back(&mut storage, 42).unwrap();
-//!
-//! // O(1) removal from anywhere
-//! assert_eq!(queue.remove(&mut storage, key), Some(42));
-//! ```
-//!
-//! # Moving Between Lists
-//!
-//! Use `unlink` and `link_back` to move elements without deallocating.
-//! The storage key stays valid.
-//!
-//! ```
-//! use nexus_collections::{List, ListStorage};
-//!
-//! let mut storage: ListStorage<u64> = ListStorage::with_capacity(100);
-//! let mut queue_a: List<u64, ListStorage<u64>> = List::new();
-//! let mut queue_b: List<u64, ListStorage<u64>> = List::new();
-//!
-//! let key = queue_a.try_push_back(&mut storage, 42).unwrap();
-//!
-//! // Move to queue_b - key remains valid
-//! queue_a.unlink(&mut storage, key);
-//! queue_b.link_back(&mut storage, key);
-//!
-//! assert!(queue_a.is_empty());
-//! assert_eq!(queue_b.get(&storage, key), Some(&42));
-//! ```
-//!
-//! # Entry API
-//!
-//! For ergonomic workflows, use the Entry API. Entries are cloneable handles
-//! that provide direct access to values without key lookups.
-//!
-//! ```
-//! use nexus_collections::{Heap, HeapStorage};
-//! use std::collections::HashMap;
-//!
-//! #[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
-//! struct Task { priority: i32, id: u64 }
-//!
-//! let mut storage: HeapStorage<Task> = HeapStorage::with_capacity(100);
-//! let mut heap: Heap<Task, HeapStorage<Task>> = Heap::new();
-//! let mut cache: HashMap<u64, nexus_collections::HeapEntry<Task>> = HashMap::new();
-//!
-//! // Insert and cache entry
-//! let entry = heap.try_push_entry(&mut storage, Task { priority: 10, id: 1 }).unwrap();
-//! cache.insert(1, entry.clone());
-//!
-//! // Later: direct access through cached entry
-//! let entry = cache.get(&1).unwrap();
-//! assert_eq!(entry.get().priority, 10);
-//! ```
-//!
-//! ## Self-Referential Patterns
-//!
-//! Use `insert_with` or `vacant` when values need to know their own storage key:
-//!
-//! ```
-//! use nexus_collections::{Heap, HeapStorage};
-//! use nexus_slab::Key as NexusKey;
-//!
-//! struct Timer {
-//!     deadline: u64,
-//!     self_key: NexusKey,  // Knows its own location
+//! ```ignore
+//! mod levels {
+//!     nexus_collections::skip_allocator!(u64, String, bounded);
 //! }
 //!
-//! // Heap ordering by deadline only
-//! impl Ord for Timer {
-//!     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-//!         self.deadline.cmp(&other.deadline)
-//!     }
-//! }
-//! impl PartialOrd for Timer {
-//!     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//!         Some(self.cmp(other))
-//!     }
-//! }
-//! impl PartialEq for Timer {
-//!     fn eq(&self, other: &Self) -> bool { self.deadline == other.deadline }
-//! }
-//! impl Eq for Timer {}
+//! fn main() {
+//!     levels::Allocator::builder().capacity(1000).build().unwrap();
 //!
-//! let mut storage: HeapStorage<Timer> = HeapStorage::with_capacity(100);
-//! let mut heap: Heap<Timer, HeapStorage<Timer>> = Heap::new();
-//!
-//! // Closure receives entry before value exists
-//! let entry = heap.try_push_with(&mut storage, |e| Timer {
-//!     deadline: 1000,
-//!     self_key: e.key(),
-//! }).unwrap();
-//!
-//! assert_eq!(entry.get().self_key, entry.key());
+//!     let mut map = levels::SkipList::new(levels::Allocator);
+//!     map.try_insert(100, "hello".into()).unwrap();
+//!     assert_eq!(map.get(&100), Some(&"hello".into()));
+//! }
 //! ```
-//!
-//! # Critical Invariant: Same Storage Instance
-//!
-//! All operations on a list must use the same storage instance.
-//! This is the caller's responsibility.
-//! Passing a different storage causes undefined behavior.
-//!
-//! ```no_run
-//! use nexus_collections::{List, ListStorage};
-//!
-//! let mut storage_a: ListStorage<u64> = ListStorage::with_capacity(16);
-//! let mut storage_b: ListStorage<u64> = ListStorage::with_capacity(16);
-//! let mut list: List<u64, ListStorage<u64>> = List::new();
-//!
-//! let key = list.try_push_back(&mut storage_a, 1).unwrap();
-//!
-//! // WRONG: using storage_b with a list that references storage_a
-//! // list.remove(&mut storage_b, key);  // Undefined behavior!
-//! ```
-//!
-//! # Storage Options
-//!
-//! | Collection | Bounded | Growable |
-//! |------------|---------|----------|
-//! | [`List`] | [`ListStorage<T>`] | [`GrowableListStorage<T>`] |
-//! | [`Heap`] | [`HeapStorage<T>`] | [`GrowableHeapStorage<T>`] |
-//! | [`SkipList`] | [`SkipStorage<K, V>`] | [`GrowableSkipStorage<K, V>`] |
-//!
-//! # Data Structures
-//!
-//! | Structure | Use Case | Key Operations |
-//! |-----------|----------|----------------|
-//! | [`List`] | FIFO queues, LRU caches | O(1) push/pop/remove |
-//! | [`Heap`] | Priority queues, timers | O(log n) push/pop, O(1) decrease-key |
-//! | [`SkipList`] | Sorted maps, probabilistic | O(log n) insert/get/remove, O(1) first/pop_first |
-//!
-//! # Performance
-//!
-//! Benchmarked on Intel Core Ultra 7 155H, single P-core, turbo off (1.7 GHz):
-//!
-//! | Operation | Cycles (p50) | Notes |
-//! |-----------|--------------|-------|
-//! | List push_back | 84 | O(1) |
-//! | List remove | 68 | O(1), from anywhere |
-//! | Heap push | 90 | O(log n) |
-//! | Heap pop | 64 | O(log n) |
-//! | SkipList insert | 614-1320 | O(log n), sequential vs random |
-//! | SkipList get | 842 | O(log n), 10K elements |
-//! | SkipList remove | 802 | O(log n), 10K elements |
-//! | SkipList first/pop_first | 62-116 | O(1) |
 
 #![warn(missing_docs)]
 
-mod internal;
+use std::cell::Cell;
 
+pub mod exclusive;
 pub mod heap;
 pub mod list;
+mod macros;
 pub mod skiplist;
-pub mod storage;
 
-pub use heap::Heap;
-pub use list::List;
-pub use skiplist::{Entry, OccupiedEntry, SkipList, VacantEntry};
-pub use storage::{
-    Full, GrowableHeapStorage, GrowableHeapVacant, GrowableListStorage, GrowableListVacant,
-    GrowableSkipStorage, GrowableSkipVacant, HeapEntry, HeapNode, HeapRef, HeapRefMut, HeapStorage,
-    HeapVacant, ListEntry, ListNode, ListRef, ListRefMut, ListStorage, ListVacant, SkipEntry,
-    SkipNode, SkipRef, SkipRefMut, SkipStorage, SkipVacant,
-};
+// Re-export ExclusiveCell types at crate root
+pub use exclusive::{ExMut, ExRef, ExclusiveCell};
+
+// =============================================================================
+// Collection identity
+// =============================================================================
+
+thread_local! {
+    static NEXT_COLLECTION_ID: Cell<usize> = const { Cell::new(1) };
+}
+
+/// Returns a unique (per-thread) collection ID for ownership checking.
+fn next_collection_id() -> usize {
+    NEXT_COLLECTION_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}

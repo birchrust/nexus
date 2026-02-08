@@ -1,6 +1,6 @@
 [package]
 name = "nexus-collections"
-version = "0.6.0"
+version = "0.7.0"
 description = "Storage-backed intrusive collections for low-latency systems"
 readme = "README.md"
 edition.workspace = true
@@ -13,10 +13,13 @@ categories = ["data-structures"]
 [dev-dependencies]
 hdrhistogram = "7.5"
 rand = "0.9.2"
+seq-macro.workspace = true
+serial_test = "3"
+trybuild = "1.0"
 
 [dependencies]
 rand_core = "0.9.3"
-nexus-slab = "0.8.0"
+nexus-slab = "0.11.1"
 
 [lints]
 workspace = true
