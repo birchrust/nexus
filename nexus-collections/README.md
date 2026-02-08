@@ -4,20 +4,29 @@ High-performance, slab-backed collections for latency-critical systems.
 
 ## Why This Crate?
 
-Standard collections allocate on every insert and scatter nodes across the
-heap. This crate uses [`nexus-slab`](https://crates.io/crates/nexus-slab)
-— a SLUB-style slab allocator — for predictable latency and cache-friendly
-node storage.
+Node-based data structures (linked lists, heaps, skip lists) offer
+operations that contiguous structures can't — O(1) unlink/re-link, stable
+handles to interior elements, and movement between collections without
+copying. The trade-off is normally heap fragmentation and allocator overhead
+on every node allocation.
+
+This crate eliminates that trade-off by using
+[`nexus-slab`](https://crates.io/crates/nexus-slab) — a SLUB-style slab
+allocator — as dedicated backing storage for all nodes. Nodes live in
+contiguous, type-homogeneous slabs rather than scattered across the global
+heap, giving you:
 
 - **Global allocator isolation** — your hot path doesn't compete with
   logging, serialization, or background tasks for allocator resources
 - **LIFO cache locality** — recently freed nodes are reused first, staying
   hot in L1
-- **Stable handles** — `RcSlot`-based references that survive insert/remove
+- **Zero fragmentation** — every slot is the same size, freed slots are
+  immediately reusable
+- **Stable handles** — `RcSlot`-based references that survive unlink,
+  re-link, and movement between collections
 - **Bounded** — fixed capacity, zero allocation after init, returns `Full`
   at capacity
-- **Unbounded** — grows via chunks without copying (like `nexus-slab`'s
-  unbounded allocator)
+- **Unbounded** — grows via chunks without copying
 
 ## Collections
 
