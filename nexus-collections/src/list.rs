@@ -30,15 +30,16 @@
 //!
 //! orders::Allocator::builder().capacity(1000).build().unwrap();
 //!
-//! let mut list = orders::List::new();
-//! let handle = orders::create_node(Order { id: 1, price: 100.0 }).unwrap();
-//! list.link_back(&handle);
+//! // Primary: collection allocates internally
+//! let mut list = orders::List::new(orders::Allocator);
+//! let handle = list.try_push_back(Order { id: 1, price: 100.0 }).unwrap();
 //!
 //! // Read via auto-deref: RcSlot → ListNode → exclusive()
 //! assert_eq!(handle.exclusive().price, 100.0);
 //!
-//! // Write
-//! handle.exclusive_mut().price = 200.0;
+//! // Re-linking: move between collections
+//! list.unlink(&handle);
+//! list.link_back(&handle);
 //! ```
 
 use std::cell::Cell;
@@ -46,50 +47,12 @@ use std::marker::PhantomData;
 use std::ptr;
 
 use nexus_slab::alloc::{Alloc, RcSlot};
-use nexus_slab::{RcInner, SlotCell};
+use nexus_slab::{BoundedAlloc, Full, RcInner, SlotCell, UnboundedAlloc};
 
 use crate::ExclusiveCell;
 use crate::exclusive::{ExMut, ExRef};
 
-// =============================================================================
-// ListId
-// =============================================================================
-
-thread_local! {
-    static NEXT_LIST_ID: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Unique identifier for a list instance.
-///
-/// Each list gets a unique ID on creation. Nodes track which list owns them
-/// to catch cross-list operations at runtime.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct ListId(usize);
-
-impl ListId {
-    /// Sentinel value indicating no owner (detached state).
-    pub const NONE: ListId = ListId(usize::MAX);
-
-    /// Returns `true` if this is the NONE sentinel.
-    #[inline]
-    pub fn is_none(self) -> bool {
-        self.0 == usize::MAX
-    }
-
-    /// Returns `true` if this is not the NONE sentinel.
-    #[inline]
-    pub fn is_some(self) -> bool {
-        self.0 != usize::MAX
-    }
-}
-
-fn next_list_id() -> ListId {
-    NEXT_LIST_ID.with(|c| {
-        let id = c.get();
-        c.set(id.wrapping_add(1));
-        ListId(id)
-    })
-}
+use crate::next_collection_id;
 
 // =============================================================================
 // NodePtr
@@ -122,7 +85,7 @@ type NodePtr<T> = *mut SlotCell<RcInner<ListNode<T>>>;
 pub struct ListNode<T> {
     prev: Cell<NodePtr<T>>,
     next: Cell<NodePtr<T>>,
-    owner: Cell<ListId>,
+    owner: Cell<usize>,
     data: ExclusiveCell<T>,
 }
 
@@ -133,7 +96,7 @@ impl<T> ListNode<T> {
         ListNode {
             prev: Cell::new(ptr::null_mut()),
             next: Cell::new(ptr::null_mut()),
-            owner: Cell::new(ListId::NONE),
+            owner: Cell::new(0),
             data: ExclusiveCell::new(value),
         }
     }
@@ -141,7 +104,7 @@ impl<T> ListNode<T> {
     /// Returns `true` if this node is linked to a list.
     #[inline]
     pub fn is_linked(&self) -> bool {
-        self.owner.get().is_some()
+        self.owner.get() != 0
     }
 
     /// Returns a reference to the underlying [`ExclusiveCell`].
@@ -202,11 +165,6 @@ impl<T> ListNode<T> {
     }
 
     #[inline]
-    fn owner_id(&self) -> ListId {
-        self.owner.get()
-    }
-
-    #[inline]
     fn set_prev(&self, ptr: NodePtr<T>) {
         self.prev.set(ptr);
     }
@@ -217,7 +175,12 @@ impl<T> ListNode<T> {
     }
 
     #[inline]
-    fn set_owner(&self, id: ListId) {
+    fn owner_id(&self) -> usize {
+        self.owner.get()
+    }
+
+    #[inline]
+    fn set_owner(&self, id: usize) {
         self.owner.set(id);
     }
 }
@@ -245,6 +208,22 @@ unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const ListNode<T> {
 }
 
 // =============================================================================
+// Cold panic helpers — extracted so hot-path functions stay leaf/frameless
+// =============================================================================
+
+#[cold]
+#[inline(never)]
+fn panic_wrong_list() -> ! {
+    panic!("node is not linked to this list")
+}
+
+#[cold]
+#[inline(never)]
+fn panic_already_linked() -> ! {
+    panic!("node is already linked to a list")
+}
+
+// =============================================================================
 // List<T, A>
 // =============================================================================
 
@@ -265,27 +244,25 @@ pub struct List<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> {
     head: NodePtr<T>,
     tail: NodePtr<T>,
     len: usize,
-    id: ListId,
+    id: usize,
     _marker: PhantomData<A>,
 }
 
 impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Creates a new empty list.
+    ///
+    /// Takes a ZST allocator by value for type inference. The value is not
+    /// stored — all methods use `A`'s associated functions directly.
     #[inline]
-    pub fn new() -> Self {
+    #[allow(unused_variables, clippy::needless_pass_by_value)]
+    pub fn new(alloc: A) -> Self {
         List {
             head: ptr::null_mut(),
             tail: ptr::null_mut(),
             len: 0,
-            id: next_list_id(),
+            id: next_collection_id(),
             _marker: PhantomData,
         }
-    }
-
-    /// Returns the unique ID of this list.
-    #[inline]
-    pub fn id(&self) -> ListId {
-        self.id
     }
 
     /// Returns the number of linked elements.
@@ -310,14 +287,29 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if the node is already linked to a list.
-    /// In release builds, this is an unchecked precondition.
+    /// Panics if the node is already linked to a list.
     #[inline]
     pub fn link_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { &*node_deref(handle.as_ptr()) };
+        if node.is_linked() {
+            panic_already_linked();
+        }
+        // SAFETY: we just verified the node is not linked
+        unsafe { self.link_back_unchecked(handle) };
+    }
+
+    /// Links a node to the back without verifying it is unlinked.
+    ///
+    /// # Safety
+    ///
+    /// The node must not be currently linked to any list. Double-linking
+    /// corrupts list structure and causes use-after-free.
+    #[inline]
+    pub unsafe fn link_back_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(ptr) };
-        debug_assert!(!node.is_linked(), "node is already linked to a list");
 
         node.set_prev(self.tail);
         node.set_next(ptr::null_mut());
@@ -343,14 +335,28 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if the node is already linked to a list.
-    /// In release builds, this is an unchecked precondition.
+    /// Panics if the node is already linked to a list.
     #[inline]
     pub fn link_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { &*node_deref(handle.as_ptr()) };
+        if node.is_linked() {
+            panic_already_linked();
+        }
+        // SAFETY: we just verified the node is not linked
+        unsafe { self.link_front_unchecked(handle) };
+    }
+
+    /// Links a node to the front without verifying it is unlinked.
+    ///
+    /// # Safety
+    ///
+    /// The node must not be currently linked to any list.
+    #[inline]
+    pub unsafe fn link_front_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(ptr) };
-        debug_assert!(!node.is_linked(), "node is already linked to a list");
 
         node.set_prev(ptr::null_mut());
         node.set_next(self.head);
@@ -374,23 +380,23 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if `handle` is already linked or `after` is
-    /// not in this list. In release builds, these are unchecked preconditions.
+    /// Panics if `handle` is already linked to a list, or if `after` is not
+    /// linked to this list.
     #[inline]
     pub fn link_after(&mut self, after: &RcSlot<ListNode<T>, A>, handle: &RcSlot<ListNode<T>, A>) {
         let after_ptr = after.as_ptr();
         // SAFETY: after is a live RcSlot, strong >= 1
         let after_node = unsafe { &*node_deref(after_ptr) };
-        debug_assert_eq!(
-            after_node.owner_id(),
-            self.id,
-            "anchor node does not belong to this list"
-        );
+        if after_node.owner_id() != self.id {
+            panic_wrong_list();
+        }
 
         let new_ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let new_node = unsafe { &*node_deref(new_ptr) };
-        debug_assert!(!new_node.is_linked(), "node is already linked to a list");
+        if new_node.is_linked() {
+            panic_already_linked();
+        }
 
         let next_ptr = after_node.next_ptr();
 
@@ -416,8 +422,8 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if `handle` is already linked or `before` is
-    /// not in this list. In release builds, these are unchecked preconditions.
+    /// Panics if `handle` is already linked to a list, or if `before` is not
+    /// linked to this list.
     #[inline]
     pub fn link_before(
         &mut self,
@@ -427,16 +433,16 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         let before_ptr = before.as_ptr();
         // SAFETY: before is a live RcSlot, strong >= 1
         let before_node = unsafe { &*node_deref(before_ptr) };
-        debug_assert_eq!(
-            before_node.owner_id(),
-            self.id,
-            "anchor node does not belong to this list"
-        );
+        if before_node.owner_id() != self.id {
+            panic_wrong_list();
+        }
 
         let new_ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let new_node = unsafe { &*node_deref(new_ptr) };
-        debug_assert!(!new_node.is_linked(), "node is already linked to a list");
+        if new_node.is_linked() {
+            panic_already_linked();
+        }
 
         let prev_ptr = before_node.prev_ptr();
 
@@ -468,20 +474,29 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if the node is not linked to this list.
-    /// In release builds, this is an unchecked precondition.
+    /// Panics if the node is not linked to this list.
     #[inline]
     pub fn unlink(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(ptr) };
-        debug_assert_eq!(
-            node.owner_id(),
-            self.id,
-            "node does not belong to this list"
-        );
-
+        if node.owner_id() != self.id {
+            panic_wrong_list();
+        }
         self.unlink_ptr(ptr);
+    }
+
+    /// Unlinks a node from the list without verifying ownership.
+    ///
+    /// The user's handle remains valid. The list releases its strong reference.
+    ///
+    /// # Safety
+    ///
+    /// The node must be currently linked to this list. Unlinking a node from
+    /// the wrong list causes use-after-free (spurious strong count decrement).
+    #[inline]
+    pub unsafe fn unlink_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        self.unlink_ptr(handle.as_ptr());
     }
 
     /// Internal: unlink by raw pointer. Clears node metadata and decrements
@@ -516,7 +531,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         node.set_prev(ptr::null_mut());
         node.set_next(ptr::null_mut());
-        node.set_owner(ListId::NONE);
+        node.set_owner(0);
 
         self.len -= 1;
 
@@ -538,7 +553,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
             node.set_prev(ptr::null_mut());
             node.set_next(ptr::null_mut());
-            node.set_owner(ListId::NONE);
+            node.set_owner(0);
 
             // SAFETY: list owns a strong ref for each linked node
             unsafe { RcSlot::<ListNode<T>, A>::decrement_strong_count(current) };
@@ -580,7 +595,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         node.set_prev(ptr::null_mut());
         node.set_next(ptr::null_mut());
-        node.set_owner(ListId::NONE);
+        node.set_owner(0);
 
         self.len -= 1;
 
@@ -611,7 +626,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
         node.set_prev(ptr::null_mut());
         node.set_next(ptr::null_mut());
-        node.set_owner(ListId::NONE);
+        node.set_owner(0);
 
         self.len -= 1;
 
@@ -629,6 +644,15 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Call `.exclusive()` on the node to access user data.
     #[inline]
     pub fn front(&self) -> Option<&ListNode<T>> {
+        // REVIEW: should this instead return Option<&T> ?
+        // That might be a bit more ergonomic since we care
+        // mostly to look at T more than the ListNode?
+        // Separately, does this cause any sort of aliasing?
+        // We might need to make use of the exclusive cell.
+        // Or I guess actually the ListNode has the exclusive
+        // cell on it, so we can pass ExRef? Maybe let's discuss
+        // what is most correct and this would also apply to the `back`
+        // method.
         if self.head.is_null() {
             return None;
         }
@@ -654,50 +678,16 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     // Position checks
     // =========================================================================
 
-    /// Returns `true` if the handle is linked to this list.
-    #[inline]
-    pub fn contains(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
-        // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { &*node_deref(handle.as_ptr()) };
-        node.owner_id() == self.id
-    }
-
     /// Returns `true` if the handle is at the head of this list.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if the node is not in this list.
-    /// In release builds, this is an unchecked precondition.
     #[inline]
     pub fn is_head(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
-        let ptr = handle.as_ptr();
-        // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { &*node_deref(ptr) };
-        debug_assert_eq!(
-            node.owner_id(),
-            self.id,
-            "node does not belong to this list"
-        );
-        ptr == self.head
+        handle.as_ptr() == self.head
     }
 
     /// Returns `true` if the handle is at the tail of this list.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if the node is not in this list.
-    /// In release builds, this is an unchecked precondition.
     #[inline]
     pub fn is_tail(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
-        let ptr = handle.as_ptr();
-        // SAFETY: handle is a live RcSlot, strong >= 1
-        let node = unsafe { &*node_deref(ptr) };
-        debug_assert_eq!(
-            node.owner_id(),
-            self.id,
-            "node does not belong to this list"
-        );
-        ptr == self.tail
+        handle.as_ptr() == self.tail
     }
 
     // =========================================================================
@@ -708,18 +698,15 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if the node is not in this list.
-    /// In release builds, this is an unchecked precondition.
+    /// Panics if the node is not linked to this list.
     #[inline]
     pub fn move_to_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(ptr) };
-        debug_assert_eq!(
-            node.owner_id(),
-            self.id,
-            "node does not belong to this list"
-        );
+        if node.owner_id() != self.id {
+            panic_wrong_list();
+        }
 
         if ptr == self.head {
             return;
@@ -750,22 +737,54 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         self.head = ptr;
     }
 
+    /// Moves a node to the front without verifying ownership.
+    ///
+    /// # Safety
+    ///
+    /// The node must be currently linked to this list.
+    #[inline]
+    pub unsafe fn move_to_front_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: caller guarantees node is linked to this list
+        let node = unsafe { &*node_deref(ptr) };
+
+        if ptr == self.head {
+            return;
+        }
+
+        let prev = node.prev_ptr();
+        let next = node.next_ptr();
+
+        if !prev.is_null() {
+            unsafe { (*node_deref(prev)).set_next(next) };
+        }
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            unsafe { (*node_deref(next)).set_prev(prev) };
+        }
+
+        node.set_prev(ptr::null_mut());
+        node.set_next(self.head);
+        if !self.head.is_null() {
+            unsafe { (*node_deref(self.head)).set_prev(ptr) };
+        }
+        self.head = ptr;
+    }
+
     /// Moves a node to the back without changing ownership or refcounts.
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if the node is not in this list.
-    /// In release builds, this is an unchecked precondition.
+    /// Panics if the node is not linked to this list.
     #[inline]
     pub fn move_to_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(ptr) };
-        debug_assert_eq!(
-            node.owner_id(),
-            self.id,
-            "node does not belong to this list"
-        );
+        if node.owner_id() != self.id {
+            panic_wrong_list();
+        }
 
         if ptr == self.tail {
             return;
@@ -791,6 +810,41 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
         node.set_prev(self.tail);
         if !self.tail.is_null() {
             // SAFETY: tail is non-null (checked), list holds strong ref
+            unsafe { (*node_deref(self.tail)).set_next(ptr) };
+        }
+        self.tail = ptr;
+    }
+
+    /// Moves a node to the back without verifying ownership.
+    ///
+    /// # Safety
+    ///
+    /// The node must be currently linked to this list.
+    #[inline]
+    pub unsafe fn move_to_back_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
+        let ptr = handle.as_ptr();
+        // SAFETY: caller guarantees node is linked to this list
+        let node = unsafe { &*node_deref(ptr) };
+
+        if ptr == self.tail {
+            return;
+        }
+
+        let prev = node.prev_ptr();
+        let next = node.next_ptr();
+
+        if !next.is_null() {
+            unsafe { (*node_deref(next)).set_prev(prev) };
+        }
+        if prev.is_null() {
+            self.head = next;
+        } else {
+            unsafe { (*node_deref(prev)).set_next(next) };
+        }
+
+        node.set_next(ptr::null_mut());
+        node.set_prev(self.tail);
+        if !self.tail.is_null() {
             unsafe { (*node_deref(self.tail)).set_next(ptr) };
         }
         self.tail = ptr;
@@ -825,10 +879,57 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     }
 }
 
-impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Default for List<T, A> {
+// =============================================================================
+// Push methods — bounded allocators
+// =============================================================================
+
+impl<T: 'static, A: BoundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
+    /// Allocates a new node and links it to the back. Returns the handle.
+    ///
+    /// Returns `Err(Full(value))` if the allocator is at capacity.
     #[inline]
-    fn default() -> Self {
-        Self::new()
+    pub fn try_push_back(&mut self, value: T) -> Result<RcSlot<ListNode<T>, A>, Full<T>> {
+        let handle = RcSlot::try_new(ListNode::new(value))
+            .map_err(|full| Full(full.into_inner().into_data()))?;
+        // SAFETY: freshly allocated node is not linked to any collection
+        unsafe { self.link_back_unchecked(&handle) };
+        Ok(handle)
+    }
+
+    /// Allocates a new node and links it to the front. Returns the handle.
+    ///
+    /// Returns `Err(Full(value))` if the allocator is at capacity.
+    #[inline]
+    pub fn try_push_front(&mut self, value: T) -> Result<RcSlot<ListNode<T>, A>, Full<T>> {
+        let handle = RcSlot::try_new(ListNode::new(value))
+            .map_err(|full| Full(full.into_inner().into_data()))?;
+        // SAFETY: freshly allocated node is not linked to any collection
+        unsafe { self.link_front_unchecked(&handle) };
+        Ok(handle)
+    }
+}
+
+// =============================================================================
+// Push methods — unbounded allocators
+// =============================================================================
+
+impl<T: 'static, A: UnboundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
+    /// Allocates a new node and links it to the back. Returns the handle.
+    #[inline]
+    pub fn push_back(&mut self, value: T) -> RcSlot<ListNode<T>, A> {
+        let handle = RcSlot::new(ListNode::new(value));
+        // SAFETY: freshly allocated node is not linked to any collection
+        unsafe { self.link_back_unchecked(&handle) };
+        handle
+    }
+
+    /// Allocates a new node and links it to the front. Returns the handle.
+    #[inline]
+    pub fn push_front(&mut self, value: T) -> RcSlot<ListNode<T>, A> {
+        let handle = RcSlot::new(ListNode::new(value));
+        // SAFETY: freshly allocated node is not linked to any collection
+        unsafe { self.link_front_unchecked(&handle) };
+        handle
     }
 }
 
@@ -852,6 +953,9 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Drop for List<T, A> {
 ///   lifetime.
 /// - `BeforeStart` / `AfterEnd`: sentinel states with no pointer.
 enum Position<T> {
+    // REVIEW: do we need this enum at all? What does the std library
+    // do for linked lists?
+
     /// Before the first element.
     BeforeStart,
     /// After the last element.
@@ -982,6 +1086,8 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     /// Panics if the cursor is not positioned at a node.
     #[inline]
     pub fn remove(&mut self) -> RcSlot<ListNode<T>, A> {
+        // REVIEW: this seems a bit weird. I'd really
+        // like to see what the std does for these.
         let Position::At(ptr) = self.position else {
             panic_cursor_not_at_node();
         };
@@ -1007,7 +1113,7 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
 
         node.set_prev(ptr::null_mut());
         node.set_next(ptr::null_mut());
-        node.set_owner(ListId::NONE);
+        node.set_owner(0);
         self.list.len -= 1;
 
         // Auto-advance to next node (std semantics)

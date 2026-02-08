@@ -25,7 +25,7 @@ fn init() {
 #[test]
 fn cursor_forward_iteration() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -45,7 +45,7 @@ fn cursor_forward_iteration() {
 #[test]
 fn cursor_backward_iteration() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -65,7 +65,7 @@ fn cursor_backward_iteration() {
 #[test]
 fn cursor_empty_list() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let mut cursor = list.cursor();
     assert!(!cursor.advance());
     assert!(cursor.current().is_none());
@@ -78,7 +78,7 @@ fn cursor_empty_list() {
 #[test]
 fn cursor_remove_middle() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -110,7 +110,7 @@ fn cursor_remove_middle() {
 #[test]
 fn cursor_remove_head() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -129,7 +129,7 @@ fn cursor_remove_head() {
 #[test]
 fn cursor_remove_tail() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -150,7 +150,7 @@ fn cursor_remove_tail() {
 #[test]
 fn cursor_remove_all() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -182,7 +182,7 @@ fn cursor_remove_all() {
 #[test]
 fn cursor_continues_after_remove() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -219,7 +219,7 @@ fn cursor_continues_after_remove() {
 #[test]
 fn cursor_backward_after_remove() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -248,7 +248,7 @@ fn cursor_backward_after_remove() {
 #[test]
 fn cursor_remove_if_matches() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -281,7 +281,7 @@ fn cursor_remove_if_matches() {
 #[test]
 fn cursor_remove_if_no_match() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h1);
@@ -304,7 +304,7 @@ fn cursor_remove_if_no_match() {
 #[test]
 fn cursor_single_element() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -319,7 +319,7 @@ fn cursor_single_element() {
 #[test]
 fn cursor_remove_single_element() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -340,7 +340,7 @@ fn cursor_remove_single_element() {
 #[test]
 fn cursor_consecutive_removals() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -376,7 +376,7 @@ fn cursor_consecutive_removals() {
 #[test]
 fn cursor_write_via_guard() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -397,7 +397,7 @@ fn cursor_write_via_guard() {
 #[should_panic(expected = "cursor is not positioned at a node")]
 fn cursor_remove_panics_when_not_at_node() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let mut cursor = list.cursor();
     let _ = cursor.remove(); // BeforeStart → panic
 }
@@ -406,7 +406,7 @@ fn cursor_remove_panics_when_not_at_node() {
 #[should_panic(expected = "cursor is not positioned at a node")]
 fn cursor_remove_if_panics_when_not_at_node() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     list.link_back(&h);
     let mut cursor = list.cursor();

@@ -76,10 +76,18 @@
 /// // Initialize the allocator before creating nodes
 /// orders::Allocator::builder().capacity(1000).build().unwrap();
 ///
-/// let mut list = orders::List::new();
-/// let handle = orders::create_node(Order { id: 1, price: 100.0 }).unwrap();
-/// list.link_back(&handle);
+/// // Primary: collection allocates internally
+/// let mut list = orders::List::new(orders::Allocator);
+/// let handle = list.try_push_back(Order { id: 1, price: 100.0 }).unwrap();
 /// assert_eq!(handle.exclusive().price, 100.0);
+///
+/// // Re-linking: move between collections
+/// list.unlink(&handle);
+/// other_list.link_back(&handle);
+///
+/// // Detached node (for deferred linking)
+/// let handle = orders::create_node(Order { id: 2, price: 200.0 }).unwrap();
+/// list.link_back(&handle);
 /// ```
 #[macro_export]
 macro_rules! list_allocator {
@@ -165,9 +173,17 @@ macro_rules! list_allocator {
 ///
 /// timers::Allocator::builder().capacity(1000).build().unwrap();
 ///
-/// let mut heap = timers::Heap::new();
+/// // Primary: collection allocates internally
+/// let mut heap = timers::Heap::new(timers::Allocator);
+/// let handle = heap.try_push(Timer { deadline: 42 }).unwrap();
+///
+/// // Re-linking: move between collections
+/// heap.unlink(&handle);
+/// other_heap.link(&handle);
+///
+/// // Detached node (for deferred linking)
 /// let handle = timers::create_node(Timer { deadline: 42 }).unwrap();
-/// heap.push(&handle);
+/// heap.link(&handle);
 /// ```
 ///
 /// # Variants

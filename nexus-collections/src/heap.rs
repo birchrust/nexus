@@ -24,7 +24,9 @@ use std::marker::PhantomData;
 use std::ptr;
 
 use nexus_slab::alloc::{Alloc, RcSlot};
-use nexus_slab::{RcInner, SlotCell};
+use nexus_slab::{BoundedAlloc, Full, RcInner, SlotCell, UnboundedAlloc};
+
+use crate::next_collection_id;
 
 // =============================================================================
 // NodePtr
@@ -54,6 +56,7 @@ pub struct HeapNode<T> {
     child: Cell<NodePtr<T>>,
     next: Cell<NodePtr<T>>,
     prev: Cell<NodePtr<T>>,
+    owner: Cell<usize>,
     data: T,
 }
 
@@ -66,8 +69,15 @@ impl<T> HeapNode<T> {
             child: Cell::new(ptr::null_mut()),
             next: Cell::new(ptr::null_mut()),
             prev: Cell::new(ptr::null_mut()),
+            owner: Cell::new(0),
             data: value,
         }
+    }
+
+    /// Returns `true` if this node is linked to a heap.
+    #[inline]
+    pub fn is_linked(&self) -> bool {
+        self.owner.get() != 0
     }
 
     /// Returns a reference to the user data.
@@ -128,17 +138,16 @@ impl<T> HeapNode<T> {
         self.prev.set(ptr);
     }
 
-    /// Returns `true` if all link pointers are null.
-    ///
-    /// A detached node has all null pointers. Note: this also returns `true`
-    /// for the root of a single-element heap (which has all null pointers).
     #[inline]
-    fn appears_detached(&self) -> bool {
-        self.parent.get().is_null()
-            && self.child.get().is_null()
-            && self.next.get().is_null()
-            && self.prev.get().is_null()
+    fn owner_id(&self) -> usize {
+        self.owner.get()
     }
+
+    #[inline]
+    fn set_owner(&self, id: usize) {
+        self.owner.set(id);
+    }
+
 }
 
 // =============================================================================
@@ -161,6 +170,22 @@ unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const HeapNode<T> {
     // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot
     // with strong > 0.
     unsafe { (*ptr).value.assume_init_ref() }.value() as *const HeapNode<T>
+}
+
+// =============================================================================
+// Cold panic helpers — extracted to prevent stack frame bloat on happy path
+// =============================================================================
+
+#[cold]
+#[inline(never)]
+fn panic_wrong_heap() -> ! {
+    panic!("node is not linked to this heap")
+}
+
+#[cold]
+#[inline(never)]
+fn panic_already_linked() -> ! {
+    panic!("node is already linked to a collection")
 }
 
 // =============================================================================
@@ -382,6 +407,7 @@ unsafe fn clear_all<T: 'static, A: Alloc<Item = RcInner<HeapNode<T>>>>(mut curre
             (*node).set_child(ptr::null_mut());
             (*node).set_next(ptr::null_mut());
             (*node).set_prev(ptr::null_mut());
+            (*node).set_owner(0);
             RcSlot::<HeapNode<T>, A>::decrement_strong_count(current);
 
             current = next_to_visit;
@@ -399,11 +425,11 @@ unsafe fn clear_all<T: 'static, A: Alloc<Item = RcInner<HeapNode<T>>>>(mut curre
 ///
 /// | Operation  | Time                |
 /// |------------|---------------------|
-/// | push       | O(1)                |
+/// | link/push  | O(1)                |
 /// | peek       | O(1)                |
 /// | pop        | O(log n) amortized  |
 /// | unlink     | O(log n) amortized  |
-/// | contains   | O(depth)            |
+/// | contains   | O(1)                |
 ///
 /// # Ownership Model
 ///
@@ -419,16 +445,22 @@ unsafe fn clear_all<T: 'static, A: Alloc<Item = RcInner<HeapNode<T>>>>(mut curre
 pub struct Heap<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> {
     root: NodePtr<T>,
     len: usize,
+    id: usize,
     _marker: PhantomData<A>,
 }
 
 impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// Creates a new empty heap.
+    ///
+    /// Takes a ZST allocator by value for type inference. The value is not
+    /// stored — all methods use `A`'s associated functions directly.
     #[inline]
-    pub fn new() -> Self {
+    #[allow(unused_variables, clippy::needless_pass_by_value)]
+    pub fn new(alloc: A) -> Self {
         Heap {
             root: ptr::null_mut(),
             len: 0,
+            id: next_collection_id(),
             _marker: PhantomData,
         }
     }
@@ -459,44 +491,50 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     }
 
     /// Returns `true` if the handle is linked to this heap.
-    ///
-    /// Walks parent pointers to the root. O(depth).
     #[inline]
     pub fn contains(&self, handle: &RcSlot<HeapNode<T>, A>) -> bool {
-        if self.root.is_null() {
-            return false;
-        }
-        let mut ptr = handle.as_ptr();
-        loop {
-            // SAFETY: ptr came from a live RcSlot or a valid linked node
-            let parent = unsafe { (*node_deref(ptr)).parent_ptr() };
-            if parent.is_null() {
-                return ptr == self.root;
-            }
-            ptr = parent;
-        }
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { &*node_deref(handle.as_ptr()) };
+        node.owner_id() == self.id
     }
 
     // =========================================================================
-    // Push / Pop / Unlink / Clear
+    // Link / Pop / Unlink / Clear
     // =========================================================================
 
-    /// Inserts a node into the heap. O(1).
+    /// Links an existing node into the heap. O(1).
     ///
     /// The heap acquires its own strong reference to the node.
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if the node appears to be already linked
-    /// to a collection (any non-null link pointer).
+    /// Panics if the node is already linked to a collection.
     #[inline]
-    pub fn push(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
+    pub fn link(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { &*node_deref(handle.as_ptr()) };
+        if node.is_linked() {
+            panic_already_linked();
+        }
+        // SAFETY: caller verified node is not linked
+        unsafe { self.link_unchecked(handle) };
+    }
+
+    /// Links an existing node into the heap without verifying it is unlinked. O(1).
+    ///
+    /// The heap acquires its own strong reference to the node.
+    ///
+    /// # Safety
+    ///
+    /// The node must not be currently linked to any collection. Double-linking
+    /// corrupts heap structure and causes use-after-free on drop.
+    #[inline]
+    pub unsafe fn link_unchecked(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
-        debug_assert!(
-            unsafe { (*node_deref(ptr)).appears_detached() },
-            "node is already linked to a collection"
-        );
+        let node = unsafe { &*node_deref(ptr) };
+
+        node.set_owner(self.id);
 
         // SAFETY: ptr from a live RcSlot; heap acquires its own ref
         unsafe { RcSlot::<HeapNode<T>, A>::increment_strong_count(ptr) };
@@ -530,6 +568,7 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
 
             // Only child needs clearing — parent/next/prev are null by invariant
             root.set_child(ptr::null_mut());
+            root.set_owner(0);
 
             // Merge root's children into new root
             self.root = merge_pairs(first_child);
@@ -544,11 +583,38 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// Removes a node from the heap by handle. O(log n) amortized.
     ///
     /// The user's handle remains valid. The heap releases its strong reference.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the node is not linked to this heap.
     #[inline]
     pub fn unlink(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
         let ptr = handle.as_ptr();
-        debug_assert!(self.contains(handle), "node is not in this heap");
+        // SAFETY: handle is a live RcSlot, strong >= 1
+        let node = unsafe { &*node_deref(ptr) };
+        if node.owner_id() != self.id {
+            panic_wrong_heap();
+        }
+        self.unlink_ptr(ptr);
+    }
 
+    /// Removes a node from the heap without verifying ownership.
+    ///
+    /// The user's handle remains valid. The heap releases its strong reference.
+    ///
+    /// # Safety
+    ///
+    /// The node must be currently linked to this heap. Unlinking a node from
+    /// the wrong heap causes use-after-free (spurious strong count decrement).
+    #[inline]
+    pub unsafe fn unlink_unchecked(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
+        self.unlink_ptr(handle.as_ptr());
+    }
+
+    /// Internal: unlink by raw pointer. Detaches the node and decrements
+    /// the heap's strong reference.
+    #[inline]
+    fn unlink_ptr(&mut self, ptr: NodePtr<T>) {
         if ptr == self.root {
             // SAFETY: root is valid, heap holds strong ref
             unsafe {
@@ -556,6 +622,7 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
                 let first_child = node.child_ptr();
                 // Only child needs clearing — parent/next/prev are null by invariant
                 node.set_child(ptr::null_mut());
+                node.set_owner(0);
 
                 self.root = merge_pairs(first_child);
             }
@@ -575,6 +642,7 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
             let node = &*node_deref(ptr);
             let first_child = node.child_ptr();
             node.set_child(ptr::null_mut());
+            node.set_owner(0);
 
             if !first_child.is_null() {
                 let merged = merge_pairs(first_child);
@@ -627,10 +695,36 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     }
 }
 
-impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Default for Heap<T, A> {
+// =============================================================================
+// Push methods — bounded allocators
+// =============================================================================
+
+impl<T: 'static + Ord, A: BoundedAlloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
+    /// Allocates a new node and inserts it into the heap. Returns the handle.
+    ///
+    /// Returns `Err(Full(value))` if the allocator is at capacity.
     #[inline]
-    fn default() -> Self {
-        Self::new()
+    pub fn try_push(&mut self, value: T) -> Result<RcSlot<HeapNode<T>, A>, Full<T>> {
+        let handle = RcSlot::try_new(HeapNode::new(value))
+            .map_err(|full| Full(full.into_inner().into_data()))?;
+        // SAFETY: freshly allocated node is not linked to any collection
+        unsafe { self.link_unchecked(&handle) };
+        Ok(handle)
+    }
+}
+
+// =============================================================================
+// Push methods — unbounded allocators
+// =============================================================================
+
+impl<T: 'static + Ord, A: UnboundedAlloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
+    /// Allocates a new node and inserts it into the heap. Returns the handle.
+    #[inline]
+    pub fn push(&mut self, value: T) -> RcSlot<HeapNode<T>, A> {
+        let handle = RcSlot::new(HeapNode::new(value));
+        // SAFETY: freshly allocated node is not linked to any collection
+        unsafe { self.link_unchecked(&handle) };
+        handle
     }
 }
 

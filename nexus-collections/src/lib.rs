@@ -27,6 +27,8 @@
 
 #![warn(missing_docs)]
 
+use std::cell::Cell;
+
 pub mod exclusive;
 pub mod heap;
 pub mod list;
@@ -35,3 +37,20 @@ pub mod skiplist;
 
 // Re-export ExclusiveCell types at crate root
 pub use exclusive::{ExMut, ExRef, ExclusiveCell};
+
+// =============================================================================
+// Collection identity
+// =============================================================================
+
+thread_local! {
+    static NEXT_COLLECTION_ID: Cell<usize> = const { Cell::new(1) };
+}
+
+/// Returns a unique (per-thread) collection ID for ownership checking.
+fn next_collection_id() -> usize {
+    NEXT_COLLECTION_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}

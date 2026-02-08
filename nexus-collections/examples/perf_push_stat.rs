@@ -41,17 +41,17 @@ fn main() {
     // Pre-allocate all handles
     let handles: Vec<pq::Handle> = (0..COUNT).map(|_| pq::create_node(rng.next())).collect();
 
-    let mut heap = pq::Heap::new();
+    let mut heap = pq::Heap::new(pq::Allocator);
 
     // Warmup: push/clear to fault pages and warm TLB
     for handle in &handles {
-        heap.push(handle);
+        heap.link(handle);
     }
     heap.clear();
 
     // ---- Measured section: pure push, no cleanup ----
     for handle in &handles {
-        black_box(heap.push(handle));
+        black_box(heap.link(handle));
     }
 
     black_box(&heap);

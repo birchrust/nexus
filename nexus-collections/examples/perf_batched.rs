@@ -113,16 +113,16 @@ fn main() {
 
     // push (growing from empty)
     {
-        let mut heap = hpq::Heap::new();
+        let mut heap = hpq::Heap::new(hpq::Allocator);
         let h = &heap_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             heap.clear();
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
             heap.clear();
@@ -132,21 +132,21 @@ fn main() {
 
     // push (steady @25k)
     {
-        let mut heap = hpq::Heap::new();
+        let mut heap = hpq::Heap::new(hpq::Allocator);
         for h in &heap_steady {
-            heap.push(h);
+            heap.link(h);
         }
         let h = &heap_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             for hh in h.iter() {
                 heap.unlink(hh);
             }
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
             for hh in h.iter() {
@@ -159,15 +159,15 @@ fn main() {
 
     // pop (from 100 elements, hot cache)
     {
-        let mut heap = hpq::Heap::new();
+        let mut heap = hpq::Heap::new(hpq::Allocator);
         let h = &heap_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             seq!(_ in 0..100 { black_box(heap.pop()); });
         }
         for _ in 0..SAMPLES {
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             let s = rdtsc_start();
             seq!(_ in 0..100 { black_box(heap.pop()); });
             let e = rdtsc_end();
@@ -178,15 +178,15 @@ fn main() {
 
     // unlink (from 100 elements)
     {
-        let mut heap = hpq::Heap::new();
+        let mut heap = hpq::Heap::new(hpq::Allocator);
         let h = &heap_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             seq!(I in 0..100 { heap.unlink(&h[I]); });
         }
         for _ in 0..SAMPLES {
-            seq!(I in 0..100 { heap.push(&h[I]); });
+            seq!(I in 0..100 { heap.link(&h[I]); });
             let s = rdtsc_start();
             seq!(I in 0..100 { heap.unlink(&h[I]); });
             let e = rdtsc_end();
@@ -195,11 +195,57 @@ fn main() {
         print_row("unlink (100 elems)", &mut samples);
     }
 
+    // unlink_unchecked (from 100 elements)
+    {
+        let mut heap = hpq::Heap::new(hpq::Allocator);
+        let h = &heap_batch;
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..WARMUP {
+            seq!(I in 0..100 { heap.link(&h[I]); });
+            seq!(I in 0..100 { unsafe { heap.unlink_unchecked(&h[I]) }; });
+        }
+        for _ in 0..SAMPLES {
+            seq!(I in 0..100 { heap.link(&h[I]); });
+            let s = rdtsc_start();
+            seq!(I in 0..100 { unsafe { heap.unlink_unchecked(&h[I]) }; });
+            let e = rdtsc_end();
+            samples.push((e - s) / BATCH as u64);
+        }
+        print_row("unlink_unchecked (100)", &mut samples);
+    }
+
+    // try_push (allocation + link)
+    {
+        let mut heap = hpq::Heap::new(hpq::Allocator);
+        let mut samples = Vec::with_capacity(SAMPLES);
+        // warmup
+        for _ in 0..WARMUP {
+            let mut handles: Vec<hpq::Handle> = Vec::with_capacity(BATCH);
+            for i in 0..BATCH as u64 {
+                handles.push(heap.try_push(i).unwrap());
+            }
+            heap.clear();
+            drop(handles);
+        }
+        // measure
+        for _ in 0..SAMPLES {
+            let s = rdtsc_start();
+            let h0 = heap.try_push(0).unwrap();
+            let h1 = heap.try_push(1).unwrap();
+            let e = rdtsc_end();
+            samples.push((e - s) / 2);
+            heap.clear();
+            drop(h0);
+            drop(h1);
+        }
+        print_row("try_push (alloc+link)", &mut samples);
+    }
+
     // peek
     {
-        let mut heap = hpq::Heap::new();
+        let mut heap = hpq::Heap::new(hpq::Allocator);
         for h in heap_batch.iter().take(50) {
-            heap.push(h);
+            heap.link(h);
         }
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -223,7 +269,7 @@ fn main() {
 
     // link_back (growing)
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -242,7 +288,7 @@ fn main() {
 
     // link_front (growing)
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -261,7 +307,7 @@ fn main() {
 
     // link_back (steady @25k)
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         for h in &list_steady {
             list.link_back(h);
         }
@@ -288,7 +334,7 @@ fn main() {
 
     // pop_front
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -307,7 +353,7 @@ fn main() {
 
     // pop_back
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -326,7 +372,7 @@ fn main() {
 
     // unlink
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -343,9 +389,28 @@ fn main() {
         print_row("unlink (100 elems)", &mut samples);
     }
 
+    // unlink_unchecked
+    {
+        let mut list = lq::List::new(lq::Allocator);
+        let h = &list_batch;
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..WARMUP {
+            seq!(I in 0..100 { list.link_back(&h[I]); });
+            seq!(I in 0..100 { unsafe { list.unlink_unchecked(&h[I]) }; });
+        }
+        for _ in 0..SAMPLES {
+            seq!(I in 0..100 { list.link_back(&h[I]); });
+            let s = rdtsc_start();
+            seq!(I in 0..100 { unsafe { list.unlink_unchecked(&h[I]) }; });
+            let e = rdtsc_end();
+            samples.push((e - s) / BATCH as u64);
+        }
+        print_row("unlink_unchecked (100)", &mut samples);
+    }
+
     // move_to_front
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         seq!(I in 0..100 { list.link_back(&h[I]); });
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -362,9 +427,28 @@ fn main() {
         list.clear();
     }
 
+    // move_to_front_unchecked
+    {
+        let mut list = lq::List::new(lq::Allocator);
+        let h = &list_batch;
+        seq!(I in 0..100 { list.link_back(&h[I]); });
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..WARMUP {
+            seq!(I in 0..100 { unsafe { list.move_to_front_unchecked(&h[I]) }; });
+        }
+        for _ in 0..SAMPLES {
+            let s = rdtsc_start();
+            seq!(I in 0..100 { unsafe { list.move_to_front_unchecked(&h[I]) }; });
+            let e = rdtsc_end();
+            samples.push((e - s) / BATCH as u64);
+        }
+        print_row("move_front_unchecked", &mut samples);
+        list.clear();
+    }
+
     // move_to_back
     {
-        let mut list = lq::List::new();
+        let mut list = lq::List::new(lq::Allocator);
         let h = &list_batch;
         seq!(I in 0..100 { list.link_back(&h[I]); });
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -379,5 +463,51 @@ fn main() {
         }
         print_row("move_to_back (100)", &mut samples);
         list.clear();
+    }
+
+    // move_to_back_unchecked
+    {
+        let mut list = lq::List::new(lq::Allocator);
+        let h = &list_batch;
+        seq!(I in 0..100 { list.link_back(&h[I]); });
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..WARMUP {
+            seq!(I in 0..100 { unsafe { list.move_to_back_unchecked(&h[I]) }; });
+        }
+        for _ in 0..SAMPLES {
+            let s = rdtsc_start();
+            seq!(I in 0..100 { unsafe { list.move_to_back_unchecked(&h[I]) }; });
+            let e = rdtsc_end();
+            samples.push((e - s) / BATCH as u64);
+        }
+        print_row("move_back_unchecked", &mut samples);
+        list.clear();
+    }
+
+    // try_push_back (allocation + link)
+    {
+        let mut list = lq::List::new(lq::Allocator);
+        let mut samples = Vec::with_capacity(SAMPLES);
+        // warmup
+        for _ in 0..WARMUP {
+            let mut handles: Vec<lq::Handle> = Vec::with_capacity(BATCH);
+            for i in 0..BATCH as u64 {
+                handles.push(list.try_push_back(i).unwrap());
+            }
+            list.clear();
+            drop(handles);
+        }
+        // measure
+        for _ in 0..SAMPLES {
+            let s = rdtsc_start();
+            let h0 = list.try_push_back(0).unwrap();
+            let h1 = list.try_push_back(1).unwrap();
+            let e = rdtsc_end();
+            samples.push((e - s) / 2);
+            list.clear();
+            drop(h0);
+            drop(h1);
+        }
+        print_row("try_push_back (alloc+lnk)", &mut samples);
     }
 }

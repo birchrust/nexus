@@ -1,4 +1,4 @@
-//! Integration tests for the v0.8.0 RcSlot-based list.
+//! Integration tests for the RcSlot-based list.
 
 use nexus_collections::list_allocator;
 
@@ -25,7 +25,7 @@ fn init() {
 #[test]
 fn empty_list() {
     init();
-    let list = orders::List::new();
+    let list = orders::List::new(orders::Allocator);
     assert!(list.is_empty());
     assert_eq!(list.len(), 0);
     assert!(list.front().is_none());
@@ -35,7 +35,7 @@ fn empty_list() {
 #[test]
 fn link_back_single() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -48,7 +48,7 @@ fn link_back_single() {
 #[test]
 fn link_front_single() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_front(&h);
@@ -59,7 +59,7 @@ fn link_front_single() {
 #[test]
 fn link_back_multiple() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -76,7 +76,7 @@ fn link_back_multiple() {
 #[test]
 fn link_front_multiple() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -95,7 +95,7 @@ fn link_front_multiple() {
 #[test]
 fn unlink_single() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -114,7 +114,7 @@ fn unlink_single() {
 #[test]
 fn unlink_middle() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -132,7 +132,7 @@ fn unlink_middle() {
 #[test]
 fn unlink_and_relink() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -150,7 +150,7 @@ fn unlink_and_relink() {
 #[test]
 fn pop_front_single() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -167,7 +167,7 @@ fn pop_front_single() {
 #[test]
 fn pop_back_single() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -179,7 +179,7 @@ fn pop_back_single() {
 #[test]
 fn pop_front_multiple() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -204,7 +204,7 @@ fn pop_front_multiple() {
 #[test]
 fn pop_empty() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     assert!(list.pop_front().is_none());
     assert!(list.pop_back().is_none());
 }
@@ -216,7 +216,7 @@ fn pop_empty() {
 #[test]
 fn is_head_and_tail() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -236,7 +236,7 @@ fn is_head_and_tail() {
 #[test]
 fn link_after() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -261,7 +261,7 @@ fn link_after() {
 #[test]
 fn link_after_at_tail() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -275,7 +275,7 @@ fn link_after_at_tail() {
 #[test]
 fn link_before() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -293,7 +293,7 @@ fn link_before() {
 #[test]
 fn link_before_at_head() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -311,7 +311,7 @@ fn link_before_at_head() {
 #[test]
 fn move_to_front() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -329,7 +329,7 @@ fn move_to_front() {
 #[test]
 fn move_to_front_already_front() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -343,7 +343,7 @@ fn move_to_front_already_front() {
 #[test]
 fn move_to_back() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -365,7 +365,7 @@ fn move_to_back() {
 #[test]
 fn write_via_exclusive_mut() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -376,7 +376,7 @@ fn write_via_exclusive_mut() {
 #[test]
 fn peek_front_write() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -400,7 +400,7 @@ fn double_borrow_panics() {
 #[test]
 fn strong_count_lifecycle() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     assert_eq!(h.strong_count(), 1);
 
@@ -423,7 +423,7 @@ fn strong_count_lifecycle() {
 #[test]
 fn drop_handle_while_linked() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -447,8 +447,8 @@ fn drop_handle_while_linked() {
 #[test]
 fn two_lists_same_allocator() {
     init();
-    let mut list_a = orders::List::new();
-    let mut list_b = orders::List::new();
+    let mut list_a = orders::List::new(orders::Allocator);
+    let mut list_b = orders::List::new(orders::Allocator);
 
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
@@ -463,8 +463,8 @@ fn two_lists_same_allocator() {
 #[test]
 fn move_between_lists() {
     init();
-    let mut list_a = orders::List::new();
-    let mut list_b = orders::List::new();
+    let mut list_a = orders::List::new(orders::Allocator);
+    let mut list_b = orders::List::new(orders::Allocator);
 
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
@@ -480,77 +480,31 @@ fn move_between_lists() {
 }
 
 // =============================================================================
-// List ID uniqueness
+// is_linked
 // =============================================================================
 
 #[test]
-fn list_ids_unique() {
+fn is_linked_tracks_state() {
     init();
-    let list_a = orders::List::new();
-    let list_b = orders::List::new();
-    assert_ne!(list_a.id(), list_b.id());
-}
-
-#[test]
-#[should_panic(expected = "node does not belong to this list")]
-fn cross_list_unlink_panics() {
-    init();
-    let mut list_a = orders::List::new();
-    let mut list_b = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
-    list_a.link_back(&h);
-    list_b.unlink(&h); // panic
-}
-
-#[test]
-#[should_panic(expected = "node does not belong to this list")]
-fn unlink_detached_panics() {
-    init();
-    let mut list = orders::List::new();
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.unlink(&h); // panic — not linked
+    assert!(!h.is_linked());
+    list.link_back(&h);
+    assert!(h.is_linked());
+    list.unlink(&h);
+    assert!(!h.is_linked());
 }
 
 #[test]
 #[should_panic(expected = "node is already linked")]
 fn double_link_panics() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
     list.link_back(&h); // panic
-}
-
-// =============================================================================
-// contains
-// =============================================================================
-
-#[test]
-fn contains_linked_node() {
-    init();
-    let mut list = orders::List::new();
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    assert!(!list.contains(&h));
-    list.link_back(&h);
-    assert!(list.contains(&h));
-    list.unlink(&h);
-    assert!(!list.contains(&h));
-}
-
-#[test]
-fn contains_wrong_list() {
-    init();
-    let mut list_a = orders::List::new();
-    let list_b = orders::List::new();
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list_a.link_back(&h);
-    assert!(list_a.contains(&h));
-    assert!(!list_b.contains(&h));
 }
 
 // =============================================================================
@@ -560,7 +514,7 @@ fn contains_wrong_list() {
 #[test]
 fn clear_empty() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     list.clear();
     assert!(list.is_empty());
 }
@@ -568,7 +522,7 @@ fn clear_empty() {
 #[test]
 fn clear_releases_strong_refs() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -594,7 +548,7 @@ fn clear_releases_strong_refs() {
 #[test]
 fn clear_then_reuse() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
 
@@ -608,13 +562,63 @@ fn clear_then_reuse() {
 }
 
 // =============================================================================
+// Push methods (internal allocation)
+// =============================================================================
+
+#[test]
+fn try_push_back_single() {
+    init();
+    let mut list = orders::List::new(orders::Allocator);
+    let h = list.try_push_back(Order { id: 1, price: 10.0 }).unwrap();
+
+    assert_eq!(list.len(), 1);
+    assert_eq!(h.exclusive().id, 1);
+    assert!(h.is_linked());
+    assert_eq!(h.strong_count(), 2);
+}
+
+#[test]
+fn try_push_front_single() {
+    init();
+    let mut list = orders::List::new(orders::Allocator);
+    let h = list.try_push_front(Order { id: 1, price: 10.0 }).unwrap();
+
+    assert_eq!(list.len(), 1);
+    assert_eq!(h.exclusive().id, 1);
+    assert!(h.is_linked());
+}
+
+#[test]
+fn push_pop_round_trip() {
+    init();
+    let mut list = orders::List::new(orders::Allocator);
+    let h1 = list.try_push_back(Order { id: 1, price: 10.0 }).unwrap();
+    let h2 = list.try_push_back(Order { id: 2, price: 20.0 }).unwrap();
+    let _h3 = list.try_push_front(Order { id: 3, price: 30.0 }).unwrap();
+
+    // Order: [3, 1, 2]
+    assert_eq!(list.len(), 3);
+
+    let p1 = list.pop_front().unwrap();
+    assert_eq!(p1.exclusive().id, 3);
+    let p2 = list.pop_front().unwrap();
+    assert_eq!(p2.exclusive().id, 1);
+    let p3 = list.pop_front().unwrap();
+    assert_eq!(p3.exclusive().id, 2);
+
+    // Original handles still valid (not linked anymore)
+    assert!(!h1.is_linked());
+    assert!(!h2.is_linked());
+}
+
+// =============================================================================
 // Cursor iteration after user drops handle (strong=1 during traversal)
 // =============================================================================
 
 #[test]
 fn cursor_iterate_after_user_drops_handle() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
     let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
     let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
@@ -645,7 +649,7 @@ fn cursor_iterate_after_user_drops_handle() {
 #[test]
 fn pop_after_user_drops_handle() {
     init();
-    let mut list = orders::List::new();
+    let mut list = orders::List::new(orders::Allocator);
     let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
 
     list.link_back(&h);
@@ -659,36 +663,4 @@ fn pop_after_user_drops_handle() {
     assert_eq!(popped.strong_count(), 1);
     assert_eq!(popped.exclusive().id, 1);
     assert!(list.is_empty());
-}
-
-// =============================================================================
-// Cross-list link_after / link_before panics
-// =============================================================================
-
-#[test]
-#[should_panic(expected = "anchor node does not belong to this list")]
-fn cross_list_link_after_panics() {
-    init();
-    let mut list_a = orders::List::new();
-    let mut list_b = orders::List::new();
-    let anchor = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let new_node = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list_a.link_back(&anchor);
-    // anchor belongs to list_a, but we call link_after on list_b
-    list_b.link_after(&anchor, &new_node); // panic
-}
-
-#[test]
-#[should_panic(expected = "anchor node does not belong to this list")]
-fn cross_list_link_before_panics() {
-    init();
-    let mut list_a = orders::List::new();
-    let mut list_b = orders::List::new();
-    let anchor = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let new_node = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list_a.link_back(&anchor);
-    // anchor belongs to list_a, but we call link_before on list_b
-    list_b.link_before(&anchor, &new_node); // panic
 }
