@@ -5,14 +5,19 @@ High-performance, slab-backed collections for latency-critical systems.
 ## Why This Crate?
 
 Standard collections allocate on every insert and scatter nodes across the
-heap. This crate uses thread-local slab allocators from
-[`nexus-slab`](https://crates.io/crates/nexus-slab) to pre-allocate storage
-at startup, eliminating allocation jitter on the hot path.
+heap. This crate uses [`nexus-slab`](https://crates.io/crates/nexus-slab)
+— a SLUB-style slab allocator — for predictable latency and cache-friendly
+node storage.
 
-- **Zero allocation after initialization** — all storage is pre-allocated
+- **Global allocator isolation** — your hot path doesn't compete with
+  logging, serialization, or background tasks for allocator resources
+- **LIFO cache locality** — recently freed nodes are reused first, staying
+  hot in L1
 - **Stable handles** — `RcSlot`-based references that survive insert/remove
-- **Bounded capacity** — fixed capacity with `Full` errors, no surprise growth
-- **Cache-friendly** — contiguous slab-backed storage
+- **Bounded** — fixed capacity, zero allocation after init, returns `Full`
+  at capacity
+- **Unbounded** — grows via chunks without copying (like `nexus-slab`'s
+  unbounded allocator)
 
 ## Collections
 
