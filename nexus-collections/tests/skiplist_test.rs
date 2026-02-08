@@ -322,20 +322,6 @@ fn iter_forward() {
 
 #[test]
 #[serial]
-fn iter_reverse() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in [50u64, 30, 10, 40, 20] {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let pairs: Vec<_> = map.iter().rev().map(|(k, _)| *k).collect();
-    assert_eq!(pairs, vec![50, 40, 30, 20, 10]);
-}
-
-#[test]
-#[serial]
 fn iter_exact_size() {
     init();
     let mut map = sl::SkipList::new(sl::Allocator);
@@ -363,25 +349,6 @@ fn keys_and_values() {
 
     let values: Vec<_> = map.values().cloned().collect();
     assert_eq!(values, vec!["1", "2", "3"]);
-}
-
-#[test]
-#[serial]
-fn iter_double_ended_meets_in_middle() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in 1u64..=5 {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let mut iter = map.iter();
-    assert_eq!(iter.next().unwrap().0, &1);
-    assert_eq!(iter.next_back().unwrap().0, &5);
-    assert_eq!(iter.next().unwrap().0, &2);
-    assert_eq!(iter.next_back().unwrap().0, &4);
-    assert_eq!(iter.next().unwrap().0, &3);
-    assert!(iter.next().is_none());
 }
 
 // =============================================================================
@@ -551,32 +518,6 @@ fn cursor_front_traversal() {
 
 #[test]
 #[serial]
-fn cursor_backward_traversal() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in [30u64, 10, 20] {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let mut cursor = map.cursor_front();
-    // Walk to past the end
-    while cursor.advance() {}
-    assert!(cursor.key().is_none());
-
-    // advance_back() from past-end goes to tail
-    assert!(cursor.advance_back());
-    assert_eq!(cursor.key(), Some(&30));
-    assert!(cursor.advance_back());
-    assert_eq!(cursor.key(), Some(&20));
-    assert!(cursor.advance_back());
-    assert_eq!(cursor.key(), Some(&10));
-    assert!(!cursor.advance_back());
-    assert!(cursor.key().is_none());
-}
-
-#[test]
-#[serial]
 fn cursor_at_key() {
     init();
     let mut map = sl::SkipList::new(sl::Allocator);
@@ -696,10 +637,9 @@ fn level_ratio_tuning() {
     map1.clear();
 
     // p=0.25 (RATIO=4) — same allocator (MAX_LEVEL=8), different promotion ratio
-    let mut map2 =
-        nexus_collections::skiplist::SkipList::<u64, String, sl::Allocator, 8, 4>::new(
-            sl::Allocator,
-        );
+    let mut map2 = nexus_collections::skiplist::SkipList::<u64, String, sl::Allocator, 8, 4>::new(
+        sl::Allocator,
+    );
     for k in 0u64..100 {
         map2.try_insert(k, String::new()).unwrap();
     }
@@ -772,7 +712,6 @@ fn iter_empty() {
     init();
     let map = sl::SkipList::new(sl::Allocator);
     assert_eq!(map.iter().count(), 0);
-    assert_eq!(map.iter().rev().count(), 0);
     assert_eq!(map.keys().count(), 0);
     assert_eq!(map.values().count(), 0);
 }
@@ -817,25 +756,6 @@ fn values_mut_modify() {
     assert_eq!(map.get(&1), Some(&String::from("v1!")));
     assert_eq!(map.get(&2), Some(&String::from("v2!")));
     assert_eq!(map.get(&3), Some(&String::from("v3!")));
-}
-
-#[test]
-#[serial]
-fn iter_mut_double_ended() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in 1u64..=5 {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let mut iter = map.iter_mut();
-    assert_eq!(iter.next().unwrap().0, &1);
-    assert_eq!(iter.next_back().unwrap().0, &5);
-    assert_eq!(iter.next().unwrap().0, &2);
-    assert_eq!(iter.next_back().unwrap().0, &4);
-    assert_eq!(iter.next().unwrap().0, &3);
-    assert!(iter.next().is_none());
 }
 
 // =============================================================================
@@ -959,40 +879,6 @@ fn range_single() {
 
 #[test]
 #[serial]
-fn range_reverse() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in [10u64, 20, 30, 40, 50] {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let keys: Vec<u64> = map.range(20..=40).rev().map(|(k, _)| *k).collect();
-    assert_eq!(keys, vec![40, 30, 20]);
-}
-
-#[test]
-#[serial]
-fn range_meets_in_middle() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in [10u64, 20, 30, 40, 50] {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let mut range = map.range(10..=50);
-    assert_eq!(range.next().unwrap().0, &10);
-    assert_eq!(range.next_back().unwrap().0, &50);
-    assert_eq!(range.next().unwrap().0, &20);
-    assert_eq!(range.next_back().unwrap().0, &40);
-    assert_eq!(range.next().unwrap().0, &30);
-    assert!(range.next().is_none());
-    assert!(range.next_back().is_none());
-}
-
-#[test]
-#[serial]
 fn range_mut_modify() {
     init();
     let mut map = sl::SkipList::new(sl::Allocator);
@@ -1010,20 +896,6 @@ fn range_mut_modify() {
     assert_eq!(map.get(&30), Some(&String::from("30!")));
     assert_eq!(map.get(&40), Some(&String::from("40!")));
     assert_eq!(map.get(&50), Some(&String::from("50")));
-}
-
-#[test]
-#[serial]
-fn range_mut_reverse() {
-    init();
-    let mut map = sl::SkipList::new(sl::Allocator);
-
-    for k in [10u64, 20, 30, 40, 50] {
-        map.try_insert(k, format!("{k}")).unwrap();
-    }
-
-    let keys: Vec<u64> = map.range_mut(20..=40).rev().map(|(k, _)| *k).collect();
-    assert_eq!(keys, vec![40, 30, 20]);
 }
 
 // =============================================================================

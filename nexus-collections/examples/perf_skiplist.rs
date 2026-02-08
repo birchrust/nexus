@@ -145,6 +145,46 @@ fn main() {
         map.clear();
     }
 
+    // get (cold random access @10k — cycles through all keys)
+    {
+        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
+        for &k in &keys {
+            map.try_insert(k, k).unwrap();
+        }
+        // Shuffle keys for random access pattern
+        for i in (1..keys.len()).rev() {
+            let j = rng.next() as usize % (i + 1);
+            keys.swap(i, j);
+        }
+        let num_keys = keys.len();
+        let mut samples = Vec::with_capacity(SAMPLES);
+        let mut offset = 0usize;
+        // Warmup — cycle through keys
+        for _ in 0..WARMUP {
+            let mut total = 0u64;
+            for j in 0..BATCH_READ {
+                total = total.wrapping_add(*map.get(&keys[(offset + j) % num_keys]).unwrap());
+            }
+            black_box(total);
+            offset = (offset + BATCH_READ) % num_keys;
+        }
+        // Measure
+        for _ in 0..SAMPLES {
+            let mut total = 0u64;
+            let s = rdtsc_start();
+            for j in 0..BATCH_READ {
+                total = total.wrapping_add(*map.get(&keys[(offset + j) % num_keys]).unwrap());
+            }
+            let e = rdtsc_end();
+            black_box(total);
+            samples.push((e - s) / BATCH_READ as u64);
+            offset = (offset + BATCH_READ) % num_keys;
+        }
+        print_row(&format!("get (cold rand, @{STEADY_SIZE})"), &mut samples);
+        map.clear();
+    }
+
     // contains_key (steady @10k)
     {
         let mut map = sl::SkipList::with_seed(42, sl::Allocator);

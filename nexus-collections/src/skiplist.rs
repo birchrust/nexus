@@ -62,13 +62,12 @@ type NodePtr<K, V, const MAX_LEVEL: usize> = *mut SlotCell<SkipNode<K, V, MAX_LE
 /// spans 2 lines; at `MAX_LEVEL=4`, key(8) + forward\[0..3\](32) = 40 bytes
 /// fits in one line. Value sits beyond the search path.
 ///
-/// Node size: `sizeof(K) + MAX_LEVEL*8 + 8 + 8 + sizeof(V)` bytes
-/// (for `K=u64`, `MAX_LEVEL=8` → 96 + sizeof(V)).
+/// Node size: `sizeof(K) + MAX_LEVEL*8 + 8 + sizeof(V)` bytes
+/// (for `K=u64`, `MAX_LEVEL=8` → 88 + sizeof(V)).
 #[repr(C)]
 pub struct SkipNode<K, V, const MAX_LEVEL: usize> {
     key: K,
     forward: [Cell<NodePtr<K, V, MAX_LEVEL>>; MAX_LEVEL],
-    back: Cell<NodePtr<K, V, MAX_LEVEL>>,
     level: Cell<u8>,
     value: V,
 }
@@ -82,7 +81,6 @@ impl<K, V, const MAX_LEVEL: usize> SkipNode<K, V, MAX_LEVEL> {
         SkipNode {
             key,
             forward: std::array::from_fn(|_| Cell::new(ptr::null_mut())),
-            back: Cell::new(ptr::null_mut()),
             level: Cell::new(0),
             value,
         }
@@ -150,6 +148,26 @@ unsafe fn node_deref_mut<K, V, const MAX_LEVEL: usize>(
 }
 
 // =============================================================================
+// Prefetch helpers
+// =============================================================================
+
+/// Prefetch a node for upcoming read access (search, iteration).
+///
+/// Issues a T0 (temporal, all cache levels) prefetch hint. On non-x86_64
+/// platforms this is a no-op.
+#[inline(always)]
+fn prefetch_read_node<K, V, const MAX_LEVEL: usize>(ptr: NodePtr<K, V, MAX_LEVEL>) {
+    #[cfg(target_arch = "x86_64")]
+    if !ptr.is_null() {
+        // SAFETY: _mm_prefetch on an invalid address is architecturally a NOP on x86.
+        // We guard against null for clarity but even null would be harmless.
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+        }
+    }
+}
+
+// =============================================================================
 // SkipList<K, V, A, MAX_LEVEL, RATIO>
 // =============================================================================
 
@@ -206,12 +224,12 @@ pub struct SkipList<
 // =============================================================================
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > SkipList<K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> SkipList<K, V, A, MAX_LEVEL, RATIO>
 {
     /// Creates a new empty skip list with default settings.
     ///
@@ -361,7 +379,10 @@ impl<
         let node = unsafe { &*node_deref(ptr) };
         let node_level = node.level.get();
 
-        debug_assert!((node_level as usize) < MAX_LEVEL, "node_level out of bounds");
+        debug_assert!(
+            (node_level as usize) < MAX_LEVEL,
+            "node_level out of bounds"
+        );
         // SAFETY: node_level was set by random_level() which caps at MAX_LEVEL - 1.
         unsafe { std::hint::assert_unchecked((node_level as usize) < MAX_LEVEL) };
 
@@ -370,13 +391,8 @@ impl<
             self.head[i] = node.forward[i].get();
         }
 
-        // Update back pointer of new first node
-        let new_first = self.head[0];
-        if new_first.is_null() {
+        if self.head[0].is_null() {
             self.tail = ptr::null_mut();
-        } else {
-            // SAFETY: new_first is non-null, in the skip list
-            unsafe { &*node_deref(new_first) }.back.set(ptr::null_mut());
         }
 
         // Reduce level if needed
@@ -499,13 +515,10 @@ impl<
     // =========================================================================
 
     /// Returns an iterator over `(&K, &V)` pairs in sorted order.
-    ///
-    /// Supports forward and reverse iteration (`DoubleEndedIterator`).
     #[inline]
     pub fn iter(&self) -> Iter<'_, K, V, MAX_LEVEL> {
         Iter {
             front: self.head[0],
-            back: self.tail,
             len: self.len,
             _marker: PhantomData,
         }
@@ -526,12 +539,10 @@ impl<
     /// Returns a mutable iterator over `(&K, &mut V)` pairs in sorted order.
     ///
     /// Keys are immutable — changing them would violate sorted order.
-    /// Supports forward and reverse iteration (`DoubleEndedIterator`).
     #[inline]
     pub fn iter_mut(&mut self) -> IterMut<'_, K, V, MAX_LEVEL> {
         IterMut {
             front: self.head[0],
-            back: self.tail,
             len: self.len,
             _marker: PhantomData,
         }
@@ -550,10 +561,10 @@ impl<
     /// Useful for market data: "give me all price levels between X and Y."
     #[inline]
     pub fn range<R: std::ops::RangeBounds<K>>(&self, range: R) -> Range<'_, K, V, MAX_LEVEL> {
-        let (front, back) = self.resolve_range_bounds(range);
+        let (front, end) = self.resolve_range_bounds(range);
         Range {
             front,
-            back,
+            end,
             _marker: PhantomData,
         }
     }
@@ -564,10 +575,10 @@ impl<
         &mut self,
         range: R,
     ) -> RangeMut<'_, K, V, MAX_LEVEL> {
-        let (front, back) = self.resolve_range_bounds(range);
+        let (front, end) = self.resolve_range_bounds(range);
         RangeMut {
             front,
-            back,
+            end,
             _marker: PhantomData,
         }
     }
@@ -587,7 +598,6 @@ impl<
             current: ptr::null_mut(),
             update: [ptr::null_mut(); MAX_LEVEL],
             started: false,
-            past_end: false,
         }
     }
 
@@ -614,7 +624,6 @@ impl<
             current,
             update,
             started: true,
-            past_end: current.is_null(),
         }
     }
 
@@ -811,9 +820,11 @@ impl<
         current
     }
 
-    /// Resolves `RangeBounds` to `(front, back)` node pointers.
+    /// Resolves `RangeBounds` to `(front, end)` node pointers.
     ///
-    /// Both `range()` and `range_mut()` use this to convert bounds to pointers.
+    /// `front` is the first node in the range. `end` is the first node
+    /// PAST the range (exclusive sentinel), or null if the range extends
+    /// to the end of the list. The iterator stops when `front == end`.
     #[inline]
     fn resolve_range_bounds<R: std::ops::RangeBounds<K>>(
         &self,
@@ -821,7 +832,7 @@ impl<
     ) -> (NodePtr<K, V, MAX_LEVEL>, NodePtr<K, V, MAX_LEVEL>) {
         use std::ops::Bound;
 
-        // Resolve front pointer
+        // Resolve front pointer: first node in range
         let front = match range.start_bound() {
             Bound::Unbounded => self.head[0],
             Bound::Included(k) => {
@@ -835,7 +846,7 @@ impl<
                 }
             }
             Bound::Excluded(k) => {
-                // Find exact match or first node > k
+                // First node > k
                 let pred = self.find_predecessor(k);
                 let candidate = if pred.is_null() {
                     self.head[0]
@@ -852,11 +863,11 @@ impl<
             }
         };
 
-        // Resolve back pointer
-        let back = match range.end_bound() {
-            Bound::Unbounded => self.tail,
+        // Resolve end sentinel: first node PAST the range (or null for unbounded)
+        let end = match range.end_bound() {
+            Bound::Unbounded => ptr::null_mut(),
             Bound::Included(k) => {
-                // Find the node with key == k, or the last node < k
+                // End = first node > k
                 let pred = self.find_predecessor(k);
                 let candidate = if pred.is_null() {
                     self.head[0]
@@ -864,34 +875,43 @@ impl<
                     // SAFETY: pred is non-null, in the skip list
                     unsafe { &*node_deref(pred) }.forward[0].get()
                 };
-                // candidate is first node >= k; if exact match, use it
+                // candidate is first node >= k
                 if !candidate.is_null() && unsafe { &*node_deref(candidate) }.key == *k {
-                    candidate
+                    // Exact match: end is the node after it
+                    unsafe { &*node_deref(candidate) }.forward[0].get()
                 } else {
-                    // No exact match — back is predecessor
-                    pred
+                    // No exact match: candidate is already past k
+                    candidate
                 }
             }
             Bound::Excluded(k) => {
-                // Last node < k is the predecessor
-                self.find_predecessor(k)
+                // End = first node >= k
+                let pred = self.find_predecessor(k);
+                if pred.is_null() {
+                    self.head[0]
+                } else {
+                    // SAFETY: pred is non-null, in the skip list
+                    unsafe { &*node_deref(pred) }.forward[0].get()
+                }
             }
         };
 
-        // Validate: front must be <= back (in sorted order).
-        // If either is null, or front's key > back's key, range is empty.
-        if front.is_null() || back.is_null() {
+        // Validate: if front is null or front is already at/past end, range is empty.
+        if front.is_null() || front == end {
             return (ptr::null_mut(), ptr::null_mut());
         }
 
-        // SAFETY: both pointers are non-null and in the skip list
-        let front_key = unsafe { &(*node_deref(front)).key };
-        let back_key = unsafe { &(*node_deref(back)).key };
-        if front_key > back_key {
-            return (ptr::null_mut(), ptr::null_mut());
+        // If end is non-null, verify front comes before end in sorted order.
+        if !end.is_null() {
+            // SAFETY: both pointers are non-null and in the skip list
+            let front_key = unsafe { &(*node_deref(front)).key };
+            let end_key = unsafe { &(*node_deref(end)).key };
+            if front_key >= end_key {
+                return (ptr::null_mut(), ptr::null_mut());
+            }
         }
 
-        (front, back)
+        (front, end)
     }
 
     /// Links a node into the skip list at the position described by `update`.
@@ -931,14 +951,6 @@ impl<
             }
         }
 
-        // Maintain back pointer at level 0
-        node.back.set(update[0]);
-        let next_at_0 = node.forward[0].get();
-        if !next_at_0.is_null() {
-            // SAFETY: next_at_0 is non-null, points to occupied slot
-            unsafe { &*node_deref(next_at_0) }.back.set(ptr);
-        }
-
         if is_tail {
             self.tail = ptr;
         }
@@ -959,7 +971,10 @@ impl<
         node_level: u8,
         update: &[NodePtr<K, V, MAX_LEVEL>; MAX_LEVEL],
     ) {
-        debug_assert!((node_level as usize) < MAX_LEVEL, "node_level out of bounds");
+        debug_assert!(
+            (node_level as usize) < MAX_LEVEL,
+            "node_level out of bounds"
+        );
         // SAFETY: node_level was set by random_level() which caps at MAX_LEVEL - 1.
         unsafe { std::hint::assert_unchecked((node_level as usize) < MAX_LEVEL) };
 
@@ -973,12 +988,6 @@ impl<
             } else {
                 unsafe { &*node_deref(update[i]) }.forward[i].set(next);
             }
-        }
-
-        // Update back pointer of successor at level 0
-        let next_at_0 = node.forward[0].get();
-        if !next_at_0.is_null() {
-            unsafe { &*node_deref(next_at_0) }.back.set(node.back.get());
         }
     }
 
@@ -1006,12 +1015,12 @@ impl<
 // =============================================================================
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: BoundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > SkipList<K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: BoundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> SkipList<K, V, A, MAX_LEVEL, RATIO>
 {
     /// Inserts a key-value pair, or returns the pair if the allocator is full.
     ///
@@ -1053,12 +1062,12 @@ impl<
 // =============================================================================
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: UnboundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > SkipList<K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: UnboundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> SkipList<K, V, A, MAX_LEVEL, RATIO>
 {
     /// Inserts a key-value pair. Always succeeds (grows as needed).
     ///
@@ -1094,12 +1103,12 @@ impl<
 // =============================================================================
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Drop for SkipList<K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Drop for SkipList<K, V, A, MAX_LEVEL, RATIO>
 {
     fn drop(&mut self) {
         self.clear();
@@ -1158,12 +1167,12 @@ pub struct VacantEntry<
 // -- Entry: base Alloc methods --
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Entry<'_, K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Entry<'_, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Modifies an existing entry before potential insertion.
     ///
@@ -1181,13 +1190,13 @@ impl<
 // -- Entry: BoundedAlloc methods --
 
 impl<
-        'a,
-        K: Ord,
-        V: 'static,
-        A: BoundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Entry<'a, K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord,
+    V: 'static,
+    A: BoundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Entry<'a, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Ensures a value is in the entry by inserting if vacant (bounded).
     ///
@@ -1205,13 +1214,13 @@ impl<
 // -- Entry: UnboundedAlloc methods --
 
 impl<
-        'a,
-        K: Ord,
-        V: 'static,
-        A: UnboundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Entry<'a, K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord,
+    V: 'static,
+    A: UnboundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Entry<'a, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Ensures a value is in the entry by inserting if vacant (unbounded).
     #[inline]
@@ -1226,13 +1235,13 @@ impl<
 // -- OccupiedEntry --
 
 impl<
-        'a,
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > OccupiedEntry<'a, K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> OccupiedEntry<'a, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Returns a reference to the key.
     #[inline]
@@ -1282,13 +1291,13 @@ impl<
 // -- VacantEntry: BoundedAlloc --
 
 impl<
-        'a,
-        K: Ord,
-        V: 'static,
-        A: BoundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > VacantEntry<'a, K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord,
+    V: 'static,
+    A: BoundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> VacantEntry<'a, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Inserts a value into the vacant entry (bounded allocator).
     ///
@@ -1312,13 +1321,13 @@ impl<
 // -- VacantEntry: UnboundedAlloc --
 
 impl<
-        'a,
-        K: Ord,
-        V: 'static,
-        A: UnboundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > VacantEntry<'a, K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord,
+    V: 'static,
+    A: UnboundedAlloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> VacantEntry<'a, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Inserts a value into the vacant entry (unbounded allocator).
     #[inline]
@@ -1336,12 +1345,12 @@ impl<
 // -- VacantEntry: base Alloc (key accessor) --
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > VacantEntry<'_, K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> VacantEntry<'_, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Returns a reference to the key that would be used for insertion.
     #[inline]
@@ -1355,11 +1364,8 @@ impl<
 // =============================================================================
 
 /// Iterator over `(&K, &V)` pairs in sorted order.
-///
-/// Supports both forward and reverse iteration.
 pub struct Iter<'a, K, V, const MAX_LEVEL: usize> {
     front: NodePtr<K, V, MAX_LEVEL>,
-    back: NodePtr<K, V, MAX_LEVEL>,
     len: usize,
     _marker: PhantomData<&'a ()>,
 }
@@ -1379,6 +1385,8 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for Iter<'a, K, V, MAX_L
         let node = unsafe { &*node_deref(ptr) };
         self.front = node.forward[0].get();
         self.len -= 1;
+        // Prefetch next node — user code between calls provides latency hiding.
+        prefetch_read_node(self.front);
         Some((&node.key, &node.value))
     }
 
@@ -1388,37 +1396,16 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for Iter<'a, K, V, MAX_L
     }
 }
 
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for Iter<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.len == 0 {
-            return None;
-        }
-
-        let ptr = self.back;
-        // SAFETY: len > 0 implies back is non-null and points to an occupied slot.
-        let node = unsafe { &*node_deref(ptr) };
-        self.back = node.back.get();
-        self.len -= 1;
-        Some((&node.key, &node.value))
-    }
-}
-
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
-    for Iter<'a, K, V, MAX_LEVEL>
-{
-}
+impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator for Iter<'a, K, V, MAX_LEVEL> {}
 
 impl<
-        'a,
-        K: Ord + 'a,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > IntoIterator for &'a SkipList<K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord + 'a,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> IntoIterator for &'a SkipList<K, V, A, MAX_LEVEL, RATIO>
 {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V, MAX_LEVEL>;
@@ -1430,13 +1417,13 @@ impl<
 }
 
 impl<
-        'a,
-        K: Ord + 'a,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > IntoIterator for &'a mut SkipList<K, V, A, MAX_LEVEL, RATIO>
+    'a,
+    K: Ord + 'a,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> IntoIterator for &'a mut SkipList<K, V, A, MAX_LEVEL, RATIO>
 {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V, MAX_LEVEL>;
@@ -1470,19 +1457,7 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for Keys<'a, K, V, MAX_L
     }
 }
 
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for Keys<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back().map(|(k, _)| k)
-    }
-}
-
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
-    for Keys<'a, K, V, MAX_LEVEL>
-{
-}
+impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator for Keys<'a, K, V, MAX_LEVEL> {}
 
 /// Iterator over values in key-sorted order.
 pub struct Values<'a, K, V, const MAX_LEVEL: usize> {
@@ -1503,19 +1478,7 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for Values<'a, K, V, MAX
     }
 }
 
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for Values<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back().map(|(_, v)| v)
-    }
-}
-
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
-    for Values<'a, K, V, MAX_LEVEL>
-{
-}
+impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator for Values<'a, K, V, MAX_LEVEL> {}
 
 // =============================================================================
 // IterMut — mutable borrowing, double-ended
@@ -1526,7 +1489,6 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
 /// Keys are immutable — changing them would violate sorted order.
 pub struct IterMut<'a, K, V, const MAX_LEVEL: usize> {
     front: NodePtr<K, V, MAX_LEVEL>,
-    back: NodePtr<K, V, MAX_LEVEL>,
     len: usize,
     _marker: PhantomData<&'a mut ()>,
 }
@@ -1546,6 +1508,8 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for IterMut<'a, K, V, MA
         let node = unsafe { &mut *node_deref_mut(ptr) };
         self.front = node.forward[0].get();
         self.len -= 1;
+        // Prefetch next node — user code between calls provides latency hiding.
+        prefetch_read_node(self.front);
         Some((&node.key, &mut node.value))
     }
 
@@ -1555,28 +1519,7 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for IterMut<'a, K, V, MA
     }
 }
 
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for IterMut<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.len == 0 {
-            return None;
-        }
-
-        let ptr = self.back;
-        // SAFETY: len > 0 implies back is non-null and points to an occupied slot.
-        let node = unsafe { &mut *node_deref_mut(ptr) };
-        self.back = node.back.get();
-        self.len -= 1;
-        Some((&node.key, &mut node.value))
-    }
-}
-
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
-    for IterMut<'a, K, V, MAX_LEVEL>
-{
-}
+impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator for IterMut<'a, K, V, MAX_LEVEL> {}
 
 // =============================================================================
 // ValuesMut
@@ -1601,15 +1544,6 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for ValuesMut<'a, K, V, 
     }
 }
 
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for ValuesMut<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back().map(|(_, v)| v)
-    }
-}
-
 impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
     for ValuesMut<'a, K, V, MAX_LEVEL>
 {
@@ -1621,10 +1555,11 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> ExactSizeIterator
 
 /// Iterator over `(&K, &V)` pairs within a key range.
 ///
-/// Does not track length — uses pointer equality for meeting detection.
+/// Forward-only. `end` is the exclusive sentinel — iteration stops when
+/// `front == end` or `front` is null.
 pub struct Range<'a, K, V, const MAX_LEVEL: usize> {
     front: NodePtr<K, V, MAX_LEVEL>,
-    back: NodePtr<K, V, MAX_LEVEL>,
+    end: NodePtr<K, V, MAX_LEVEL>,
     _marker: PhantomData<&'a ()>,
 }
 
@@ -1633,47 +1568,16 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for Range<'a, K, V, MAX_
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.front.is_null() {
+        if self.front.is_null() || self.front == self.end {
             return None;
         }
 
         let ptr = self.front;
         // SAFETY: front is non-null and points to an occupied slot.
         let node = unsafe { &*node_deref(ptr) };
-
-        if self.front == self.back {
-            // Last element — mark both as exhausted
-            self.front = ptr::null_mut();
-            self.back = ptr::null_mut();
-        } else {
-            self.front = node.forward[0].get();
-        }
-
-        Some((&node.key, &node.value))
-    }
-}
-
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for Range<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.back.is_null() {
-            return None;
-        }
-
-        let ptr = self.back;
-        // SAFETY: back is non-null and points to an occupied slot.
-        let node = unsafe { &*node_deref(ptr) };
-
-        if self.front == self.back {
-            // Last element — mark both as exhausted
-            self.front = ptr::null_mut();
-            self.back = ptr::null_mut();
-        } else {
-            self.back = node.back.get();
-        }
-
+        self.front = node.forward[0].get();
+        // Prefetch next node — user code between calls provides latency hiding.
+        prefetch_read_node(self.front);
         Some((&node.key, &node.value))
     }
 }
@@ -1685,9 +1589,10 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
 /// Mutable iterator over `(&K, &mut V)` pairs within a key range.
 ///
 /// Keys are immutable — changing them would violate sorted order.
+/// Forward-only. `end` is the exclusive sentinel.
 pub struct RangeMut<'a, K, V, const MAX_LEVEL: usize> {
     front: NodePtr<K, V, MAX_LEVEL>,
-    back: NodePtr<K, V, MAX_LEVEL>,
+    end: NodePtr<K, V, MAX_LEVEL>,
     _marker: PhantomData<&'a mut ()>,
 }
 
@@ -1696,45 +1601,16 @@ impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> Iterator for RangeMut<'a, K, V, M
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.front.is_null() {
+        if self.front.is_null() || self.front == self.end {
             return None;
         }
 
         let ptr = self.front;
         // SAFETY: front is non-null and occupied. &mut prevents aliasing.
         let node = unsafe { &mut *node_deref_mut(ptr) };
-
-        if self.front == self.back {
-            self.front = ptr::null_mut();
-            self.back = ptr::null_mut();
-        } else {
-            self.front = node.forward[0].get();
-        }
-
-        Some((&node.key, &mut node.value))
-    }
-}
-
-impl<'a, K: 'a, V: 'a, const MAX_LEVEL: usize> DoubleEndedIterator
-    for RangeMut<'a, K, V, MAX_LEVEL>
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.back.is_null() {
-            return None;
-        }
-
-        let ptr = self.back;
-        // SAFETY: back is non-null and occupied. &mut prevents aliasing.
-        let node = unsafe { &mut *node_deref_mut(ptr) };
-
-        if self.front == self.back {
-            self.front = ptr::null_mut();
-            self.back = ptr::null_mut();
-        } else {
-            self.back = node.back.get();
-        }
-
+        self.front = node.forward[0].get();
+        // Prefetch next node — user code between calls provides latency hiding.
+        prefetch_read_node(self.front);
         Some((&node.key, &mut node.value))
     }
 }
@@ -1771,16 +1647,15 @@ pub struct Cursor<
     current: NodePtr<K, V, MAX_LEVEL>,
     update: [NodePtr<K, V, MAX_LEVEL>; MAX_LEVEL],
     started: bool,
-    past_end: bool,
 }
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Cursor<'_, K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Cursor<'_, K, V, A, MAX_LEVEL, RATIO>
 {
     /// Returns a reference to the current key, or `None` if not positioned.
     #[inline]
@@ -1819,11 +1694,9 @@ impl<
     pub fn advance(&mut self) -> bool {
         if !self.started {
             self.started = true;
-            self.past_end = false;
             self.current = self.list.head[0];
-            if self.current.is_null() {
-                self.past_end = true;
-            }
+            // Prefetch first node — user code before key()/value() hides latency.
+            prefetch_read_node(self.current);
             return !self.current.is_null();
         }
 
@@ -1839,31 +1712,8 @@ impl<
         }
 
         self.current = node.forward[0].get();
-        if self.current.is_null() {
-            self.past_end = true;
-        }
-        !self.current.is_null()
-    }
-
-    /// Moves the cursor to the previous element.
-    ///
-    /// Returns `true` if the cursor is now at a valid element.
-    ///
-    /// **Note:** Moving backward does NOT update the predecessor array.
-    /// `remove()` after `advance_back()` will re-search internally.
-    #[inline]
-    pub fn advance_back(&mut self) -> bool {
-        if self.current.is_null() {
-            if self.past_end {
-                self.past_end = false;
-                self.current = self.list.tail;
-                return !self.current.is_null();
-            }
-            return false;
-        }
-
-        let back = unsafe { &*node_deref(self.current) }.back.get();
-        self.current = back;
+        // Prefetch next node — user code before key()/value() hides latency.
+        prefetch_read_node(self.current);
         !self.current.is_null()
     }
 
@@ -1881,16 +1731,8 @@ impl<
         let node_level = node.level.get();
         let next = node.forward[0].get();
 
-        // Verify update array is current. After advance_back(), it may be stale.
-        let mut update = self.update;
-        let expected_prev = node.back.get();
-        if update[0] != expected_prev {
-            self.list
-                .search(unsafe { &(*node_deref(ptr)).key }, &mut update);
-        }
-
-        self.list.unlink_at_levels(ptr, node_level, &update);
-        self.list.update_tail_and_level(ptr, &update);
+        self.list.unlink_at_levels(ptr, node_level, &self.update);
+        self.list.update_tail_and_level(ptr, &self.update);
         self.list.len -= 1;
 
         // Advance cursor to next
@@ -1923,12 +1765,12 @@ pub struct Drain<
 }
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Iterator for Drain<'_, K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Iterator for Drain<'_, K, V, A, MAX_LEVEL, RATIO>
 {
     type Item = (K, V);
 
@@ -1944,22 +1786,22 @@ impl<
 }
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > ExactSizeIterator for Drain<'_, K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> ExactSizeIterator for Drain<'_, K, V, A, MAX_LEVEL, RATIO>
 {
 }
 
 impl<
-        K: Ord,
-        V: 'static,
-        A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
-        const MAX_LEVEL: usize,
-        const RATIO: u32,
-    > Drop for Drain<'_, K, V, A, MAX_LEVEL, RATIO>
+    K: Ord,
+    V: 'static,
+    A: Alloc<Item = SkipNode<K, V, MAX_LEVEL>>,
+    const MAX_LEVEL: usize,
+    const RATIO: u32,
+> Drop for Drain<'_, K, V, A, MAX_LEVEL, RATIO>
 {
     fn drop(&mut self) {
         self.list.clear();

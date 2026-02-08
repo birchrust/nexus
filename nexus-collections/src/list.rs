@@ -955,7 +955,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Drop for List<T, A> {
 enum Position<T> {
     // REVIEW: do we need this enum at all? What does the std library
     // do for linked lists?
-
     /// Before the first element.
     BeforeStart,
     /// After the last element.
