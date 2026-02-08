@@ -644,15 +644,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Call `.exclusive()` on the node to access user data.
     #[inline]
     pub fn front(&self) -> Option<&ListNode<T>> {
-        // REVIEW: should this instead return Option<&T> ?
-        // That might be a bit more ergonomic since we care
-        // mostly to look at T more than the ListNode?
-        // Separately, does this cause any sort of aliasing?
-        // We might need to make use of the exclusive cell.
-        // Or I guess actually the ListNode has the exclusive
-        // cell on it, so we can pass ExRef? Maybe let's discuss
-        // what is most correct and this would also apply to the `back`
-        // method.
         if self.head.is_null() {
             return None;
         }
@@ -953,8 +944,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Drop for List<T, A> {
 ///   lifetime.
 /// - `BeforeStart` / `AfterEnd`: sentinel states with no pointer.
 enum Position<T> {
-    // REVIEW: do we need this enum at all? What does the std library
-    // do for linked lists?
     /// Before the first element.
     BeforeStart,
     /// After the last element.
@@ -1085,8 +1074,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     /// Panics if the cursor is not positioned at a node.
     #[inline]
     pub fn remove(&mut self) -> RcSlot<ListNode<T>, A> {
-        // REVIEW: this seems a bit weird. I'd really
-        // like to see what the std does for these.
         let Position::At(ptr) = self.position else {
             panic_cursor_not_at_node();
         };

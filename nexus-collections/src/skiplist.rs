@@ -10,7 +10,7 @@
 //!
 //! The skip list takes a ZST allocator at construction time and handles all
 //! node allocation and deallocation internally. The user only sees keys and
-//! values — no `BoxSlot` or `Slot` in the public API.
+//! values — node types are hidden behind the public API.
 //!
 //! - Bounded allocators: `try_insert` returns `Err(Full((K, V)))` when full
 //! - Unbounded allocators: `insert` always succeeds (grows as needed)
@@ -63,7 +63,7 @@ type NodePtr<K, V, const MAX_LEVEL: usize> = *mut SlotCell<SkipNode<K, V, MAX_LE
 /// fits in one line. Value sits beyond the search path.
 ///
 /// Node size: `sizeof(K) + MAX_LEVEL*8 + 8 + sizeof(V)` bytes
-/// (for `K=u64`, `MAX_LEVEL=8` → 88 + sizeof(V)).
+/// (for `K=u64`, `MAX_LEVEL=8` → 80 + sizeof(V)).
 #[repr(C)]
 pub struct SkipNode<K, V, const MAX_LEVEL: usize> {
     key: K,
@@ -962,7 +962,7 @@ impl<
         self.len += 1;
     }
 
-    /// Unlinks a node from forward and back pointers at each level.
+    /// Unlinks a node from forward pointers at each level.
     /// Does NOT update tail, level, or len — caller handles those.
     #[inline]
     fn unlink_at_levels(
