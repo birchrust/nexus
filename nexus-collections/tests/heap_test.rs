@@ -683,4 +683,3 @@ fn unbounded_drain() {
     let result: Vec<u64> = heap.drain().map(|h| *h.data()).collect();
     assert_eq!(result, vec![1, 3, 5, 8, 10]);
 }
-

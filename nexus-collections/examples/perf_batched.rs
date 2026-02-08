@@ -83,10 +83,7 @@ fn main() {
         .capacity(CAPACITY)
         .build()
         .unwrap();
-    lq::Allocator::builder()
-        .capacity(CAPACITY)
-        .build()
-        .unwrap();
+    lq::Allocator::builder().capacity(CAPACITY).build().unwrap();
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
 

@@ -1,37 +1,27 @@
 //! High-performance collections with slab-backed storage.
 //!
-//! Collections use thread-local `RcSlot`-based slab allocators for O(1)
-//! insert/remove with stable handles and no allocation on the hot path.
+//! Collections use thread-local slab allocators for O(1) insert/remove with
+//! stable handles and no allocation on the hot path.
 //!
-//! # Design Philosophy
+//! # Collections
 //!
-//! - **RcSlot handles** — User holds ownership token, data accessible via guard
-//! - **ExclusiveCell** — Interior mutability with exclusive-borrow semantics
-//! - **List manages links** — Raw pointer bookkeeping with refcount safety
-//! - **No closures** — Guard-based access replaces closure-based API
+//! - **List** — Doubly-linked list with `RcSlot` handles and external allocation
+//! - **Heap** — Pairing heap with `RcSlot` handles and external allocation
+//! - **SkipList** — Sorted map with internal allocation (user sees only K/V)
 //!
-//! # Quick Start
+//! # Quick Start (SkipList)
 //!
 //! ```ignore
-//! use nexus_collections::list_allocator;
-//!
-//! struct Order { id: u64, price: f64 }
-//!
-//! mod orders {
-//!     use super::*;
-//!     list_allocator!(Order, bounded);
+//! mod levels {
+//!     nexus_collections::skip_allocator!(u64, String, bounded);
 //! }
 //!
 //! fn main() {
-//!     orders::Allocator::builder().capacity(1000).build().unwrap();
+//!     levels::Allocator::builder().capacity(1000).build().unwrap();
 //!
-//!     let mut list = orders::List::new();
-//!     let handle = orders::create_node(Order { id: 1, price: 100.0 }).unwrap();
-//!     list.link_back(&handle);
-//!
-//!     // Guard-based access via auto-deref
-//!     let price = handle.exclusive().price;
-//!     handle.exclusive_mut().price = 200.0;
+//!     let mut map = levels::SkipList::new(levels::Allocator);
+//!     map.try_insert(100, "hello".into()).unwrap();
+//!     assert_eq!(map.get(&100), Some(&"hello".into()));
 //! }
 //! ```
 
@@ -41,6 +31,7 @@ pub mod exclusive;
 pub mod heap;
 pub mod list;
 mod macros;
+pub mod skiplist;
 
 // Re-export ExclusiveCell types at crate root
 pub use exclusive::{ExMut, ExRef, ExclusiveCell};

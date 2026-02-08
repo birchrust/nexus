@@ -67,7 +67,10 @@ fn new_hist() -> Histogram<u64> {
 }
 
 fn main() {
-    hpq::Allocator::builder().capacity(CAPACITY).build().unwrap();
+    hpq::Allocator::builder()
+        .capacity(CAPACITY)
+        .build()
+        .unwrap();
     lq::Allocator::builder().capacity(CAPACITY).build().unwrap();
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
@@ -96,7 +99,9 @@ fn main() {
         let mut heap = hpq::Heap::new();
         let mut hist = new_hist();
         // warmup
-        for h in heap_handles.iter().take(5000) { heap.push(h); }
+        for h in heap_handles.iter().take(5000) {
+            heap.push(h);
+        }
         heap.clear();
         // measure
         for h in &heap_handles {
@@ -114,7 +119,9 @@ fn main() {
         let mut heap = hpq::Heap::new();
         let mut hist = new_hist();
         let half = N / 2;
-        for h in heap_handles.iter().take(half) { heap.push(h); }
+        for h in heap_handles.iter().take(half) {
+            heap.push(h);
+        }
         for h in heap_handles.iter().skip(half) {
             let s = rdtscp();
             heap.push(h);
@@ -130,7 +137,9 @@ fn main() {
     {
         let mut heap = hpq::Heap::new();
         let mut hist = new_hist();
-        for h in &heap_handles { heap.push(h); }
+        for h in &heap_handles {
+            heap.push(h);
+        }
         while heap.len() > 0 {
             let s = rdtscp();
             let _ = black_box(heap.pop());
@@ -144,7 +153,9 @@ fn main() {
     {
         let mut heap = hpq::Heap::new();
         let mut hist = new_hist();
-        for h in &heap_handles { heap.push(h); }
+        for h in &heap_handles {
+            heap.push(h);
+        }
         // unlink all in original order (arbitrary positions)
         for h in &heap_handles {
             let s = rdtscp();
@@ -159,7 +170,9 @@ fn main() {
     {
         let mut heap = hpq::Heap::new();
         let mut hist = new_hist();
-        for h in heap_handles.iter().take(N / 2) { heap.push(h); }
+        for h in heap_handles.iter().take(N / 2) {
+            heap.push(h);
+        }
         for _ in 0..N {
             let s = rdtscp();
             let _ = black_box(heap.peek());
@@ -182,7 +195,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in list_handles.iter().take(5000) { list.link_back(h); }
+        for h in list_handles.iter().take(5000) {
+            list.link_back(h);
+        }
         list.clear();
         for h in &list_handles {
             let s = rdtscp();
@@ -198,7 +213,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in list_handles.iter().take(5000) { list.link_front(h); }
+        for h in list_handles.iter().take(5000) {
+            list.link_front(h);
+        }
         list.clear();
         for h in &list_handles {
             let s = rdtscp();
@@ -215,7 +232,9 @@ fn main() {
         let mut list = lq::List::new();
         let mut hist = new_hist();
         let half = N / 2;
-        for h in list_handles.iter().take(half) { list.link_back(h); }
+        for h in list_handles.iter().take(half) {
+            list.link_back(h);
+        }
         for h in list_handles.iter().skip(half) {
             let s = rdtscp();
             list.link_back(h);
@@ -231,7 +250,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in &list_handles { list.link_back(h); }
+        for h in &list_handles {
+            list.link_back(h);
+        }
         while list.len() > 0 {
             let s = rdtscp();
             let _ = black_box(list.pop_front());
@@ -245,7 +266,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in &list_handles { list.link_back(h); }
+        for h in &list_handles {
+            list.link_back(h);
+        }
         while list.len() > 0 {
             let s = rdtscp();
             let _ = black_box(list.pop_back());
@@ -259,7 +282,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in &list_handles { list.link_back(h); }
+        for h in &list_handles {
+            list.link_back(h);
+        }
         for h in &list_handles {
             let s = rdtscp();
             list.unlink(h);
@@ -273,7 +298,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in &list_handles { list.link_back(h); }
+        for h in &list_handles {
+            list.link_back(h);
+        }
         // move each handle to front in order (simulates LRU touch)
         for h in &list_handles {
             let s = rdtscp();
@@ -289,7 +316,9 @@ fn main() {
     {
         let mut list = lq::List::new();
         let mut hist = new_hist();
-        for h in &list_handles { list.link_back(h); }
+        for h in &list_handles {
+            list.link_back(h);
+        }
         for h in list_handles.iter().rev() {
             let s = rdtscp();
             list.move_to_back(h);
