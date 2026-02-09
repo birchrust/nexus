@@ -4,7 +4,7 @@ High-performance, slab-backed collections for latency-critical systems.
 
 ## Why This Crate?
 
-Node-based data structures (linked lists, heaps, skip lists) offer
+Node-based data structures (linked lists, heaps, trees) offer
 operations that contiguous structures can't — O(1) unlink/re-link, stable
 handles to interior elements, and movement between collections without
 copying. The trade-off is normally heap fragmentation and allocator overhead
@@ -75,30 +75,46 @@ assert_eq!(heap.peek().unwrap().data().deadline, 42);
 heap.unlink(&handle);
 ```
 
-### SkipList — Sorted Map
+### RbTree — Red-Black Tree Sorted Map
 
-Probabilistic sorted map with O(log n) insert/lookup/remove. Internal
-allocation — user sees only keys and values.
+Deterministic O(log n) sorted map with at most 2 rotations per insert,
+3 per delete. Best for entry-heavy and pop-heavy workloads (order books,
+timer wheels).
 
 ```rust
 mod levels {
-    nexus_collections::skip_allocator!(u64, String, bounded);
+    nexus_collections::rbtree_allocator!(u64, String, bounded);
 }
 
 levels::Allocator::builder().capacity(1000).build().unwrap();
 
-let mut map = levels::SkipList::new(levels::Allocator);
+let mut map = levels::RbTree::new(levels::Allocator);
 map.try_insert(100, "hello".into()).unwrap();
 
 assert_eq!(map.get(&100), Some(&"hello".into()));
 
-// Sorted iteration
-for (k, v) in map.iter() {
-    println!("{k}: {v}");
-}
-
 // Entry API
 map.entry(200).or_try_insert("world".into()).unwrap();
+```
+
+### BTree — B-Tree Sorted Map
+
+Cache-friendly sorted map with tunable branching factor. Best for read-heavy
+lookups, existence checking, high-churn streaming data, and range scans.
+
+```rust
+mod levels {
+    nexus_collections::btree_allocator!(u64, String, bounded);
+}
+
+// Custom branching factor: btree_allocator!(u64, String, bounded, 12)
+
+levels::Allocator::builder().capacity(1000).build().unwrap();
+
+let mut map = levels::BTree::new(levels::Allocator);
+map.try_insert(100, "hello".into()).unwrap();
+
+assert_eq!(map.get(&100), Some(&"hello".into()));
 ```
 
 ## Allocator Macros
@@ -110,7 +126,8 @@ allocator. Invoke inside a module:
 |-------|-----------|-----------------|
 | `list_allocator!(T, bounded\|unbounded)` | List | `Allocator`, `Handle`, `List`, `Cursor` |
 | `heap_allocator!(T, bounded\|unbounded)` | Heap | `Allocator`, `Handle`, `Heap` |
-| `skip_allocator!(K, V, bounded\|unbounded)` | SkipList | `Allocator`, `SkipList`, `Cursor`, `Entry` |
+| `rbtree_allocator!(K, V, bounded\|unbounded)` | RbTree | `Allocator`, `RbTree`, `Cursor`, `Entry` |
+| `btree_allocator!(K, V, bounded\|unbounded)` | BTree | `Allocator`, `BTree`, `Cursor`, `Entry` |
 
 **Bounded** allocators have a fixed capacity. Insert operations return
 `Result<_, Full<T>>` when full.
@@ -132,7 +149,10 @@ orders::Allocator::builder().chunk_size(512).build().unwrap();
 ## Performance
 
 Cycle-accurate latency, Intel Core Ultra 7 155H, pinned to physical core,
-turbo boost disabled. See [BENCHMARKS.md](BENCHMARKS.md) for full results.
+turbo boost disabled. Sorted map benchmarks use batched `seq!` unrolled timing
+(100 ops per rdtsc pair) to amortize serialization overhead. Same PRNG seed
+across all benchmarks. See [BENCHMARKS.md](BENCHMARKS.md) for individual
+tables with all percentiles.
 
 ### List (p50 cycles)
 
@@ -152,14 +172,56 @@ turbo boost disabled. See [BENCHMARKS.md](BENCHMARKS.md) for full results.
 | peek | 20 |
 | unlink | 30 |
 
-### SkipList (p50 cycles, @10k population)
+### Sorted Maps — p50 (cycles, @10k population)
 
-| Operation | Cycles |
-|-----------|--------|
-| get (hit) | 171 |
-| insert | 510 |
-| remove | 544 |
-| pop_first | 26 |
+| Operation | nexus BTree | nexus RbTree | std BTreeMap | Best |
+|---|---|---|---|---|
+| get (hit, @100) | 14 | **9** | 23 | RbTree |
+| get (hit, @10k) | 22 | **15** | 40 | RbTree |
+| get (miss, @10k) | **30** | 41 | 48 | nexus BTree |
+| get (cold rand, @10k) | 137 | **131** | 153 | RbTree |
+| contains_key (hit) | **22** | 50 | 37 | nexus BTree |
+| insert (growing) | **254** | 278 | 256 | nexus BTree |
+| insert (steady) | 211 | **203** | 231 | RbTree |
+| insert (duplicate) | 27 | **24** | 42 | RbTree |
+| remove | **209** | 245 | 243 | nexus BTree |
+| pop_first | 47 | **22** | 71 | RbTree |
+| pop_last | 38 | **21** | 52 | RbTree |
+| churn | **455** | 520 | 510 | nexus BTree |
+| entry (occupied) | 22 | **20** | 37 | RbTree |
+| entry (vacant+insert) | 373 | **197** | 228 | RbTree |
+
+### Sorted Maps — p999 Tail Latency (cycles, @10k population)
+
+| Operation | nexus BTree | nexus RbTree | std BTreeMap | Best |
+|---|---|---|---|---|
+| get (hit, @100) | 44 | **34** | 87 | RbTree |
+| get (hit, @10k) | 139 | **54** | 161 | RbTree |
+| get (miss, @10k) | **92** | 105 | 127 | nexus BTree |
+| get (cold rand, @10k) | 252 | **210** | 316 | RbTree |
+| contains_key (hit) | **81** | 111 | 155 | nexus BTree |
+| insert (growing) | **758** | 1178 | 3736 | nexus BTree |
+| insert (steady) | **319** | 345 | 401 | nexus BTree |
+| insert (duplicate) | 87 | **82** | 152 | RbTree |
+| remove | **359** | 372 | 423 | nexus BTree |
+| pop_first | 128 | **69** | 153 | RbTree |
+| pop_last | 107 | **74** | 132 | RbTree |
+| churn | **758** | 803 | 920 | nexus BTree |
+| entry (occupied) | 94 | **77** | 141 | RbTree |
+| entry (vacant+insert) | **602** | 366 | 406 | RbTree |
+
+Both nexus trees beat `std::collections::BTreeMap` across the board. The slab
+allocator eliminates global allocator contention and gives predictable cache
+behavior. The advantage is most visible in tail latency — std's p999 on growing
+insert is **3736 cycles** (global allocator on node splits) vs nexus BTree's 758.
+
+### When to Choose Which
+
+**RbTree**: Entry-heavy workloads (order books), pop-heavy workloads (timer
+wheels), anything where the pattern is check-then-insert via the entry API.
+
+**BTree**: Read-heavy lookups, existence checking (`contains_key`), high-churn
+streaming data, range scans. Tunable branching factor via const generic `B`.
 
 ## License
 

@@ -1,4 +1,4 @@
-//! Macros for creating typed list, heap, and skip list allocators.
+//! Macros for creating typed list, heap, and tree allocators.
 
 /// Creates a list allocator for a specific type.
 ///
@@ -261,41 +261,38 @@ macro_rules! heap_allocator {
     };
 }
 
-/// Creates a skip list allocator for a specific key-value pair.
+/// Creates a B-tree allocator for a specific key-value pair.
 ///
-/// This macro generates all the types needed to work with slab-backed skip
-/// lists. Invoke it inside a module — either a file-based module or an
-/// inline `mod` block.
-///
-/// The macro generates the allocator definition, but **you must initialize
-/// the allocator at runtime** before creating any skip lists.
+/// This macro generates all the types needed to work with slab-backed
+/// B-trees. Invoke it inside a module — either a file-based module or
+/// an inline `mod` block.
 ///
 /// # Usage
 ///
 /// ```ignore
-/// // Market data book — defaults (MAX_LEVEL=8, RATIO=2)
+/// // Default B=8
 /// mod levels {
-///     nexus_collections::skip_allocator!(Price, LevelData, bounded);
+///     nexus_collections::btree_allocator!(u64, String, bounded);
 /// }
 ///
-/// // Matching engine — dense nodes, higher capacity
-/// mod orders {
-///     nexus_collections::skip_allocator!(Price, OrderQueue, bounded, 6, 4);
+/// // Custom B=12
+/// mod wide {
+///     nexus_collections::btree_allocator!(u64, String, bounded, 12);
 /// }
 ///
 /// levels::Allocator::builder().capacity(1000).build().unwrap();
-/// let mut map = levels::SkipList::new(levels::Allocator);
-/// map.try_insert(Price(100), LevelData::default()).unwrap();
+/// let mut map = levels::BTree::new(levels::Allocator);
+/// map.try_insert(100, "hello".into()).unwrap();
 /// ```
 ///
 /// # Parameters
 ///
-/// | Form | MAX_LEVEL | RATIO | Capacity (R^ML) | Node overhead |
-/// |------|-----------|-------|-----------------|---------------|
-/// | `(K, V, bounded)` | 8 | 2 | 256 | 96B (K=u64) |
-/// | `(K, V, bounded, 6)` | 6 | 2 | 64 | 80B |
-/// | `(K, V, bounded, 6, 4)` | 6 | 4 | 4,096 | 80B |
-/// | `(K, V, bounded, 8, 4)` | 8 | 4 | 65,536 | 96B |
+/// | Form | B (branching) | Max keys/node |
+/// |------|---------------|---------------|
+/// | `(K, V, bounded)` | 8 | 7 |
+/// | `(K, V, bounded, 12)` | 12 | 11 |
+///
+/// B must be even and >= 4. Max keys per node is B-1.
 ///
 /// # Variants
 ///
@@ -306,68 +303,123 @@ macro_rules! heap_allocator {
 ///
 /// - `Allocator` — call `Allocator::builder()` to configure and initialize
 /// - `Builder` — configuration builder
-/// - `SkipList` — the sorted map type
+/// - `BTree` — the B-tree sorted map type
 /// - `Cursor` — cursor for positional traversal
 /// - `Entry` — entry enum for the entry API
 #[macro_export]
-macro_rules! skip_allocator {
-    // 3-arg: defaults (MAX_LEVEL=8, RATIO=2)
+macro_rules! btree_allocator {
+    // 3-arg: defaults (B=8)
     ($K:ty, $V:ty, bounded) => {
-        $crate::skip_allocator!($K, $V, bounded, 8, 2);
+        $crate::btree_allocator!($K, $V, bounded, 8);
     };
     ($K:ty, $V:ty, unbounded) => {
-        $crate::skip_allocator!($K, $V, unbounded, 8, 2);
+        $crate::btree_allocator!($K, $V, unbounded, 8);
     };
-    // 4-arg: custom MAX_LEVEL, default RATIO=2
-    ($K:ty, $V:ty, bounded, $ML:expr) => {
-        $crate::skip_allocator!($K, $V, bounded, $ML, 2);
-    };
-    ($K:ty, $V:ty, unbounded, $ML:expr) => {
-        $crate::skip_allocator!($K, $V, unbounded, $ML, 2);
-    };
-    // 5-arg: full specification
-    ($K:ty, $V:ty, bounded, $ML:expr, $R:expr) => {
+    // 4-arg: custom B
+    ($K:ty, $V:ty, bounded, $B:expr) => {
         type __K = $K;
         type __V = $V;
 
         mod __alloc {
             nexus_slab::bounded_allocator!(
-                $crate::skiplist::SkipNode<super::__K, super::__V, $ML>
+                $crate::btree::BTreeNode<super::__K, super::__V, $B>
             );
         }
 
         pub use __alloc::{Allocator, Builder};
 
-        /// The skip list sorted map type.
-        pub type SkipList =
-            $crate::skiplist::SkipList<__K, __V, __alloc::Allocator, $ML, $R>;
+        /// The B-tree sorted map type.
+        pub type BTree = $crate::btree::BTree<__K, __V, __alloc::Allocator, $B>;
         /// Cursor for positional traversal.
-        pub type Cursor<'a> =
-            $crate::skiplist::Cursor<'a, __K, __V, __alloc::Allocator, $ML, $R>;
+        pub type Cursor<'a> = $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B>;
         /// Entry for the entry API.
-        pub type Entry<'a> =
-            $crate::skiplist::Entry<'a, __K, __V, __alloc::Allocator, $ML, $R>;
+        pub type Entry<'a> = $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B>;
     };
-    ($K:ty, $V:ty, unbounded, $ML:expr, $R:expr) => {
+    ($K:ty, $V:ty, unbounded, $B:expr) => {
         type __K = $K;
         type __V = $V;
 
         mod __alloc {
             nexus_slab::unbounded_allocator!(
-                $crate::skiplist::SkipNode<super::__K, super::__V, $ML>
+                $crate::btree::BTreeNode<super::__K, super::__V, $B>
             );
         }
 
         pub use __alloc::{Allocator, Builder};
 
-        /// The skip list sorted map type.
-        pub type SkipList =
-            $crate::skiplist::SkipList<__K, __V, __alloc::Allocator, $ML, $R>;
+        /// The B-tree sorted map type.
+        pub type BTree = $crate::btree::BTree<__K, __V, __alloc::Allocator, $B>;
         /// Cursor for positional traversal.
-        pub type Cursor<'a> =
-            $crate::skiplist::Cursor<'a, __K, __V, __alloc::Allocator, $ML, $R>;
+        pub type Cursor<'a> = $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B>;
         /// Entry for the entry API.
-        pub type Entry<'a> =
-            $crate::skiplist::Entry<'a, __K, __V, __alloc::Allocator, $ML, $R>;
+        pub type Entry<'a> = $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B>;
+    };
+}
+
+/// Creates a red-black tree allocator for a specific key-value pair.
+///
+/// This macro generates all the types needed to work with slab-backed
+/// red-black trees. Invoke it inside a module — either a file-based
+/// module or an inline `mod` block.
+///
+/// # Usage
+///
+/// ```ignore
+/// mod levels {
+///     nexus_collections::rbtree_allocator!(u64, String, bounded);
+/// }
+///
+/// levels::Allocator::builder().capacity(1000).build().unwrap();
+/// let mut map = levels::RbTree::new(levels::Allocator);
+/// map.try_insert(100, "hello".into()).unwrap();
+/// ```
+///
+/// # Variants
+///
+/// - `bounded` — Fixed capacity. `try_insert` returns `Result<Option<V>, Full<(K, V)>>`.
+/// - `unbounded` — Grows as needed. `insert` always succeeds.
+///
+/// # Generated API
+///
+/// - `Allocator` — call `Allocator::builder()` to configure and initialize
+/// - `Builder` — configuration builder
+/// - `RbTree` — the sorted map type
+/// - `Cursor` — cursor for positional traversal
+/// - `Entry` — entry enum for the entry API
+#[macro_export]
+macro_rules! rbtree_allocator {
+    ($K:ty, $V:ty, bounded) => {
+        type __K = $K;
+        type __V = $V;
+
+        mod __alloc {
+            nexus_slab::bounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
+        }
+
+        pub use __alloc::{Allocator, Builder};
+
+        /// The red-black tree sorted map type.
+        pub type RbTree = $crate::rbtree::RbTree<__K, __V, __alloc::Allocator>;
+        /// Cursor for positional traversal.
+        pub type Cursor<'a> = $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator>;
+        /// Entry for the entry API.
+        pub type Entry<'a> = $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator>;
+    };
+    ($K:ty, $V:ty, unbounded) => {
+        type __K = $K;
+        type __V = $V;
+
+        mod __alloc {
+            nexus_slab::unbounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
+        }
+
+        pub use __alloc::{Allocator, Builder};
+
+        /// The red-black tree sorted map type.
+        pub type RbTree = $crate::rbtree::RbTree<__K, __V, __alloc::Allocator>;
+        /// Cursor for positional traversal.
+        pub type Cursor<'a> = $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator>;
+        /// Entry for the entry API.
+        pub type Entry<'a> = $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator>;
     };
 }

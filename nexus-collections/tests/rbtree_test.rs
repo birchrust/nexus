@@ -1,14 +1,14 @@
-//! Integration tests for the skip list sorted map with internal allocation.
+//! Integration tests for the red-black tree sorted map with internal allocation.
 
 use serial_test::serial;
 
 #[allow(dead_code)]
-mod sl {
-    nexus_collections::skip_allocator!(u64, String, bounded);
+mod rb {
+    nexus_collections::rbtree_allocator!(u64, String, bounded);
 }
 
 fn init() {
-    let _ = sl::Allocator::builder().capacity(200).build();
+    let _ = rb::Allocator::builder().capacity(200).build();
 }
 
 // =============================================================================
@@ -17,40 +17,43 @@ fn init() {
 
 #[test]
 #[serial]
-fn empty_skip_list() {
+fn empty_rbtree() {
     init();
-    let map = sl::SkipList::new(sl::Allocator);
+    let map = rb::RbTree::new(rb::Allocator);
     assert!(map.is_empty());
     assert_eq!(map.len(), 0);
     assert!(map.first_key_value().is_none());
     assert!(map.last_key_value().is_none());
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn insert_single() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     let old = map.try_insert(10, "ten".into()).unwrap();
     assert!(old.is_none());
     assert_eq!(map.len(), 1);
     assert!(!map.is_empty());
     assert_eq!(map.get(&10), Some(&String::from("ten")));
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn insert_multiple_sorted() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     let keys = [50u64, 30, 80, 10, 70, 20, 60, 40];
 
     for &k in &keys {
         map.try_insert(k, format!("val-{k}")).unwrap();
+        map.verify_invariants();
     }
     assert_eq!(map.len(), 8);
 
-    // Verify sorted iteration
+    // Verify sorted iteration.
     let collected: Vec<_> = map.iter().map(|(k, _)| *k).collect();
     assert_eq!(collected, vec![10, 20, 30, 40, 50, 60, 70, 80]);
 }
@@ -59,16 +62,16 @@ fn insert_multiple_sorted() {
 #[serial]
 fn insert_existing_key_returns_old_value() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     assert!(map.try_insert(10, "first".into()).unwrap().is_none());
 
     let old = map.try_insert(10, "second".into()).unwrap();
     assert_eq!(old, Some(String::from("first")));
 
-    // Map has the updated value
     assert_eq!(map.get(&10), Some(&String::from("second")));
     assert_eq!(map.len(), 1);
+    map.verify_invariants();
 }
 
 // =============================================================================
@@ -79,7 +82,7 @@ fn insert_existing_key_returns_old_value() {
 #[serial]
 fn get_and_get_mut() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     map.try_insert(42, "hello".into()).unwrap();
 
     assert_eq!(map.get(&42), Some(&String::from("hello")));
@@ -87,13 +90,14 @@ fn get_and_get_mut() {
 
     *map.get_mut(&42).unwrap() = "world".into();
     assert_eq!(map.get(&42), Some(&String::from("world")));
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn get_key_value() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     map.try_insert(42, "hello".into()).unwrap();
 
     let (k, v) = map.get_key_value(&42).unwrap();
@@ -106,7 +110,7 @@ fn get_key_value() {
 #[serial]
 fn contains_key() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     map.try_insert(42, "x".into()).unwrap();
 
     assert!(map.contains_key(&42));
@@ -117,7 +121,7 @@ fn contains_key() {
 #[serial]
 fn first_and_last() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [50u64, 10, 90, 30, 70] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -130,6 +134,7 @@ fn first_and_last() {
     let (k, v) = map.last_key_value().unwrap();
     assert_eq!(*k, 90);
     assert_eq!(v, "90");
+    map.verify_invariants();
 }
 
 // =============================================================================
@@ -140,22 +145,20 @@ fn first_and_last() {
 #[serial]
 fn remove_by_key() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
-    // Remove middle element
     let removed = map.remove(&30);
     assert_eq!(removed, Some(String::from("30")));
     assert_eq!(map.len(), 4);
     assert!(!map.contains_key(&30));
+    map.verify_invariants();
 
-    // Remove non-existent
     assert!(map.remove(&99).is_none());
 
-    // Remaining elements still sorted
     let keys: Vec<_> = map.iter().map(|(k, _)| *k).collect();
     assert_eq!(keys, vec![10, 20, 40, 50]);
 }
@@ -164,7 +167,7 @@ fn remove_by_key() {
 #[serial]
 fn remove_entry_by_key() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -174,22 +177,25 @@ fn remove_entry_by_key() {
     assert_eq!(k, 20);
     assert_eq!(v, "20");
     assert_eq!(map.len(), 2);
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn remove_first_and_last() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
     map.remove(&10);
+    map.verify_invariants();
     assert_eq!(map.first_key_value().unwrap().0, &20);
 
     map.remove(&30);
+    map.verify_invariants();
     assert_eq!(map.last_key_value().unwrap().0, &20);
     assert_eq!(map.len(), 1);
 }
@@ -202,7 +208,7 @@ fn remove_first_and_last() {
 #[serial]
 fn pop_first() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [30u64, 10, 20] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -212,12 +218,15 @@ fn pop_first() {
     assert_eq!(k, 10);
     assert_eq!(v, "10");
     assert_eq!(map.len(), 2);
+    map.verify_invariants();
 
     let (k, _) = map.pop_first().unwrap();
     assert_eq!(k, 20);
+    map.verify_invariants();
 
     let (k, _) = map.pop_first().unwrap();
     assert_eq!(k, 30);
+    map.verify_invariants();
 
     assert!(map.pop_first().is_none());
     assert!(map.is_empty());
@@ -227,7 +236,7 @@ fn pop_first() {
 #[serial]
 fn pop_last() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [30u64, 10, 20] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -236,12 +245,15 @@ fn pop_last() {
     let (k, _) = map.pop_last().unwrap();
     assert_eq!(k, 30);
     assert_eq!(map.len(), 2);
+    map.verify_invariants();
 
     let (k, _) = map.pop_last().unwrap();
     assert_eq!(k, 20);
+    map.verify_invariants();
 
     let (k, _) = map.pop_last().unwrap();
     assert_eq!(k, 10);
+    map.verify_invariants();
 
     assert!(map.pop_last().is_none());
 }
@@ -254,7 +266,7 @@ fn pop_last() {
 #[serial]
 fn clear_frees_all() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in 0u64..50 {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -267,11 +279,12 @@ fn clear_frees_all() {
     assert!(map.first_key_value().is_none());
     assert!(map.last_key_value().is_none());
 
-    // Can reuse allocator slots after clear
+    // Can reuse allocator slots after clear.
     for k in 0u64..50 {
         map.try_insert(k, format!("{k}")).unwrap();
     }
     assert_eq!(map.len(), 50);
+    map.verify_invariants();
 }
 
 #[test]
@@ -279,14 +292,14 @@ fn clear_frees_all() {
 fn drop_frees_all() {
     init();
     {
-        let mut map = sl::SkipList::new(sl::Allocator);
+        let mut map = rb::RbTree::new(rb::Allocator);
         for k in 0u64..50 {
             map.try_insert(k, format!("{k}")).unwrap();
         }
     }
-    // Slots should be returned — allocate again to verify
+    // Slots should be returned — allocate again to verify.
     {
-        let mut map = sl::SkipList::new(sl::Allocator);
+        let mut map = rb::RbTree::new(rb::Allocator);
         for k in 0u64..50 {
             map.try_insert(k, format!("{k}")).unwrap();
         }
@@ -301,7 +314,7 @@ fn drop_frees_all() {
 #[serial]
 fn iter_forward() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [50u64, 30, 10, 40, 20] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -324,7 +337,7 @@ fn iter_forward() {
 #[serial]
 fn iter_exact_size() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in 0u64..10 {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -338,7 +351,7 @@ fn iter_exact_size() {
 #[serial]
 fn keys_and_values() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [3u64, 1, 2] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -359,7 +372,7 @@ fn keys_and_values() {
 #[serial]
 fn drain_returns_pairs_in_order() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [30u64, 10, 20] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -378,21 +391,19 @@ fn drain_returns_pairs_in_order() {
 fn drain_drop_frees_remaining() {
     init();
     {
-        let mut map = sl::SkipList::new(sl::Allocator);
+        let mut map = rb::RbTree::new(rb::Allocator);
         for k in 0u64..50 {
             map.try_insert(k, format!("{k}")).unwrap();
         }
 
         let mut drain = map.drain();
-        // Only consume a few
         let _ = drain.next();
         let _ = drain.next();
-        // Drop the drain — remaining should be freed
         drop(drain);
     }
-    // Slots should be available
+    // Slots should be available.
     {
-        let mut map = sl::SkipList::new(sl::Allocator);
+        let mut map = rb::RbTree::new(rb::Allocator);
         for k in 0u64..50 {
             map.try_insert(k, format!("{k}")).unwrap();
         }
@@ -407,33 +418,34 @@ fn drain_drop_frees_remaining() {
 #[serial]
 fn entry_vacant_try_insert() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     match map.entry(10) {
-        nexus_collections::skiplist::Entry::Vacant(v) => {
+        nexus_collections::rbtree::Entry::Vacant(v) => {
             let val = v.try_insert("ten".into()).unwrap();
             assert_eq!(val, "ten");
         }
-        nexus_collections::skiplist::Entry::Occupied(_) => panic!("expected vacant"),
+        nexus_collections::rbtree::Entry::Occupied(_) => panic!("expected vacant"),
     }
 
     assert_eq!(map.get(&10), Some(&String::from("ten")));
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn entry_occupied_get_and_modify() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     map.try_insert(10, "ten".into()).unwrap();
 
     match map.entry(10) {
-        nexus_collections::skiplist::Entry::Occupied(mut o) => {
+        nexus_collections::rbtree::Entry::Occupied(mut o) => {
             assert_eq!(o.get(), "ten");
             *o.get_mut() = "TEN".into();
             assert_eq!(o.get(), "TEN");
         }
-        nexus_collections::skiplist::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
     }
 
     assert_eq!(map.get(&10), Some(&String::from("TEN")));
@@ -443,41 +455,43 @@ fn entry_occupied_get_and_modify() {
 #[serial]
 fn entry_occupied_remove() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     map.try_insert(10, "ten".into()).unwrap();
 
     match map.entry(10) {
-        nexus_collections::skiplist::Entry::Occupied(o) => {
+        nexus_collections::rbtree::Entry::Occupied(o) => {
             let (k, v) = o.remove();
             assert_eq!(k, 10);
             assert_eq!(v, "ten");
         }
-        nexus_collections::skiplist::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
     }
 
     assert!(map.is_empty());
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn entry_or_try_insert() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
-    // Vacant — inserts
+    // Vacant — inserts.
     let val = map.entry(10).or_try_insert("ten".into()).unwrap();
     assert_eq!(val, "ten");
 
-    // Occupied — returns existing
+    // Occupied — returns existing.
     let val = map.entry(10).or_try_insert("TEN".into()).unwrap();
     assert_eq!(val, "ten");
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn entry_and_modify() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
     map.try_insert(10, "ten".into()).unwrap();
 
     map.entry(10)
@@ -488,6 +502,99 @@ fn entry_and_modify() {
     assert_eq!(map.get(&10), Some(&String::from("TEN")));
 }
 
+#[test]
+#[serial]
+fn entry_occupied_insert() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+    map.try_insert(10, "ten".into()).unwrap();
+
+    match map.entry(10) {
+        nexus_collections::rbtree::Entry::Occupied(mut o) => {
+            let old = o.insert("TEN".into());
+            assert_eq!(old, "ten");
+            assert_eq!(o.get(), "TEN");
+        }
+        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
+    }
+
+    assert_eq!(map.get(&10), Some(&String::from("TEN")));
+}
+
+#[test]
+#[serial]
+fn entry_key() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+    map.try_insert(10, "ten".into()).unwrap();
+
+    // Occupied entry key.
+    assert_eq!(*map.entry(10).key(), 10);
+
+    // Vacant entry key.
+    assert_eq!(*map.entry(99).key(), 99);
+}
+
+#[test]
+#[serial]
+fn entry_or_try_insert_with() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+
+    // Vacant — calls closure.
+    let val = map.entry(10).or_try_insert_with(|| "ten".into()).unwrap();
+    assert_eq!(val, "ten");
+
+    // Occupied — does NOT call closure.
+    let val = map
+        .entry(10)
+        .or_try_insert_with(|| panic!("should not be called"))
+        .unwrap();
+    assert_eq!(val, "ten");
+}
+
+#[test]
+#[serial]
+fn entry_or_try_insert_with_key() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+
+    let val = map
+        .entry(42)
+        .or_try_insert_with_key(|k| format!("key={k}"))
+        .unwrap();
+    assert_eq!(val, "key=42");
+}
+
+#[test]
+#[serial]
+fn entry_or_try_insert_default() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+
+    let val = map.entry(10).or_try_insert_default().unwrap();
+    assert_eq!(val, "");
+
+    // Occupied — returns existing.
+    *map.get_mut(&10).unwrap() = "ten".into();
+    let val = map.entry(10).or_try_insert_default().unwrap();
+    assert_eq!(val, "ten");
+}
+
+#[test]
+#[serial]
+fn debug_fmt() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+    map.try_insert(1, "a".into()).unwrap();
+    map.try_insert(2, "b".into()).unwrap();
+    let s = format!("{:?}", map);
+    assert!(s.contains("1"));
+    assert!(s.contains("\"a\""));
+    assert!(s.contains("2"));
+    assert!(s.contains("\"b\""));
+}
+
 // =============================================================================
 // Cursor
 // =============================================================================
@@ -496,13 +603,12 @@ fn entry_and_modify() {
 #[serial]
 fn cursor_front_traversal() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [30u64, 10, 20] {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
-    // cursor_front() starts before the first element
     let mut cursor = map.cursor_front();
     assert!(cursor.key().is_none());
 
@@ -520,7 +626,7 @@ fn cursor_front_traversal() {
 #[serial]
 fn cursor_at_key() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -535,13 +641,12 @@ fn cursor_at_key() {
 #[serial]
 fn cursor_at_nonexistent_key() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
-    // cursor_at positions at first element > key when key not found
     let cursor = map.cursor_at(&25);
     assert_eq!(cursor.key(), Some(&30));
 }
@@ -550,7 +655,7 @@ fn cursor_at_nonexistent_key() {
 #[serial]
 fn cursor_remove() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -562,11 +667,12 @@ fn cursor_remove() {
         assert_eq!(k, 30);
         assert_eq!(v, "30");
 
-        // Cursor advanced to next element
+        // Cursor advanced to next element.
         assert_eq!(cursor.key(), Some(&40));
     }
 
     assert_eq!(map.len(), 4);
+    map.verify_invariants();
     let keys: Vec<_> = map.iter().map(|(k, _)| *k).collect();
     assert_eq!(keys, vec![10, 20, 40, 50]);
 }
@@ -575,7 +681,7 @@ fn cursor_remove() {
 #[serial]
 fn cursor_value_mut() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -593,12 +699,11 @@ fn cursor_value_mut() {
 #[test]
 #[serial]
 fn large_sorted_drain() {
-    let _ = sl::Allocator::builder().capacity(1100).build();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let _ = rb::Allocator::builder().capacity(1100).build();
+    let mut map = rb::RbTree::new(rb::Allocator);
 
-    // Insert 1000 elements in shuffled order
+    // Insert 1000 elements in shuffled order.
     let mut keys: Vec<u64> = (0..1000).collect();
-    // Simple deterministic shuffle
     for i in (1..keys.len()).rev() {
         let j = (i * 7 + 13) % (i + 1);
         keys.swap(i, j);
@@ -608,44 +713,12 @@ fn large_sorted_drain() {
         map.try_insert(k, format!("{k}")).unwrap();
     }
     assert_eq!(map.len(), 1000);
+    map.verify_invariants();
 
-    // Drain should produce sorted order
+    // Drain should produce sorted order.
     let drained: Vec<u64> = map.drain().map(|(k, _)| k).collect();
     let expected: Vec<u64> = (0..1000).collect();
     assert_eq!(drained, expected);
-}
-
-// =============================================================================
-// Level ratio tuning
-// =============================================================================
-
-#[test]
-#[serial]
-fn level_ratio_tuning() {
-    init();
-
-    // p=0.5 (default, level_ratio=2)
-    let mut map1 = sl::SkipList::new(sl::Allocator);
-    for k in 0u64..100 {
-        map1.try_insert(k, String::new()).unwrap();
-    }
-
-    // Verify it works (sorted output)
-    let keys: Vec<_> = map1.iter().map(|(k, _)| *k).collect();
-    let expected: Vec<u64> = (0..100).collect();
-    assert_eq!(keys, expected);
-    map1.clear();
-
-    // p=0.25 (RATIO=4) — same allocator (MAX_LEVEL=8), different promotion ratio
-    let mut map2 = nexus_collections::skiplist::SkipList::<u64, String, sl::Allocator, 8, 4>::new(
-        sl::Allocator,
-    );
-    for k in 0u64..100 {
-        map2.try_insert(k, String::new()).unwrap();
-    }
-
-    let keys: Vec<_> = map2.iter().map(|(k, _)| *k).collect();
-    assert_eq!(keys, expected);
 }
 
 // =============================================================================
@@ -655,14 +728,13 @@ fn level_ratio_tuning() {
 #[test]
 #[serial]
 fn bounded_full_returns_error() {
-    let _ = sl::Allocator::builder().capacity(3).build();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let _ = rb::Allocator::builder().capacity(3).build();
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     map.try_insert(1, "a".into()).unwrap();
     map.try_insert(2, "b".into()).unwrap();
     map.try_insert(3, "c".into()).unwrap();
 
-    // Allocator is full
     let result = map.try_insert(4, "d".into());
     match result {
         Err(full) => assert_eq!(full.0, (4, String::from("d"))),
@@ -678,22 +750,23 @@ fn bounded_full_returns_error() {
 #[serial]
 fn insert_remove_reinsert() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     map.try_insert(10, "first".into()).unwrap();
-
     map.remove(&10);
     assert!(map.is_empty());
+    map.verify_invariants();
 
     map.try_insert(10, "second".into()).unwrap();
     assert_eq!(map.get(&10), Some(&String::from("second")));
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn single_element_operations() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     map.try_insert(42, "x".into()).unwrap();
 
@@ -704,13 +777,14 @@ fn single_element_operations() {
     assert_eq!(k, 42);
     assert!(map.first_key_value().is_none());
     assert!(map.last_key_value().is_none());
+    map.verify_invariants();
 }
 
 #[test]
 #[serial]
 fn iter_empty() {
     init();
-    let map = sl::SkipList::new(sl::Allocator);
+    let map = rb::RbTree::new(rb::Allocator);
     assert_eq!(map.iter().count(), 0);
     assert_eq!(map.keys().count(), 0);
     assert_eq!(map.values().count(), 0);
@@ -724,7 +798,7 @@ fn iter_empty() {
 #[serial]
 fn iter_mut_modify_values() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -743,7 +817,7 @@ fn iter_mut_modify_values() {
 #[serial]
 fn values_mut_modify() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [1u64, 2, 3] {
         map.try_insert(k, format!("v{k}")).unwrap();
@@ -766,7 +840,7 @@ fn values_mut_modify() {
 #[serial]
 fn range_full() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -781,7 +855,7 @@ fn range_full() {
 #[serial]
 fn range_inclusive() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -795,13 +869,12 @@ fn range_inclusive() {
 #[serial]
 fn range_exclusive() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
-    // 20..40 includes 20, 30 but not 40
     let keys: Vec<u64> = map.range(20..40).map(|(k, _)| *k).collect();
     assert_eq!(keys, vec![20, 30]);
 }
@@ -810,7 +883,7 @@ fn range_exclusive() {
 #[serial]
 fn range_from() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -824,7 +897,7 @@ fn range_from() {
 #[serial]
 fn range_to() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -838,7 +911,7 @@ fn range_to() {
 #[serial]
 fn range_to_inclusive() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -852,13 +925,12 @@ fn range_to_inclusive() {
 #[serial]
 fn range_empty() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
-    // No elements in [100, 200]
     let keys: Vec<u64> = map.range(100..=200).map(|(k, _)| *k).collect();
     assert!(keys.is_empty());
 }
@@ -867,7 +939,7 @@ fn range_empty() {
 #[serial]
 fn range_single() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -881,7 +953,7 @@ fn range_single() {
 #[serial]
 fn range_mut_modify() {
     init();
-    let mut map = sl::SkipList::new(sl::Allocator);
+    let mut map = rb::RbTree::new(rb::Allocator);
 
     for k in [10u64, 20, 30, 40, 50] {
         map.try_insert(k, format!("{k}")).unwrap();
@@ -899,78 +971,147 @@ fn range_mut_modify() {
 }
 
 // =============================================================================
-// Level bound stress test
+// Stress tests with invariant verification
 // =============================================================================
 
 #[allow(dead_code)]
-mod sl_stress {
-    nexus_collections::skip_allocator!(u64, u64, bounded);
+mod rb_stress {
+    nexus_collections::rbtree_allocator!(u64, u64, bounded);
 }
 
-#[allow(dead_code)]
-mod sl_stress_r4 {
-    nexus_collections::skip_allocator!(u64, u64, bounded, 8, 4);
-}
-
-/// Stress test that exercises level generation with multiple seeds.
-///
-/// Runs in debug mode where `debug_assert!` in find/search/link_node/
-/// unlink_at_levels/pop_first fires if any level bound is violated.
-/// This validates the `assert_unchecked` hints are sound.
+/// Stress test: insert many, remove many, verify invariants throughout.
 #[test]
 #[serial]
-fn level_bounds_stress() {
-    let _ = sl_stress::Allocator::builder().capacity(2000).build();
+fn invariant_stress_insert_remove() {
+    let _ = rb_stress::Allocator::builder().capacity(2000).build();
 
-    // Multiple seeds to maximize RNG coverage of level generation
-    for seed in [1u64, 42, 0xDEAD_BEEF, 0xCAFE_BABE, u64::MAX] {
-        let mut map = sl_stress::SkipList::with_seed(seed, sl_stress::Allocator);
+    let mut map = rb_stress::RbTree::new(rb_stress::Allocator);
 
-        // Insert enough to force high levels (2^8 = 256 capacity)
-        for k in 0..200u64 {
-            map.try_insert(k, k).unwrap();
-        }
-
-        // Exercise every search path
-        for k in 0..200u64 {
-            assert_eq!(map.get(&k), Some(&k));
-            assert!(map.contains_key(&k));
-        }
-
-        // Remove half (exercises unlink_at_levels + update_tail_and_level)
-        for k in (0..200u64).step_by(2) {
-            assert!(map.remove(&k).is_some());
-        }
-
-        // Pop from both ends
-        for _ in 0..10 {
-            map.pop_first();
-            map.pop_last();
-        }
-
-        // Reinsert to force relinking at potentially different levels
-        for k in 200..300u64 {
-            map.try_insert(k, k).unwrap();
-        }
-
-        // Drain everything — exercises pop_first repeatedly down to empty
-        let drained: Vec<_> = map.drain().collect();
-        assert!(!drained.is_empty());
+    // Insert 500 elements in shuffled order.
+    let mut keys: Vec<u64> = (0..500).collect();
+    for i in (1..keys.len()).rev() {
+        let j = (i * 7 + 13) % (i + 1);
+        keys.swap(i, j);
     }
 
-    // Also test with RATIO=4
-    {
-        let _ = sl_stress_r4::Allocator::builder().capacity(2000).build();
-        let mut map = sl_stress_r4::SkipList::with_seed(0xBEEF, sl_stress_r4::Allocator);
+    for &k in &keys {
+        map.try_insert(k, k).unwrap();
+    }
+    map.verify_invariants();
 
+    // Remove half (even keys).
+    for k in (0..500u64).step_by(2) {
+        map.remove(&k);
+    }
+    map.verify_invariants();
+
+    // Pop from both ends.
+    for _ in 0..20 {
+        map.pop_first();
+        map.pop_last();
+    }
+    map.verify_invariants();
+
+    // Reinsert.
+    for k in 500..700u64 {
+        map.try_insert(k, k).unwrap();
+    }
+    map.verify_invariants();
+
+    // Drain everything.
+    let drained: Vec<_> = map.drain().collect();
+    assert!(!drained.is_empty());
+
+    // Verify drained is sorted.
+    for w in drained.windows(2) {
+        assert!(w[0].0 < w[1].0);
+    }
+}
+
+/// Stress test: ascending and descending insertion (worst case for naive BST).
+#[test]
+#[serial]
+fn invariant_stress_sequential() {
+    let _ = rb_stress::Allocator::builder().capacity(2000).build();
+
+    // Ascending.
+    {
+        let mut map = rb_stress::RbTree::new(rb_stress::Allocator);
         for k in 0..500u64 {
             map.try_insert(k, k).unwrap();
         }
+        map.verify_invariants();
 
         for k in (0..500u64).rev() {
             map.remove(&k);
         }
-
         assert!(map.is_empty());
     }
+
+    // Descending.
+    {
+        let mut map = rb_stress::RbTree::new(rb_stress::Allocator);
+        for k in (0..500u64).rev() {
+            map.try_insert(k, k).unwrap();
+        }
+        map.verify_invariants();
+
+        for k in 0..500u64 {
+            map.remove(&k);
+        }
+        assert!(map.is_empty());
+    }
+}
+
+/// Stress test: interleaved insert/remove maintaining steady state.
+#[test]
+#[serial]
+fn invariant_stress_churn() {
+    let _ = rb_stress::Allocator::builder().capacity(2000).build();
+    let mut map = rb_stress::RbTree::new(rb_stress::Allocator);
+
+    // Build up to 500.
+    for k in 0..500u64 {
+        map.try_insert(k, k).unwrap();
+    }
+
+    // Churn: remove old, insert new.
+    for k in 500..1500u64 {
+        map.remove(&(k - 500));
+        map.try_insert(k, k).unwrap();
+    }
+    map.verify_invariants();
+    assert_eq!(map.len(), 500);
+
+    // Verify sorted.
+    let keys: Vec<u64> = map.iter().map(|(k, _)| *k).collect();
+    let expected: Vec<u64> = (1000..1500).collect();
+    assert_eq!(keys, expected);
+}
+
+/// Stress test: verify invariants after every single mutation.
+#[test]
+#[serial]
+fn invariant_every_mutation() {
+    let _ = rb_stress::Allocator::builder().capacity(2000).build();
+    let mut map = rb_stress::RbTree::new(rb_stress::Allocator);
+
+    // Insert 100, verifying after each.
+    for k in 0..100u64 {
+        map.try_insert(k, k).unwrap();
+        map.verify_invariants();
+    }
+
+    // Remove in random-ish order, verifying after each.
+    let mut keys: Vec<u64> = (0..100).collect();
+    for i in (1..keys.len()).rev() {
+        let j = (i * 11 + 7) % (i + 1);
+        keys.swap(i, j);
+    }
+
+    for &k in &keys {
+        map.remove(&k);
+        map.verify_invariants();
+    }
+    assert!(map.is_empty());
 }
