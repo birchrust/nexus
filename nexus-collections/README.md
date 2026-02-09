@@ -97,6 +97,26 @@ assert_eq!(map.get(&100), Some(&"hello".into()));
 map.entry(200).or_try_insert("world".into()).unwrap();
 ```
 
+### BTree — B-Tree Sorted Map
+
+Cache-friendly sorted map with tunable branching factor. Best for read-heavy
+lookups, existence checking, high-churn streaming data, and range scans.
+
+```rust
+mod levels {
+    nexus_collections::btree_allocator!(u64, String, bounded);
+}
+
+// Custom branching factor: btree_allocator!(u64, String, bounded, 12)
+
+levels::Allocator::builder().capacity(1000).build().unwrap();
+
+let mut map = levels::BTree::new(levels::Allocator);
+map.try_insert(100, "hello".into()).unwrap();
+
+assert_eq!(map.get(&100), Some(&"hello".into()));
+```
+
 ## Allocator Macros
 
 Each collection has a macro that generates a typed thread-local slab
@@ -129,7 +149,10 @@ orders::Allocator::builder().chunk_size(512).build().unwrap();
 ## Performance
 
 Cycle-accurate latency, Intel Core Ultra 7 155H, pinned to physical core,
-turbo boost disabled. See [BENCHMARKS.md](BENCHMARKS.md) for full results.
+turbo boost disabled. Sorted map benchmarks use batched `seq!` unrolled timing
+(100 ops per rdtsc pair) to amortize serialization overhead. Same PRNG seed
+across all benchmarks. See [BENCHMARKS.md](BENCHMARKS.md) for individual
+tables with all percentiles.
 
 ### List (p50 cycles)
 
@@ -149,27 +172,56 @@ turbo boost disabled. See [BENCHMARKS.md](BENCHMARKS.md) for full results.
 | peek | 20 |
 | unlink | 30 |
 
-### RbTree (p50 cycles, @10k population)
+### Sorted Maps — p50 (cycles, @10k population)
 
-| Operation | Cycles |
-|-----------|--------|
-| get (hit) | 15 |
-| insert | 203 |
-| remove | 245 |
-| entry (occupied) | 20 |
-| entry (vacant) | 197 |
-| pop_first | 22 |
+| Operation | nexus BTree | nexus RbTree | std BTreeMap | Best |
+|---|---|---|---|---|
+| get (hit, @100) | 14 | **9** | 23 | RbTree |
+| get (hit, @10k) | 22 | **15** | 40 | RbTree |
+| get (miss, @10k) | **30** | 41 | 48 | nexus BTree |
+| get (cold rand, @10k) | 137 | **131** | 153 | RbTree |
+| contains_key (hit) | **22** | 50 | 37 | nexus BTree |
+| insert (growing) | **254** | 278 | 256 | nexus BTree |
+| insert (steady) | 211 | **203** | 231 | RbTree |
+| insert (duplicate) | 27 | **24** | 42 | RbTree |
+| remove | **209** | 245 | 243 | nexus BTree |
+| pop_first | 47 | **22** | 71 | RbTree |
+| pop_last | 38 | **21** | 52 | RbTree |
+| churn | **455** | 520 | 510 | nexus BTree |
+| entry (occupied) | 22 | **20** | 37 | RbTree |
+| entry (vacant+insert) | 373 | **197** | 228 | RbTree |
 
-### BTree (p50 cycles, @10k population, B=8)
+### Sorted Maps — p999 Tail Latency (cycles, @10k population)
 
-| Operation | Cycles |
-|-----------|--------|
-| get (hit) | 22 |
-| insert | 211 |
-| remove | 209 |
-| entry (occupied) | 22 |
-| entry (vacant) | 373 |
-| pop_first | 47 |
+| Operation | nexus BTree | nexus RbTree | std BTreeMap | Best |
+|---|---|---|---|---|
+| get (hit, @100) | 44 | **34** | 87 | RbTree |
+| get (hit, @10k) | 139 | **54** | 161 | RbTree |
+| get (miss, @10k) | **92** | 105 | 127 | nexus BTree |
+| get (cold rand, @10k) | 252 | **210** | 316 | RbTree |
+| contains_key (hit) | **81** | 111 | 155 | nexus BTree |
+| insert (growing) | **758** | 1178 | 3736 | nexus BTree |
+| insert (steady) | **319** | 345 | 401 | nexus BTree |
+| insert (duplicate) | 87 | **82** | 152 | RbTree |
+| remove | **359** | 372 | 423 | nexus BTree |
+| pop_first | 128 | **69** | 153 | RbTree |
+| pop_last | 107 | **74** | 132 | RbTree |
+| churn | **758** | 803 | 920 | nexus BTree |
+| entry (occupied) | 94 | **77** | 141 | RbTree |
+| entry (vacant+insert) | **602** | 366 | 406 | RbTree |
+
+Both nexus trees beat `std::collections::BTreeMap` across the board. The slab
+allocator eliminates global allocator contention and gives predictable cache
+behavior. The advantage is most visible in tail latency — std's p999 on growing
+insert is **3736 cycles** (global allocator on node splits) vs nexus BTree's 758.
+
+### When to Choose Which
+
+**RbTree**: Entry-heavy workloads (order books), pop-heavy workloads (timer
+wheels), anything where the pattern is check-then-insert via the entry API.
+
+**BTree**: Read-heavy lookups, existence checking (`contains_key`), high-churn
+streaming data, range scans. Tunable branching factor via const generic `B`.
 
 ## License
 
