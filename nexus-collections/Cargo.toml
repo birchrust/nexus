@@ -1,6 +1,6 @@
 [package]
 name = "nexus-collections"
-version = "0.8.1"
+version = "0.8.2"
 description = "Storage-backed intrusive collections for low-latency systems"
 readme = "README.md"
 edition.workspace = true
