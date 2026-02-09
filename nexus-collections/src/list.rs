@@ -91,7 +91,6 @@ pub struct ListNode<T> {
 
 impl<T> ListNode<T> {
     /// Creates a new detached node wrapping the given value.
-    #[inline]
     pub fn new(value: T) -> Self {
         ListNode {
             prev: Cell::new(ptr::null_mut()),
@@ -102,13 +101,11 @@ impl<T> ListNode<T> {
     }
 
     /// Returns `true` if this node is linked to a list.
-    #[inline]
     pub fn is_linked(&self) -> bool {
         self.owner.get() != 0
     }
 
     /// Returns a reference to the underlying [`ExclusiveCell`].
-    #[inline]
     pub fn data(&self) -> &ExclusiveCell<T> {
         &self.data
     }
@@ -119,7 +116,6 @@ impl<T> ListNode<T> {
     /// the value from a `Full<ListNode<T>>` into `Full<T>`. Not intended for
     /// direct use.
     #[doc(hidden)]
-    #[inline]
     pub fn into_data(self) -> T {
         // Only callable with an owned ListNode<T> — not reachable through
         // RcSlot (which derefs to &ListNode<T>). The sole call site is the
@@ -129,57 +125,47 @@ impl<T> ListNode<T> {
     }
 
     /// Exclusive shared borrow of user data.
-    #[inline]
     pub fn exclusive(&self) -> ExRef<'_, T> {
         self.data.borrow()
     }
 
     /// Exclusive mutable borrow of user data.
-    #[inline]
     pub fn exclusive_mut(&self) -> ExMut<'_, T> {
         self.data.borrow_mut()
     }
 
     /// Try exclusive shared borrow.
-    #[inline]
     pub fn try_exclusive(&self) -> Option<ExRef<'_, T>> {
         self.data.try_borrow()
     }
 
     /// Try exclusive mutable borrow.
-    #[inline]
     pub fn try_exclusive_mut(&self) -> Option<ExMut<'_, T>> {
         self.data.try_borrow_mut()
     }
 
     // Internal accessors for list operations
 
-    #[inline]
     fn prev_ptr(&self) -> NodePtr<T> {
         self.prev.get()
     }
 
-    #[inline]
     fn next_ptr(&self) -> NodePtr<T> {
         self.next.get()
     }
 
-    #[inline]
     fn set_prev(&self, ptr: NodePtr<T>) {
         self.prev.set(ptr);
     }
 
-    #[inline]
     fn set_next(&self, ptr: NodePtr<T>) {
         self.next.set(ptr);
     }
 
-    #[inline]
     fn owner_id(&self) -> usize {
         self.owner.get()
     }
 
-    #[inline]
     fn set_owner(&self, id: usize) {
         self.owner.set(id);
     }
@@ -196,7 +182,6 @@ impl<T> ListNode<T> {
 /// - `ptr` must be non-null and point to an occupied `SlotCell` with `strong > 0`.
 /// - The returned pointer is only valid as long as the caller (or the list)
 ///   holds a strong reference to the node.
-#[inline]
 unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const ListNode<T> {
     // SlotCell.value: ManuallyDrop<MaybeUninit<RcInner<ListNode<T>>>>
     // → assume_init_ref() → &RcInner<ListNode<T>>
@@ -253,7 +238,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// Takes a ZST allocator by value for type inference. The value is not
     /// stored — all methods use `A`'s associated functions directly.
-    #[inline]
     #[allow(unused_variables, clippy::needless_pass_by_value)]
     pub fn new(alloc: A) -> Self {
         List {
@@ -266,13 +250,11 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     }
 
     /// Returns the number of linked elements.
-    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` if the list has no linked elements.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -288,7 +270,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Panics
     ///
     /// Panics if the node is already linked to a list.
-    #[inline]
     pub fn link_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(handle.as_ptr()) };
@@ -305,7 +286,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// The node must not be currently linked to any list. Double-linking
     /// corrupts list structure and causes use-after-free.
-    #[inline]
     pub unsafe fn link_back_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -336,7 +316,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Panics
     ///
     /// Panics if the node is already linked to a list.
-    #[inline]
     pub fn link_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(handle.as_ptr()) };
@@ -352,7 +331,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Safety
     ///
     /// The node must not be currently linked to any list.
-    #[inline]
     pub unsafe fn link_front_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -382,7 +360,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// Panics if `handle` is already linked to a list, or if `after` is not
     /// linked to this list.
-    #[inline]
     pub fn link_after(&mut self, after: &RcSlot<ListNode<T>, A>, handle: &RcSlot<ListNode<T>, A>) {
         let after_ptr = after.as_ptr();
         // SAFETY: after is a live RcSlot, strong >= 1
@@ -424,7 +401,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// Panics if `handle` is already linked to a list, or if `before` is not
     /// linked to this list.
-    #[inline]
     pub fn link_before(
         &mut self,
         before: &RcSlot<ListNode<T>, A>,
@@ -475,7 +451,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Panics
     ///
     /// Panics if the node is not linked to this list.
-    #[inline]
     pub fn unlink(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -494,7 +469,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// The node must be currently linked to this list. Unlinking a node from
     /// the wrong list causes use-after-free (spurious strong count decrement).
-    #[inline]
     pub unsafe fn unlink_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         self.unlink_ptr(handle.as_ptr());
     }
@@ -507,7 +481,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// - `ptr` must be non-null
     /// - `ptr` must point to a node currently linked to this list
     /// - The list holds a strong reference to this node
-    #[inline]
     fn unlink_ptr(&mut self, ptr: NodePtr<T>) {
         // SAFETY: caller guarantees ptr is non-null and points to a linked node;
         // list holds a strong ref for all linked nodes
@@ -543,7 +516,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// Each node is detached and the list's strong reference is released.
     /// User handles remain valid.
-    #[inline]
     pub fn clear(&mut self) {
         let mut current = self.head;
         while !current.is_null() {
@@ -574,7 +546,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// The returned handle carries the list's strong reference — no net
     /// refcount change. The node is detached.
-    #[inline]
     pub fn pop_front(&mut self) -> Option<RcSlot<ListNode<T>, A>> {
         if self.head.is_null() {
             return None;
@@ -605,7 +576,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     }
 
     /// Removes and returns the back node as an `RcSlot`.
-    #[inline]
     pub fn pop_back(&mut self) -> Option<RcSlot<ListNode<T>, A>> {
         if self.tail.is_null() {
             return None;
@@ -642,7 +612,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Returns a reference to the front node, or `None` if empty.
     ///
     /// Call `.exclusive()` on the node to access user data.
-    #[inline]
     pub fn front(&self) -> Option<&ListNode<T>> {
         if self.head.is_null() {
             return None;
@@ -655,7 +624,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Returns a reference to the back node, or `None` if empty.
     ///
     /// Call `.exclusive()` on the node to access user data.
-    #[inline]
     pub fn back(&self) -> Option<&ListNode<T>> {
         if self.tail.is_null() {
             return None;
@@ -670,13 +638,11 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     // =========================================================================
 
     /// Returns `true` if the handle is at the head of this list.
-    #[inline]
     pub fn is_head(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
         handle.as_ptr() == self.head
     }
 
     /// Returns `true` if the handle is at the tail of this list.
-    #[inline]
     pub fn is_tail(&self, handle: &RcSlot<ListNode<T>, A>) -> bool {
         handle.as_ptr() == self.tail
     }
@@ -690,7 +656,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Panics
     ///
     /// Panics if the node is not linked to this list.
-    #[inline]
     pub fn move_to_front(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -733,7 +698,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Safety
     ///
     /// The node must be currently linked to this list.
-    #[inline]
     pub unsafe fn move_to_front_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: caller guarantees node is linked to this list
@@ -768,7 +732,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Panics
     ///
     /// Panics if the node is not linked to this list.
-    #[inline]
     pub fn move_to_back(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -811,7 +774,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// # Safety
     ///
     /// The node must be currently linked to this list.
-    #[inline]
     pub unsafe fn move_to_back_unchecked(&mut self, handle: &RcSlot<ListNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: caller guarantees node is linked to this list
@@ -849,7 +811,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// Call `advance()` to move to the head, or `advance_back()` to move to
     /// the tail.
-    #[inline]
     pub fn cursor(&mut self) -> Cursor<'_, T, A> {
         Cursor {
             list: self,
@@ -861,7 +822,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     ///
     /// Call `advance_back()` to move to the tail, or `advance()` to stay
     /// at `AfterEnd`.
-    #[inline]
     pub fn cursor_back(&mut self) -> Cursor<'_, T, A> {
         Cursor {
             list: self,
@@ -878,7 +838,6 @@ impl<T: 'static, A: BoundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Allocates a new node and links it to the back. Returns the handle.
     ///
     /// Returns `Err(Full(value))` if the allocator is at capacity.
-    #[inline]
     pub fn try_push_back(&mut self, value: T) -> Result<RcSlot<ListNode<T>, A>, Full<T>> {
         let handle = RcSlot::try_new(ListNode::new(value))
             .map_err(|full| Full(full.into_inner().into_data()))?;
@@ -890,7 +849,6 @@ impl<T: 'static, A: BoundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Allocates a new node and links it to the front. Returns the handle.
     ///
     /// Returns `Err(Full(value))` if the allocator is at capacity.
-    #[inline]
     pub fn try_push_front(&mut self, value: T) -> Result<RcSlot<ListNode<T>, A>, Full<T>> {
         let handle = RcSlot::try_new(ListNode::new(value))
             .map_err(|full| Full(full.into_inner().into_data()))?;
@@ -906,7 +864,6 @@ impl<T: 'static, A: BoundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
 
 impl<T: 'static, A: UnboundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     /// Allocates a new node and links it to the back. Returns the handle.
-    #[inline]
     pub fn push_back(&mut self, value: T) -> RcSlot<ListNode<T>, A> {
         let handle = RcSlot::new(ListNode::new(value));
         // SAFETY: freshly allocated node is not linked to any collection
@@ -915,7 +872,6 @@ impl<T: 'static, A: UnboundedAlloc<Item = RcInner<ListNode<T>>>> List<T, A> {
     }
 
     /// Allocates a new node and links it to the front. Returns the handle.
-    #[inline]
     pub fn push_front(&mut self, value: T) -> RcSlot<ListNode<T>, A> {
         let handle = RcSlot::new(ListNode::new(value));
         // SAFETY: freshly allocated node is not linked to any collection
@@ -999,7 +955,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     ///
     /// Returns `true` if the cursor is now at a valid node, `false` if it
     /// moved past the end.
-    #[inline]
     pub fn advance(&mut self) -> bool {
         let next_ptr = match self.position {
             Position::BeforeStart => self.list.head,
@@ -1023,7 +978,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     ///
     /// Returns `true` if the cursor is now at a valid node, `false` if it
     /// moved before the start.
-    #[inline]
     pub fn advance_back(&mut self) -> bool {
         let prev_ptr = match self.position {
             Position::BeforeStart => return false,
@@ -1047,7 +1001,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     /// at `BeforeStart` or `AfterEnd`.
     ///
     /// No refcount traffic — borrows directly from the cursor.
-    #[inline]
     pub fn current(&self) -> Option<&ListNode<T>> {
         match self.position {
             Position::At(ptr) => {
@@ -1072,7 +1025,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     /// # Panics
     ///
     /// Panics if the cursor is not positioned at a node.
-    #[inline]
     pub fn remove(&mut self) -> RcSlot<ListNode<T>, A> {
         let Position::At(ptr) = self.position else {
             panic_cursor_not_at_node();
@@ -1124,7 +1076,6 @@ impl<T: 'static, A: Alloc<Item = RcInner<ListNode<T>>>> Cursor<'_, T, A> {
     /// # Panics
     ///
     /// Panics if the cursor is not positioned at a node.
-    #[inline]
     pub fn remove_if(
         &mut self,
         f: impl FnOnce(&ListNode<T>) -> bool,

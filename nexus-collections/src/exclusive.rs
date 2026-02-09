@@ -54,7 +54,6 @@ unsafe impl<T: ?Sized + Send> Send for ExclusiveCell<T> {}
 
 impl<T> ExclusiveCell<T> {
     /// Creates a new `ExclusiveCell` containing the given value.
-    #[inline]
     pub const fn new(value: T) -> Self {
         ExclusiveCell {
             borrowed: Cell::new(false),
@@ -63,7 +62,6 @@ impl<T> ExclusiveCell<T> {
     }
 
     /// Consumes the cell, returning the wrapped value.
-    #[inline]
     pub fn into_inner(self) -> T {
         self.value.into_inner()
     }
@@ -73,7 +71,6 @@ impl<T> ExclusiveCell<T> {
     /// # Panics
     ///
     /// Panics if the value is currently borrowed.
-    #[inline]
     pub fn replace(&self, value: T) -> T {
         assert!(
             !self.borrowed.get(),
@@ -90,7 +87,6 @@ impl<T: ?Sized> ExclusiveCell<T> {
     /// # Panics
     ///
     /// Panics if the value is already borrowed.
-    #[inline]
     pub fn borrow(&self) -> ExRef<'_, T> {
         assert!(!self.borrowed.get(), "ExclusiveCell: already borrowed");
         self.borrowed.set(true);
@@ -102,7 +98,6 @@ impl<T: ?Sized> ExclusiveCell<T> {
     /// # Panics
     ///
     /// Panics if the value is already borrowed.
-    #[inline]
     pub fn borrow_mut(&self) -> ExMut<'_, T> {
         assert!(!self.borrowed.get(), "ExclusiveCell: already borrowed");
         self.borrowed.set(true);
@@ -110,7 +105,6 @@ impl<T: ?Sized> ExclusiveCell<T> {
     }
 
     /// Tries to borrow the value. Returns `None` if already borrowed.
-    #[inline]
     pub fn try_borrow(&self) -> Option<ExRef<'_, T>> {
         if self.borrowed.get() {
             return None;
@@ -120,7 +114,6 @@ impl<T: ?Sized> ExclusiveCell<T> {
     }
 
     /// Tries to borrow the value mutably. Returns `None` if already borrowed.
-    #[inline]
     pub fn try_borrow_mut(&self) -> Option<ExMut<'_, T>> {
         if self.borrowed.get() {
             return None;
@@ -130,7 +123,6 @@ impl<T: ?Sized> ExclusiveCell<T> {
     }
 
     /// Returns `true` if the value is currently borrowed.
-    #[inline]
     pub fn is_borrowed(&self) -> bool {
         self.borrowed.get()
     }
@@ -139,7 +131,6 @@ impl<T: ?Sized> ExclusiveCell<T> {
     ///
     /// No borrow tracking is performed. The caller must ensure
     /// no `ExRef`/`ExMut` guards are active when dereferencing.
-    #[inline]
     pub fn as_ptr(&self) -> *mut T {
         self.value.get()
     }
@@ -147,14 +138,12 @@ impl<T: ?Sized> ExclusiveCell<T> {
     /// Returns a mutable reference to the underlying data.
     ///
     /// Since this takes `&mut self`, no borrows can be active.
-    #[inline]
     pub fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
     }
 }
 
 impl<T: Default> Default for ExclusiveCell<T> {
-    #[inline]
     fn default() -> Self {
         Self::new(T::default())
     }
@@ -189,7 +178,6 @@ pub struct ExRef<'a, T: ?Sized> {
 impl<T: ?Sized> Deref for ExRef<'_, T> {
     type Target = T;
 
-    #[inline]
     fn deref(&self) -> &T {
         // SAFETY: We hold the exclusive borrow flag, no other refs exist
         unsafe { &*self.cell.value.get() }
@@ -197,7 +185,6 @@ impl<T: ?Sized> Deref for ExRef<'_, T> {
 }
 
 impl<T: ?Sized> Drop for ExRef<'_, T> {
-    #[inline]
     fn drop(&mut self) {
         self.cell.borrowed.set(false);
     }
@@ -229,7 +216,6 @@ pub struct ExMut<'a, T: ?Sized> {
 impl<T: ?Sized> Deref for ExMut<'_, T> {
     type Target = T;
 
-    #[inline]
     fn deref(&self) -> &T {
         // SAFETY: We hold the exclusive borrow flag, no other refs exist
         unsafe { &*self.cell.value.get() }
@@ -237,7 +223,6 @@ impl<T: ?Sized> Deref for ExMut<'_, T> {
 }
 
 impl<T: ?Sized> DerefMut for ExMut<'_, T> {
-    #[inline]
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: We hold the exclusive borrow flag, no other refs exist
         unsafe { &mut *self.cell.value.get() }
@@ -245,7 +230,6 @@ impl<T: ?Sized> DerefMut for ExMut<'_, T> {
 }
 
 impl<T: ?Sized> Drop for ExMut<'_, T> {
-    #[inline]
     fn drop(&mut self) {
         self.cell.borrowed.set(false);
     }

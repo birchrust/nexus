@@ -62,7 +62,6 @@ pub struct HeapNode<T> {
 
 impl<T> HeapNode<T> {
     /// Creates a new detached node wrapping the given value.
-    #[inline]
     pub fn new(value: T) -> Self {
         HeapNode {
             parent: Cell::new(ptr::null_mut()),
@@ -75,13 +74,11 @@ impl<T> HeapNode<T> {
     }
 
     /// Returns `true` if this node is linked to a heap.
-    #[inline]
     pub fn is_linked(&self) -> bool {
         self.owner.get() != 0
     }
 
     /// Returns a reference to the user data.
-    #[inline]
     pub fn data(&self) -> &T {
         &self.data
     }
@@ -91,59 +88,48 @@ impl<T> HeapNode<T> {
     /// Used internally by the `heap_allocator!` macro's error path to recover
     /// the value from a `Full<HeapNode<T>>` into `Full<T>`.
     #[doc(hidden)]
-    #[inline]
     pub fn into_data(self) -> T {
         self.data
     }
 
     // Internal accessors
 
-    #[inline]
     fn parent_ptr(&self) -> NodePtr<T> {
         self.parent.get()
     }
 
-    #[inline]
     fn child_ptr(&self) -> NodePtr<T> {
         self.child.get()
     }
 
-    #[inline]
     fn next_ptr(&self) -> NodePtr<T> {
         self.next.get()
     }
 
-    #[inline]
     fn prev_ptr(&self) -> NodePtr<T> {
         self.prev.get()
     }
 
-    #[inline]
     fn set_parent(&self, ptr: NodePtr<T>) {
         self.parent.set(ptr);
     }
 
-    #[inline]
     fn set_child(&self, ptr: NodePtr<T>) {
         self.child.set(ptr);
     }
 
-    #[inline]
     fn set_next(&self, ptr: NodePtr<T>) {
         self.next.set(ptr);
     }
 
-    #[inline]
     fn set_prev(&self, ptr: NodePtr<T>) {
         self.prev.set(ptr);
     }
 
-    #[inline]
     fn owner_id(&self) -> usize {
         self.owner.get()
     }
 
-    #[inline]
     fn set_owner(&self, id: usize) {
         self.owner.set(id);
     }
@@ -160,7 +146,6 @@ impl<T> HeapNode<T> {
 /// - `ptr` must be non-null and point to an occupied `SlotCell` with `strong > 0`.
 /// - The returned pointer is only valid as long as the caller (or the heap)
 ///   holds a strong reference to the node.
-#[inline]
 unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const HeapNode<T> {
     // SlotCell.value: ManuallyDrop<MaybeUninit<RcInner<HeapNode<T>>>>
     // → assume_init_ref() → &RcInner<HeapNode<T>>
@@ -201,7 +186,6 @@ fn panic_already_linked() -> ! {
 /// # Safety
 ///
 /// - Both `a` and `b` must be non-null, valid heap nodes with `strong > 0`.
-#[inline]
 unsafe fn link<T: Ord>(a: NodePtr<T>, b: NodePtr<T>) -> NodePtr<T> {
     debug_assert!(!a.is_null() && !b.is_null());
 
@@ -247,7 +231,6 @@ unsafe fn link<T: Ord>(a: NodePtr<T>, b: NodePtr<T>) -> NodePtr<T> {
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to a valid linked node (not root).
-#[inline]
 unsafe fn cut<T>(ptr: NodePtr<T>) {
     // SAFETY: caller guarantees ptr is non-null and valid
     unsafe {
@@ -291,7 +274,6 @@ unsafe fn cut<T>(ptr: NodePtr<T>) {
 /// - `first` may be null (returns null).
 /// - If non-null, must point to the first node in a valid sibling list.
 /// - All nodes in the list must have `strong > 0`.
-#[inline]
 unsafe fn merge_pairs<T: Ord>(first: NodePtr<T>) -> NodePtr<T> {
     if first.is_null() {
         return ptr::null_mut();
@@ -453,7 +435,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     ///
     /// Takes a ZST allocator by value for type inference. The value is not
     /// stored — all methods use `A`'s associated functions directly.
-    #[inline]
     #[allow(unused_variables, clippy::needless_pass_by_value)]
     pub fn new(alloc: A) -> Self {
         Heap {
@@ -465,13 +446,11 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     }
 
     /// Returns the number of elements in the heap.
-    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` if the heap has no elements.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -479,7 +458,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// Returns a reference to the minimum (root) node, or `None` if empty.
     ///
     /// Call `.data()` on the node to access user data.
-    #[inline]
     pub fn peek(&self) -> Option<&HeapNode<T>> {
         if self.root.is_null() {
             return None;
@@ -490,7 +468,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     }
 
     /// Returns `true` if the handle is linked to this heap.
-    #[inline]
     pub fn contains(&self, handle: &RcSlot<HeapNode<T>, A>) -> bool {
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(handle.as_ptr()) };
@@ -508,7 +485,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// # Panics
     ///
     /// Panics if the node is already linked to a collection.
-    #[inline]
     pub fn link(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
         // SAFETY: handle is a live RcSlot, strong >= 1
         let node = unsafe { &*node_deref(handle.as_ptr()) };
@@ -527,7 +503,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     ///
     /// The node must not be currently linked to any collection. Double-linking
     /// corrupts heap structure and causes use-after-free on drop.
-    #[inline]
     pub unsafe fn link_unchecked(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -552,7 +527,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     ///
     /// The returned handle carries the heap's strong reference — no net
     /// refcount change.
-    #[inline]
     pub fn pop(&mut self) -> Option<RcSlot<HeapNode<T>, A>> {
         if self.root.is_null() {
             return None;
@@ -586,7 +560,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// # Panics
     ///
     /// Panics if the node is not linked to this heap.
-    #[inline]
     pub fn unlink(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
         let ptr = handle.as_ptr();
         // SAFETY: handle is a live RcSlot, strong >= 1
@@ -605,14 +578,12 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     ///
     /// The node must be currently linked to this heap. Unlinking a node from
     /// the wrong heap causes use-after-free (spurious strong count decrement).
-    #[inline]
     pub unsafe fn unlink_unchecked(&mut self, handle: &RcSlot<HeapNode<T>, A>) {
         self.unlink_ptr(handle.as_ptr());
     }
 
     /// Internal: unlink by raw pointer. Detaches the node and decrements
     /// the heap's strong reference.
-    #[inline]
     fn unlink_ptr(&mut self, ptr: NodePtr<T>) {
         if ptr == self.root {
             // SAFETY: root is valid, heap holds strong ref
@@ -658,7 +629,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     ///
     /// Each node is detached and the heap's strong reference is released.
     /// User handles remain valid.
-    #[inline]
     pub fn clear(&mut self) {
         if self.root.is_null() {
             return;
@@ -676,7 +646,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// Returns a draining iterator that pops elements in sorted order.
     ///
     /// When dropped, any remaining elements are cleared from the heap.
-    #[inline]
     pub fn drain(&mut self) -> Drain<'_, T, A> {
         Drain { heap: self }
     }
@@ -685,7 +654,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     ///
     /// The predicate receives `&HeapNode<T>` — call `.data()` to read data.
     /// When dropped, remaining elements stay in the heap.
-    #[inline]
     pub fn drain_while<F: FnMut(&HeapNode<T>) -> bool>(
         &mut self,
         pred: F,
@@ -702,7 +670,6 @@ impl<T: 'static + Ord, A: BoundedAlloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> 
     /// Allocates a new node and inserts it into the heap. Returns the handle.
     ///
     /// Returns `Err(Full(value))` if the allocator is at capacity.
-    #[inline]
     pub fn try_push(&mut self, value: T) -> Result<RcSlot<HeapNode<T>, A>, Full<T>> {
         let handle = RcSlot::try_new(HeapNode::new(value))
             .map_err(|full| Full(full.into_inner().into_data()))?;
@@ -718,7 +685,6 @@ impl<T: 'static + Ord, A: BoundedAlloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> 
 
 impl<T: 'static + Ord, A: UnboundedAlloc<Item = RcInner<HeapNode<T>>>> Heap<T, A> {
     /// Allocates a new node and inserts it into the heap. Returns the handle.
-    #[inline]
     pub fn push(&mut self, value: T) -> RcSlot<HeapNode<T>, A> {
         let handle = RcSlot::new(HeapNode::new(value));
         // SAFETY: freshly allocated node is not linked to any collection
@@ -747,12 +713,10 @@ pub struct Drain<'a, T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> {
 impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>> Iterator for Drain<'_, T, A> {
     type Item = RcSlot<HeapNode<T>, A>;
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.heap.pop()
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.heap.len(), Some(self.heap.len()))
     }
@@ -791,7 +755,6 @@ impl<T: 'static + Ord, A: Alloc<Item = RcInner<HeapNode<T>>>, F: FnMut(&HeapNode
 {
     type Item = RcSlot<HeapNode<T>, A>;
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.heap.is_empty() {
             return None;
