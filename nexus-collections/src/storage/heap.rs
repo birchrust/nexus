@@ -76,7 +76,6 @@ pub struct HeapNode<T> {
 
 impl<T> HeapNode<T> {
     /// Creates a new node not yet in a heap.
-    #[inline]
     pub(crate) fn new(data: T) -> Self {
         Self {
             data,
@@ -216,7 +215,6 @@ impl<T> HeapStorage<T> {
     /// # Panics
     ///
     /// Panics if `capacity` is 0.
-    #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: BoundedSlab::with_capacity(capacity),
@@ -224,37 +222,31 @@ impl<T> HeapStorage<T> {
     }
 
     /// Returns the total capacity.
-    #[inline]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
     }
 
     /// Returns the number of elements stored.
-    #[inline]
     pub fn len(&self) -> usize {
         self.inner.slab_len()
     }
 
     /// Returns `true` if no elements are stored.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.slab_is_empty()
     }
 
     /// Returns `true` if storage is at capacity.
-    #[inline]
     pub fn is_full(&self) -> bool {
         self.len() >= self.capacity()
     }
 
     /// Returns `true` if the key is valid.
-    #[inline]
     pub fn contains(&self, key: NexusKey) -> bool {
         self.inner.slab_contains(key)
     }
 
     /// Attempts to insert a node, returning its key.
-    #[inline]
     pub(crate) fn try_insert(&mut self, node: HeapNode<T>) -> Result<NexusKey, Full<T>> {
         self.inner
             .insert(node)
@@ -263,14 +255,12 @@ impl<T> HeapStorage<T> {
     }
 
     /// Returns a reference to the node at `key`.
-    #[inline]
     pub(crate) fn get_node(&self, key: NexusKey) -> Option<&HeapNode<T>> {
         // SAFETY: We have &self, so no mutable references can exist.
         unsafe { self.inner.slab_get_untracked(key) }
     }
 
     /// Returns a mutable reference to the node at `key`.
-    #[inline]
     pub(crate) fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut HeapNode<T>> {
         // SAFETY: We have &mut self, so no other references can exist.
         unsafe { self.inner.slab_get_untracked_mut(key) }
@@ -281,7 +271,6 @@ impl<T> HeapStorage<T> {
     /// # Safety
     ///
     /// Key must be valid and occupied.
-    #[inline]
     pub(crate) unsafe fn get_node_unchecked(&self, key: NexusKey) -> &HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked(key) }
     }
@@ -291,13 +280,11 @@ impl<T> HeapStorage<T> {
     /// # Safety
     ///
     /// Key must be valid and occupied.
-    #[inline]
     pub(crate) unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked_mut(key) }
     }
 
     /// Removes and returns the node at `key`.
-    #[inline]
     pub(crate) fn remove_node(&mut self, key: NexusKey) -> Option<HeapNode<T>> {
         self.inner.slab_try_remove(key)
     }
@@ -307,7 +294,6 @@ impl<T> HeapStorage<T> {
     /// # Safety
     ///
     /// Key must be valid and occupied.
-    #[inline]
     pub(crate) unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> HeapNode<T> {
         unsafe { self.inner.slab_remove_unchecked(key) }
     }
@@ -342,7 +328,6 @@ pub struct GrowableHeapStorage<T> {
 
 impl<T> GrowableHeapStorage<T> {
     /// Creates empty growable storage.
-    #[inline]
     pub fn new() -> Self {
         Self { inner: Slab::new() }
     }
@@ -350,7 +335,6 @@ impl<T> GrowableHeapStorage<T> {
     /// Creates growable storage with pre-allocated capacity.
     ///
     /// The storage will grow beyond this if needed.
-    #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: Slab::with_capacity(capacity),
@@ -358,38 +342,32 @@ impl<T> GrowableHeapStorage<T> {
     }
 
     /// Returns the number of elements stored.
-    #[inline]
     pub fn len(&self) -> usize {
         self.inner.slab_len()
     }
 
     /// Returns `true` if no elements are stored.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.slab_is_empty()
     }
 
     /// Returns `true` if the key is valid.
-    #[inline]
     pub fn contains(&self, key: NexusKey) -> bool {
         self.inner.slab_contains(key)
     }
 
     /// Inserts a node, returning its key.
-    #[inline]
     pub(crate) fn insert(&mut self, node: HeapNode<T>) -> NexusKey {
         self.inner.insert(node).key()
     }
 
     /// Returns a reference to the node at `key`.
-    #[inline]
     pub(crate) fn get_node(&self, key: NexusKey) -> Option<&HeapNode<T>> {
         // SAFETY: We have &self, so no mutable references can exist.
         unsafe { self.inner.slab_get_untracked(key) }
     }
 
     /// Returns a mutable reference to the node at `key`.
-    #[inline]
     pub(crate) fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut HeapNode<T>> {
         // SAFETY: We have &mut self, so no other references can exist.
         unsafe { self.inner.slab_get_untracked_mut(key) }
@@ -400,7 +378,6 @@ impl<T> GrowableHeapStorage<T> {
     /// # Safety
     ///
     /// Key must be valid and occupied.
-    #[inline]
     pub(crate) unsafe fn get_node_unchecked(&self, key: NexusKey) -> &HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked(key) }
     }
@@ -410,13 +387,11 @@ impl<T> GrowableHeapStorage<T> {
     /// # Safety
     ///
     /// Key must be valid and occupied.
-    #[inline]
     pub(crate) unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked_mut(key) }
     }
 
     /// Removes and returns the node at `key`.
-    #[inline]
     pub(crate) fn remove_node(&mut self, key: NexusKey) -> Option<HeapNode<T>> {
         self.inner.slab_try_remove(key)
     }
@@ -426,7 +401,6 @@ impl<T> GrowableHeapStorage<T> {
     /// # Safety
     ///
     /// Key must be valid and occupied.
-    #[inline]
     pub(crate) unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> HeapNode<T> {
         unsafe { self.inner.slab_remove_unchecked(key) }
     }
@@ -443,61 +417,52 @@ impl<T> Default for GrowableHeapStorage<T> {
 // =============================================================================
 
 impl<T> HeapStorageOps<T> for HeapStorage<T> {
-    #[inline]
+
     fn len(&self) -> usize {
         self.inner.slab_len()
     }
 
-    #[inline]
     fn contains(&self, key: NexusKey) -> bool {
         self.inner.slab_contains(key)
     }
 
-    #[inline]
     fn get_node(&self, key: NexusKey) -> Option<&HeapNode<T>> {
         // SAFETY: We have &self, so no mutable references can exist.
         unsafe { self.inner.slab_get_untracked(key) }
     }
 
-    #[inline]
     fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut HeapNode<T>> {
         // SAFETY: We have &mut self, so no other references can exist.
         unsafe { self.inner.slab_get_untracked_mut(key) }
     }
 
-    #[inline]
     unsafe fn get_node_unchecked(&self, key: NexusKey) -> &HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked(key) }
     }
 
-    #[inline]
     unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked_mut(key) }
     }
 
-    #[inline]
     fn remove_node(&mut self, key: NexusKey) -> Option<HeapNode<T>> {
         self.inner.slab_try_remove(key)
     }
 
-    #[inline]
     unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> HeapNode<T> {
         unsafe { self.inner.slab_remove_unchecked(key) }
     }
 
-    #[inline]
     fn entry(&self, key: NexusKey) -> Option<HeapEntry<T>> {
         self.inner.entry(key).map(HeapEntry::new)
     }
 }
 
 impl<T> BoundedHeapStorageOps<T> for HeapStorage<T> {
-    #[inline]
+
     fn capacity(&self) -> usize {
         self.inner.capacity()
     }
 
-    #[inline]
     fn try_insert_node(&mut self, node: HeapNode<T>) -> Result<NexusKey, Full<T>> {
         self.inner
             .insert(node)
@@ -505,7 +470,6 @@ impl<T> BoundedHeapStorageOps<T> for HeapStorage<T> {
             .map_err(|e| Full(e.0.data))
     }
 
-    #[inline]
     fn insert_with<F>(&self, f: F) -> Result<HeapEntry<T>, CapacityError>
     where
         F: FnOnce(HeapEntry<T>) -> T,
@@ -520,61 +484,52 @@ impl<T> BoundedHeapStorageOps<T> for HeapStorage<T> {
 }
 
 impl<T> HeapStorageOps<T> for GrowableHeapStorage<T> {
-    #[inline]
+
     fn len(&self) -> usize {
         self.inner.slab_len()
     }
 
-    #[inline]
     fn contains(&self, key: NexusKey) -> bool {
         self.inner.slab_contains(key)
     }
 
-    #[inline]
     fn get_node(&self, key: NexusKey) -> Option<&HeapNode<T>> {
         // SAFETY: We have &self, so no mutable references can exist.
         unsafe { self.inner.slab_get_untracked(key) }
     }
 
-    #[inline]
     fn get_node_mut(&mut self, key: NexusKey) -> Option<&mut HeapNode<T>> {
         // SAFETY: We have &mut self, so no other references can exist.
         unsafe { self.inner.slab_get_untracked_mut(key) }
     }
 
-    #[inline]
     unsafe fn get_node_unchecked(&self, key: NexusKey) -> &HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked(key) }
     }
 
-    #[inline]
     unsafe fn get_node_unchecked_mut(&mut self, key: NexusKey) -> &mut HeapNode<T> {
         unsafe { self.inner.slab_get_unchecked_mut(key) }
     }
 
-    #[inline]
     fn remove_node(&mut self, key: NexusKey) -> Option<HeapNode<T>> {
         self.inner.slab_try_remove(key)
     }
 
-    #[inline]
     unsafe fn remove_node_unchecked(&mut self, key: NexusKey) -> HeapNode<T> {
         unsafe { self.inner.slab_remove_unchecked(key) }
     }
 
-    #[inline]
     fn entry(&self, key: NexusKey) -> Option<HeapEntry<T>> {
         self.inner.entry(key).map(HeapEntry::new)
     }
 }
 
 impl<T> GrowableHeapStorageOps<T> for GrowableHeapStorage<T> {
-    #[inline]
+
     fn insert_node(&mut self, node: HeapNode<T>) -> NexusKey {
         self.inner.insert(node).key()
     }
 
-    #[inline]
     fn insert_with<F>(&self, f: F) -> HeapEntry<T>
     where
         F: FnOnce(HeapEntry<T>) -> T,
@@ -627,7 +582,6 @@ pub struct HeapEntry<T> {
 
 impl<T> HeapEntry<T> {
     /// Creates a new entry from a nexus-slab entry.
-    #[inline]
     pub(crate) fn new(inner: nexus_slab::Entry<HeapNode<T>>) -> Self {
         Self { inner }
     }
@@ -635,7 +589,6 @@ impl<T> HeapEntry<T> {
     /// Returns the storage key.
     ///
     /// Use this for collection operations like `heap.update(storage, key)`.
-    #[inline]
     pub fn key(&self) -> NexusKey {
         self.inner.key()
     }
@@ -645,7 +598,6 @@ impl<T> HeapEntry<T> {
     /// An entry becomes invalid when:
     /// - The element is removed from storage
     /// - The storage is dropped
-    #[inline]
     pub fn is_valid(&self) -> bool {
         self.inner.is_valid()
     }
@@ -659,7 +611,6 @@ impl<T> HeapEntry<T> {
     /// # Panics
     ///
     /// Panics if the entry is invalid or already borrowed.
-    #[inline]
     pub fn get(&self) -> HeapRef<T> {
         HeapRef {
             inner: self.inner.get(),
@@ -677,7 +628,6 @@ impl<T> HeapEntry<T> {
     /// Mutating a heap element's ordering field (e.g., priority) breaks the
     /// heap property. After mutation, call `heap.update(storage, key)` to
     /// restore the heap invariant.
-    #[inline]
     pub fn get_mut(&self) -> HeapRefMut<T> {
         HeapRefMut {
             inner: self.inner.get_mut(),
@@ -689,13 +639,11 @@ impl<T> HeapEntry<T> {
     // =========================================================================
 
     /// Returns a reference to the value, or `None` if invalid/borrowed.
-    #[inline]
     pub fn try_get(&self) -> Option<HeapRef<T>> {
         self.inner.try_get().map(|inner| HeapRef { inner })
     }
 
     /// Returns a mutable reference to the value, or `None` if invalid/borrowed.
-    #[inline]
     pub fn try_get_mut(&self) -> Option<HeapRefMut<T>> {
         self.inner.try_get_mut().map(|inner| HeapRefMut { inner })
     }
@@ -711,7 +659,6 @@ impl<T> HeapEntry<T> {
     /// # Safety
     ///
     /// Caller must ensure no concurrent mutable access to this slot.
-    #[inline]
     pub unsafe fn get_untracked(&self) -> Option<&T> {
         // SAFETY: Caller ensures no concurrent mutable access.
         unsafe { self.inner.get_untracked().map(|node| &node.data) }
@@ -724,7 +671,6 @@ impl<T> HeapEntry<T> {
     /// # Safety
     ///
     /// Caller must ensure exclusive access to this slot.
-    #[inline]
     #[allow(clippy::mut_from_ref)] // Interior mutability via nexus_slab
     pub unsafe fn get_untracked_mut(&self) -> Option<&mut T> {
         // SAFETY: Caller ensures exclusive access.
@@ -741,7 +687,6 @@ impl<T> HeapEntry<T> {
     ///
     /// - Entry must be valid (not removed, storage not dropped)
     /// - No concurrent mutable access to this slot
-    #[inline]
     pub unsafe fn get_unchecked(&self) -> &T {
         // SAFETY: Caller ensures entry is valid and no concurrent mutable access.
         unsafe { &self.inner.get_unchecked().data }
@@ -753,7 +698,6 @@ impl<T> HeapEntry<T> {
     ///
     /// - Entry must be valid (not removed, storage not dropped)
     /// - Exclusive access to this slot
-    #[inline]
     #[allow(clippy::mut_from_ref)] // Interior mutability via nexus_slab
     pub unsafe fn get_unchecked_mut(&self) -> &mut T {
         // SAFETY: Caller ensures entry is valid and exclusive access.
@@ -801,7 +745,6 @@ pub struct HeapRef<T> {
 impl<T> Deref for HeapRef<T> {
     type Target = T;
 
-    #[inline]
     fn deref(&self) -> &T {
         &self.inner.data
     }
@@ -830,14 +773,13 @@ pub struct HeapRefMut<T> {
 impl<T> Deref for HeapRefMut<T> {
     type Target = T;
 
-    #[inline]
     fn deref(&self) -> &T {
         &self.inner.data
     }
 }
 
 impl<T> DerefMut for HeapRefMut<T> {
-    #[inline]
+
     fn deref_mut(&mut self) -> &mut T {
         &mut self.inner.data
     }
@@ -909,7 +851,6 @@ pub struct HeapVacant<T> {
 
 impl<T> HeapVacant<T> {
     /// Returns the key this slot will have once filled.
-    #[inline]
     pub fn key(&self) -> NexusKey {
         self.inner.key()
     }
@@ -918,7 +859,6 @@ impl<T> HeapVacant<T> {
     ///
     /// Returns a [`HeapEntry`] handle. The entry exists in storage but is
     /// NOT in any heap. Use `heap.link()` to add it to a heap.
-    #[inline]
     pub fn insert(self, value: T) -> HeapEntry<T> {
         let inner = self.inner.insert(HeapNode::new(value));
         HeapEntry::new(inner)
@@ -943,7 +883,6 @@ pub struct GrowableHeapVacant<T> {
 
 impl<T> GrowableHeapVacant<T> {
     /// Returns the key this slot will have once filled.
-    #[inline]
     pub fn key(&self) -> NexusKey {
         self.inner.key()
     }
@@ -952,7 +891,6 @@ impl<T> GrowableHeapVacant<T> {
     ///
     /// Returns a [`HeapEntry`] handle. The entry exists in storage but is
     /// NOT in any heap. Use `heap.link()` to add it to a heap.
-    #[inline]
     pub fn insert(self, value: T) -> HeapEntry<T> {
         let inner = self.inner.insert(HeapNode::new(value));
         HeapEntry::new(inner)
@@ -977,7 +915,6 @@ impl<T> HeapStorage<T> {
     /// Returns a reference to the value at `key`.
     ///
     /// Returns `None` if the key is invalid.
-    #[inline]
     pub fn get(&self, key: NexusKey) -> Option<&T> {
         self.get_node(key).map(|node| &node.data)
     }
@@ -991,7 +928,6 @@ impl<T> HeapStorage<T> {
     /// Mutating a heap element's ordering field breaks the heap property.
     /// After mutation, call `heap.update(storage, key)` to restore the
     /// heap invariant.
-    #[inline]
     pub fn get_mut(&mut self, key: NexusKey) -> Option<&mut T> {
         self.get_node_mut(key).map(|node| &mut node.data)
     }
@@ -1001,7 +937,6 @@ impl<T> HeapStorage<T> {
     /// Creates an entry handle from a key.
     ///
     /// Returns `None` if the key is invalid.
-    #[inline]
     pub fn entry(&self, key: NexusKey) -> Option<HeapEntry<T>> {
         self.inner.entry(key).map(HeapEntry::new)
     }
@@ -1016,7 +951,6 @@ impl<T> HeapStorage<T> {
     /// # Errors
     ///
     /// Returns `Err(CapacityError)` if storage is full.
-    #[inline]
     pub fn vacant(&self) -> Result<HeapVacant<T>, CapacityError> {
         self.inner.vacant_entry().map(|inner| HeapVacant { inner })
     }
@@ -1056,7 +990,6 @@ impl<T> HeapStorage<T> {
     ///
     /// assert_eq!(entry.get().self_key, entry.key());
     /// ```
-    #[inline]
     pub fn insert_with<F>(&self, f: F) -> Result<HeapEntry<T>, CapacityError>
     where
         F: FnOnce(HeapEntry<T>) -> T,
@@ -1076,7 +1009,6 @@ impl<T> GrowableHeapStorage<T> {
     /// Returns a reference to the value at `key`.
     ///
     /// Returns `None` if the key is invalid.
-    #[inline]
     pub fn get(&self, key: NexusKey) -> Option<&T> {
         self.get_node(key).map(|node| &node.data)
     }
@@ -1084,7 +1016,6 @@ impl<T> GrowableHeapStorage<T> {
     /// Returns a mutable reference to the value at `key`.
     ///
     /// Returns `None` if the key is invalid.
-    #[inline]
     pub fn get_mut(&mut self, key: NexusKey) -> Option<&mut T> {
         self.get_node_mut(key).map(|node| &mut node.data)
     }
@@ -1094,7 +1025,6 @@ impl<T> GrowableHeapStorage<T> {
     /// Creates an entry handle from a key.
     ///
     /// Returns `None` if the key is invalid.
-    #[inline]
     pub fn entry(&self, key: NexusKey) -> Option<HeapEntry<T>> {
         self.inner.entry(key).map(HeapEntry::new)
     }
@@ -1105,7 +1035,6 @@ impl<T> GrowableHeapStorage<T> {
     ///
     /// The slot is allocated but not yet filled. Use [`GrowableHeapVacant::insert`]
     /// to fill it, then `heap.link()` to add it to a heap.
-    #[inline]
     pub fn vacant(&self) -> GrowableHeapVacant<T> {
         GrowableHeapVacant {
             inner: self.inner.vacant_entry(),
@@ -1119,7 +1048,6 @@ impl<T> GrowableHeapStorage<T> {
     /// # Note
     ///
     /// The returned entry is NOT in any heap. Use `heap.link()` to add it.
-    #[inline]
     pub fn insert_with<F>(&self, f: F) -> HeapEntry<T>
     where
         F: FnOnce(HeapEntry<T>) -> T,

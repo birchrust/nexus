@@ -80,7 +80,6 @@ impl<K, V> RbNode<K, V> {
     /// Creates a new detached red node with the given key and value.
     ///
     /// All link pointers are null. Color is red (new insertions are red).
-    #[inline]
     pub fn new(key: K, value: V) -> Self {
         RbNode {
             key,
@@ -92,26 +91,22 @@ impl<K, V> RbNode<K, V> {
     }
 
     /// Returns a reference to the key.
-    #[inline]
     pub fn key(&self) -> &K {
         &self.key
     }
 
     /// Returns a reference to the value.
-    #[inline]
     pub fn value(&self) -> &V {
         &self.value
     }
 
     /// Returns a mutable reference to the value.
-    #[inline]
     pub fn value_mut(&mut self) -> &mut V {
         &mut self.value
     }
 
     /// Consumes the node, returning `(key, value)`.
     #[doc(hidden)]
-    #[inline]
     pub fn into_data(self) -> (K, V) {
         (self.key, self.value)
     }
@@ -122,7 +117,6 @@ impl<K, V> RbNode<K, V> {
 // =============================================================================
 
 /// Extracts the parent pointer from a node's packed parent_color field.
-#[inline]
 fn get_parent<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     // SAFETY: ptr is non-null, caller guarantees it points to an occupied slot.
     let packed = unsafe { (*node_deref(ptr)).parent_color.get() };
@@ -130,7 +124,6 @@ fn get_parent<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
 }
 
 /// Sets the parent pointer, preserving the existing color.
-#[inline]
 fn set_parent<K, V>(ptr: NodePtr<K, V>, parent: NodePtr<K, V>) {
     // SAFETY: ptr is non-null, caller guarantees it points to an occupied slot.
     let node = unsafe { &*node_deref(ptr) };
@@ -140,7 +133,6 @@ fn set_parent<K, V>(ptr: NodePtr<K, V>, parent: NodePtr<K, V>) {
 }
 
 /// Sets both parent and color in one write.
-#[inline]
 fn set_parent_color<K, V>(ptr: NodePtr<K, V>, parent: NodePtr<K, V>, color: usize) {
     // SAFETY: ptr is non-null, caller guarantees it points to an occupied slot.
     let node = unsafe { &*node_deref(ptr) };
@@ -157,7 +149,6 @@ fn set_parent_color<K, V>(ptr: NodePtr<K, V>, parent: NodePtr<K, V>, color: usiz
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to an occupied `SlotCell`.
-#[inline]
 unsafe fn node_deref<K, V>(ptr: NodePtr<K, V>) -> *const RbNode<K, V> {
     // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot.
     // Use addr_of! to avoid creating an intermediate reference.
@@ -171,7 +162,6 @@ unsafe fn node_deref<K, V>(ptr: NodePtr<K, V>) -> *const RbNode<K, V> {
 ///
 /// - `ptr` must be non-null and point to an occupied `SlotCell`.
 /// - The caller must ensure no other reference to the same node exists.
-#[inline]
 unsafe fn node_deref_mut<K, V>(ptr: NodePtr<K, V>) -> *mut RbNode<K, V> {
     // SAFETY: Caller guarantees ptr is non-null, occupied, and unaliased.
     // Use addr_of_mut! to avoid implicit DerefMut on ManuallyDrop union field.
@@ -184,7 +174,6 @@ unsafe fn node_deref_mut<K, V>(ptr: NodePtr<K, V>) -> *mut RbNode<K, V> {
 // =============================================================================
 
 /// Returns `true` if the node is red. Null nodes are black.
-#[inline]
 fn is_red<K, V>(ptr: NodePtr<K, V>) -> bool {
     if ptr.is_null() {
         return false;
@@ -194,7 +183,6 @@ fn is_red<K, V>(ptr: NodePtr<K, V>) -> bool {
 }
 
 /// Sets the color of a node, preserving its parent pointer. No-op if null.
-#[inline]
 fn set_color<K, V>(ptr: NodePtr<K, V>, color: usize) {
     if !ptr.is_null() {
         // SAFETY: ptr is non-null; caller ensures it points to an occupied slot.
@@ -213,7 +201,6 @@ fn set_color<K, V>(ptr: NodePtr<K, V>, color: usize) {
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to an occupied slot.
-#[inline]
 unsafe fn tree_minimum<K, V>(mut ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     // SAFETY: ptr is non-null on entry; loop maintains this invariant.
     loop {
@@ -230,7 +217,6 @@ unsafe fn tree_minimum<K, V>(mut ptr: NodePtr<K, V>) -> NodePtr<K, V> {
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to an occupied slot.
-#[inline]
 unsafe fn tree_maximum<K, V>(mut ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     // SAFETY: ptr is non-null on entry; loop maintains this invariant.
     loop {
@@ -249,7 +235,6 @@ unsafe fn tree_maximum<K, V>(mut ptr: NodePtr<K, V>) -> NodePtr<K, V> {
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to an occupied slot in the tree.
-#[inline]
 unsafe fn successor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     // SAFETY: ptr is non-null.
     let node = unsafe { &*node_deref(ptr) };
@@ -281,7 +266,6 @@ unsafe fn successor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
 /// # Safety
 ///
 /// - `ptr` must be non-null and point to an occupied slot in the tree.
-#[inline]
 unsafe fn predecessor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     // SAFETY: ptr is non-null.
     let node = unsafe { &*node_deref(ptr) };
@@ -314,7 +298,6 @@ unsafe fn predecessor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
 ///
 /// Issues a T0 (temporal, all cache levels) prefetch hint. On non-x86_64
 /// platforms this is a no-op.
-#[inline(always)]
 fn prefetch_read_node<K, V>(ptr: NodePtr<K, V>) {
     #[cfg(target_arch = "x86_64")]
     if !ptr.is_null() {
@@ -363,7 +346,6 @@ pub struct RbTree<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
 
 impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Creates a new empty red-black tree.
-    #[inline]
     #[allow(unused_variables, clippy::needless_pass_by_value)]
     pub fn new(alloc: A) -> Self {
         RbTree {
@@ -380,25 +362,21 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     // =========================================================================
 
     /// Returns the number of elements in the tree.
-    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` if the tree is empty.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns `true` if the tree contains the given key.
-    #[inline]
     pub fn contains_key(&self, key: &K) -> bool {
         self.find(key).is_some()
     }
 
     /// Returns a reference to the value for the given key.
-    #[inline]
     pub fn get(&self, key: &K) -> Option<&V> {
         let ptr = self.find(key)?;
         // SAFETY: find returns a valid, occupied node pointer.
@@ -406,7 +384,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Returns a mutable reference to the value for the given key.
-    #[inline]
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         let ptr = self.find(key)?;
         // SAFETY: find returns a valid node pointer; &mut self prevents aliasing.
@@ -414,7 +391,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Returns references to the key and value for the given key.
-    #[inline]
     pub fn get_key_value(&self, key: &K) -> Option<(&K, &V)> {
         let ptr = self.find(key)?;
         // SAFETY: find returns a valid, occupied node pointer.
@@ -425,7 +401,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Returns the first (smallest) key-value pair.
     ///
     /// O(1) — cached leftmost pointer.
-    #[inline]
     pub fn first_key_value(&self) -> Option<(&K, &V)> {
         if self.leftmost.is_null() {
             return None;
@@ -438,7 +413,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Returns the last (largest) key-value pair.
     ///
     /// O(1) — cached rightmost pointer.
-    #[inline]
     pub fn last_key_value(&self) -> Option<(&K, &V)> {
         if self.rightmost.is_null() {
             return None;
@@ -453,14 +427,12 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     // =========================================================================
 
     /// Removes the node with the given key and returns the value.
-    #[inline]
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let (_, v) = self.remove_entry(key)?;
         Some(v)
     }
 
     /// Removes the node with the given key and returns `(key, value)`.
-    #[inline]
     pub fn remove_entry(&mut self, key: &K) -> Option<(K, V)> {
         let ptr = self.find(key)?;
         Some(self.remove_node(ptr))
@@ -469,7 +441,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Removes and returns the first (smallest) key-value pair.
     ///
     /// O(log n) — requires delete fixup.
-    #[inline]
     pub fn pop_first(&mut self) -> Option<(K, V)> {
         if self.leftmost.is_null() {
             return None;
@@ -480,7 +451,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Removes and returns the last (largest) key-value pair.
     ///
     /// O(log n) — requires delete fixup.
-    #[inline]
     pub fn pop_last(&mut self) -> Option<(K, V)> {
         if self.rightmost.is_null() {
             return None;
@@ -489,7 +459,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Removes all nodes, freeing them via the allocator.
-    #[inline]
     pub fn clear(&mut self) {
         // Iterative post-order destruction: detach children and descend,
         // freeing leaf nodes and walking up via parent pointers.
@@ -546,7 +515,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     ///     }
     /// }
     /// ```
-    #[inline]
     pub fn entry(&mut self, key: K) -> Entry<'_, K, V, A> {
         let mut parent: NodePtr<K, V> = ptr::null_mut();
         let mut is_left = true;
@@ -586,7 +554,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     // =========================================================================
 
     /// Returns an iterator over `(&K, &V)` pairs in sorted order.
-    #[inline]
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter {
             front: self.leftmost,
@@ -596,13 +563,11 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Returns an iterator over keys in sorted order.
-    #[inline]
     pub fn keys(&self) -> Keys<'_, K, V> {
         Keys { inner: self.iter() }
     }
 
     /// Returns an iterator over values in key-sorted order.
-    #[inline]
     pub fn values(&self) -> Values<'_, K, V> {
         Values { inner: self.iter() }
     }
@@ -610,7 +575,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Returns a mutable iterator over `(&K, &mut V)` pairs in sorted order.
     ///
     /// Keys are immutable — changing them would violate sorted order.
-    #[inline]
     pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
         IterMut {
             front: self.leftmost,
@@ -620,7 +584,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Returns a mutable iterator over values in key-sorted order.
-    #[inline]
     pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
         ValuesMut {
             inner: self.iter_mut(),
@@ -628,7 +591,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Returns an iterator over `(&K, &V)` pairs within the given range.
-    #[inline]
     pub fn range<R: std::ops::RangeBounds<K>>(&self, range: R) -> Range<'_, K, V> {
         let (front, end) = self.resolve_range_bounds(range);
         Range {
@@ -639,7 +601,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Returns a mutable iterator over `(&K, &mut V)` pairs within the given range.
-    #[inline]
     pub fn range_mut<R: std::ops::RangeBounds<K>>(&mut self, range: R) -> RangeMut<'_, K, V> {
         let (front, end) = self.resolve_range_bounds(range);
         RangeMut {
@@ -656,7 +617,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Returns a cursor positioned before the first element.
     ///
     /// Call `advance()` to move to the first element.
-    #[inline]
     pub fn cursor_front(&mut self) -> Cursor<'_, K, V, A> {
         Cursor {
             tree: self,
@@ -667,7 +627,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 
     /// Returns a cursor positioned at the given key, or at the first
     /// element greater than the key.
-    #[inline]
     pub fn cursor_at(&mut self, key: &K) -> Cursor<'_, K, V, A> {
         let current = self
             .find(key)
@@ -687,7 +646,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// pairs in sorted order.
     ///
     /// When dropped, any remaining nodes are freed via the allocator.
-    #[inline]
     pub fn drain(&mut self) -> Drain<'_, K, V, A> {
         Drain { tree: self }
     }
@@ -710,7 +668,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// - `new` must be a non-null, freshly allocated, detached node.
     /// - The caller must ensure `new`'s key maintains BST ordering
     ///   (typically used for same-key replacement or inter-tree migration).
-    #[inline]
     #[allow(dead_code)]
     unsafe fn replace_node(&mut self, old: NodePtr<K, V>, new: NodePtr<K, V>) {
         let old_node = unsafe { &*node_deref(old) };
@@ -787,7 +744,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     ///
     /// Loads both children eagerly before branching on the comparison.
     /// Out-of-order execution pipelines the loads in parallel.
-    #[inline]
     fn find(&self, key: &K) -> Option<NodePtr<K, V>> {
         let mut current = self.root;
         while !current.is_null() {
@@ -808,7 +764,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Find first node with key >= target.
-    #[inline]
     fn lower_bound(&self, key: &K) -> NodePtr<K, V> {
         let mut result: NodePtr<K, V> = ptr::null_mut();
         let mut current = self.root;
@@ -826,7 +781,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     }
 
     /// Find first node with key > target.
-    #[inline]
     fn upper_bound(&self, key: &K) -> NodePtr<K, V> {
         let mut result: NodePtr<K, V> = ptr::null_mut();
         let mut current = self.root;
@@ -848,7 +802,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// `front` is the first node in the range. `end` is the first node
     /// PAST the range (exclusive sentinel), or null if the range extends
     /// to the end. The iterator stops when `front == end`.
-    #[inline]
     fn resolve_range_bounds<R: std::ops::RangeBounds<K>>(
         &self,
         range: R,
@@ -888,7 +841,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     ///
     /// Sets parent pointers, updates leftmost/rightmost, increments len,
     /// then runs insert fixup for rebalancing.
-    #[inline]
     fn link_new_node(&mut self, ptr: NodePtr<K, V>, parent: NodePtr<K, V>, is_left: bool) {
         // SAFETY: ptr points to a valid, occupied node (just allocated).
         // New nodes are red (COLOR_RED = 0), so parent_color = parent address.
@@ -975,7 +927,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// # Safety
     ///
     /// - `x` must be non-null with a non-null right child.
-    #[inline]
     unsafe fn rotate_left(&mut self, x: NodePtr<K, V>) {
         // SAFETY: x is non-null with a non-null right child.
         let x_node = unsafe { &*node_deref(x) };
@@ -1022,7 +973,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// # Safety
     ///
     /// - `x` must be non-null with a non-null left child.
-    #[inline]
     unsafe fn rotate_right(&mut self, x: NodePtr<K, V>) {
         // SAFETY: x is non-null with a non-null left child.
         let x_node = unsafe { &*node_deref(x) };
@@ -1065,7 +1015,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     ///
     /// - `u` must be non-null and in the tree.
     /// - `v` may be null (replacing with empty subtree).
-    #[inline]
     unsafe fn transplant(&mut self, u: NodePtr<K, V>, v: NodePtr<K, V>) {
         // SAFETY: u is non-null.
         let u_parent = get_parent(u);
@@ -1447,7 +1396,6 @@ impl<K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// path is zero-allocation.
     ///
     /// Returns `Err(Full((key, value)))` if the allocator cannot allocate.
-    #[inline]
     pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, Full<(K, V)>> {
         // BST search for insertion point.
         let mut parent: NodePtr<K, V> = ptr::null_mut();
@@ -1493,7 +1441,6 @@ impl<K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     ///
     /// If a node with the same key already exists, the value is replaced
     /// and the old value is returned. This path is zero-allocation.
-    #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         // BST search for insertion point.
         let mut parent: NodePtr<K, V> = ptr::null_mut();
@@ -1575,7 +1522,6 @@ pub struct VacantEntry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
 
 impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
     /// Returns a reference to this entry's key.
-    #[inline]
     pub fn key(&self) -> &K {
         match self {
             Entry::Occupied(e) => e.key(),
@@ -1587,7 +1533,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
     ///
     /// If the entry is occupied, calls `f` with `&mut V`.
     /// If vacant, this is a no-op.
-    #[inline]
     pub fn and_modify<F: FnOnce(&mut V)>(mut self, f: F) -> Self {
         if let Entry::Occupied(ref mut e) = self {
             f(e.get_mut());
@@ -1603,7 +1548,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     ///
     /// Returns `Err(Full((K, V)))` if the allocator is full and the entry
     /// was vacant.
-    #[inline]
     pub fn or_try_insert(self, value: V) -> Result<&'a mut V, Full<(K, V)>> {
         match self {
             Entry::Occupied(e) => Ok(e.into_mut()),
@@ -1612,7 +1556,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     }
 
     /// Ensures a value by inserting the result of `f` if vacant (bounded).
-    #[inline]
     pub fn or_try_insert_with<F: FnOnce() -> V>(self, f: F) -> Result<&'a mut V, Full<(K, V)>> {
         match self {
             Entry::Occupied(e) => Ok(e.into_mut()),
@@ -1621,7 +1564,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     }
 
     /// Ensures a value by inserting `f(key)` if vacant (bounded).
-    #[inline]
     pub fn or_try_insert_with_key<F: FnOnce(&K) -> V>(
         self,
         f: F,
@@ -1636,7 +1578,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     }
 
     /// Ensures a value by inserting `V::default()` if vacant (bounded).
-    #[inline]
     pub fn or_try_insert_default(self) -> Result<&'a mut V, Full<(K, V)>>
     where
         V: Default,
@@ -1649,7 +1590,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
 
 impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     /// Ensures a value is in the entry by inserting if vacant (unbounded).
-    #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
         match self {
             Entry::Occupied(e) => e.into_mut(),
@@ -1658,7 +1598,6 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     }
 
     /// Ensures a value by inserting the result of `f` if vacant (unbounded).
-    #[inline]
     pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
         match self {
             Entry::Occupied(e) => e.into_mut(),
@@ -1667,7 +1606,6 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     }
 
     /// Ensures a value by inserting `f(key)` if vacant (unbounded).
-    #[inline]
     pub fn or_insert_with_key<F: FnOnce(&K) -> V>(self, f: F) -> &'a mut V {
         match self {
             Entry::Occupied(e) => e.into_mut(),
@@ -1679,7 +1617,6 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     }
 
     /// Ensures a value by inserting `V::default()` if vacant (unbounded).
-    #[inline]
     pub fn or_default(self) -> &'a mut V
     where
         V: Default,
@@ -1692,28 +1629,24 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
 
 impl<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
     /// Returns a reference to the key.
-    #[inline]
     pub fn key(&self) -> &K {
         // SAFETY: ptr is valid, node is in the tree.
         unsafe { &(*node_deref(self.ptr)).key }
     }
 
     /// Returns a reference to the value.
-    #[inline]
     pub fn get(&self) -> &V {
         // SAFETY: ptr is valid, node is in the tree.
         unsafe { &(*node_deref(self.ptr)).value }
     }
 
     /// Returns a mutable reference to the value.
-    #[inline]
     pub fn get_mut(&mut self) -> &mut V {
         // SAFETY: ptr is valid, &mut self prevents aliasing.
         unsafe { &mut (*node_deref_mut(self.ptr)).value }
     }
 
     /// Converts to a mutable reference to the value with the entry's lifetime.
-    #[inline]
     pub fn into_mut(self) -> &'a mut V {
         // SAFETY: ptr is valid, the entry consumed &'a mut RbTree,
         // so the returned reference continues that exclusive borrow.
@@ -1721,7 +1654,6 @@ impl<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
     }
 
     /// Sets the value of the entry and returns the old value.
-    #[inline]
     pub fn insert(&mut self, value: V) -> V {
         // SAFETY: ptr is valid and occupied; &mut self prevents aliasing.
         let node = unsafe { &mut *node_deref_mut(self.ptr) };
@@ -1729,7 +1661,6 @@ impl<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
     }
 
     /// Removes the entry and returns `(key, value)`.
-    #[inline]
     pub fn remove(self) -> (K, V) {
         self.tree.remove_node(self.ptr)
     }
@@ -1741,7 +1672,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, 
     /// Inserts a value into the vacant entry (bounded allocator).
     ///
     /// Returns `Err(Full((K, V)))` if the allocator is full.
-    #[inline]
     pub fn try_insert(self, value: V) -> Result<&'a mut V, Full<(K, V)>> {
         let VacantEntry {
             tree,
@@ -1764,7 +1694,6 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, 
 
 impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
     /// Inserts a value into the vacant entry (unbounded allocator).
-    #[inline]
     pub fn insert(self, value: V) -> &'a mut V {
         let VacantEntry {
             tree,
@@ -1783,7 +1712,6 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V
 
 impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> VacantEntry<'_, K, V, A> {
     /// Returns a reference to the key that would be used for insertion.
-    #[inline]
     pub fn key(&self) -> &K {
         &self.key
     }
@@ -1803,7 +1731,6 @@ pub struct Iter<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
@@ -1818,7 +1745,6 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
         Some((&node.key, &node.value))
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
     }
@@ -1830,7 +1756,6 @@ impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a RbT
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
-    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
@@ -1840,7 +1765,6 @@ impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a mut
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
-    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
@@ -1858,12 +1782,10 @@ pub struct Keys<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for Keys<'a, K, V> {
     type Item = &'a K;
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|(k, _)| k)
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
     }
@@ -1879,12 +1801,10 @@ pub struct Values<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for Values<'a, K, V> {
     type Item = &'a V;
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|(_, v)| v)
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
     }
@@ -1908,7 +1828,6 @@ pub struct IterMut<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
@@ -1926,7 +1845,6 @@ impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
         Some((&node.key, &mut node.value))
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
     }
@@ -1946,12 +1864,10 @@ pub struct ValuesMut<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for ValuesMut<'a, K, V> {
     type Item = &'a mut V;
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|(_, v)| v)
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
     }
@@ -1976,7 +1892,6 @@ pub struct Range<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for Range<'a, K, V> {
     type Item = (&'a K, &'a V);
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.front.is_null() || self.front == self.end {
             return None;
@@ -2008,7 +1923,6 @@ pub struct RangeMut<'a, K, V> {
 impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.front.is_null() || self.front == self.end {
             return None;
@@ -2052,7 +1966,6 @@ pub struct Cursor<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
 
 impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
     /// Returns a reference to the current key, or `None` if not positioned.
-    #[inline]
     pub fn key(&self) -> Option<&K> {
         if self.current.is_null() {
             return None;
@@ -2062,7 +1975,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
     }
 
     /// Returns a reference to the current value, or `None` if not positioned.
-    #[inline]
     pub fn value(&self) -> Option<&V> {
         if self.current.is_null() {
             return None;
@@ -2072,7 +1984,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
     }
 
     /// Returns a mutable reference to the current value, or `None` if not positioned.
-    #[inline]
     pub fn value_mut(&mut self) -> Option<&mut V> {
         if self.current.is_null() {
             return None;
@@ -2084,7 +1995,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
     /// Advances the cursor to the next element.
     ///
     /// Returns `true` if the cursor is now at a valid element.
-    #[inline]
     pub fn advance(&mut self) -> bool {
         if !self.started {
             self.started = true;
@@ -2105,7 +2015,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
     /// Removes the current element and advances to the next.
     ///
     /// Returns the removed `(key, value)`, or `None` if not positioned.
-    #[inline]
     pub fn remove(&mut self) -> Option<(K, V)> {
         if self.current.is_null() {
             return None;
@@ -2136,12 +2045,10 @@ pub struct Drain<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
 impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Iterator for Drain<'_, K, V, A> {
     type Item = (K, V);
 
-    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.tree.pop_first()
     }
 
-    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.tree.len(), Some(self.tree.len()))
     }
