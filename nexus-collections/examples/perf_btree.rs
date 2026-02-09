@@ -1,18 +1,17 @@
-//! Skip list benchmark: cycle-accurate latency measurement.
+//! B-tree benchmark: cycle-accurate latency measurement.
 //!
 //! Measures insert, remove, get, entry, pop_first, pop_last at various
-//! population sizes. Skip list operations are O(log n), so we measure at
-//! both small (100) and steady-state (10k) sizes.
+//! population sizes. Same methodology as perf_rbtree for direct comparison.
 //!
 //! Run with:
-//!   cargo build --release --example perf_skiplist
-//!   taskset -c 0 ./target/release/examples/perf_skiplist
+//!   cargo build --release --example perf_btree -p nexus-collections
+//!   taskset -c 0 ./target/release/examples/perf_btree
 
 use seq_macro::seq;
 use std::hint::black_box;
 
-mod sl {
-    nexus_collections::skip_allocator!(u64, u64, bounded);
+mod bt {
+    nexus_collections::btree_allocator!(u64, u64, bounded);
 }
 
 const CAPACITY: usize = 200_000;
@@ -74,12 +73,12 @@ impl Xorshift {
 }
 
 fn main() {
-    sl::Allocator::builder().capacity(CAPACITY).build().unwrap();
+    bt::Allocator::builder().capacity(CAPACITY).build().unwrap();
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
 
-    println!("SKIP LIST OPERATION LATENCY (cycles/op) — steady state populations");
-    println!("Samples: {SAMPLES}, Warmup: {WARMUP}");
+    println!("B-TREE OPERATION LATENCY (cycles/op) — steady state populations");
+    println!("Samples: {SAMPLES}, Warmup: {WARMUP}, B=8");
     println!("====================================================================\n");
 
     // ── GET (batched, read-only — seq_macro unrolled) ───────────────
@@ -88,12 +87,11 @@ fn main() {
 
     // get (small @100)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..SMALL_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
         }
-        // Pick 100 keys to look up repeatedly (all hits)
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -111,7 +109,7 @@ fn main() {
 
     // get (steady @10k)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -129,19 +127,8 @@ fn main() {
         }
         print_row(&format!("get (hit, @{STEADY_SIZE})"), &mut samples);
 
-        // get miss — 100 random keys guaranteed not in the tree
-        let miss_keys: [u64; BATCH_READ] = {
-            let mut mk = [0u64; BATCH_READ];
-            let mut i = 0;
-            while i < BATCH_READ {
-                let k = rng.next();
-                if map.get(&k).is_none() {
-                    mk[i] = k;
-                    i += 1;
-                }
-            }
-            mk
-        };
+        // get miss (random keys not in tree)
+        let miss_keys: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             seq!(I in 0..100 { black_box(map.get(&miss_keys[I])); });
@@ -156,14 +143,13 @@ fn main() {
         map.clear();
     }
 
-    // get (cold random access @10k — cycles through all keys)
+    // get (cold random access @10k)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let mut keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
         }
-        // Shuffle keys for random access pattern
         for i in (1..keys.len()).rev() {
             let j = rng.next() as usize % (i + 1);
             keys.swap(i, j);
@@ -171,7 +157,6 @@ fn main() {
         let num_keys = keys.len();
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut offset = 0usize;
-        // Warmup — cycle through keys
         for _ in 0..WARMUP {
             let mut total = 0u64;
             for j in 0..BATCH_READ {
@@ -180,7 +165,6 @@ fn main() {
             black_box(total);
             offset = (offset + BATCH_READ) % num_keys;
         }
-        // Measure
         for _ in 0..SAMPLES {
             let mut total = 0u64;
             let s = rdtsc_start();
@@ -198,7 +182,7 @@ fn main() {
 
     // contains_key (steady @10k)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -220,13 +204,13 @@ fn main() {
 
     println!();
 
-    // ── INSERT / REMOVE (100 unrolled ops/sample) ──────────────────
-    println!("INSERT / REMOVE (100 unrolled ops/sample)");
+    // ── INSERT / REMOVE ─────────────────────────────────────────────
+    println!("INSERT / REMOVE ({BATCH_READ} unrolled ops/sample)");
     println!("---");
 
-    // insert (into empty, growing) — per-op (intentionally measures varying sizes)
+    // insert (into empty, growing — per-op, tree size varies)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             map.try_insert(rng.next(), 0).unwrap();
@@ -243,9 +227,9 @@ fn main() {
         map.clear();
     }
 
-    // insert (steady @10k) — batch 100 fresh inserts, remove after
+    // insert (steady @10k, batched)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let steady_keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &steady_keys {
             map.try_insert(k, k).unwrap();
@@ -253,24 +237,28 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
-            seq!(I in 0..100 { map.try_insert(batch[I], 0).unwrap(); });
-            seq!(I in 0..100 { map.remove(&batch[I]); });
+            seq!(I in 0..100 { black_box(map.try_insert(batch[I], 0)); });
+            for &k in batch.iter() {
+                map.remove(&k);
+            }
         }
         for _ in 0..SAMPLES {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
-            seq!(I in 0..100 { map.try_insert(batch[I], 0).unwrap(); });
+            seq!(I in 0..100 { black_box(map.try_insert(batch[I], 0)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            seq!(I in 0..100 { map.remove(&batch[I]); });
+            for &k in batch.iter() {
+                map.remove(&k);
+            }
         }
         print_row(&format!("insert (steady @{STEADY_SIZE})"), &mut samples);
         map.clear();
     }
 
-    // remove (steady @10k) — batch 100 removes from existing keys, reinsert after
+    // remove (steady @10k, batched)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -278,32 +266,36 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut offset = 0usize;
         for _ in 0..WARMUP {
-            let base = offset % STEADY_SIZE;
+            let base = offset % keys.len();
             let batch: [u64; BATCH_READ] =
-                std::array::from_fn(|i| keys[(base + i) % STEADY_SIZE]);
-            seq!(I in 0..100 { map.remove(&batch[I]); });
-            seq!(I in 0..100 { map.try_insert(batch[I], batch[I]).unwrap(); });
+                std::array::from_fn(|i| keys[(base + i) % keys.len()]);
+            seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
+            for &k in batch.iter() {
+                map.try_insert(k, k).unwrap();
+            }
             offset += BATCH_READ;
         }
         offset = 0;
         for _ in 0..SAMPLES {
-            let base = offset % STEADY_SIZE;
+            let base = offset % keys.len();
             let batch: [u64; BATCH_READ] =
-                std::array::from_fn(|i| keys[(base + i) % STEADY_SIZE]);
+                std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             let s = rdtsc_start();
-            seq!(I in 0..100 { map.remove(&batch[I]); });
+            seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            seq!(I in 0..100 { map.try_insert(batch[I], batch[I]).unwrap(); });
+            for &k in batch.iter() {
+                map.try_insert(k, k).unwrap();
+            }
             offset += BATCH_READ;
         }
         print_row(&format!("remove (steady @{STEADY_SIZE})"), &mut samples);
         map.clear();
     }
 
-    // insert duplicate key (update in place) — batched
+    // insert duplicate key (batched, update in place)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -325,13 +317,13 @@ fn main() {
 
     println!();
 
-    // ── ENTRY API (100 unrolled ops/sample) ───────────────────────────
-    println!("ENTRY API (100 unrolled ops/sample)");
+    // ── ENTRY API ────────────────────────────────────────────────────
+    println!("ENTRY API (per-op, cycles)");
     println!("---");
 
-    // entry (occupied) — batched
+    // entry (occupied, batched)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -339,19 +331,11 @@ fn main() {
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 {
-                if let nexus_collections::skiplist::Entry::Occupied(mut o) = map.entry(lookup[I]) {
-                    *o.get_mut() += 1;
-                }
-            });
+            seq!(I in 0..100 { black_box(map.entry(lookup[I]).and_modify(|v| *v += 1)); });
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 {
-                if let nexus_collections::skiplist::Entry::Occupied(mut o) = map.entry(lookup[I]) {
-                    *o.get_mut() += 1;
-                }
-            });
+            seq!(I in 0..100 { black_box(map.entry(lookup[I]).and_modify(|v| *v += 1)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
         }
@@ -359,9 +343,9 @@ fn main() {
         map.clear();
     }
 
-    // entry (vacant — insert) — batched
+    // entry (vacant — insert, batched)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -370,7 +354,9 @@ fn main() {
         for _ in 0..WARMUP {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             seq!(I in 0..100 { black_box(map.entry(batch[I]).or_try_insert(0)); });
-            seq!(I in 0..100 { map.remove(&batch[I]); });
+            for &k in batch.iter() {
+                map.remove(&k);
+            }
         }
         for _ in 0..SAMPLES {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
@@ -378,7 +364,9 @@ fn main() {
             seq!(I in 0..100 { black_box(map.entry(batch[I]).or_try_insert(0)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            seq!(I in 0..100 { map.remove(&batch[I]); });
+            for &k in batch.iter() {
+                map.remove(&k);
+            }
         }
         print_row(
             &format!("entry vacant+insert (@{STEADY_SIZE})"),
@@ -389,32 +377,33 @@ fn main() {
 
     println!();
 
-    // ── POP (100 unrolled ops/sample) ─────────────────────────────────
-    println!("POP (100 unrolled ops/sample)");
+    // ── POP ──────────────────────────────────────────────────────────
+    println!("POP ({BATCH_READ} unrolled ops/sample)");
     println!("---");
 
-    // pop_first (steady @10k) — batch 100 pops, reinsert after
+    // pop_first (steady @10k, batched)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
         }
+        let mut popped = [(0u64, 0u64); BATCH_READ];
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            let mut buf = [(0u64, 0u64); BATCH_READ];
-            seq!(I in 0..100 { buf[I] = map.pop_first().unwrap(); });
-            for &(k, v) in &buf {
+            for p in popped.iter_mut() {
+                *p = map.pop_first().unwrap();
+            }
+            for &(k, v) in popped.iter() {
                 map.try_insert(k, v).unwrap();
             }
         }
         for _ in 0..SAMPLES {
-            let mut buf = [(0u64, 0u64); BATCH_READ];
             let s = rdtsc_start();
-            seq!(I in 0..100 { buf[I] = map.pop_first().unwrap(); });
+            seq!(I in 0..100 { popped[I] = map.pop_first().unwrap(); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &(k, v) in &buf {
+            for &(k, v) in popped.iter() {
                 map.try_insert(k, v).unwrap();
             }
         }
@@ -422,28 +411,29 @@ fn main() {
         map.clear();
     }
 
-    // pop_last (steady @10k) — batch 100 pops, reinsert after
+    // pop_last (steady @10k, batched)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
         }
+        let mut popped = [(0u64, 0u64); BATCH_READ];
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            let mut buf = [(0u64, 0u64); BATCH_READ];
-            seq!(I in 0..100 { buf[I] = map.pop_last().unwrap(); });
-            for &(k, v) in &buf {
+            for p in popped.iter_mut() {
+                *p = map.pop_last().unwrap();
+            }
+            for &(k, v) in popped.iter() {
                 map.try_insert(k, v).unwrap();
             }
         }
         for _ in 0..SAMPLES {
-            let mut buf = [(0u64, 0u64); BATCH_READ];
             let s = rdtsc_start();
-            seq!(I in 0..100 { buf[I] = map.pop_last().unwrap(); });
+            seq!(I in 0..100 { popped[I] = map.pop_last().unwrap(); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &(k, v) in &buf {
+            for &(k, v) in popped.iter() {
                 map.try_insert(k, v).unwrap();
             }
         }
@@ -453,7 +443,7 @@ fn main() {
 
     // first_key_value (batched, read-only)
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         for i in 0..STEADY_SIZE {
             map.try_insert(i as u64, 0).unwrap();
         }
@@ -473,12 +463,11 @@ fn main() {
 
     println!();
 
-    // ── CHURN (100 unrolled ops/sample) ────────────────────────────────
-    // Simulates order book: insert a new price level, remove an old one.
+    // ── CHURN ─────────────────────────────────────────────────────────
     println!("CHURN (remove+insert pair, {BATCH_READ} unrolled ops/sample)");
     println!("---");
     {
-        let mut map = sl::SkipList::with_seed(42, sl::Allocator);
+        let mut map = bt::BTree::new(bt::Allocator);
         let mut keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
             map.try_insert(k, k).unwrap();
@@ -486,9 +475,9 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut offset = 0usize;
         for _ in 0..WARMUP {
-            let base = offset % STEADY_SIZE;
+            let base = offset % keys.len();
             let old_batch: [u64; BATCH_READ] =
-                std::array::from_fn(|i| keys[(base + i) % STEADY_SIZE]);
+                std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             let new_batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             seq!(I in 0..100 {
                 map.remove(&old_batch[I]);
@@ -501,9 +490,9 @@ fn main() {
         }
         offset = 0;
         for _ in 0..SAMPLES {
-            let base = offset % STEADY_SIZE;
+            let base = offset % keys.len();
             let old_batch: [u64; BATCH_READ] =
-                std::array::from_fn(|i| keys[(base + i) % STEADY_SIZE]);
+                std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             let new_batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
             seq!(I in 0..100 {

@@ -9,6 +9,7 @@
 //! - **Heap** — Pairing heap with `RcSlot` handles and external allocation
 //! - **SkipList** — Sorted map with internal allocation (user sees only K/V)
 //! - **RbTree** — Red-black tree sorted map with deterministic O(log n) worst case
+//! - **BTree** — B-tree sorted map with cache-friendly node layout
 //!
 //! # Quick Start (SkipList)
 //!
@@ -30,6 +31,7 @@
 
 use std::cell::Cell;
 
+pub mod btree;
 pub mod exclusive;
 pub mod heap;
 pub mod list;

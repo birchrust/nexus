@@ -372,6 +372,101 @@ macro_rules! skip_allocator {
     };
 }
 
+/// Creates a B-tree allocator for a specific key-value pair.
+///
+/// This macro generates all the types needed to work with slab-backed
+/// B-trees. Invoke it inside a module — either a file-based module or
+/// an inline `mod` block.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Default B=8
+/// mod levels {
+///     nexus_collections::btree_allocator!(u64, String, bounded);
+/// }
+///
+/// // Custom B=12
+/// mod wide {
+///     nexus_collections::btree_allocator!(u64, String, bounded, 12);
+/// }
+///
+/// levels::Allocator::builder().capacity(1000).build().unwrap();
+/// let mut map = levels::BTree::new(levels::Allocator);
+/// map.try_insert(100, "hello".into()).unwrap();
+/// ```
+///
+/// # Parameters
+///
+/// | Form | B (branching) | Max keys/node |
+/// |------|---------------|---------------|
+/// | `(K, V, bounded)` | 8 | 7 |
+/// | `(K, V, bounded, 12)` | 12 | 11 |
+///
+/// B must be even and >= 4. Max keys per node is B-1.
+///
+/// # Variants
+///
+/// - `bounded` — Fixed capacity. `try_insert` returns `Result<Option<V>, Full<(K, V)>>`.
+/// - `unbounded` — Grows as needed. `insert` always succeeds.
+///
+/// # Generated API
+///
+/// - `Allocator` — call `Allocator::builder()` to configure and initialize
+/// - `Builder` — configuration builder
+/// - `BTree` — the B-tree sorted map type
+/// - `Cursor` — cursor for positional traversal
+/// - `Entry` — entry enum for the entry API
+#[macro_export]
+macro_rules! btree_allocator {
+    // 3-arg: defaults (B=8)
+    ($K:ty, $V:ty, bounded) => {
+        $crate::btree_allocator!($K, $V, bounded, 8);
+    };
+    ($K:ty, $V:ty, unbounded) => {
+        $crate::btree_allocator!($K, $V, unbounded, 8);
+    };
+    // 4-arg: custom B
+    ($K:ty, $V:ty, bounded, $B:expr) => {
+        type __K = $K;
+        type __V = $V;
+
+        mod __alloc {
+            nexus_slab::bounded_allocator!(
+                $crate::btree::BTreeNode<super::__K, super::__V, $B>
+            );
+        }
+
+        pub use __alloc::{Allocator, Builder};
+
+        /// The B-tree sorted map type.
+        pub type BTree = $crate::btree::BTree<__K, __V, __alloc::Allocator, $B>;
+        /// Cursor for positional traversal.
+        pub type Cursor<'a> = $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B>;
+        /// Entry for the entry API.
+        pub type Entry<'a> = $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B>;
+    };
+    ($K:ty, $V:ty, unbounded, $B:expr) => {
+        type __K = $K;
+        type __V = $V;
+
+        mod __alloc {
+            nexus_slab::unbounded_allocator!(
+                $crate::btree::BTreeNode<super::__K, super::__V, $B>
+            );
+        }
+
+        pub use __alloc::{Allocator, Builder};
+
+        /// The B-tree sorted map type.
+        pub type BTree = $crate::btree::BTree<__K, __V, __alloc::Allocator, $B>;
+        /// Cursor for positional traversal.
+        pub type Cursor<'a> = $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B>;
+        /// Entry for the entry API.
+        pub type Entry<'a> = $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B>;
+    };
+}
+
 /// Creates a red-black tree allocator for a specific key-value pair.
 ///
 /// This macro generates all the types needed to work with slab-backed
