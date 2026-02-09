@@ -371,3 +371,71 @@ macro_rules! skip_allocator {
             $crate::skiplist::Entry<'a, __K, __V, __alloc::Allocator, $ML, $R>;
     };
 }
+
+/// Creates a red-black tree allocator for a specific key-value pair.
+///
+/// This macro generates all the types needed to work with slab-backed
+/// red-black trees. Invoke it inside a module — either a file-based
+/// module or an inline `mod` block.
+///
+/// # Usage
+///
+/// ```ignore
+/// mod levels {
+///     nexus_collections::rbtree_allocator!(u64, String, bounded);
+/// }
+///
+/// levels::Allocator::builder().capacity(1000).build().unwrap();
+/// let mut map = levels::RbTree::new(levels::Allocator);
+/// map.try_insert(100, "hello".into()).unwrap();
+/// ```
+///
+/// # Variants
+///
+/// - `bounded` — Fixed capacity. `try_insert` returns `Result<Option<V>, Full<(K, V)>>`.
+/// - `unbounded` — Grows as needed. `insert` always succeeds.
+///
+/// # Generated API
+///
+/// - `Allocator` — call `Allocator::builder()` to configure and initialize
+/// - `Builder` — configuration builder
+/// - `RbTree` — the sorted map type
+/// - `Cursor` — cursor for positional traversal
+/// - `Entry` — entry enum for the entry API
+#[macro_export]
+macro_rules! rbtree_allocator {
+    ($K:ty, $V:ty, bounded) => {
+        type __K = $K;
+        type __V = $V;
+
+        mod __alloc {
+            nexus_slab::bounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
+        }
+
+        pub use __alloc::{Allocator, Builder};
+
+        /// The red-black tree sorted map type.
+        pub type RbTree = $crate::rbtree::RbTree<__K, __V, __alloc::Allocator>;
+        /// Cursor for positional traversal.
+        pub type Cursor<'a> = $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator>;
+        /// Entry for the entry API.
+        pub type Entry<'a> = $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator>;
+    };
+    ($K:ty, $V:ty, unbounded) => {
+        type __K = $K;
+        type __V = $V;
+
+        mod __alloc {
+            nexus_slab::unbounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
+        }
+
+        pub use __alloc::{Allocator, Builder};
+
+        /// The red-black tree sorted map type.
+        pub type RbTree = $crate::rbtree::RbTree<__K, __V, __alloc::Allocator>;
+        /// Cursor for positional traversal.
+        pub type Cursor<'a> = $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator>;
+        /// Entry for the entry API.
+        pub type Entry<'a> = $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator>;
+    };
+}

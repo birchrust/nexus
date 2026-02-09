@@ -48,6 +48,26 @@ turbo boost disabled. All values in cycles per operation.
 | entry (occupied) | 484 | 750 | 932 | 1132 |
 | entry (vacant+insert) | 486 | 770 | 994 | 1414 |
 
+## RbTree (red-black tree sorted map, @10k population)
+
+| Operation | p50 | p90 | p99 | p999 |
+|-----------|-----|-----|-----|------|
+| get (hit, @100) | 8 | 8 | 9 | 13 |
+| get (hit, @10k) | 14 | 14 | 15 | 49 |
+| get (miss, @10k) | 11 | 11 | 17 | 33 |
+| get (cold rand, @10k) | 129 | 133 | 176 | 235 |
+| contains_key (hit) | 47 | 48 | 52 | 107 |
+| insert (growing) | 280 | 372 | 478 | 594 |
+| insert (steady) | 228 | 286 | 330 | 382 |
+| insert (duplicate) | 196 | 236 | 272 | 300 |
+| remove | 242 | 290 | 342 | 416 |
+| pop_first | 26 | 28 | 44 | 66 |
+| pop_last | 28 | 28 | 30 | 38 |
+| first_key_value | 0 | 0 | 1 | 1 |
+| churn (insert+remove) | 466 | 560 | 660 | 848 |
+| entry (occupied) | 190 | 232 | 274 | 312 |
+| entry (vacant+insert) | 228 | 286 | 326 | 446 |
+
 ## Running Benchmarks
 
 ```bash
@@ -60,6 +80,7 @@ cargo build --release --examples -p nexus-collections
 # Run pinned to a physical core
 taskset -c 0 ./target/release/examples/perf_push_hist    # list + heap
 taskset -c 0 ./target/release/examples/perf_skiplist     # skip list
+taskset -c 0 ./target/release/examples/perf_rbtree       # red-black tree
 
 # Re-enable turbo boost
 echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo

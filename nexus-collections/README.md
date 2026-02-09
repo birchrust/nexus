@@ -4,7 +4,7 @@ High-performance, slab-backed collections for latency-critical systems.
 
 ## Why This Crate?
 
-Node-based data structures (linked lists, heaps, skip lists) offer
+Node-based data structures (linked lists, heaps, trees, skip lists) offer
 operations that contiguous structures can't — O(1) unlink/re-link, stable
 handles to interior elements, and movement between collections without
 copying. The trade-off is normally heap fragmentation and allocator overhead
@@ -101,6 +101,27 @@ for (k, v) in map.iter() {
 map.entry(200).or_try_insert("world".into()).unwrap();
 ```
 
+### RbTree — Red-Black Tree Sorted Map
+
+Deterministic O(log n) sorted map with at most 2 rotations per insert,
+3 per delete. Same API as SkipList with tighter tail latency.
+
+```rust
+mod levels {
+    nexus_collections::rbtree_allocator!(u64, String, bounded);
+}
+
+levels::Allocator::builder().capacity(1000).build().unwrap();
+
+let mut map = levels::RbTree::new(levels::Allocator);
+map.try_insert(100, "hello".into()).unwrap();
+
+assert_eq!(map.get(&100), Some(&"hello".into()));
+
+// Entry API
+map.entry(200).or_try_insert("world".into()).unwrap();
+```
+
 ## Allocator Macros
 
 Each collection has a macro that generates a typed thread-local slab
@@ -111,6 +132,7 @@ allocator. Invoke inside a module:
 | `list_allocator!(T, bounded\|unbounded)` | List | `Allocator`, `Handle`, `List`, `Cursor` |
 | `heap_allocator!(T, bounded\|unbounded)` | Heap | `Allocator`, `Handle`, `Heap` |
 | `skip_allocator!(K, V, bounded\|unbounded)` | SkipList | `Allocator`, `SkipList`, `Cursor`, `Entry` |
+| `rbtree_allocator!(K, V, bounded\|unbounded)` | RbTree | `Allocator`, `RbTree`, `Cursor`, `Entry` |
 
 **Bounded** allocators have a fixed capacity. Insert operations return
 `Result<_, Full<T>>` when full.
@@ -159,6 +181,16 @@ turbo boost disabled. See [BENCHMARKS.md](BENCHMARKS.md) for full results.
 | get (hit) | 171 |
 | insert | 510 |
 | remove | 544 |
+| pop_first | 26 |
+
+### RbTree (p50 cycles, @10k population)
+
+| Operation | Cycles |
+|-----------|--------|
+| get (hit) | 14 |
+| insert | 228 |
+| remove | 242 |
+| entry (occupied) | 190 |
 | pop_first | 26 |
 
 ## License
