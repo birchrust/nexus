@@ -409,7 +409,7 @@ fn prefetch_read_node<K, V, const B: usize>(ptr: NodePtr<K, V, B>) {
 /// | first / last | O(log_B n)      |
 /// | pop_first    | O(B * log_B n)  |
 /// | range scan   | O(B * log_B n + k) |
-pub struct BTree<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
+pub struct BTree<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
     root: NodePtr<K, V, B>,
     len: usize,
     depth: usize,
@@ -420,7 +420,7 @@ pub struct BTree<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const 
 // impl<A: Alloc> — base block
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BTree<K, V, A, B> {
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BTree<K, V, A, B> {
     /// Creates a new empty B-tree.
     ///
     /// # Panics
@@ -1458,9 +1458,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
 // impl<A: BoundedAlloc> — try_insert
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
-    BTree<K, V, A, B>
-{
+impl<K: Ord, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize> BTree<K, V, A, B> {
     /// Inserts a key-value pair, or returns the pair if the allocator is full.
     ///
     /// If a node with the same key already exists, the value is replaced
@@ -1593,9 +1591,7 @@ impl<K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: us
 // impl<A: UnboundedAlloc> — insert
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
-    BTree<K, V, A, B>
-{
+impl<K: Ord, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize> BTree<K, V, A, B> {
     /// Inserts a key-value pair. Always succeeds (grows as needed).
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -1689,20 +1685,14 @@ impl<K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: 
 // Drop
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Drop
-    for BTree<K, V, A, B>
-{
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Drop for BTree<K, V, A, B> {
     fn drop(&mut self) {
         self.clear();
     }
 }
 
-impl<
-    K: Ord + fmt::Debug,
-    V: fmt::Debug + 'static,
-    A: Alloc<Item = BTreeNode<K, V, B>>,
-    const B: usize,
-> fmt::Debug for BTree<K, V, A, B>
+impl<K: Ord + fmt::Debug, V: fmt::Debug, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
+    fmt::Debug for BTree<K, V, A, B>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.iter()).finish()
@@ -1714,7 +1704,7 @@ impl<
 // =============================================================================
 
 /// A view into a single entry in the tree.
-pub enum Entry<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
+pub enum Entry<'a, K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
     /// An occupied entry — key exists.
     Occupied(OccupiedEntry<'a, K, V, A, B>),
     /// A vacant entry — key does not exist.
@@ -1722,13 +1712,7 @@ pub enum Entry<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, cons
 }
 
 /// A view into an occupied entry.
-pub struct OccupiedEntry<
-    'a,
-    K: Ord,
-    V: 'static,
-    A: Alloc<Item = BTreeNode<K, V, B>>,
-    const B: usize,
-> {
+pub struct OccupiedEntry<'a, K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
     tree: &'a mut BTree<K, V, A, B>,
     node: NodePtr<K, V, B>,
     idx: usize,
@@ -1741,17 +1725,14 @@ pub struct OccupiedEntry<
 /// full nodes on descent. The `entry()` lookup traversal cannot be reused.
 /// For insert-heavy workloads where the key is usually absent, prefer
 /// `try_insert`/`insert` directly to avoid the redundant first traversal.
-pub struct VacantEntry<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
-{
+pub struct VacantEntry<'a, K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
     tree: &'a mut BTree<K, V, A, B>,
     key: K,
 }
 
 // -- Entry: base Alloc methods --
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
-    Entry<'_, K, V, A, B>
-{
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Entry<'_, K, V, A, B> {
     /// Returns a reference to this entry's key.
     #[inline]
     pub fn key(&self) -> &K {
@@ -1773,7 +1754,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
 
 // -- Entry: BoundedAlloc methods --
 
-impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
+impl<'a, K: Ord, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
     Entry<'a, K, V, A, B>
 {
     /// Ensures a value is in the entry by inserting if vacant (bounded).
@@ -1821,7 +1802,7 @@ impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B
 
 // -- Entry: UnboundedAlloc methods --
 
-impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
+impl<'a, K: Ord, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
     Entry<'a, K, V, A, B>
 {
     /// Ensures a value is in the entry by inserting if vacant (unbounded).
@@ -1866,7 +1847,7 @@ impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const
 
 // -- OccupiedEntry --
 
-impl<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
+impl<'a, K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
     OccupiedEntry<'a, K, V, A, B>
 {
     /// Returns a reference to the key.
@@ -1925,7 +1906,7 @@ impl<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize
 
 // -- VacantEntry: BoundedAlloc --
 
-impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
+impl<'a, K: Ord, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
     VacantEntry<'a, K, V, A, B>
 {
     /// Inserts a value into the vacant entry (bounded).
@@ -1940,7 +1921,7 @@ impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B
 
 // -- VacantEntry: UnboundedAlloc --
 
-impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
+impl<'a, K: Ord, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize>
     VacantEntry<'a, K, V, A, B>
 {
     /// Inserts a value into the vacant entry (unbounded).
@@ -1955,9 +1936,7 @@ impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const
 
 // -- VacantEntry: base Alloc --
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
-    VacantEntry<'_, K, V, A, B>
-{
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> VacantEntry<'_, K, V, A, B> {
     /// Returns a reference to the key that would be used for insertion.
     #[inline]
     pub fn key(&self) -> &K {
@@ -2172,7 +2151,7 @@ impl<'a, K: 'a, V: 'a, const B: usize> Iterator for Iter<'a, K, V, B> {
 
 impl<'a, K: 'a, V: 'a, const B: usize> ExactSizeIterator for Iter<'a, K, V, B> {}
 
-impl<'a, K: Ord + 'a, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> IntoIterator
+impl<'a, K: Ord + 'a, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> IntoIterator
     for &'a BTree<K, V, A, B>
 {
     type Item = (&'a K, &'a V);
@@ -2184,7 +2163,7 @@ impl<'a, K: Ord + 'a, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: 
     }
 }
 
-impl<'a, K: Ord + 'a, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> IntoIterator
+impl<'a, K: Ord + 'a, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> IntoIterator
     for &'a mut BTree<K, V, A, B>
 {
     type Item = (&'a K, &'a mut V);
@@ -2363,16 +2342,14 @@ impl<'a, K: 'a, V: 'a, const B: usize> Iterator for RangeMut<'a, K, V, B> {
 /// Cursor for positional traversal with removal.
 ///
 /// After `remove()`, the cursor repositions to the successor.
-pub struct Cursor<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
+pub struct Cursor<'a, K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
     tree: &'a mut BTree<K, V, A, B>,
     stack: [(NodePtr<K, V, B>, u16); MAX_DEPTH],
     stack_len: usize,
     started: bool,
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
-    Cursor<'_, K, V, A, B>
-{
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Cursor<'_, K, V, A, B> {
     /// Returns a reference to the current key.
     #[inline]
     pub fn key(&self) -> Option<&K> {
@@ -2467,11 +2444,11 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
 // =============================================================================
 
 /// Draining iterator that removes and returns all key-value pairs in sorted order.
-pub struct Drain<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
+pub struct Drain<'a, K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> {
     tree: &'a mut BTree<K, V, A, B>,
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Iterator
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Iterator
     for Drain<'_, K, V, A, B>
 {
     type Item = (K, V);
@@ -2487,12 +2464,12 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> It
     }
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> ExactSizeIterator
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> ExactSizeIterator
     for Drain<'_, K, V, A, B>
 {
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Drop
+impl<K: Ord, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Drop
     for Drain<'_, K, V, A, B>
 {
     fn drop(&mut self) {

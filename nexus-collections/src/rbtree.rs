@@ -349,7 +349,7 @@ fn prefetch_read_node<K, V>(ptr: NodePtr<K, V>) {
 /// - Bounded: `try_insert` may fail with `Full<(K, V)>`
 /// - Unbounded: `insert` always succeeds
 /// - `remove`/`pop` deallocate internally and return values directly
-pub struct RbTree<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
+pub struct RbTree<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
     root: NodePtr<K, V>,
     leftmost: NodePtr<K, V>,
     rightmost: NodePtr<K, V>,
@@ -361,7 +361,7 @@ pub struct RbTree<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
 // impl<A: Alloc> — base block
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Creates a new empty red-black tree.
     #[inline]
     #[allow(unused_variables, clippy::needless_pass_by_value)]
@@ -1439,7 +1439,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 // impl<A: BoundedAlloc> — try_insert
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
+impl<K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Inserts a key-value pair, or returns the pair if the allocator is full.
     ///
     /// If a node with the same key already exists, the value is replaced
@@ -1488,7 +1488,7 @@ impl<K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 // impl<A: UnboundedAlloc> — insert
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
+impl<K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Inserts a key-value pair. Always succeeds (grows as needed).
     ///
     /// If a node with the same key already exists, the value is replaced
@@ -1529,13 +1529,13 @@ impl<K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A>
 // Drop
 // =============================================================================
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Drop for RbTree<K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Drop for RbTree<K, V, A> {
     fn drop(&mut self) {
         self.clear();
     }
 }
 
-impl<K: Ord + fmt::Debug, V: fmt::Debug + 'static, A: Alloc<Item = RbNode<K, V>>> fmt::Debug
+impl<K: Ord + fmt::Debug, V: fmt::Debug, A: Alloc<Item = RbNode<K, V>>> fmt::Debug
     for RbTree<K, V, A>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1550,7 +1550,7 @@ impl<K: Ord + fmt::Debug, V: fmt::Debug + 'static, A: Alloc<Item = RbNode<K, V>>
 /// A view into a single entry in the tree, which may be vacant or occupied.
 ///
 /// Constructed via [`RbTree::entry`].
-pub enum Entry<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
+pub enum Entry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
     /// An occupied entry — key exists in the tree.
     Occupied(OccupiedEntry<'a, K, V, A>),
     /// A vacant entry — key does not exist.
@@ -1558,13 +1558,13 @@ pub enum Entry<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
 }
 
 /// A view into an occupied entry in the tree.
-pub struct OccupiedEntry<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
+pub struct OccupiedEntry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, A>,
     ptr: NodePtr<K, V>,
 }
 
 /// A view into a vacant entry in the tree.
-pub struct VacantEntry<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
+pub struct VacantEntry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, A>,
     key: K,
     parent: NodePtr<K, V>,
@@ -1573,7 +1573,7 @@ pub struct VacantEntry<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
 
 // -- Entry: base Alloc methods --
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
     /// Returns a reference to this entry's key.
     #[inline]
     pub fn key(&self) -> &K {
@@ -1598,7 +1598,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
 
 // -- Entry: BoundedAlloc methods --
 
-impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
+impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     /// Ensures a value is in the entry by inserting if vacant (bounded).
     ///
     /// Returns `Err(Full((K, V)))` if the allocator is full and the entry
@@ -1647,7 +1647,7 @@ impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, 
 
 // -- Entry: UnboundedAlloc methods --
 
-impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
+impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
     /// Ensures a value is in the entry by inserting if vacant (unbounded).
     #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
@@ -1690,7 +1690,7 @@ impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K
 
 // -- OccupiedEntry --
 
-impl<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
+impl<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
     /// Returns a reference to the key.
     #[inline]
     pub fn key(&self) -> &K {
@@ -1737,7 +1737,7 @@ impl<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K,
 
 // -- VacantEntry: BoundedAlloc --
 
-impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
+impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
     /// Inserts a value into the vacant entry (bounded allocator).
     ///
     /// Returns `Err(Full((K, V)))` if the allocator is full.
@@ -1762,7 +1762,7 @@ impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'
 
 // -- VacantEntry: UnboundedAlloc --
 
-impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
+impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
     /// Inserts a value into the vacant entry (unbounded allocator).
     #[inline]
     pub fn insert(self, value: V) -> &'a mut V {
@@ -1781,7 +1781,7 @@ impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry
 
 // -- VacantEntry: base Alloc (key accessor) --
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> VacantEntry<'_, K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> VacantEntry<'_, K, V, A> {
     /// Returns a reference to the key that would be used for insertion.
     #[inline]
     pub fn key(&self) -> &K {
@@ -1826,9 +1826,7 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
 
 impl<'a, K: 'a, V: 'a> ExactSizeIterator for Iter<'a, K, V> {}
 
-impl<'a, K: Ord + 'a, V: 'static, A: Alloc<Item = RbNode<K, V>>> IntoIterator
-    for &'a RbTree<K, V, A>
-{
+impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a RbTree<K, V, A> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
@@ -1838,9 +1836,7 @@ impl<'a, K: Ord + 'a, V: 'static, A: Alloc<Item = RbNode<K, V>>> IntoIterator
     }
 }
 
-impl<'a, K: Ord + 'a, V: 'static, A: Alloc<Item = RbNode<K, V>>> IntoIterator
-    for &'a mut RbTree<K, V, A>
-{
+impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a mut RbTree<K, V, A> {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
@@ -2048,13 +2044,13 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
 ///     }
 /// }
 /// ```
-pub struct Cursor<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
+pub struct Cursor<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, A>,
     current: NodePtr<K, V>,
     started: bool,
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
     /// Returns a reference to the current key, or `None` if not positioned.
     #[inline]
     pub fn key(&self) -> Option<&K> {
@@ -2133,11 +2129,11 @@ impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
 /// in sorted (ascending) order.
 ///
 /// When dropped, any remaining nodes are freed via the allocator.
-pub struct Drain<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
+pub struct Drain<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, A>,
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Iterator for Drain<'_, K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Iterator for Drain<'_, K, V, A> {
     type Item = (K, V);
 
     #[inline]
@@ -2151,9 +2147,9 @@ impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Iterator for Drain<'_, K
     }
 }
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> ExactSizeIterator for Drain<'_, K, V, A> {}
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> ExactSizeIterator for Drain<'_, K, V, A> {}
 
-impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Drop for Drain<'_, K, V, A> {
+impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Drop for Drain<'_, K, V, A> {
     fn drop(&mut self) {
         self.tree.clear();
     }
