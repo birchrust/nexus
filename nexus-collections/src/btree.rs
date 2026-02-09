@@ -651,6 +651,14 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
     // =========================================================================
 
     /// Gets the entry for the given key.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// map.entry(100).or_try_insert("hello".into()).unwrap();
+    /// map.entry(100).and_modify(|v| *v = "world".into());
+    /// assert_eq!(map.get(&100), Some(&"world".into()));
+    /// ```
     #[inline]
     pub fn entry(&mut self, key: K) -> Entry<'_, K, V, A, B> {
         let mut current = self.root;

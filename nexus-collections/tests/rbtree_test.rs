@@ -502,6 +502,99 @@ fn entry_and_modify() {
     assert_eq!(map.get(&10), Some(&String::from("TEN")));
 }
 
+#[test]
+#[serial]
+fn entry_occupied_insert() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+    map.try_insert(10, "ten".into()).unwrap();
+
+    match map.entry(10) {
+        nexus_collections::rbtree::Entry::Occupied(mut o) => {
+            let old = o.insert("TEN".into());
+            assert_eq!(old, "ten");
+            assert_eq!(o.get(), "TEN");
+        }
+        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
+    }
+
+    assert_eq!(map.get(&10), Some(&String::from("TEN")));
+}
+
+#[test]
+#[serial]
+fn entry_key() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+    map.try_insert(10, "ten".into()).unwrap();
+
+    // Occupied entry key.
+    assert_eq!(*map.entry(10).key(), 10);
+
+    // Vacant entry key.
+    assert_eq!(*map.entry(99).key(), 99);
+}
+
+#[test]
+#[serial]
+fn entry_or_try_insert_with() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+
+    // Vacant — calls closure.
+    let val = map.entry(10).or_try_insert_with(|| "ten".into()).unwrap();
+    assert_eq!(val, "ten");
+
+    // Occupied — does NOT call closure.
+    let val = map
+        .entry(10)
+        .or_try_insert_with(|| panic!("should not be called"))
+        .unwrap();
+    assert_eq!(val, "ten");
+}
+
+#[test]
+#[serial]
+fn entry_or_try_insert_with_key() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+
+    let val = map
+        .entry(42)
+        .or_try_insert_with_key(|k| format!("key={k}"))
+        .unwrap();
+    assert_eq!(val, "key=42");
+}
+
+#[test]
+#[serial]
+fn entry_or_try_insert_default() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+
+    let val = map.entry(10).or_try_insert_default().unwrap();
+    assert_eq!(val, "");
+
+    // Occupied — returns existing.
+    *map.get_mut(&10).unwrap() = "ten".into();
+    let val = map.entry(10).or_try_insert_default().unwrap();
+    assert_eq!(val, "ten");
+}
+
+#[test]
+#[serial]
+fn debug_fmt() {
+    init();
+    let mut map = rb::RbTree::new(rb::Allocator);
+    map.try_insert(1, "a".into()).unwrap();
+    map.try_insert(2, "b".into()).unwrap();
+    let s = format!("{:?}", map);
+    assert!(s.contains("1"));
+    assert!(s.contains("\"a\""));
+    assert!(s.contains("2"));
+    assert!(s.contains("\"b\""));
+}
+
 // =============================================================================
 // Cursor
 // =============================================================================
@@ -994,4 +1087,31 @@ fn invariant_stress_churn() {
     let keys: Vec<u64> = map.iter().map(|(k, _)| *k).collect();
     let expected: Vec<u64> = (1000..1500).collect();
     assert_eq!(keys, expected);
+}
+
+/// Stress test: verify invariants after every single mutation.
+#[test]
+#[serial]
+fn invariant_every_mutation() {
+    let _ = rb_stress::Allocator::builder().capacity(2000).build();
+    let mut map = rb_stress::RbTree::new(rb_stress::Allocator);
+
+    // Insert 100, verifying after each.
+    for k in 0..100u64 {
+        map.try_insert(k, k).unwrap();
+        map.verify_invariants();
+    }
+
+    // Remove in random-ish order, verifying after each.
+    let mut keys: Vec<u64> = (0..100).collect();
+    for i in (1..keys.len()).rev() {
+        let j = (i * 11 + 7) % (i + 1);
+        keys.swap(i, j);
+    }
+
+    for &k in &keys {
+        map.remove(&k);
+        map.verify_invariants();
+    }
+    assert!(map.is_empty());
 }
