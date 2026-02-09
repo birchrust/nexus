@@ -29,6 +29,7 @@
 //! assert_eq!(map.get(&100), Some(&"hello".into()));
 //! ```
 
+use std::fmt;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -236,27 +237,20 @@ unsafe fn shift_right<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
     let len = node.len as usize;
     if i < len {
         // SAFETY: [i..len) is initialized, [i+1..len+1) is within B.
+        // Both src and dst derived from a single as_mut_ptr() to avoid
+        // conflicting Stacked Borrows reborrows.
         unsafe {
-            ptr::copy(
-                node.keys.as_ptr().add(i),
-                node.keys.as_mut_ptr().add(i + 1),
-                len - i,
-            );
-            ptr::copy(
-                node.values.as_ptr().add(i),
-                node.values.as_mut_ptr().add(i + 1),
-                len - i,
-            );
+            let kp = node.keys.as_mut_ptr();
+            ptr::copy(kp.add(i).cast_const(), kp.add(i + 1), len - i);
+            let vp = node.values.as_mut_ptr();
+            ptr::copy(vp.add(i).cast_const(), vp.add(i + 1), len - i);
         }
     }
     if !node.leaf && i < len {
         // SAFETY: children[i+1..=len] → children[i+2..=len+1].
         unsafe {
-            ptr::copy(
-                node.children.as_ptr().add(i + 1),
-                node.children.as_mut_ptr().add(i + 2),
-                len - i,
-            );
+            let cp = node.children.as_mut_ptr();
+            ptr::copy(cp.add(i + 1).cast_const(), cp.add(i + 2), len - i);
         }
     }
 }
@@ -275,28 +269,20 @@ unsafe fn shift_left<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
     let node = unsafe { &mut *node_deref_mut(ptr) };
     let len = node.len as usize;
     if i + 1 < len {
-        // SAFETY: [i+1..len) is initialized.
+        // SAFETY: [i+1..len) is initialized. Single as_mut_ptr() origin
+        // avoids conflicting Stacked Borrows reborrows.
         unsafe {
-            ptr::copy(
-                node.keys.as_ptr().add(i + 1),
-                node.keys.as_mut_ptr().add(i),
-                len - i - 1,
-            );
-            ptr::copy(
-                node.values.as_ptr().add(i + 1),
-                node.values.as_mut_ptr().add(i),
-                len - i - 1,
-            );
+            let kp = node.keys.as_mut_ptr();
+            ptr::copy(kp.add(i + 1).cast_const(), kp.add(i), len - i - 1);
+            let vp = node.values.as_mut_ptr();
+            ptr::copy(vp.add(i + 1).cast_const(), vp.add(i), len - i - 1);
         }
     }
     if !node.leaf && i + 2 <= len {
         // SAFETY: children[i+2..=len] → children[i+1..=len-1].
         unsafe {
-            ptr::copy(
-                node.children.as_ptr().add(i + 2),
-                node.children.as_mut_ptr().add(i + 1),
-                len - i - 1,
-            );
+            let cp = node.children.as_mut_ptr();
+            ptr::copy(cp.add(i + 2).cast_const(), cp.add(i + 1), len - i - 1);
         }
     }
     node.len -= 1;
@@ -577,6 +563,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
             if unsafe { node_is_leaf(current) } {
                 return None;
             }
+            debug_assert!(path_len < MAX_DEPTH, "path overflow in remove_entry");
             path[path_len] = (current, idx);
             path_len += 1;
             let next = unsafe { child_at(current, idx) };
@@ -598,6 +585,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
 
         // SAFETY: root is non-null.
         while !unsafe { node_is_leaf(current) } {
+            debug_assert!(path_len < MAX_DEPTH, "path overflow in pop_first");
             path[path_len] = (current, 0);
             path_len += 1;
             let next = unsafe { child_at(current, 0) };
@@ -628,6 +616,7 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
         // SAFETY: root is non-null.
         while !unsafe { node_is_leaf(current) } {
             let len = unsafe { node_len(current) };
+            debug_assert!(path_len < MAX_DEPTH, "path overflow in pop_last");
             path[path_len] = (current, len);
             path_len += 1;
             let next = unsafe { child_at(current, len) };
@@ -951,12 +940,17 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
             let mut ext_path = *path;
             let mut ext_len = path_len;
 
+            debug_assert!(ext_len < MAX_DEPTH, "path overflow in remove_found");
             ext_path[ext_len] = (node, idx);
             ext_len += 1;
 
             let mut pred_node = unsafe { child_at(node, idx) };
             while !unsafe { node_is_leaf(pred_node) } {
                 let plen = unsafe { node_len(pred_node) };
+                debug_assert!(
+                    ext_len < MAX_DEPTH,
+                    "path overflow in remove_found predecessor"
+                );
                 ext_path[ext_len] = (pred_node, plen);
                 ext_len += 1;
                 pred_node = unsafe { child_at(pred_node, plen) };
@@ -1074,28 +1068,20 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
 
         // Shift everything in child right by 1.
         // SAFETY: keys/values [0..child_len) → [1..child_len+1).
+        // Single as_mut_ptr() origin avoids Stacked Borrows conflicts.
         if child_len > 0 {
             unsafe {
-                ptr::copy(
-                    child_node.keys.as_ptr(),
-                    child_node.keys.as_mut_ptr().add(1),
-                    child_len,
-                );
-                ptr::copy(
-                    child_node.values.as_ptr(),
-                    child_node.values.as_mut_ptr().add(1),
-                    child_len,
-                );
+                let kp = child_node.keys.as_mut_ptr();
+                ptr::copy(kp.cast_const(), kp.add(1), child_len);
+                let vp = child_node.values.as_mut_ptr();
+                ptr::copy(vp.cast_const(), vp.add(1), child_len);
             }
         }
         if !child_node.leaf {
             // children[0..=child_len] → [1..=child_len+1]
             unsafe {
-                ptr::copy(
-                    child_node.children.as_ptr(),
-                    child_node.children.as_mut_ptr().add(1),
-                    child_len + 1,
-                );
+                let cp = child_node.children.as_mut_ptr();
+                ptr::copy(cp.cast_const(), cp.add(1), child_len + 1);
             }
         }
 
@@ -1153,27 +1139,19 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
             MaybeUninit::new(unsafe { right_node.values[0].assume_init_read() });
 
         // Shift right's keys/values/children left by 1.
+        // Single as_mut_ptr() origin avoids Stacked Borrows conflicts.
         if right_len > 1 {
             unsafe {
-                ptr::copy(
-                    right_node.keys.as_ptr().add(1),
-                    right_node.keys.as_mut_ptr(),
-                    right_len - 1,
-                );
-                ptr::copy(
-                    right_node.values.as_ptr().add(1),
-                    right_node.values.as_mut_ptr(),
-                    right_len - 1,
-                );
+                let kp = right_node.keys.as_mut_ptr();
+                ptr::copy(kp.add(1).cast_const(), kp, right_len - 1);
+                let vp = right_node.values.as_mut_ptr();
+                ptr::copy(vp.add(1).cast_const(), vp, right_len - 1);
             }
         }
         if !right_node.leaf {
             unsafe {
-                ptr::copy(
-                    right_node.children.as_ptr().add(1),
-                    right_node.children.as_mut_ptr(),
-                    right_len,
-                );
+                let cp = right_node.children.as_mut_ptr();
+                ptr::copy(cp.add(1).cast_const(), cp, right_len);
             }
         }
 
@@ -1711,6 +1689,18 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> Dr
     }
 }
 
+impl<
+    K: Ord + fmt::Debug,
+    V: fmt::Debug + 'static,
+    A: Alloc<Item = BTreeNode<K, V, B>>,
+    const B: usize,
+> fmt::Debug for BTree<K, V, A, B>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
 // =============================================================================
 // Entry API
 // =============================================================================
@@ -1754,6 +1744,15 @@ pub struct VacantEntry<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B
 impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>
     Entry<'_, K, V, A, B>
 {
+    /// Returns a reference to this entry's key.
+    #[inline]
+    pub fn key(&self) -> &K {
+        match self {
+            Entry::Occupied(e) => e.key(),
+            Entry::Vacant(e) => e.key(),
+        }
+    }
+
     /// Modifies an existing entry before potential insertion.
     #[inline]
     pub fn and_modify<F: FnOnce(&mut V)>(mut self, f: F) -> Self {
@@ -1777,6 +1776,39 @@ impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B
             Entry::Vacant(e) => e.try_insert(value),
         }
     }
+
+    /// Ensures a value by inserting the result of `f` if vacant (bounded).
+    #[inline]
+    pub fn or_try_insert_with<F: FnOnce() -> V>(self, f: F) -> Result<&'a mut V, Full<(K, V)>> {
+        match self {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+            Entry::Vacant(e) => e.try_insert(f()),
+        }
+    }
+
+    /// Ensures a value by inserting `f(key)` if vacant (bounded).
+    #[inline]
+    pub fn or_try_insert_with_key<F: FnOnce(&K) -> V>(
+        self,
+        f: F,
+    ) -> Result<&'a mut V, Full<(K, V)>> {
+        match self {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+            Entry::Vacant(e) => {
+                let value = f(e.key());
+                e.try_insert(value)
+            }
+        }
+    }
+
+    /// Ensures a value by inserting `V::default()` if vacant (bounded).
+    #[inline]
+    pub fn or_try_insert_default(self) -> Result<&'a mut V, Full<(K, V)>>
+    where
+        V: Default,
+    {
+        self.or_try_insert(V::default())
+    }
 }
 
 // -- Entry: UnboundedAlloc methods --
@@ -1791,6 +1823,36 @@ impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => e.insert(value),
         }
+    }
+
+    /// Ensures a value by inserting the result of `f` if vacant (unbounded).
+    #[inline]
+    pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(f()),
+        }
+    }
+
+    /// Ensures a value by inserting `f(key)` if vacant (unbounded).
+    #[inline]
+    pub fn or_insert_with_key<F: FnOnce(&K) -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let value = f(e.key());
+                e.insert(value)
+            }
+        }
+    }
+
+    /// Ensures a value by inserting `V::default()` if vacant (unbounded).
+    #[inline]
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.or_insert(V::default())
     }
 }
 
@@ -1825,6 +1887,16 @@ impl<'a, K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize
     pub fn into_mut(self) -> &'a mut V {
         // SAFETY: node/idx are valid.
         unsafe { value_at_mut(self.node, self.idx) }
+    }
+
+    /// Sets the value of the entry and returns the old value.
+    #[inline]
+    pub fn insert(&mut self, value: V) -> V {
+        // SAFETY: node/idx are valid; &mut self prevents aliasing.
+        let slot = unsafe { &mut (*node_deref_mut(self.node)).values[self.idx] };
+        let old = unsafe { slot.assume_init_read() };
+        *slot = MaybeUninit::new(value);
+        old
     }
 
     /// Removes the entry and returns `(key, value)`.
@@ -1896,6 +1968,10 @@ fn push_leftmost_path<K, V, const B: usize>(
     stack_len: &mut usize,
 ) {
     loop {
+        debug_assert!(
+            *stack_len < MAX_DEPTH,
+            "stack overflow in push_leftmost_path"
+        );
         stack[*stack_len] = (node, 0);
         *stack_len += 1;
         // SAFETY: node is non-null and in the tree.

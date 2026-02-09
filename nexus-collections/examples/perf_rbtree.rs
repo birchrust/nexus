@@ -267,8 +267,7 @@ fn main() {
         let mut offset = 0usize;
         for _ in 0..WARMUP {
             let base = offset % keys.len();
-            let batch: [u64; BATCH_READ] =
-                std::array::from_fn(|i| keys[(base + i) % keys.len()]);
+            let batch: [u64; BATCH_READ] = std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
             for &k in batch.iter() {
                 map.try_insert(k, k).unwrap();
@@ -278,8 +277,7 @@ fn main() {
         offset = 0;
         for _ in 0..SAMPLES {
             let base = offset % keys.len();
-            let batch: [u64; BATCH_READ] =
-                std::array::from_fn(|i| keys[(base + i) % keys.len()]);
+            let batch: [u64; BATCH_READ] = std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             let s = rdtsc_start();
             seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
             let e = rdtsc_end();

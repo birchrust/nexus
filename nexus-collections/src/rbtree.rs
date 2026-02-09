@@ -8,7 +8,7 @@
 //!
 //! # Allocation Model
 //!
-//! Same as [`SkipList`](crate::skiplist::SkipList) — the tree takes a ZST allocator
+//! Same as [`BTree`](crate::btree::BTree) — the tree takes a ZST allocator
 //! at construction time and handles all node allocation/deallocation internally.
 //! The user only sees keys and values.
 //!
@@ -31,6 +31,7 @@
 //! ```
 
 use std::cell::Cell;
+use std::fmt;
 use std::marker::PhantomData;
 use std::ptr;
 
@@ -1534,6 +1535,14 @@ impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Drop for RbTree<K, V, A>
     }
 }
 
+impl<K: Ord + fmt::Debug, V: fmt::Debug + 'static, A: Alloc<Item = RbNode<K, V>>> fmt::Debug
+    for RbTree<K, V, A>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
 // =============================================================================
 // Entry API
 // =============================================================================
@@ -1565,6 +1574,15 @@ pub struct VacantEntry<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> {
 // -- Entry: base Alloc methods --
 
 impl<K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
+    /// Returns a reference to this entry's key.
+    #[inline]
+    pub fn key(&self) -> &K {
+        match self {
+            Entry::Occupied(e) => e.key(),
+            Entry::Vacant(e) => e.key(),
+        }
+    }
+
     /// Modifies an existing entry before potential insertion.
     ///
     /// If the entry is occupied, calls `f` with `&mut V`.
@@ -1592,6 +1610,39 @@ impl<'a, K: Ord, V: 'static, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, 
             Entry::Vacant(e) => e.try_insert(value),
         }
     }
+
+    /// Ensures a value by inserting the result of `f` if vacant (bounded).
+    #[inline]
+    pub fn or_try_insert_with<F: FnOnce() -> V>(self, f: F) -> Result<&'a mut V, Full<(K, V)>> {
+        match self {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+            Entry::Vacant(e) => e.try_insert(f()),
+        }
+    }
+
+    /// Ensures a value by inserting `f(key)` if vacant (bounded).
+    #[inline]
+    pub fn or_try_insert_with_key<F: FnOnce(&K) -> V>(
+        self,
+        f: F,
+    ) -> Result<&'a mut V, Full<(K, V)>> {
+        match self {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+            Entry::Vacant(e) => {
+                let value = f(e.key());
+                e.try_insert(value)
+            }
+        }
+    }
+
+    /// Ensures a value by inserting `V::default()` if vacant (bounded).
+    #[inline]
+    pub fn or_try_insert_default(self) -> Result<&'a mut V, Full<(K, V)>>
+    where
+        V: Default,
+    {
+        self.or_try_insert(V::default())
+    }
 }
 
 // -- Entry: UnboundedAlloc methods --
@@ -1604,6 +1655,36 @@ impl<'a, K: Ord, V: 'static, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => e.insert(value),
         }
+    }
+
+    /// Ensures a value by inserting the result of `f` if vacant (unbounded).
+    #[inline]
+    pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(f()),
+        }
+    }
+
+    /// Ensures a value by inserting `f(key)` if vacant (unbounded).
+    #[inline]
+    pub fn or_insert_with_key<F: FnOnce(&K) -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let value = f(e.key());
+                e.insert(value)
+            }
+        }
+    }
+
+    /// Ensures a value by inserting `V::default()` if vacant (unbounded).
+    #[inline]
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.or_insert(V::default())
     }
 }
 
@@ -1637,6 +1718,14 @@ impl<'a, K: Ord, V: 'static, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K,
         // SAFETY: ptr is valid, the entry consumed &'a mut RbTree,
         // so the returned reference continues that exclusive borrow.
         unsafe { &mut (*node_deref_mut(self.ptr)).value }
+    }
+
+    /// Sets the value of the entry and returns the old value.
+    #[inline]
+    pub fn insert(&mut self, value: V) -> V {
+        // SAFETY: ptr is valid and occupied; &mut self prevents aliasing.
+        let node = unsafe { &mut *node_deref_mut(self.ptr) };
+        std::mem::replace(&mut node.value, value)
     }
 
     /// Removes the entry and returns `(key, value)`.
@@ -1830,10 +1919,12 @@ impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
         }
 
         let ptr = self.front;
-        // SAFETY: len > 0 implies front is non-null and points to an occupied slot.
-        // The iterator holds &'a mut RbTree, so no aliasing.
+        // SAFETY: Advance to successor FIRST — successor() reads parent/child
+        // pointers via shared references. Creating &mut to the same node
+        // afterward avoids invalidating those reads under Stacked Borrows.
+        let next = unsafe { successor(ptr) };
         let node = unsafe { &mut *node_deref_mut(ptr) };
-        self.front = unsafe { successor(ptr) };
+        self.front = next;
         self.len -= 1;
         prefetch_read_node(self.front);
         Some((&node.key, &mut node.value))
@@ -1928,9 +2019,11 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
         }
 
         let ptr = self.front;
-        // SAFETY: front is non-null and occupied. &mut prevents aliasing.
+        // SAFETY: See IterMut::next — successor() must precede &mut creation
+        // to avoid conflicting Stacked Borrows reborrows on the same node.
+        let next = unsafe { successor(ptr) };
         let node = unsafe { &mut *node_deref_mut(ptr) };
-        self.front = unsafe { successor(ptr) };
+        self.front = next;
         prefetch_read_node(self.front);
         Some((&node.key, &mut node.value))
     }
@@ -1942,8 +2035,7 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
 
 /// Cursor for positional traversal with removal.
 ///
-/// Uses parent pointers for O(1) amortized advance — no predecessor
-/// tracking needed (unlike skip list cursors).
+/// Uses parent pointers for O(1) amortized advance.
 ///
 /// # Example
 ///
