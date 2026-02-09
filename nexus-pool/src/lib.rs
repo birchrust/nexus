@@ -19,8 +19,10 @@
 //!
 //! For use within a single thread. Zero synchronization overhead.
 //!
-//! - [`local::BoundedPool`] - Fixed capacity, pre-allocated objects
+//! - [`local::BoundedPool`] - Fixed capacity, pre-allocated objects (RAII only)
 //! - [`local::Pool`] - Growable, creates objects on demand via factory
+//!   - RAII: [`acquire()`](local::Pool::acquire) / [`try_acquire()`](local::Pool::try_acquire) → auto-return on drop
+//!   - Manual: [`take()`](local::Pool::take) / [`try_take()`](local::Pool::try_take) → [`put()`](local::Pool::put) to return
 //!
 //! **Performance**: ~26 cycles acquire, ~26-28 cycles release (p50)
 //!
@@ -117,10 +119,14 @@
 //!
 //! ## Safety
 //!
-//! Both pool types use RAII guards ([`local::Pooled`], [`sync::Pooled`]) that
+//! The RAII pool types use guards ([`local::Pooled`], [`sync::Pooled`]) that
 //! automatically return objects to the pool on drop. If the pool is dropped
 //! before all guards, the guards will drop their values directly instead of
 //! returning them—no panic, no leak, no use-after-free.
+//!
+//! [`local::Pool`] also supports manual [`take()`](local::Pool::take) /
+//! [`put()`](local::Pool::put) for cases where RAII lifetime doesn't fit
+//! (e.g., storing values in structs, passing through pipelines).
 
 pub mod local;
 pub mod sync;

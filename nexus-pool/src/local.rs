@@ -21,9 +21,11 @@ struct Inner<T> {
     data: UnsafeCell<Vec<T>>,
 
     /// Reset function - called when object returns to pool
+    #[allow(clippy::type_complexity)]
     reset: UnsafeCell<Box<dyn FnMut(&mut T)>>,
 
     /// Factory function - only initialized for Pool, not BoundedPool
+    #[allow(clippy::type_complexity)]
     factory: UnsafeCell<MaybeUninit<Box<dyn FnMut() -> T>>>,
 }
 
@@ -54,7 +56,6 @@ impl<T> Inner<T> {
     }
 
     /// Try to pop from available stack. Used by both pool types.
-    #[inline]
     fn try_pop(&self) -> Option<T> {
         // Safety: single-threaded access
         let data = unsafe { &mut *self.data.get() };
@@ -66,22 +67,20 @@ impl<T> Inner<T> {
     /// # Safety
     ///
     /// Caller must ensure factory was initialized (i.e., this is Pool, not BoundedPool)
-    #[inline]
+    #[allow(clippy::option_if_let_else)]
     unsafe fn pop_or_create(&self) -> T {
         unsafe {
             let data = &mut *self.data.get();
-            match data.pop() {
-                Some(value) => value,
-                None => {
-                    let factory = &mut *self.factory.get();
-                    (factory.assume_init_mut())()
-                }
+            if let Some(value) = data.pop() {
+                value
+            } else {
+                let factory = &mut *self.factory.get();
+                (factory.assume_init_mut())()
             }
         }
     }
 
     /// Reset and return value to available stack
-    #[inline]
     fn return_value(&self, value: &mut T) {
         // Safety: single-threaded access
         let reset = unsafe { &mut *self.reset.get() };
@@ -89,20 +88,17 @@ impl<T> Inner<T> {
     }
 
     /// Push value back to available stack
-    #[inline]
     fn push(&self, value: T) {
         // Safety: single-threaded access
         let data = unsafe { &mut *self.data.get() };
         data.push(value);
     }
 
-    #[inline]
     fn available(&self) -> usize {
         // Safety: single-threaded access
         unsafe { (*self.data.get()).len() }
     }
 
-    #[inline]
     fn is_empty(&self) -> bool {
         self.available() == 0
     }
@@ -168,7 +164,6 @@ impl<T> BoundedPool<T> {
     /// Attempts to acquire an object from the pool.
     ///
     /// Returns `None` if all objects are currently in use.
-    #[inline]
     pub fn try_acquire(&self) -> Option<Pooled<T>> {
         self.inner.try_pop().map(|value| Pooled {
             value: ManuallyDrop::new(value),
@@ -177,13 +172,11 @@ impl<T> BoundedPool<T> {
     }
 
     /// Returns the number of available objects.
-    #[inline]
     pub fn available(&self) -> usize {
         self.inner.available()
     }
 
     /// Returns true if there are no more available objects.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -255,7 +248,6 @@ impl<T> Pool<T> {
     /// Acquires an object from the pool, creating one if necessary.
     ///
     /// This always succeeds but may allocate if the pool is empty.
-    #[inline]
     pub fn acquire(&self) -> Pooled<T> {
         // Safety: Pool always initializes the factory
         let value = unsafe { self.inner.pop_or_create() };
@@ -268,7 +260,6 @@ impl<T> Pool<T> {
     /// Attempts to acquire an object from the pool without creating.
     ///
     /// Returns `None` if the pool is empty. This is the fast path.
-    #[inline]
     pub fn try_acquire(&self) -> Option<Pooled<T>> {
         self.inner.try_pop().map(|value| Pooled {
             value: ManuallyDrop::new(value),
@@ -276,8 +267,48 @@ impl<T> Pool<T> {
         })
     }
 
+    /// Takes an object from the pool without an RAII guard, creating one
+    /// via the factory if the pool is empty.
+    ///
+    /// The caller is responsible for returning the object via [`put()`](Pool::put).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_pool::local::Pool;
+    ///
+    /// let pool = Pool::new(
+    ///     || Vec::<u8>::with_capacity(1024),
+    ///     |v| v.clear(),
+    /// );
+    ///
+    /// let mut buf = pool.take();
+    /// buf.extend_from_slice(b"hello");
+    /// pool.put(buf); // manual return, reset is called
+    /// ```
+    pub fn take(&self) -> T {
+        // Safety: Pool always initializes the factory
+        unsafe { self.inner.pop_or_create() }
+    }
+
+    /// Takes an object from the pool if one is available, without creating.
+    ///
+    /// Returns `None` if the pool is empty. The caller is responsible for
+    /// returning the object via [`put()`](Pool::put).
+    pub fn try_take(&self) -> Option<T> {
+        self.inner.try_pop()
+    }
+
+    /// Returns an object to the pool.
+    ///
+    /// Calls the reset function, then pushes the value back onto the
+    /// available stack for reuse.
+    pub fn put(&self, mut value: T) {
+        self.inner.return_value(&mut value);
+        self.inner.push(value);
+    }
+
     /// Returns the number of available objects.
-    #[inline]
     pub fn available(&self) -> usize {
         self.inner.available()
     }
@@ -478,5 +509,91 @@ mod tests {
     #[should_panic(expected = "capacity must be non-zero")]
     fn bounded_pool_zero_capacity_panics() {
         let _ = BoundedPool::new(0, || (), |_| {});
+    }
+
+    #[test]
+    fn take_put_basic() {
+        let pool = Pool::new(|| Vec::<u8>::with_capacity(16), |v| v.clear());
+
+        let mut buf = pool.take();
+        buf.extend_from_slice(b"hello");
+        assert_eq!(&buf, b"hello");
+
+        pool.put(buf);
+        assert_eq!(pool.available(), 1);
+
+        let reused = pool.take();
+        assert!(reused.is_empty()); // reset was called
+    }
+
+    #[test]
+    fn try_take_empty_returns_none() {
+        let pool = Pool::new(|| 0u32, |_| {});
+
+        assert!(pool.try_take().is_none());
+
+        let v = pool.take(); // creates via factory
+        pool.put(v);
+
+        assert!(pool.try_take().is_some());
+    }
+
+    #[test]
+    fn take_put_reset_called() {
+        let reset_count = StdRc::new(Cell::new(0));
+        let rc = reset_count.clone();
+
+        let pool = Pool::new(
+            || 0u32,
+            move |_| {
+                rc.set(rc.get() + 1);
+            },
+        );
+
+        let v = pool.take();
+        assert_eq!(reset_count.get(), 0);
+
+        pool.put(v);
+        assert_eq!(reset_count.get(), 1);
+
+        let v = pool.take();
+        pool.put(v);
+        assert_eq!(reset_count.get(), 2);
+    }
+
+    #[test]
+    fn take_put_with_capacity() {
+        let pool = Pool::with_capacity(5, || String::from("init"), |s| s.clear());
+        assert_eq!(pool.available(), 5);
+
+        let s = pool.try_take().unwrap();
+        assert_eq!(s, "init");
+        assert_eq!(pool.available(), 4);
+
+        pool.put(s);
+        assert_eq!(pool.available(), 5);
+    }
+
+    #[test]
+    fn mix_raii_and_manual() {
+        let pool = Pool::with_capacity(3, || Vec::<u8>::new(), |v| v.clear());
+
+        // Take one manually
+        let mut manual = pool.take();
+        manual.push(1);
+
+        // Acquire one via RAII
+        let mut guard = pool.acquire();
+        guard.push(2);
+
+        assert_eq!(pool.available(), 1);
+
+        // Return manual
+        pool.put(manual);
+        assert_eq!(pool.available(), 2);
+
+        // Drop guard
+        drop(guard);
+        assert_eq!(pool.available(), 3);
     }
 }

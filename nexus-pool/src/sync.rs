@@ -40,7 +40,6 @@ struct Inner<T> {
 
 impl<T> Inner<T> {
     /// Push a slot back onto the free list. Called from any thread.
-    #[inline]
     fn push(&self, idx: u32, mut value: T) {
         // Reset the value
         (self.reset)(&mut value);
@@ -69,7 +68,6 @@ impl<T> Inner<T> {
     }
 
     /// Pop a slot from the free list. Called only from Acquirer thread.
-    #[inline]
     fn pop(&self) -> Option<u32> {
         loop {
             let head = self.free_head.load(Ordering::Acquire);
@@ -100,7 +98,6 @@ impl<T> Inner<T> {
     /// # Safety
     ///
     /// Caller must own the slot (have popped it) and slot must contain valid value.
-    #[inline]
     unsafe fn read_value(&self, idx: u32) -> T {
         unsafe { (*self.slots[idx as usize].value.get()).assume_init_read() }
     }
@@ -163,6 +160,9 @@ pub struct Pool<T> {
 
 // Pool is Send (can be moved to another thread) but not Sync (not shared)
 // Not Clone - only one acquirer exists
+// Safety: Inner uses atomics for the free list and values are only accessed
+// when a slot is owned (popped). T: Send ensures values can cross threads.
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send> Send for Pool<T> {}
 
 impl<T> Pool<T> {
@@ -213,7 +213,6 @@ impl<T> Pool<T> {
     /// Attempts to acquire an object from the pool.
     ///
     /// Returns `None` if all objects are currently in use.
-    #[inline]
     pub fn try_acquire(&self) -> Option<Pooled<T>> {
         self.inner.pop().map(|idx| {
             // Take value from slot
@@ -257,6 +256,10 @@ pub struct Pooled<T> {
 }
 
 // Pooled is Send + Sync - can be sent anywhere, dropped from anywhere
+// Safety: Pooled owns its value (ManuallyDrop<T>). The Weak<Inner<T>> is only
+// used during drop to push the slot back via atomic CAS. T: Send ensures the
+// value can cross threads; T: Sync ensures shared references are safe.
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send> Send for Pooled<T> {}
 unsafe impl<T: Send + Sync> Sync for Pooled<T> {}
 
