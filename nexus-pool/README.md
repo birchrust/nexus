@@ -11,6 +11,7 @@ High-performance object pools for latency-sensitive applications.
 - **Sub-100 cycle operations**: ~26 cycles for local pools, ~42-68 cycles for sync pools
 - **Zero allocation on hot path**: Pre-allocate objects at startup
 - **RAII guards**: Objects automatically return to pool on drop
+- **Manual take/put**: Owned values without RAII when guard lifetime doesn't fit
 - **Graceful shutdown**: Guards safely drop values if pool is gone
 
 ## Quick Start
@@ -47,8 +48,13 @@ let pool = Pool::new(
     |v| v.clear(),
 );
 
-// Always succeeds (creates new if empty)
+// RAII: auto-returns to pool on drop
 let buf = pool.acquire();
+
+// Manual: caller controls lifetime
+let mut buf = pool.take();
+buf.extend_from_slice(b"hello");
+pool.put(buf); // reset is called, value returns to pool
 ```
 
 ### `sync::Pool`
