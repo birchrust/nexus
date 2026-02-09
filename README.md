@@ -26,6 +26,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | [**nexus-queue**](./nexus-queue) | Lock-free SPSC ring buffer with per-slot lap counters. Two implementations: index-based (NUMA-friendly) and slot-based (shared-L3 friendly). |
 | [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. |
 | [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
+| [**nexus-logbuf**](./nexus-logbuf) | Bounded SPSC and MPSC byte ring buffers. Claim-based API for variable-length messages. The hot-path primitive for getting data off the trading loop without syscalls. |
 
 ### Storage & Allocation
 
@@ -38,7 +39,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-collections**](./nexus-collections) | Index-linked data structures with external storage. O(1) linked lists, O(log n) heaps, skip lists. Storage is separate from structure — move elements between collections without deallocation. |
+| [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. Internal allocation via `nexus-slab` — user sees keys and values, not nodes. |
 
 ### Identity & Strings
 
@@ -47,13 +48,6 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake, UUID v4/v7, ULID. SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
 | [**nexus-ascii**](./nexus-ascii) | Fixed-capacity ASCII strings. Stack-allocated, immutable, with precomputed 48-bit XXH3 hash. Identity-hashable via `nohash` feature for zero-cost lookups. |
 | [**nexus-bits**](./nexus-bits) | Bit-packed integer newtypes via derive macros. Structs, tagged enums, `IntEnum` for discriminants. Zero-cost `#[repr(transparent)]` with compile-time validation. |
-
-## Planned
-
-| Crate | Description |
-|-------|-------------|
-| **nexus-logbuf** | Bounded SPSC and MPSC byte ring buffer for variable-length messages. Offset-based claiming, 8-byte aligned records, claim-based API (`WriteClaim`/`ReadClaim`). Returns `Err(Full)` on exhaustion — caller decides policy. The hot-path primitive for getting data off the trading loop. |
-| **MPSC queue** | Bounded multi-producer, single-consumer lock-free queue. CAS-based tail claiming, wait-free consumer. For buffer return paths and aggregation where producers are not on the hot path. |
 
 ## Design Principles
 
