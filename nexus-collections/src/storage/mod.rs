@@ -11,7 +11,6 @@
 //! |------------|---------|----------|
 //! | [`List`](crate::List) | [`ListStorage<T>`] | [`GrowableListStorage<T>`] |
 //! | [`Heap`](crate::Heap) | [`HeapStorage<T>`] | [`GrowableHeapStorage<T>`] |
-//! | [`SkipList`](crate::SkipList) | [`SkipStorage<K, V>`] | [`GrowableSkipStorage<K, V>`] |
 //!
 //! # Example
 //!
@@ -29,8 +28,6 @@
 
 mod heap;
 mod list;
-mod skip;
-
 // Re-export specialized storage types
 pub use heap::{
     BoundedHeapStorageOps, GrowableHeapStorage, GrowableHeapStorageOps, GrowableHeapVacant,
@@ -40,11 +37,6 @@ pub use list::{
     BoundedListStorageOps, GrowableListStorage, GrowableListStorageOps, GrowableListVacant,
     ListEntry, ListNode, ListRef, ListRefMut, ListStorage, ListStorageOps, ListVacant,
 };
-pub use skip::{
-    BoundedSkipStorageOps, GrowableSkipStorage, GrowableSkipStorageOps, GrowableSkipVacant,
-    SkipEntry, SkipNode, SkipRef, SkipRefMut, SkipStorage, SkipStorageOps, SkipVacant,
-};
-
 // Internal exports for crate use
 pub(crate) use heap::HEAP_POS_NONE;
 

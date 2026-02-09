@@ -579,7 +579,9 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
             }
             path[path_len] = (current, idx);
             path_len += 1;
-            current = unsafe { child_at(current, idx) };
+            let next = unsafe { child_at(current, idx) };
+            prefetch_read_node(next);
+            current = next;
         }
     }
 
@@ -598,7 +600,9 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
         while !unsafe { node_is_leaf(current) } {
             path[path_len] = (current, 0);
             path_len += 1;
-            current = unsafe { child_at(current, 0) };
+            let next = unsafe { child_at(current, 0) };
+            prefetch_read_node(next);
+            current = next;
         }
 
         // current is the leftmost leaf, remove key[0].
@@ -626,7 +630,9 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
             let len = unsafe { node_len(current) };
             path[path_len] = (current, len);
             path_len += 1;
-            current = unsafe { child_at(current, len) };
+            let next = unsafe { child_at(current, len) };
+            prefetch_read_node(next);
+            current = next;
         }
 
         // current is the rightmost leaf, remove last key.
@@ -673,7 +679,9 @@ impl<K: Ord, V: 'static, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize> BT
             if unsafe { node_is_leaf(current) } {
                 break;
             }
-            current = unsafe { child_at(current, idx) };
+            let next = unsafe { child_at(current, idx) };
+            prefetch_read_node(next);
+            current = next;
         }
 
         Entry::Vacant(VacantEntry { tree: self, key })

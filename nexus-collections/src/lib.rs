@@ -7,21 +7,20 @@
 //!
 //! - **List** — Doubly-linked list with `RcSlot` handles and external allocation
 //! - **Heap** — Pairing heap with `RcSlot` handles and external allocation
-//! - **SkipList** — Sorted map with internal allocation (user sees only K/V)
 //! - **RbTree** — Red-black tree sorted map with deterministic O(log n) worst case
-//! - **BTree** — B-tree sorted map with cache-friendly node layout
+//! - **BTree** — B-tree sorted map with cache-friendly, tunable node layout
 //!
-//! # Quick Start (SkipList)
+//! # Quick Start (RbTree)
 //!
 //! ```ignore
 //! mod levels {
-//!     nexus_collections::skip_allocator!(u64, String, bounded);
+//!     nexus_collections::rbtree_allocator!(u64, String, bounded);
 //! }
 //!
 //! fn main() {
 //!     levels::Allocator::builder().capacity(1000).build().unwrap();
 //!
-//!     let mut map = levels::SkipList::new(levels::Allocator);
+//!     let mut map = levels::RbTree::new(levels::Allocator);
 //!     map.try_insert(100, "hello".into()).unwrap();
 //!     assert_eq!(map.get(&100), Some(&"hello".into()));
 //! }
@@ -37,7 +36,6 @@ pub mod heap;
 pub mod list;
 mod macros;
 pub mod rbtree;
-pub mod skiplist;
 
 // Re-export ExclusiveCell types at crate root
 pub use exclusive::{ExMut, ExRef, ExclusiveCell};

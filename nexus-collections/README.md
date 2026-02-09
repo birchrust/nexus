@@ -4,7 +4,7 @@ High-performance, slab-backed collections for latency-critical systems.
 
 ## Why This Crate?
 
-Node-based data structures (linked lists, heaps, trees, skip lists) offer
+Node-based data structures (linked lists, heaps, trees) offer
 operations that contiguous structures can't — O(1) unlink/re-link, stable
 handles to interior elements, and movement between collections without
 copying. The trade-off is normally heap fragmentation and allocator overhead
@@ -75,36 +75,11 @@ assert_eq!(heap.peek().unwrap().data().deadline, 42);
 heap.unlink(&handle);
 ```
 
-### SkipList — Sorted Map
-
-Probabilistic sorted map with O(log n) insert/lookup/remove. Internal
-allocation — user sees only keys and values.
-
-```rust
-mod levels {
-    nexus_collections::skip_allocator!(u64, String, bounded);
-}
-
-levels::Allocator::builder().capacity(1000).build().unwrap();
-
-let mut map = levels::SkipList::new(levels::Allocator);
-map.try_insert(100, "hello".into()).unwrap();
-
-assert_eq!(map.get(&100), Some(&"hello".into()));
-
-// Sorted iteration
-for (k, v) in map.iter() {
-    println!("{k}: {v}");
-}
-
-// Entry API
-map.entry(200).or_try_insert("world".into()).unwrap();
-```
-
 ### RbTree — Red-Black Tree Sorted Map
 
 Deterministic O(log n) sorted map with at most 2 rotations per insert,
-3 per delete. Same API as SkipList with tighter tail latency.
+3 per delete. Best for entry-heavy and pop-heavy workloads (order books,
+timer wheels).
 
 ```rust
 mod levels {
@@ -131,8 +106,8 @@ allocator. Invoke inside a module:
 |-------|-----------|-----------------|
 | `list_allocator!(T, bounded\|unbounded)` | List | `Allocator`, `Handle`, `List`, `Cursor` |
 | `heap_allocator!(T, bounded\|unbounded)` | Heap | `Allocator`, `Handle`, `Heap` |
-| `skip_allocator!(K, V, bounded\|unbounded)` | SkipList | `Allocator`, `SkipList`, `Cursor`, `Entry` |
 | `rbtree_allocator!(K, V, bounded\|unbounded)` | RbTree | `Allocator`, `RbTree`, `Cursor`, `Entry` |
+| `btree_allocator!(K, V, bounded\|unbounded)` | BTree | `Allocator`, `BTree`, `Cursor`, `Entry` |
 
 **Bounded** allocators have a fixed capacity. Insert operations return
 `Result<_, Full<T>>` when full.
@@ -174,24 +149,27 @@ turbo boost disabled. See [BENCHMARKS.md](BENCHMARKS.md) for full results.
 | peek | 20 |
 | unlink | 30 |
 
-### SkipList (p50 cycles, @10k population)
-
-| Operation | Cycles |
-|-----------|--------|
-| get (hit) | 171 |
-| insert | 510 |
-| remove | 544 |
-| pop_first | 26 |
-
 ### RbTree (p50 cycles, @10k population)
 
 | Operation | Cycles |
 |-----------|--------|
-| get (hit) | 14 |
-| insert | 228 |
-| remove | 242 |
-| entry (occupied) | 190 |
-| pop_first | 26 |
+| get (hit) | 15 |
+| insert | 203 |
+| remove | 245 |
+| entry (occupied) | 20 |
+| entry (vacant) | 197 |
+| pop_first | 22 |
+
+### BTree (p50 cycles, @10k population, B=8)
+
+| Operation | Cycles |
+|-----------|--------|
+| get (hit) | 22 |
+| insert | 211 |
+| remove | 209 |
+| entry (occupied) | 22 |
+| entry (vacant) | 373 |
+| pop_first | 47 |
 
 ## License
 
