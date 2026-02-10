@@ -329,11 +329,14 @@ macro_rules! btree_allocator {
         pub use __alloc::{Allocator, Builder};
 
         /// The B-tree sorted map type.
-        pub type BTree = $crate::btree::BTree<__K, __V, __alloc::Allocator, $B>;
+        pub type BTree<C = $crate::compare::Natural> =
+            $crate::btree::BTree<__K, __V, __alloc::Allocator, $B, C>;
         /// Cursor for positional traversal.
-        pub type Cursor<'a> = $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B>;
+        pub type Cursor<'a, C = $crate::compare::Natural> =
+            $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B, C>;
         /// Entry for the entry API.
-        pub type Entry<'a> = $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B>;
+        pub type Entry<'a, C = $crate::compare::Natural> =
+            $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B, C>;
     };
     ($K:ty, $V:ty, unbounded, $B:expr) => {
         type __K = $K;
@@ -348,11 +351,14 @@ macro_rules! btree_allocator {
         pub use __alloc::{Allocator, Builder};
 
         /// The B-tree sorted map type.
-        pub type BTree = $crate::btree::BTree<__K, __V, __alloc::Allocator, $B>;
+        pub type BTree<C = $crate::compare::Natural> =
+            $crate::btree::BTree<__K, __V, __alloc::Allocator, $B, C>;
         /// Cursor for positional traversal.
-        pub type Cursor<'a> = $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B>;
+        pub type Cursor<'a, C = $crate::compare::Natural> =
+            $crate::btree::Cursor<'a, __K, __V, __alloc::Allocator, $B, C>;
         /// Entry for the entry API.
-        pub type Entry<'a> = $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B>;
+        pub type Entry<'a, C = $crate::compare::Natural> =
+            $crate::btree::Entry<'a, __K, __V, __alloc::Allocator, $B, C>;
     };
 }
 
@@ -399,11 +405,14 @@ macro_rules! rbtree_allocator {
         pub use __alloc::{Allocator, Builder};
 
         /// The red-black tree sorted map type.
-        pub type RbTree = $crate::rbtree::RbTree<__K, __V, __alloc::Allocator>;
+        pub type RbTree<C = $crate::compare::Natural> =
+            $crate::rbtree::RbTree<__K, __V, __alloc::Allocator, C>;
         /// Cursor for positional traversal.
-        pub type Cursor<'a> = $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator>;
+        pub type Cursor<'a, C = $crate::compare::Natural> =
+            $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator, C>;
         /// Entry for the entry API.
-        pub type Entry<'a> = $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator>;
+        pub type Entry<'a, C = $crate::compare::Natural> =
+            $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator, C>;
     };
     ($K:ty, $V:ty, unbounded) => {
         type __K = $K;
@@ -416,10 +425,13 @@ macro_rules! rbtree_allocator {
         pub use __alloc::{Allocator, Builder};
 
         /// The red-black tree sorted map type.
-        pub type RbTree = $crate::rbtree::RbTree<__K, __V, __alloc::Allocator>;
+        pub type RbTree<C = $crate::compare::Natural> =
+            $crate::rbtree::RbTree<__K, __V, __alloc::Allocator, C>;
         /// Cursor for positional traversal.
-        pub type Cursor<'a> = $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator>;
+        pub type Cursor<'a, C = $crate::compare::Natural> =
+            $crate::rbtree::Cursor<'a, __K, __V, __alloc::Allocator, C>;
         /// Entry for the entry API.
-        pub type Entry<'a> = $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator>;
+        pub type Entry<'a, C = $crate::compare::Natural> =
+            $crate::rbtree::Entry<'a, __K, __V, __alloc::Allocator, C>;
     };
 }

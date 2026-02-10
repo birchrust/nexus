@@ -1,6 +1,6 @@
 [package]
 name = "nexus-collections"
-version = "0.8.2"
+version = "0.9.0"
 description = "SLUB allocator backed intrusive collections for low-latency systems"
 readme = "README.md"
 edition.workspace = true
