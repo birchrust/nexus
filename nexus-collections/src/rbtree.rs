@@ -31,11 +31,14 @@
 //! ```
 
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ptr;
 
 use nexus_slab::{Alloc, BoundedAlloc, Full, Slot, SlotCell, UnboundedAlloc};
+
+use crate::compare::{Compare, Natural};
 
 // =============================================================================
 // Color constants — packed into the LSB of parent pointer
@@ -332,45 +335,19 @@ fn prefetch_read_node<K, V>(ptr: NodePtr<K, V>) {
 /// - Bounded: `try_insert` may fail with `Full<(K, V)>`
 /// - Unbounded: `insert` always succeeds
 /// - `remove`/`pop` deallocate internally and return values directly
-pub struct RbTree<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
+pub struct RbTree<K, V, A: Alloc<Item = RbNode<K, V>>, C = Natural> {
     root: NodePtr<K, V>,
     leftmost: NodePtr<K, V>,
     rightmost: NodePtr<K, V>,
     len: usize,
-    _marker: PhantomData<A>,
+    _marker: PhantomData<(A, C)>,
 }
 
 // =============================================================================
 // impl<A: Alloc> — base block
 // =============================================================================
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
-    /// Creates a new empty red-black tree.
-    #[allow(unused_variables, clippy::needless_pass_by_value)]
-    pub fn new(alloc: A) -> Self {
-        RbTree {
-            root: ptr::null_mut(),
-            leftmost: ptr::null_mut(),
-            rightmost: ptr::null_mut(),
-            len: 0,
-            _marker: PhantomData,
-        }
-    }
-
-    // =========================================================================
-    // Queries
-    // =========================================================================
-
-    /// Returns the number of elements in the tree.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns `true` if the tree is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, C> {
     /// Returns `true` if the tree contains the given key.
     pub fn contains_key(&self, key: &K) -> bool {
         self.find(key).is_some()
@@ -395,30 +372,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         let ptr = self.find(key)?;
         // SAFETY: find returns a valid, occupied node pointer.
         let node = unsafe { &*node_deref(ptr) };
-        Some((&node.key, &node.value))
-    }
-
-    /// Returns the first (smallest) key-value pair.
-    ///
-    /// O(1) — cached leftmost pointer.
-    pub fn first_key_value(&self) -> Option<(&K, &V)> {
-        if self.leftmost.is_null() {
-            return None;
-        }
-        // SAFETY: leftmost is non-null and points to an occupied slot.
-        let node = unsafe { &*node_deref(self.leftmost) };
-        Some((&node.key, &node.value))
-    }
-
-    /// Returns the last (largest) key-value pair.
-    ///
-    /// O(1) — cached rightmost pointer.
-    pub fn last_key_value(&self) -> Option<(&K, &V)> {
-        if self.rightmost.is_null() {
-            return None;
-        }
-        // SAFETY: rightmost is non-null and points to an occupied slot.
-        let node = unsafe { &*node_deref(self.rightmost) };
         Some((&node.key, &node.value))
     }
 
@@ -458,40 +411,6 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         Some(self.remove_node(self.rightmost))
     }
 
-    /// Removes all nodes, freeing them via the allocator.
-    pub fn clear(&mut self) {
-        // Iterative post-order destruction: detach children and descend,
-        // freeing leaf nodes and walking up via parent pointers.
-        let mut current = self.root;
-        while !current.is_null() {
-            // SAFETY: current is non-null, points to an occupied slot.
-            let node = unsafe { &*node_deref(current) };
-            let left = node.left.get();
-            let right = node.right.get();
-
-            if !left.is_null() {
-                // Detach left child and descend.
-                node.left.set(ptr::null_mut());
-                current = left;
-            } else if !right.is_null() {
-                // Detach right child and descend.
-                node.right.set(ptr::null_mut());
-                current = right;
-            } else {
-                // Leaf: read parent before freeing.
-                let parent = get_parent(current);
-                let slot = unsafe { Slot::from_ptr(current) };
-                unsafe { A::free(slot) };
-                current = parent;
-            }
-        }
-
-        self.root = ptr::null_mut();
-        self.leftmost = ptr::null_mut();
-        self.rightmost = ptr::null_mut();
-        self.len = 0;
-    }
-
     // =========================================================================
     // Entry API
     // =========================================================================
@@ -515,7 +434,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     ///     }
     /// }
     /// ```
-    pub fn entry(&mut self, key: K) -> Entry<'_, K, V, A> {
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V, A, C> {
         let mut parent: NodePtr<K, V> = ptr::null_mut();
         let mut is_left = true;
         let mut current = self.root;
@@ -524,20 +443,23 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
             parent = current;
             // SAFETY: current is non-null and in the tree.
             let node = unsafe { &*node_deref(current) };
-            if key == node.key {
-                // Key dropped — existing key stays in the map (matches BTreeMap).
-                drop(key);
-                return Entry::Occupied(OccupiedEntry {
-                    tree: self,
-                    ptr: current,
-                });
-            }
-            if key < node.key {
-                is_left = true;
-                current = node.left.get();
-            } else {
-                is_left = false;
-                current = node.right.get();
+            match C::cmp(&key, &node.key) {
+                Ordering::Equal => {
+                    // Key dropped — existing key stays in the map (matches BTreeMap).
+                    drop(key);
+                    return Entry::Occupied(OccupiedEntry {
+                        tree: self,
+                        ptr: current,
+                    });
+                }
+                Ordering::Less => {
+                    is_left = true;
+                    current = node.left.get();
+                }
+                Ordering::Greater => {
+                    is_left = false;
+                    current = node.right.get();
+                }
             }
         }
 
@@ -617,7 +539,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// Returns a cursor positioned before the first element.
     ///
     /// Call `advance()` to move to the first element.
-    pub fn cursor_front(&mut self) -> Cursor<'_, K, V, A> {
+    pub fn cursor_front(&mut self) -> Cursor<'_, K, V, A, C> {
         Cursor {
             tree: self,
             current: ptr::null_mut(),
@@ -627,7 +549,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 
     /// Returns a cursor positioned at the given key, or at the first
     /// element greater than the key.
-    pub fn cursor_at(&mut self, key: &K) -> Cursor<'_, K, V, A> {
+    pub fn cursor_at(&mut self, key: &K) -> Cursor<'_, K, V, A, C> {
         let current = self
             .find(key)
             .map_or_else(|| self.lower_bound(key), |ptr| ptr);
@@ -646,7 +568,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
     /// pairs in sorted order.
     ///
     /// When dropped, any remaining nodes are freed via the allocator.
-    pub fn drain(&mut self) -> Drain<'_, K, V, A> {
+    pub fn drain(&mut self) -> Drain<'_, K, V, A, C> {
         Drain { tree: self }
     }
 
@@ -749,15 +671,10 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         while !current.is_null() {
             // SAFETY: current is non-null and in the tree.
             let node = unsafe { &*node_deref(current) };
-            // Direct comparisons avoid LLVM's seta/sbb Ordering materialization.
-            // Generates: cmp + je (equal) + jb (less) + fall-through (greater).
-            if *key == node.key {
-                return Some(current);
-            }
-            if *key < node.key {
-                current = node.left.get();
-            } else {
-                current = node.right.get();
+            match C::cmp(key, &node.key) {
+                Ordering::Equal => return Some(current),
+                Ordering::Less => current = node.left.get(),
+                Ordering::Greater => current = node.right.get(),
             }
         }
         None
@@ -770,7 +687,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         while !current.is_null() {
             // SAFETY: current is non-null and in the tree.
             let node = unsafe { &*node_deref(current) };
-            if *key > node.key {
+            if C::cmp(key, &node.key) == Ordering::Greater {
                 current = node.right.get();
             } else {
                 result = current;
@@ -787,7 +704,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         while !current.is_null() {
             // SAFETY: current is non-null and in the tree.
             let node = unsafe { &*node_deref(current) };
-            if *key < node.key {
+            if C::cmp(key, &node.key) == Ordering::Less {
                 result = current;
                 current = node.left.get();
             } else {
@@ -829,7 +746,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
             // SAFETY: both pointers are non-null and in the tree.
             let front_key = unsafe { &(*node_deref(front)).key };
             let end_key = unsafe { &(*node_deref(end)).key };
-            if front_key >= end_key {
+            if C::cmp(front_key, end_key) != Ordering::Less {
                 return (ptr::null_mut(), ptr::null_mut());
             }
         }
@@ -1356,7 +1273,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         if !left.is_null() {
             let left_key = unsafe { &(*node_deref(left)).key };
             assert!(
-                *left_key < node.key,
+                C::cmp(left_key, &node.key) == Ordering::Less,
                 "BST violation: left key >= parent key"
             );
             assert_eq!(
@@ -1368,7 +1285,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
         if !right.is_null() {
             let right_key = unsafe { &(*node_deref(right)).key };
             assert!(
-                *right_key > node.key,
+                C::cmp(right_key, &node.key) == Ordering::Greater,
                 "BST violation: right key <= parent key"
             );
             assert_eq!(
@@ -1388,7 +1305,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 // impl<A: BoundedAlloc> — try_insert
 // =============================================================================
 
-impl<K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
+impl<K, V, A: BoundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, C> {
     /// Inserts a key-value pair, or returns the pair if the allocator is full.
     ///
     /// If a node with the same key already exists, the value is replaced
@@ -1406,18 +1323,21 @@ impl<K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
             parent = current;
             // SAFETY: current is non-null and in the tree.
             let node = unsafe { &*node_deref(current) };
-            if key == node.key {
-                // Key exists: replace value in-place, no allocation.
-                // SAFETY: current is valid; &mut self prevents aliasing.
-                let existing = unsafe { &mut (*node_deref_mut(current)).value };
-                return Ok(Some(std::mem::replace(existing, value)));
-            }
-            if key < node.key {
-                is_left = true;
-                current = node.left.get();
-            } else {
-                is_left = false;
-                current = node.right.get();
+            match C::cmp(&key, &node.key) {
+                Ordering::Equal => {
+                    // Key exists: replace value in-place, no allocation.
+                    // SAFETY: current is valid; &mut self prevents aliasing.
+                    let existing = unsafe { &mut (*node_deref_mut(current)).value };
+                    return Ok(Some(std::mem::replace(existing, value)));
+                }
+                Ordering::Less => {
+                    is_left = true;
+                    current = node.left.get();
+                }
+                Ordering::Greater => {
+                    is_left = false;
+                    current = node.right.get();
+                }
             }
         }
 
@@ -1436,7 +1356,7 @@ impl<K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 // impl<A: UnboundedAlloc> — insert
 // =============================================================================
 
-impl<K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
+impl<K, V, A: UnboundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, C> {
     /// Inserts a key-value pair. Always succeeds (grows as needed).
     ///
     /// If a node with the same key already exists, the value is replaced
@@ -1451,17 +1371,20 @@ impl<K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
             parent = current;
             // SAFETY: current is non-null and in the tree.
             let node = unsafe { &*node_deref(current) };
-            if key == node.key {
-                // SAFETY: current is valid; &mut self prevents aliasing.
-                let existing = unsafe { &mut (*node_deref_mut(current)).value };
-                return Some(std::mem::replace(existing, value));
-            }
-            if key < node.key {
-                is_left = true;
-                current = node.left.get();
-            } else {
-                is_left = false;
-                current = node.right.get();
+            match C::cmp(&key, &node.key) {
+                Ordering::Equal => {
+                    // SAFETY: current is valid; &mut self prevents aliasing.
+                    let existing = unsafe { &mut (*node_deref_mut(current)).value };
+                    return Some(std::mem::replace(existing, value));
+                }
+                Ordering::Less => {
+                    is_left = true;
+                    current = node.left.get();
+                }
+                Ordering::Greater => {
+                    is_left = false;
+                    current = node.right.get();
+                }
             }
         }
 
@@ -1473,17 +1396,128 @@ impl<K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
 }
 
 // =============================================================================
+// new — Natural-specific (HashMap pattern: default C pinned at construction)
+// =============================================================================
+
+impl<K, V, A: Alloc<Item = RbNode<K, V>>> RbTree<K, V, A> {
+    /// Creates a new empty red-black tree with natural (`Ord`) key ordering.
+    #[allow(unused_variables, clippy::needless_pass_by_value)]
+    pub fn new(alloc: A) -> Self {
+        RbTree {
+            root: ptr::null_mut(),
+            leftmost: ptr::null_mut(),
+            rightmost: ptr::null_mut(),
+            len: 0,
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// Unconstrained methods — no Compare bound
+// =============================================================================
+
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C> RbTree<K, V, A, C> {
+    /// Creates a new empty red-black tree with a custom comparator.
+    ///
+    /// The comparator argument is used for type inference only (comparators
+    /// are ZSTs). This follows the `HashMap::with_hasher` pattern.
+    ///
+    /// ```ignore
+    /// let mut map = rb::RbTree::with_comparator(rb::Allocator, Reverse);
+    /// ```
+    #[allow(unused_variables, clippy::needless_pass_by_value)]
+    pub fn with_comparator(alloc: A, comparator: C) -> Self {
+        RbTree {
+            root: ptr::null_mut(),
+            leftmost: ptr::null_mut(),
+            rightmost: ptr::null_mut(),
+            len: 0,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns the number of elements in the tree.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the tree is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the first (smallest) key-value pair.
+    ///
+    /// O(1) — cached leftmost pointer.
+    pub fn first_key_value(&self) -> Option<(&K, &V)> {
+        if self.leftmost.is_null() {
+            return None;
+        }
+        // SAFETY: leftmost is non-null and points to an occupied slot.
+        let node = unsafe { &*node_deref(self.leftmost) };
+        Some((&node.key, &node.value))
+    }
+
+    /// Returns the last (largest) key-value pair.
+    ///
+    /// O(1) — cached rightmost pointer.
+    pub fn last_key_value(&self) -> Option<(&K, &V)> {
+        if self.rightmost.is_null() {
+            return None;
+        }
+        // SAFETY: rightmost is non-null and points to an occupied slot.
+        let node = unsafe { &*node_deref(self.rightmost) };
+        Some((&node.key, &node.value))
+    }
+
+    /// Removes all nodes, freeing them via the allocator.
+    pub fn clear(&mut self) {
+        // Iterative post-order destruction: detach children and descend,
+        // freeing leaf nodes and walking up via parent pointers.
+        let mut current = self.root;
+        while !current.is_null() {
+            // SAFETY: current is non-null, points to an occupied slot.
+            let node = unsafe { &*node_deref(current) };
+            let left = node.left.get();
+            let right = node.right.get();
+
+            if !left.is_null() {
+                // Detach left child and descend.
+                node.left.set(ptr::null_mut());
+                current = left;
+            } else if !right.is_null() {
+                // Detach right child and descend.
+                node.right.set(ptr::null_mut());
+                current = right;
+            } else {
+                // Leaf: read parent before freeing.
+                let parent = get_parent(current);
+                let slot = unsafe { Slot::from_ptr(current) };
+                unsafe { A::free(slot) };
+                current = parent;
+            }
+        }
+
+        self.root = ptr::null_mut();
+        self.leftmost = ptr::null_mut();
+        self.rightmost = ptr::null_mut();
+        self.len = 0;
+    }
+}
+
+// =============================================================================
 // Drop
 // =============================================================================
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Drop for RbTree<K, V, A> {
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C> Drop for RbTree<K, V, A, C> {
     fn drop(&mut self) {
         self.clear();
     }
 }
 
-impl<K: Ord + fmt::Debug, V: fmt::Debug, A: Alloc<Item = RbNode<K, V>>> fmt::Debug
-    for RbTree<K, V, A>
+impl<K: fmt::Debug, V: fmt::Debug, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> fmt::Debug
+    for RbTree<K, V, A, C>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.iter()).finish()
@@ -1497,22 +1531,22 @@ impl<K: Ord + fmt::Debug, V: fmt::Debug, A: Alloc<Item = RbNode<K, V>>> fmt::Deb
 /// A view into a single entry in the tree, which may be vacant or occupied.
 ///
 /// Constructed via [`RbTree::entry`].
-pub enum Entry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
+pub enum Entry<'a, K, V, A: Alloc<Item = RbNode<K, V>>, C = Natural> {
     /// An occupied entry — key exists in the tree.
-    Occupied(OccupiedEntry<'a, K, V, A>),
+    Occupied(OccupiedEntry<'a, K, V, A, C>),
     /// A vacant entry — key does not exist.
-    Vacant(VacantEntry<'a, K, V, A>),
+    Vacant(VacantEntry<'a, K, V, A, C>),
 }
 
 /// A view into an occupied entry in the tree.
-pub struct OccupiedEntry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
-    tree: &'a mut RbTree<K, V, A>,
+pub struct OccupiedEntry<'a, K, V, A: Alloc<Item = RbNode<K, V>>, C = Natural> {
+    tree: &'a mut RbTree<K, V, A, C>,
     ptr: NodePtr<K, V>,
 }
 
 /// A view into a vacant entry in the tree.
-pub struct VacantEntry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
-    tree: &'a mut RbTree<K, V, A>,
+pub struct VacantEntry<'a, K, V, A: Alloc<Item = RbNode<K, V>>, C = Natural> {
+    tree: &'a mut RbTree<K, V, A, C>,
     key: K,
     parent: NodePtr<K, V>,
     is_left: bool,
@@ -1520,7 +1554,7 @@ pub struct VacantEntry<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
 
 // -- Entry: base Alloc methods --
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> Entry<'_, K, V, A, C> {
     /// Returns a reference to this entry's key.
     pub fn key(&self) -> &K {
         match self {
@@ -1543,7 +1577,7 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Entry<'_, K, V, A> {
 
 // -- Entry: BoundedAlloc methods --
 
-impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
+impl<'a, K, V, A: BoundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> Entry<'a, K, V, A, C> {
     /// Ensures a value is in the entry by inserting if vacant (bounded).
     ///
     /// Returns `Err(Full((K, V)))` if the allocator is full and the entry
@@ -1588,7 +1622,7 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
 
 // -- Entry: UnboundedAlloc methods --
 
-impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
+impl<'a, K, V, A: UnboundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> Entry<'a, K, V, A, C> {
     /// Ensures a value is in the entry by inserting if vacant (unbounded).
     pub fn or_insert(self, value: V) -> &'a mut V {
         match self {
@@ -1627,7 +1661,7 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> Entry<'a, K, V, A> {
 
 // -- OccupiedEntry --
 
-impl<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
+impl<'a, K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> OccupiedEntry<'a, K, V, A, C> {
     /// Returns a reference to the key.
     pub fn key(&self) -> &K {
         // SAFETY: ptr is valid, node is in the tree.
@@ -1668,7 +1702,7 @@ impl<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> OccupiedEntry<'a, K, V, A> {
 
 // -- VacantEntry: BoundedAlloc --
 
-impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
+impl<'a, K, V, A: BoundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> VacantEntry<'a, K, V, A, C> {
     /// Inserts a value into the vacant entry (bounded allocator).
     ///
     /// Returns `Err(Full((K, V)))` if the allocator is full.
@@ -1692,7 +1726,7 @@ impl<'a, K: Ord, V, A: BoundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, 
 
 // -- VacantEntry: UnboundedAlloc --
 
-impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V, A> {
+impl<'a, K, V, A: UnboundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> VacantEntry<'a, K, V, A, C> {
     /// Inserts a value into the vacant entry (unbounded allocator).
     pub fn insert(self, value: V) -> &'a mut V {
         let VacantEntry {
@@ -1710,7 +1744,7 @@ impl<'a, K: Ord, V, A: UnboundedAlloc<Item = RbNode<K, V>>> VacantEntry<'a, K, V
 
 // -- VacantEntry: base Alloc (key accessor) --
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> VacantEntry<'_, K, V, A> {
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> VacantEntry<'_, K, V, A, C> {
     /// Returns a reference to the key that would be used for insertion.
     pub fn key(&self) -> &K {
         &self.key
@@ -1752,7 +1786,9 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
 
 impl<'a, K: 'a, V: 'a> ExactSizeIterator for Iter<'a, K, V> {}
 
-impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a RbTree<K, V, A> {
+impl<'a, K: 'a, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> IntoIterator
+    for &'a RbTree<K, V, A, C>
+{
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
@@ -1761,7 +1797,9 @@ impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a RbT
     }
 }
 
-impl<'a, K: Ord + 'a, V, A: Alloc<Item = RbNode<K, V>>> IntoIterator for &'a mut RbTree<K, V, A> {
+impl<'a, K: 'a, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> IntoIterator
+    for &'a mut RbTree<K, V, A, C>
+{
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
@@ -1958,13 +1996,13 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
 ///     }
 /// }
 /// ```
-pub struct Cursor<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
-    tree: &'a mut RbTree<K, V, A>,
+pub struct Cursor<'a, K, V, A: Alloc<Item = RbNode<K, V>>, C = Natural> {
+    tree: &'a mut RbTree<K, V, A, C>,
     current: NodePtr<K, V>,
     started: bool,
 }
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> Cursor<'_, K, V, A, C> {
     /// Returns a reference to the current key, or `None` if not positioned.
     pub fn key(&self) -> Option<&K> {
         if self.current.is_null() {
@@ -2038,11 +2076,11 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Cursor<'_, K, V, A> {
 /// in sorted (ascending) order.
 ///
 /// When dropped, any remaining nodes are freed via the allocator.
-pub struct Drain<'a, K: Ord, V, A: Alloc<Item = RbNode<K, V>>> {
-    tree: &'a mut RbTree<K, V, A>,
+pub struct Drain<'a, K, V, A: Alloc<Item = RbNode<K, V>>, C = Natural> {
+    tree: &'a mut RbTree<K, V, A, C>,
 }
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Iterator for Drain<'_, K, V, A> {
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> Iterator for Drain<'_, K, V, A, C> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2054,9 +2092,12 @@ impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Iterator for Drain<'_, K, V, A> {
     }
 }
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> ExactSizeIterator for Drain<'_, K, V, A> {}
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> ExactSizeIterator
+    for Drain<'_, K, V, A, C>
+{
+}
 
-impl<K: Ord, V, A: Alloc<Item = RbNode<K, V>>> Drop for Drain<'_, K, V, A> {
+impl<K, V, A: Alloc<Item = RbNode<K, V>>, C> Drop for Drain<'_, K, V, A, C> {
     fn drop(&mut self) {
         self.tree.clear();
     }

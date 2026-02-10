@@ -31,12 +31,15 @@
 use std::cell::Cell;
 
 pub mod btree;
+pub mod compare;
 pub mod exclusive;
 pub mod heap;
 pub mod list;
 mod macros;
 pub mod rbtree;
 
+// Re-export comparison types at crate root
+pub use compare::{Compare, Natural, Reverse};
 // Re-export ExclusiveCell types at crate root
 pub use exclusive::{ExMut, ExRef, ExclusiveCell};
 
