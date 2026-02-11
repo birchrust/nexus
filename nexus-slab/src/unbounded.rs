@@ -223,6 +223,12 @@ impl<T> Slab<T> {
         unsafe { chunks.get_unchecked(chunk_idx) }
     }
 
+    /// Returns the number of allocated chunks.
+    #[inline]
+    pub fn chunk_count(&self) -> usize {
+        self.chunks().len()
+    }
+
     /// Ensures at least `count` chunks are allocated.
     ///
     /// No-op if the slab already has `count` or more chunks. Only allocates

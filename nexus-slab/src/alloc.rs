@@ -122,6 +122,14 @@ pub trait UnboundedAlloc: Alloc {
     ///
     /// Always succeeds - grows the allocator if needed.
     fn alloc(value: Self::Item) -> Slot<Self::Item>;
+
+    /// Ensures at least `count` chunks are allocated.
+    ///
+    /// No-op if the allocator already has `count` or more chunks.
+    fn reserve_chunks(count: usize);
+
+    /// Returns the number of allocated chunks.
+    fn chunk_count() -> usize;
 }
 
 // =============================================================================

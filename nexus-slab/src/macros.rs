@@ -245,24 +245,22 @@ macro_rules! bounded_allocator {
             pub fn builder() -> Builder {
                 Builder { capacity: None }
             }
-
-            /// Returns true if the allocator has been initialized.
-            #[inline]
-            pub fn is_initialized() -> bool {
-                SLAB.with(|slab| slab.is_initialized())
-            }
-
-            /// Returns the total capacity.
-            #[inline]
-            pub fn capacity() -> usize {
-                SLAB.with(|slab| slab.capacity())
-            }
         }
 
         // SAFETY: All operations use TLS freelist with proper union semantics.
         // Single-threaded by nature of TLS.
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
+
+            #[inline]
+            fn is_initialized() -> bool {
+                SLAB.with(|slab| slab.is_initialized())
+            }
+
+            #[inline]
+            fn capacity() -> usize {
+                SLAB.with(|slab| slab.capacity())
+            }
 
             #[inline]
             unsafe fn free(slot: $crate::Slot<$ty>) {
@@ -486,24 +484,22 @@ macro_rules! unbounded_allocator {
                     initial_chunks: 0,
                 }
             }
-
-            /// Returns true if the allocator has been initialized.
-            #[inline]
-            pub fn is_initialized() -> bool {
-                SLAB.with(|slab| slab.is_initialized())
-            }
-
-            /// Returns the total capacity across all chunks.
-            #[inline]
-            pub fn capacity() -> usize {
-                SLAB.with(|slab| slab.capacity())
-            }
         }
 
         // SAFETY: All operations use TLS freelist with proper union semantics.
         // Single-threaded by nature of TLS.
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
+
+            #[inline]
+            fn is_initialized() -> bool {
+                SLAB.with(|slab| slab.is_initialized())
+            }
+
+            #[inline]
+            fn capacity() -> usize {
+                SLAB.with(|slab| slab.capacity())
+            }
 
             #[inline]
             unsafe fn free(slot: $crate::Slot<$ty>) {
@@ -551,6 +547,16 @@ macro_rules! unbounded_allocator {
                 }
                 // SAFETY: slot_ptr is valid and occupied
                 unsafe { $crate::Slot::from_ptr(slot_ptr) }
+            }
+
+            #[inline]
+            fn reserve_chunks(count: usize) {
+                SLAB.with(|slab| slab.reserve_chunks(count));
+            }
+
+            #[inline]
+            fn chunk_count() -> usize {
+                SLAB.with(|slab| slab.chunk_count())
             }
         }
 
