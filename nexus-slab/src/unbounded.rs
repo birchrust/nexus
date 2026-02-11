@@ -223,8 +223,19 @@ impl<T> Slab<T> {
         unsafe { chunks.get_unchecked(chunk_idx) }
     }
 
-    /// Grows the slab by adding a new chunk.
-    pub(crate) fn grow(&self) {
+    /// Ensures at least `count` chunks are allocated.
+    ///
+    /// No-op if the slab already has `count` or more chunks. Only allocates
+    /// the difference.
+    pub fn reserve_chunks(&self, count: usize) {
+        let current = self.chunks().len();
+        for _ in current..count {
+            self.grow();
+        }
+    }
+
+    /// Grows the slab by adding a single new chunk.
+    fn grow(&self) {
         let chunks = self.chunks_mut();
         let chunk_idx = chunks.len();
         let inner = Box::new(BoundedSlab::with_capacity(self.chunk_capacity.get()));
