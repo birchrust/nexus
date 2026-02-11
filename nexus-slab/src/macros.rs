@@ -94,6 +94,7 @@ impl Default for BoundedBuilder {
 #[derive(Debug)]
 pub struct UnboundedBuilder {
     chunk_size: usize,
+    initial_chunks: usize,
 }
 
 impl UnboundedBuilder {
@@ -105,6 +106,7 @@ impl UnboundedBuilder {
     pub const fn new() -> Self {
         Self {
             chunk_size: Self::DEFAULT_CHUNK_SIZE,
+            initial_chunks: 0,
         }
     }
 
@@ -118,10 +120,30 @@ impl UnboundedBuilder {
         self
     }
 
+    /// Sets the number of chunks to preallocate at initialization.
+    ///
+    /// By default, chunks are allocated on-demand. Setting this to N
+    /// preallocates N chunks upfront, avoiding growth pauses during
+    /// early operation.
+    ///
+    /// This is independent of `chunk_size` — e.g., `chunk_size(1024)`
+    /// with `initial_chunks(4)` preallocates 4096 slots across 4 chunks.
+    #[inline]
+    pub const fn initial_chunks(mut self, count: usize) -> Self {
+        self.initial_chunks = count;
+        self
+    }
+
     /// Returns the configured chunk size.
     #[inline]
     pub const fn get_chunk_size(&self) -> usize {
         self.chunk_size
+    }
+
+    /// Returns the configured initial chunk count.
+    #[inline]
+    pub const fn get_initial_chunks(&self) -> usize {
+        self.initial_chunks
     }
 }
 
@@ -180,6 +202,7 @@ macro_rules! bounded_allocator {
         }
 
         /// Unit struct providing static methods for allocator lifecycle.
+        #[derive(Clone, Copy)]
         pub struct Allocator;
 
         /// Builder for configuring this allocator.
@@ -222,24 +245,22 @@ macro_rules! bounded_allocator {
             pub fn builder() -> Builder {
                 Builder { capacity: None }
             }
-
-            /// Returns true if the allocator has been initialized.
-            #[inline]
-            pub fn is_initialized() -> bool {
-                SLAB.with(|slab| slab.is_initialized())
-            }
-
-            /// Returns the total capacity.
-            #[inline]
-            pub fn capacity() -> usize {
-                SLAB.with(|slab| slab.capacity())
-            }
         }
 
         // SAFETY: All operations use TLS freelist with proper union semantics.
         // Single-threaded by nature of TLS.
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
+
+            #[inline]
+            fn is_initialized() -> bool {
+                SLAB.with(|slab| slab.is_initialized())
+            }
+
+            #[inline]
+            fn capacity() -> usize {
+                SLAB.with(|slab| slab.capacity())
+            }
 
             #[inline]
             unsafe fn free(slot: $crate::Slot<$ty>) {
@@ -403,11 +424,13 @@ macro_rules! unbounded_allocator {
         }
 
         /// Unit struct providing static methods for allocator lifecycle.
+        #[derive(Clone, Copy)]
         pub struct Allocator;
 
         /// Builder for configuring this allocator.
         pub struct Builder {
             chunk_size: usize,
+            initial_chunks: usize,
         }
 
         impl Builder {
@@ -418,6 +441,20 @@ macro_rules! unbounded_allocator {
             #[inline]
             pub fn chunk_size(mut self, size: usize) -> Self {
                 self.chunk_size = size;
+                self
+            }
+
+            /// Sets the number of chunks to preallocate at initialization.
+            ///
+            /// By default, chunks are allocated on-demand. Setting this to N
+            /// preallocates N chunks upfront, avoiding growth pauses during
+            /// early operation.
+            ///
+            /// This is independent of `chunk_size` — e.g., `chunk_size(1024)`
+            /// with `initial_chunks(4)` preallocates 4096 slots across 4 chunks.
+            #[inline]
+            pub fn initial_chunks(mut self, count: usize) -> Self {
+                self.initial_chunks = count;
                 self
             }
 
@@ -432,6 +469,7 @@ macro_rules! unbounded_allocator {
                         return Err(AlreadyInitialized);
                     }
                     slab.init(self.chunk_size);
+                    slab.reserve_chunks(self.initial_chunks);
                     Ok(())
                 })
             }
@@ -443,19 +481,8 @@ macro_rules! unbounded_allocator {
             pub fn builder() -> Builder {
                 Builder {
                     chunk_size: DEFAULT_CHUNK_SIZE,
+                    initial_chunks: 0,
                 }
-            }
-
-            /// Returns true if the allocator has been initialized.
-            #[inline]
-            pub fn is_initialized() -> bool {
-                SLAB.with(|slab| slab.is_initialized())
-            }
-
-            /// Returns the total capacity across all chunks.
-            #[inline]
-            pub fn capacity() -> usize {
-                SLAB.with(|slab| slab.capacity())
             }
         }
 
@@ -463,6 +490,16 @@ macro_rules! unbounded_allocator {
         // Single-threaded by nature of TLS.
         unsafe impl $crate::Alloc for Allocator {
             type Item = $ty;
+
+            #[inline]
+            fn is_initialized() -> bool {
+                SLAB.with(|slab| slab.is_initialized())
+            }
+
+            #[inline]
+            fn capacity() -> usize {
+                SLAB.with(|slab| slab.capacity())
+            }
 
             #[inline]
             unsafe fn free(slot: $crate::Slot<$ty>) {
@@ -510,6 +547,16 @@ macro_rules! unbounded_allocator {
                 }
                 // SAFETY: slot_ptr is valid and occupied
                 unsafe { $crate::Slot::from_ptr(slot_ptr) }
+            }
+
+            #[inline]
+            fn reserve_chunks(count: usize) {
+                SLAB.with(|slab| slab.reserve_chunks(count));
+            }
+
+            #[inline]
+            fn chunk_count() -> usize {
+                SLAB.with(|slab| slab.chunk_count())
             }
         }
 

@@ -66,6 +66,15 @@ pub unsafe trait Alloc: Sized + 'static {
     /// The type stored in each slot.
     type Item;
 
+    /// Returns `true` if the allocator has been initialized.
+    fn is_initialized() -> bool;
+
+    /// Returns the total slot capacity.
+    ///
+    /// For bounded allocators this is fixed at init. For unbounded allocators
+    /// this is the sum across all allocated chunks.
+    fn capacity() -> usize;
+
     /// Drops the value and returns the slot to the freelist.
     ///
     /// This is for manual memory management after calling `BoxSlot::into_slot()`.
@@ -113,6 +122,14 @@ pub trait UnboundedAlloc: Alloc {
     ///
     /// Always succeeds - grows the allocator if needed.
     fn alloc(value: Self::Item) -> Slot<Self::Item>;
+
+    /// Ensures at least `count` chunks are allocated.
+    ///
+    /// No-op if the allocator already has `count` or more chunks.
+    fn reserve_chunks(count: usize);
+
+    /// Returns the number of allocated chunks.
+    fn chunk_count() -> usize;
 }
 
 // =============================================================================
