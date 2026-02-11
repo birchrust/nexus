@@ -42,9 +42,12 @@ pub mod rbtree;
 pub use compare::{Compare, Natural, Reverse};
 // Re-export ExclusiveCell types at crate root
 pub use exclusive::{ExMut, ExRef, ExclusiveCell};
-// Re-export slab traits so users can call Allocator::is_initialized() etc.
-// without depending on nexus-slab directly
+// Re-export slab types, traits, and macros so users don't need nexus-slab
+// as a direct dependency. The slab is an implementation detail.
 pub use nexus_slab::{Alloc, BoundedAlloc, Full, UnboundedAlloc};
+pub use nexus_slab::{
+    bounded_allocator, bounded_rc_allocator, unbounded_allocator, unbounded_rc_allocator,
+};
 
 // =============================================================================
 // Collection identity

@@ -95,7 +95,7 @@ macro_rules! list_allocator {
         type __T = $T;
 
         mod __alloc {
-            nexus_slab::bounded_rc_allocator!($crate::list::ListNode<super::__T>);
+            $crate::bounded_rc_allocator!($crate::list::ListNode<super::__T>);
         }
 
         pub use __alloc::{Allocator, Builder};
@@ -113,9 +113,9 @@ macro_rules! list_allocator {
         ///
         /// Returns `Err(Full(value))` if the allocator is at capacity.
         #[inline]
-        pub fn create_node(value: __T) -> Result<Handle, nexus_slab::Full<__T>> {
+        pub fn create_node(value: __T) -> Result<Handle, $crate::Full<__T>> {
             Handle::try_new($crate::list::ListNode::new(value))
-                .map_err(|full| nexus_slab::Full(full.into_inner().into_data()))
+                .map_err(|full| $crate::Full(full.into_inner().into_data()))
         }
 
         /// Creates a new detached list node, panicking if full.
@@ -132,7 +132,7 @@ macro_rules! list_allocator {
         type __T = $T;
 
         mod __alloc {
-            nexus_slab::unbounded_rc_allocator!($crate::list::ListNode<super::__T>);
+            $crate::unbounded_rc_allocator!($crate::list::ListNode<super::__T>);
         }
 
         pub use __alloc::{Allocator, Builder};
@@ -206,7 +206,7 @@ macro_rules! heap_allocator {
         type __T = $T;
 
         mod __alloc {
-            nexus_slab::bounded_rc_allocator!($crate::heap::HeapNode<super::__T>);
+            $crate::bounded_rc_allocator!($crate::heap::HeapNode<super::__T>);
         }
 
         pub use __alloc::{Allocator, Builder};
@@ -222,9 +222,9 @@ macro_rules! heap_allocator {
         ///
         /// Returns `Err(Full(value))` if the allocator is at capacity.
         #[inline]
-        pub fn create_node(value: __T) -> Result<Handle, nexus_slab::Full<__T>> {
+        pub fn create_node(value: __T) -> Result<Handle, $crate::Full<__T>> {
             Handle::try_new($crate::heap::HeapNode::new(value))
-                .map_err(|full| nexus_slab::Full(full.into_inner().into_data()))
+                .map_err(|full| $crate::Full(full.into_inner().into_data()))
         }
 
         /// Creates a new detached heap node, panicking if full.
@@ -241,7 +241,7 @@ macro_rules! heap_allocator {
         type __T = $T;
 
         mod __alloc {
-            nexus_slab::unbounded_rc_allocator!($crate::heap::HeapNode<super::__T>);
+            $crate::unbounded_rc_allocator!($crate::heap::HeapNode<super::__T>);
         }
 
         pub use __alloc::{Allocator, Builder};
@@ -321,7 +321,7 @@ macro_rules! btree_allocator {
         type __V = $V;
 
         mod __alloc {
-            nexus_slab::bounded_allocator!(
+            $crate::bounded_allocator!(
                 $crate::btree::BTreeNode<super::__K, super::__V, $B>
             );
         }
@@ -343,7 +343,7 @@ macro_rules! btree_allocator {
         type __V = $V;
 
         mod __alloc {
-            nexus_slab::unbounded_allocator!(
+            $crate::unbounded_allocator!(
                 $crate::btree::BTreeNode<super::__K, super::__V, $B>
             );
         }
@@ -399,7 +399,7 @@ macro_rules! rbtree_allocator {
         type __V = $V;
 
         mod __alloc {
-            nexus_slab::bounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
+            $crate::bounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
         }
 
         pub use __alloc::{Allocator, Builder};
@@ -419,7 +419,7 @@ macro_rules! rbtree_allocator {
         type __V = $V;
 
         mod __alloc {
-            nexus_slab::unbounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
+            $crate::unbounded_allocator!($crate::rbtree::RbNode<super::__K, super::__V>);
         }
 
         pub use __alloc::{Allocator, Builder};
