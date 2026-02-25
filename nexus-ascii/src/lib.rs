@@ -39,6 +39,8 @@ mod builder;
 mod char;
 mod format;
 mod parse;
+mod raw_string;
+mod raw_text;
 mod str_ref;
 mod string;
 mod text;
@@ -50,6 +52,8 @@ pub mod simd;
 pub use builder::AsciiStringBuilder;
 pub use char::{AsciiChar, InvalidAsciiChar};
 pub use format::IntegerTooLarge;
+pub use raw_string::RawAsciiString;
+pub use raw_text::RawAsciiText;
 pub use str_ref::AsciiStr;
 pub use string::AsciiString;
 pub use text::AsciiText;
@@ -82,6 +86,30 @@ pub type AsciiText32 = AsciiText<32>;
 pub type AsciiText64 = AsciiText<64>;
 /// 128-byte capacity printable ASCII text.
 pub type AsciiText128 = AsciiText<128>;
+
+/// 8-byte capacity raw ASCII string.
+pub type RawAsciiString8 = RawAsciiString<8>;
+/// 16-byte capacity raw ASCII string.
+pub type RawAsciiString16 = RawAsciiString<16>;
+/// 32-byte capacity raw ASCII string.
+pub type RawAsciiString32 = RawAsciiString<32>;
+/// 64-byte capacity raw ASCII string.
+pub type RawAsciiString64 = RawAsciiString<64>;
+/// 128-byte capacity raw ASCII string.
+pub type RawAsciiString128 = RawAsciiString<128>;
+/// 256-byte capacity raw ASCII string.
+pub type RawAsciiString256 = RawAsciiString<256>;
+
+/// 8-byte capacity raw printable ASCII text.
+pub type RawAsciiText8 = RawAsciiText<8>;
+/// 16-byte capacity raw printable ASCII text.
+pub type RawAsciiText16 = RawAsciiText<16>;
+/// 32-byte capacity raw printable ASCII text.
+pub type RawAsciiText32 = RawAsciiText<32>;
+/// 64-byte capacity raw printable ASCII text.
+pub type RawAsciiText64 = RawAsciiText<64>;
+/// 128-byte capacity raw printable ASCII text.
+pub type RawAsciiText128 = RawAsciiText<128>;
 
 /// 8-byte capacity ASCII string builder.
 pub type AsciiStringBuilder8 = AsciiStringBuilder<8>;

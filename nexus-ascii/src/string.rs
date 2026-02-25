@@ -127,7 +127,7 @@ const EMPTY_HEADER: u64 = hash::pack_header(0, hash::hash_const::<0>(&[]));
 /// - `src` must be readable for `len` bytes
 /// - `dst` and `src` must not overlap
 #[inline(always)]
-unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
+pub(crate) unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
     unsafe {
         if len > 32 {
             core::ptr::copy_nonoverlapping(src, dst, len);
@@ -1584,9 +1584,9 @@ impl<const CAP: usize> AsciiString<CAP> {
 /// Created by the [`AsciiString::split`] method.
 #[derive(Debug, Clone)]
 pub struct Split<'a> {
-    remainder: &'a [u8],
-    delimiter: u8,
-    finished: bool,
+    pub(crate) remainder: &'a [u8],
+    pub(crate) delimiter: u8,
+    pub(crate) finished: bool,
 }
 
 impl<'a> Iterator for Split<'a> {

@@ -192,16 +192,16 @@ pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
             let chunk = _mm512_loadu_si512(bytes.as_ptr().add(i).cast());
 
             // Check digit: byte > 0x2F AND byte <= 0x39
-            let is_digit = _mm512_cmpgt_epi8_mask(chunk, digit_lo)
-                & _mm512_cmple_epi8_mask(chunk, digit_hi);
+            let is_digit =
+                _mm512_cmpgt_epi8_mask(chunk, digit_lo) & _mm512_cmple_epi8_mask(chunk, digit_hi);
 
             // Check uppercase: byte > 0x40 AND byte <= 0x5A
-            let is_upper = _mm512_cmpgt_epi8_mask(chunk, upper_lo)
-                & _mm512_cmple_epi8_mask(chunk, upper_hi);
+            let is_upper =
+                _mm512_cmpgt_epi8_mask(chunk, upper_lo) & _mm512_cmple_epi8_mask(chunk, upper_hi);
 
             // Check lowercase: byte > 0x60 AND byte <= 0x7A
-            let is_lower = _mm512_cmpgt_epi8_mask(chunk, lower_lo)
-                & _mm512_cmple_epi8_mask(chunk, lower_hi);
+            let is_lower =
+                _mm512_cmpgt_epi8_mask(chunk, lower_lo) & _mm512_cmple_epi8_mask(chunk, lower_hi);
 
             // Alphanumeric = digit OR upper OR lower
             let is_alnum = is_digit | is_upper | is_lower;
