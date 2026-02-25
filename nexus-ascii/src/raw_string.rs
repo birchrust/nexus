@@ -31,7 +31,7 @@ use crate::string::{copy_short, find_null_byte};
 /// - Content bytes: 0x01-0x7F (null is terminator, not content)
 /// - If no null found in buffer, content = full `CAP` bytes
 /// - `from_static` / `from_static_bytes` reject embedded nulls (compile-time bug)
-/// - `try_from_bytes` finds first null, takes everything before it, validates
+/// - `try_from_bytes` copies input as-is; embedded nulls act as terminators for `len()`
 /// - `as_raw_mut()` gives full buffer access; garbage after null is fine
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -189,17 +189,14 @@ impl<const CAP: usize> RawAsciiString<CAP> {
             });
         }
 
-        // Find content length (up to first null)
-        let content_len = find_null_byte(bytes);
-
-        // Validate ASCII on content bytes using SIMD
-        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(&bytes[..content_len]) {
+        // Validate ASCII using SIMD (no null scan — input is a known-length slice)
+        if let Err((byte, pos)) = simd::validate_ascii_bounded::<CAP>(bytes) {
             return Err(AsciiError::InvalidByte { byte, pos });
         }
 
         let mut data = [0u8; CAP];
-        // SAFETY: content_len <= bytes.len() <= CAP, buffers don't overlap
-        unsafe { copy_short(data.as_mut_ptr(), bytes.as_ptr(), content_len) };
+        // SAFETY: bytes.len() <= CAP, buffers don't overlap
+        unsafe { copy_short(data.as_mut_ptr(), bytes.as_ptr(), bytes.len()) };
 
         Ok(Self(data))
     }
@@ -1864,8 +1861,7 @@ mod tests {
 
     #[test]
     fn try_from_null_terminated_full_buffer() {
-        let s: RawAsciiString<8> =
-            RawAsciiString::try_from_null_terminated(b"abcdefgh").unwrap();
+        let s: RawAsciiString<8> = RawAsciiString::try_from_null_terminated(b"abcdefgh").unwrap();
         assert_eq!(s.len(), 8);
         assert_eq!(s.as_str(), "abcdefgh");
     }

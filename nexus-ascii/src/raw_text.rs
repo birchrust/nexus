@@ -9,6 +9,7 @@ use crate::char::AsciiChar;
 use crate::raw_string::RawAsciiString;
 use crate::simd;
 use crate::str_ref::AsciiStr;
+use crate::string::{copy_short, find_null_byte};
 use crate::text_ref::AsciiTextStr;
 
 // =============================================================================
@@ -169,15 +170,13 @@ impl<const CAP: usize> RawAsciiText<CAP> {
             });
         }
 
-        // Build the raw string first (handles null termination + ASCII validation)
-        let raw = RawAsciiString::try_from_bytes(bytes)?;
-
-        // Validate printable on content
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(raw.as_bytes()) {
+        // Single-pass printable validation (printable 0x20-0x7E is a subset of ASCII)
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(bytes) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
 
-        Ok(Self(raw))
+        // SAFETY: printable ASCII is valid ASCII, len <= CAP checked above
+        Ok(Self(unsafe { RawAsciiString::from_bytes_unchecked(bytes) }))
     }
 
     /// Creates a printable raw ASCII text from a string slice.
@@ -219,32 +218,50 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// Returns [`AsciiError::NonPrintable`] if any content byte is non-printable.
     #[inline]
     pub fn try_from_null_terminated(bytes: &[u8]) -> Result<Self, AsciiError> {
-        let raw = RawAsciiString::try_from_null_terminated(bytes)?;
+        let null_pos = find_null_byte(bytes);
+        let content_len = if null_pos < bytes.len() {
+            null_pos
+        } else {
+            bytes.len()
+        };
 
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(raw.as_bytes()) {
+        if content_len > CAP {
+            return Err(AsciiError::TooLong {
+                len: content_len,
+                cap: CAP,
+            });
+        }
+
+        // Single-pass: printable (0x20-0x7E) is a subset of ASCII
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&bytes[..content_len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
 
-        Ok(Self(raw))
+        let mut data = [0u8; CAP];
+        // SAFETY: content_len <= CAP, buffers don't overlap
+        unsafe { copy_short(data.as_mut_ptr(), bytes.as_ptr(), content_len) };
+
+        Ok(Self(RawAsciiString(data)))
     }
 
     /// Creates a printable raw ASCII text from a raw buffer.
     ///
     /// Validates that all bytes before the first null are printable ASCII.
+    /// Single-pass validation — printable (0x20-0x7E) is a subset of ASCII.
     ///
     /// # Errors
     ///
-    /// Returns [`AsciiError::InvalidByte`] if any content byte is > 127.
     /// Returns [`AsciiError::NonPrintable`] if any content byte is non-printable.
     #[inline]
     pub fn try_from_raw(buffer: [u8; CAP]) -> Result<Self, AsciiError> {
-        let raw = RawAsciiString::try_from_raw(buffer)?;
+        let content_len = find_null_byte(&buffer);
 
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(raw.as_bytes()) {
+        // Single-pass: printable (0x20-0x7E) is a subset of ASCII
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&buffer[..content_len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
 
-        Ok(Self(raw))
+        Ok(Self(RawAsciiString(buffer)))
     }
 
     /// Creates a printable raw ASCII text from a borrowed raw buffer.
@@ -823,10 +840,14 @@ mod tests {
 
     #[test]
     fn rejects_null_in_content() {
-        // Null is a control character, but try_from_bytes on RawAsciiString
-        // will truncate at null. So "Hello\x00World" becomes "Hello" which IS printable.
-        let t: RawAsciiText<32> = RawAsciiText::try_from_bytes(b"Hello\x00World").unwrap();
-        assert_eq!(t.as_str(), "Hello");
+        // Null (0x00) is non-printable — try_from_bytes rejects it.
+        // Null truncation only happens in wire format constructors
+        // (try_from_raw, try_from_null_terminated).
+        let result = RawAsciiText::<32>::try_from_bytes(b"Hello\x00World");
+        assert!(matches!(
+            result,
+            Err(AsciiError::NonPrintable { byte: 0x00, pos: 5 })
+        ));
     }
 
     #[test]
@@ -993,8 +1014,7 @@ mod tests {
 
     #[test]
     fn try_from_null_terminated_printable() {
-        let t: RawAsciiText<16> =
-            RawAsciiText::try_from_null_terminated(b"Hello\0").unwrap();
+        let t: RawAsciiText<16> = RawAsciiText::try_from_null_terminated(b"Hello\0").unwrap();
         assert_eq!(t.as_str(), "Hello");
     }
 
@@ -1006,8 +1026,7 @@ mod tests {
 
     #[test]
     fn try_from_null_terminated_full_buffer() {
-        let t: RawAsciiText<8> =
-            RawAsciiText::try_from_null_terminated(b"abcdefgh").unwrap();
+        let t: RawAsciiText<8> = RawAsciiText::try_from_null_terminated(b"abcdefgh").unwrap();
         assert_eq!(t.len(), 8);
         assert_eq!(t.as_str(), "abcdefgh");
     }
