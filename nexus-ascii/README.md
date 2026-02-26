@@ -85,7 +85,7 @@ Enable the `nohash` feature for optimal HashMap performance:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.4", features = ["nohash"] }
+nexus-ascii = { version = "1.5", features = ["nohash"] }
 ```
 
 ```rust
@@ -172,7 +172,7 @@ Enable the `serde` feature for serialization:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.4", features = ["serde"] }
+nexus-ascii = { version = "1.5", features = ["serde"] }
 ```
 
 ```rust
@@ -198,7 +198,7 @@ Enable the `bytes` feature for async I/O integration:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.4", features = ["bytes"] }
+nexus-ascii = { version = "1.5", features = ["bytes"] }
 ```
 
 ```rust
@@ -220,7 +220,7 @@ This crate is `no_std` compatible. Disable default features to use in `no_std` e
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.4", default-features = false }
+nexus-ascii = { version = "1.5", default-features = false }
 ```
 
 Note: Without `std`, `Error` trait impls and `TryFrom<String>` conversions are unavailable.
