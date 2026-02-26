@@ -13,7 +13,7 @@
 #[path = "_bench_utils.rs"]
 mod bench_utils;
 
-use bench_utils::{bench, bench_raw, print_header, print_intro, rdtsc};
+use bench_utils::{bench, bench_batched, bench_raw, print_header, print_intro, rdtsc};
 use nexus_ascii::AsciiString;
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -27,33 +27,33 @@ fn main() {
     print_header("CONSTRUCTION");
 
     // Empty
-    bench("empty()", || {
+    bench_batched("empty()", || {
         let s: AsciiString<32> = AsciiString::empty();
-        black_box(s).header()
+        black_box(s).as_raw()[0] as u64
     });
 
     // try_from_str - various sizes
-    bench("try_from (7B \"BTC-USD\")", || {
+    bench_batched("try_from (7B \"BTC-USD\")", || {
         let s: AsciiString<32> = AsciiString::try_from(black_box("BTC-USD")).unwrap();
-        s.header()
+        s.as_raw()[0] as u64
     });
 
-    bench("try_from (20B)", || {
+    bench_batched("try_from (20B)", || {
         let s: AsciiString<32> = AsciiString::try_from(black_box("ABCDEFGHIJ1234567890")).unwrap();
-        s.header()
+        s.as_raw()[0] as u64
     });
 
-    bench("try_from (32B, full cap)", || {
+    bench_batched("try_from (32B, full cap)", || {
         let s: AsciiString<32> =
             AsciiString::try_from(black_box("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456")).unwrap();
-        s.header()
+        s.as_raw()[0] as u64
     });
 
     // from_bytes_unchecked
-    bench("from_bytes_unchecked (7B)", || {
+    bench_batched("from_bytes_unchecked (7B)", || {
         let s: AsciiString<32> =
             unsafe { AsciiString::from_bytes_unchecked(black_box(b"BTC-USD")) };
-        s.header()
+        s.as_raw()[0] as u64
     });
 
     // =========================================================================

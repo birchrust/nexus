@@ -8,22 +8,31 @@
 // ASCII Validation
 // =============================================================================
 
-/// Validate that all bytes are ASCII (< 128) using SWAR.
+/// Validate that all bytes are non-null ASCII (0x01-0x7F) using SWAR.
 ///
-/// Processes 8 bytes at a time by checking if any byte has its high bit set.
+/// Processes 8 bytes at a time. Rejects both null bytes (0x00) and non-ASCII
+/// bytes (> 0x7F).
 #[inline]
 pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
     const HI: u64 = 0x8080_8080_8080_8080;
+    const LO: u64 = 0x0101_0101_0101_0101;
     let mut i = 0;
 
-    // Process 8 bytes at a time - just check if any high bit is set
+    // Process 8 bytes at a time
     while i + 8 <= bytes.len() {
         // SAFETY: We just checked that i + 8 <= bytes.len()
         let chunk: [u8; 8] = unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
         let word = u64::from_ne_bytes(chunk);
-        let mask = word & HI;
+
+        // High-bit check: any byte > 0x7F sets the high bit
+        let hi_mask = word & HI;
+
+        // Null check: SWAR null detection — (word - 0x0101...) & ~word & 0x8080...
+        // Sets the high bit of any byte lane that was zero
+        let null_mask = word.wrapping_sub(LO) & !word & HI;
+
+        let mask = hi_mask | null_mask;
         if mask != 0 {
-            // Found non-ASCII - use trailing_zeros to find first invalid byte
             let offset = (mask.trailing_zeros() / 8) as usize;
             let pos = i + offset;
             return Err((bytes[pos], pos));
@@ -33,7 +42,7 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
 
     // Handle remainder byte by byte
     while i < bytes.len() {
-        if bytes[i] > 127 {
+        if bytes[i] == 0 || bytes[i] > 127 {
             return Err((bytes[i], i));
         }
         i += 1;
@@ -727,8 +736,13 @@ mod tests {
     fn test_validate_ascii_valid() {
         assert!(validate_ascii(b"Hello, World!").is_ok());
         assert!(validate_ascii(b"").is_ok());
-        assert!(validate_ascii(&[0u8]).is_ok());
+        assert!(validate_ascii(&[1u8]).is_ok());
         assert!(validate_ascii(&[127u8]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_ascii_null_rejected() {
+        assert_eq!(validate_ascii(&[0u8]), Err((0, 0)));
     }
 
     #[test]

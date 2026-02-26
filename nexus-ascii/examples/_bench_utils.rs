@@ -182,6 +182,111 @@ pub fn bench_raw_wide<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64
     (p50, p99, p999)
 }
 
+/// Batch size for batched benchmarks. 100 ops per measurement amortizes
+/// the ~20 cycle rdtsc overhead down to ~0.2 cycles per operation.
+pub const BATCH: u64 = 100;
+
+/// Serializing rdtsc for measurement start.
+///
+/// `lfence` ensures all prior instructions retire before reading TSC,
+/// preventing out-of-order execution from skewing the measurement.
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub fn rdtsc_fenced_start() -> u64 {
+    unsafe {
+        core::arch::x86_64::_mm_lfence();
+        core::arch::x86_64::_rdtsc()
+    }
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn rdtsc_fenced_start() -> u64 {
+    std::time::Instant::now().elapsed().as_nanos() as u64
+}
+
+/// Serializing rdtsc for measurement end.
+///
+/// `rdtscp` waits for prior instructions to complete before reading TSC.
+/// The trailing `lfence` prevents later instructions from reordering
+/// before the TSC read.
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+pub fn rdtsc_fenced_end() -> u64 {
+    unsafe {
+        let mut aux = 0u32;
+        let tsc = core::arch::x86_64::__rdtscp(&mut aux as *mut _);
+        core::arch::x86_64::_mm_lfence();
+        tsc
+    }
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn rdtsc_fenced_end() -> u64 {
+    std::time::Instant::now().elapsed().as_nanos() as u64
+}
+
+/// Run a batched benchmark: 100 ops per rdtsc measurement.
+///
+/// Amortizes the ~20 cycle rdtsc overhead across [`BATCH`] operations,
+/// giving ~0.2 cycle measurement resolution. Uses serializing fences
+/// for accurate timing. Reports per-operation cycles.
+pub fn bench_batched<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
+    // Warmup
+    for _ in 0..WARMUP {
+        black_box(f());
+    }
+
+    // Collect samples
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let start = rdtsc_fenced_start();
+        for _ in 0..BATCH {
+            black_box(f());
+        }
+        let end = rdtsc_fenced_end();
+        samples.push(end.wrapping_sub(start) / BATCH);
+    }
+
+    samples.sort_unstable();
+    let p50 = percentile(&samples, 50.0);
+    let p99 = percentile(&samples, 99.0);
+    let p999 = percentile(&samples, 99.9);
+
+    println!("{:<40} {:>8} {:>8} {:>8}", name, p50, p99, p999);
+    (p50, p99, p999)
+}
+
+/// Run a batched benchmark with a wider name column (45 chars).
+///
+/// Same as [`bench_batched`] but with more space for longer operation names.
+pub fn bench_batched_wide<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
+    // Warmup
+    for _ in 0..WARMUP {
+        black_box(f());
+    }
+
+    // Collect samples
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let start = rdtsc_fenced_start();
+        for _ in 0..BATCH {
+            black_box(f());
+        }
+        let end = rdtsc_fenced_end();
+        samples.push(end.wrapping_sub(start) / BATCH);
+    }
+
+    samples.sort_unstable();
+    let p50 = percentile(&samples, 50.0);
+    let p99 = percentile(&samples, 99.0);
+    let p999 = percentile(&samples, 99.9);
+
+    println!("{:<45} {:>8} {:>8} {:>8}", name, p50, p99, p999);
+    (p50, p99, p999)
+}
+
 // Cargo requires a main function for files in the examples directory.
 // This module is included via #[path] in the actual benchmark examples.
 #[allow(dead_code)]

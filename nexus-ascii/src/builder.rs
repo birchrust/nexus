@@ -175,10 +175,14 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     /// ```
     #[inline]
     pub fn push(&mut self, ch: AsciiChar) -> Result<(), AsciiError> {
+        let byte = ch.as_u8();
+        if byte == 0 {
+            return Err(AsciiError::InvalidByte { byte: 0, pos: 0 });
+        }
         if self.len >= CAP {
             return Err(AsciiError::TooLong { len: 1, cap: 0 });
         }
-        self.data[self.len] = ch.as_u8();
+        self.data[self.len] = byte;
         self.len += 1;
         Ok(())
     }
@@ -187,7 +191,7 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     ///
     /// # Errors
     ///
-    /// - [`AsciiError::InvalidByte`] if `byte > 127`
+    /// - [`AsciiError::InvalidByte`] if `byte` is null or `> 127`
     /// - [`AsciiError::TooLong`] if the builder is at capacity
     ///
     /// # Example
@@ -203,7 +207,7 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     /// ```
     #[inline]
     pub fn push_byte(&mut self, byte: u8) -> Result<(), AsciiError> {
-        if byte > 127 {
+        if byte == 0 || byte > 127 {
             return Err(AsciiError::InvalidByte { byte, pos: 0 });
         }
         if self.len >= CAP {
@@ -241,7 +245,7 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     ///
     /// # Errors
     ///
-    /// - [`AsciiError::InvalidByte`] if any byte is > 127
+    /// - [`AsciiError::InvalidByte`] if any byte is null or > 127
     /// - [`AsciiError::TooLong`] if the slice exceeds remaining capacity
     ///
     /// # Example
@@ -278,7 +282,7 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     /// # Safety
     ///
     /// The caller must guarantee:
-    /// - All bytes are valid ASCII (0x00-0x7F)
+    /// - All bytes are valid ASCII (0x01-0x7F)
     /// - The slice length does not exceed `remaining()`
     ///
     /// # Example
@@ -297,7 +301,10 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
             bytes.len() <= self.remaining(),
             "bytes exceed remaining capacity"
         );
-        debug_assert!(bytes.iter().all(|&b| b <= 127), "bytes contain non-ASCII");
+        debug_assert!(
+            bytes.iter().all(|&b| b > 0 && b <= 127),
+            "bytes contain null or non-ASCII"
+        );
 
         // SAFETY: Caller guarantees bytes fit
         unsafe {
@@ -391,7 +398,7 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     ///
     /// # Errors
     ///
-    /// - [`AsciiError::InvalidByte`] if any byte before the null is > 127
+    /// - [`AsciiError::InvalidByte`] if any byte before the null is null or > 127
     /// - [`AsciiError::TooLong`] if the content exceeds remaining capacity
     ///
     /// # Example
@@ -436,7 +443,7 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     /// # Safety
     ///
     /// The caller must guarantee:
-    /// - All bytes before the first null (or entire buffer) are valid ASCII (0x00-0x7F)
+    /// - All bytes before the first null (or entire buffer) are valid ASCII (0x01-0x7F)
     /// - The content length does not exceed `remaining()`
     ///
     /// # Example
@@ -460,8 +467,8 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
             "content exceeds remaining capacity"
         );
         debug_assert!(
-            buffer[..content_len].iter().all(|&b| b <= 127),
-            "buffer contains non-ASCII"
+            buffer[..content_len].iter().all(|&b| b > 0 && b <= 127),
+            "buffer contains null or non-ASCII"
         );
 
         // SAFETY: Caller guarantees ASCII and capacity

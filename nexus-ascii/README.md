@@ -4,7 +4,7 @@ Fixed-capacity ASCII strings for high-performance systems.
 
 ## Overview
 
-`nexus-ascii` provides stack-allocated, fixed-capacity ASCII string types optimized for trading systems and other latency-sensitive applications. Every string stores a precomputed hash in its header, enabling fast equality checks and optimal HashMap performance.
+`nexus-ascii` provides stack-allocated, fixed-capacity ASCII string types optimized for trading systems and other latency-sensitive applications. Two families of types are provided: **hashed** types (`AsciiString`, `AsciiText`) store a precomputed 48-bit XXH3 hash in an 8-byte header for fast equality and HashMap lookups; **raw** types (`FlatAsciiString`, `FlatAsciiText`) are `repr(transparent)` over `[u8; N]` with no header overhead, designed for wire protocol fields where hashing is unnecessary.
 
 ## Key Features
 
@@ -19,8 +19,10 @@ Fixed-capacity ASCII strings for high-performance systems.
 
 | Type | Description |
 |------|-------------|
-| `AsciiString<N>` | Fixed-capacity ASCII string (bytes 0x00-0x7F) |
-| `AsciiText<N>` | Printable ASCII only (bytes 0x20-0x7E) |
+| `AsciiString<N>` | Fixed-capacity ASCII string (bytes 0x01-0x7F) with precomputed hash |
+| `AsciiText<N>` | Printable ASCII only (bytes 0x20-0x7E) with precomputed hash |
+| `FlatAsciiString<N>` | No-header ASCII string (bytes 0x01-0x7F), `repr(transparent)` over `[u8; N]` |
+| `FlatAsciiText<N>` | No-header printable ASCII (bytes 0x20-0x7E), `repr(transparent)` over `[u8; N]` |
 | `AsciiStr` | Borrowed reference to ASCII data (DST) |
 | `AsciiTextStr` | Borrowed reference to printable ASCII data (DST) |
 | `AsciiChar` | Single ASCII character with classification methods |
@@ -83,7 +85,7 @@ Enable the `nohash` feature for optimal HashMap performance:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.3", features = ["nohash"] }
+nexus-ascii = { version = "1.5", features = ["nohash"] }
 ```
 
 ```rust
@@ -170,7 +172,7 @@ Enable the `serde` feature for serialization:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.3", features = ["serde"] }
+nexus-ascii = { version = "1.5", features = ["serde"] }
 ```
 
 ```rust
@@ -187,8 +189,8 @@ let restored: AsciiString<32> = serde_json::from_str(&json)?;
 
 Deserialization returns an error (not panic) if:
 - The string exceeds capacity
-- The string contains non-ASCII bytes
-- For `AsciiText`, the string contains non-printable characters
+- The string contains null bytes or non-ASCII bytes
+- For `AsciiText`/`FlatAsciiText`, the string contains non-printable characters
 
 ## Bytes Crate Integration
 
@@ -196,7 +198,7 @@ Enable the `bytes` feature for async I/O integration:
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.3", features = ["bytes"] }
+nexus-ascii = { version = "1.5", features = ["bytes"] }
 ```
 
 ```rust
@@ -218,7 +220,7 @@ This crate is `no_std` compatible. Disable default features to use in `no_std` e
 
 ```toml
 [dependencies]
-nexus-ascii = { version = "1.3", default-features = false }
+nexus-ascii = { version = "1.5", default-features = false }
 ```
 
 Note: Without `std`, `Error` trait impls and `TryFrom<String>` conversions are unavailable.

@@ -11,9 +11,10 @@ use super::sse2;
 // ASCII Validation
 // =============================================================================
 
-/// Validate that all bytes are ASCII (< 128) using AVX2.
+/// Validate that all bytes are non-null ASCII (0x01-0x7F) using AVX2.
 ///
-/// Processes 32 bytes at a time using `_mm256_movemask_epi8` to check high bits.
+/// Processes 32 bytes at a time. Rejects both null bytes (0x00) and
+/// non-ASCII bytes (> 0x7F).
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
@@ -22,14 +23,22 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
 
     // SAFETY: AVX2 availability is guaranteed by target_feature cfg
     unsafe {
+        let zero = _mm256_setzero_si256();
+
         // Process 32 bytes at a time
         while i + 32 <= len {
             let chunk = _mm256_loadu_si256(bytes.as_ptr().add(i).cast());
-            // movemask extracts the high bit of each byte into a 32-bit mask
-            let mask = _mm256_movemask_epi8(chunk);
-            if mask != 0 {
-                // Found non-ASCII byte(s) - find the first one
-                let offset = mask.trailing_zeros() as usize;
+
+            // High-bit check: movemask extracts the high bit of each byte
+            let high_mask = _mm256_movemask_epi8(chunk);
+
+            // Null check: compare each byte with zero
+            let null_cmp = _mm256_cmpeq_epi8(chunk, zero);
+            let null_mask = _mm256_movemask_epi8(null_cmp);
+
+            if (high_mask | null_mask) != 0 {
+                let combined = (high_mask | null_mask) as u32;
+                let offset = combined.trailing_zeros() as usize;
                 let pos = i + offset;
                 return Err((bytes[pos], pos));
             }
@@ -452,6 +461,20 @@ mod tests {
             let mut bytes = vec![b'a'; 64];
             bytes[pos] = 0xFF;
             assert_eq!(validate_ascii(&bytes), Err((0xFF, pos)), "pos={}", pos);
+        }
+    }
+
+    #[test]
+    fn test_validate_ascii_null_rejected() {
+        assert_eq!(validate_ascii(&[0x00]), Err((0x00, 0)));
+    }
+
+    #[test]
+    fn test_validate_ascii_null_at_various_positions() {
+        for pos in 0..64 {
+            let mut bytes = vec![b'a'; 64];
+            bytes[pos] = 0x00;
+            assert_eq!(validate_ascii(&bytes), Err((0x00, pos)), "pos={}", pos);
         }
     }
 

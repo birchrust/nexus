@@ -127,7 +127,7 @@ const EMPTY_HEADER: u64 = hash::pack_header(0, hash::hash_const::<0>(&[]));
 /// - `src` must be readable for `len` bytes
 /// - `dst` and `src` must not overlap
 #[inline(always)]
-unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
+pub(crate) unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
     unsafe {
         if len > 32 {
             core::ptr::copy_nonoverlapping(src, dst, len);
@@ -169,7 +169,7 @@ unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
 /// - **Immutable**: Once created, the string cannot be modified. This guarantees
 ///   the hash is always valid.
 /// - **Copy**: Always implements `Copy`. For move semantics, wrap in a newtype.
-/// - **Full ASCII**: Accepts bytes 0x00-0x7F. For printable-only, use `AsciiText`.
+/// - **Full ASCII**: Accepts bytes 0x01-0x7F. For printable-only, use `AsciiText`.
 ///
 /// # Example
 ///
@@ -228,7 +228,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Panics
     ///
     /// Panics at compile time if:
-    /// - The string contains non-ASCII bytes (> 127)
+    /// - The string contains null bytes or non-ASCII bytes (> 127)
     /// - The string is longer than `CAP`
     /// - `CAP > 128` (const hash limitation)
     ///
@@ -254,9 +254,10 @@ impl<const CAP: usize> AsciiString<CAP> {
 
         assert!(len <= CAP, "string exceeds capacity");
 
-        // Validate ASCII at compile time
+        // Validate non-null ASCII at compile time
         let mut i = 0;
         while i < len {
+            assert!(bytes[i] != 0, "string contains null byte");
             assert!(bytes[i] <= 127, "string contains non-ASCII byte");
             i += 1;
         }
@@ -279,13 +280,13 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// Creates an ASCII string from a static byte slice at compile time.
     ///
     /// This is a `const fn` that validates the input and computes the hash
-    /// at compile time. Invalid input (non-ASCII or too long) causes a
-    /// compile-time panic.
+    /// at compile time. Invalid input (non-ASCII, null, or too long) causes
+    /// a compile-time panic.
     ///
     /// # Panics
     ///
     /// Panics at compile time if:
-    /// - Any byte is > 127 (non-ASCII)
+    /// - Any byte is null (0x00) or > 127 (non-ASCII)
     /// - The slice is longer than `CAP`
     /// - `CAP > 128` (const hash limitation)
     ///
@@ -310,9 +311,10 @@ impl<const CAP: usize> AsciiString<CAP> {
 
         assert!(len <= CAP, "bytes exceed capacity");
 
-        // Validate ASCII at compile time
+        // Validate non-null ASCII at compile time
         let mut i = 0;
         while i < len {
+            assert!(bytes[i] != 0, "bytes contain null byte");
             assert!(bytes[i] <= 127, "bytes contain non-ASCII byte");
             i += 1;
         }
@@ -337,7 +339,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Safety
     ///
     /// The caller must ensure:
-    /// - All bytes are valid ASCII (0x00-0x7F)
+    /// - All bytes are valid ASCII (0x01-0x7F)
     /// - `bytes.len() <= CAP`
     ///
     /// Violating these invariants causes undefined behavior in downstream code
@@ -357,7 +359,10 @@ impl<const CAP: usize> AsciiString<CAP> {
     pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
         let () = Self::_CAP_ASSERT;
         debug_assert!(bytes.len() <= CAP, "bytes exceed capacity");
-        debug_assert!(bytes.iter().all(|&b| b <= 127), "bytes contain non-ASCII");
+        debug_assert!(
+            bytes.iter().all(|&b| b > 0 && b <= 127),
+            "bytes contain null or non-ASCII"
+        );
 
         let len = bytes.len();
         let hash = hash::hash::<CAP>(bytes);
@@ -375,7 +380,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// This is an internal constructor used by `AsciiStringBuilder`. The caller
     /// must guarantee that:
     /// - `len <= CAP`
-    /// - `data[..len]` contains only valid ASCII bytes (0x00-0x7F)
+    /// - `data[..len]` contains only valid ASCII bytes (0x01-0x7F)
     ///
     /// The hash is computed from `data[..len]`.
     #[inline]
@@ -383,8 +388,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let () = Self::_CAP_ASSERT;
         debug_assert!(len <= CAP, "len exceeds capacity");
         debug_assert!(
-            data[..len].iter().all(|&b| b <= 127),
-            "data contains non-ASCII"
+            data[..len].iter().all(|&b| b > 0 && b <= 127),
+            "data contains null or non-ASCII"
         );
 
         // Zero-pad beyond content for word-aligned processing invariant
@@ -399,7 +404,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     ///
     /// Returns an error if:
     /// - The slice is longer than `CAP` ([`AsciiError::TooLong`])
-    /// - Any byte is > 127 ([`AsciiError::InvalidByte`])
+    /// - Any byte is null (0x00) or > 127 ([`AsciiError::InvalidByte`])
     ///
     /// # Example
     ///
@@ -460,7 +465,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Safety
     ///
     /// The caller must ensure:
-    /// - All bytes are valid ASCII (0x00-0x7F)
+    /// - All bytes are valid ASCII (0x01-0x7F)
     /// - The string length does not exceed `CAP`
     ///
     /// Violating these invariants causes undefined behavior.
@@ -553,7 +558,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Errors
     ///
     /// Returns [`AsciiError::InvalidByte`] if any byte before the first null
-    /// is not valid ASCII (> 127).
+    /// is not valid ASCII (null or > 127).
     ///
     /// # Example
     ///
@@ -600,7 +605,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Errors
     ///
     /// Returns [`AsciiError::InvalidByte`] if any byte before the first null
-    /// is not valid ASCII (> 127).
+    /// is not valid ASCII (null or > 127).
     ///
     /// # Example
     ///
@@ -650,7 +655,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Safety
     ///
     /// The caller must ensure that all bytes before the first null byte are
-    /// valid ASCII (0x00-0x7F). Violating this causes undefined behavior in
+    /// valid ASCII (0x01-0x7F). Violating this causes undefined behavior in
     /// code that assumes ASCII validity.
     ///
     /// # Example
@@ -669,8 +674,8 @@ impl<const CAP: usize> AsciiString<CAP> {
         let len = find_null_byte(&buffer);
 
         debug_assert!(
-            buffer[..len].iter().all(|&b| b <= 127),
-            "buffer contains non-ASCII before null"
+            buffer[..len].iter().all(|&b| b > 0 && b <= 127),
+            "buffer contains null or non-ASCII before terminator"
         );
 
         // Zero-pad beyond content for word-aligned processing invariant
@@ -693,7 +698,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// # Errors
     ///
     /// Returns [`AsciiError::InvalidByte`] if any non-padding byte is not valid
-    /// ASCII (> 127).
+    /// ASCII (null or > 127).
     ///
     /// # Example
     ///
@@ -1584,9 +1589,9 @@ impl<const CAP: usize> AsciiString<CAP> {
 /// Created by the [`AsciiString::split`] method.
 #[derive(Debug, Clone)]
 pub struct Split<'a> {
-    remainder: &'a [u8],
-    delimiter: u8,
-    finished: bool,
+    pub(crate) remainder: &'a [u8],
+    pub(crate) delimiter: u8,
+    pub(crate) finished: bool,
 }
 
 impl<'a> Iterator for Split<'a> {
@@ -1871,6 +1876,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn replaced_char(self, from: AsciiChar, to: AsciiChar) -> Self {
+        debug_assert!(to.as_u8() != 0, "cannot replace with null byte");
         let len = self.len();
         let mut data = self.data;
         let from_byte = from.as_u8();
@@ -1905,6 +1911,7 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// ```
     #[inline]
     pub fn replace_first_char(self, from: AsciiChar, to: AsciiChar) -> Self {
+        debug_assert!(to.as_u8() != 0, "cannot replace with null byte");
         let len = self.len();
         let mut data = self.data;
         let from_byte = from.as_u8();
@@ -2166,8 +2173,8 @@ impl<const CAP: usize> AsciiString<CAP> {
     /// let text: AsciiText<32> = s.try_into_text().unwrap();
     /// assert_eq!(text.as_str(), "Hello");
     ///
-    /// let with_null: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x00").unwrap();
-    /// assert!(with_null.try_into_text().is_err());
+    /// let with_ctrl: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x01").unwrap();
+    /// assert!(with_ctrl.try_into_text().is_err());
     /// ```
     #[inline]
     pub fn try_into_text(self) -> Result<crate::AsciiText<CAP>, crate::AsciiError> {
@@ -2645,7 +2652,7 @@ impl<const CAP: usize> TryFrom<bytes::Bytes> for AsciiString<CAP> {
     /// # Errors
     ///
     /// Returns [`AsciiError::TooLong`] if the bytes exceed capacity.
-    /// Returns [`AsciiError::InvalidByte`] if any byte is > 127.
+    /// Returns [`AsciiError::InvalidByte`] if any byte is null or > 127.
     #[inline]
     fn try_from(bytes: bytes::Bytes) -> Result<Self, Self::Error> {
         Self::try_from_bytes(&bytes)
@@ -2661,7 +2668,7 @@ impl<const CAP: usize> TryFrom<&bytes::Bytes> for AsciiString<CAP> {
     /// # Errors
     ///
     /// Returns [`AsciiError::TooLong`] if the bytes exceed capacity.
-    /// Returns [`AsciiError::InvalidByte`] if any byte is > 127.
+    /// Returns [`AsciiError::InvalidByte`] if any byte is null or > 127.
     #[inline]
     fn try_from(bytes: &bytes::Bytes) -> Result<Self, Self::Error> {
         Self::try_from_bytes(bytes.as_ref())
@@ -3064,8 +3071,8 @@ mod tests {
 
     #[test]
     fn from_static_bytes_all_ascii_values() {
-        // Test with bytes spanning the full ASCII range
-        const LOW: AsciiString<32> = AsciiString::from_static_bytes(&[0x00, 0x01, 0x02, 0x03]);
+        // Test with bytes spanning the full non-null ASCII range
+        const LOW: AsciiString<32> = AsciiString::from_static_bytes(&[0x01, 0x02, 0x03, 0x04]);
         const HIGH: AsciiString<32> = AsciiString::from_static_bytes(&[0x7C, 0x7D, 0x7E, 0x7F]);
 
         assert_eq!(LOW.len(), 4);
