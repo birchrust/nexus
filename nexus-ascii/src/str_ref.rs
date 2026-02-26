@@ -53,7 +53,7 @@ pub struct AsciiStr([u8]);
 impl AsciiStr {
     /// Creates an `&AsciiStr` from a byte slice after validating ASCII.
     ///
-    /// Returns an error if any byte is > 127.
+    /// Returns an error if any byte is null (0x00) or > 127.
     ///
     /// # Example
     ///
@@ -77,7 +77,7 @@ impl AsciiStr {
 
     /// Creates an `&AsciiStr` from a string slice after validating ASCII.
     ///
-    /// Returns an error if any byte is > 127 (non-ASCII UTF-8).
+    /// Returns an error if any byte is null (0x00) or > 127 (non-ASCII UTF-8).
     ///
     /// # Example
     ///
@@ -100,7 +100,7 @@ impl AsciiStr {
     ///
     /// # Safety
     ///
-    /// The caller must ensure all bytes are valid ASCII (0x00-0x7F).
+    /// The caller must ensure all bytes are valid ASCII (0x01-0x7F).
     /// Violating this invariant causes undefined behavior in downstream
     /// code that assumes ASCII validity.
     ///
@@ -127,7 +127,7 @@ impl AsciiStr {
     ///
     /// # Safety
     ///
-    /// The caller must ensure all characters are ASCII (code points 0-127).
+    /// The caller must ensure all characters are non-null ASCII (code points 1-127).
     ///
     /// # Example
     ///

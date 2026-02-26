@@ -1,12 +1,12 @@
-//! Printable-only raw ASCII string type.
+//! Printable-only flat ASCII string type.
 //!
-//! `RawAsciiText<CAP>` is a `#[repr(transparent)]` newtype over
-//! [`RawAsciiString<CAP>`] that guarantees all content bytes are printable
+//! `FlatAsciiText<CAP>` is a `#[repr(transparent)]` newtype over
+//! [`FlatAsciiString<CAP>`] that guarantees all content bytes are printable
 //! ASCII (0x20-0x7E). No header, no hash.
 
 use crate::AsciiError;
 use crate::char::AsciiChar;
-use crate::raw_string::RawAsciiString;
+use crate::flat_string::FlatAsciiString;
 use crate::simd;
 use crate::str_ref::AsciiStr;
 use crate::string::{copy_short, find_null_byte};
@@ -34,14 +34,14 @@ const fn validate_printable_const(bytes: &[u8]) -> bool {
 }
 
 // =============================================================================
-// RawAsciiText
+// FlatAsciiText
 // =============================================================================
 
-/// A fixed-capacity raw ASCII buffer containing only printable characters.
+/// A fixed-capacity flat ASCII buffer containing only printable characters.
 ///
-/// `RawAsciiText<CAP>` is a `#[repr(transparent)]` newtype over
-/// [`RawAsciiString<CAP>`] that guarantees all content characters are printable
-/// ASCII (0x20-0x7E). No header, no hash — just raw printable bytes.
+/// `FlatAsciiText<CAP>` is a `#[repr(transparent)]` newtype over
+/// [`FlatAsciiString<CAP>`] that guarantees all content characters are printable
+/// ASCII (0x20-0x7E). No header, no hash — just printable bytes.
 ///
 /// # Design
 ///
@@ -49,46 +49,50 @@ const fn validate_printable_const(bytes: &[u8]) -> bool {
 /// - **No header**: Zero bytes of overhead
 /// - **Copy**: Always implements `Copy`
 /// - **Mutable**: `as_raw_mut()` is NOT inherited via Deref (Deref is `&`).
-///   To mutate, convert to `RawAsciiString` first, then re-validate.
+///   To mutate, convert to `FlatAsciiString` first, then re-validate.
+///
+/// For key-like strings that benefit from precomputed hashing and fast equality
+/// rejection, use [`AsciiText`](crate::AsciiText) instead.
 ///
 /// # Example
 ///
 /// ```
-/// use nexus_ascii::{RawAsciiText, AsciiError};
+/// use nexus_ascii::{FlatAsciiText, AsciiError};
 ///
-/// let text: RawAsciiText<32> = RawAsciiText::try_from("Hello, World!")?;
+/// let text: FlatAsciiText<32> = FlatAsciiText::try_from("Hello, World!")?;
 /// assert_eq!(text.as_str(), "Hello, World!");
 ///
 /// // Control characters are rejected
-/// let err = RawAsciiText::<32>::try_from_bytes(b"Hello\x01World");
+/// let err = FlatAsciiText::<32>::try_from_bytes(b"Hello\x01World");
 /// assert!(matches!(err, Err(AsciiError::NonPrintable { .. })));
 /// # Ok::<(), AsciiError>(())
 /// ```
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct RawAsciiText<const CAP: usize>(RawAsciiString<CAP>);
+pub struct FlatAsciiText<const CAP: usize>(FlatAsciiString<CAP>);
 
 // =============================================================================
 // Constructors
 // =============================================================================
 
-impl<const CAP: usize> RawAsciiText<CAP> {
-    /// Creates an empty printable raw ASCII text (all zeros).
+impl<const CAP: usize> FlatAsciiText<CAP> {
+    /// Creates an empty printable flat ASCII text (all zeros).
     ///
     /// # Example
     ///
     /// ```
-    /// use nexus_ascii::RawAsciiText;
+    /// use nexus_ascii::FlatAsciiText;
     ///
-    /// let text: RawAsciiText<32> = RawAsciiText::empty();
+    /// let text: FlatAsciiText<32> = FlatAsciiText::empty();
     /// assert!(text.is_empty());
     /// ```
     #[inline]
+    #[must_use]
     pub const fn empty() -> Self {
-        Self(RawAsciiString::empty())
+        Self(FlatAsciiString::empty())
     }
 
-    /// Creates a printable raw ASCII text from a static string literal at compile time.
+    /// Creates a printable flat ASCII text from a static string literal at compile time.
     ///
     /// Validates printable range and rejects embedded null bytes at compile time.
     ///
@@ -101,12 +105,13 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// # Example
     ///
     /// ```
-    /// use nexus_ascii::RawAsciiText;
+    /// use nexus_ascii::FlatAsciiText;
     ///
-    /// const HELLO: RawAsciiText<16> = RawAsciiText::from_static("Hello!");
+    /// const HELLO: FlatAsciiText<16> = FlatAsciiText::from_static("Hello!");
     /// assert_eq!(HELLO.as_str(), "Hello!");
     /// ```
     #[inline]
+    #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
         let bytes = s.as_bytes();
         assert!(
@@ -114,10 +119,10 @@ impl<const CAP: usize> RawAsciiText<CAP> {
             "string contains non-printable byte"
         );
         // from_static validates ASCII + no nulls
-        Self(RawAsciiString::from_static(s))
+        Self(FlatAsciiString::from_static(s))
     }
 
-    /// Creates a printable raw ASCII text from a static byte slice at compile time.
+    /// Creates a printable flat ASCII text from a static byte slice at compile time.
     ///
     /// # Panics
     ///
@@ -128,25 +133,27 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// # Example
     ///
     /// ```
-    /// use nexus_ascii::RawAsciiText;
+    /// use nexus_ascii::FlatAsciiText;
     ///
-    /// const SYMBOL: RawAsciiText<16> = RawAsciiText::from_static_bytes(b"BTC-USD");
+    /// const SYMBOL: FlatAsciiText<16> = FlatAsciiText::from_static_bytes(b"BTC-USD");
     /// assert_eq!(SYMBOL.as_str(), "BTC-USD");
     /// ```
     #[inline]
+    #[must_use]
     pub const fn from_static_bytes(bytes: &'static [u8]) -> Self {
         assert!(
             validate_printable_const(bytes),
             "bytes contain non-printable byte"
         );
         // from_static_bytes validates ASCII + no nulls
-        Self(RawAsciiString::from_static_bytes(bytes))
+        Self(FlatAsciiString::from_static_bytes(bytes))
     }
 
-    /// Creates a printable raw ASCII text from a byte slice.
+    /// Creates a printable flat ASCII text from a byte slice.
     ///
-    /// If the slice contains a null byte, only bytes before the first null are
-    /// included. All content bytes must be printable (0x20-0x7E).
+    /// Validates that all bytes are printable ASCII (0x20-0x7E). Null bytes
+    /// are rejected — use [`try_from_null_terminated`](Self::try_from_null_terminated)
+    /// for null-terminated input.
     ///
     /// # Errors
     ///
@@ -156,9 +163,9 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// # Example
     ///
     /// ```
-    /// use nexus_ascii::RawAsciiText;
+    /// use nexus_ascii::FlatAsciiText;
     ///
-    /// let text: RawAsciiText<32> = RawAsciiText::try_from_bytes(b"Hello").unwrap();
+    /// let text: FlatAsciiText<32> = FlatAsciiText::try_from_bytes(b"Hello").unwrap();
     /// assert_eq!(text.as_str(), "Hello");
     /// ```
     #[inline]
@@ -176,16 +183,18 @@ impl<const CAP: usize> RawAsciiText<CAP> {
         }
 
         // SAFETY: printable ASCII is valid ASCII, len <= CAP checked above
-        Ok(Self(unsafe { RawAsciiString::from_bytes_unchecked(bytes) }))
+        Ok(Self(unsafe {
+            FlatAsciiString::from_bytes_unchecked(bytes)
+        }))
     }
 
-    /// Creates a printable raw ASCII text from a string slice.
+    /// Creates a printable flat ASCII text from a string slice.
     #[inline]
     pub fn try_from_str(s: &str) -> Result<Self, AsciiError> {
         Self::try_from_bytes(s.as_bytes())
     }
 
-    /// Creates a printable raw ASCII text from bytes without validation.
+    /// Creates a printable flat ASCII text from bytes without validation.
     ///
     /// # Safety
     ///
@@ -193,24 +202,26 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// - All content bytes are printable ASCII (0x20-0x7E)
     /// - `bytes.len() <= CAP`
     #[inline]
+    #[must_use]
     pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
         // SAFETY: caller guarantees printable ASCII
-        Self(unsafe { RawAsciiString::from_bytes_unchecked(bytes) })
+        Self(unsafe { FlatAsciiString::from_bytes_unchecked(bytes) })
     }
 
-    /// Creates a printable raw ASCII text from a string slice without validation.
+    /// Creates a printable flat ASCII text from a string slice without validation.
     ///
     /// # Safety
     ///
     /// The caller must ensure all bytes are printable ASCII (0x20-0x7E)
     /// and `s.len() <= CAP`.
     #[inline]
+    #[must_use]
     pub unsafe fn from_str_unchecked(s: &str) -> Self {
         // SAFETY: caller guarantees printable ASCII
         unsafe { Self::from_bytes_unchecked(s.as_bytes()) }
     }
 
-    /// Creates a printable raw ASCII text from null-terminated bytes.
+    /// Creates a printable flat ASCII text from null-terminated bytes.
     ///
     /// # Errors
     ///
@@ -218,6 +229,7 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// Returns [`AsciiError::NonPrintable`] if any content byte is non-printable.
     #[inline]
     pub fn try_from_null_terminated(bytes: &[u8]) -> Result<Self, AsciiError> {
+        let () = FlatAsciiString::<CAP>::_CAP_ASSERT;
         let null_pos = find_null_byte(bytes);
         let content_len = if null_pos < bytes.len() {
             null_pos
@@ -241,10 +253,10 @@ impl<const CAP: usize> RawAsciiText<CAP> {
         // SAFETY: content_len <= CAP, buffers don't overlap
         unsafe { copy_short(data.as_mut_ptr(), bytes.as_ptr(), content_len) };
 
-        Ok(Self(RawAsciiString(data)))
+        Ok(Self(FlatAsciiString(data)))
     }
 
-    /// Creates a printable raw ASCII text from a raw buffer.
+    /// Creates a printable flat ASCII text from a raw buffer.
     ///
     /// Validates that all bytes before the first null are printable ASCII.
     /// Single-pass validation — printable (0x20-0x7E) is a subset of ASCII.
@@ -253,7 +265,7 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     ///
     /// Returns [`AsciiError::NonPrintable`] if any content byte is non-printable.
     #[inline]
-    pub fn try_from_raw(buffer: [u8; CAP]) -> Result<Self, AsciiError> {
+    pub fn try_from_raw(mut buffer: [u8; CAP]) -> Result<Self, AsciiError> {
         let content_len = find_null_byte(&buffer);
 
         // Single-pass: printable (0x20-0x7E) is a subset of ASCII
@@ -261,44 +273,64 @@ impl<const CAP: usize> RawAsciiText<CAP> {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
 
-        Ok(Self(RawAsciiString(buffer)))
+        buffer[content_len..].fill(0); // enforce clean trailing zeros
+        Ok(Self(FlatAsciiString(buffer)))
     }
 
-    /// Creates a printable raw ASCII text from a borrowed raw buffer.
+    /// Creates a printable flat ASCII text from a borrowed raw buffer.
     #[inline]
     pub fn try_from_raw_ref(buffer: &[u8; CAP]) -> Result<Self, AsciiError> {
         Self::try_from_raw(*buffer)
     }
 
-    /// Creates a printable raw ASCII text from a raw buffer without validation.
+    /// Creates a printable flat ASCII text from a raw buffer without validation.
     ///
     /// # Safety
     ///
     /// The caller must ensure all bytes before the first null are printable ASCII (0x20-0x7E).
     #[inline]
+    #[must_use]
     pub const unsafe fn from_raw_unchecked(buffer: [u8; CAP]) -> Self {
         // SAFETY: caller guarantees printable ASCII
-        Self(unsafe { RawAsciiString::from_raw_unchecked(buffer) })
+        Self(unsafe { FlatAsciiString::from_raw_unchecked(buffer) })
     }
 
-    /// Creates a printable raw ASCII text from a right-padded buffer.
+    /// Creates a printable flat ASCII text from a right-padded buffer.
+    ///
+    /// Strips trailing `pad` bytes, finds the null terminator, then validates
+    /// content as printable ASCII in a single pass.
     ///
     /// # Errors
     ///
-    /// Returns [`AsciiError::InvalidByte`] if any content byte is > 127.
-    /// Returns [`AsciiError::NonPrintable`] if any content byte is non-printable.
+    /// Returns [`AsciiError::NonPrintable`] if any content byte is non-printable
+    /// (including null, control characters, DEL, or non-ASCII).
     #[inline]
     pub fn try_from_right_padded(buffer: [u8; CAP], pad: u8) -> Result<Self, AsciiError> {
-        let raw = RawAsciiString::try_from_right_padded(buffer, pad)?;
+        let () = FlatAsciiString::<CAP>::_CAP_ASSERT;
 
-        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(raw.as_bytes()) {
+        // Strip trailing pad bytes
+        let mut stripped_len = CAP;
+        while stripped_len > 0 && buffer[stripped_len - 1] == pad {
+            stripped_len -= 1;
+        }
+
+        // Find null in stripped region (content terminator)
+        let content_len = find_null_byte(&buffer[..stripped_len]);
+
+        // Single-pass: validate_printable rejects null, non-printable, and non-ASCII
+        if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(&buffer[..content_len]) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
 
-        Ok(Self(raw))
+        // Copy content into zeroed buffer
+        let mut data = [0u8; CAP];
+        // SAFETY: content_len <= stripped_len <= CAP
+        unsafe { copy_short(data.as_mut_ptr(), buffer.as_ptr(), content_len) };
+
+        Ok(Self(FlatAsciiString(data)))
     }
 
-    /// Creates a printable raw ASCII text from a `RawAsciiString`.
+    /// Creates a printable flat ASCII text from a `FlatAsciiString`.
     ///
     /// Validates that all content bytes are printable (0x20-0x7E).
     ///
@@ -309,27 +341,27 @@ impl<const CAP: usize> RawAsciiText<CAP> {
     /// # Example
     ///
     /// ```
-    /// use nexus_ascii::{RawAsciiString, RawAsciiText};
+    /// use nexus_ascii::{FlatAsciiString, FlatAsciiText};
     ///
-    /// let raw: RawAsciiString<32> = RawAsciiString::try_from("Hello").unwrap();
-    /// let text: RawAsciiText<32> = RawAsciiText::try_from_raw_ascii_string(raw).unwrap();
+    /// let raw: FlatAsciiString<32> = FlatAsciiString::try_from("Hello").unwrap();
+    /// let text: FlatAsciiText<32> = FlatAsciiText::try_from_flat_ascii_string(raw).unwrap();
     /// assert_eq!(text.as_str(), "Hello");
     /// ```
     #[inline]
-    pub fn try_from_raw_ascii_string(s: RawAsciiString<CAP>) -> Result<Self, AsciiError> {
+    pub fn try_from_flat_ascii_string(s: FlatAsciiString<CAP>) -> Result<Self, AsciiError> {
         if let Err((byte, pos)) = simd::validate_printable_bounded::<CAP>(s.as_bytes()) {
             return Err(AsciiError::NonPrintable { byte, pos });
         }
         Ok(Self(s))
     }
 
-    /// Creates a printable raw ASCII text from a `RawAsciiString` without validation.
+    /// Creates a printable flat ASCII text from a `FlatAsciiString` without validation.
     ///
     /// # Safety
     ///
     /// The caller must ensure all content bytes are printable ASCII (0x20-0x7E).
     #[inline]
-    pub const unsafe fn from_raw_ascii_string_unchecked(s: RawAsciiString<CAP>) -> Self {
+    pub const unsafe fn from_flat_ascii_string_unchecked(s: FlatAsciiString<CAP>) -> Self {
         Self(s)
     }
 }
@@ -338,27 +370,27 @@ impl<const CAP: usize> RawAsciiText<CAP> {
 // Conversion
 // =============================================================================
 
-impl<const CAP: usize> RawAsciiText<CAP> {
-    /// Returns the inner `RawAsciiString`.
+impl<const CAP: usize> FlatAsciiText<CAP> {
+    /// Returns the inner `FlatAsciiString`.
     #[inline]
-    pub const fn into_raw_ascii_string(self) -> RawAsciiString<CAP> {
+    pub const fn into_flat_ascii_string(self) -> FlatAsciiString<CAP> {
         self.0
     }
 
-    /// Returns a reference to the inner `RawAsciiString`.
+    /// Returns a reference to the inner `FlatAsciiString`.
     #[inline]
-    pub const fn as_raw_ascii_string(&self) -> &RawAsciiString<CAP> {
+    pub const fn as_flat_ascii_string(&self) -> &FlatAsciiString<CAP> {
         &self.0
     }
 
-    /// Promotes this raw text to an `AsciiText` with precomputed hash.
+    /// Promotes this flat text to an `AsciiText` with precomputed hash.
     ///
     /// # Example
     ///
     /// ```
-    /// use nexus_ascii::{RawAsciiText, AsciiText};
+    /// use nexus_ascii::{FlatAsciiText, AsciiText};
     ///
-    /// let raw: RawAsciiText<32> = RawAsciiText::try_from("Hello").unwrap();
+    /// let raw: FlatAsciiText<32> = FlatAsciiText::try_from("Hello").unwrap();
     /// let hashed: AsciiText<32> = raw.to_ascii_text();
     /// assert_eq!(hashed.as_str(), "Hello");
     /// ```
@@ -421,7 +453,7 @@ impl<const CAP: usize> RawAsciiText<CAP> {
 // Replacement Methods (printable-safe)
 // =============================================================================
 
-impl<const CAP: usize> RawAsciiText<CAP> {
+impl<const CAP: usize> FlatAsciiText<CAP> {
     /// Returns a copy with all occurrences of `from` replaced with `to`.
     ///
     /// Validates that `to` is a printable ASCII character (0x20-0x7E).
@@ -483,28 +515,28 @@ impl<const CAP: usize> RawAsciiText<CAP> {
 // Integer Parsing
 // =============================================================================
 
-crate::parse::impl_parse_int_generic!(RawAsciiText, as_str);
+crate::parse::impl_parse_int_generic!(FlatAsciiText, as_str);
 
 // =============================================================================
 // Integer Formatting
 // =============================================================================
 
-crate::format::impl_format_int_generic!(RawAsciiText, from_bytes_unchecked);
+crate::format::impl_format_int_generic!(FlatAsciiText, from_bytes_unchecked);
 
 // =============================================================================
 // Trait Implementations
 // =============================================================================
 
-impl<const CAP: usize> Default for RawAsciiText<CAP> {
+impl<const CAP: usize> Default for FlatAsciiText<CAP> {
     #[inline]
     fn default() -> Self {
         Self::empty()
     }
 }
 
-impl<const CAP: usize> core::fmt::Debug for RawAsciiText<CAP> {
+impl<const CAP: usize> core::fmt::Debug for FlatAsciiText<CAP> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RawAsciiText")
+        f.debug_struct("FlatAsciiText")
             .field("value", &self.as_str())
             .field("len", &self.len())
             .field("cap", &CAP)
@@ -512,14 +544,40 @@ impl<const CAP: usize> core::fmt::Debug for RawAsciiText<CAP> {
     }
 }
 
-impl<const CAP: usize> core::fmt::Display for RawAsciiText<CAP> {
+impl<const CAP: usize> core::fmt::Display for FlatAsciiText<CAP> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl<const CAP: usize> core::ops::Deref for RawAsciiText<CAP> {
-    type Target = RawAsciiString<CAP>;
+impl<const CAP: usize> PartialEq for FlatAsciiText<CAP> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<const CAP: usize> Eq for FlatAsciiText<CAP> {}
+
+impl<const CAP: usize> PartialOrd for FlatAsciiText<CAP> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<const CAP: usize> Ord for FlatAsciiText<CAP> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl<const CAP: usize> core::hash::Hash for FlatAsciiText<CAP> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl<const CAP: usize> core::ops::Deref for FlatAsciiText<CAP> {
+    type Target = FlatAsciiString<CAP>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -527,7 +585,7 @@ impl<const CAP: usize> core::ops::Deref for RawAsciiText<CAP> {
     }
 }
 
-impl<const CAP: usize> core::ops::Index<usize> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<usize> for FlatAsciiText<CAP> {
     type Output = AsciiChar;
 
     #[inline]
@@ -536,7 +594,7 @@ impl<const CAP: usize> core::ops::Index<usize> for RawAsciiText<CAP> {
     }
 }
 
-impl<const CAP: usize> core::ops::Index<core::ops::Range<usize>> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<core::ops::Range<usize>> for FlatAsciiText<CAP> {
     type Output = AsciiTextStr;
 
     #[inline]
@@ -548,7 +606,7 @@ impl<const CAP: usize> core::ops::Index<core::ops::Range<usize>> for RawAsciiTex
     }
 }
 
-impl<const CAP: usize> core::ops::Index<core::ops::RangeFrom<usize>> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<core::ops::RangeFrom<usize>> for FlatAsciiText<CAP> {
     type Output = AsciiTextStr;
 
     #[inline]
@@ -559,7 +617,7 @@ impl<const CAP: usize> core::ops::Index<core::ops::RangeFrom<usize>> for RawAsci
     }
 }
 
-impl<const CAP: usize> core::ops::Index<core::ops::RangeTo<usize>> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<core::ops::RangeTo<usize>> for FlatAsciiText<CAP> {
     type Output = AsciiTextStr;
 
     #[inline]
@@ -570,7 +628,7 @@ impl<const CAP: usize> core::ops::Index<core::ops::RangeTo<usize>> for RawAsciiT
     }
 }
 
-impl<const CAP: usize> core::ops::Index<core::ops::RangeFull> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<core::ops::RangeFull> for FlatAsciiText<CAP> {
     type Output = AsciiTextStr;
 
     #[inline]
@@ -579,7 +637,7 @@ impl<const CAP: usize> core::ops::Index<core::ops::RangeFull> for RawAsciiText<C
     }
 }
 
-impl<const CAP: usize> core::ops::Index<core::ops::RangeInclusive<usize>> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<core::ops::RangeInclusive<usize>> for FlatAsciiText<CAP> {
     type Output = AsciiTextStr;
 
     #[inline]
@@ -593,7 +651,7 @@ impl<const CAP: usize> core::ops::Index<core::ops::RangeInclusive<usize>> for Ra
     }
 }
 
-impl<const CAP: usize> core::ops::Index<core::ops::RangeToInclusive<usize>> for RawAsciiText<CAP> {
+impl<const CAP: usize> core::ops::Index<core::ops::RangeToInclusive<usize>> for FlatAsciiText<CAP> {
     type Output = AsciiTextStr;
 
     #[inline]
@@ -608,7 +666,7 @@ impl<const CAP: usize> core::ops::Index<core::ops::RangeToInclusive<usize>> for 
 // TryFrom Implementations
 // =============================================================================
 
-impl<const CAP: usize> TryFrom<&str> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<&str> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
@@ -617,7 +675,7 @@ impl<const CAP: usize> TryFrom<&str> for RawAsciiText<CAP> {
     }
 }
 
-impl<const CAP: usize> TryFrom<&[u8]> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<&[u8]> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
@@ -627,7 +685,7 @@ impl<const CAP: usize> TryFrom<&[u8]> for RawAsciiText<CAP> {
 }
 
 #[cfg(feature = "std")]
-impl<const CAP: usize> TryFrom<std::string::String> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<std::string::String> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
@@ -637,7 +695,7 @@ impl<const CAP: usize> TryFrom<std::string::String> for RawAsciiText<CAP> {
 }
 
 #[cfg(feature = "std")]
-impl<const CAP: usize> TryFrom<&std::string::String> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<&std::string::String> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
@@ -646,12 +704,12 @@ impl<const CAP: usize> TryFrom<&std::string::String> for RawAsciiText<CAP> {
     }
 }
 
-impl<const CAP: usize> TryFrom<RawAsciiString<CAP>> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<FlatAsciiString<CAP>> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
-    fn try_from(s: RawAsciiString<CAP>) -> Result<Self, Self::Error> {
-        Self::try_from_raw_ascii_string(s)
+    fn try_from(s: FlatAsciiString<CAP>) -> Result<Self, Self::Error> {
+        Self::try_from_flat_ascii_string(s)
     }
 }
 
@@ -659,44 +717,44 @@ impl<const CAP: usize> TryFrom<RawAsciiString<CAP>> for RawAsciiText<CAP> {
 // AsRef Implementations
 // =============================================================================
 
-impl<const CAP: usize> AsRef<str> for RawAsciiText<CAP> {
+impl<const CAP: usize> AsRef<str> for FlatAsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl<const CAP: usize> AsRef<[u8]> for RawAsciiText<CAP> {
+impl<const CAP: usize> AsRef<[u8]> for FlatAsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
     }
 }
 
-impl<const CAP: usize> AsRef<AsciiStr> for RawAsciiText<CAP> {
+impl<const CAP: usize> AsRef<AsciiStr> for FlatAsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &AsciiStr {
         self.as_ascii_str()
     }
 }
 
-impl<const CAP: usize> AsRef<[u8; CAP]> for RawAsciiText<CAP> {
+impl<const CAP: usize> AsRef<[u8; CAP]> for FlatAsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &[u8; CAP] {
         self.as_raw()
     }
 }
 
-impl<const CAP: usize> AsRef<AsciiTextStr> for RawAsciiText<CAP> {
+impl<const CAP: usize> AsRef<AsciiTextStr> for FlatAsciiText<CAP> {
     #[inline]
     fn as_ref(&self) -> &AsciiTextStr {
         self.as_ascii_text_str()
     }
 }
 
-impl<const CAP: usize> AsRef<RawAsciiString<CAP>> for RawAsciiText<CAP> {
+impl<const CAP: usize> AsRef<FlatAsciiString<CAP>> for FlatAsciiText<CAP> {
     #[inline]
-    fn as_ref(&self) -> &RawAsciiString<CAP> {
+    fn as_ref(&self) -> &FlatAsciiString<CAP> {
         &self.0
     }
 }
@@ -706,7 +764,7 @@ impl<const CAP: usize> AsRef<RawAsciiString<CAP>> for RawAsciiText<CAP> {
 // =============================================================================
 
 #[cfg(feature = "serde")]
-impl<const CAP: usize> serde::Serialize for RawAsciiText<CAP> {
+impl<const CAP: usize> serde::Serialize for FlatAsciiText<CAP> {
     #[inline]
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
@@ -714,12 +772,12 @@ impl<const CAP: usize> serde::Serialize for RawAsciiText<CAP> {
 }
 
 #[cfg(feature = "serde")]
-impl<'de, const CAP: usize> serde::Deserialize<'de> for RawAsciiText<CAP> {
+impl<'de, const CAP: usize> serde::Deserialize<'de> for FlatAsciiText<CAP> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct RawAsciiTextVisitor<const CAP: usize>;
+        struct FlatAsciiTextVisitor<const CAP: usize>;
 
-        impl<const CAP: usize> serde::de::Visitor<'_> for RawAsciiTextVisitor<CAP> {
-            type Value = RawAsciiText<CAP>;
+        impl<const CAP: usize> serde::de::Visitor<'_> for FlatAsciiTextVisitor<CAP> {
+            type Value = FlatAsciiText<CAP>;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
                 write!(
@@ -731,7 +789,7 @@ impl<'de, const CAP: usize> serde::Deserialize<'de> for RawAsciiText<CAP> {
 
             #[inline]
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                RawAsciiText::try_from_str(v).map_err(|e| match e {
+                FlatAsciiText::try_from_str(v).map_err(|e| match e {
                     AsciiError::TooLong { len, cap } => E::custom(format_args!(
                         "string length {} exceeds capacity {}",
                         len, cap
@@ -749,7 +807,7 @@ impl<'de, const CAP: usize> serde::Deserialize<'de> for RawAsciiText<CAP> {
 
             #[inline]
             fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
-                RawAsciiText::try_from_bytes(v).map_err(|e| match e {
+                FlatAsciiText::try_from_bytes(v).map_err(|e| match e {
                     AsciiError::TooLong { len, cap } => E::custom(format_args!(
                         "byte slice length {} exceeds capacity {}",
                         len, cap
@@ -766,7 +824,7 @@ impl<'de, const CAP: usize> serde::Deserialize<'de> for RawAsciiText<CAP> {
             }
         }
 
-        deserializer.deserialize_str(RawAsciiTextVisitor)
+        deserializer.deserialize_str(FlatAsciiTextVisitor)
     }
 }
 
@@ -775,23 +833,23 @@ impl<'de, const CAP: usize> serde::Deserialize<'de> for RawAsciiText<CAP> {
 // =============================================================================
 
 #[cfg(feature = "bytes")]
-impl<const CAP: usize> From<RawAsciiText<CAP>> for bytes::Bytes {
+impl<const CAP: usize> From<FlatAsciiText<CAP>> for bytes::Bytes {
     #[inline]
-    fn from(s: RawAsciiText<CAP>) -> Self {
+    fn from(s: FlatAsciiText<CAP>) -> Self {
         bytes::Bytes::copy_from_slice(s.as_bytes())
     }
 }
 
 #[cfg(feature = "bytes")]
-impl<const CAP: usize> From<&RawAsciiText<CAP>> for bytes::Bytes {
+impl<const CAP: usize> From<&FlatAsciiText<CAP>> for bytes::Bytes {
     #[inline]
-    fn from(s: &RawAsciiText<CAP>) -> Self {
+    fn from(s: &FlatAsciiText<CAP>) -> Self {
         bytes::Bytes::copy_from_slice(s.as_bytes())
     }
 }
 
 #[cfg(feature = "bytes")]
-impl<const CAP: usize> TryFrom<bytes::Bytes> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<bytes::Bytes> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
@@ -801,7 +859,7 @@ impl<const CAP: usize> TryFrom<bytes::Bytes> for RawAsciiText<CAP> {
 }
 
 #[cfg(feature = "bytes")]
-impl<const CAP: usize> TryFrom<&bytes::Bytes> for RawAsciiText<CAP> {
+impl<const CAP: usize> TryFrom<&bytes::Bytes> for FlatAsciiText<CAP> {
     type Error = AsciiError;
 
     #[inline]
@@ -820,7 +878,7 @@ mod tests {
 
     #[test]
     fn empty_text() {
-        let t: RawAsciiText<32> = RawAsciiText::empty();
+        let t: FlatAsciiText<32> = FlatAsciiText::empty();
         assert!(t.is_empty());
         assert_eq!(t.len(), 0);
         assert_eq!(t.as_str(), "");
@@ -828,13 +886,13 @@ mod tests {
 
     #[test]
     fn from_str_printable() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("Hello, World!").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("Hello, World!").unwrap();
         assert_eq!(t.as_str(), "Hello, World!");
     }
 
     #[test]
     fn rejects_control_chars() {
-        let result = RawAsciiText::<32>::try_from_bytes(b"Hello\x01World");
+        let result = FlatAsciiText::<32>::try_from_bytes(b"Hello\x01World");
         assert!(matches!(result, Err(AsciiError::NonPrintable { .. })));
     }
 
@@ -843,7 +901,7 @@ mod tests {
         // Null (0x00) is non-printable — try_from_bytes rejects it.
         // Null truncation only happens in wire format constructors
         // (try_from_raw, try_from_null_terminated).
-        let result = RawAsciiText::<32>::try_from_bytes(b"Hello\x00World");
+        let result = FlatAsciiText::<32>::try_from_bytes(b"Hello\x00World");
         assert!(matches!(
             result,
             Err(AsciiError::NonPrintable { byte: 0x00, pos: 5 })
@@ -852,61 +910,61 @@ mod tests {
 
     #[test]
     fn from_static_const() {
-        const T: RawAsciiText<16> = RawAsciiText::from_static("BTC-USD");
+        const T: FlatAsciiText<16> = FlatAsciiText::from_static("BTC-USD");
         assert_eq!(T.as_str(), "BTC-USD");
     }
 
     #[test]
     fn from_static_bytes_const() {
-        const T: RawAsciiText<16> = RawAsciiText::from_static_bytes(b"ETH-USD");
+        const T: FlatAsciiText<16> = FlatAsciiText::from_static_bytes(b"ETH-USD");
         assert_eq!(T.as_str(), "ETH-USD");
     }
 
     #[test]
-    fn try_from_raw_ascii_string() {
-        let raw: RawAsciiString<32> = RawAsciiString::try_from("Hello").unwrap();
-        let text: RawAsciiText<32> = RawAsciiText::try_from_raw_ascii_string(raw).unwrap();
+    fn try_from_flat_ascii_string() {
+        let raw: FlatAsciiString<32> = FlatAsciiString::try_from("Hello").unwrap();
+        let text: FlatAsciiText<32> = FlatAsciiText::try_from_flat_ascii_string(raw).unwrap();
         assert_eq!(text.as_str(), "Hello");
     }
 
     #[test]
-    fn try_from_raw_ascii_string_with_control() {
-        let raw: RawAsciiString<32> = RawAsciiString::try_from_bytes(b"\x01Hello").unwrap();
-        let result = RawAsciiText::try_from_raw_ascii_string(raw);
+    fn try_from_flat_ascii_string_with_control() {
+        let raw: FlatAsciiString<32> = FlatAsciiString::try_from_bytes(b"\x01Hello").unwrap();
+        let result = FlatAsciiText::try_from_flat_ascii_string(raw);
         assert!(matches!(result, Err(AsciiError::NonPrintable { .. })));
     }
 
     #[test]
-    fn deref_to_raw_ascii_string() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("hello").unwrap();
-        let raw: &RawAsciiString<32> = &*t;
+    fn deref_to_flat_ascii_string() {
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("hello").unwrap();
+        let raw: &FlatAsciiString<32> = &*t;
         assert_eq!(raw.as_str(), "hello");
     }
 
     #[test]
-    fn into_raw_ascii_string() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("hello").unwrap();
-        let raw = t.into_raw_ascii_string();
+    fn into_flat_ascii_string() {
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("hello").unwrap();
+        let raw = t.into_flat_ascii_string();
         assert_eq!(raw.as_str(), "hello");
     }
 
     #[test]
     fn to_ascii_text_promotion() {
-        let raw: RawAsciiText<32> = RawAsciiText::try_from("Hello").unwrap();
+        let raw: FlatAsciiText<32> = FlatAsciiText::try_from("Hello").unwrap();
         let hashed = raw.to_ascii_text();
         assert_eq!(hashed.as_str(), "Hello");
     }
 
     #[test]
     fn index_range_returns_text_str() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("BTC-USD").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("BTC-USD").unwrap();
         let slice: &AsciiTextStr = &t[0..3];
         assert_eq!(slice.as_str(), "BTC");
     }
 
     #[test]
     fn split_once_text() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("key=value").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("key=value").unwrap();
         let (k, v) = t.split_once_text(b'=').unwrap();
         assert_eq!(k.as_str(), "key");
         assert_eq!(v.as_str(), "value");
@@ -914,21 +972,21 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let t: RawAsciiText<32> = Default::default();
+        let t: FlatAsciiText<32> = Default::default();
         assert!(t.is_empty());
     }
 
     #[test]
     fn display() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("hello").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("hello").unwrap();
         assert_eq!(format!("{}", t), "hello");
     }
 
     #[test]
     fn debug() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("hi").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("hi").unwrap();
         let debug = format!("{:?}", t);
-        assert!(debug.contains("RawAsciiText"));
+        assert!(debug.contains("FlatAsciiText"));
         assert!(debug.contains("hi"));
         assert!(debug.contains("32"));
     }
@@ -938,7 +996,7 @@ mod tests {
         let mut buf = [0u8; 32];
         buf[0] = b'A';
         buf[1] = b'B';
-        let t: RawAsciiText<32> = RawAsciiText::try_from_raw(buf).unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from_raw(buf).unwrap();
         assert_eq!(t.as_str(), "AB");
     }
 
@@ -947,28 +1005,28 @@ mod tests {
         let mut buf = [b' '; 32];
         buf[0] = b'H';
         buf[1] = b'i';
-        let t: RawAsciiText<32> = RawAsciiText::try_from_right_padded(buf, b' ').unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from_right_padded(buf, b' ').unwrap();
         assert_eq!(t.as_str(), "Hi");
     }
 
     #[test]
     fn classification_via_deref() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("12345").unwrap();
-        // These methods come from RawAsciiString via Deref
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("12345").unwrap();
+        // These methods come from FlatAsciiString via Deref
         assert!(t.is_numeric());
         assert!(t.is_alphanumeric());
     }
 
     #[test]
-    fn try_from_raw_ascii_string_trait() {
-        let raw: RawAsciiString<32> = RawAsciiString::try_from("Hello").unwrap();
-        let text: RawAsciiText<32> = raw.try_into().unwrap();
+    fn try_from_flat_ascii_string_trait() {
+        let raw: FlatAsciiString<32> = FlatAsciiString::try_from("Hello").unwrap();
+        let text: FlatAsciiText<32> = raw.try_into().unwrap();
         assert_eq!(text.as_str(), "Hello");
     }
 
     #[test]
     fn replaced_char_checked() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("a-b-c").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("a-b-c").unwrap();
         let minus = AsciiChar::try_new(b'-').unwrap();
         let underscore = AsciiChar::try_new(b'_').unwrap();
         let result = t.replaced_char(minus, underscore).unwrap();
@@ -977,7 +1035,7 @@ mod tests {
 
     #[test]
     fn replaced_char_rejects_non_printable() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("hello").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("hello").unwrap();
         let h = AsciiChar::try_new(b'h').unwrap();
         let ctrl = AsciiChar::try_new(0x01).unwrap();
         let result = t.replaced_char(h, ctrl);
@@ -986,7 +1044,7 @@ mod tests {
 
     #[test]
     fn replaced_char_unchecked() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("a-b-c").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("a-b-c").unwrap();
         let minus = AsciiChar::try_new(b'-').unwrap();
         let underscore = AsciiChar::try_new(b'_').unwrap();
         // SAFETY: underscore is printable
@@ -996,7 +1054,7 @@ mod tests {
 
     #[test]
     fn replace_first_char_checked() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("a-b-c").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("a-b-c").unwrap();
         let minus = AsciiChar::try_new(b'-').unwrap();
         let underscore = AsciiChar::try_new(b'_').unwrap();
         let result = t.replace_first_char(minus, underscore).unwrap();
@@ -1005,7 +1063,7 @@ mod tests {
 
     #[test]
     fn replace_first_char_rejects_non_printable() {
-        let t: RawAsciiText<32> = RawAsciiText::try_from("hello").unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from("hello").unwrap();
         let h = AsciiChar::try_new(b'h').unwrap();
         let ctrl = AsciiChar::try_new(0x01).unwrap();
         let result = t.replace_first_char(h, ctrl);
@@ -1014,19 +1072,19 @@ mod tests {
 
     #[test]
     fn try_from_null_terminated_printable() {
-        let t: RawAsciiText<16> = RawAsciiText::try_from_null_terminated(b"Hello\0").unwrap();
+        let t: FlatAsciiText<16> = FlatAsciiText::try_from_null_terminated(b"Hello\0").unwrap();
         assert_eq!(t.as_str(), "Hello");
     }
 
     #[test]
     fn try_from_null_terminated_rejects_control() {
-        let result = RawAsciiText::<16>::try_from_null_terminated(b"Hi\x01\0");
+        let result = FlatAsciiText::<16>::try_from_null_terminated(b"Hi\x01\0");
         assert!(matches!(result, Err(AsciiError::NonPrintable { .. })));
     }
 
     #[test]
     fn try_from_null_terminated_full_buffer() {
-        let t: RawAsciiText<8> = RawAsciiText::try_from_null_terminated(b"abcdefgh").unwrap();
+        let t: FlatAsciiText<8> = FlatAsciiText::try_from_null_terminated(b"abcdefgh").unwrap();
         assert_eq!(t.len(), 8);
         assert_eq!(t.as_str(), "abcdefgh");
     }

@@ -4,7 +4,7 @@ CPU cycles measured via `rdtsc` on x86_64. Pinned to a single core via
 `taskset -c 0` for stable measurements.
 
 **System:** SSE2 baseline (no AVX2 flags). 100k iterations, 10k warmup.
-Best-of-5 isolated runs. Construction and Raw type benchmarks use 100-op
+Best-of-5 isolated runs. Construction and Flat type benchmarks use 100-op
 batched measurements with serializing fences for sub-rdtsc-floor resolution.
 
 Run any benchmark yourself:
@@ -19,8 +19,8 @@ taskset -c 0 cargo run --release --example perf_vs_ascii_crate
 taskset -c 0 cargo run --release --features nohash --example perf_hashmap
 taskset -c 0 cargo run --release --example perf_string_ops
 taskset -c 0 cargo run --release --example perf_text
-taskset -c 0 cargo run --release --example perf_raw_string
-taskset -c 0 cargo run --release --example perf_raw_text
+taskset -c 0 cargo run --release --example perf_flat_string
+taskset -c 0 cargo run --release --example perf_flat_text
 ```
 
 ---
@@ -634,9 +634,9 @@ AVX-512 verified via Intel SDE (Sapphire Rapids emulation) for lengths 0-160.
 
 ---
 
-## RawAsciiString (No Header/Hash)
+## FlatAsciiString (No Header/Hash)
 
-`RawAsciiString<CAP>` is a `#[repr(transparent)]` newtype over `[u8; CAP]` —
+`FlatAsciiString<CAP>` is a `#[repr(transparent)]` newtype over `[u8; CAP]` —
 zero overhead, no 8-byte header, no precomputed hash. Content is null-terminated
 when `len < CAP`; a full buffer has no null terminator. The `len()` call uses
 SIMD null-byte scanning.
@@ -661,15 +661,14 @@ Benchmarks use **100-op batched measurements** with serializing fences
 |-----------|-----|-----|------|
 | `try_from_null_terminated` (7B) | 11 | 12 | 21 |
 | `try_from_null_terminated` (16B full) | 5 | 5 | 9 |
-| `try_from_raw` (7B in 16B) | 9 | 10 | 16 |
-| `try_from_raw_ref` (7B in &[u8;16]) | 9 | 10 | 15 |
-| `from_raw_unchecked` (7B in 16B) | 1 | 1 | 1 |
-| `try_from_right_padded` (7B) | 21 | 23 | 58 |
+| `try_from_raw` (7B in 16B) | 15 | 16 | 49 |
+| `try_from_raw_ref` (7B in &[u8;16]) | 15 | 23 | 52 |
+| `from_raw_unchecked` (7B in 16B) | 1 | 1 | 2 |
+| `try_from_right_padded` (7B) | 22 | 24 | 73 |
 
-Wire format hot path: `try_from_raw` at **9 cycles**, `from_raw_unchecked`
-at **1 cycle** (just a type cast). `try_from_raw_ref` has excellent tail
-latency (p999: 15) because the compiler eliminates bounds checks when the
-buffer size is known.
+Wire format hot path: `try_from_raw` at **15 cycles** (includes zero-fill
+of trailing bytes after null), `from_raw_unchecked` at **1 cycle** (just a
+type cast, caller guarantees clean buffer).
 
 **Accessors:**
 
@@ -723,31 +722,53 @@ it exits after the first match.
 Promotion computes the XXH3 hash, packs the header, and copies the buffer.
 8-23 cycles at p50 depending on content length.
 
-**Comparison: RawAsciiString vs AsciiString:**
+**Comparison: FlatAsciiString vs AsciiString:**
 
 Numbers from isolated best-of-5 runs (separate processes, no ordering bias).
 
-| Operation | Raw p50 | Std p50 | Raw p99 | Std p99 |
+| Operation | Flat p50 | Std p50 | Flat p99 | Std p99 |
 |-----------|---------|---------|---------|---------|
 | `try_from` str (7B) | 14 | 21 | 15 | 31 |
 | `try_from` str (20B) | 12 | 27 | 18 | 43 |
 | `from_bytes_unchecked` (7B) | 3 | 17 | 4 | 23 |
-| `try_from_raw` (7B in 16B) | 9 | — | 10 | — |
+| `try_from_raw` (7B in 16B) | 15 | — | 16 | — |
 
-RawAsciiString's `try_from` is **~1.5x faster** at p50 (14 vs 21 cycles) and
+FlatAsciiString's `try_from` is **~1.5x faster** at p50 (14 vs 21 cycles) and
 **2x faster** at p99 (15 vs 31) — the gap is the XXH3 hash computation that
 AsciiString performs. `from_bytes_unchecked` shows the hash cost directly:
 3 vs 17 cycles when validation is skipped. For wire format (`try_from_raw`),
-Raw wins at **9 cycles** with no AsciiString equivalent (raw buffers are the
-primary use case). RawAsciiString's advantage is both **performance** (no hash)
+Flat wins at **15 cycles** with no AsciiString equivalent (raw buffers are the
+primary use case). FlatAsciiString's advantage is both **performance** (no hash)
 and **memory layout**: no 8-byte header overhead, `#[repr(transparent)]` over
 `[u8; CAP]`, directly overlayable on wire protocol buffers.
 
+**Hashing and equality — why both types exist:**
+
+| Operation | Flat p50 | AsciiString p50 | Flat p99 | AsciiString p99 |
+|-----------|----------|-----------------|----------|-----------------|
+| `Hash::hash` (7B) | 21 | 14 | 31 | 29 |
+| `Hash::hash` (32B) | 27 | 14 | 43 | 15 |
+| `==` (7B, equal) | 18 | 19 | 22 | 19 |
+| `==` (7B, not equal) | 24 | 3 | 30 | 6 |
+
+FlatAsciiString hashes content bytes on every call — cost scales with length
+(21 → 27 cycles at 7B → 32B). AsciiString feeds one precomputed u64 to the
+hasher — **constant time** regardless of length (14 cycles at any size).
+
+Equality on matching content is similar (both compare bytes). But **not-equal
+rejection** is where AsciiString dominates: **3 vs 24 cycles**. A single u64
+header mismatch rejects instantly without touching the data buffer. This is
+the HashMap fast path — most lookups probe non-matching entries.
+
+**Rule of thumb:** Use `FlatAsciiString` for wire protocol fields where the
+hot path is buffer I/O. Use `AsciiString` for keys in HashMaps/BTreeMaps
+where hashing and equality are on the hot path.
+
 ---
 
-## RawAsciiText (Printable + No Header)
+## FlatAsciiText (Printable + No Header)
 
-`RawAsciiText<CAP>` wraps `RawAsciiString<CAP>` with printable ASCII validation
+`FlatAsciiText<CAP>` wraps `FlatAsciiString<CAP>` with printable ASCII validation
 (0x20-0x7E). Same zero-overhead layout, same null-termination semantics.
 Uses single-pass printable validation (printable ⊂ ASCII, so no separate
 ASCII check needed).
@@ -760,13 +781,15 @@ ASCII check needed).
 | `try_from` str (7B) | 15 | 15 | 42 |
 | `try_from` str (20B) | 14 | 15 | 43 |
 | `try_from_null_terminated` (7B) | 15 | 16 | 46 |
-| `try_from_raw` (7B in 16B) | 9 | 11 | 19 |
-| `try_from_right_padded` (7B) | 48 | 60 | 108 |
-| `try_from` RawAsciiString | 12 | 13 | 39 |
+| `try_from_raw` (7B in 16B) | 13 | 15 | 69 |
+| `try_from_right_padded` (7B) | 19 | 21 | 73 |
+| `try_from` FlatAsciiString | 9 | 17 | 37 |
 
 Single-pass printable validation brings `try_from str` down to **15 cycles**.
-Wire format `try_from_raw` at **9 cycles**. Converting from an already-validated
-`RawAsciiString` costs **12 cycles** (printable range check only).
+Wire format `try_from_raw` at **13 cycles**. `try_from_right_padded` at **19
+cycles** — down from 48 thanks to the single-pass rewrite that eliminates the
+redundant ASCII validation pass. Converting from an already-validated
+`FlatAsciiString` costs **9 cycles** (printable range check only).
 
 **Replacement (checked vs unchecked):**
 
@@ -788,20 +811,20 @@ caller that the replacement character is printable.
 | `to_ascii_text` (7B) | 8 | 10 | 18 |
 | `to_ascii_text` (20B) | 23 | 34 | 74 |
 
-**Comparison: RawAsciiText vs AsciiText:**
+**Comparison: FlatAsciiText vs AsciiText:**
 
 Numbers from isolated best-of-5 runs (separate processes, no ordering bias).
 
-| Operation | RawText p50 | AsciiText p50 | RawText p99 | AsciiText p99 |
+| Operation | FlatText p50 | AsciiText p50 | FlatText p99 | AsciiText p99 |
 |-----------|-------------|---------------|-------------|---------------|
 | `try_from` str (7B) | 15 | 20 | 15 | 26 |
 | `try_from` str (20B) | 14 | 21 | 15 | 23 |
-| `try_from_raw` (7B in 16B) | 9 | 16 | 11 | 17 |
+| `try_from_raw` (7B in 16B) | 13 | 16 | 15 | 17 |
 
-RawAsciiText's `try_from` is **~1.4x faster** at p50 (15 vs 20 cycles) — the
+FlatAsciiText's `try_from` is **~1.4x faster** at p50 (15 vs 20 cycles) — the
 gap is the XXH3 hash that AsciiText inherits from AsciiString. Wire format
-`try_from_raw` shows a larger gap: **9 vs 16 cycles** (1.8x) because the hash
-cost dominates when validation is minimal.
+`try_from_raw` shows a smaller gap: **13 vs 16 cycles** (1.2x) because the
+null-rejection validation adds a few cycles to the raw path.
 
 ---
 

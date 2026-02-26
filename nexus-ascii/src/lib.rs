@@ -13,7 +13,7 @@
 //! - **Immutable**: Strings are immutable after creation. Hash is computed once.
 //! - **Copy**: All string types are `Copy`. Use newtypes for move semantics.
 //! - **Performance**: Single 64-bit comparison for equality fast path.
-//! - **Full ASCII**: Supports 0x00-0x7F. Use `AsciiText` for printable-only.
+//! - **Full ASCII**: Supports 0x01-0x7F (null is structural, not content). Use `AsciiText` for printable-only.
 //!
 //! # Example
 //!
@@ -37,10 +37,10 @@
 
 mod builder;
 mod char;
+mod flat_string;
+mod flat_text;
 mod format;
 mod parse;
-mod raw_string;
-mod raw_text;
 mod str_ref;
 mod string;
 mod text;
@@ -51,9 +51,9 @@ pub mod simd;
 
 pub use builder::AsciiStringBuilder;
 pub use char::{AsciiChar, InvalidAsciiChar};
+pub use flat_string::FlatAsciiString;
+pub use flat_text::FlatAsciiText;
 pub use format::IntegerTooLarge;
-pub use raw_string::RawAsciiString;
-pub use raw_text::RawAsciiText;
 pub use str_ref::AsciiStr;
 pub use string::AsciiString;
 pub use text::AsciiText;
@@ -87,29 +87,29 @@ pub type AsciiText64 = AsciiText<64>;
 /// 128-byte capacity printable ASCII text.
 pub type AsciiText128 = AsciiText<128>;
 
-/// 8-byte capacity raw ASCII string.
-pub type RawAsciiString8 = RawAsciiString<8>;
-/// 16-byte capacity raw ASCII string.
-pub type RawAsciiString16 = RawAsciiString<16>;
-/// 32-byte capacity raw ASCII string.
-pub type RawAsciiString32 = RawAsciiString<32>;
-/// 64-byte capacity raw ASCII string.
-pub type RawAsciiString64 = RawAsciiString<64>;
-/// 128-byte capacity raw ASCII string.
-pub type RawAsciiString128 = RawAsciiString<128>;
-/// 256-byte capacity raw ASCII string.
-pub type RawAsciiString256 = RawAsciiString<256>;
+/// 8-byte capacity flat ASCII string.
+pub type FlatAsciiString8 = FlatAsciiString<8>;
+/// 16-byte capacity flat ASCII string.
+pub type FlatAsciiString16 = FlatAsciiString<16>;
+/// 32-byte capacity flat ASCII string.
+pub type FlatAsciiString32 = FlatAsciiString<32>;
+/// 64-byte capacity flat ASCII string.
+pub type FlatAsciiString64 = FlatAsciiString<64>;
+/// 128-byte capacity flat ASCII string.
+pub type FlatAsciiString128 = FlatAsciiString<128>;
+/// 256-byte capacity flat ASCII string.
+pub type FlatAsciiString256 = FlatAsciiString<256>;
 
-/// 8-byte capacity raw printable ASCII text.
-pub type RawAsciiText8 = RawAsciiText<8>;
-/// 16-byte capacity raw printable ASCII text.
-pub type RawAsciiText16 = RawAsciiText<16>;
-/// 32-byte capacity raw printable ASCII text.
-pub type RawAsciiText32 = RawAsciiText<32>;
-/// 64-byte capacity raw printable ASCII text.
-pub type RawAsciiText64 = RawAsciiText<64>;
-/// 128-byte capacity raw printable ASCII text.
-pub type RawAsciiText128 = RawAsciiText<128>;
+/// 8-byte capacity flat printable ASCII text.
+pub type FlatAsciiText8 = FlatAsciiText<8>;
+/// 16-byte capacity flat printable ASCII text.
+pub type FlatAsciiText16 = FlatAsciiText<16>;
+/// 32-byte capacity flat printable ASCII text.
+pub type FlatAsciiText32 = FlatAsciiText<32>;
+/// 64-byte capacity flat printable ASCII text.
+pub type FlatAsciiText64 = FlatAsciiText<64>;
+/// 128-byte capacity flat printable ASCII text.
+pub type FlatAsciiText128 = FlatAsciiText<128>;
 
 /// 8-byte capacity ASCII string builder.
 pub type AsciiStringBuilder8 = AsciiStringBuilder<8>;
@@ -197,7 +197,7 @@ pub enum AsciiError {
         /// Maximum capacity of the target string.
         cap: usize,
     },
-    /// Byte is not valid ASCII (value > 127).
+    /// Byte is not valid ASCII (null byte or value > 127).
     InvalidByte {
         /// The invalid byte value.
         byte: u8,

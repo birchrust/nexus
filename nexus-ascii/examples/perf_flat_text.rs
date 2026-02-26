@@ -1,4 +1,4 @@
-//! RawAsciiText performance benchmark (batched).
+//! FlatAsciiText performance benchmark (batched).
 //!
 //! Uses 100-op batched measurements with serializing fences for sub-rdtsc-floor
 //! resolution. Measures construction, checked vs unchecked replacement, and
@@ -6,18 +6,18 @@
 //!
 //! Run with:
 //! ```bash
-//! taskset -c 0 cargo run --release --example perf_raw_text
+//! taskset -c 0 cargo run --release --example perf_flat_text
 //! ```
 
 #[path = "_bench_utils.rs"]
 mod bench_utils;
 
 use bench_utils::{bench_batched, print_header, print_intro};
-use nexus_ascii::{AsciiChar, RawAsciiString, RawAsciiText};
+use nexus_ascii::{AsciiChar, FlatAsciiString, FlatAsciiText};
 use std::hint::black_box;
 
 fn main() {
-    print_intro("RAWASCIITEXT PERFORMANCE BENCHMARK (batched, 100 ops/sample)");
+    print_intro("FLATASCIITEXT PERFORMANCE BENCHMARK (batched, 100 ops/sample)");
 
     // =========================================================================
     // Construction
@@ -25,45 +25,45 @@ fn main() {
     print_header("CONSTRUCTION");
 
     bench_batched("empty()", || {
-        let t: RawAsciiText<32> = RawAsciiText::empty();
+        let t: FlatAsciiText<32> = FlatAsciiText::empty();
         black_box(t).as_raw()[0] as u64
     });
 
     bench_batched("try_from str (7B \"BTC-USD\")", || {
-        let t: RawAsciiText<32> = RawAsciiText::try_from(black_box("BTC-USD")).unwrap();
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from(black_box("BTC-USD")).unwrap();
         t.as_raw()[0] as u64
     });
 
     bench_batched("try_from str (20B)", || {
-        let t: RawAsciiText<32> =
-            RawAsciiText::try_from(black_box("ABCDEFGHIJ1234567890")).unwrap();
+        let t: FlatAsciiText<32> =
+            FlatAsciiText::try_from(black_box("ABCDEFGHIJ1234567890")).unwrap();
         t.as_raw()[0] as u64
     });
 
     // Wire format
     let buffer_7: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
     bench_batched("try_from_null_terminated (7B)", || {
-        let t: RawAsciiText<16> =
-            RawAsciiText::try_from_null_terminated(black_box(&buffer_7[..])).unwrap();
+        let t: FlatAsciiText<16> =
+            FlatAsciiText::try_from_null_terminated(black_box(&buffer_7[..])).unwrap();
         t.as_raw()[0] as u64
     });
 
     bench_batched("try_from_raw (7B in 16B)", || {
-        let t: RawAsciiText<16> = RawAsciiText::try_from_raw(black_box(buffer_7)).unwrap();
+        let t: FlatAsciiText<16> = FlatAsciiText::try_from_raw(black_box(buffer_7)).unwrap();
         t.as_raw()[0] as u64
     });
 
     let padded: [u8; 16] = *b"BTC-USD         ";
     bench_batched("try_from_right_padded (7B)", || {
-        let t: RawAsciiText<16> =
-            RawAsciiText::try_from_right_padded(black_box(padded), b' ').unwrap();
+        let t: FlatAsciiText<16> =
+            FlatAsciiText::try_from_right_padded(black_box(padded), b' ').unwrap();
         t.as_raw()[0] as u64
     });
 
-    // From RawAsciiString
-    let raw: RawAsciiString<32> = RawAsciiString::try_from("BTC-USD").unwrap();
-    bench_batched("try_from RawAsciiString", || {
-        let t: RawAsciiText<32> = RawAsciiText::try_from(black_box(raw)).unwrap();
+    // From FlatAsciiString
+    let raw: FlatAsciiString<32> = FlatAsciiString::try_from("BTC-USD").unwrap();
+    bench_batched("try_from FlatAsciiString", || {
+        let t: FlatAsciiText<32> = FlatAsciiText::try_from(black_box(raw)).unwrap();
         t.as_raw()[0] as u64
     });
 
@@ -73,7 +73,7 @@ fn main() {
     println!();
     print_header("ACCESSORS");
 
-    let t7: RawAsciiText<32> = RawAsciiText::try_from("BTC-USD").unwrap();
+    let t7: FlatAsciiText<32> = FlatAsciiText::try_from("BTC-USD").unwrap();
 
     bench_batched("len() (7B)", || black_box(t7).len() as u64);
     bench_batched("as_str() (7B)", || black_box(t7).as_str().len() as u64);
@@ -90,7 +90,7 @@ fn main() {
     println!();
     print_header("REPLACEMENT (checked vs unchecked)");
 
-    let sym: RawAsciiText<32> = RawAsciiText::try_from("BTC-USD-PERP").unwrap();
+    let sym: FlatAsciiText<32> = FlatAsciiText::try_from("BTC-USD-PERP").unwrap();
     let minus = AsciiChar::try_new(b'-').unwrap();
     let underscore = AsciiChar::try_new(b'_').unwrap();
 
@@ -126,7 +126,7 @@ fn main() {
         black_box(t7).to_ascii_text().header()
     });
 
-    let t20: RawAsciiText<32> = RawAsciiText::try_from("ABCDEFGHIJ1234567890").unwrap();
+    let t20: FlatAsciiText<32> = FlatAsciiText::try_from("ABCDEFGHIJ1234567890").unwrap();
     bench_batched("to_ascii_text (20B)", || {
         black_box(t20).to_ascii_text().header()
     });

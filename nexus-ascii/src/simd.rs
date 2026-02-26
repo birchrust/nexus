@@ -46,10 +46,10 @@ mod avx512;
 // ASCII Validation
 // =============================================================================
 
-/// Validate that all bytes are ASCII (< 128).
+/// Validate that all bytes are non-null ASCII (0x01-0x7F).
 ///
-/// Returns `Ok(())` if all bytes are valid ASCII, or `Err((byte, pos))` with
-/// the first invalid byte and its position.
+/// Returns `Ok(())` if all bytes are valid non-null ASCII, or `Err((byte, pos))`
+/// with the first invalid byte and its position. Null bytes (0x00) are rejected.
 ///
 /// Dispatches to the best available implementation at compile time:
 /// - AVX-512: 64 bytes/iter
@@ -92,7 +92,7 @@ pub fn validate_ascii(bytes: &[u8]) -> Result<(), (u8, usize)> {
     }
 }
 
-/// Validate ASCII with compile-time capacity bound.
+/// Validate non-null ASCII (0x01-0x7F) with compile-time capacity bound.
 ///
 /// Uses `CAP` to eliminate unreachable SIMD loops at compile time.
 /// For fixed-capacity types like `AsciiString<8>`, the compiler inlines
@@ -421,7 +421,7 @@ pub fn make_uppercase(bytes: &mut [u8]) {
 /// Control characters are bytes < 0x20 (space) or == 0x7F (DEL).
 /// Returns true if any control character is found, false otherwise.
 ///
-/// For ASCII-validated input (all bytes in 0x00-0x7F), this is equivalent
+/// For ASCII-validated input (all bytes in 0x01-0x7F), this is equivalent
 /// to checking for non-printable bytes, so we delegate to `validate_printable`
 /// which has full SIMD dispatch.
 ///
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn validate_ascii_single_valid() {
-        for b in 0u8..=127 {
+        for b in 1u8..=127 {
             assert!(validate_ascii(&[b]).is_ok(), "byte {} should be valid", b);
         }
     }
@@ -595,8 +595,25 @@ mod tests {
     }
 
     #[test]
+    fn validate_ascii_null_rejected() {
+        assert_eq!(validate_ascii(&[0x00]), Err((0x00, 0)));
+    }
+
+    #[test]
+    fn validate_ascii_null_at_various_positions() {
+        for len in 1..=64 {
+            for pos in 0..len {
+                let mut bytes = vec![b'a'; len];
+                bytes[pos] = 0x00;
+                let result = validate_ascii(&bytes);
+                assert_eq!(result, Err((0x00, pos)), "len={}, pos={}", len, pos);
+            }
+        }
+    }
+
+    #[test]
     fn validate_ascii_all_valid() {
-        let bytes: Vec<u8> = (0..=127).collect();
+        let bytes: Vec<u8> = (1..=127).collect();
         assert!(validate_ascii(&bytes).is_ok());
     }
 

@@ -319,7 +319,7 @@ impl<const CAP: usize> AsciiText<CAP> {
     /// assert_eq!(text.as_str(), "Hello");
     ///
     /// // Strings with control characters are rejected
-    /// let s_ctrl: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x00").unwrap();
+    /// let s_ctrl: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x01").unwrap();
     /// let err = AsciiText::try_from_ascii_string(s_ctrl).unwrap_err();
     /// assert!(matches!(err, AsciiError::NonPrintable { .. }));
     /// # Ok::<(), AsciiError>(())
@@ -1368,9 +1368,10 @@ mod tests {
 
     #[test]
     fn test_try_from_ascii_string_with_control() {
-        let s: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x00").unwrap();
+        // Null is now rejected at the AsciiString level, so use a non-null control char
+        let s: AsciiString<32> = AsciiString::try_from_bytes(b"Hello\x01").unwrap();
         let err = AsciiText::try_from_ascii_string(s).unwrap_err();
-        assert!(matches!(err, AsciiError::NonPrintable { byte: 0, pos: 5 }));
+        assert!(matches!(err, AsciiError::NonPrintable { byte: 1, pos: 5 }));
     }
 
     #[test]

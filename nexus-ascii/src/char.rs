@@ -35,6 +35,8 @@ impl std::error::Error for InvalidAsciiChar {}
 /// A single ASCII character (0x00-0x7F).
 ///
 /// Zero-cost wrapper around `u8` with validation. All methods are const.
+/// Note: `AsciiChar::NULL` (0x00) is a valid character value, but null cannot
+/// appear as content in string types where it is structural (terminator/padding).
 ///
 /// # Example
 ///
