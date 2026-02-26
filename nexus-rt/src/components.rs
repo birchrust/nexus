@@ -36,7 +36,7 @@ pub struct ComponentId(usize);
 
 /// Type-erased drop function. Monomorphized at registration time so we
 /// can reconstruct and drop the original `Box<T>` from a `*mut u8`.
-type DropFn = unsafe fn(*mut u8);
+pub(crate) type DropFn = unsafe fn(*mut u8);
 
 /// Reconstruct and drop a `Box<T>` from a raw pointer.
 ///
@@ -44,7 +44,7 @@ type DropFn = unsafe fn(*mut u8);
 ///
 /// `ptr` must have been produced by `Box::into_raw(Box::new(value))`
 /// where `value: T`. Must only be called once per pointer.
-unsafe fn drop_component<T>(ptr: *mut u8) {
+pub(crate) unsafe fn drop_component<T>(ptr: *mut u8) {
     // SAFETY: ptr was produced by Box::into_raw(Box::new(value))
     // where value: T. Called exactly once in Storage::drop.
     unsafe {
@@ -61,27 +61,27 @@ unsafe fn drop_component<T>(ptr: *mut u8) {
 /// Owns the heap allocations and is responsible for cleanup. Shared between
 /// [`ComponentsBuilder`] and [`Components`] via move — avoids duplicating
 /// Drop logic.
-struct Storage {
+pub(crate) struct Storage {
     /// Dense array of type-erased pointers. Each was produced by `Box::into_raw`.
-    ptrs: Vec<*mut u8>,
+    pub(crate) ptrs: Vec<*mut u8>,
     /// Parallel array of drop functions. `drop_fns[i]` is the monomorphized
     /// destructor for the concrete type behind `ptrs[i]`.
-    drop_fns: Vec<DropFn>,
+    pub(crate) drop_fns: Vec<DropFn>,
 }
 
 impl Storage {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             ptrs: Vec::new(),
             drop_fns: Vec::new(),
         }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.ptrs.len()
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.ptrs.is_empty()
     }
 }

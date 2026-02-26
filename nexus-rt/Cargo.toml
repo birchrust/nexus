@@ -9,6 +9,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+mio = "1.1.1"
 
 [lints]
 workspace = true
