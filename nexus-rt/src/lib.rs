@@ -7,76 +7,60 @@
 //! async runtime — there is no task scheduler, no work stealing, no `Future`
 //! polling. Instead, it provides:
 //!
-//! - **Stores** — [`Components`] and [`Drivers`] are type-erased singleton
-//!   stores. Each registered type gets a dense index ([`ComponentId`] /
-//!   [`DriverId`]) for ~3-cycle dispatch-time access.
+//! - **World** — [`World`] is a unified type-erased singleton store. Each
+//!   registered type gets a dense index ([`ResourceId`]) for ~3-cycle
+//!   dispatch-time access.
 //!
-//! - **Fetch** — The [`Fetch`] trait resolves state at build time and
-//!   produces references at dispatch time. Eliminates manual resolve+cast
-//!   boilerplate.
-//!
-//! - **Parameters** — [`Comp`] and [`Ctx`] are what users see in system
+//! - **Resources** — [`Res`] and [`ResMut`] are what users see in system
 //!   function signatures. They deref to the inner value transparently.
+//!
+//! - **Systems** — The [`SystemParam`] trait resolves state at build time
+//!   and produces references at dispatch time. [`IntoSystem`] converts
+//!   plain functions into [`System`] trait objects for type-erased dispatch.
+//!
+//! - **Events** — [`Events`], [`EventWriter`], and [`EventReader`] provide
+//!   simple event buffer types that integrate as system parameters.
 //!
 //! # Quick Start
 //!
 //! ```
-//! use nexus_rt::{Components, ComponentsBuilder, Drivers, DriversBuilder};
+//! use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System};
 //!
-//! let components = Components::builder()
-//!     .register::<u64>(0)
-//!     .register::<bool>(true)
-//!     .build();
+//! let mut builder = WorldBuilder::new();
+//! builder.register::<u64>(0);
+//! let mut world = builder.build();
 //!
-//! let drivers = Drivers::builder()
-//!     .register::<String>(String::from("timer"))
-//!     .build();
-//!
-//! // Hot path: ~3 cycles per fetch via dense index
-//! let counter_id = components.id::<u64>();
-//! let driver_id = drivers.id::<String>();
-//!
-//! unsafe {
-//!     *components.get_mut::<u64>(counter_id) += 1;
-//!     assert_eq!(*components.get::<u64>(counter_id), 1);
-//!     assert_eq!(drivers.get::<String>(driver_id), "timer");
+//! fn tick(mut counter: ResMut<u64>, event: u32) {
+//!     *counter += event as u64;
 //! }
-//! ```
 //!
-//! # Fetch
+//! let mut system = tick.into_system(world.registry());
 //!
-//! ```
-//! use nexus_rt::{Components, ComponentsBuilder, Fetch};
+//! system.run(&mut world, 10u32);
 //!
-//! let components = ComponentsBuilder::new()
-//!     .register::<u64>(42)
-//!     .build();
-//!
-//! // Build time: resolve state once
-//! let state = <&u64 as Fetch<Components>>::init(&components);
-//!
-//! // Dispatch time: fetch reference (~3 cycles)
-//! let val = unsafe { <&u64 as Fetch<Components>>::fetch(&components, &state) };
-//! assert_eq!(*val, 42);
+//! assert_eq!(*world.resource::<u64>(), 10);
 //! ```
 //!
 //! # Safety
 //!
-//! The `get` / `get_mut` methods on both stores are `unsafe`. The caller
-//! must ensure:
+//! The low-level `get` / `get_mut` methods on [`World`] are `unsafe` and
+//! intended for framework internals. The caller must ensure:
 //!
 //! 1. The ID was obtained from the same builder that produced the container.
 //! 2. The type parameter matches the type registered at that ID.
 //! 3. No mutable aliasing — at most one `&mut T` exists per value at any time.
 //!
-//! These invariants are naturally upheld by single-threaded sequential dispatch.
+//! User-facing APIs (`resource`, `resource_mut`, `with_mut`, `System::run`)
+//! are fully safe.
 
 #![warn(missing_docs)]
 
-mod components;
-mod drivers;
-mod fetch;
+mod event;
+mod resource;
+mod system;
+mod world;
 
-pub use components::{ComponentId, Components, ComponentsBuilder};
-pub use drivers::{DriverId, Drivers, DriversBuilder};
-pub use fetch::{Comp, Ctx, Fetch};
+pub use event::{EventReader, EventWriter, Events};
+pub use resource::{Res, ResMut};
+pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
+pub use world::{Registry, ResourceId, World, WorldBuilder};

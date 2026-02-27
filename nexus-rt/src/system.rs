@@ -1,0 +1,633 @@
+//! System parameter resolution and dispatch primitives.
+
+use std::ops::{Deref, DerefMut};
+
+use crate::resource::{Res, ResMut};
+use crate::world::{Registry, ResourceId, World};
+
+// =============================================================================
+// SystemParam
+// =============================================================================
+
+/// Trait for types that can be resolved from a [`Registry`] at build time
+/// and fetched from [`World`] at dispatch time.
+///
+/// Build time: [`init`](Self::init) resolves opaque state (e.g. a
+/// [`ResourceId`]) from the registry. This panics if the required type
+/// isn't registered — giving an early build-time error.
+///
+/// Dispatch time: [`fetch`](Self::fetch) uses the cached state to produce
+/// a reference in ~3 cycles.
+pub trait SystemParam {
+    /// Opaque state cached at build time (e.g. [`ResourceId`]).
+    type State;
+
+    /// The item produced at dispatch time.
+    type Item<'w>;
+
+    /// Resolve state from the registry. Called once at build time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the required resource is not registered.
+    fn init(registry: &Registry) -> Self::State;
+
+    /// Fetch the item using cached state.
+    ///
+    /// # Safety
+    ///
+    /// - `state` must have been produced by [`init`](Self::init) on the
+    ///   same registry that built the `world`.
+    /// - Caller ensures no aliasing violations.
+    unsafe fn fetch<'w>(world: &'w World, state: &'w mut Self::State) -> Self::Item<'w>;
+}
+
+// -- Res<T> ------------------------------------------------------------------
+
+impl<T: 'static> SystemParam for Res<'_, T> {
+    type State = ResourceId;
+    type Item<'w> = Res<'w, T>;
+
+    fn init(registry: &Registry) -> ResourceId {
+        registry.id::<T>()
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> Res<'w, T> {
+        // SAFETY: state was produced by init() on the same world.
+        // Caller ensures no mutable alias exists for T.
+        Res::new(unsafe { world.get::<T>(*state) })
+    }
+}
+
+// -- ResMut<T> ---------------------------------------------------------------
+
+impl<T: 'static> SystemParam for ResMut<'_, T> {
+    type State = ResourceId;
+    type Item<'w> = ResMut<'w, T>;
+
+    fn init(registry: &Registry) -> ResourceId {
+        registry.id::<T>()
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> ResMut<'w, T> {
+        // SAFETY: state was produced by init() on the same world.
+        // Caller ensures no aliases exist for T.
+        ResMut::new(unsafe { world.get_mut::<T>(*state) })
+    }
+}
+
+// -- Option<Res<T>> ----------------------------------------------------------
+
+impl<T: 'static> SystemParam for Option<Res<'_, T>> {
+    type State = Option<ResourceId>;
+    type Item<'w> = Option<Res<'w, T>>;
+
+    fn init(registry: &Registry) -> Option<ResourceId> {
+        registry.try_id::<T>()
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, state: &'w mut Option<ResourceId>) -> Option<Res<'w, T>> {
+        // SAFETY: state was produced by init() on the same world.
+        // Caller ensures no mutable alias exists for T.
+        state.map(|id| Res::new(unsafe { world.get::<T>(id) }))
+    }
+}
+
+// -- Option<ResMut<T>> -------------------------------------------------------
+
+impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
+    type State = Option<ResourceId>;
+    type Item<'w> = Option<ResMut<'w, T>>;
+
+    fn init(registry: &Registry) -> Option<ResourceId> {
+        registry.try_id::<T>()
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(
+        world: &'w World,
+        state: &'w mut Option<ResourceId>,
+    ) -> Option<ResMut<'w, T>> {
+        // SAFETY: state was produced by init() on the same world.
+        // Caller ensures no aliases exist for T.
+        state.map(|id| ResMut::new(unsafe { world.get_mut::<T>(id) }))
+    }
+}
+
+// =============================================================================
+// Tuple impls
+// =============================================================================
+
+/// Unit impl — event-only systems with no resource parameters.
+impl SystemParam for () {
+    type State = ();
+    type Item<'w> = ();
+
+    fn init(_registry: &Registry) {}
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(_world: &'w World, _state: &'w mut ()) {}
+}
+
+macro_rules! impl_system_param_tuple {
+    ($($P:ident),+) => {
+        impl<$($P: SystemParam),+> SystemParam for ($($P,)+) {
+            type State = ($($P::State,)+);
+            type Item<'w> = ($($P::Item<'w>,)+);
+
+            fn init(registry: &Registry) -> Self::State {
+                ($($P::init(registry),)+)
+            }
+
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            unsafe fn fetch<'w>(world: &'w World, state: &'w mut Self::State) -> Self::Item<'w> {
+                let ($($P,)+) = state;
+                // SAFETY: caller upholds aliasing invariants for all params.
+                unsafe { ($($P::fetch(world, $P),)+) }
+            }
+        }
+    };
+}
+
+macro_rules! all_tuples {
+    ($m:ident) => {
+        $m!(P0);
+        $m!(P0, P1);
+        $m!(P0, P1, P2);
+        $m!(P0, P1, P2, P3);
+        $m!(P0, P1, P2, P3, P4);
+        $m!(P0, P1, P2, P3, P4, P5);
+        $m!(P0, P1, P2, P3, P4, P5, P6);
+        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
+    };
+}
+
+all_tuples!(impl_system_param_tuple);
+
+// =============================================================================
+// Local<T> — per-system state
+// =============================================================================
+
+/// Per-system local state. Stored inside [`FunctionSystem`], not in [`World`].
+///
+/// Initialized with [`Default::default()`] at system creation time. Mutated
+/// freely at dispatch time — each system instance has its own independent copy.
+///
+/// # Examples
+///
+/// ```ignore
+/// fn count_events(mut count: Local<u64>, event: u32) {
+///     *count += 1;
+///     println!("event #{}: {}", *count, event);
+/// }
+/// ```
+pub struct Local<'s, T: Default + 'static> {
+    value: &'s mut T,
+}
+
+impl<'s, T: Default + 'static> Local<'s, T> {
+    pub(crate) fn new(value: &'s mut T) -> Self {
+        Self { value }
+    }
+}
+
+impl<T: Default + 'static> Deref for Local<'_, T> {
+    type Target = T;
+
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+impl<T: Default + 'static> DerefMut for Local<'_, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        self.value
+    }
+}
+
+impl<T: Default + 'static> SystemParam for Local<'_, T> {
+    type State = T;
+    type Item<'s> = Local<'s, T>;
+
+    fn init(_registry: &Registry) -> T {
+        T::default()
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'s>(_world: &'s World, state: &'s mut T) -> Local<'s, T> {
+        // SAFETY: FunctionSystem owns state exclusively. Single-threaded
+        // dispatch ensures no aliasing. Lifetime 's is bounded by the
+        // system's run() call.
+        Local::new(state)
+    }
+}
+
+// =============================================================================
+// System<E> — object-safe dispatch trait
+// =============================================================================
+
+/// Object-safe dispatch trait for systems.
+///
+/// Enables `Box<dyn System<E>>` for type-erased heterogeneous dispatch.
+/// Storage and scheduling are the driver's responsibility — this trait
+/// only defines the dispatch interface.
+///
+/// Takes `&mut World` — callers use [`World::with_mut`] to split the
+/// driver out of World before dispatching, which provides `&mut World`
+/// without aliasing.
+pub trait System<E> {
+    /// Run this system with the given event.
+    fn run(&mut self, world: &mut World, event: E);
+}
+
+// =============================================================================
+// FunctionSystem — concrete System impl
+// =============================================================================
+
+/// A system backed by a plain function. Created via [`IntoSystem`].
+///
+/// `pub` because it appears as [`IntoSystem::System`], but users don't
+/// construct it directly — they call [`IntoSystem::into_system`].
+pub struct FunctionSystem<F, Params: SystemParam> {
+    f: F,
+    state: Params::State,
+}
+
+// =============================================================================
+// IntoSystem — conversion trait
+// =============================================================================
+
+/// Converts a plain function into a [`System`].
+///
+/// Event `E` is always the last function parameter. Everything before
+/// it is resolved as [`SystemParam`] from a [`Registry`].
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::{Res, ResMut, IntoSystem, WorldBuilder};
+///
+/// fn tick(counter: Res<u64>, mut flag: ResMut<bool>, event: u32) {
+///     if event > 0 {
+///         *flag = true;
+///     }
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// builder.register::<bool>(false);
+///
+/// let mut system = tick.into_system(builder.registry());
+/// ```
+pub trait IntoSystem<E, Params> {
+    /// The concrete system type produced.
+    type System: System<E> + 'static;
+
+    /// Convert this function into a system, resolving parameters from the registry.
+    fn into_system(self, registry: &Registry) -> Self::System;
+}
+
+// =============================================================================
+// Per-arity impls via macro
+// =============================================================================
+
+// Arity 0: fn(E) — event-only system, no resource params.
+impl<E, F: FnMut(E) + 'static> IntoSystem<E, ()> for F {
+    type System = FunctionSystem<F, ()>;
+
+    fn into_system(self, registry: &Registry) -> Self::System {
+        FunctionSystem {
+            f: self,
+            state: <() as SystemParam>::init(registry),
+        }
+    }
+}
+
+impl<E, F: FnMut(E) + 'static> System<E> for FunctionSystem<F, ()> {
+    fn run(&mut self, _world: &mut World, event: E) {
+        (self.f)(event);
+    }
+}
+
+macro_rules! impl_into_system {
+    ($($P:ident),+) => {
+        impl<E, F: 'static, $($P: SystemParam + 'static),+> IntoSystem<E, ($($P,)+)> for F
+        where
+            // Double-bound pattern (from Bevy):
+            // - First bound: compiler uses P directly to infer SystemParam
+            //   types from the function signature (GATs aren't injective,
+            //   so P::Item<'w> alone can't determine P).
+            // - Second bound: verifies the function is callable with the
+            //   fetched items at any lifetime.
+            for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
+        {
+            type System = FunctionSystem<F, ($($P,)+)>;
+
+            fn into_system(self, registry: &Registry) -> Self::System {
+                FunctionSystem {
+                    f: self,
+                    state: <($($P,)+) as SystemParam>::init(registry),
+                }
+            }
+        }
+
+        impl<E, F: 'static, $($P: SystemParam + 'static),+> System<E> for FunctionSystem<F, ($($P,)+)>
+        where
+            for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
+        {
+            #[allow(non_snake_case)]
+            fn run(&mut self, world: &mut World, event: E) {
+                // Helper binds the HRTB lifetime at a concrete call site.
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ Ev>(
+                    mut f: impl FnMut($($P,)+ Ev),
+                    $($P: $P,)+
+                    event: Ev,
+                ) {
+                    f($($P,)+ event);
+                }
+
+                // SAFETY: state was produced by init() on the same registry
+                // that built this world. Single-threaded sequential dispatch
+                // ensures no mutable aliasing across params.
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ event);
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_system);
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WorldBuilder;
+
+    // -- SystemParam tests ----------------------------------------------------
+
+    #[test]
+    fn res_system_param() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let world = builder.build();
+
+        let mut state = <Res<u64> as SystemParam>::init(world.registry());
+        // SAFETY: state from init on same registry, no aliasing.
+        let res = unsafe { <Res<u64> as SystemParam>::fetch(&world, &mut state) };
+        assert_eq!(*res, 42);
+    }
+
+    #[test]
+    fn res_mut_system_param() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(1);
+        let world = builder.build();
+
+        let mut state = <ResMut<u64> as SystemParam>::init(world.registry());
+        // SAFETY: state from init on same registry, no aliasing.
+        unsafe {
+            let mut res = <ResMut<u64> as SystemParam>::fetch(&world, &mut state);
+            *res = 99;
+        }
+        unsafe {
+            let mut read_state = <Res<u64> as SystemParam>::init(world.registry());
+            let res = <Res<u64> as SystemParam>::fetch(&world, &mut read_state);
+            assert_eq!(*res, 99);
+        }
+    }
+
+    #[test]
+    fn tuple_system_param() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(10).register::<bool>(true);
+        let world = builder.build();
+
+        let mut state = <(Res<u64>, ResMut<bool>) as SystemParam>::init(world.registry());
+        // SAFETY: different types, no aliasing.
+        unsafe {
+            let (counter, mut flag) =
+                <(Res<u64>, ResMut<bool>) as SystemParam>::fetch(&world, &mut state);
+            assert_eq!(*counter, 10);
+            assert!(*flag);
+            *flag = false;
+        }
+        unsafe {
+            let mut read_state = <Res<bool> as SystemParam>::init(world.registry());
+            let res = <Res<bool> as SystemParam>::fetch(&world, &mut read_state);
+            assert!(!*res);
+        }
+    }
+
+    #[test]
+    fn empty_tuple_param() {
+        let world = WorldBuilder::new().build();
+        let mut state = <() as SystemParam>::init(world.registry());
+        // SAFETY: no params to alias.
+        let () = unsafe { <() as SystemParam>::fetch(&world, &mut state) };
+    }
+
+    // -- System dispatch tests ------------------------------------------------
+
+    fn event_only_handler(event: u32) {
+        assert_eq!(event, 42);
+    }
+
+    #[test]
+    fn event_only_system() {
+        let mut world = WorldBuilder::new().build();
+        let mut sys = event_only_handler.into_system(world.registry());
+        sys.run(&mut world, 42u32);
+    }
+
+    fn one_res_handler(counter: Res<u64>, event: u32) {
+        assert_eq!(*counter, 10);
+        assert_eq!(event, 5);
+    }
+
+    #[test]
+    fn one_res_and_event() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(10);
+        let mut world = builder.build();
+
+        let mut sys = one_res_handler.into_system(world.registry());
+        sys.run(&mut world, 5u32);
+    }
+
+    fn two_res_handler(counter: Res<u64>, flag: Res<bool>, event: u32) {
+        assert_eq!(*counter, 10);
+        assert!(*flag);
+        assert_eq!(event, 7);
+    }
+
+    #[test]
+    fn two_res_and_event() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(10).register::<bool>(true);
+        let mut world = builder.build();
+
+        let mut sys = two_res_handler.into_system(world.registry());
+        sys.run(&mut world, 7u32);
+    }
+
+    fn accumulate(mut counter: ResMut<u64>, event: u64) {
+        *counter += event;
+    }
+
+    #[test]
+    fn mutation_through_res_mut() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut sys = accumulate.into_system(world.registry());
+
+        sys.run(&mut world, 10u64);
+        sys.run(&mut world, 5u64);
+
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    fn add_system(mut counter: ResMut<u64>, event: u64) {
+        *counter += event;
+    }
+
+    fn mul_system(mut counter: ResMut<u64>, event: u64) {
+        *counter *= event;
+    }
+
+    #[test]
+    fn box_dyn_type_erasure() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let sys_a = add_system.into_system(world.registry());
+        let sys_b = mul_system.into_system(world.registry());
+
+        let mut systems: Vec<Box<dyn System<u64>>> = vec![Box::new(sys_a), Box::new(sys_b)];
+
+        for sys in systems.iter_mut() {
+            sys.run(&mut world, 3u64);
+        }
+        // 0 + 3 = 3, then 3 * 3 = 9
+        assert_eq!(*world.resource::<u64>(), 9);
+    }
+
+    // -- Local<T> tests -------------------------------------------------------
+
+    fn local_counter(mut count: Local<u64>, _event: u32) {
+        *count += 1;
+    }
+
+    #[test]
+    fn local_default_init() {
+        let mut world = WorldBuilder::new().build();
+        let mut sys = local_counter.into_system(world.registry());
+        // Ran once — count should be 1 (started at 0). No panic means init worked.
+        sys.run(&mut world, 1u32);
+    }
+
+    #[test]
+    fn local_persists_across_runs() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn accumulate_local(mut count: Local<u64>, mut total: ResMut<u64>, _event: u32) {
+            *count += 1;
+            *total = *count;
+        }
+
+        let mut sys = accumulate_local.into_system(world.registry());
+        sys.run(&mut world, 0u32);
+        sys.run(&mut world, 0u32);
+        sys.run(&mut world, 0u32);
+
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    #[test]
+    fn local_independent_per_system() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn inc_local(mut count: Local<u64>, mut total: ResMut<u64>, _event: u32) {
+            *count += 1;
+            *total += *count;
+        }
+
+        let mut sys_a = inc_local.into_system(world.registry());
+        let mut sys_b = inc_local.into_system(world.registry());
+
+        sys_a.run(&mut world, 0u32); // local=1, total=0+1=1
+        sys_b.run(&mut world, 0u32); // local=1, total=1+1=2
+        sys_a.run(&mut world, 0u32); // local=2, total=2+2=4
+
+        assert_eq!(*world.resource::<u64>(), 4);
+    }
+
+    // -- Option<Res<T>> / Option<ResMut<T>> tests -----------------------------
+
+    #[test]
+    fn option_res_none_when_missing() {
+        let world = WorldBuilder::new().build();
+        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry());
+        let opt = unsafe { <Option<Res<u64>> as SystemParam>::fetch(&world, &mut state) };
+        assert!(opt.is_none());
+    }
+
+    #[test]
+    fn option_res_some_when_present() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let world = builder.build();
+
+        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry());
+        let opt = unsafe { <Option<Res<u64>> as SystemParam>::fetch(&world, &mut state) };
+        assert_eq!(*opt.unwrap(), 42);
+    }
+
+    #[test]
+    fn option_res_mut_some_when_present() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(1);
+        let world = builder.build();
+
+        let mut state = <Option<ResMut<u64>> as SystemParam>::init(world.registry());
+        unsafe {
+            let opt = <Option<ResMut<u64>> as SystemParam>::fetch(&world, &mut state);
+            *opt.unwrap() = 99;
+        }
+        unsafe {
+            let mut read_state = <Res<u64> as SystemParam>::init(world.registry());
+            let res = <Res<u64> as SystemParam>::fetch(&world, &mut read_state);
+            assert_eq!(*res, 99);
+        }
+    }
+
+    fn optional_system(opt: Option<Res<String>>, _event: u32) {
+        assert!(opt.is_none());
+    }
+
+    #[test]
+    fn option_in_system() {
+        let mut world = WorldBuilder::new().build();
+        let mut sys = optional_system.into_system(world.registry());
+        sys.run(&mut world, 0u32);
+    }
+}

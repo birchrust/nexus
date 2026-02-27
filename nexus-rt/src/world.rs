@@ -1,0 +1,808 @@
+//! Type-erased singleton resource storage.
+//!
+//! [`World`] is a unified store where each resource type gets a dense index
+//! ([`ResourceId`]) for O(1) dispatch-time access. Registration happens through
+//! [`WorldBuilder`], which freezes into an immutable [`World`] container via
+//! [`build()`](WorldBuilder::build).
+//!
+//! The type [`Registry`] maps types to dense indices. It is shared between
+//! [`WorldBuilder`] and [`World`], and is passed to [`SystemParam::init`] and
+//! [`IntoSystem::into_system`] so that systems can resolve their parameter
+//! state during driver setup — before or after `build()`.
+//!
+//! # Lifecycle
+//!
+//! ```text
+//! let mut builder = WorldBuilder::new();
+//! builder.register::<PriceCache>(value);
+//! builder.register::<TimerDriver>(value);
+//!
+//! // Drivers can resolve systems against builder.registry()
+//! // before World is built.
+//!
+//! let world = builder.build();  // → World (frozen)
+//! ```
+//!
+//! After `build()`, the container is frozen — no inserts, no removes. All
+//! [`ResourceId`] values are valid for the lifetime of the [`World`] container.
+
+use std::any::{TypeId, type_name};
+
+use rustc_hash::FxHashMap;
+
+// =============================================================================
+// Core types
+// =============================================================================
+
+/// Dense index identifying a resource type within a [`World`] container.
+///
+/// Assigned sequentially at registration (0, 1, 2, ...). Used as a direct
+/// index into internal storage at dispatch time — no hashing, no searching.
+///
+/// Only obtained from [`Registry::id`], [`World::id`], or their `try_` variants.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ResourceId(usize);
+
+/// Type-erased drop function. Monomorphized at registration time so we
+/// can reconstruct and drop the original `Box<T>` from a `*mut u8`.
+pub(crate) type DropFn = unsafe fn(*mut u8);
+
+/// Reconstruct and drop a `Box<T>` from a raw pointer.
+///
+/// # Safety
+///
+/// `ptr` must have been produced by `Box::into_raw(Box::new(value))`
+/// where `value: T`. Must only be called once per pointer.
+pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
+    // SAFETY: ptr was produced by Box::into_raw(Box::new(value))
+    // where value: T. Called exactly once in Storage::drop.
+    unsafe {
+        let _ = Box::from_raw(ptr as *mut T);
+    }
+}
+
+// =============================================================================
+// Registry — type-to-index mapping
+// =============================================================================
+
+/// Type-to-index mapping shared between [`WorldBuilder`] and [`World`].
+///
+/// Contains only the type registry — no storage, no pointers. Passed to
+/// [`IntoSystem::into_system`](crate::IntoSystem::into_system) and
+/// [`SystemParam::init`](crate::SystemParam::init) so systems can resolve
+/// [`ResourceId`]s during driver setup.
+///
+/// Obtained via [`WorldBuilder::registry()`] or [`World::registry()`].
+pub struct Registry {
+    indices: FxHashMap<TypeId, ResourceId>,
+}
+
+impl Registry {
+    pub(crate) fn new() -> Self {
+        Self {
+            indices: FxHashMap::default(),
+        }
+    }
+
+    /// Resolve the [`ResourceId`] for a type. Cold path — uses HashMap lookup.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type was not registered.
+    pub fn id<T: 'static>(&self) -> ResourceId {
+        *self
+            .indices
+            .get(&TypeId::of::<T>())
+            .unwrap_or_else(|| panic!("resource `{}` not registered", type_name::<T>()))
+    }
+
+    /// Try to resolve the [`ResourceId`] for a type. Returns `None` if the
+    /// type was not registered.
+    pub fn try_id<T: 'static>(&self) -> Option<ResourceId> {
+        self.indices.get(&TypeId::of::<T>()).copied()
+    }
+
+    /// Returns `true` if a resource of type `T` has been registered.
+    pub fn contains<T: 'static>(&self) -> bool {
+        self.indices.contains_key(&TypeId::of::<T>())
+    }
+}
+
+// =============================================================================
+// Storage — shared backing between builder and frozen container
+// =============================================================================
+
+/// Internal storage for type-erased resource pointers and their destructors.
+///
+/// Owns the heap allocations and is responsible for cleanup. Shared between
+/// [`WorldBuilder`] and [`World`] via move — avoids duplicating Drop logic.
+pub(crate) struct Storage {
+    /// Dense array of type-erased pointers. Each was produced by `Box::into_raw`.
+    pub(crate) ptrs: Vec<*mut u8>,
+    /// Parallel array of drop functions. `drop_fns[i]` is the monomorphized
+    /// destructor for the concrete type behind `ptrs[i]`.
+    pub(crate) drop_fns: Vec<DropFn>,
+}
+
+impl Storage {
+    pub(crate) fn new() -> Self {
+        Self {
+            ptrs: Vec::new(),
+            drop_fns: Vec::new(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.ptrs.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ptrs.is_empty()
+    }
+}
+
+// SAFETY: Storage exclusively owns the heap allocations behind its raw pointers.
+// They are not aliased or shared. Transferring ownership to another thread is safe.
+unsafe impl Send for Storage {}
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        for (ptr, drop_fn) in self.ptrs.iter().zip(&self.drop_fns) {
+            // Skip null pointers — a slot may be null if a with_mut closure
+            // panicked before the pointer was restored. The resource is
+            // leaked, but the process is crashing anyway.
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: each (ptr, drop_fn) pair was created together in
+            // WorldBuilder::register(). drop_fn is the monomorphized
+            // destructor for the concrete type behind ptr. Called exactly
+            // once here.
+            unsafe {
+                drop_fn(*ptr);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// WorldBuilder
+// =============================================================================
+
+/// Builder for registering resources before freezing into a [`World`] container.
+///
+/// Each resource type can only be registered once. Registration assigns a
+/// dense [`ResourceId`] index (0, 1, 2, ...).
+///
+/// The [`registry()`](Self::registry) method exposes the type-to-index mapping
+/// so that drivers can resolve systems against the builder before `build()`.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::WorldBuilder;
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(42);
+/// builder.register::<bool>(true);
+/// let world = builder.build();
+///
+/// let id = world.id::<u64>();
+/// unsafe {
+///     assert_eq!(*world.get::<u64>(id), 42);
+/// }
+/// ```
+pub struct WorldBuilder {
+    registry: Registry,
+    storage: Storage,
+}
+
+impl WorldBuilder {
+    /// Create an empty builder.
+    pub fn new() -> Self {
+        Self {
+            registry: Registry::new(),
+            storage: Storage::new(),
+        }
+    }
+
+    /// Register a resource.
+    ///
+    /// The value is heap-allocated via `Box` and ownership is transferred
+    /// to the container. The pointer is stable for the lifetime of the
+    /// resulting [`World`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if a resource of the same type is already registered.
+    pub fn register<T: 'static>(&mut self, value: T) -> &mut Self {
+        let type_id = TypeId::of::<T>();
+        assert!(
+            !self.registry.indices.contains_key(&type_id),
+            "resource `{}` already registered",
+            type_name::<T>(),
+        );
+
+        let ptr = Box::into_raw(Box::new(value)) as *mut u8;
+        let id = ResourceId(self.storage.ptrs.len());
+        self.registry.indices.insert(type_id, id);
+        self.storage.ptrs.push(ptr);
+        self.storage.drop_fns.push(drop_resource::<T>);
+        self
+    }
+
+    /// Register a resource using its [`Default`] value.
+    ///
+    /// Equivalent to `self.register::<T>(T::default())`.
+    pub fn register_default<T: Default + 'static>(&mut self) -> &mut Self {
+        self.register(T::default())
+    }
+
+    /// Returns a reference to the type registry.
+    ///
+    /// Use this to resolve systems during driver setup before [`build()`](Self::build):
+    ///
+    /// ```ignore
+    /// let mut builder = WorldBuilder::new();
+    /// builder.register::<PriceCache>(PriceCache::new());
+    ///
+    /// let mut driver = MockDriver::new();
+    /// driver.register(my_system, builder.registry());
+    ///
+    /// builder.register(driver);
+    /// let world = builder.build();
+    /// ```
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// Returns the number of registered resources.
+    pub fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    /// Returns `true` if no resources have been registered.
+    pub fn is_empty(&self) -> bool {
+        self.storage.is_empty()
+    }
+
+    /// Returns `true` if a resource of type `T` has been registered.
+    pub fn contains<T: 'static>(&self) -> bool {
+        self.registry.contains::<T>()
+    }
+
+    /// Freeze the builder into an immutable [`World`] container.
+    ///
+    /// After this call, no more resources can be registered. All
+    /// [`ResourceId`] values remain valid for the lifetime of the
+    /// returned [`World`].
+    pub fn build(self) -> World {
+        World {
+            registry: self.registry,
+            storage: self.storage,
+        }
+    }
+}
+
+impl Default for WorldBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// World — frozen container
+// =============================================================================
+
+/// Frozen singleton resource storage.
+///
+/// Created by [`WorldBuilder::build()`]. Resources are indexed by dense
+/// [`ResourceId`] for O(1) dispatch-time access (~3 cycles per fetch).
+///
+/// # Safe API
+///
+/// - [`resource`](Self::resource) / [`resource_mut`](Self::resource_mut) —
+///   cold-path access via HashMap lookup.
+/// - [`with_mut`](Self::with_mut) — yanks one resource out of storage,
+///   passes `(&mut T, &mut World)` to a closure. Systems dispatch
+///   through `&mut World` safely.
+///
+/// # Unsafe API (framework internals)
+///
+/// The low-level `get` / `get_mut` methods are `unsafe` — used by
+/// [`SystemParam::fetch`](crate::SystemParam) for ~3-cycle dispatch.
+/// The caller must ensure no mutable aliasing.
+pub struct World {
+    /// Type-to-index mapping. Same registry used during build.
+    registry: Registry,
+    /// Type-erased pointer storage. Drop handled by `Storage`.
+    storage: Storage,
+}
+
+impl World {
+    /// Convenience constructor — returns a new [`WorldBuilder`].
+    pub fn builder() -> WorldBuilder {
+        WorldBuilder::new()
+    }
+
+    /// Returns a reference to the type registry.
+    ///
+    /// Use this to resolve systems after `build()`:
+    ///
+    /// ```ignore
+    /// let mut system = my_fn.into_system(world.registry());
+    /// ```
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// Resolve the [`ResourceId`] for a type. Cold path — uses HashMap lookup.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type was not registered.
+    pub fn id<T: 'static>(&self) -> ResourceId {
+        self.registry.id::<T>()
+    }
+
+    /// Try to resolve the [`ResourceId`] for a type. Returns `None` if the
+    /// type was not registered.
+    pub fn try_id<T: 'static>(&self) -> Option<ResourceId> {
+        self.registry.try_id::<T>()
+    }
+
+    /// Returns the number of registered resources.
+    pub fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    /// Returns `true` if no resources are stored.
+    pub fn is_empty(&self) -> bool {
+        self.storage.is_empty()
+    }
+
+    /// Returns `true` if a resource of type `T` is stored.
+    pub fn contains<T: 'static>(&self) -> bool {
+        self.registry.contains::<T>()
+    }
+
+    // =========================================================================
+    // Safe resource access (cold path — HashMap lookup per call)
+    // =========================================================================
+
+    /// Safe shared access to a resource. Cold path — resolves via HashMap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type was not registered, or if the resource
+    /// is currently borrowed by [`with_mut`](Self::with_mut).
+    pub fn resource<T: 'static>(&mut self) -> &T {
+        let id = self.registry.id::<T>();
+        assert!(
+            !self.storage.ptrs[id.0].is_null(),
+            "resource `{}` is currently borrowed by with_mut",
+            type_name::<T>(),
+        );
+        // SAFETY: id resolved from our own registry. &mut self ensures
+        // exclusive access — no other references can exist. Null check above.
+        unsafe { self.get(id) }
+    }
+
+    /// Safe exclusive access to a resource. Cold path — resolves via HashMap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type was not registered, or if the resource
+    /// is currently borrowed by [`with_mut`](Self::with_mut).
+    pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
+        let id = self.registry.id::<T>();
+        assert!(
+            !self.storage.ptrs[id.0].is_null(),
+            "resource `{}` is currently borrowed by with_mut",
+            type_name::<T>(),
+        );
+        // SAFETY: id resolved from our own registry. &mut self ensures
+        // exclusive access — no other references can exist. Null check above.
+        unsafe { self.get_mut(id) }
+    }
+
+    /// Borrow one resource mutably while passing `&mut World` for dispatch.
+    ///
+    /// The resource is temporarily removed from storage (pointer nulled)
+    /// so that the closure receives `(&mut T, &mut World)` without aliasing.
+    /// Safe resource accessors on `&mut World` will panic if called on the
+    /// borrowed type — all other resources are accessible normally.
+    ///
+    /// The pointer is restored after the closure returns. If the closure
+    /// panics, the pointer is **not** restored (the resource leaks), but
+    /// [`Storage::drop`] handles null slots safely.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type was not registered.
+    pub fn with_mut<T: 'static, R>(&mut self, f: impl FnOnce(&mut T, &mut Self) -> R) -> R {
+        let id = self.registry.id::<T>();
+        // Yank the pointer out — the closure cannot reach T through &mut World.
+        let ptr = std::mem::replace(&mut self.storage.ptrs[id.0], std::ptr::null_mut());
+        // SAFETY: ptr was produced by Box::into_raw in register(), type T
+        // matches. Removed from storage so no aliasing through &mut Self.
+        let resource = unsafe { &mut *(ptr as *mut T) };
+        let result = f(resource, self);
+        // Restore the pointer.
+        self.storage.ptrs[id.0] = ptr;
+        result
+    }
+
+    // =========================================================================
+    // Unsafe resource access (hot path — pre-resolved ResourceId)
+    // =========================================================================
+
+    /// Fetch a shared reference to a resource by pre-validated index.
+    ///
+    /// # Safety
+    ///
+    /// - `id` must have been returned by [`WorldBuilder::register`] for
+    ///   the same builder that produced this container.
+    /// - `T` must be the same type that was registered at this `id`.
+    /// - The caller must ensure no mutable reference to this resource exists.
+    #[inline(always)]
+    pub unsafe fn get<T: 'static>(&self, id: ResourceId) -> &T {
+        // SAFETY: caller guarantees id was returned by register() on the
+        // builder that produced this container, so id.0 < self.storage.ptrs.len().
+        // T matches the registered type. No mutable alias exists.
+        unsafe { &*(self.get_ptr(id) as *const T) }
+    }
+
+    /// Fetch a mutable reference to a resource by pre-validated index.
+    ///
+    /// Takes `&self` — the container structure is frozen, but individual
+    /// resources have interior mutability via raw pointers. Sound because
+    /// callers (single-threaded sequential dispatch) uphold no-aliasing.
+    ///
+    /// # Safety
+    ///
+    /// - `id` must have been returned by [`WorldBuilder::register`] for
+    ///   the same builder that produced this container.
+    /// - `T` must be the same type that was registered at this `id`.
+    /// - The caller must ensure no other reference (shared or mutable) to this
+    ///   resource exists.
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn get_mut<T: 'static>(&self, id: ResourceId) -> &mut T {
+        // SAFETY: caller guarantees id was returned by register() on the
+        // builder that produced this container, so id.0 < self.storage.ptrs.len().
+        // T matches the registered type. No aliases exist.
+        unsafe { &mut *(self.get_ptr(id) as *mut T) }
+    }
+
+    /// Fetch a raw pointer to a resource by pre-validated index.
+    ///
+    /// Intended for macro-generated dispatch code that needs direct pointer
+    /// access.
+    ///
+    /// # Safety
+    ///
+    /// - `id` must have been returned by [`WorldBuilder::register`] for
+    ///   the same builder that produced this container.
+    #[inline(always)]
+    pub unsafe fn get_ptr(&self, id: ResourceId) -> *mut u8 {
+        debug_assert!(
+            id.0 < self.storage.ptrs.len(),
+            "ResourceId({}) out of bounds (len {})",
+            id.0,
+            self.storage.ptrs.len(),
+        );
+        // SAFETY: caller guarantees id was returned by register() on the
+        // builder that produced this container, so id.0 < self.storage.ptrs.len().
+        let ptr = unsafe { *self.storage.ptrs.get_unchecked(id.0) };
+        debug_assert!(
+            !ptr.is_null(),
+            "ResourceId({}) is null — resource is currently borrowed by with_mut",
+            id.0,
+        );
+        ptr
+    }
+}
+
+// SAFETY: World owns all heap-allocated data exclusively. The raw pointers
+// in Storage are not shared — they were produced by Box::into_raw and are only
+// accessed through &self methods. Transferring ownership to another thread is safe;
+// the new thread becomes the sole accessor.
+unsafe impl Send for World {}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Weak};
+
+    struct Price {
+        value: f64,
+    }
+
+    struct Venue {
+        name: &'static str,
+    }
+
+    struct Config {
+        max_orders: usize,
+    }
+
+    #[test]
+    fn register_and_build() {
+        let mut builder = WorldBuilder::new();
+        builder
+            .register::<Price>(Price { value: 100.0 })
+            .register::<Venue>(Venue { name: "test" });
+        let world = builder.build();
+        assert_eq!(world.len(), 2);
+    }
+
+    #[test]
+    fn resource_ids_are_sequential() {
+        let mut builder = WorldBuilder::new();
+        builder
+            .register::<Price>(Price { value: 0.0 })
+            .register::<Venue>(Venue { name: "" })
+            .register::<Config>(Config { max_orders: 0 });
+        let world = builder.build();
+        assert_eq!(world.id::<Price>(), ResourceId(0));
+        assert_eq!(world.id::<Venue>(), ResourceId(1));
+        assert_eq!(world.id::<Config>(), ResourceId(2));
+    }
+
+    #[test]
+    fn get_returns_registered_value() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 42.5 });
+        let world = builder.build();
+
+        let id = world.id::<Price>();
+        // SAFETY: id resolved from this container, type matches, no aliasing.
+        let price = unsafe { world.get::<Price>(id) };
+        assert_eq!(price.value, 42.5);
+    }
+
+    #[test]
+    fn get_mut_modifies_value() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 1.0 });
+        let world = builder.build();
+
+        let id = world.id::<Price>();
+        // SAFETY: id resolved from this container, type matches, no aliasing.
+        unsafe {
+            world.get_mut::<Price>(id).value = 99.0;
+            assert_eq!(world.get::<Price>(id).value, 99.0);
+        }
+    }
+
+    #[test]
+    fn try_id_returns_none_for_unregistered() {
+        let world = WorldBuilder::new().build();
+        assert!(world.try_id::<Price>().is_none());
+    }
+
+    #[test]
+    fn try_id_returns_some_for_registered() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 0.0 });
+        let world = builder.build();
+
+        assert!(world.try_id::<Price>().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "already registered")]
+    fn panics_on_duplicate_registration() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 1.0 });
+        builder.register::<Price>(Price { value: 2.0 });
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn panics_on_unregistered_id() {
+        let world = WorldBuilder::new().build();
+        world.id::<Price>();
+    }
+
+    #[test]
+    fn empty_builder_builds_empty_world() {
+        let world = WorldBuilder::new().build();
+        assert_eq!(world.len(), 0);
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn drop_runs_destructors() {
+        let arc = Arc::new(42u32);
+        let weak: Weak<u32> = Arc::downgrade(&arc);
+
+        {
+            let mut builder = WorldBuilder::new();
+            builder.register::<Arc<u32>>(arc);
+            let _world = builder.build();
+            // Arc still alive — held by World
+            assert!(weak.upgrade().is_some());
+        }
+        // World dropped — Arc should be deallocated
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn builder_drop_cleans_up_without_build() {
+        let arc = Arc::new(99u32);
+        let weak: Weak<u32> = Arc::downgrade(&arc);
+
+        {
+            let mut builder = WorldBuilder::new();
+            builder.register::<Arc<u32>>(arc);
+        }
+        // Builder dropped without build() — Storage::drop cleans up
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn multiple_types_independent() {
+        let mut builder = WorldBuilder::new();
+        builder
+            .register::<Price>(Price { value: 10.0 })
+            .register::<Venue>(Venue { name: "CB" })
+            .register::<Config>(Config { max_orders: 500 });
+        let world = builder.build();
+
+        unsafe {
+            let price_id = world.id::<Price>();
+            let venue_id = world.id::<Venue>();
+            let config_id = world.id::<Config>();
+            assert_eq!(world.get::<Price>(price_id).value, 10.0);
+            assert_eq!(world.get::<Venue>(venue_id).name, "CB");
+            assert_eq!(world.get::<Config>(config_id).max_orders, 500);
+        }
+    }
+
+    #[test]
+    fn contains_reflects_registration() {
+        let mut builder = WorldBuilder::new();
+        assert!(!builder.contains::<Price>());
+
+        builder.register::<Price>(Price { value: 0.0 });
+        assert!(builder.contains::<Price>());
+        assert!(!builder.contains::<Venue>());
+
+        let world = builder.build();
+        assert!(world.contains::<Price>());
+        assert!(!world.contains::<Venue>());
+    }
+
+    #[test]
+    fn get_ptr_returns_valid_pointer() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 77.7 });
+        let world = builder.build();
+
+        let id = world.id::<Price>();
+        unsafe {
+            let ptr = world.get_ptr(id);
+            let price = &*(ptr as *const Price);
+            assert_eq!(price.value, 77.7);
+        }
+    }
+
+    #[test]
+    fn send_to_another_thread() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 55.5 });
+        let world = builder.build();
+
+        let handle = std::thread::spawn(move || {
+            let id = world.id::<Price>();
+            // SAFETY: sole owner on this thread, no aliasing.
+            unsafe { world.get::<Price>(id).value }
+        });
+        assert_eq!(handle.join().unwrap(), 55.5);
+    }
+
+    #[test]
+    fn registry_accessible_from_builder() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+
+        let registry = builder.registry();
+        assert!(registry.contains::<u64>());
+        assert!(!registry.contains::<bool>());
+
+        let id = registry.id::<u64>();
+        assert_eq!(id, ResourceId(0));
+    }
+
+    #[test]
+    fn registry_accessible_from_world() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let world = builder.build();
+
+        let registry = world.registry();
+        assert!(registry.contains::<u64>());
+
+        // Registry from world and world.id() agree.
+        assert_eq!(registry.id::<u64>(), world.id::<u64>());
+    }
+
+    // -- Safe accessor tests --------------------------------------------------
+
+    #[test]
+    fn resource_reads_value() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Price>(Price { value: 42.5 });
+        let mut world = builder.build();
+
+        assert_eq!(world.resource::<Price>().value, 42.5);
+    }
+
+    #[test]
+    fn resource_mut_modifies_value() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        *world.resource_mut::<u64>() = 99;
+        assert_eq!(*world.resource::<u64>(), 99);
+    }
+
+    #[test]
+    fn with_mut_provides_mutable_access_and_world() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(10).register::<bool>(false);
+        let mut world = builder.build();
+
+        world.with_mut::<u64, _>(|counter, world| {
+            // Safe access to other resources through &mut World.
+            let flag = world.resource::<bool>();
+            if !flag {
+                *counter += 5;
+            }
+        });
+
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn with_mut_returns_value() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let mut world = builder.build();
+
+        let val = world.with_mut::<u64, _>(|counter, _world| *counter);
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "currently borrowed by with_mut")]
+    fn with_mut_panics_on_aliased_access() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let mut world = builder.build();
+
+        world.with_mut::<u64, _>(|_counter, world| {
+            // Attempting to access the yanked resource through World panics.
+            let _ = world.resource::<u64>();
+        });
+    }
+
+    #[test]
+    fn register_default_works() {
+        use crate::event::Events;
+
+        let mut builder = WorldBuilder::new();
+        builder.register_default::<Events<u32>>();
+        let mut world = builder.build();
+
+        let events = world.resource::<Events<u32>>();
+        assert!(events.is_empty());
+    }
+}
