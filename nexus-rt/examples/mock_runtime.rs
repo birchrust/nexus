@@ -1,50 +1,37 @@
-//! Mock runtime example.
+//! Mock runtime example — Scheduler + Plugin + App.
 //!
-//! Demonstrates how nexus-rt primitives compose into a realistic
-//! single-threaded runtime. The runtime loop phases are explicit
-//! in `main()` so you can see exactly what happens and in what order.
+//! Demonstrates the complete lifecycle of a nexus-rt runtime:
 //!
-//! # Runtime loop
+//! 1. Define plugins (register resources + systems with ordering)
+//! 2. Build via `App::new().add_plugin(...).build()`
+//! 3. Runtime loop:
+//!    - Poll: push events into `Events<MarketTick>` via `resource_mut`
+//!    - Dispatch: `world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w))`
+//!    - Clear event buffers, `advance_tick()`
 //!
-//! ```text
-//! loop {
-//!     // 1. Poll — pull raw events from data source into a local buffer
-//!     // 2. Dispatch — drain buffer, fire each event into registered systems
-//!     // 3. Post-dispatch — process accumulated signals, clear event buffers
-//! }
-//! ```
-//!
-//! All three phases are written out explicitly below — not hidden behind
-//! a `tick()` method. This is intentional: the user should see the flow.
-//!
-//! # Architecture
-//!
-//! - **DataFeed** — simulated data source (VecDeque). In a real runtime
-//!   this would be a mio poll + socket reads + protocol parsing.
-//! - **Dispatcher** — holds registered system callbacks. Provides
-//!   `fire_tick` and `fire_post` to run them against `&mut World`.
-//! - **Domain resources** — PriceCache, OrderCount, Events<TradeSignal>
-//!   live in World and are accessed by systems via `Res`/`ResMut`.
+//! Systems are batch-oriented: they read all events for a tick via
+//! `EventReader<T>`, not one event at a time.
 //!
 //! # Features demonstrated
 //!
+//! - `Scheduler` — toposorted dispatch with automatic skip propagation
+//! - `Plugin` / `App` — composable system and resource registration
+//! - `EventReader<T>` / `EventWriter<T>` — batch event processing
 //! - `Res<T>` / `ResMut<T>` — shared and exclusive resource access
 //! - `Local<T>` — per-system state (tick counter on check_signals)
-//! - `Option<Res<T>>` — optional dependencies (risk limits may not exist)
-//! - `EventWriter<T>` / `EventReader<T>` — inter-system event buffers
-//! - `register_default` — ergonomic resource registration
-//! - `with_mut` — safe driver extraction pattern
-//! - `Box<dyn System<E>>` — type-erased heterogeneous dispatch
+//! - `Option<Res<T>>` — optional dependencies (risk limits)
+//! - Skip propagation: on a tick with no new events, all systems skip
 //!
 //! Run with:
 //! ```bash
 //! cargo run -p nexus-rt --example mock_runtime
 //! ```
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use nexus_rt::{
-    EventReader, EventWriter, Events, IntoSystem, Local, Res, ResMut, System, WorldBuilder,
+    App, EventReader, EventWriter, Events, Local, Plugin, Res, ResMut, Scheduler, SchedulerBuilder,
+    WorldBuilder,
 };
 
 // =============================================================================
@@ -75,7 +62,6 @@ struct RiskLimits {
 // Event types
 // =============================================================================
 
-#[derive(Clone)]
 struct MarketTick {
     symbol: &'static str,
     price: f64,
@@ -86,117 +72,54 @@ struct TradeSignal {
 }
 
 // =============================================================================
-// Data feed — simulated data source
+// Systems — batch-oriented via EventReader<T>
 // =============================================================================
 
-/// Simulated data source. In a real runtime this would be a mio poll
-/// reading from sockets and parsing wire protocol into typed events.
-struct DataFeed {
-    queue: VecDeque<MarketTick>,
-}
-
-impl DataFeed {
-    fn new() -> Self {
-        Self {
-            queue: VecDeque::new(),
-        }
-    }
-
-    fn push(&mut self, tick: MarketTick) {
-        self.queue.push_back(tick);
-    }
-
-    /// Drain all pending events into the provided buffer.
-    fn drain_into(&mut self, buf: &mut Vec<MarketTick>) {
-        buf.extend(self.queue.drain(..));
-    }
-}
-
-// =============================================================================
-// Dispatcher — holds registered system callbacks
-// =============================================================================
-
-/// Holds registered system callbacks. The dispatcher doesn't own the
-/// loop — it just provides methods to fire events into systems.
-struct Dispatcher {
-    on_tick: Vec<Box<dyn System<MarketTick>>>,
-    on_post: Vec<Box<dyn System<()>>>,
-}
-
-impl Dispatcher {
-    fn new() -> Self {
-        Self {
-            on_tick: Vec::new(),
-            on_post: Vec::new(),
-        }
-    }
-
-    fn register_tick<P>(
-        &mut self,
-        sys: impl IntoSystem<MarketTick, P>,
-        registry: &nexus_rt::Registry,
-    ) {
-        self.on_tick.push(Box::new(sys.into_system(registry)));
-    }
-
-    fn register_post<P>(&mut self, sys: impl IntoSystem<(), P>, registry: &nexus_rt::Registry) {
-        self.on_post.push(Box::new(sys.into_system(registry)));
-    }
-
-    /// Fire one event into all tick systems.
-    fn fire_tick(&mut self, world: &mut nexus_rt::World, event: MarketTick) {
-        for sys in &mut self.on_tick {
-            sys.run(world, event.clone());
-        }
-    }
-
-    /// Fire post-dispatch systems (once per tick, no event payload).
-    fn fire_post(&mut self, world: &mut nexus_rt::World) {
-        for sys in &mut self.on_post {
-            sys.run(world, ());
-        }
-    }
-}
-
-// =============================================================================
-// System callbacks — plain functions
-// =============================================================================
-
-/// Compares against previous price, emits signal if delta > threshold.
+/// Compares each tick's price against the cached price from the previous
+/// dispatch cycle. Emits a TradeSignal if the delta exceeds the threshold.
 ///
-/// Uses `Local<u64>` to track how many ticks this system has processed
-/// across all dispatch cycles — without polluting World.
+/// Uses `Local<u64>` to track total ticks processed across all cycles.
+///
+/// Ordering: runs BEFORE update_prices so signal detection compares
+/// against the previous cycle's cache.
 fn check_signals(
+    ticks: EventReader<MarketTick>,
     cache: Res<PriceCache>,
     mut signals: EventWriter<TradeSignal>,
     mut tick_count: Local<u64>,
-    tick: MarketTick,
+    _: (),
 ) {
-    *tick_count += 1;
-    if let Some(&prev) = cache.prices.get(tick.symbol) {
-        let delta = (tick.price - prev).abs();
-        if delta > 50.0 {
-            println!(
-                "  [check_signals] tick #{}: {} moved {:.2} — emitting signal",
-                *tick_count, tick.symbol, delta
-            );
-            signals.send(TradeSignal {
-                symbol: tick.symbol,
-            });
+    for tick in ticks.iter() {
+        *tick_count += 1;
+        if let Some(&prev) = cache.prices.get(tick.symbol) {
+            let delta = (tick.price - prev).abs();
+            if delta > 50.0 {
+                println!(
+                    "  [check_signals] tick #{}: {} moved {:.2} — emitting signal",
+                    *tick_count, tick.symbol, delta
+                );
+                signals.send(TradeSignal {
+                    symbol: tick.symbol,
+                });
+            }
         }
     }
 }
 
-/// Updates the price cache with the latest tick.
-fn update_prices(mut cache: ResMut<PriceCache>, tick: MarketTick) {
-    cache.prices.insert(tick.symbol, tick.price);
-    println!("  [update_prices] {} = {:.2}", tick.symbol, tick.price);
+/// Updates the price cache with the latest prices from this batch.
+///
+/// Runs AFTER check_signals so that signal detection compares against
+/// the previous cycle's prices.
+fn update_prices(ticks: EventReader<MarketTick>, mut cache: ResMut<PriceCache>, _: ()) {
+    for tick in ticks.iter() {
+        cache.prices.insert(tick.symbol, tick.price);
+        println!("  [update_prices] {} = {:.2}", tick.symbol, tick.price);
+    }
 }
 
 /// Reads accumulated trade signals and increments the order count.
 ///
-/// Uses `Option<Res<RiskLimits>>` — if risk limits are registered,
-/// respects the per-tick cap. If not, signals are unlimited.
+/// Uses `Option<Res<RiskLimits>>` — respects per-tick cap if registered.
 fn count_trades(
     signals: EventReader<TradeSignal>,
     mut count: ResMut<OrderCount>,
@@ -224,129 +147,129 @@ fn count_trades(
 }
 
 // =============================================================================
+// Plugin — composable registration
+// =============================================================================
+
+struct TradingPlugin {
+    initial_prices: Vec<(&'static str, f64)>,
+    risk_cap: u64,
+}
+
+impl Plugin for TradingPlugin {
+    fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder) {
+        // Resources
+        let mut cache = PriceCache::new();
+        for &(sym, price) in &self.initial_prices {
+            cache.prices.insert(sym, price);
+        }
+        world.register(cache);
+        world.register(OrderCount(0));
+        world.register(RiskLimits {
+            max_signals_per_tick: self.risk_cap,
+        });
+        world.register_default::<Events<MarketTick>>();
+        world.register_default::<Events<TradeSignal>>();
+
+        // Systems + ordering
+        let signals = scheduler.add_system(check_signals, world.registry());
+        let prices = scheduler.add_system(update_prices, world.registry());
+        let trades = scheduler.add_system(count_trades, world.registry());
+
+        // check_signals before update_prices: signal detection uses old cache
+        // check_signals before count_trades: signals must exist before counting
+        scheduler.after(prices, signals);
+        scheduler.after(trades, signals);
+    }
+}
+
+// =============================================================================
 // main — the runtime loop is here, not hidden in a method
 // =============================================================================
 
 fn main() {
-    // -- Build ----------------------------------------------------------------
+    // -- Build via App + Plugin -----------------------------------------------
 
-    let mut builder = WorldBuilder::new();
-    builder
-        .register(PriceCache::new())
-        .register(OrderCount(0))
-        .register(RiskLimits {
-            max_signals_per_tick: 2,
-        })
-        .register_default::<Events<TradeSignal>>();
-
-    let mut dispatcher = Dispatcher::new();
-    dispatcher.register_tick(check_signals, builder.registry());
-    dispatcher.register_tick(update_prices, builder.registry());
-    dispatcher.register_post(count_trades, builder.registry());
-
-    builder.register(DataFeed::new()).register(dispatcher);
-    let mut world = builder.build();
-
-    // -- Load simulated data --------------------------------------------------
-
-    world.with_mut::<DataFeed, _>(|feed, _| {
-        for tick in [
-            MarketTick {
-                symbol: "BTC",
-                price: 50_000.0,
-            },
-            MarketTick {
-                symbol: "ETH",
-                price: 3_000.0,
-            },
-            MarketTick {
-                symbol: "BTC",
-                price: 50_100.0,
-            },
-            MarketTick {
-                symbol: "ETH",
-                price: 3_010.0,
-            },
-            MarketTick {
-                symbol: "BTC",
-                price: 49_900.0,
-            },
-        ] {
-            feed.push(tick);
-        }
+    let mut app = App::new();
+    app.add_plugin(&TradingPlugin {
+        initial_prices: vec![("BTC", 50_000.0), ("ETH", 3_000.0)],
+        risk_cap: 2,
     });
+    let mut world = app.build();
+
+    // -- Tick 0 ---------------------------------------------------------------
+
+    println!("=== Tick 0 ===\n");
+
+    // Poll: push events into Events<MarketTick>.
+    {
+        let events = world.resource_mut::<Events<MarketTick>>();
+        events.send(MarketTick {
+            symbol: "BTC",
+            price: 50_100.0,
+        });
+        events.send(MarketTick {
+            symbol: "ETH",
+            price: 3_010.0,
+        });
+        events.send(MarketTick {
+            symbol: "BTC",
+            price: 49_900.0,
+        });
+    }
+    println!("[poll] 3 events");
+
+    // Dispatch: Scheduler walks toposorted systems with skip propagation.
+    world.with_mut::<Scheduler, _>(|scheduler, world| {
+        scheduler.dispatch(world);
+    });
+
+    // Clear event buffers + advance tick.
+    world.resource_mut::<Events<MarketTick>>().clear();
+    world.resource_mut::<Events<TradeSignal>>().clear();
+    world.advance_tick();
 
     // -- Tick 1 ---------------------------------------------------------------
-    //
-    // The three phases are explicit here. In a real runtime you'd wrap this
-    // in a `loop { ... }` with a mio poll at the top.
 
-    println!("=== Tick 1 ===\n");
+    println!("\n=== Tick 1 ===\n");
 
-    // Phase 1: Poll — pull events from the data source into a local buffer.
-    //
-    // We yank DataFeed out of World via with_mut, drain it into a local Vec,
-    // then drop the borrow. The buffer is ours — no World borrow held.
-    let mut event_buf = Vec::new();
-    world.with_mut::<DataFeed, _>(|feed, _| {
-        feed.drain_into(&mut event_buf);
-    });
-    println!("[poll] {} events buffered", event_buf.len());
-
-    // Phase 2: Dispatch — fire each event into registered systems.
-    //
-    // We yank the Dispatcher out of World so systems can access all other
-    // resources via &mut World without aliasing the dispatcher itself.
-    world.with_mut::<Dispatcher, _>(|dispatcher, world| {
-        for tick in event_buf.drain(..) {
-            dispatcher.fire_tick(world, tick);
-        }
-    });
-
-    // Phase 3: Post-dispatch — run post-tick systems, then clear event buffers.
-    //
-    // Post-dispatch systems (like count_trades) read accumulated events
-    // from the dispatch phase. After they run, we clear the buffers.
-    world.with_mut::<Dispatcher, _>(|dispatcher, world| {
-        dispatcher.fire_post(world);
-    });
-    world.resource_mut::<Events<TradeSignal>>().clear();
-
-    // -- Tick 2 ---------------------------------------------------------------
-
-    world.with_mut::<DataFeed, _>(|feed, _| {
-        feed.push(MarketTick {
+    {
+        let events = world.resource_mut::<Events<MarketTick>>();
+        events.send(MarketTick {
             symbol: "BTC",
-            price: 50_200.0, // +300 from 49900 → signal
+            price: 50_200.0,
         });
-        feed.push(MarketTick {
+        events.send(MarketTick {
             symbol: "ETH",
-            price: 3_015.0, // +5 from 3010 → no signal
+            price: 3_015.0,
         });
-        feed.push(MarketTick {
+        events.send(MarketTick {
             symbol: "BTC",
-            price: 50_500.0, // +300 from 50200 → signal (will hit risk cap)
+            price: 50_500.0,
         });
+    }
+    println!("[poll] 3 events");
+
+    world.with_mut::<Scheduler, _>(|scheduler, world| {
+        scheduler.dispatch(world);
     });
 
-    println!("\n=== Tick 2 ===\n");
-
-    // Same three phases — explicit and visible.
-    world.with_mut::<DataFeed, _>(|feed, _| {
-        feed.drain_into(&mut event_buf);
-    });
-    println!("[poll] {} events buffered", event_buf.len());
-
-    world.with_mut::<Dispatcher, _>(|dispatcher, world| {
-        for tick in event_buf.drain(..) {
-            dispatcher.fire_tick(world, tick);
-        }
-    });
-
-    world.with_mut::<Dispatcher, _>(|dispatcher, world| {
-        dispatcher.fire_post(world);
-    });
+    world.resource_mut::<Events<MarketTick>>().clear();
     world.resource_mut::<Events<TradeSignal>>().clear();
+    world.advance_tick();
+
+    // -- Tick 2 (no events — demonstrates skip propagation) -------------------
+
+    println!("\n=== Tick 2 (no events) ===\n");
+
+    // No events pushed. All systems should be skipped.
+    world.with_mut::<Scheduler, _>(|scheduler, world| {
+        scheduler.dispatch(world);
+    });
+    println!("[dispatch] all systems skipped (no inputs changed)");
+
+    world.resource_mut::<Events<MarketTick>>().clear();
+    world.resource_mut::<Events<TradeSignal>>().clear();
+    world.advance_tick();
 
     // -- Results --------------------------------------------------------------
 
@@ -362,21 +285,21 @@ fn main() {
 
     let count = world.resource::<OrderCount>().0;
     println!("OrderCount: {count}");
-    // Tick 1: 2 BTC signals (50100 moved 100, 49900 moved 200)
-    // Tick 2: 2 BTC signals but risk cap is 2 per tick
-    //   - 50200 moved 300 → signal #3
-    //   - 50500 moved 300 → signal #4, but cap=2 → SKIPPED
-    // Wait, let's trace carefully:
-    // Tick 1 check_signals: BTC 50100 vs prev 50000 → delta 100 > 50 → signal
-    //                       ETH 3010 vs prev 3000 → delta 10 < 50 → no signal
-    //                       BTC 49900 vs prev 50100 → delta 200 > 50 → signal
-    // count_trades: 2 signals, cap 2 → both accepted. OrderCount = 2
+
+    // Tick 0: check_signals compares against initial cache (BTC=50000, ETH=3000)
+    //   BTC=50100: delta=100 > 50 → signal
+    //   ETH=3010:  delta=10 < 50 → no signal
+    //   BTC=49900: delta=100 > 50 → signal (vs initial 50000, not 50100)
+    //   count_trades: 2 signals, cap=2 → both accepted. OrderCount=2.
     //
-    // Tick 2 check_signals: BTC 50200 vs prev 49900 → delta 300 > 50 → signal
-    //                       ETH 3015 vs prev 3010 → delta 5 < 50 → no signal
-    //                       BTC 50500 vs prev 50200 → delta 300 > 50 → signal
-    // count_trades: 2 signals, cap 2 → both accepted. OrderCount = 4
-    assert_eq!(count, 4, "expected 4 trade signals");
+    // Tick 1: check_signals compares against tick 0 cache (BTC=49900, ETH=3010)
+    //   BTC=50200: delta=300 > 50 → signal
+    //   ETH=3015:  delta=5 < 50 → no signal
+    //   BTC=50500: delta=600 > 50 → signal (vs 49900, not 50200)
+    //   count_trades: 2 signals, cap=2 → both accepted. OrderCount=4.
+    //
+    // Tick 2: no events → all systems skipped. OrderCount unchanged.
+    assert_eq!(count, 4, "expected 4 trade signals across all ticks");
 
     println!("\nDone.");
 }

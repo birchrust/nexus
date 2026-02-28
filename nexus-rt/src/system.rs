@@ -40,6 +40,12 @@ pub trait SystemParam {
     ///   same registry that built the `world`.
     /// - Caller ensures no aliasing violations.
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Self::State) -> Self::Item<'w>;
+
+    /// Returns `true` if any resource this param depends on was modified
+    /// during the current tick.
+    ///
+    /// Used by the scheduler to skip systems whose inputs haven't changed.
+    fn any_changed(state: &Self::State, world: &World) -> bool;
 }
 
 // -- Res<T> ------------------------------------------------------------------
@@ -54,9 +60,21 @@ impl<T: 'static> SystemParam for Res<'_, T> {
 
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> Res<'w, T> {
+        let id = *state;
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no mutable alias exists for T.
-        Res::new(unsafe { world.get::<T>(*state) })
+        unsafe {
+            Res::new(
+                world.get::<T>(id),
+                world.changed_at(id),
+                world.current_tick(),
+            )
+        }
+    }
+
+    fn any_changed(state: &ResourceId, world: &World) -> bool {
+        // SAFETY: state was produced by init() on the same registry.
+        unsafe { world.changed_at(*state) == world.current_tick() }
     }
 }
 
@@ -72,9 +90,21 @@ impl<T: 'static> SystemParam for ResMut<'_, T> {
 
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> ResMut<'w, T> {
+        let id = *state;
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no aliases exist for T.
-        ResMut::new(unsafe { world.get_mut::<T>(*state) })
+        unsafe {
+            ResMut::new(
+                world.get_mut::<T>(id),
+                world.changed_at_cell(id),
+                world.current_tick(),
+            )
+        }
+    }
+
+    fn any_changed(state: &ResourceId, world: &World) -> bool {
+        // SAFETY: state was produced by init() on the same registry.
+        unsafe { world.changed_at(*state) == world.current_tick() }
     }
 }
 
@@ -92,7 +122,20 @@ impl<T: 'static> SystemParam for Option<Res<'_, T>> {
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Option<ResourceId>) -> Option<Res<'w, T>> {
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no mutable alias exists for T.
-        state.map(|id| Res::new(unsafe { world.get::<T>(id) }))
+        state.map(|id| unsafe {
+            Res::new(
+                world.get::<T>(id),
+                world.changed_at(id),
+                world.current_tick(),
+            )
+        })
+    }
+
+    fn any_changed(state: &Option<ResourceId>, world: &World) -> bool {
+        state.is_some_and(|id| {
+            // SAFETY: id was produced by init() on the same registry.
+            unsafe { world.changed_at(id) == world.current_tick() }
+        })
     }
 }
 
@@ -113,7 +156,20 @@ impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
     ) -> Option<ResMut<'w, T>> {
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no aliases exist for T.
-        state.map(|id| ResMut::new(unsafe { world.get_mut::<T>(id) }))
+        state.map(|id| unsafe {
+            ResMut::new(
+                world.get_mut::<T>(id),
+                world.changed_at_cell(id),
+                world.current_tick(),
+            )
+        })
+    }
+
+    fn any_changed(state: &Option<ResourceId>, world: &World) -> bool {
+        state.is_some_and(|id| {
+            // SAFETY: id was produced by init() on the same registry.
+            unsafe { world.changed_at(id) == world.current_tick() }
+        })
     }
 }
 
@@ -130,6 +186,10 @@ impl SystemParam for () {
 
     #[inline(always)]
     unsafe fn fetch<'w>(_world: &'w World, _state: &'w mut ()) {}
+
+    fn any_changed(_state: &(), _world: &World) -> bool {
+        false
+    }
 }
 
 macro_rules! impl_system_param_tuple {
@@ -148,6 +208,12 @@ macro_rules! impl_system_param_tuple {
                 let ($($P,)+) = state;
                 // SAFETY: caller upholds aliasing invariants for all params.
                 unsafe { ($($P::fetch(world, $P),)+) }
+            }
+
+            #[allow(non_snake_case)]
+            fn any_changed(state: &Self::State, world: &World) -> bool {
+                let ($($P,)+) = state;
+                $($P::any_changed($P, world))||+
             }
         }
     };
@@ -226,6 +292,11 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
         // system's run() call.
         Local::new(state)
     }
+
+    fn any_changed(_state: &T, _world: &World) -> bool {
+        // Local state is per-system, not a World resource — never "changed."
+        false
+    }
 }
 
 // =============================================================================
@@ -244,6 +315,15 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
 pub trait System<E> {
     /// Run this system with the given event.
     fn run(&mut self, world: &mut World, event: E);
+
+    /// Returns `true` if any input resource was modified this tick.
+    ///
+    /// Default returns `true` (always run). [`FunctionSystem`] overrides
+    /// by checking its state via [`SystemParam::any_changed`].
+    fn inputs_changed(&self, world: &World) -> bool {
+        let _ = world;
+        true
+    }
 }
 
 // =============================================================================
@@ -313,6 +393,11 @@ impl<E, F: FnMut(E) + 'static> System<E> for FunctionSystem<F, ()> {
     fn run(&mut self, _world: &mut World, event: E) {
         (self.f)(event);
     }
+
+    fn inputs_changed(&self, _world: &World) -> bool {
+        // Event-only system — no resource dependencies.
+        false
+    }
 }
 
 macro_rules! impl_into_system {
@@ -360,6 +445,10 @@ macro_rules! impl_into_system {
                     <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
                 };
                 call_inner(&mut self.f, $($P,)+ event);
+            }
+
+            fn inputs_changed(&self, world: &World) -> bool {
+                <($($P,)+) as SystemParam>::any_changed(&self.state, world)
             }
         }
     };
@@ -629,5 +718,114 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let mut sys = optional_system.into_system(world.registry());
         sys.run(&mut world, 0u32);
+    }
+
+    // -- Change detection tests -----------------------------------------------
+
+    #[test]
+    fn inputs_changed_true_when_resource_stamped() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn reader(val: Res<u64>, _e: ()) {
+            let _ = *val;
+        }
+
+        let sys = reader.into_system(world.registry());
+
+        // Tick 0: changed_at=0, current_tick=0 → inputs changed
+        assert!(sys.inputs_changed(&world));
+
+        world.advance_tick(); // tick=1
+
+        // Tick 1: changed_at=0, current_tick=1 → not changed
+        assert!(!sys.inputs_changed(&world));
+
+        // Stamp u64 at tick=1
+        *world.resource_mut::<u64>() = 42;
+        assert!(sys.inputs_changed(&world));
+    }
+
+    #[test]
+    fn inputs_changed_false_when_not_stamped() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0).register::<bool>(false);
+        let mut world = builder.build();
+
+        fn reads_bool(flag: Res<bool>, _e: ()) {
+            let _ = *flag;
+        }
+
+        let sys = reads_bool.into_system(world.registry());
+
+        world.advance_tick(); // tick=1
+
+        // Only stamp u64, not bool
+        *world.resource_mut::<u64>() = 42;
+
+        // System reads bool, which wasn't stamped → not changed
+        assert!(!sys.inputs_changed(&world));
+    }
+
+    #[test]
+    fn inputs_changed_with_optional_none() {
+        // Optional param with no resource registered → always false
+        let world = WorldBuilder::new().build();
+
+        fn optional_sys(opt: Option<Res<String>>, _e: ()) {
+            let _ = opt;
+        }
+
+        let sys = optional_sys.into_system(world.registry());
+        assert!(!sys.inputs_changed(&world));
+    }
+
+    #[test]
+    fn inputs_changed_event_only_system() {
+        let world = WorldBuilder::new().build();
+
+        fn event_handler(_e: u32) {}
+
+        let sys = event_handler.into_system(world.registry());
+        // Event-only systems have no resource deps → false
+        assert!(!sys.inputs_changed(&world));
+    }
+
+    #[test]
+    fn end_to_end_change_detection() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0).register::<bool>(false);
+        let mut world = builder.build();
+
+        // Tick 0: all resources changed_at=0, current_tick=0 → changed.
+        fn writer(mut val: ResMut<u64>, _e: ()) {
+            *val = 42;
+        }
+        fn observer(val: Res<u64>, flag: Res<bool>, _e: ()) {
+            // On tick 0: both are "changed" (changed_at == current_tick == 0).
+            // After advance_tick: only u64 should be changed (writer stamps it).
+            let _ = (*val, *flag);
+        }
+
+        let mut writer_sys = writer.into_system(world.registry());
+        let mut observer_sys = observer.into_system(world.registry());
+
+        // Tick 0: everything is "changed"
+        writer_sys.run(&mut world, ());
+        observer_sys.run(&mut world, ());
+
+        world.advance_tick(); // tick=1
+
+        // Tick 1: writer runs → stamps u64 to tick=1.
+        // bool was not written → still at tick=0.
+        writer_sys.run(&mut world, ());
+
+        let u64_id = world.id::<u64>();
+        let bool_id = world.id::<bool>();
+        unsafe {
+            assert_eq!(world.changed_at(u64_id), world.current_tick());
+            assert_ne!(world.changed_at(bool_id), world.current_tick());
+        }
     }
 }

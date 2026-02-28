@@ -21,6 +21,14 @@
 //! - **Events** — [`Events`], [`EventWriter`], and [`EventReader`] provide
 //!   simple event buffer types that integrate as system parameters.
 //!
+//! - **Scheduler** — [`Scheduler`] toposorts systems by ordering constraints
+//!   and dispatches them with automatic skip propagation via tick-based
+//!   change detection.
+//!
+//! - **Plugin / App** — [`Plugin`] is a composable unit of registration.
+//!   [`App`] ties [`WorldBuilder`] and [`SchedulerBuilder`] together
+//!   for ergonomic setup.
+//!
 //! # Quick Start
 //!
 //! ```
@@ -55,12 +63,18 @@
 
 #![warn(missing_docs)]
 
+mod app;
 mod event;
+mod plugin;
 mod resource;
+mod scheduler;
 mod system;
 mod world;
 
+pub use app::App;
 pub use event::{EventReader, EventWriter, Events};
+pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
+pub use scheduler::{Scheduler, SchedulerBuilder, SystemId};
 pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
-pub use world::{Registry, ResourceId, World, WorldBuilder};
+pub use world::{Registry, ResourceId, Tick, World, WorldBuilder};

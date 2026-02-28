@@ -27,6 +27,7 @@
 //! [`ResourceId`] values are valid for the lifetime of the [`World`] container.
 
 use std::any::{TypeId, type_name};
+use std::cell::Cell;
 
 use rustc_hash::FxHashMap;
 
@@ -42,6 +43,15 @@ use rustc_hash::FxHashMap;
 /// Only obtained from [`Registry::id`], [`World::id`], or their `try_` variants.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ResourceId(usize);
+
+/// Monotonic epoch counter for change detection.
+///
+/// Resources record the tick at which they were last written.
+/// A resource is considered "changed" if its `changed_at` equals
+/// the world's `current_tick`. Wrapping is harmless — only equality
+/// is checked.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Tick(pub(crate) u64);
 
 /// Type-erased drop function. Monomorphized at registration time so we
 /// can reconstruct and drop the original `Box<T>` from a `*mut u8`.
@@ -122,6 +132,9 @@ pub(crate) struct Storage {
     /// Parallel array of drop functions. `drop_fns[i]` is the monomorphized
     /// destructor for the concrete type behind `ptrs[i]`.
     pub(crate) drop_fns: Vec<DropFn>,
+    /// Parallel array of change-detection ticks. `changed_at[i]` records
+    /// the epoch at which resource `i` was last written.
+    pub(crate) changed_at: Vec<Cell<Tick>>,
 }
 
 impl Storage {
@@ -129,6 +142,7 @@ impl Storage {
         Self {
             ptrs: Vec::new(),
             drop_fns: Vec::new(),
+            changed_at: Vec::new(),
         }
     }
 
@@ -228,6 +242,7 @@ impl WorldBuilder {
         self.registry.indices.insert(type_id, id);
         self.storage.ptrs.push(ptr);
         self.storage.drop_fns.push(drop_resource::<T>);
+        self.storage.changed_at.push(Cell::new(Tick(0)));
         self
     }
 
@@ -280,6 +295,7 @@ impl WorldBuilder {
         World {
             registry: self.registry,
             storage: self.storage,
+            current_tick: Tick(0),
         }
     }
 }
@@ -317,6 +333,9 @@ pub struct World {
     registry: Registry,
     /// Type-erased pointer storage. Drop handled by `Storage`.
     storage: Storage,
+    /// Current epoch tick. Advanced by the scheduler/driver at the
+    /// end of each dispatch pass.
+    current_tick: Tick,
 }
 
 impl World {
@@ -401,6 +420,8 @@ impl World {
             "resource `{}` is currently borrowed by with_mut",
             type_name::<T>(),
         );
+        // Cold path — stamp unconditionally. If you request &mut, you're writing.
+        self.storage.changed_at[id.0].set(self.current_tick);
         // SAFETY: id resolved from our own registry. &mut self ensures
         // exclusive access — no other references can exist. Null check above.
         unsafe { self.get_mut(id) }
@@ -422,6 +443,8 @@ impl World {
     /// Panics if the resource type was not registered.
     pub fn with_mut<T: 'static, R>(&mut self, f: impl FnOnce(&mut T, &mut Self) -> R) -> R {
         let id = self.registry.id::<T>();
+        // Cold path — stamp unconditionally. If you request &mut, you're writing.
+        self.storage.changed_at[id.0].set(self.current_tick);
         // Yank the pointer out — the closure cannot reach T through &mut World.
         let ptr = std::mem::replace(&mut self.storage.ptrs[id.0], std::ptr::null_mut());
         // SAFETY: ptr was produced by Box::into_raw in register(), type T
@@ -431,6 +454,23 @@ impl World {
         // Restore the pointer.
         self.storage.ptrs[id.0] = ptr;
         result
+    }
+
+    // =========================================================================
+    // Tick / change detection
+    // =========================================================================
+
+    /// Returns the current epoch tick.
+    pub fn current_tick(&self) -> Tick {
+        self.current_tick
+    }
+
+    /// Advance the epoch tick by one (wrapping).
+    ///
+    /// Called by the scheduler/driver at the end of each dispatch pass.
+    /// Wrapping is harmless — only equality is checked.
+    pub fn advance_tick(&mut self) {
+        self.current_tick = Tick(self.current_tick.0.wrapping_add(1));
     }
 
     // =========================================================================
@@ -501,6 +541,49 @@ impl World {
             id.0,
         );
         ptr
+    }
+
+    // =========================================================================
+    // Change-detection internals (framework use only)
+    // =========================================================================
+
+    /// Read the tick at which a resource was last changed.
+    ///
+    /// # Safety
+    ///
+    /// `id` must have been returned by [`WorldBuilder::register`] for
+    /// the same builder that produced this container.
+    #[inline(always)]
+    pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Tick {
+        unsafe { self.storage.changed_at.get_unchecked(id.0).get() }
+    }
+
+    /// Get a reference to the `Cell` tracking a resource's change tick.
+    ///
+    /// # Safety
+    ///
+    /// `id` must have been returned by [`WorldBuilder::register`] for
+    /// the same builder that produced this container.
+    #[inline(always)]
+    pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Tick> {
+        unsafe { self.storage.changed_at.get_unchecked(id.0) }
+    }
+
+    /// Stamp a resource as changed at the current tick.
+    ///
+    /// # Safety
+    ///
+    /// `id` must have been returned by [`WorldBuilder::register`] for
+    /// the same builder that produced this container.
+    #[inline(always)]
+    #[allow(dead_code)] // Used by the Scheduler (upcoming).
+    pub(crate) unsafe fn stamp_changed(&self, id: ResourceId) {
+        unsafe {
+            self.storage
+                .changed_at
+                .get_unchecked(id.0)
+                .set(self.current_tick);
+        }
     }
 }
 
@@ -804,5 +887,82 @@ mod tests {
 
         let events = world.resource::<Events<u32>>();
         assert!(events.is_empty());
+    }
+
+    // -- Tick / change detection tests ----------------------------------------
+
+    #[test]
+    fn tick_default_is_zero() {
+        assert_eq!(Tick::default(), Tick(0));
+    }
+
+    #[test]
+    fn advance_tick_increments() {
+        let mut world = WorldBuilder::new().build();
+        assert_eq!(world.current_tick(), Tick(0));
+        world.advance_tick();
+        assert_eq!(world.current_tick(), Tick(1));
+        world.advance_tick();
+        assert_eq!(world.current_tick(), Tick(2));
+    }
+
+    #[test]
+    fn resource_registered_at_current_tick() {
+        // Resources registered at build time get changed_at=Tick(0).
+        // World starts at current_tick=Tick(0). So they match — "changed."
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let world = builder.build();
+
+        let id = world.id::<u64>();
+        unsafe {
+            assert_eq!(world.changed_at(id), Tick(0));
+            assert_eq!(world.current_tick(), Tick(0));
+            // changed_at == current_tick → "changed"
+            assert_eq!(world.changed_at(id), world.current_tick());
+        }
+    }
+
+    #[test]
+    fn resource_mut_stamps_changed_at() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        world.advance_tick(); // tick=1
+        let id = world.id::<u64>();
+
+        // changed_at is still 0, current_tick is 1 → not changed
+        unsafe {
+            assert_eq!(world.changed_at(id), Tick(0));
+        }
+
+        // resource_mut stamps changed_at to current_tick
+        *world.resource_mut::<u64>() = 99;
+        unsafe {
+            assert_eq!(world.changed_at(id), Tick(1));
+        }
+    }
+
+    #[test]
+    fn with_mut_stamps_changed_at() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0).register::<bool>(false);
+        let mut world = builder.build();
+
+        world.advance_tick(); // tick=1
+        let id = world.id::<u64>();
+
+        unsafe {
+            assert_eq!(world.changed_at(id), Tick(0));
+        }
+
+        world.with_mut::<u64, _>(|val, _world| {
+            *val = 42;
+        });
+
+        unsafe {
+            assert_eq!(world.changed_at(id), Tick(1));
+        }
     }
 }

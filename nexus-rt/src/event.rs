@@ -106,11 +106,23 @@ impl<T: 'static> SystemParam for EventWriter<'_, T> {
 
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> EventWriter<'w, T> {
+        let id = *state;
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no aliases exist for Events<T>.
         EventWriter {
-            events: ResMut::new(unsafe { world.get_mut::<Events<T>>(*state) }),
+            events: unsafe {
+                ResMut::new(
+                    world.get_mut::<Events<T>>(id),
+                    world.changed_at_cell(id),
+                    world.current_tick(),
+                )
+            },
         }
+    }
+
+    fn any_changed(state: &ResourceId, world: &World) -> bool {
+        // SAFETY: state was produced by init() on the same registry.
+        unsafe { world.changed_at(*state) == world.current_tick() }
     }
 }
 
@@ -162,11 +174,23 @@ impl<T: 'static> SystemParam for EventReader<'_, T> {
 
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> EventReader<'w, T> {
+        let id = *state;
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no mutable alias exists for Events<T>.
         EventReader {
-            events: Res::new(unsafe { world.get::<Events<T>>(*state) }),
+            events: unsafe {
+                Res::new(
+                    world.get::<Events<T>>(id),
+                    world.changed_at(id),
+                    world.current_tick(),
+                )
+            },
         }
+    }
+
+    fn any_changed(state: &ResourceId, world: &World) -> bool {
+        // SAFETY: state was produced by init() on the same registry.
+        unsafe { world.changed_at(*state) == world.current_tick() }
     }
 }
 
@@ -251,5 +275,50 @@ mod tests {
 
         writer_sys.run(&mut world, 5u32);
         reader_sys.run(&mut world, 2usize);
+    }
+
+    // -- Change detection tests -----------------------------------------------
+
+    #[test]
+    fn inputs_changed_with_events() {
+        let mut builder = WorldBuilder::new();
+        builder.register_default::<Events<u32>>();
+        let mut world = builder.build();
+
+        let writer_sys = write_events.into_system(world.registry());
+        let reader_sys = read_events.into_system(world.registry());
+
+        // Tick 0: Events registered at tick=0, current_tick=0 → changed
+        assert!(writer_sys.inputs_changed(&world));
+        assert!(reader_sys.inputs_changed(&world));
+
+        world.advance_tick(); // tick=1
+
+        // Tick 1: Events changed_at=0, current_tick=1 → not changed
+        assert!(!writer_sys.inputs_changed(&world));
+        assert!(!reader_sys.inputs_changed(&world));
+    }
+
+    #[test]
+    fn event_writer_stamps_events() {
+        let mut builder = WorldBuilder::new();
+        builder.register_default::<Events<u32>>();
+        let mut world = builder.build();
+
+        world.advance_tick(); // tick=1
+
+        let events_id = world.id::<Events<u32>>();
+        // Events registered at tick=0, now at tick=1 → not changed
+        unsafe {
+            assert_ne!(world.changed_at(events_id), world.current_tick());
+        }
+
+        // EventWriter::send → DerefMut on inner ResMut → stamps
+        let mut writer_sys = write_events.into_system(world.registry());
+        writer_sys.run(&mut world, 1u32);
+
+        unsafe {
+            assert_eq!(world.changed_at(events_id), world.current_tick());
+        }
     }
 }
