@@ -25,6 +25,10 @@
 //!   and dispatches them with automatic skip propagation via tick-based
 //!   change detection.
 //!
+//! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
+//!   chain. Stages transform data using `Option` and `Result` for flow
+//!   control. [`Pipeline`] implements [`System`] for Scheduler integration.
+//!
 //! - **Plugin / App** — [`Plugin`] is a composable unit of registration.
 //!   [`App`] ties [`WorldBuilder`] and [`SchedulerBuilder`] together
 //!   for ergonomic setup.
@@ -65,6 +69,7 @@
 
 mod app;
 mod event;
+pub mod pipeline;
 mod plugin;
 mod resource;
 mod scheduler;
@@ -73,6 +78,7 @@ mod world;
 
 pub use app::App;
 pub use event::{EventReader, EventWriter, Events};
+pub use pipeline::{Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
 pub use scheduler::{Scheduler, SchedulerBuilder, SystemId};

@@ -391,19 +391,23 @@ impl World {
 
     /// Safe shared access to a resource. Cold path — resolves via HashMap.
     ///
+    /// Takes `&self` — multiple shared references can coexist. The borrow
+    /// checker prevents mixing with [`resource_mut`](Self::resource_mut)
+    /// or [`with_mut`](Self::with_mut) (both take `&mut self`).
+    ///
     /// # Panics
     ///
     /// Panics if the resource type was not registered, or if the resource
     /// is currently borrowed by [`with_mut`](Self::with_mut).
-    pub fn resource<T: 'static>(&mut self) -> &T {
+    pub fn resource<T: 'static>(&self) -> &T {
         let id = self.registry.id::<T>();
         assert!(
             !self.storage.ptrs[id.0].is_null(),
             "resource `{}` is currently borrowed by with_mut",
             type_name::<T>(),
         );
-        // SAFETY: id resolved from our own registry. &mut self ensures
-        // exclusive access — no other references can exist. Null check above.
+        // SAFETY: id resolved from our own registry. &self prevents mutable
+        // aliases — resource_mut/with_mut take &mut self. Null check above.
         unsafe { self.get(id) }
     }
 
@@ -822,7 +826,7 @@ mod tests {
     fn resource_reads_value() {
         let mut builder = WorldBuilder::new();
         builder.register::<Price>(Price { value: 42.5 });
-        let mut world = builder.build();
+        let world = builder.build();
 
         assert_eq!(world.resource::<Price>().value, 42.5);
     }
@@ -883,7 +887,7 @@ mod tests {
 
         let mut builder = WorldBuilder::new();
         builder.register_default::<Events<u32>>();
-        let mut world = builder.build();
+        let world = builder.build();
 
         let events = world.resource::<Events<u32>>();
         assert!(events.is_empty());

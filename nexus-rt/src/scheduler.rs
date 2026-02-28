@@ -25,6 +25,10 @@ use crate::World;
 use crate::system::{IntoSystem, System};
 use crate::world::Registry;
 
+/// Boxed run condition predicate. Evaluated before dispatch — if it
+/// returns `false`, the system is skipped entirely.
+type Condition = Box<dyn Fn(&World) -> bool>;
+
 // =============================================================================
 // SystemId
 // =============================================================================
@@ -43,6 +47,7 @@ pub struct SystemId(usize);
 struct BuildEntry {
     system: Box<dyn System<()>>,
     after: Vec<SystemId>,
+    condition: Option<Condition>,
 }
 
 /// Builder for constructing a toposorted [`Scheduler`].
@@ -75,6 +80,7 @@ impl SchedulerBuilder {
         self.entries.push(BuildEntry {
             system: Box::new(system.into_system(registry)),
             after: Vec::new(),
+            condition: None,
         });
         id
     }
@@ -98,6 +104,32 @@ impl SchedulerBuilder {
             self.entries.len(),
         );
         self.entries[system.0].after.push(dependency);
+        self
+    }
+
+    /// Attach a run condition to a system.
+    ///
+    /// The condition is evaluated before [`System::inputs_changed`].
+    /// If it returns `false`, the system is skipped entirely — it never
+    /// runs, never writes, and downstream systems see unchanged inputs.
+    ///
+    /// Only one condition per system. A second call replaces the first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the [`SystemId`] is out of bounds.
+    pub fn run_if(
+        &mut self,
+        system: SystemId,
+        condition: impl Fn(&World) -> bool + 'static,
+    ) -> &mut Self {
+        assert!(
+            system.0 < self.entries.len(),
+            "SystemId({}) out of bounds (len {})",
+            system.0,
+            self.entries.len(),
+        );
+        self.entries[system.0].condition = Some(Box::new(condition));
         self
     }
 
@@ -156,7 +188,13 @@ impl SchedulerBuilder {
         let mut entries: Vec<Option<BuildEntry>> = self.entries.into_iter().map(Some).collect();
         let schedule = sorted
             .into_iter()
-            .map(|idx| entries[idx].take().expect("index visited twice").system)
+            .map(|idx| {
+                let entry = entries[idx].take().expect("index visited twice");
+                ScheduleSlot {
+                    system: entry.system,
+                    condition: entry.condition,
+                }
+            })
             .collect();
 
         Scheduler { schedule }
@@ -173,25 +211,35 @@ impl Default for SchedulerBuilder {
 // Scheduler
 // =============================================================================
 
+struct ScheduleSlot {
+    system: Box<dyn System<()>>,
+    condition: Option<Condition>,
+}
+
 /// Toposorted system schedule with automatic skip propagation.
 ///
 /// Created by [`SchedulerBuilder::build`]. Stored in [`World`] as a
 /// resource, extracted via [`World::with_mut`] for dispatch.
 pub struct Scheduler {
-    schedule: Vec<Box<dyn System<()>>>,
+    schedule: Vec<ScheduleSlot>,
 }
 
 impl Scheduler {
     /// Run the schedule against the world.
     ///
-    /// Each system is checked via [`System::inputs_changed`] before
-    /// running. Systems whose inputs haven't changed are skipped.
+    /// For each system in toposorted order:
+    /// 1. If a run condition is attached and returns `false`, skip.
+    /// 2. If [`System::inputs_changed`] returns `false`, skip.
+    /// 3. Otherwise, run the system.
+    ///
     /// Skipped systems don't write, so downstream systems also see
-    /// unchanged inputs — skip propagation is automatic.
+    /// unchanged inputs — skip propagation is automatic regardless
+    /// of skip reason.
     pub fn dispatch(&mut self, world: &mut World) {
-        for system in &mut self.schedule {
-            if system.inputs_changed(world) {
-                system.run(world, ());
+        for slot in &mut self.schedule {
+            let condition_ok = slot.condition.as_ref().is_none_or(|cond| cond(world));
+            if condition_ok && slot.system.inputs_changed(world) {
+                slot.system.run(world, ());
             }
         }
     }
@@ -417,6 +465,129 @@ mod tests {
             *world.resource::<i32>(),
             count_before,
             "sink_b should have been skipped"
+        );
+    }
+
+    // -- Run condition tests ----------------------------------------------------
+
+    #[test]
+    fn run_if_false_skips_system() {
+        let mut wb = WorldBuilder::new();
+        wb.register_default::<ExecLog>();
+
+        let mut sb = SchedulerBuilder::new();
+        let a = sb.add_system(system_a, wb.registry());
+        sb.run_if(a, |_| false);
+
+        wb.register(sb.build());
+        let mut world = wb.build();
+
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        assert!(world.resource::<ExecLog>().is_empty());
+    }
+
+    #[test]
+    fn run_if_true_allows_system() {
+        let mut wb = WorldBuilder::new();
+        wb.register_default::<ExecLog>();
+
+        let mut sb = SchedulerBuilder::new();
+        let a = sb.add_system(system_a, wb.registry());
+        sb.run_if(a, |_| true);
+
+        wb.register(sb.build());
+        let mut world = wb.build();
+
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        assert_eq!(*world.resource::<ExecLog>(), vec![0]);
+    }
+
+    #[test]
+    fn run_if_skips_even_when_inputs_changed() {
+        let mut wb = WorldBuilder::new();
+        wb.register_default::<ExecLog>();
+
+        let mut sb = SchedulerBuilder::new();
+        let a = sb.add_system(system_a, wb.registry());
+        sb.run_if(a, |_| false);
+
+        wb.register(sb.build());
+        let mut world = wb.build();
+
+        // Tick 0: ExecLog changed_at=0 == current_tick=0 → inputs changed.
+        // But condition is false → skipped anyway.
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        assert!(world.resource::<ExecLog>().is_empty());
+    }
+
+    #[test]
+    fn run_if_reads_resource() {
+        let mut wb = WorldBuilder::new();
+        wb.register_default::<ExecLog>();
+        wb.register::<bool>(false); // feature flag
+
+        let mut sb = SchedulerBuilder::new();
+        let a = sb.add_system(system_a, wb.registry());
+        sb.run_if(a, |world| *world.resource::<bool>());
+
+        wb.register(sb.build());
+        let mut world = wb.build();
+
+        // Flag is false → system skipped.
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        assert!(world.resource::<ExecLog>().is_empty());
+
+        // Set flag to true.
+        *world.resource_mut::<bool>() = true;
+
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        assert_eq!(*world.resource::<ExecLog>(), vec![0]);
+    }
+
+    #[test]
+    fn run_if_skip_propagates_downstream() {
+        // A (gated) → B. Condition false → A skipped → B inputs stale → B skipped.
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(false);
+
+        fn writer(mut val: ResMut<u64>, _: ()) {
+            *val += 1;
+        }
+
+        fn reader(val: Res<u64>, mut flag: ResMut<bool>, _: ()) {
+            *flag = *val > 0;
+        }
+
+        let mut sb = SchedulerBuilder::new();
+        let w = sb.add_system(writer, wb.registry());
+        let r = sb.add_system(reader, wb.registry());
+        sb.after(r, w);
+        sb.run_if(w, |_| false);
+
+        wb.register(sb.build());
+        let mut world = wb.build();
+
+        // Tick 0: writer gated off → u64 not written.
+        // reader: inputs are u64 (changed_at=0==0, still "changed" on tick 0).
+        // So reader WILL run on tick 0 because everything starts as "changed."
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        // u64 is still 0, so reader ran but set flag = false (0 > 0 is false).
+        assert!(!*world.resource::<bool>());
+        assert_eq!(*world.resource::<u64>(), 0, "writer should not have run");
+
+        // Advance past tick 0 stamps.
+        world.advance_tick();
+        world.advance_tick();
+
+        // Tick 2: writer still gated → u64 not stamped → reader inputs stale → skipped.
+        *world.resource_mut::<bool>() = true; // set to true so we can detect skip
+        world.advance_tick(); // tick 3
+
+        world.with_mut::<Scheduler, _>(|s, w| s.dispatch(w));
+        assert!(
+            *world.resource::<bool>(),
+            "reader should have been skipped (flag unchanged)"
         );
     }
 
