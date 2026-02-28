@@ -85,12 +85,16 @@ pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
 /// Obtained via [`WorldBuilder::registry()`] or [`World::registry()`].
 pub struct Registry {
     indices: FxHashMap<TypeId, ResourceId>,
+    /// Scratch bitset reused across [`check_access`](Self::check_access) calls.
+    /// Allocated once on the first call with >64 resources, then reused.
+    scratch: Vec<u64>,
 }
 
 impl Registry {
     pub(crate) fn new() -> Self {
         Self {
             indices: FxHashMap::default(),
+            scratch: Vec::new(),
         }
     }
 
@@ -115,6 +119,69 @@ impl Registry {
     /// Returns `true` if a resource of type `T` has been registered.
     pub fn contains<T: 'static>(&self) -> bool {
         self.indices.contains_key(&TypeId::of::<T>())
+    }
+
+    /// Returns the number of registered resources.
+    pub fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Returns `true` if no resources have been registered.
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    /// Validate that a set of parameter accesses don't conflict.
+    ///
+    /// Two accesses conflict when they target the same ResourceId.
+    /// Called at construction time by `into_system`, `into_callback`,
+    /// and `into_stage`.
+    ///
+    /// Fast path (≤128 resources): single `u128` on the stack, zero heap.
+    /// Slow path (>128 resources): reusable `Vec<u64>` owned by Registry —
+    /// allocated once on first use, then cleared and reused.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any resource is accessed by more than one parameter.
+    pub fn check_access(&mut self, accesses: &[(Option<ResourceId>, &str)]) {
+        let n = self.len();
+        if n == 0 {
+            return;
+        }
+
+        if n <= 128 {
+            // Fast path: single u128 on the stack.
+            let mut seen = 0u128;
+            for &(id, name) in accesses {
+                let Some(id) = id else { continue };
+                let bit = 1u128 << id.0;
+                assert!(
+                    seen & bit == 0,
+                    "conflicting access: resource borrowed by `{}` is already \
+                     borrowed by another parameter in the same system",
+                    name,
+                );
+                seen |= bit;
+            }
+        } else {
+            // Slow path: reusable heap buffer.
+            let words = n.div_ceil(64);
+            self.scratch.resize(words, 0);
+            self.scratch.fill(0);
+            for &(id, name) in accesses {
+                let Some(id) = id else { continue };
+                let word = id.0 / 64;
+                let bit = 1u64 << (id.0 % 64);
+                assert!(
+                    self.scratch[word] & bit == 0,
+                    "conflicting access: resource borrowed by `{}` is already \
+                     borrowed by another parameter in the same system",
+                    name,
+                );
+                self.scratch[word] |= bit;
+            }
+        }
     }
 }
 
@@ -253,22 +320,22 @@ impl WorldBuilder {
         self.register(T::default())
     }
 
-    /// Returns a reference to the type registry.
+    /// Returns a shared reference to the type registry.
     ///
-    /// Use this to resolve systems during driver setup before [`build()`](Self::build):
-    ///
-    /// ```ignore
-    /// let mut builder = WorldBuilder::new();
-    /// builder.register::<PriceCache>(PriceCache::new());
-    ///
-    /// let mut driver = MockDriver::new();
-    /// driver.register(my_system, builder.registry());
-    ///
-    /// builder.register(driver);
-    /// let world = builder.build();
-    /// ```
+    /// Use this for read-only queries. For construction-time calls
+    /// like [`into_system`](crate::IntoSystem::into_system), use
+    /// [`registry_mut`](Self::registry_mut) instead.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Returns a mutable reference to the type registry.
+    ///
+    /// Needed at construction time for [`IntoSystem::into_system`],
+    /// [`IntoCallback::into_callback`], and [`IntoStage::into_stage`]
+    /// which call [`Registry::check_access`].
+    pub fn registry_mut(&mut self) -> &mut Registry {
+        &mut self.registry
     }
 
     /// Returns the number of registered resources.
@@ -344,15 +411,23 @@ impl World {
         WorldBuilder::new()
     }
 
-    /// Returns a reference to the type registry.
+    /// Returns a shared reference to the type registry.
     ///
-    /// Use this to resolve systems after `build()`:
-    ///
-    /// ```ignore
-    /// let mut system = my_fn.into_system(world.registry());
-    /// ```
+    /// Use this for read-only queries (e.g. [`id`](Registry::id),
+    /// [`contains`](Registry::contains)). For construction-time calls
+    /// like [`into_system`](crate::IntoSystem::into_system), use
+    /// [`registry_mut`](Self::registry_mut) instead.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Returns a mutable reference to the type registry.
+    ///
+    /// Needed at construction time for [`IntoSystem::into_system`],
+    /// [`IntoCallback::into_callback`], and [`IntoStage::into_stage`]
+    /// which call [`Registry::check_access`].
+    pub fn registry_mut(&mut self) -> &mut Registry {
+        &mut self.registry
     }
 
     /// Resolve the [`ResourceId`] for a type. Cold path — uses HashMap lookup.

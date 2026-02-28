@@ -19,7 +19,7 @@ use crate::world::WorldBuilder;
 ///         world.register(PriceCache::new());
 ///         world.register_default::<Events<TradeSignal>>();
 ///
-///         let sys = scheduler.add_system(update_prices, world.registry());
+///         let sys = scheduler.add_system(update_prices, world.registry_mut());
 ///         // ...
 ///     }
 /// }

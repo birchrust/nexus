@@ -46,7 +46,7 @@
 //!     *counter += event as u64;
 //! }
 //!
-//! let mut system = tick.into_system(world.registry());
+//! let mut system = tick.into_system(world.registry_mut());
 //!
 //! system.run(&mut world, 10u32);
 //!
@@ -74,6 +74,7 @@ pub mod pipeline;
 mod plugin;
 mod resource;
 mod scheduler;
+pub mod stage_pipeline;
 mod system;
 mod world;
 
@@ -84,5 +85,8 @@ pub use pipeline::{Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
 pub use scheduler::{Scheduler, SchedulerBuilder, SystemId};
+pub use stage_pipeline::{
+    IntoStage, StagePipeline, StagePipelineBuilder, StagePipelineOutput, StagePipelineStart,
+};
 pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
 pub use world::{Registry, ResourceId, Tick, World, WorldBuilder};

@@ -87,9 +87,9 @@ fn main() {
         .register::<u64>(0);
     let mut world = builder.build();
 
-    let mut check = threshold_check.into_system(world.registry());
-    let mut collect = collect_alerts.into_system(world.registry());
-    let mut count = count_alerts.into_system(world.registry());
+    let mut check = threshold_check.into_system(world.registry_mut());
+    let mut collect = collect_alerts.into_system(world.registry_mut());
+    let mut count = count_alerts.into_system(world.registry_mut());
 
     // -- Tick 1: several sensor readings --------------------------------------
 

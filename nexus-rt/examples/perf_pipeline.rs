@@ -96,11 +96,7 @@ fn print_header(title: &str) {
 /// 3-stage bare pipeline: multiply, add, shift.
 #[inline(never)]
 pub fn bare_3stage_run(
-    p: &mut nexus_rt::PipelineBuilder<
-        u64,
-        u64,
-        impl FnMut(&mut nexus_rt::World, u64) -> u64,
-    >,
+    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -124,11 +120,7 @@ pub fn option_3stage_run(
 /// Pipeline that reads World via HashMap (cold-path API).
 #[inline(never)]
 pub fn world_access_run(
-    p: &mut nexus_rt::PipelineBuilder<
-        u64,
-        u64,
-        impl FnMut(&mut nexus_rt::World, u64) -> u64,
-    >,
+    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -138,11 +130,7 @@ pub fn world_access_run(
 /// Pipeline that reads World via pre-resolved ResourceId (hot-path pattern).
 #[inline(never)]
 pub fn world_access_resolved_run(
-    p: &mut nexus_rt::PipelineBuilder<
-        u64,
-        u64,
-        impl FnMut(&mut nexus_rt::World, u64) -> u64,
-    >,
+    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -189,42 +177,26 @@ fn system_two_res(a: Res<u64>, b: Res<u32>, input: u64) {
 /// Monomorphized System dispatch with Res<u64>.
 /// Full path: System::run → SystemParam::fetch → World::get_ptr + changed_at + current_tick.
 #[inline(never)]
-pub fn probe_system_res_read(
-    sys: &mut impl System<u64>,
-    world: &mut nexus_rt::World,
-    input: u64,
-) {
+pub fn probe_system_res_read(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
 /// Monomorphized System dispatch with ResMut<u64>.
 /// Full path: fetch + DerefMut stamps changed_at on write.
 #[inline(never)]
-pub fn probe_system_res_mut(
-    sys: &mut impl System<u64>,
-    world: &mut nexus_rt::World,
-    input: u64,
-) {
+pub fn probe_system_res_mut(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
 /// Monomorphized System dispatch with two Res params (tuple fetch).
 #[inline(never)]
-pub fn probe_system_two_res(
-    sys: &mut impl System<u64>,
-    world: &mut nexus_rt::World,
-    input: u64,
-) {
+pub fn probe_system_two_res(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
 /// Dyn-dispatched System — vtable call + SystemParam fetch.
 #[inline(never)]
-pub fn probe_dyn_system(
-    sys: &mut dyn System<u64>,
-    world: &mut nexus_rt::World,
-    input: u64,
-) {
+pub fn probe_dyn_system(sys: &mut dyn System<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
@@ -287,11 +259,7 @@ fn main() {
 
     let mut catch_pipeline = PipelineStart::<u64>::new()
         .pipe(|_w, x| -> Result<u64, &str> {
-            if x > 0 {
-                Ok(x)
-            } else {
-                Err("zero")
-            }
+            if x > 0 { Ok(x) } else { Err("zero") }
         })
         .catch(|_w, _err| {})
         .map(|_w, x| x.wrapping_mul(2))
@@ -299,11 +267,11 @@ fn main() {
 
     // --- System dispatch setup ---
 
-    let mut sys_res = system_res_read.into_system(world.registry());
-    let mut sys_res_mut = system_res_mut_write.into_system(world.registry());
-    let mut sys_two = system_two_res.into_system(world.registry());
+    let mut sys_res = system_res_read.into_system(world.registry_mut());
+    let mut sys_res_mut = system_res_mut_write.into_system(world.registry_mut());
+    let mut sys_two = system_two_res.into_system(world.registry_mut());
     let mut sys_dyn: Box<dyn System<u64>> =
-        Box::new(system_res_read.into_system(world.registry()));
+        Box::new(system_res_read.into_system(world.registry_mut()));
 
     // --- Pipeline benchmarks ---
 

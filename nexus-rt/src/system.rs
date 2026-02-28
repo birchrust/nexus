@@ -46,6 +46,16 @@ pub trait SystemParam {
     ///
     /// Used by the scheduler to skip systems whose inputs haven't changed.
     fn any_changed(state: &Self::State, world: &World) -> bool;
+
+    /// The ResourceId this param accesses, if any.
+    ///
+    /// Returns `None` for params that don't access World resources
+    /// (e.g. Local<T>). Used by Registry::check_access to enforce
+    /// one borrow per resource per system.
+    fn resource_id(state: &Self::State) -> Option<ResourceId> {
+        let _ = state;
+        None
+    }
 }
 
 // -- Res<T> ------------------------------------------------------------------
@@ -75,6 +85,10 @@ impl<T: 'static> SystemParam for Res<'_, T> {
     fn any_changed(state: &ResourceId, world: &World) -> bool {
         // SAFETY: state was produced by init() on the same registry.
         unsafe { world.changed_at(*state) == world.current_tick() }
+    }
+
+    fn resource_id(state: &ResourceId) -> Option<ResourceId> {
+        Some(*state)
     }
 }
 
@@ -106,6 +120,10 @@ impl<T: 'static> SystemParam for ResMut<'_, T> {
         // SAFETY: state was produced by init() on the same registry.
         unsafe { world.changed_at(*state) == world.current_tick() }
     }
+
+    fn resource_id(state: &ResourceId) -> Option<ResourceId> {
+        Some(*state)
+    }
 }
 
 // -- Option<Res<T>> ----------------------------------------------------------
@@ -136,6 +154,10 @@ impl<T: 'static> SystemParam for Option<Res<'_, T>> {
             // SAFETY: id was produced by init() on the same registry.
             unsafe { world.changed_at(id) == world.current_tick() }
         })
+    }
+
+    fn resource_id(state: &Option<ResourceId>) -> Option<ResourceId> {
+        *state
     }
 }
 
@@ -170,6 +192,10 @@ impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
             // SAFETY: id was produced by init() on the same registry.
             unsafe { world.changed_at(id) == world.current_tick() }
         })
+    }
+
+    fn resource_id(state: &Option<ResourceId>) -> Option<ResourceId> {
+        *state
     }
 }
 
@@ -363,14 +389,14 @@ pub struct FunctionSystem<F, Params: SystemParam> {
 /// builder.register::<u64>(0);
 /// builder.register::<bool>(false);
 ///
-/// let mut system = tick.into_system(builder.registry());
+/// let mut system = tick.into_system(builder.registry_mut());
 /// ```
 pub trait IntoSystem<E, Params> {
     /// The concrete system type produced.
     type System: System<E> + 'static;
 
     /// Convert this function into a system, resolving parameters from the registry.
-    fn into_system(self, registry: &Registry) -> Self::System;
+    fn into_system(self, registry: &mut Registry) -> Self::System;
 }
 
 // =============================================================================
@@ -381,7 +407,7 @@ pub trait IntoSystem<E, Params> {
 impl<E, F: FnMut(E) + 'static> IntoSystem<E, ()> for F {
     type System = FunctionSystem<F, ()>;
 
-    fn into_system(self, registry: &Registry) -> Self::System {
+    fn into_system(self, registry: &mut Registry) -> Self::System {
         FunctionSystem {
             f: self,
             state: <() as SystemParam>::init(registry),
@@ -414,11 +440,19 @@ macro_rules! impl_into_system {
         {
             type System = FunctionSystem<F, ($($P,)+)>;
 
-            fn into_system(self, registry: &Registry) -> Self::System {
-                FunctionSystem {
-                    f: self,
-                    state: <($($P,)+) as SystemParam>::init(registry),
+            fn into_system(self, registry: &mut Registry) -> Self::System {
+                let state = <($($P,)+) as SystemParam>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as SystemParam>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
                 }
+                FunctionSystem { f: self, state }
             }
         }
 
@@ -471,9 +505,9 @@ mod tests {
     fn res_system_param() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(42);
-        let world = builder.build();
+        let mut world = builder.build();
 
-        let mut state = <Res<u64> as SystemParam>::init(world.registry());
+        let mut state = <Res<u64> as SystemParam>::init(world.registry_mut());
         // SAFETY: state from init on same registry, no aliasing.
         let res = unsafe { <Res<u64> as SystemParam>::fetch(&world, &mut state) };
         assert_eq!(*res, 42);
@@ -483,16 +517,16 @@ mod tests {
     fn res_mut_system_param() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(1);
-        let world = builder.build();
+        let mut world = builder.build();
 
-        let mut state = <ResMut<u64> as SystemParam>::init(world.registry());
+        let mut state = <ResMut<u64> as SystemParam>::init(world.registry_mut());
         // SAFETY: state from init on same registry, no aliasing.
         unsafe {
             let mut res = <ResMut<u64> as SystemParam>::fetch(&world, &mut state);
             *res = 99;
         }
         unsafe {
-            let mut read_state = <Res<u64> as SystemParam>::init(world.registry());
+            let mut read_state = <Res<u64> as SystemParam>::init(world.registry_mut());
             let res = <Res<u64> as SystemParam>::fetch(&world, &mut read_state);
             assert_eq!(*res, 99);
         }
@@ -502,9 +536,9 @@ mod tests {
     fn tuple_system_param() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(10).register::<bool>(true);
-        let world = builder.build();
+        let mut world = builder.build();
 
-        let mut state = <(Res<u64>, ResMut<bool>) as SystemParam>::init(world.registry());
+        let mut state = <(Res<u64>, ResMut<bool>) as SystemParam>::init(world.registry_mut());
         // SAFETY: different types, no aliasing.
         unsafe {
             let (counter, mut flag) =
@@ -514,7 +548,7 @@ mod tests {
             *flag = false;
         }
         unsafe {
-            let mut read_state = <Res<bool> as SystemParam>::init(world.registry());
+            let mut read_state = <Res<bool> as SystemParam>::init(world.registry_mut());
             let res = <Res<bool> as SystemParam>::fetch(&world, &mut read_state);
             assert!(!*res);
         }
@@ -522,8 +556,8 @@ mod tests {
 
     #[test]
     fn empty_tuple_param() {
-        let world = WorldBuilder::new().build();
-        let mut state = <() as SystemParam>::init(world.registry());
+        let mut world = WorldBuilder::new().build();
+        let mut state = <() as SystemParam>::init(world.registry_mut());
         // SAFETY: no params to alias.
         let () = unsafe { <() as SystemParam>::fetch(&world, &mut state) };
     }
@@ -537,7 +571,7 @@ mod tests {
     #[test]
     fn event_only_system() {
         let mut world = WorldBuilder::new().build();
-        let mut sys = event_only_handler.into_system(world.registry());
+        let mut sys = event_only_handler.into_system(world.registry_mut());
         sys.run(&mut world, 42u32);
     }
 
@@ -552,7 +586,7 @@ mod tests {
         builder.register::<u64>(10);
         let mut world = builder.build();
 
-        let mut sys = one_res_handler.into_system(world.registry());
+        let mut sys = one_res_handler.into_system(world.registry_mut());
         sys.run(&mut world, 5u32);
     }
 
@@ -568,7 +602,7 @@ mod tests {
         builder.register::<u64>(10).register::<bool>(true);
         let mut world = builder.build();
 
-        let mut sys = two_res_handler.into_system(world.registry());
+        let mut sys = two_res_handler.into_system(world.registry_mut());
         sys.run(&mut world, 7u32);
     }
 
@@ -582,7 +616,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let mut sys = accumulate.into_system(world.registry());
+        let mut sys = accumulate.into_system(world.registry_mut());
 
         sys.run(&mut world, 10u64);
         sys.run(&mut world, 5u64);
@@ -604,8 +638,8 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let sys_a = add_system.into_system(world.registry());
-        let sys_b = mul_system.into_system(world.registry());
+        let sys_a = add_system.into_system(world.registry_mut());
+        let sys_b = mul_system.into_system(world.registry_mut());
 
         let mut systems: Vec<Box<dyn System<u64>>> = vec![Box::new(sys_a), Box::new(sys_b)];
 
@@ -625,7 +659,7 @@ mod tests {
     #[test]
     fn local_default_init() {
         let mut world = WorldBuilder::new().build();
-        let mut sys = local_counter.into_system(world.registry());
+        let mut sys = local_counter.into_system(world.registry_mut());
         // Ran once — count should be 1 (started at 0). No panic means init worked.
         sys.run(&mut world, 1u32);
     }
@@ -641,7 +675,7 @@ mod tests {
             *total = *count;
         }
 
-        let mut sys = accumulate_local.into_system(world.registry());
+        let mut sys = accumulate_local.into_system(world.registry_mut());
         sys.run(&mut world, 0u32);
         sys.run(&mut world, 0u32);
         sys.run(&mut world, 0u32);
@@ -660,8 +694,8 @@ mod tests {
             *total += *count;
         }
 
-        let mut sys_a = inc_local.into_system(world.registry());
-        let mut sys_b = inc_local.into_system(world.registry());
+        let mut sys_a = inc_local.into_system(world.registry_mut());
+        let mut sys_b = inc_local.into_system(world.registry_mut());
 
         sys_a.run(&mut world, 0u32); // local=1, total=0+1=1
         sys_b.run(&mut world, 0u32); // local=1, total=1+1=2
@@ -674,8 +708,8 @@ mod tests {
 
     #[test]
     fn option_res_none_when_missing() {
-        let world = WorldBuilder::new().build();
-        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry());
+        let mut world = WorldBuilder::new().build();
+        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry_mut());
         let opt = unsafe { <Option<Res<u64>> as SystemParam>::fetch(&world, &mut state) };
         assert!(opt.is_none());
     }
@@ -684,9 +718,9 @@ mod tests {
     fn option_res_some_when_present() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(42);
-        let world = builder.build();
+        let mut world = builder.build();
 
-        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry());
+        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry_mut());
         let opt = unsafe { <Option<Res<u64>> as SystemParam>::fetch(&world, &mut state) };
         assert_eq!(*opt.unwrap(), 42);
     }
@@ -695,15 +729,15 @@ mod tests {
     fn option_res_mut_some_when_present() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(1);
-        let world = builder.build();
+        let mut world = builder.build();
 
-        let mut state = <Option<ResMut<u64>> as SystemParam>::init(world.registry());
+        let mut state = <Option<ResMut<u64>> as SystemParam>::init(world.registry_mut());
         unsafe {
             let opt = <Option<ResMut<u64>> as SystemParam>::fetch(&world, &mut state);
             *opt.unwrap() = 99;
         }
         unsafe {
-            let mut read_state = <Res<u64> as SystemParam>::init(world.registry());
+            let mut read_state = <Res<u64> as SystemParam>::init(world.registry_mut());
             let res = <Res<u64> as SystemParam>::fetch(&world, &mut read_state);
             assert_eq!(*res, 99);
         }
@@ -716,7 +750,7 @@ mod tests {
     #[test]
     fn option_in_system() {
         let mut world = WorldBuilder::new().build();
-        let mut sys = optional_system.into_system(world.registry());
+        let mut sys = optional_system.into_system(world.registry_mut());
         sys.run(&mut world, 0u32);
     }
 
@@ -732,7 +766,7 @@ mod tests {
             let _ = *val;
         }
 
-        let sys = reader.into_system(world.registry());
+        let sys = reader.into_system(world.registry_mut());
 
         // Tick 0: changed_at=0, current_tick=0 → inputs changed
         assert!(sys.inputs_changed(&world));
@@ -757,7 +791,7 @@ mod tests {
             let _ = *flag;
         }
 
-        let sys = reads_bool.into_system(world.registry());
+        let sys = reads_bool.into_system(world.registry_mut());
 
         world.advance_tick(); // tick=1
 
@@ -771,25 +805,96 @@ mod tests {
     #[test]
     fn inputs_changed_with_optional_none() {
         // Optional param with no resource registered → always false
-        let world = WorldBuilder::new().build();
+        let mut world = WorldBuilder::new().build();
 
         fn optional_sys(opt: Option<Res<String>>, _e: ()) {
             let _ = opt;
         }
 
-        let sys = optional_sys.into_system(world.registry());
+        let sys = optional_sys.into_system(world.registry_mut());
         assert!(!sys.inputs_changed(&world));
     }
 
     #[test]
     fn inputs_changed_event_only_system() {
-        let world = WorldBuilder::new().build();
+        let mut world = WorldBuilder::new().build();
 
         fn event_handler(_e: u32) {}
 
-        let sys = event_handler.into_system(world.registry());
+        let sys = event_handler.into_system(world.registry_mut());
         // Event-only systems have no resource deps → false
         assert!(!sys.inputs_changed(&world));
+    }
+
+    // -- Access conflict detection ----------------------------------------
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn duplicate_res_panics() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn bad(a: Res<u64>, b: Res<u64>, _e: ()) {
+            let _ = (*a, *b);
+        }
+
+        let _sys = bad.into_system(world.registry_mut());
+    }
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn duplicate_res_mut_panics() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn bad(a: ResMut<u64>, b: ResMut<u64>, _e: ()) {
+            let _ = (&*a, &*b);
+        }
+
+        let _sys = bad.into_system(world.registry_mut());
+    }
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn duplicate_mixed_panics() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn bad(a: Res<u64>, b: ResMut<u64>, _e: ()) {
+            let _ = (*a, &*b);
+        }
+
+        let _sys = bad.into_system(world.registry_mut());
+    }
+
+    #[test]
+    fn different_types_no_conflict() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<u32>(0);
+        let mut world = builder.build();
+
+        fn ok(a: Res<u64>, b: ResMut<u32>, _e: ()) {
+            let _ = (*a, &*b);
+        }
+
+        let _sys = ok.into_system(world.registry_mut());
+    }
+
+    #[test]
+    fn local_no_conflict() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn ok(local: Local<u64>, val: ResMut<u64>, _e: ()) {
+            let _ = (&*local, &*val);
+        }
+
+        let _sys = ok.into_system(world.registry_mut());
     }
 
     #[test]
@@ -808,8 +913,8 @@ mod tests {
             let _ = (*val, *flag);
         }
 
-        let mut writer_sys = writer.into_system(world.registry());
-        let mut observer_sys = observer.into_system(world.registry());
+        let mut writer_sys = writer.into_system(world.registry_mut());
+        let mut observer_sys = observer.into_system(world.registry_mut());
 
         // Tick 0: everything is "changed"
         writer_sys.run(&mut world, ());

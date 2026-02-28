@@ -74,7 +74,7 @@ impl SchedulerBuilder {
     pub fn add_system<P>(
         &mut self,
         system: impl IntoSystem<(), P>,
-        registry: &Registry,
+        registry: &mut Registry,
     ) -> SystemId {
         let id = SystemId(self.entries.len());
         self.entries.push(BuildEntry {
@@ -278,7 +278,7 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        sb.add_system(system_a, wb.registry());
+        sb.add_system(system_a, wb.registry_mut());
 
         wb.register(sb.build());
         let mut world = wb.build();
@@ -294,8 +294,8 @@ mod tests {
 
         let mut sb = SchedulerBuilder::new();
         // Register B first, then A, but declare B runs after A.
-        let b = sb.add_system(system_b, wb.registry());
-        let a = sb.add_system(system_a, wb.registry());
+        let b = sb.add_system(system_b, wb.registry_mut());
+        let a = sb.add_system(system_a, wb.registry_mut());
         sb.after(b, a);
 
         wb.register(sb.build());
@@ -313,10 +313,10 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
-        let b = sb.add_system(system_b, wb.registry());
-        let c = sb.add_system(system_c, wb.registry());
-        let d = sb.add_system(system_d, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
+        let b = sb.add_system(system_b, wb.registry_mut());
+        let c = sb.add_system(system_c, wb.registry_mut());
+        let d = sb.add_system(system_d, wb.registry_mut());
 
         sb.after(b, a);
         sb.after(c, a);
@@ -342,8 +342,8 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
-        let b = sb.add_system(system_b, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
+        let b = sb.add_system(system_b, wb.registry_mut());
         sb.after(a, b);
         sb.after(b, a);
 
@@ -357,7 +357,7 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
         sb.after(a, a);
 
         sb.build();
@@ -383,8 +383,8 @@ mod tests {
         }
 
         let mut sb = SchedulerBuilder::new();
-        let p = sb.add_system(producer, wb.registry());
-        let c = sb.add_system(consumer, wb.registry());
+        let p = sb.add_system(producer, wb.registry_mut());
+        let c = sb.add_system(consumer, wb.registry_mut());
         sb.after(c, p);
 
         wb.register(sb.build());
@@ -440,9 +440,9 @@ mod tests {
         }
 
         let mut sb = SchedulerBuilder::new();
-        let s = sb.add_system(source, wb.registry());
-        let a = sb.add_system(sink_a, wb.registry());
-        let b = sb.add_system(sink_b, wb.registry());
+        let s = sb.add_system(source, wb.registry_mut());
+        let a = sb.add_system(sink_a, wb.registry_mut());
+        let b = sb.add_system(sink_b, wb.registry_mut());
         sb.after(a, s);
         sb.after(b, s);
 
@@ -476,7 +476,7 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
         sb.run_if(a, |_| false);
 
         wb.register(sb.build());
@@ -492,7 +492,7 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
         sb.run_if(a, |_| true);
 
         wb.register(sb.build());
@@ -508,7 +508,7 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
         sb.run_if(a, |_| false);
 
         wb.register(sb.build());
@@ -527,7 +527,7 @@ mod tests {
         wb.register::<bool>(false); // feature flag
 
         let mut sb = SchedulerBuilder::new();
-        let a = sb.add_system(system_a, wb.registry());
+        let a = sb.add_system(system_a, wb.registry_mut());
         sb.run_if(a, |world| *world.resource::<bool>());
 
         wb.register(sb.build());
@@ -560,8 +560,8 @@ mod tests {
         }
 
         let mut sb = SchedulerBuilder::new();
-        let w = sb.add_system(writer, wb.registry());
-        let r = sb.add_system(reader, wb.registry());
+        let w = sb.add_system(writer, wb.registry_mut());
+        let r = sb.add_system(reader, wb.registry_mut());
         sb.after(r, w);
         sb.run_if(w, |_| false);
 
@@ -597,9 +597,9 @@ mod tests {
         wb.register_default::<ExecLog>();
 
         let mut sb = SchedulerBuilder::new();
-        sb.add_system(system_a, wb.registry());
-        sb.add_system(system_b, wb.registry());
-        sb.add_system(system_c, wb.registry());
+        sb.add_system(system_a, wb.registry_mut());
+        sb.add_system(system_b, wb.registry_mut());
+        sb.add_system(system_c, wb.registry_mut());
 
         wb.register(sb.build());
         let mut world = wb.build();

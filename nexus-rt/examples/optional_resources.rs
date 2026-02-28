@@ -81,8 +81,8 @@ fn main() {
             });
         let mut world = builder.build();
 
-        let mut process = process_event.into_system(world.registry());
-        let mut track = track_metrics.into_system(world.registry());
+        let mut process = process_event.into_system(world.registry_mut());
+        let mut track = track_metrics.into_system(world.registry_mut());
 
         for value in [3.0, 7.5, 1.2] {
             process.run(&mut world, value);
@@ -104,8 +104,8 @@ fn main() {
         // DebugLog and Metrics intentionally not registered.
         let mut world = builder.build();
 
-        let mut process = process_event.into_system(world.registry());
-        let mut track = track_metrics.into_system(world.registry());
+        let mut process = process_event.into_system(world.registry_mut());
+        let mut track = track_metrics.into_system(world.registry_mut());
 
         for value in [3.0, 7.5] {
             process.run(&mut world, value);

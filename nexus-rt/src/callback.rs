@@ -41,7 +41,7 @@ use crate::world::{Registry, World};
 /// builder.register::<u64>(0);
 /// let mut world = builder.build();
 ///
-/// let mut cb = handler.into_callback(Ctx { count: 0 }, world.registry());
+/// let mut cb = handler.into_callback(Ctx { count: 0 }, world.registry_mut());
 /// cb.run(&mut world, 10u32);
 ///
 /// assert_eq!(cb.ctx.count, 1);
@@ -73,7 +73,7 @@ pub trait IntoCallback<C, E, Params> {
     type Callback: System<E>;
 
     /// Convert this function + context into a Callback.
-    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback;
+    fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback;
 }
 
 // =============================================================================
@@ -83,7 +83,7 @@ pub trait IntoCallback<C, E, Params> {
 impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> IntoCallback<C, E, ()> for F {
     type Callback = Callback<C, F, ()>;
 
-    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+    fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback {
         Callback {
             ctx,
             f: self,
@@ -117,12 +117,19 @@ macro_rules! impl_into_callback {
         {
             type Callback = Callback<C, F, ($($P,)+)>;
 
-            fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
-                Callback {
-                    ctx,
-                    f: self,
-                    state: <($($P,)+) as SystemParam>::init(registry),
+            fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback {
+                let state = <($($P,)+) as SystemParam>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as SystemParam>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
                 }
+                Callback { ctx, f: self, state }
             }
         }
 
@@ -211,7 +218,7 @@ mod tests {
                 order_id: 1,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.run(&mut world, 42u32);
         assert_eq!(cb.ctx.call_count, 1);
@@ -234,7 +241,7 @@ mod tests {
                 order_id: 1,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.run(&mut world, 0u32);
         assert_eq!(cb.ctx.call_count, 3);
@@ -256,7 +263,7 @@ mod tests {
                 order_id: 42,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.run(&mut world, 0u32);
         assert_eq!(cb.ctx.call_count, 1);
@@ -285,7 +292,7 @@ mod tests {
                 order_id: 0,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.run(&mut world, 0u32);
         assert_eq!(cb.ctx.call_count, 1);
@@ -318,7 +325,7 @@ mod tests {
                 order_id: 0,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.run(&mut world, 0u32);
         assert_eq!(cb.ctx.call_count, 1);
@@ -335,7 +342,7 @@ mod tests {
                 order_id: 1,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.run(&mut world, 0u32);
         cb.run(&mut world, 0u32);
@@ -351,7 +358,7 @@ mod tests {
                 order_id: 42,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         assert_eq!(cb.ctx.order_id, 42);
         assert_eq!(cb.ctx.call_count, 0);
@@ -367,7 +374,7 @@ mod tests {
                 order_id: 1,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         cb.ctx.order_id = 99;
         cb.run(&mut world, 0u32);
@@ -380,7 +387,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "not registered")]
     fn panics_on_missing_resource() {
-        let world = WorldBuilder::new().build();
+        let mut world = WorldBuilder::new().build();
 
         fn needs_cache(_ctx: &mut TimerCtx, _cache: Res<OrderCache>, _e: u32) {}
 
@@ -389,7 +396,7 @@ mod tests {
                 order_id: 0,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
     }
 
@@ -398,7 +405,7 @@ mod tests {
     fn panics_on_second_missing() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let world = builder.build();
+        let mut world = builder.build();
 
         fn needs_two(_ctx: &mut TimerCtx, _a: Res<u64>, _b: Res<OrderCache>, _e: u32) {}
 
@@ -407,8 +414,24 @@ mod tests {
                 order_id: 0,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
+    }
+
+    // -- Access conflict detection --------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn callback_duplicate_access_panics() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn bad(_ctx: &mut u64, a: Res<u64>, b: ResMut<u64>, _e: ()) {
+            let _ = (*a, &*b);
+        }
+
+        let _cb = bad.into_callback(0u64, world.registry_mut());
     }
 
     // -- Change detection -----------------------------------------------------
@@ -421,7 +444,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let cb = reads_resource.into_callback(0u64, world.registry());
+        let cb = reads_resource.into_callback(0u64, world.registry_mut());
 
         // Tick 0: changed_at=0, current_tick=0 → changed
         assert!(cb.inputs_changed(&world));
@@ -435,13 +458,13 @@ mod tests {
 
     #[test]
     fn inputs_changed_false_no_params() {
-        let world = WorldBuilder::new().build();
+        let mut world = WorldBuilder::new().build();
         let cb = ctx_only_handler.into_callback(
             TimerCtx {
                 order_id: 0,
                 call_count: 0,
             },
-            world.registry(),
+            world.registry_mut(),
         );
         assert!(!cb.inputs_changed(&world));
     }
@@ -456,7 +479,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let mut cb = stamps_writer.into_callback(0u64, world.registry());
+        let mut cb = stamps_writer.into_callback(0u64, world.registry_mut());
 
         world.advance_tick(); // tick=1
         let id = world.id::<u64>();
@@ -482,7 +505,7 @@ mod tests {
             *val += event + *ctx;
         }
 
-        let cb = add_ctx.into_callback(10u64, world.registry());
+        let cb = add_ctx.into_callback(10u64, world.registry_mut());
         let mut boxed: Box<dyn System<u64>> = Box::new(cb);
         boxed.run(&mut world, 5u64);
         // 0 + 5 + 10 = 15
@@ -502,8 +525,8 @@ mod tests {
             *val *= *ctx;
         }
 
-        let cb_add = add.into_callback(3u64, world.registry());
-        let cb_mul = mul.into_callback(2u64, world.registry());
+        let cb_add = add.into_callback(3u64, world.registry_mut());
+        let cb_mul = mul.into_callback(2u64, world.registry_mut());
 
         let mut systems: Vec<Box<dyn System<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
 
@@ -525,7 +548,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let mut cb = with_local.into_callback(0u64, world.registry());
+        let mut cb = with_local.into_callback(0u64, world.registry_mut());
         cb.run(&mut world, ());
         cb.run(&mut world, ());
         cb.run(&mut world, ());
@@ -549,8 +572,8 @@ mod tests {
             *val *= *ctx;
         }
 
-        let sys = sys_add.into_system(world.registry());
-        let cb = cb_mul.into_callback(3u64, world.registry());
+        let sys = sys_add.into_system(world.registry_mut());
+        let cb = cb_mul.into_callback(3u64, world.registry_mut());
 
         let mut systems: Vec<Box<dyn System<u64>>> = vec![Box::new(sys), Box::new(cb)];
 
@@ -572,7 +595,7 @@ mod tests {
             *val += *ctx;
         }
 
-        let mut cb = on_event.into_callback(10u64, world.registry());
+        let mut cb = on_event.into_callback(10u64, world.registry_mut());
 
         world.with_mut::<Vec<u64>, _>(|log, world| {
             cb.run(world, ());

@@ -91,7 +91,7 @@ mod tests {
     impl Plugin for TestPlugin {
         fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder) {
             world.register_default::<ExecLog>();
-            scheduler.add_system(sys_a, world.registry());
+            scheduler.add_system(sys_a, world.registry_mut());
         }
     }
 
@@ -120,7 +120,7 @@ mod tests {
         struct PluginB;
         impl Plugin for PluginB {
             fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder) {
-                scheduler.add_system(sys_b, world.registry());
+                scheduler.add_system(sys_b, world.registry_mut());
             }
         }
 
@@ -141,14 +141,14 @@ mod tests {
         impl Plugin for PluginA {
             fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder) {
                 world.register_default::<ExecLog>();
-                scheduler.add_system(sys_a, world.registry());
+                scheduler.add_system(sys_a, world.registry_mut());
             }
         }
 
         struct PluginB;
         impl Plugin for PluginB {
             fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder) {
-                scheduler.add_system(sys_b, world.registry());
+                scheduler.add_system(sys_b, world.registry_mut());
             }
         }
 

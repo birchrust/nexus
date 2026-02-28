@@ -171,9 +171,9 @@ impl Plugin for TradingPlugin {
         world.register_default::<Events<TradeSignal>>();
 
         // Systems + ordering
-        let signals = scheduler.add_system(check_signals, world.registry());
-        let prices = scheduler.add_system(update_prices, world.registry());
-        let trades = scheduler.add_system(count_trades, world.registry());
+        let signals = scheduler.add_system(check_signals, world.registry_mut());
+        let prices = scheduler.add_system(update_prices, world.registry_mut());
+        let trades = scheduler.add_system(count_trades, world.registry_mut());
 
         // check_signals before update_prices: signal detection uses old cache
         // check_signals before count_trades: signals must exist before counting

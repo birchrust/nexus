@@ -52,7 +52,7 @@ fn main() {
     println!("=== Example 1: Simple counter ===\n");
     {
         let mut world = WorldBuilder::new().build();
-        let mut sys = counting_system.into_system(world.registry());
+        let mut sys = counting_system.into_system(world.registry_mut());
 
         sys.run(&mut world, "alpha");
         sys.run(&mut world, "beta");
@@ -66,8 +66,8 @@ fn main() {
         let mut world = builder.build();
 
         // Two systems from the same function — each has its own Local<i64>.
-        let mut sys_a = accumulator.into_system(world.registry());
-        let mut sys_b = accumulator.into_system(world.registry());
+        let mut sys_a = accumulator.into_system(world.registry_mut());
+        let mut sys_b = accumulator.into_system(world.registry_mut());
 
         println!("sys_a gets 10:");
         sys_a.run(&mut world, 10i64);
@@ -89,7 +89,7 @@ fn main() {
         builder.register::<Vec<u32>>(Vec::new());
         let mut world = builder.build();
 
-        let mut sys = batch_writer.into_system(world.registry());
+        let mut sys = batch_writer.into_system(world.registry_mut());
 
         // First two events accumulate locally.
         sys.run(&mut world, 1u32);

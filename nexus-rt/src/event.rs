@@ -124,6 +124,10 @@ impl<T: 'static> SystemParam for EventWriter<'_, T> {
         // SAFETY: state was produced by init() on the same registry.
         unsafe { world.changed_at(*state) == world.current_tick() }
     }
+
+    fn resource_id(state: &ResourceId) -> Option<ResourceId> {
+        Some(*state)
+    }
 }
 
 // =============================================================================
@@ -191,6 +195,10 @@ impl<T: 'static> SystemParam for EventReader<'_, T> {
     fn any_changed(state: &ResourceId, world: &World) -> bool {
         // SAFETY: state was produced by init() on the same registry.
         unsafe { world.changed_at(*state) == world.current_tick() }
+    }
+
+    fn resource_id(state: &ResourceId) -> Option<ResourceId> {
+        Some(*state)
     }
 }
 
@@ -270,8 +278,8 @@ mod tests {
         builder.register::<Events<u32>>(Events::new());
         let mut world = builder.build();
 
-        let mut writer_sys = write_events.into_system(world.registry());
-        let mut reader_sys = read_events.into_system(world.registry());
+        let mut writer_sys = write_events.into_system(world.registry_mut());
+        let mut reader_sys = read_events.into_system(world.registry_mut());
 
         writer_sys.run(&mut world, 5u32);
         reader_sys.run(&mut world, 2usize);
@@ -285,8 +293,8 @@ mod tests {
         builder.register_default::<Events<u32>>();
         let mut world = builder.build();
 
-        let writer_sys = write_events.into_system(world.registry());
-        let reader_sys = read_events.into_system(world.registry());
+        let writer_sys = write_events.into_system(world.registry_mut());
+        let reader_sys = read_events.into_system(world.registry_mut());
 
         // Tick 0: Events registered at tick=0, current_tick=0 → changed
         assert!(writer_sys.inputs_changed(&world));
@@ -297,6 +305,22 @@ mod tests {
         // Tick 1: Events changed_at=0, current_tick=1 → not changed
         assert!(!writer_sys.inputs_changed(&world));
         assert!(!reader_sys.inputs_changed(&world));
+    }
+
+    // -- Access conflict detection -------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn duplicate_event_access_panics() {
+        let mut builder = WorldBuilder::new();
+        builder.register_default::<Events<u32>>();
+        let mut world = builder.build();
+
+        fn bad(w: EventWriter<u32>, r: EventReader<u32>, _e: ()) {
+            let _ = (w, r);
+        }
+
+        let _sys = bad.into_system(world.registry_mut());
     }
 
     #[test]
@@ -314,7 +338,7 @@ mod tests {
         }
 
         // EventWriter::send → DerefMut on inner ResMut → stamps
-        let mut writer_sys = write_events.into_system(world.registry());
+        let mut writer_sys = write_events.into_system(world.registry_mut());
         writer_sys.run(&mut world, 1u32);
 
         unsafe {
