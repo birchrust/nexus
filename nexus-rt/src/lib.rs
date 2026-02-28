@@ -68,6 +68,7 @@
 #![warn(missing_docs)]
 
 mod app;
+mod callback;
 mod event;
 pub mod pipeline;
 mod plugin;
@@ -77,6 +78,7 @@ mod system;
 mod world;
 
 pub use app::App;
+pub use callback::{Callback, IntoCallback};
 pub use event::{EventReader, EventWriter, Events};
 pub use pipeline::{Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
 pub use plugin::Plugin;

@@ -1,0 +1,585 @@
+//! Context-owning system dispatch.
+//!
+//! [`Callback`] is [`FunctionSystem`](crate::FunctionSystem) with one extra
+//! field: an owned context `C`. The function convention is
+//! `fn handler(ctx: &mut C, params: Res<T>..., event: E)` — context first,
+//! [`SystemParam`]-resolved resources in the middle, event last.
+//!
+//! Same HRTB double-bound pattern, same macro generation, same ~2-cycle
+//! dispatch. Named functions only (same closure limitation as
+//! [`IntoSystem`](crate::IntoSystem)).
+
+use crate::System;
+use crate::system::SystemParam;
+use crate::world::{Registry, World};
+
+// =============================================================================
+// Callback<C, F, Params>
+// =============================================================================
+
+/// Context-owning system. Stores per-callback state alongside
+/// pre-resolved resource access.
+///
+/// Created via [`IntoCallback::into_callback`]. Function convention:
+/// `fn handler(ctx: &mut C, params: Res<T>..., event: E)`.
+///
+/// Context first. SystemParams in the middle. Event last.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, System};
+///
+/// struct Ctx { count: u64 }
+///
+/// fn handler(ctx: &mut Ctx, mut val: ResMut<u64>, event: u32) {
+///     *val += event as u64;
+///     ctx.count += 1;
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// let mut world = builder.build();
+///
+/// let mut cb = handler.into_callback(Ctx { count: 0 }, world.registry());
+/// cb.run(&mut world, 10u32);
+///
+/// assert_eq!(cb.ctx.count, 1);
+/// assert_eq!(*world.resource::<u64>(), 10);
+/// ```
+pub struct Callback<C, F, Params: SystemParam> {
+    /// Per-callback owned state. Accessible outside dispatch.
+    pub ctx: C,
+    f: F,
+    state: Params::State,
+}
+
+// =============================================================================
+// IntoCallback
+// =============================================================================
+
+/// Converts a named function into a [`Callback`].
+///
+/// Identical to [`IntoSystem`](crate::IntoSystem) but injects `&mut C` as
+/// the first parameter. [`ResourceId`](crate::ResourceId)s resolved via
+/// `registry.id::<T>()` at call time — panics if any resource is not
+/// registered.
+///
+/// # Panics
+///
+/// Panics if any [`SystemParam`] resource is not registered.
+pub trait IntoCallback<C, E, Params> {
+    /// The concrete Callback type produced.
+    type Callback: System<E>;
+
+    /// Convert this function + context into a Callback.
+    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback;
+}
+
+// =============================================================================
+// Arity 0: fn(ctx: &mut C, E) — context + event only, no SystemParam
+// =============================================================================
+
+impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> IntoCallback<C, E, ()> for F {
+    type Callback = Callback<C, F, ()>;
+
+    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+        Callback {
+            ctx,
+            f: self,
+            state: <() as SystemParam>::init(registry),
+        }
+    }
+}
+
+impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> System<E> for Callback<C, F, ()> {
+    fn run(&mut self, _world: &mut World, event: E) {
+        (self.f)(&mut self.ctx, event);
+    }
+
+    fn inputs_changed(&self, _world: &World) -> bool {
+        false
+    }
+}
+
+// =============================================================================
+// Macro-generated impls (arities 1-8)
+// =============================================================================
+
+macro_rules! impl_into_callback {
+    ($($P:ident),+) => {
+        impl<C: 'static, E, F: 'static, $($P: SystemParam + 'static),+>
+            IntoCallback<C, E, ($($P,)+)> for F
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+ E) +
+                FnMut(&mut C, $($P::Item<'a>,)+ E),
+        {
+            type Callback = Callback<C, F, ($($P,)+)>;
+
+            fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+                Callback {
+                    ctx,
+                    f: self,
+                    state: <($($P,)+) as SystemParam>::init(registry),
+                }
+            }
+        }
+
+        impl<C: 'static, E, F: 'static, $($P: SystemParam + 'static),+>
+            System<E> for Callback<C, F, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+ E) +
+                FnMut(&mut C, $($P::Item<'a>,)+ E),
+        {
+            #[allow(non_snake_case)]
+            fn run(&mut self, world: &mut World, event: E) {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<Ctx, $($P,)+ Ev>(
+                    mut f: impl FnMut(&mut Ctx, $($P,)+ Ev),
+                    ctx: &mut Ctx,
+                    $($P: $P,)+
+                    event: Ev,
+                ) {
+                    f(ctx, $($P,)+ event);
+                }
+
+                // SAFETY: state was produced by init() on the same registry
+                // that built this world. Single-threaded sequential dispatch
+                // ensures no mutable aliasing across params.
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, &mut self.ctx, $($P,)+ event);
+            }
+
+            fn inputs_changed(&self, world: &World) -> bool {
+                <($($P,)+) as SystemParam>::any_changed(&self.state, world)
+            }
+        }
+    };
+}
+
+// Reuse all_tuples — re-declared here since macros are module-scoped.
+macro_rules! all_tuples {
+    ($m:ident) => {
+        $m!(P0);
+        $m!(P0, P1);
+        $m!(P0, P1, P2);
+        $m!(P0, P1, P2, P3);
+        $m!(P0, P1, P2, P3, P4);
+        $m!(P0, P1, P2, P3, P4, P5);
+        $m!(P0, P1, P2, P3, P4, P5, P6);
+        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
+    };
+}
+
+all_tuples!(impl_into_callback);
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Local, Res, ResMut, WorldBuilder};
+
+    // -- Helper types ---------------------------------------------------------
+
+    struct TimerCtx {
+        order_id: u64,
+        call_count: u64,
+    }
+
+    struct OrderCache {
+        expired: Vec<u64>,
+    }
+
+    // -- Core dispatch --------------------------------------------------------
+
+    fn ctx_only_handler(ctx: &mut TimerCtx, _event: u32) {
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn ctx_only_no_params() {
+        let mut world = WorldBuilder::new().build();
+        let mut cb = ctx_only_handler.into_callback(
+            TimerCtx {
+                order_id: 1,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.run(&mut world, 42u32);
+        assert_eq!(cb.ctx.call_count, 1);
+    }
+
+    fn ctx_one_res_handler(ctx: &mut TimerCtx, cache: Res<OrderCache>, _event: u32) {
+        ctx.call_count += cache.expired.len() as u64;
+    }
+
+    #[test]
+    fn ctx_one_res() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<OrderCache>(OrderCache {
+            expired: vec![1, 2, 3],
+        });
+        let mut world = builder.build();
+
+        let mut cb = ctx_one_res_handler.into_callback(
+            TimerCtx {
+                order_id: 1,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.call_count, 3);
+    }
+
+    fn ctx_one_res_mut_handler(ctx: &mut TimerCtx, mut cache: ResMut<OrderCache>, _event: u32) {
+        cache.expired.push(ctx.order_id);
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn ctx_one_res_mut() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<OrderCache>(OrderCache { expired: vec![] });
+        let mut world = builder.build();
+
+        let mut cb = ctx_one_res_mut_handler.into_callback(
+            TimerCtx {
+                order_id: 42,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.call_count, 1);
+        assert_eq!(world.resource::<OrderCache>().expired, vec![42]);
+    }
+
+    fn ctx_two_params_handler(
+        ctx: &mut TimerCtx,
+        counter: Res<u64>,
+        mut cache: ResMut<OrderCache>,
+        _event: u32,
+    ) {
+        cache.expired.push(*counter);
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn ctx_two_params() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(99);
+        builder.register::<OrderCache>(OrderCache { expired: vec![] });
+        let mut world = builder.build();
+
+        let mut cb = ctx_two_params_handler.into_callback(
+            TimerCtx {
+                order_id: 0,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.call_count, 1);
+        assert_eq!(world.resource::<OrderCache>().expired, vec![99]);
+    }
+
+    fn ctx_three_params_handler(
+        ctx: &mut TimerCtx,
+        a: Res<u64>,
+        b: Res<bool>,
+        mut c: ResMut<OrderCache>,
+        _event: u32,
+    ) {
+        if *b {
+            c.expired.push(*a);
+        }
+        ctx.call_count += 1;
+    }
+
+    #[test]
+    fn ctx_three_params() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(7);
+        builder.register::<bool>(true);
+        builder.register::<OrderCache>(OrderCache { expired: vec![] });
+        let mut world = builder.build();
+
+        let mut cb = ctx_three_params_handler.into_callback(
+            TimerCtx {
+                order_id: 0,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.call_count, 1);
+        assert_eq!(world.resource::<OrderCache>().expired, vec![7]);
+    }
+
+    // -- Context ownership ----------------------------------------------------
+
+    #[test]
+    fn ctx_mutated_persists() {
+        let mut world = WorldBuilder::new().build();
+        let mut cb = ctx_only_handler.into_callback(
+            TimerCtx {
+                order_id: 1,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.run(&mut world, 0u32);
+        cb.run(&mut world, 0u32);
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.call_count, 3);
+    }
+
+    #[test]
+    fn ctx_accessible_outside_dispatch() {
+        let mut world = WorldBuilder::new().build();
+        let mut cb = ctx_only_handler.into_callback(
+            TimerCtx {
+                order_id: 42,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        assert_eq!(cb.ctx.order_id, 42);
+        assert_eq!(cb.ctx.call_count, 0);
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.call_count, 1);
+    }
+
+    #[test]
+    fn ctx_mutated_outside_dispatch() {
+        let mut world = WorldBuilder::new().build();
+        let mut cb = ctx_only_handler.into_callback(
+            TimerCtx {
+                order_id: 1,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        cb.ctx.order_id = 99;
+        cb.run(&mut world, 0u32);
+        assert_eq!(cb.ctx.order_id, 99);
+        assert_eq!(cb.ctx.call_count, 1);
+    }
+
+    // -- Safety validation ----------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn panics_on_missing_resource() {
+        let world = WorldBuilder::new().build();
+
+        fn needs_cache(_ctx: &mut TimerCtx, _cache: Res<OrderCache>, _e: u32) {}
+
+        let _cb = needs_cache.into_callback(
+            TimerCtx {
+                order_id: 0,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn panics_on_second_missing() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let world = builder.build();
+
+        fn needs_two(_ctx: &mut TimerCtx, _a: Res<u64>, _b: Res<OrderCache>, _e: u32) {}
+
+        let _cb = needs_two.into_callback(
+            TimerCtx {
+                order_id: 0,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+    }
+
+    // -- Change detection -----------------------------------------------------
+
+    fn reads_resource(_ctx: &mut u64, _val: Res<u64>, _e: ()) {}
+
+    #[test]
+    fn inputs_changed_delegates() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let cb = reads_resource.into_callback(0u64, world.registry());
+
+        // Tick 0: changed_at=0, current_tick=0 → changed
+        assert!(cb.inputs_changed(&world));
+
+        world.advance_tick();
+        assert!(!cb.inputs_changed(&world));
+
+        *world.resource_mut::<u64>() = 42;
+        assert!(cb.inputs_changed(&world));
+    }
+
+    #[test]
+    fn inputs_changed_false_no_params() {
+        let world = WorldBuilder::new().build();
+        let cb = ctx_only_handler.into_callback(
+            TimerCtx {
+                order_id: 0,
+                call_count: 0,
+            },
+            world.registry(),
+        );
+        assert!(!cb.inputs_changed(&world));
+    }
+
+    fn stamps_writer(_ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+        *val = 99;
+    }
+
+    #[test]
+    fn mut_stamps_changed_at() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut cb = stamps_writer.into_callback(0u64, world.registry());
+
+        world.advance_tick(); // tick=1
+        let id = world.id::<u64>();
+        unsafe {
+            assert_eq!(world.changed_at(id), crate::Tick(0));
+        }
+
+        cb.run(&mut world, ());
+        unsafe {
+            assert_eq!(world.changed_at(id), crate::Tick(1));
+        }
+    }
+
+    // -- System<E> interface --------------------------------------------------
+
+    #[test]
+    fn box_dyn_system() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn add_ctx(ctx: &mut u64, mut val: ResMut<u64>, event: u64) {
+            *val += event + *ctx;
+        }
+
+        let cb = add_ctx.into_callback(10u64, world.registry());
+        let mut boxed: Box<dyn System<u64>> = Box::new(cb);
+        boxed.run(&mut world, 5u64);
+        // 0 + 5 + 10 = 15
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn callback_in_vec_dyn() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn add(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+            *val += *ctx;
+        }
+        fn mul(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+            *val *= *ctx;
+        }
+
+        let cb_add = add.into_callback(3u64, world.registry());
+        let cb_mul = mul.into_callback(2u64, world.registry());
+
+        let mut systems: Vec<Box<dyn System<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
+
+        for sys in systems.iter_mut() {
+            sys.run(&mut world, ());
+        }
+        // 0 + 3 = 3, then 3 * 2 = 6
+        assert_eq!(*world.resource::<u64>(), 6);
+    }
+
+    fn with_local(_ctx: &mut u64, mut local: Local<u64>, mut val: ResMut<u64>, _e: ()) {
+        *local += 1;
+        *val = *local;
+    }
+
+    #[test]
+    fn callback_with_local() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut cb = with_local.into_callback(0u64, world.registry());
+        cb.run(&mut world, ());
+        cb.run(&mut world, ());
+        cb.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    // -- Integration ----------------------------------------------------------
+
+    #[test]
+    fn callback_interop_with_function_system() {
+        use crate::IntoSystem;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn sys_add(mut val: ResMut<u64>, event: u64) {
+            *val += event;
+        }
+        fn cb_mul(ctx: &mut u64, mut val: ResMut<u64>, _e: u64) {
+            *val *= *ctx;
+        }
+
+        let sys = sys_add.into_system(world.registry());
+        let cb = cb_mul.into_callback(3u64, world.registry());
+
+        let mut systems: Vec<Box<dyn System<u64>>> = vec![Box::new(sys), Box::new(cb)];
+
+        for s in systems.iter_mut() {
+            s.run(&mut world, 5u64);
+        }
+        // 0 + 5 = 5, then 5 * 3 = 15
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn callback_with_world_with_mut() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<Vec<u64>>(vec![]);
+        let mut world = builder.build();
+
+        fn on_event(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
+            *val += *ctx;
+        }
+
+        let mut cb = on_event.into_callback(10u64, world.registry());
+
+        world.with_mut::<Vec<u64>, _>(|log, world| {
+            cb.run(world, ());
+            log.push(*world.resource::<u64>());
+        });
+
+        assert_eq!(*world.resource::<u64>(), 10);
+        assert_eq!(*world.resource::<Vec<u64>>(), vec![10]);
+    }
+}
