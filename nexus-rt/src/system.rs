@@ -265,10 +265,12 @@ all_tuples!(impl_system_param_tuple);
 // Local<T> — per-handler state
 // =============================================================================
 
-/// Per-handler local state. Stored inside the [`Callback`], not in [`World`].
+/// Per-handler local state. Stored inside the dispatch wrapper (e.g.
+/// [`Callback`] or pipeline [`Stage`](crate::Stage)), not in [`World`].
 ///
 /// Initialized with [`Default::default()`] at handler creation time. Mutated
-/// freely at dispatch time — each handler instance has its own independent copy.
+/// freely at dispatch time — each handler/stage instance has its own
+/// independent copy.
 ///
 /// # Examples
 ///
@@ -314,9 +316,9 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
 
     #[inline(always)]
     unsafe fn fetch<'s>(_world: &'s World, state: &'s mut T) -> Local<'s, T> {
-        // SAFETY: Callback owns state exclusively. Single-threaded
-        // dispatch ensures no aliasing. Lifetime 's is bounded by the
-        // handler's run() call.
+        // SAFETY: The dispatch wrapper (Callback or Stage) owns state
+        // exclusively. Single-threaded dispatch ensures no aliasing.
+        // Lifetime 's is bounded by the handler/stage's run() call.
         Local::new(state)
     }
 

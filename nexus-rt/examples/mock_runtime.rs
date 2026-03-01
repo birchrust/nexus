@@ -181,7 +181,12 @@ impl Driver for MarketDataInstaller {
 }
 
 impl MarketDataHandle {
-    /// Process a batch of market ticks. Advances sequence once per batch.
+    /// Process a batch of market ticks.
+    ///
+    /// Advances sequence once per batch — all ticks share the same sequence
+    /// number. This amortizes the sequence bump but means `inputs_changed()`
+    /// cannot distinguish individual events within a batch. For per-event
+    /// change detection, move `next_sequence()` inside the loop.
     fn poll(&mut self, world: &mut World, ticks: &[MarketTick]) {
         if ticks.is_empty() {
             return;
