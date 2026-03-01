@@ -44,7 +44,7 @@ pub trait SystemParam {
     /// Returns `true` if any resource this param depends on was modified
     /// during the current tick.
     ///
-    /// Used by the scheduler to skip systems whose inputs haven't changed.
+    /// Used by drivers to skip systems whose inputs haven't changed.
     fn any_changed(state: &Self::State, world: &World) -> bool;
 
     /// The ResourceId this param accesses, if any.
@@ -350,6 +350,14 @@ pub trait System<E> {
         let _ = world;
         true
     }
+
+    /// Returns the system's name.
+    ///
+    /// Default returns `"<unnamed>"`. [`FunctionSystem`] captures the
+    /// function's [`type_name`](std::any::type_name) at construction time.
+    fn name(&self) -> &'static str {
+        "<unnamed>"
+    }
 }
 
 // =============================================================================
@@ -363,6 +371,7 @@ pub trait System<E> {
 pub struct FunctionSystem<F, Params: SystemParam> {
     f: F,
     state: Params::State,
+    name: &'static str,
 }
 
 // =============================================================================
@@ -411,6 +420,7 @@ impl<E, F: FnMut(E) + 'static> IntoSystem<E, ()> for F {
         FunctionSystem {
             f: self,
             state: <() as SystemParam>::init(registry),
+            name: std::any::type_name::<F>(),
         }
     }
 }
@@ -421,8 +431,13 @@ impl<E, F: FnMut(E) + 'static> System<E> for FunctionSystem<F, ()> {
     }
 
     fn inputs_changed(&self, _world: &World) -> bool {
-        // Event-only system — no resource dependencies.
-        false
+        // Event-only system — no resource dependencies to check.
+        // Always returns true so drivers never skip it.
+        true
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
     }
 }
 
@@ -452,7 +467,7 @@ macro_rules! impl_into_system {
                         )+
                     ]);
                 }
-                FunctionSystem { f: self, state }
+                FunctionSystem { f: self, state, name: std::any::type_name::<F>() }
             }
         }
 
@@ -483,6 +498,10 @@ macro_rules! impl_into_system {
 
             fn inputs_changed(&self, world: &World) -> bool {
                 <($($P,)+) as SystemParam>::any_changed(&self.state, world)
+            }
+
+            fn name(&self) -> &'static str {
+                self.name
             }
         }
     };
@@ -822,8 +841,8 @@ mod tests {
         fn event_handler(_e: u32) {}
 
         let sys = event_handler.into_system(world.registry_mut());
-        // Event-only systems have no resource deps → false
-        assert!(!sys.inputs_changed(&world));
+        // Event-only systems always run — drivers must not skip them.
+        assert!(sys.inputs_changed(&world));
     }
 
     // -- Access conflict detection ----------------------------------------

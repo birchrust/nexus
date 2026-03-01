@@ -1,13 +1,11 @@
-//! Plugin trait for composable system and resource registration.
+//! Plugin trait for composable resource registration.
 
-use crate::scheduler::SchedulerBuilder;
 use crate::world::WorldBuilder;
 
-/// Composable unit of system and resource registration.
+/// Composable unit of resource registration.
 ///
-/// Plugins register resources into a [`WorldBuilder`] and systems
-/// into a [`SchedulerBuilder`]. The runtime is assembled by composing
-/// plugins via [`App`](crate::App).
+/// Plugins register resources into a [`WorldBuilder`]. The runtime is
+/// assembled by installing plugins via [`WorldBuilder::install_plugin`].
 ///
 /// # Examples
 ///
@@ -15,16 +13,16 @@ use crate::world::WorldBuilder;
 /// struct TradingPlugin;
 ///
 /// impl Plugin for TradingPlugin {
-///     fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder) {
+///     fn build(self, world: &mut WorldBuilder) {
 ///         world.register(PriceCache::new());
 ///         world.register_default::<Events<TradeSignal>>();
-///
-///         let sys = scheduler.add_system(update_prices, world.registry_mut());
-///         // ...
 ///     }
 /// }
+///
+/// let mut wb = WorldBuilder::new();
+/// wb.install_plugin(TradingPlugin);
 /// ```
 pub trait Plugin {
-    /// Register resources and systems.
-    fn build(&self, world: &mut WorldBuilder, scheduler: &mut SchedulerBuilder);
+    /// Register resources into the world.
+    fn build(self, world: &mut WorldBuilder);
 }

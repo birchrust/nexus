@@ -5,12 +5,12 @@
 //!
 //! Key concepts:
 //! - [`EventWriter<T>`] — exclusive write access to `Events<T>` (one writer)
-//! - [`EventReader<T>`] — shared read access to `Events<T>` (many readers)
-//! - Clearing is the runtime's job — call `events.clear()` between ticks
+//! - [`EventReader<T>`] — exclusive access with `iter()` (peek) or `drain()` (consume)
+//! - Multiple readers work across sequential systems, not within one system
 //! - `register_default::<Events<T>>()` is a convenient shorthand
 //!
 //! This example shows a pipeline: sensor readings → threshold detection →
-//! alert accumulation, all connected through event buffers.
+//! alert counting (peek) → alert collection (drain).
 //!
 //! Run with:
 //! ```bash
@@ -61,21 +61,23 @@ fn threshold_check(
     }
 }
 
-/// Reads all alerts accumulated during dispatch and records them.
-fn collect_alerts(reader: EventReader<Alert>, mut log: ResMut<Vec<String>>, _: ()) {
-    for alert in reader.iter() {
-        let entry = format!("ALERT: {} = {:.1}", alert.sensor, alert.value);
-        println!("[collect] {}", entry);
-        log.push(entry);
-    }
-}
-
-/// A second reader — multiple readers can coexist.
+/// Counts alerts without consuming them (peek via iter).
+/// Runs before the drainer so it sees all events.
 fn count_alerts(reader: EventReader<Alert>, mut total: ResMut<u64>, _: ()) {
     let n = reader.len();
     *total += n as u64;
     if n > 0 {
         println!("[count] {} alerts this tick, {} total", n, *total);
+    }
+}
+
+/// Drains all alerts and records them in the log.
+/// Runs after the counter so events are available to peekers first.
+fn collect_alerts(mut reader: EventReader<Alert>, mut log: ResMut<Vec<String>>, _: ()) {
+    for alert in reader.drain() {
+        let entry = format!("ALERT: {} = {:.1}", alert.sensor, alert.value);
+        println!("[collect] {}", entry);
+        log.push(entry);
     }
 }
 
@@ -88,8 +90,8 @@ fn main() {
     let mut world = builder.build();
 
     let mut check = threshold_check.into_system(world.registry_mut());
-    let mut collect = collect_alerts.into_system(world.registry_mut());
     let mut count = count_alerts.into_system(world.registry_mut());
+    let mut collect = collect_alerts.into_system(world.registry_mut());
 
     // -- Tick 1: several sensor readings --------------------------------------
 
@@ -118,13 +120,12 @@ fn main() {
         check.run(&mut world, reading);
     }
 
-    // Post-dispatch: readers consume accumulated alerts.
+    // Post-dispatch: peekers first (iter), then drainers (drain).
     println!();
-    collect.run(&mut world, ());
     count.run(&mut world, ());
+    collect.run(&mut world, ());
 
-    // Clear event buffer between ticks (runtime's responsibility).
-    world.resource_mut::<Events<Alert>>().clear();
+    // No manual clear needed — drain() consumed the events.
 
     // -- Tick 2: more readings ------------------------------------------------
 
@@ -148,9 +149,8 @@ fn main() {
     }
 
     println!();
-    collect.run(&mut world, ());
     count.run(&mut world, ());
-    world.resource_mut::<Events<Alert>>().clear();
+    collect.run(&mut world, ());
 
     // -- Results --------------------------------------------------------------
 

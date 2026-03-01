@@ -5,7 +5,6 @@
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::bare_3stage_run
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::option_3stage_run
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::world_access_run
-//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::world_access_resolved_run
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::boxed_pipeline_run
 //! ```
 //!
@@ -48,7 +47,7 @@ fn rdtsc_start() -> u64 {
 fn rdtsc_end() -> u64 {
     unsafe {
         let mut aux = 0u32;
-        let tsc = core::arch::x86_64::__rdtscp(&mut aux as *mut _);
+        let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
         tsc
     }
@@ -117,19 +116,9 @@ pub fn option_3stage_run(
     p.run(world, input)
 }
 
-/// Pipeline that reads World via HashMap (cold-path API).
+/// Pipeline that reads World via pre-resolved Res<T> stages.
 #[inline(never)]
 pub fn world_access_run(
-    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
-    world: &mut nexus_rt::World,
-    input: u64,
-) -> u64 {
-    p.run(world, input)
-}
-
-/// Pipeline that reads World via pre-resolved ResourceId (hot-path pattern).
-#[inline(never)]
-pub fn world_access_resolved_run(
     p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
     world: &mut nexus_rt::World,
     input: u64,
@@ -157,10 +146,46 @@ pub fn baseline_handwritten(world: &mut nexus_rt::World, input: u64) -> u64 {
 }
 
 // =============================================================================
-// System dispatch probes — SystemParam fetch hot path
+// Stage functions for World-accessing pipeline
 // =============================================================================
 
-// Named functions required for IntoSystem (closures don't work with HRTB).
+fn add_resource(val: Res<u64>, x: u64) -> u64 {
+    x.wrapping_add(*val)
+}
+
+fn mul_resource(val: Res<u64>, x: u64) -> u64 {
+    x.wrapping_mul(*val)
+}
+
+fn sub_resource(val: Res<u32>, x: u64) -> u64 {
+    x.wrapping_sub(*val as u64)
+}
+
+// =============================================================================
+// inputs_changed probe functions at various arities
+// =============================================================================
+
+fn ic_1p(_a: Res<u64>, _: ()) {}
+fn ic_2p(_a: Res<u64>, _b: Res<u32>, _: ()) {}
+fn ic_4p(_a: Res<u64>, _b: Res<u32>, _c: Res<bool>, _d: Res<f64>, _: ()) {}
+
+#[allow(clippy::too_many_arguments)]
+fn ic_8p(
+    _a: Res<u64>,
+    _b: Res<u32>,
+    _c: Res<bool>,
+    _d: Res<f64>,
+    _e: Res<i64>,
+    _f: Res<i32>,
+    _g: Res<u8>,
+    _h: Res<u16>,
+    _: (),
+) {
+}
+
+// =============================================================================
+// System dispatch probes — SystemParam fetch hot path
+// =============================================================================
 
 fn system_res_read(counter: Res<u64>, input: u64) {
     black_box((*counter).wrapping_add(input));
@@ -209,60 +234,55 @@ fn main() {
     wb.register::<u64>(42);
     wb.register::<u32>(7);
     let mut world = wb.build();
+    let r = world.registry_mut();
 
     // --- Bare 3-stage pipeline (no Option, no World access) ---
 
     let mut bare = PipelineStart::<u64>::new()
-        .pipe(|_w, x| x.wrapping_mul(3))
-        .pipe(|_w, x| x.wrapping_add(7))
-        .pipe(|_w, x| x >> 1);
+        .stage(|x: u64| x.wrapping_mul(3), r)
+        .stage(|x: u64| x.wrapping_add(7), r)
+        .stage(|x: u64| x >> 1, r);
 
     // --- Option 3-stage pipeline ---
 
     let mut option = PipelineStart::<u64>::new()
-        .pipe(|_w, x| if x > 0 { Some(x) } else { None })
-        .map(|_w, x| x.wrapping_mul(3))
+        .stage(
+            |x: u64| -> Option<u64> { if x > 0 { Some(x) } else { None } },
+            r,
+        )
+        .map(|x: u64| x.wrapping_mul(3), r)
         .filter(|_w, x| *x < 1_000_000);
 
-    // --- World-accessing pipeline (HashMap lookup per stage) ---
+    // --- World-accessing pipeline (pre-resolved via Res<T>) ---
 
-    let mut world_access = PipelineStart::<u64>::new()
-        .pipe(|w, x| x.wrapping_add(*w.resource::<u64>()))
-        .pipe(|w, x| x.wrapping_mul(*w.resource::<u64>()));
-
-    // --- World-accessing pipeline (pre-resolved ResourceId) ---
-
-    let res_id = world.id::<u64>();
     let mut world_resolved = PipelineStart::<u64>::new()
-        .pipe(move |w, x| {
-            // SAFETY: id from same registry, single-threaded dispatch.
-            let val = unsafe { w.get::<u64>(res_id) };
-            x.wrapping_add(*val)
-        })
-        .pipe(move |w, x| {
-            // SAFETY: id from same registry, single-threaded dispatch.
-            let val = unsafe { w.get::<u64>(res_id) };
-            x.wrapping_mul(*val)
-        });
+        .stage(add_resource, r)
+        .stage(mul_resource, r);
+
+    // --- World-accessing 3-stage pipeline ---
+
+    let mut stage_3 = PipelineStart::<u64>::new()
+        .stage(add_resource, r)
+        .stage(mul_resource, r)
+        .stage(sub_resource, r);
 
     // --- Built (boxed) pipeline ---
 
     let mut boxed = PipelineStart::<u64>::new()
-        .pipe(|_w, x| x.wrapping_mul(3))
-        .pipe(|_w, x| x.wrapping_add(7))
-        .pipe(|_w, x| {
-            let _ = x;
-        })
+        .stage(|x: u64| x.wrapping_mul(3), r)
+        .stage(|x: u64| x.wrapping_add(7), r)
+        .stage(|_x: u64| {}, r)
         .build();
 
-    // --- Option pipeline with catch ---
+    // --- Result→catch→map→unwrap_or ---
 
     let mut catch_pipeline = PipelineStart::<u64>::new()
-        .pipe(|_w, x| -> Result<u64, &str> {
-            if x > 0 { Ok(x) } else { Err("zero") }
-        })
-        .catch(|_w, _err| {})
-        .map(|_w, x| x.wrapping_mul(2))
+        .stage(
+            |x: u64| -> Result<u64, &'static str> { if x > 0 { Ok(x) } else { Err("zero") } },
+            r,
+        )
+        .catch(|_err: &'static str| {}, r)
+        .map(|x: u64| x.wrapping_mul(2), r)
         .unwrap_or(0);
 
     // --- System dispatch setup ---
@@ -298,14 +318,9 @@ fn main() {
         option_3stage_run(&mut option, &mut world, black_box(0)).unwrap_or(0)
     });
 
-    bench_batched("world-access 2-stage (HashMap)", || {
+    bench_batched("world-access 2-stage (Res<T>)", || {
         input = input.wrapping_add(1);
-        world_access_run(&mut world_access, &mut world, black_box(input))
-    });
-
-    bench_batched("world-access 2-stage (pre-resolved)", || {
-        input = input.wrapping_add(1);
-        world_access_resolved_run(&mut world_resolved, &mut world, black_box(input))
+        world_access_run(&mut world_resolved, &mut world, black_box(input))
     });
 
     bench_batched("boxed Pipeline (dyn dispatch)", || {
@@ -346,6 +361,75 @@ fn main() {
         input = input.wrapping_add(1);
         probe_dyn_system(&mut *sys_dyn, &mut world, black_box(input));
         0
+    });
+
+    // --- Stage pipeline with Res<T> (3-stage) ---
+
+    println!();
+    print_header("Stage Pipeline with Res<T> (cycles)");
+
+    bench_batched("3-stage pipeline (Res<T>)", || {
+        input = input.wrapping_add(1);
+        stage_3.run(&mut world, black_box(input))
+    });
+
+    // --- inputs_changed cost ---
+
+    println!();
+    print_header("inputs_changed Latency (cycles)");
+
+    // Build a world with enough resources for 8-param systems.
+    let mut ic_wb = WorldBuilder::new();
+    ic_wb.register::<u64>(0);
+    ic_wb.register::<u32>(0);
+    ic_wb.register::<bool>(false);
+    ic_wb.register::<f64>(0.0);
+    ic_wb.register::<i64>(0);
+    ic_wb.register::<i32>(0);
+    ic_wb.register::<u8>(0);
+    ic_wb.register::<u16>(0);
+    let mut ic_world = ic_wb.build();
+    let ic_r = ic_world.registry_mut();
+
+    let ic1 = ic_1p.into_system(ic_r);
+    let ic2 = ic_2p.into_system(ic_r);
+    let ic4 = ic_4p.into_system(ic_r);
+    let ic8 = ic_8p.into_system(ic_r);
+
+    // Tick 0: all changed (changed_at == current_tick).
+    bench_batched("inputs_changed 1-param (changed)", || {
+        if ic1.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    bench_batched("inputs_changed 2-param (changed)", || {
+        if ic2.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    bench_batched("inputs_changed 4-param (changed)", || {
+        if ic4.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    bench_batched("inputs_changed 8-param (changed)", || {
+        if ic8.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    // Advance tick so inputs are stale.
+    ic_world.advance_tick();
+
+    bench_batched("inputs_changed 1-param (stale)", || {
+        if ic1.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    bench_batched("inputs_changed 2-param (stale)", || {
+        if ic2.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    bench_batched("inputs_changed 4-param (stale)", || {
+        if ic4.inputs_changed(&ic_world) { 1 } else { 0 }
+    });
+
+    bench_batched("inputs_changed 8-param (stale)", || {
+        if ic8.inputs_changed(&ic_world) { 1 } else { 0 }
     });
 
     println!();

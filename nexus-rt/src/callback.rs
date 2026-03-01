@@ -52,6 +52,7 @@ pub struct Callback<C, F, Params: SystemParam> {
     pub ctx: C,
     f: F,
     state: Params::State,
+    name: &'static str,
 }
 
 // =============================================================================
@@ -88,6 +89,7 @@ impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> IntoCallback<C, E, ()> for F 
             ctx,
             f: self,
             state: <() as SystemParam>::init(registry),
+            name: std::any::type_name::<F>(),
         }
     }
 }
@@ -98,7 +100,13 @@ impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> System<E> for Callback<C, F, 
     }
 
     fn inputs_changed(&self, _world: &World) -> bool {
-        false
+        // Context-only callback — no resource dependencies to check.
+        // Always returns true so the scheduler never skips it.
+        true
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
     }
 }
 
@@ -129,7 +137,7 @@ macro_rules! impl_into_callback {
                         )+
                     ]);
                 }
-                Callback { ctx, f: self, state }
+                Callback { ctx, f: self, state, name: std::any::type_name::<F>() }
             }
         }
 
@@ -163,6 +171,10 @@ macro_rules! impl_into_callback {
 
             fn inputs_changed(&self, world: &World) -> bool {
                 <($($P,)+) as SystemParam>::any_changed(&self.state, world)
+            }
+
+            fn name(&self) -> &'static str {
+                self.name
             }
         }
     };
@@ -457,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn inputs_changed_false_no_params() {
+    fn inputs_changed_true_no_params() {
         let mut world = WorldBuilder::new().build();
         let cb = ctx_only_handler.into_callback(
             TimerCtx {
@@ -466,7 +478,8 @@ mod tests {
             },
             world.registry_mut(),
         );
-        assert!(!cb.inputs_changed(&world));
+        // Context-only callbacks always run — scheduler must not skip them.
+        assert!(cb.inputs_changed(&world));
     }
 
     fn stamps_writer(_ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {

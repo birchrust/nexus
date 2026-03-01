@@ -28,6 +28,7 @@
 
 use std::any::{TypeId, type_name};
 use std::cell::Cell;
+use std::marker::PhantomData;
 
 use rustc_hash::FxHashMap;
 
@@ -144,6 +145,7 @@ impl Registry {
     /// # Panics
     ///
     /// Panics if any resource is accessed by more than one parameter.
+    #[cold]
     pub fn check_access(&mut self, accesses: &[(Option<ResourceId>, &str)]) {
         let n = self.len();
         if n == 0 {
@@ -189,58 +191,65 @@ impl Registry {
 // Storage — shared backing between builder and frozen container
 // =============================================================================
 
+/// Interleaved pointer + change tick for a single resource.
+/// 16 bytes — 4 slots per cache line.
+#[repr(C)]
+pub(crate) struct ResourceSlot {
+    pub(crate) ptr: *mut u8,
+    pub(crate) changed_at: Cell<Tick>,
+}
+
 /// Internal storage for type-erased resource pointers and their destructors.
 ///
 /// Owns the heap allocations and is responsible for cleanup. Shared between
 /// [`WorldBuilder`] and [`World`] via move — avoids duplicating Drop logic.
 pub(crate) struct Storage {
-    /// Dense array of type-erased pointers. Each was produced by `Box::into_raw`.
-    pub(crate) ptrs: Vec<*mut u8>,
+    /// Dense array of interleaved pointer + change tick pairs.
+    /// Each pointer was produced by `Box::into_raw`.
+    pub(crate) slots: Vec<ResourceSlot>,
     /// Parallel array of drop functions. `drop_fns[i]` is the monomorphized
-    /// destructor for the concrete type behind `ptrs[i]`.
+    /// destructor for the concrete type behind `slots[i].ptr`.
     pub(crate) drop_fns: Vec<DropFn>,
-    /// Parallel array of change-detection ticks. `changed_at[i]` records
-    /// the epoch at which resource `i` was last written.
-    pub(crate) changed_at: Vec<Cell<Tick>>,
 }
 
 impl Storage {
     pub(crate) fn new() -> Self {
         Self {
-            ptrs: Vec::new(),
+            slots: Vec::new(),
             drop_fns: Vec::new(),
-            changed_at: Vec::new(),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.ptrs.len()
+        self.slots.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.ptrs.is_empty()
+        self.slots.is_empty()
     }
 }
 
 // SAFETY: Storage exclusively owns the heap allocations behind its raw pointers.
 // They are not aliased or shared. Transferring ownership to another thread is safe.
+// Cell<Tick> is !Sync but we're transferring ownership, not sharing.
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for Storage {}
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        for (ptr, drop_fn) in self.ptrs.iter().zip(&self.drop_fns) {
+        for (slot, drop_fn) in self.slots.iter().zip(&self.drop_fns) {
             // Skip null pointers — a slot may be null if a with_mut closure
             // panicked before the pointer was restored. The resource is
             // leaked, but the process is crashing anyway.
-            if ptr.is_null() {
+            if slot.ptr.is_null() {
                 continue;
             }
-            // SAFETY: each (ptr, drop_fn) pair was created together in
+            // SAFETY: each (slot.ptr, drop_fn) pair was created together in
             // WorldBuilder::register(). drop_fn is the monomorphized
             // destructor for the concrete type behind ptr. Called exactly
             // once here.
             unsafe {
-                drop_fn(*ptr);
+                drop_fn(slot.ptr);
             }
         }
     }
@@ -296,6 +305,7 @@ impl WorldBuilder {
     /// # Panics
     ///
     /// Panics if a resource of the same type is already registered.
+    #[cold]
     pub fn register<T: 'static>(&mut self, value: T) -> &mut Self {
         let type_id = TypeId::of::<T>();
         assert!(
@@ -305,17 +315,20 @@ impl WorldBuilder {
         );
 
         let ptr = Box::into_raw(Box::new(value)) as *mut u8;
-        let id = ResourceId(self.storage.ptrs.len());
+        let id = ResourceId(self.storage.slots.len());
         self.registry.indices.insert(type_id, id);
-        self.storage.ptrs.push(ptr);
+        self.storage.slots.push(ResourceSlot {
+            ptr,
+            changed_at: Cell::new(Tick(0)),
+        });
         self.storage.drop_fns.push(drop_resource::<T>);
-        self.storage.changed_at.push(Cell::new(Tick(0)));
         self
     }
 
     /// Register a resource using its [`Default`] value.
     ///
     /// Equivalent to `self.register::<T>(T::default())`.
+    #[cold]
     pub fn register_default<T: Default + 'static>(&mut self) -> &mut Self {
         self.register(T::default())
     }
@@ -353,6 +366,20 @@ impl WorldBuilder {
         self.registry.contains::<T>()
     }
 
+    /// Install a plugin. The plugin is consumed and registers its
+    /// resources into this builder.
+    pub fn install_plugin(&mut self, plugin: impl crate::plugin::Plugin) -> &mut Self {
+        plugin.build(self);
+        self
+    }
+
+    /// Install a driver. The driver is consumed, registers its resources
+    /// into this builder, and returns a concrete handle for dispatch-time
+    /// polling.
+    pub fn install_driver<D: crate::driver::Driver>(&mut self, driver: D) -> D::Handle {
+        driver.install(self)
+    }
+
     /// Freeze the builder into an immutable [`World`] container.
     ///
     /// After this call, no more resources can be registered. All
@@ -363,6 +390,7 @@ impl WorldBuilder {
             registry: self.registry,
             storage: self.storage,
             current_tick: Tick(0),
+            _not_sync: PhantomData,
         }
     }
 }
@@ -400,9 +428,13 @@ pub struct World {
     registry: Registry,
     /// Type-erased pointer storage. Drop handled by `Storage`.
     storage: Storage,
-    /// Current epoch tick. Advanced by the scheduler/driver at the
+    /// Current epoch tick. Advanced by the driver at the
     /// end of each dispatch pass.
     current_tick: Tick,
+    /// World must not be shared across threads — it holds interior-mutable
+    /// `Cell<Tick>` values accessed through `&self`. `!Sync` enforced by
+    /// `PhantomData<Cell<()>>`.
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl World {
@@ -477,7 +509,7 @@ impl World {
     pub fn resource<T: 'static>(&self) -> &T {
         let id = self.registry.id::<T>();
         assert!(
-            !self.storage.ptrs[id.0].is_null(),
+            !self.storage.slots[id.0].ptr.is_null(),
             "resource `{}` is currently borrowed by with_mut",
             type_name::<T>(),
         );
@@ -495,12 +527,12 @@ impl World {
     pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
         let id = self.registry.id::<T>();
         assert!(
-            !self.storage.ptrs[id.0].is_null(),
+            !self.storage.slots[id.0].ptr.is_null(),
             "resource `{}` is currently borrowed by with_mut",
             type_name::<T>(),
         );
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.changed_at[id.0].set(self.current_tick);
+        self.storage.slots[id.0].changed_at.set(self.current_tick);
         // SAFETY: id resolved from our own registry. &mut self ensures
         // exclusive access — no other references can exist. Null check above.
         unsafe { self.get_mut(id) }
@@ -523,15 +555,15 @@ impl World {
     pub fn with_mut<T: 'static, R>(&mut self, f: impl FnOnce(&mut T, &mut Self) -> R) -> R {
         let id = self.registry.id::<T>();
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.changed_at[id.0].set(self.current_tick);
+        self.storage.slots[id.0].changed_at.set(self.current_tick);
         // Yank the pointer out — the closure cannot reach T through &mut World.
-        let ptr = std::mem::replace(&mut self.storage.ptrs[id.0], std::ptr::null_mut());
+        let ptr = std::mem::replace(&mut self.storage.slots[id.0].ptr, std::ptr::null_mut());
         // SAFETY: ptr was produced by Box::into_raw in register(), type T
         // matches. Removed from storage so no aliasing through &mut Self.
         let resource = unsafe { &mut *(ptr as *mut T) };
         let result = f(resource, self);
         // Restore the pointer.
-        self.storage.ptrs[id.0] = ptr;
+        self.storage.slots[id.0].ptr = ptr;
         result
     }
 
@@ -546,7 +578,7 @@ impl World {
 
     /// Advance the epoch tick by one (wrapping).
     ///
-    /// Called by the scheduler/driver at the end of each dispatch pass.
+    /// Called by the driver at the end of each dispatch pass.
     /// Wrapping is harmless — only equality is checked.
     pub fn advance_tick(&mut self) {
         self.current_tick = Tick(self.current_tick.0.wrapping_add(1));
@@ -606,14 +638,14 @@ impl World {
     #[inline(always)]
     pub unsafe fn get_ptr(&self, id: ResourceId) -> *mut u8 {
         debug_assert!(
-            id.0 < self.storage.ptrs.len(),
+            id.0 < self.storage.slots.len(),
             "ResourceId({}) out of bounds (len {})",
             id.0,
-            self.storage.ptrs.len(),
+            self.storage.slots.len(),
         );
         // SAFETY: caller guarantees id was returned by register() on the
-        // builder that produced this container, so id.0 < self.storage.ptrs.len().
-        let ptr = unsafe { *self.storage.ptrs.get_unchecked(id.0) };
+        // builder that produced this container, so id.0 < self.storage.slots.len().
+        let ptr = unsafe { self.storage.slots.get_unchecked(id.0).ptr };
         debug_assert!(
             !ptr.is_null(),
             "ResourceId({}) is null — resource is currently borrowed by with_mut",
@@ -634,7 +666,7 @@ impl World {
     /// the same builder that produced this container.
     #[inline(always)]
     pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Tick {
-        unsafe { self.storage.changed_at.get_unchecked(id.0).get() }
+        unsafe { self.storage.slots.get_unchecked(id.0).changed_at.get() }
     }
 
     /// Get a reference to the `Cell` tracking a resource's change tick.
@@ -645,7 +677,7 @@ impl World {
     /// the same builder that produced this container.
     #[inline(always)]
     pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Tick> {
-        unsafe { self.storage.changed_at.get_unchecked(id.0) }
+        unsafe { &self.storage.slots.get_unchecked(id.0).changed_at }
     }
 
     /// Stamp a resource as changed at the current tick.
@@ -655,12 +687,13 @@ impl World {
     /// `id` must have been returned by [`WorldBuilder::register`] for
     /// the same builder that produced this container.
     #[inline(always)]
-    #[allow(dead_code)] // Used by the Scheduler (upcoming).
+    #[allow(dead_code)] // Available for driver implementations.
     pub(crate) unsafe fn stamp_changed(&self, id: ResourceId) {
         unsafe {
             self.storage
-                .changed_at
+                .slots
                 .get_unchecked(id.0)
+                .changed_at
                 .set(self.current_tick);
         }
     }

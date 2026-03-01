@@ -9,7 +9,7 @@
 
 use std::slice;
 
-use crate::resource::{Res, ResMut};
+use crate::resource::ResMut;
 use crate::system::SystemParam;
 use crate::world::{Registry, ResourceId, World};
 
@@ -29,6 +29,13 @@ impl<T> Events<T> {
     /// Create an empty event buffer.
     pub fn new() -> Self {
         Self { buffer: Vec::new() }
+    }
+
+    /// Create an event buffer with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(capacity),
+        }
     }
 
     /// Push an event into the buffer.
@@ -134,18 +141,26 @@ impl<T: 'static> SystemParam for EventWriter<'_, T> {
 // EventReader<T>
 // =============================================================================
 
-/// System parameter for reading events from an [`Events<T>`] buffer.
+/// System parameter for reading (and optionally draining) events from an
+/// [`Events<T>`] buffer.
 ///
-/// Wraps [`Res<Events<T>>`] — shared access. Multiple readers can
-/// coexist in the same dispatch cycle.
+/// Wraps [`ResMut<Events<T>>`] — exclusive access. Use [`iter()`](Self::iter)
+/// for non-consuming reads, or [`drain()`](Self::drain) to consume events.
+/// Multiple readers can coexist across sequential systems, but not within
+/// the same system.
 pub struct EventReader<'w, T: 'static> {
-    events: Res<'w, Events<T>>,
+    events: ResMut<'w, Events<T>>,
 }
 
 impl<T: 'static> EventReader<'_, T> {
-    /// Iterate over pending events.
+    /// Iterate over pending events without consuming them.
     pub fn iter(&self) -> slice::Iter<'_, T> {
         self.events.iter()
+    }
+
+    /// Consume all events, returning a draining iterator.
+    pub fn drain(&mut self) -> std::vec::Drain<'_, T> {
+        self.events.drain()
     }
 
     /// Returns `true` if no events are pending.
@@ -180,12 +195,12 @@ impl<T: 'static> SystemParam for EventReader<'_, T> {
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> EventReader<'w, T> {
         let id = *state;
         // SAFETY: state was produced by init() on the same world.
-        // Caller ensures no mutable alias exists for Events<T>.
+        // Caller ensures no aliases exist for Events<T>.
         EventReader {
             events: unsafe {
-                Res::new(
-                    world.get::<Events<T>>(id),
-                    world.changed_at(id),
+                ResMut::new(
+                    world.get_mut::<Events<T>>(id),
+                    world.changed_at_cell(id),
                     world.current_tick(),
                 )
             },
@@ -261,6 +276,31 @@ mod tests {
         assert_eq!(reader.len(), 2);
         let vals: Vec<&u32> = reader.iter().collect();
         assert_eq!(vals, vec![&10, &20]);
+    }
+
+    #[test]
+    fn event_reader_drain() {
+        let mut events = Events::new();
+        events.send(1u32);
+        events.send(2);
+        events.send(3);
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<Events<u32>>(events);
+        let world = builder.build();
+
+        let mut state = <EventReader<u32> as SystemParam>::init(world.registry());
+        // SAFETY: state from init on same registry, no aliasing.
+        let mut reader = unsafe { <EventReader<u32> as SystemParam>::fetch(&world, &mut state) };
+        let drained: Vec<u32> = reader.drain().collect();
+        assert_eq!(drained, vec![1, 2, 3]);
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn events_with_capacity() {
+        let events = Events::<u32>::with_capacity(64);
+        assert!(events.is_empty());
     }
 
     fn write_events(mut writer: EventWriter<u32>, tick: u32) {

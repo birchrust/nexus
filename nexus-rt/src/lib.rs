@@ -21,17 +21,16 @@
 //! - **Events** — [`Events`], [`EventWriter`], and [`EventReader`] provide
 //!   simple event buffer types that integrate as system parameters.
 //!
-//! - **Scheduler** — [`Scheduler`] toposorts systems by ordering constraints
-//!   and dispatches them with automatic skip propagation via tick-based
-//!   change detection.
-//!
 //! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
 //!   chain. Stages transform data using `Option` and `Result` for flow
-//!   control. [`Pipeline`] implements [`System`] for Scheduler integration.
+//!   control. [`Pipeline`] implements [`System`] for boxed dispatch.
 //!
-//! - **Plugin / App** — [`Plugin`] is a composable unit of registration.
-//!   [`App`] ties [`WorldBuilder`] and [`SchedulerBuilder`] together
-//!   for ergonomic setup.
+//! - **Driver** — [`Driver`] is the install-time trait for event sources.
+//!   `install()` registers resources into [`WorldBuilder`] and returns a
+//!   concrete handle whose `poll()` method drives the event lifecycle.
+//!
+//! - **Plugin** — [`Plugin`] is a composable unit of resource registration.
+//!   [`WorldBuilder::install_plugin`] consumes a plugin to configure state.
 //!
 //! # Quick Start
 //!
@@ -67,26 +66,20 @@
 
 #![warn(missing_docs)]
 
-mod app;
 mod callback;
+mod driver;
 mod event;
 pub mod pipeline;
 mod plugin;
 mod resource;
-mod scheduler;
-pub mod stage_pipeline;
 mod system;
 mod world;
 
-pub use app::App;
 pub use callback::{Callback, IntoCallback};
+pub use driver::Driver;
 pub use event::{EventReader, EventWriter, Events};
-pub use pipeline::{Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
+pub use pipeline::{IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
-pub use scheduler::{Scheduler, SchedulerBuilder, SystemId};
-pub use stage_pipeline::{
-    IntoStage, StagePipeline, StagePipelineBuilder, StagePipelineOutput, StagePipelineStart,
-};
 pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
 pub use world::{Registry, ResourceId, Tick, World, WorldBuilder};

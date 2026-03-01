@@ -1,8 +1,12 @@
-//! Per-event typed pipeline composition.
+//! Pre-resolved pipeline composition using SystemParam stages.
 //!
-//! Pipelines compose stages through closure chains. `pipe()` is the core
-//! transform. When the output is `Option<T>` or `Result<T, E>`, additional
-//! convenience methods (`map`, `filter`, `catch`, etc.) become available.
+//! Pipeline stages are named functions whose SystemParam dependencies are
+//! resolved at build time. Arity-0 stages (no SystemParams) also accept
+//! closures.
+//!
+//! IntoStage-based methods (`.stage()`, `.map()`, `.and_then()`, `.catch()`)
+//! resolve params from the registry. Closure-based methods (`.filter()`,
+//! `.inspect()`, `.on_none()`, etc.) take `&mut World` for cold-path use.
 //!
 //! Two dispatch modes:
 //! - `run()` — direct call, no boxing, works with borrowed inputs
@@ -13,7 +17,7 @@
 //! cargo run -p nexus-rt --example pipeline
 //! ```
 
-use nexus_rt::{Pipeline, PipelineStart, System, WorldBuilder};
+use nexus_rt::{PipelineStart, ResMut, System, WorldBuilder};
 
 struct PriceCache {
     latest: f64,
@@ -26,11 +30,6 @@ impl PriceCache {
             latest: 0.0,
             updates: 0,
         }
-    }
-
-    fn update(&mut self, price: f64) {
-        self.latest = price;
-        self.updates += 1;
     }
 }
 
@@ -45,37 +44,75 @@ enum ProcessError {
     UnknownSymbol,
 }
 
+// --- Stage functions: SystemParams first, stage input last ---
+
+fn validate(tick: MarketTick) -> Result<MarketTick, ProcessError> {
+    if tick.price <= 0.0 {
+        Err(ProcessError::InvalidPrice)
+    } else {
+        Ok(tick)
+    }
+}
+
+fn check_known(tick: MarketTick) -> Result<MarketTick, ProcessError> {
+    if tick.symbol == "BTC" || tick.symbol == "ETH" {
+        Ok(tick)
+    } else {
+        Err(ProcessError::UnknownSymbol)
+    }
+}
+
+fn count_error(mut errors: ResMut<u64>, err: ProcessError) {
+    println!("  [catch] {err:?}");
+    *errors += 1;
+}
+
+fn store_price(mut cache: ResMut<PriceCache>, tick: MarketTick) {
+    println!("  [ok] {} @ {:.2}", tick.symbol, tick.price);
+    cache.latest = tick.price;
+    cache.updates += 1;
+}
+
+fn accumulate(mut total: ResMut<u64>, x: u32) {
+    *total += u64::from(x);
+}
+
 fn main() {
-    // --- Bare value pipeline: pipe transforms freely ---
+    // --- Bare value pipeline: arity-0 closure stages ---
 
     println!("=== Bare Value Pipeline ===\n");
 
     let mut world = WorldBuilder::new().build();
+    let r = world.registry_mut();
 
     let mut bare_pipeline = PipelineStart::<u32>::new()
-        .pipe(|_w, x| x * 2)
-        .pipe(|_w, x| x + 1);
+        .stage(|x: u32| x * 2, r)
+        .stage(|x: u32| x + 1, r);
 
     println!("  5 → {}", bare_pipeline.run(&mut world, 5));
     println!("  10 → {}", bare_pipeline.run(&mut world, 10));
 
-    // --- Option pipeline: filter + inspect ---
+    // --- Option pipeline: filter + inspect (cold path), map (hot path) ---
 
     println!("\n=== Option Pipeline ===\n");
 
     let mut wb = WorldBuilder::new();
     wb.register(PriceCache::new());
     let mut world = wb.build();
+    let r = world.registry_mut();
 
     let mut option_pipeline = PipelineStart::<MarketTick>::new()
-        .pipe(|_w, tick| if tick.price > 0.0 { Some(tick) } else { None })
+        .stage(
+            |tick: MarketTick| -> Option<MarketTick> {
+                if tick.price > 0.0 { Some(tick) } else { None }
+            },
+            r,
+        )
         .filter(|_w, tick| tick.symbol == "BTC")
         .inspect(|_w, tick| {
-            println!("  [inspect] processing {} @ {:.2}", tick.symbol, tick.price);
+            println!("  [inspect] {} @ {:.2}", tick.symbol, tick.price);
         })
-        .map(|w, tick| {
-            w.resource_mut::<PriceCache>().update(tick.price);
-        });
+        .map(store_price, r);
 
     let ticks = [
         MarketTick {
@@ -108,7 +145,7 @@ fn main() {
     assert_eq!(cache.updates, 2);
     assert_eq!(cache.latest, 51_000.0);
 
-    // --- Result pipeline: error handling + catch ---
+    // --- Result pipeline: validate → check → catch → store ---
 
     println!("\n=== Result Pipeline with catch ===\n");
 
@@ -116,30 +153,13 @@ fn main() {
     wb.register(PriceCache::new());
     wb.register::<u64>(0); // error counter
     let mut world = wb.build();
+    let r = world.registry_mut();
 
     let mut result_pipeline = PipelineStart::<MarketTick>::new()
-        .pipe(|_w, tick| -> Result<MarketTick, ProcessError> {
-            if tick.price <= 0.0 {
-                Err(ProcessError::InvalidPrice)
-            } else {
-                Ok(tick)
-            }
-        })
-        .and_then(|_w, tick| -> Result<MarketTick, ProcessError> {
-            if tick.symbol == "BTC" || tick.symbol == "ETH" {
-                Ok(tick)
-            } else {
-                Err(ProcessError::UnknownSymbol)
-            }
-        })
-        .catch(|w, err| {
-            println!("  [catch] {err:?}");
-            *w.resource_mut::<u64>() += 1;
-        })
-        .map(|w, tick| {
-            println!("  [ok] {} @ {:.2}", tick.symbol, tick.price);
-            w.resource_mut::<PriceCache>().update(tick.price);
-        });
+        .stage(validate, r)
+        .and_then(check_known, r)
+        .catch(count_error, r)
+        .map(store_price, r);
 
     let ticks = [
         MarketTick {
@@ -168,27 +188,20 @@ fn main() {
     println!("\n  Errors: {errors}");
     assert_eq!(errors, 2);
 
-    // --- Build into System, store in World ---
+    // --- Build into System ---
 
     println!("\n=== Pipeline as System ===\n");
 
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
-
-    let pipeline = PipelineStart::<u32>::new()
-        .pipe(|w, x| {
-            *w.resource_mut::<u64>() += u64::from(x);
-        })
-        .build();
-
-    wb.register::<Pipeline<u32>>(pipeline);
     let mut world = wb.build();
+    let r = world.registry_mut();
 
-    world.with_mut::<Pipeline<u32>, _>(|pipeline, world| {
-        pipeline.run(world, 10);
-        pipeline.run(world, 20);
-        pipeline.run(world, 30);
-    });
+    let mut pipeline = PipelineStart::<u32>::new().stage(accumulate, r).build();
+
+    pipeline.run(&mut world, 10);
+    pipeline.run(&mut world, 20);
+    pipeline.run(&mut world, 30);
 
     let total = *world.resource::<u64>();
     println!("  Total: {total}");
