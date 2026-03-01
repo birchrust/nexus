@@ -179,7 +179,7 @@ let mut pipeline = PipelineStart::<Order>::new()
     .and_then(enrich, registry)      // Order → Result<Order, Error>
     .catch(log_error, registry)      // Error → () (side effect)
     .map(submit, registry)           // Order → Receipt
-    .build();                        // → Pipeline<Order> (boxed)
+    .build();                        // → Pipeline<Order, _> (concrete)
 
 pipeline.run(&mut world, order);
 ```
@@ -308,10 +308,16 @@ eliminates runtime bookkeeping.
   Option, Result with catch, build into System
 - [`events`](examples/events.rs) — Event buffers: peek with `iter()`,
   consume with `drain()`
+- [`local_state`](examples/local_state.rs) — Per-system state with
+  `Local<T>`, independent across system instances
+- [`optional_resources`](examples/optional_resources.rs) — Optional
+  dependencies with `Option<Res<T>>` / `Option<ResMut<T>>`
 - [`perf_pipeline`](examples/perf_pipeline.rs) — Dispatch latency
   benchmarks with codegen inspection probes
 - [`perf_construction`](examples/perf_construction.rs) — Construction-time
   latency benchmarks at various arities
+- [`perf_fetch`](examples/perf_fetch.rs) — Fetch dispatch strategy
+  benchmarks
 
 ## License
 

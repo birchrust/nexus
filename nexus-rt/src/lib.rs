@@ -23,7 +23,7 @@
 //!
 //! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
 //!   chain. Stages transform data using `Option` and `Result` for flow
-//!   control. [`Pipeline`] implements [`System`] for boxed dispatch.
+//!   control. [`Pipeline`] implements [`System`] for direct or boxed dispatch.
 //!
 //! - **Driver** — [`Driver`] is the install-time trait for event sources.
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
@@ -61,8 +61,7 @@
 //! 2. The type parameter matches the type registered at that ID.
 //! 3. No mutable aliasing — at most one `&mut T` exists per value at any time.
 //!
-//! User-facing APIs (`resource`, `resource_mut`, `with_mut`, `System::run`)
-//! are fully safe.
+//! User-facing APIs (`resource`, `resource_mut`, `System::run`) are fully safe.
 
 #![warn(missing_docs)]
 

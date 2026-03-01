@@ -601,26 +601,4 @@ mod tests {
         // 0 + 5 = 5, then 5 * 3 = 15
         assert_eq!(*world.resource::<u64>(), 15);
     }
-
-    #[test]
-    fn callback_with_world_with_mut() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        builder.register::<Vec<u64>>(vec![]);
-        let mut world = builder.build();
-
-        fn on_event(ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
-            *val += *ctx;
-        }
-
-        let mut cb = on_event.into_callback(10u64, world.registry_mut());
-
-        world.with_mut::<Vec<u64>, _>(|log, world| {
-            cb.run(world, ());
-            log.push(*world.resource::<u64>());
-        });
-
-        assert_eq!(*world.resource::<u64>(), 10);
-        assert_eq!(*world.resource::<Vec<u64>>(), vec![10]);
-    }
 }

@@ -7,7 +7,7 @@
 //! [`PipelineStart`] begins a typed composition chain where each stage
 //! is a named function with [`SystemParam`] dependencies resolved at build
 //! time. The result is a monomorphized closure chain where dispatch-time
-//! resource access is ~3 cycles per fetch (pre-resolved [`ResourceId`]),
+//! resource access is ~3 cycles per fetch (pre-resolved [`ResourceId`](crate::ResourceId)),
 //! not a HashMap lookup.
 //!
 //! Two dispatch tiers in nexus-rt:
@@ -667,38 +667,38 @@ impl<In: 'static, Out: PipelineOutput, Chain> PipelineBuilder<In, Out, Chain>
 where
     Chain: FnMut(&mut World, In) -> Out + 'static,
 {
-    /// Box the composed closure and produce a [`Pipeline<In>`].
+    /// Finalize the pipeline into a [`Pipeline`].
+    ///
+    /// The returned pipeline is a concrete, monomorphized type — no boxing,
+    /// no virtual dispatch. Call `.run()` directly for zero-cost execution,
+    /// or wrap in `Box<dyn System<In>>` when type erasure is needed.
     ///
     /// Only available when the pipeline ends with `()`. If your chain
-    /// produces a value, add a final `.stage()` that writes it to World.
-    pub fn build(self) -> Pipeline<In> {
-        let mut chain = self.chain;
+    /// produces a value, add a final `.stage()` that consumes the output.
+    pub fn build(self) -> Pipeline<In, Chain> {
         Pipeline {
-            chain: Box::new(move |world, input| {
-                chain(world, input);
-            }),
+            chain: self.chain,
+            _marker: PhantomData,
         }
     }
 }
 
 // =============================================================================
-// Pipeline<In> — built pipeline
+// Pipeline<In, F> — built pipeline
 // =============================================================================
 
 /// Built stage pipeline implementing [`System<In>`](crate::System).
 ///
 /// Created by [`PipelineBuilder::build`]. The entire pipeline chain is
-/// monomorphized at compile time. `build()` erases the closure type via
-/// `Box<dyn FnMut>` for the `dyn System<In>` boundary.
-///
-/// One virtual dispatch per `run()` call; the pipeline body executes
-/// with zero further indirection — each stage does `get_unchecked` per
-/// pre-resolved resource.
-pub struct Pipeline<In> {
-    chain: Box<dyn FnMut(&mut World, In)>,
+/// monomorphized at compile time — no boxing, no virtual dispatch.
+/// Call `.run()` directly for zero-cost execution, or wrap in
+/// `Box<dyn System<In>>` when you need type erasure (single box).
+pub struct Pipeline<In, F> {
+    chain: F,
+    _marker: PhantomData<fn(In)>,
 }
 
-impl<In: 'static> crate::System<In> for Pipeline<In> {
+impl<In: 'static, F: FnMut(&mut World, In) + 'static> crate::System<In> for Pipeline<In, F> {
     fn run(&mut self, world: &mut World, event: In) {
         (self.chain)(world, event);
     }

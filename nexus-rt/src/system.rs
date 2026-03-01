@@ -42,7 +42,7 @@ pub trait SystemParam {
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Self::State) -> Self::Item<'w>;
 
     /// Returns `true` if any resource this param depends on was modified
-    /// during the current tick.
+    /// during the current sequence.
     ///
     /// Used by drivers to skip systems whose inputs haven't changed.
     fn any_changed(state: &Self::State, world: &World) -> bool;
@@ -50,7 +50,7 @@ pub trait SystemParam {
     /// The ResourceId this param accesses, if any.
     ///
     /// Returns `None` for params that don't access World resources
-    /// (e.g. Local<T>). Used by Registry::check_access to enforce
+    /// (e.g. `Local<T>`). Used by [`Registry::check_access`] to enforce
     /// one borrow per resource per system.
     fn resource_id(state: &Self::State) -> Option<ResourceId> {
         let _ = state;
@@ -335,14 +335,12 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
 /// Storage and scheduling are the driver's responsibility — this trait
 /// only defines the dispatch interface.
 ///
-/// Takes `&mut World` — callers use [`World::with_mut`] to split the
-/// driver out of World before dispatching, which provides `&mut World`
-/// without aliasing.
+/// Takes `&mut World` — drivers call this directly in their poll loop.
 pub trait System<E> {
     /// Run this system with the given event.
     fn run(&mut self, world: &mut World, event: E);
 
-    /// Returns `true` if any input resource was modified this tick.
+    /// Returns `true` if any input resource was modified this sequence.
     ///
     /// Default returns `true` (always run). [`FunctionSystem`] overrides
     /// by checking its state via [`SystemParam::any_changed`].

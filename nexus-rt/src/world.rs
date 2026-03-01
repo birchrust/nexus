@@ -192,7 +192,7 @@ impl Registry {
 // Storage — shared backing between builder and frozen container
 // =============================================================================
 
-/// Interleaved pointer + change tick for a single resource.
+/// Interleaved pointer + change sequence for a single resource.
 /// 16 bytes — 4 slots per cache line.
 #[repr(C)]
 pub(crate) struct ResourceSlot {
@@ -205,7 +205,7 @@ pub(crate) struct ResourceSlot {
 /// Owns the heap allocations and is responsible for cleanup. Shared between
 /// [`WorldBuilder`] and [`World`] via move — avoids duplicating Drop logic.
 pub(crate) struct Storage {
-    /// Dense array of interleaved pointer + change tick pairs.
+    /// Dense array of interleaved pointer + change sequence pairs.
     /// Each pointer was produced by `Box::into_raw`.
     pub(crate) slots: Vec<ResourceSlot>,
     /// Parallel array of drop functions. `drop_fns[i]` is the monomorphized
@@ -241,12 +241,6 @@ unsafe impl Send for Storage {}
 impl Drop for Storage {
     fn drop(&mut self) {
         for (slot, drop_fn) in self.slots.iter().zip(&self.drop_fns) {
-            // Skip null pointers — defensive only. with_mut uses an RAII
-            // guard to restore pointers on unwind, so null slots should
-            // not occur in practice.
-            if slot.ptr.is_null() {
-                continue;
-            }
             // SAFETY: each (slot.ptr, drop_fn) pair was created together in
             // WorldBuilder::register(). drop_fn is the monomorphized
             // destructor for the concrete type behind ptr. Called exactly
@@ -347,8 +341,10 @@ impl WorldBuilder {
 
     /// Returns a mutable reference to the type registry.
     ///
-    /// Needed at construction time for [`IntoSystem::into_system`],
-    /// [`IntoCallback::into_callback`], and [`IntoStage::into_stage`]
+    /// Needed at construction time for
+    /// [`into_system`](crate::IntoSystem::into_system),
+    /// [`into_callback`](crate::IntoCallback::into_callback), and
+    /// [`into_stage`](crate::IntoStage::into_stage)
     /// which call [`Registry::check_access`].
     pub fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
@@ -417,9 +413,6 @@ impl Default for WorldBuilder {
 ///
 /// - [`resource`](Self::resource) / [`resource_mut`](Self::resource_mut) —
 ///   cold-path access via HashMap lookup.
-/// - [`with_mut`](Self::with_mut) — yanks one resource out of storage,
-///   passes `(&mut T, &mut World)` to a closure. Systems dispatch
-///   through `&mut World` safely.
 ///
 /// # Unsafe API (framework internals)
 ///
@@ -431,8 +424,8 @@ pub struct World {
     registry: Registry,
     /// Type-erased pointer storage. Drop handled by `Storage`.
     storage: Storage,
-    /// Current epoch tick. Advanced by the driver at the
-    /// end of each dispatch pass.
+    /// Current sequence number. Advanced by the driver before
+    /// each event dispatch.
     current_sequence: Sequence,
     /// World must not be shared across threads — it holds interior-mutable
     /// `Cell<Sequence>` values accessed through `&self`. `!Sync` enforced by
@@ -458,8 +451,10 @@ impl World {
 
     /// Returns a mutable reference to the type registry.
     ///
-    /// Needed at construction time for [`IntoSystem::into_system`],
-    /// [`IntoCallback::into_callback`], and [`IntoStage::into_stage`]
+    /// Needed at construction time for
+    /// [`into_system`](crate::IntoSystem::into_system),
+    /// [`into_callback`](crate::IntoCallback::into_callback), and
+    /// [`into_stage`](crate::IntoStage::into_stage)
     /// which call [`Registry::check_access`].
     pub fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
@@ -503,21 +498,15 @@ impl World {
     ///
     /// Takes `&self` — multiple shared references can coexist. The borrow
     /// checker prevents mixing with [`resource_mut`](Self::resource_mut)
-    /// or [`with_mut`](Self::with_mut) (both take `&mut self`).
+    /// (which takes `&mut self`).
     ///
     /// # Panics
     ///
-    /// Panics if the resource type was not registered, or if the resource
-    /// is currently borrowed by [`with_mut`](Self::with_mut).
+    /// Panics if the resource type was not registered.
     pub fn resource<T: 'static>(&self) -> &T {
         let id = self.registry.id::<T>();
-        assert!(
-            !self.storage.slots[id.0].ptr.is_null(),
-            "resource `{}` is currently borrowed by with_mut",
-            type_name::<T>(),
-        );
         // SAFETY: id resolved from our own registry. &self prevents mutable
-        // aliases — resource_mut/with_mut take &mut self. Null check above.
+        // aliases — resource_mut takes &mut self.
         unsafe { self.get(id) }
     }
 
@@ -525,77 +514,16 @@ impl World {
     ///
     /// # Panics
     ///
-    /// Panics if the resource type was not registered, or if the resource
-    /// is currently borrowed by [`with_mut`](Self::with_mut).
+    /// Panics if the resource type was not registered.
     pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
         let id = self.registry.id::<T>();
-        assert!(
-            !self.storage.slots[id.0].ptr.is_null(),
-            "resource `{}` is currently borrowed by with_mut",
-            type_name::<T>(),
-        );
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
         self.storage.slots[id.0]
             .changed_at
             .set(self.current_sequence);
         // SAFETY: id resolved from our own registry. &mut self ensures
-        // exclusive access — no other references can exist. Null check above.
+        // exclusive access — no other references can exist.
         unsafe { self.get_mut(id) }
-    }
-
-    /// Borrow one resource mutably while passing `&mut World` for dispatch.
-    ///
-    /// The resource is temporarily removed from storage (pointer nulled)
-    /// so that the closure receives `(&mut T, &mut World)` without aliasing.
-    /// Safe resource accessors on `&mut World` will panic if called on the
-    /// borrowed type — all other resources are accessible normally.
-    ///
-    /// The pointer is restored after the closure returns. If the closure
-    /// panics, the pointer is restored via an RAII guard before unwinding
-    /// continues — the resource remains accessible after `catch_unwind`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the resource type was not registered.
-    pub fn with_mut<T: 'static, R>(&mut self, f: impl FnOnce(&mut T, &mut Self) -> R) -> R {
-        let id = self.registry.id::<T>();
-        assert!(
-            !self.storage.slots[id.0].ptr.is_null(),
-            "resource `{}` is currently borrowed by with_mut",
-            type_name::<T>(),
-        );
-        // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.slots[id.0]
-            .changed_at
-            .set(self.current_sequence);
-
-        // Yank the pointer out — the closure cannot reach T through &mut World.
-        let slot_ptr: *mut *mut u8 = &mut self.storage.slots[id.0].ptr;
-        // SAFETY: slot_ptr is valid — derived from a bounds-checked index above.
-        let ptr = std::mem::replace(unsafe { &mut *slot_ptr }, std::ptr::null_mut());
-
-        // RAII guard restores the pointer on both normal return and panic unwind.
-        struct RestoreGuard {
-            slot_ptr: *mut *mut u8,
-            original: *mut u8,
-        }
-        impl Drop for RestoreGuard {
-            fn drop(&mut self) {
-                // SAFETY: slot_ptr points into Storage::slots which outlives
-                // this guard. original is the pointer yanked in with_mut.
-                unsafe { *self.slot_ptr = self.original; }
-            }
-        }
-        let _guard = RestoreGuard {
-            slot_ptr,
-            original: ptr,
-        };
-
-        // SAFETY: ptr was produced by Box::into_raw in register(), type T
-        // matches. Removed from storage so no aliasing through &mut Self.
-        // Null case excluded by assert above.
-        let resource = unsafe { &mut *(ptr as *mut T) };
-        f(resource, self)
     }
 
     // =========================================================================
@@ -678,20 +606,14 @@ impl World {
         );
         // SAFETY: caller guarantees id was returned by register() on the
         // builder that produced this container, so id.0 < self.storage.slots.len().
-        let ptr = unsafe { self.storage.slots.get_unchecked(id.0).ptr };
-        debug_assert!(
-            !ptr.is_null(),
-            "ResourceId({}) is null — resource is currently borrowed by with_mut",
-            id.0,
-        );
-        ptr
+        unsafe { self.storage.slots.get_unchecked(id.0).ptr }
     }
 
     // =========================================================================
     // Change-detection internals (framework use only)
     // =========================================================================
 
-    /// Read the tick at which a resource was last changed.
+    /// Read the sequence at which a resource was last changed.
     ///
     /// # Safety
     ///
@@ -702,7 +624,7 @@ impl World {
         unsafe { self.storage.slots.get_unchecked(id.0).changed_at.get() }
     }
 
-    /// Get a reference to the `Cell` tracking a resource's change tick.
+    /// Get a reference to the `Cell` tracking a resource's change sequence.
     ///
     /// # Safety
     ///
@@ -713,7 +635,7 @@ impl World {
         unsafe { &self.storage.slots.get_unchecked(id.0).changed_at }
     }
 
-    /// Stamp a resource as changed at the current tick.
+    /// Stamp a resource as changed at the current sequence.
     ///
     /// # Safety
     ///
@@ -983,78 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn with_mut_provides_mutable_access_and_world() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(10).register::<bool>(false);
-        let mut world = builder.build();
-
-        world.with_mut::<u64, _>(|counter, world| {
-            // Safe access to other resources through &mut World.
-            let flag = world.resource::<bool>();
-            if !flag {
-                *counter += 5;
-            }
-        });
-
-        assert_eq!(*world.resource::<u64>(), 15);
-    }
-
-    #[test]
-    fn with_mut_returns_value() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(42);
-        let mut world = builder.build();
-
-        let val = world.with_mut::<u64, _>(|counter, _world| *counter);
-        assert_eq!(val, 42);
-    }
-
-    #[test]
-    #[should_panic(expected = "currently borrowed by with_mut")]
-    fn with_mut_panics_on_aliased_access() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(42);
-        let mut world = builder.build();
-
-        world.with_mut::<u64, _>(|_counter, world| {
-            // Attempting to access the yanked resource through World panics.
-            let _ = world.resource::<u64>();
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "currently borrowed by with_mut")]
-    fn with_mut_panics_on_reentrant_borrow() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(42);
-        let mut world = builder.build();
-
-        world.with_mut::<u64, _>(|_counter, world| {
-            // Nested with_mut on the same type must panic, not UB.
-            world.with_mut::<u64, _>(|_inner, _| {});
-        });
-    }
-
-    #[test]
-    fn with_mut_restores_pointer_after_panic() {
-        use std::panic;
-
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(42);
-        let mut world = builder.build();
-
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            world.with_mut::<u64, _>(|_counter, _world| {
-                panic!("intentional");
-            });
-        }));
-        assert!(result.is_err());
-
-        // Resource must still be accessible — guard restored the pointer.
-        assert_eq!(*world.resource::<u64>(), 42);
-    }
-
-    #[test]
     fn register_default_works() {
         use crate::event::Events;
 
@@ -1069,7 +919,7 @@ mod tests {
     // -- Sequence / change detection tests ----------------------------------------
 
     #[test]
-    fn tick_default_is_zero() {
+    fn sequence_default_is_zero() {
         assert_eq!(Sequence::default(), Sequence(0));
     }
 
@@ -1121,25 +971,136 @@ mod tests {
         }
     }
 
+    // -- Plugin / Driver tests ------------------------------------------------
+
     #[test]
-    fn with_mut_stamps_changed_at() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0).register::<bool>(false);
-        let mut world = builder.build();
+    fn plugin_registers_resources() {
+        struct TestPlugin;
 
-        world.next_sequence(); // tick=1
-        let id = world.id::<u64>();
-
-        unsafe {
-            assert_eq!(world.changed_at(id), Sequence(0));
+        impl crate::plugin::Plugin for TestPlugin {
+            fn build(self, world: &mut WorldBuilder) {
+                world.register::<u64>(42);
+                world.register::<bool>(true);
+            }
         }
 
-        world.with_mut::<u64, _>(|val, _world| {
-            *val = 42;
-        });
+        let mut builder = WorldBuilder::new();
+        builder.install_plugin(TestPlugin);
+        let world = builder.build();
 
+        assert_eq!(*world.resource::<u64>(), 42);
+        assert_eq!(*world.resource::<bool>(), true);
+    }
+
+    #[test]
+    fn driver_installs_and_returns_handle() {
+        struct TestInstaller;
+        struct TestHandle {
+            counter_id: ResourceId,
+        }
+
+        impl crate::driver::Driver for TestInstaller {
+            type Handle = TestHandle;
+
+            fn install(self, world: &mut WorldBuilder) -> TestHandle {
+                world.register::<u64>(0);
+                let counter_id = world.registry().id::<u64>();
+                TestHandle { counter_id }
+            }
+        }
+
+        let mut builder = WorldBuilder::new();
+        let handle = builder.install_driver(TestInstaller);
+        let world = builder.build();
+
+        // Handle's pre-resolved ID can access the resource.
         unsafe {
-            assert_eq!(world.changed_at(id), Sequence(1));
+            assert_eq!(*world.get::<u64>(handle.counter_id), 0);
+        }
+    }
+
+    // -- check_access slow path (>128 resources) ------------------------------
+
+    #[test]
+    fn check_access_slow_path_no_conflict() {
+        // Register 130 distinct types to force the slow path (>128).
+        macro_rules! register_many {
+            ($builder:expr, $($i:literal),* $(,)?) => {
+                $(
+                    $builder.register::<[u8; $i]>([0u8; $i]);
+                )*
+            };
+        }
+
+        let mut builder = WorldBuilder::new();
+        register_many!(
+            builder, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66,
+            67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
+            89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
+            125, 126, 127, 128, 129, 130
+        );
+        assert!(builder.len() > 128);
+
+        // Non-conflicting accesses at high indices — exercises slow path.
+        let accesses = [(Some(ResourceId(0)), "a"), (Some(ResourceId(129)), "b")];
+        builder.registry_mut().check_access(&accesses);
+    }
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn check_access_slow_path_detects_conflict() {
+        macro_rules! register_many {
+            ($builder:expr, $($i:literal),* $(,)?) => {
+                $(
+                    $builder.register::<[u8; $i]>([0u8; $i]);
+                )*
+            };
+        }
+
+        let mut builder = WorldBuilder::new();
+        register_many!(
+            builder, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66,
+            67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
+            89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
+            125, 126, 127, 128, 129, 130
+        );
+
+        // Duplicate access at index 129 — must panic.
+        let accesses = [(Some(ResourceId(129)), "a"), (Some(ResourceId(129)), "b")];
+        builder.registry_mut().check_access(&accesses);
+    }
+
+    #[test]
+    fn sequence_wrapping() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        // Advance to MAX.
+        world.current_sequence = Sequence(u64::MAX);
+        assert_eq!(world.current_sequence(), Sequence(u64::MAX));
+
+        // Stamp resource at MAX.
+        *world.resource_mut::<u64>() = 99;
+        let id = world.id::<u64>();
+        unsafe {
+            assert_eq!(world.changed_at(id), Sequence(u64::MAX));
+        }
+
+        // Wrap to 0.
+        let seq = world.next_sequence();
+        assert_eq!(seq, Sequence(0));
+        assert_eq!(world.current_sequence(), Sequence(0));
+
+        // Resource changed at MAX, current is 0 → not changed.
+        unsafe {
+            assert_ne!(world.changed_at(id), world.current_sequence());
         }
     }
 }

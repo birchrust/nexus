@@ -126,10 +126,10 @@ pub fn world_access_run(
     p.run(world, input)
 }
 
-/// Built Pipeline<u64> through dyn dispatch.
+/// Built Pipeline through dyn dispatch.
 #[inline(never)]
 pub fn boxed_pipeline_run(
-    p: &mut nexus_rt::Pipeline<u64>,
+    p: &mut dyn nexus_rt::System<u64>,
     world: &mut nexus_rt::World,
     input: u64,
 ) {
