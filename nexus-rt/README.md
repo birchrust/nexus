@@ -118,8 +118,9 @@ impl Driver for TimerInstaller {
     type Handle = TimerHandle;
 
     fn install(self, world: &mut WorldBuilder) -> TimerHandle {
-        let timers_id = world.register(Vec::<u64>::new());
+        world.register(Vec::<u64>::new());
         // ... register other resources ...
+        let timers_id = world.registry().id::<Vec<u64>>();
         TimerHandle { timers_id }
     }
 }

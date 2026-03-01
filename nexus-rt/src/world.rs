@@ -230,18 +230,20 @@ impl Storage {
     }
 }
 
-// SAFETY: Storage exclusively owns the heap allocations behind its raw pointers.
-// They are not aliased or shared. Transferring ownership to another thread is safe.
-// Cell<Sequence> is !Sync but we're transferring ownership, not sharing.
+// SAFETY: All values stored in Storage were registered via `register<T: Send + 'static>`,
+// so every concrete type behind the raw pointers is Send. Storage exclusively owns
+// these heap allocations — they are not aliased or shared. Transferring ownership
+// to another thread is safe. Cell<Sequence> is !Sync but we're transferring
+// ownership, not sharing.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for Storage {}
 
 impl Drop for Storage {
     fn drop(&mut self) {
         for (slot, drop_fn) in self.slots.iter().zip(&self.drop_fns) {
-            // Skip null pointers — a slot may be null if a with_mut closure
-            // panicked before the pointer was restored. The resource is
-            // leaked, but the process is crashing anyway.
+            // Skip null pointers — defensive only. with_mut uses an RAII
+            // guard to restore pointers on unwind, so null slots should
+            // not occur in practice.
             if slot.ptr.is_null() {
                 continue;
             }
@@ -307,7 +309,7 @@ impl WorldBuilder {
     ///
     /// Panics if a resource of the same type is already registered.
     #[cold]
-    pub fn register<T: 'static>(&mut self, value: T) -> &mut Self {
+    pub fn register<T: Send + 'static>(&mut self, value: T) -> &mut Self {
         let type_id = TypeId::of::<T>();
         assert!(
             !self.registry.indices.contains_key(&type_id),
@@ -330,7 +332,7 @@ impl WorldBuilder {
     ///
     /// Equivalent to `self.register::<T>(T::default())`.
     #[cold]
-    pub fn register_default<T: Default + 'static>(&mut self) -> &mut Self {
+    pub fn register_default<T: Default + Send + 'static>(&mut self) -> &mut Self {
         self.register(T::default())
     }
 
@@ -549,27 +551,51 @@ impl World {
     /// borrowed type — all other resources are accessible normally.
     ///
     /// The pointer is restored after the closure returns. If the closure
-    /// panics, the pointer is **not** restored (the resource leaks), but
-    /// [`Storage::drop`] handles null slots safely.
+    /// panics, the pointer is restored via an RAII guard before unwinding
+    /// continues — the resource remains accessible after `catch_unwind`.
     ///
     /// # Panics
     ///
     /// Panics if the resource type was not registered.
     pub fn with_mut<T: 'static, R>(&mut self, f: impl FnOnce(&mut T, &mut Self) -> R) -> R {
         let id = self.registry.id::<T>();
+        assert!(
+            !self.storage.slots[id.0].ptr.is_null(),
+            "resource `{}` is currently borrowed by with_mut",
+            type_name::<T>(),
+        );
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
         self.storage.slots[id.0]
             .changed_at
             .set(self.current_sequence);
+
         // Yank the pointer out — the closure cannot reach T through &mut World.
-        let ptr = std::mem::replace(&mut self.storage.slots[id.0].ptr, std::ptr::null_mut());
+        let slot_ptr: *mut *mut u8 = &mut self.storage.slots[id.0].ptr;
+        // SAFETY: slot_ptr is valid — derived from a bounds-checked index above.
+        let ptr = std::mem::replace(unsafe { &mut *slot_ptr }, std::ptr::null_mut());
+
+        // RAII guard restores the pointer on both normal return and panic unwind.
+        struct RestoreGuard {
+            slot_ptr: *mut *mut u8,
+            original: *mut u8,
+        }
+        impl Drop for RestoreGuard {
+            fn drop(&mut self) {
+                // SAFETY: slot_ptr points into Storage::slots which outlives
+                // this guard. original is the pointer yanked in with_mut.
+                unsafe { *self.slot_ptr = self.original; }
+            }
+        }
+        let _guard = RestoreGuard {
+            slot_ptr,
+            original: ptr,
+        };
+
         // SAFETY: ptr was produced by Box::into_raw in register(), type T
         // matches. Removed from storage so no aliasing through &mut Self.
+        // Null case excluded by assert above.
         let resource = unsafe { &mut *(ptr as *mut T) };
-        let result = f(resource, self);
-        // Restore the pointer.
-        self.storage.slots[id.0].ptr = ptr;
-        result
+        f(resource, self)
     }
 
     // =========================================================================
@@ -706,10 +732,10 @@ impl World {
     }
 }
 
-// SAFETY: World owns all heap-allocated data exclusively. The raw pointers
-// in Storage are not shared — they were produced by Box::into_raw and are only
-// accessed through &self methods. Transferring ownership to another thread is safe;
-// the new thread becomes the sole accessor.
+// SAFETY: All resources are `T: Send` (enforced by `register`). World owns all
+// heap-allocated data exclusively — the raw pointers are not aliased or shared.
+// Transferring ownership to another thread is safe; the new thread becomes the
+// sole accessor.
 unsafe impl Send for World {}
 
 // =============================================================================
@@ -994,6 +1020,38 @@ mod tests {
             // Attempting to access the yanked resource through World panics.
             let _ = world.resource::<u64>();
         });
+    }
+
+    #[test]
+    #[should_panic(expected = "currently borrowed by with_mut")]
+    fn with_mut_panics_on_reentrant_borrow() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let mut world = builder.build();
+
+        world.with_mut::<u64, _>(|_counter, world| {
+            // Nested with_mut on the same type must panic, not UB.
+            world.with_mut::<u64, _>(|_inner, _| {});
+        });
+    }
+
+    #[test]
+    fn with_mut_restores_pointer_after_panic() {
+        use std::panic;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        let mut world = builder.build();
+
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            world.with_mut::<u64, _>(|_counter, _world| {
+                panic!("intentional");
+            });
+        }));
+        assert!(result.is_err());
+
+        // Resource must still be accessible — guard restored the pointer.
+        assert_eq!(*world.resource::<u64>(), 42);
     }
 
     #[test]
