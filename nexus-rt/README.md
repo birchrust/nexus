@@ -188,6 +188,28 @@ Option and Result combinators (`.map()`, `.and_then()`, `.catch()`,
 `.filter()`, `.unwrap_or()`, etc.) enable typed flow control without
 runtime overhead.
 
+### Batch pipeline — per-item processing over a buffer
+
+`build_batch(capacity)` produces a `BatchPipeline` that owns a
+pre-allocated input buffer. Each item flows through the same chain
+independently — errors are handled per-item, not per-batch.
+
+```rust
+let mut batch = PipelineStart::<Order>::new()
+    .stage(validate, registry)       // Order → Result<Order, Error>
+    .catch(log_error, registry)      // handle error, continue batch
+    .map(enrich, registry)           // runs for valid items only
+    .stage(submit, registry)
+    .build_batch(1024);
+
+// Driver fills input buffer
+batch.input_mut().extend_from_slice(&orders);
+batch.run(&mut world);  // drains buffer, no allocation
+```
+
+No intermediate buffers between stages. The compiler monomorphizes
+the per-item chain identically to the single-event pipeline.
+
 ### Change detection
 
 Each resource tracks a `changed_at` sequence number. `Res::is_changed()`
@@ -241,6 +263,20 @@ boost disabled.
 
 Pipeline dispatch matches hand-written code — zero-cost abstraction
 confirmed.
+
+### Batch throughput
+
+Total cycles for 100 items through the same pipeline chain.
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| Batch bare (100 items) | 130 | 264 | 534 |
+| Linear bare (100 calls) | 196 | 512 | 528 |
+| Batch Res\<T\> (100 items) | 390 | 466 | 612 |
+| Linear Res\<T\> (100 calls) | 406 | 550 | 720 |
+
+Batch dispatch amortizes to ~1.3 cycles/item for compute-heavy chains
+(~1.5x faster than individual calls).
 
 ### Construction (cold path)
 
