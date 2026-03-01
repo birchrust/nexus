@@ -274,6 +274,38 @@ fn main() {
         .stage(|_x: u64| {}, r)
         .build();
 
+    // --- Batch pipelines (same chains as their linear counterparts) ---
+
+    fn sink(mut acc: ResMut<u64>, x: u64) {
+        *acc = acc.wrapping_add(x);
+    }
+
+    // Bare: 3 compute stages + sink (same chain for both batch and linear)
+    let mut batch_bare = PipelineStart::<u64>::new()
+        .stage(|x: u64| x.wrapping_mul(3), r)
+        .stage(|x: u64| x.wrapping_add(7), r)
+        .stage(sink, r)
+        .build_batch(1024);
+
+    let mut linear_bare = PipelineStart::<u64>::new()
+        .stage(|x: u64| x.wrapping_mul(3), r)
+        .stage(|x: u64| x.wrapping_add(7), r)
+        .stage(sink, r);
+
+    // Res<T>: 3 world-access stages + sink (same chain for both)
+    let mut batch_res = PipelineStart::<u64>::new()
+        .stage(add_resource, r)
+        .stage(mul_resource, r)
+        .stage(sub_resource, r)
+        .stage(sink, r)
+        .build_batch(1024);
+
+    let mut linear_res = PipelineStart::<u64>::new()
+        .stage(add_resource, r)
+        .stage(mul_resource, r)
+        .stage(sub_resource, r)
+        .stage(sink, r);
+
     // --- Result→catch→map→unwrap_or ---
 
     let mut catch_pipeline = PipelineStart::<u64>::new()
@@ -372,6 +404,113 @@ fn main() {
         input = input.wrapping_add(1);
         stage_3.run(&mut world, black_box(input))
     });
+
+    // --- Batch vs Linear throughput (total cycles for 100 items) ---
+
+    println!();
+    print_header("Batch vs Linear Throughput (total cycles, 100 items)");
+
+    let items_100: Vec<u64> = (0..100).collect();
+
+    // Batch bare: fill + run
+    {
+        for _ in 0..WARMUP {
+            batch_bare.input_mut().extend_from_slice(&items_100);
+            batch_bare.run(&mut world);
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            batch_bare.input_mut().extend_from_slice(&items_100);
+            let start = rdtsc_start();
+            batch_bare.run(&mut world);
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        samples.sort_unstable();
+        println!(
+            "{:<44} {:>8} {:>8} {:>8}",
+            "batch bare (100 items)",
+            percentile(&samples, 50.0),
+            percentile(&samples, 99.0),
+            percentile(&samples, 99.9),
+        );
+    }
+
+    // Linear bare: 100 individual calls (same chain)
+    {
+        for _ in 0..WARMUP {
+            for i in 0..100u64 {
+                linear_bare.run(&mut world, black_box(i));
+            }
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let start = rdtsc_start();
+            for i in 0..100u64 {
+                linear_bare.run(&mut world, black_box(i));
+            }
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        samples.sort_unstable();
+        println!(
+            "{:<44} {:>8} {:>8} {:>8}",
+            "linear bare (100 calls)",
+            percentile(&samples, 50.0),
+            percentile(&samples, 99.0),
+            percentile(&samples, 99.9),
+        );
+    }
+
+    // Batch Res<T>: fill + run
+    {
+        for _ in 0..WARMUP {
+            batch_res.input_mut().extend_from_slice(&items_100);
+            batch_res.run(&mut world);
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            batch_res.input_mut().extend_from_slice(&items_100);
+            let start = rdtsc_start();
+            batch_res.run(&mut world);
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        samples.sort_unstable();
+        println!(
+            "{:<44} {:>8} {:>8} {:>8}",
+            "batch Res<T> (100 items)",
+            percentile(&samples, 50.0),
+            percentile(&samples, 99.0),
+            percentile(&samples, 99.9),
+        );
+    }
+
+    // Linear Res<T>: 100 individual calls (same chain)
+    {
+        for _ in 0..WARMUP {
+            for i in 0..100u64 {
+                linear_res.run(&mut world, black_box(i));
+            }
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let start = rdtsc_start();
+            for i in 0..100u64 {
+                linear_res.run(&mut world, black_box(i));
+            }
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        samples.sort_unstable();
+        println!(
+            "{:<44} {:>8} {:>8} {:>8}",
+            "linear Res<T> (100 calls)",
+            percentile(&samples, 50.0),
+            percentile(&samples, 99.0),
+            percentile(&samples, 99.9),
+        );
+    }
 
     // --- inputs_changed cost ---
 

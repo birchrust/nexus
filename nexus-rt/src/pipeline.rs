@@ -658,6 +658,7 @@ where
 )]
 pub trait PipelineOutput {}
 impl PipelineOutput for () {}
+impl PipelineOutput for Option<()> {}
 
 // =============================================================================
 // build — when Out: PipelineOutput (i.e., Out = ())
@@ -681,6 +682,22 @@ where
             _marker: PhantomData,
         }
     }
+
+    /// Finalize into a [`BatchPipeline`] with a pre-allocated input buffer.
+    ///
+    /// Same pipeline chain as [`build`](Self::build), but the pipeline owns
+    /// an input buffer that drivers fill between dispatch cycles. Each call
+    /// to [`BatchPipeline::run`] drains the buffer, running every item
+    /// through the chain independently.
+    ///
+    /// `capacity` is the initial allocation — the buffer can grow if needed,
+    /// but sizing it for the expected batch size avoids reallocation.
+    pub fn build_batch(self, capacity: usize) -> BatchPipeline<In, Chain> {
+        BatchPipeline {
+            input: Vec::with_capacity(capacity),
+            chain: self.chain,
+        }
+    }
 }
 
 // =============================================================================
@@ -701,6 +718,71 @@ pub struct Pipeline<In, F> {
 impl<In: 'static, F: FnMut(&mut World, In) + 'static> crate::System<In> for Pipeline<In, F> {
     fn run(&mut self, world: &mut World, event: In) {
         (self.chain)(world, event);
+    }
+}
+
+// =============================================================================
+// BatchPipeline<In, F> — pipeline with owned input buffer
+// =============================================================================
+
+/// Batch pipeline that owns a pre-allocated input buffer.
+///
+/// Created by [`PipelineBuilder::build_batch`]. Each item flows through
+/// the full pipeline chain independently — the same per-item `Option`
+/// and `Result` flow control as [`Pipeline`]. Errors are handled inline
+/// (via `.catch()`, `.unwrap_or()`, etc.) and the batch continues to
+/// the next item. No intermediate buffers between stages.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart};
+///
+/// let mut wb = WorldBuilder::new();
+/// wb.register::<u64>(0);
+/// let mut world = wb.build();
+///
+/// fn accumulate(mut sum: ResMut<u64>, x: u32) {
+///     *sum += x as u64;
+/// }
+///
+/// let r = world.registry_mut();
+/// let mut batch = PipelineStart::<u32>::new()
+///     .stage(accumulate, r)
+///     .build_batch(64);
+///
+/// batch.input_mut().extend_from_slice(&[1, 2, 3, 4, 5]);
+/// batch.run(&mut world);
+///
+/// assert_eq!(*world.resource::<u64>(), 15);
+/// assert!(batch.input().is_empty());
+/// ```
+pub struct BatchPipeline<In, F> {
+    input: Vec<In>,
+    chain: F,
+}
+
+impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In, F> {
+    /// Mutable access to the input buffer. Drivers fill this between
+    /// dispatch cycles.
+    pub fn input_mut(&mut self) -> &mut Vec<In> {
+        &mut self.input
+    }
+
+    /// Read-only access to the input buffer.
+    pub fn input(&self) -> &[In] {
+        &self.input
+    }
+
+    /// Drain the input buffer, running each item through the pipeline.
+    ///
+    /// Each item gets independent `Option`/`Result` flow control — an
+    /// error on one item does not affect subsequent items. After `run()`,
+    /// the input buffer is empty but retains its allocation.
+    pub fn run(&mut self, world: &mut World) {
+        for item in self.input.drain(..) {
+            let _ = (self.chain)(world, item);
+        }
     }
 }
 
@@ -1247,5 +1329,170 @@ mod tests {
             .stage(|_x: u32| -> Result<u32, i32> { Err(-5) }, r)
             .unwrap_or_else(|_w, e| e.unsigned_abs());
         assert_eq!(p.run(&mut world, 0), 5);
+    }
+
+    // =========================================================================
+    // Batch pipeline
+    // =========================================================================
+
+    #[test]
+    fn batch_accumulates() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn accumulate(mut sum: ResMut<u64>, x: u32) {
+            *sum += x as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(accumulate, r)
+            .build_batch(16);
+
+        batch.input_mut().extend_from_slice(&[1, 2, 3, 4, 5]);
+        batch.run(&mut world);
+
+        assert_eq!(*world.resource::<u64>(), 15);
+        assert!(batch.input().is_empty());
+    }
+
+    #[test]
+    fn batch_retains_allocation() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(|_x: u32| {}, r)
+            .build_batch(64);
+
+        batch.input_mut().extend_from_slice(&[1, 2, 3]);
+        batch.run(&mut world);
+
+        assert!(batch.input().is_empty());
+        assert!(batch.input_mut().capacity() >= 64);
+    }
+
+    #[test]
+    fn batch_empty_is_noop() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn accumulate(mut sum: ResMut<u64>, x: u32) {
+            *sum += x as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(accumulate, r)
+            .build_batch(16);
+
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 0);
+    }
+
+    #[test]
+    fn batch_catch_continues_on_error() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<u32>(0);
+        let mut world = wb.build();
+
+        fn validate(x: u32) -> Result<u32, &'static str> {
+            if x > 0 { Ok(x) } else { Err("zero") }
+        }
+
+        fn count_errors(mut errs: ResMut<u32>, _err: &'static str) {
+            *errs += 1;
+        }
+
+        fn accumulate(mut sum: ResMut<u64>, x: u32) {
+            *sum += x as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(validate, r)
+            .catch(count_errors, r)
+            .map(accumulate, r)
+            .build_batch(16);
+
+        // Items: 1, 0 (error), 2, 0 (error), 3
+        batch.input_mut().extend_from_slice(&[1, 0, 2, 0, 3]);
+        batch.run(&mut world);
+
+        assert_eq!(*world.resource::<u64>(), 6); // 1 + 2 + 3
+        assert_eq!(*world.resource::<u32>(), 2); // 2 errors
+    }
+
+    #[test]
+    fn batch_filter_skips_items() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn accumulate(mut sum: ResMut<u64>, x: u32) {
+            *sum += x as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(
+                |x: u32| -> Option<u32> { if x > 2 { Some(x) } else { None } },
+                r,
+            )
+            .map(accumulate, r)
+            .build_batch(16);
+
+        batch.input_mut().extend_from_slice(&[1, 2, 3, 4, 5]);
+        batch.run(&mut world);
+
+        assert_eq!(*world.resource::<u64>(), 12); // 3 + 4 + 5
+    }
+
+    #[test]
+    fn batch_multiple_runs_accumulate() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn accumulate(mut sum: ResMut<u64>, x: u32) {
+            *sum += x as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(accumulate, r)
+            .build_batch(16);
+
+        batch.input_mut().extend_from_slice(&[1, 2, 3]);
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 6);
+
+        batch.input_mut().extend_from_slice(&[4, 5]);
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn batch_with_world_access() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(10); // multiplier
+        wb.register::<Vec<u64>>(Vec::new());
+        let mut world = wb.build();
+
+        fn multiply_and_collect(factor: Res<u64>, mut out: ResMut<Vec<u64>>, x: u32) {
+            out.push(x as u64 * *factor);
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<u32>::new()
+            .stage(multiply_and_collect, r)
+            .build_batch(16);
+
+        batch.input_mut().extend_from_slice(&[1, 2, 3]);
+        batch.run(&mut world);
+
+        assert_eq!(world.resource::<Vec<u64>>().as_slice(), &[10, 20, 30]);
     }
 }

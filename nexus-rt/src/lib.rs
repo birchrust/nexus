@@ -21,6 +21,9 @@
 //! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
 //!   chain. Stages transform data using `Option` and `Result` for flow
 //!   control. [`Pipeline`] implements [`System`] for direct or boxed dispatch.
+//!   [`BatchPipeline`] owns a pre-allocated input buffer and runs each item
+//!   through the same chain independently — errors on one item don't affect
+//!   subsequent items.
 //!
 //! - **Driver** — [`Driver`] is the install-time trait for event sources.
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
@@ -72,7 +75,9 @@ mod world;
 
 pub use callback::{Callback, IntoCallback};
 pub use driver::Driver;
-pub use pipeline::{IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
+pub use pipeline::{
+    BatchPipeline, IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart,
+};
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
 pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
