@@ -1,37 +1,67 @@
-//! Mock runtime example — Driver + Plugin + explicit poll loop.
+//! Market data runtime — plugin, driver, pipeline, latency measurement.
 //!
-//! Demonstrates the complete lifecycle of a nexus-rt runtime:
-//!
-//! 1. Define plugins (register resources)
-//! 2. Install drivers via `WorldBuilder::install_driver`
-//! 3. Build the world
-//! 4. Runtime loop: poll drivers, advance tick
-//!
-//! The driver owns the full event lifecycle internally: receive events,
-//! process via pipeline, update state. The executor loop just calls
-//! `driver.poll()` — it doesn't know about event types.
-//!
-//! # Features demonstrated
-//!
-//! - `Driver` / `Plugin` — composable installation and registration
-//! - `Pipeline` — pre-resolved processing chain inside the driver
-//! - `Res<T>` / `ResMut<T>` — resource access via pre-resolved IDs
-//! - `Local<T>` — per-system state (tick counter on check_signals)
-//! - `Option<Res<T>>` — optional dependencies (risk limits)
-//! - Change detection: tick = event sequence number
+//! Demonstrates the full nexus-rt lifecycle with realistic domain types,
+//! then runs 1000 iterations to measure dispatch latency in CPU cycles.
 //!
 //! Run with:
 //! ```bash
-//! cargo run -p nexus-rt --example mock_runtime
+//! taskset -c 0 cargo run --release -p nexus-rt --example mock_runtime
 //! ```
 
+#![allow(clippy::needless_pass_by_value, clippy::items_after_statements)]
+
 use std::collections::HashMap;
+use std::hint::black_box;
 
-use nexus_rt::{Driver, IntoSystem, Local, Plugin, Res, ResMut, System, World, WorldBuilder};
+use nexus_rt::{
+    Driver, Handler, IntoHandler, Local, PipelineStart, Plugin, Res, ResMut, World, WorldBuilder,
+};
 
-// =============================================================================
-// Domain types (World resources)
-// =============================================================================
+// ── Timing ──────────────────────────────────────────────────────────────
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+fn rdtsc_start() -> u64 {
+    unsafe {
+        core::arch::x86_64::_mm_lfence();
+        core::arch::x86_64::_rdtsc()
+    }
+}
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+fn rdtsc_end() -> u64 {
+    unsafe {
+        let mut aux = 0u32;
+        let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
+        core::arch::x86_64::_mm_lfence();
+        tsc
+    }
+}
+
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    let idx = ((sorted.len() as f64) * p / 100.0) as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn report(label: &str, samples: &mut [u64]) {
+    samples.sort_unstable();
+    println!(
+        "{:<44} {:>8} {:>8} {:>8}",
+        label,
+        percentile(samples, 50.0),
+        percentile(samples, 99.0),
+        percentile(samples, 99.9),
+    );
+}
+
+// ── Domain types ────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct MarketTick {
+    symbol: &'static str,
+    price: f64,
+}
 
 struct PriceCache {
     prices: HashMap<&'static str, f64>,
@@ -45,8 +75,6 @@ impl PriceCache {
     }
 }
 
-struct OrderCount(u64);
-
 struct SignalBuffer {
     signals: Vec<&'static str>,
 }
@@ -59,54 +87,14 @@ impl SignalBuffer {
     }
 }
 
+struct OrderCount(u64);
+
 /// Optional resource — may or may not be registered.
 struct RiskLimits {
     max_signals_per_tick: u64,
 }
 
-// =============================================================================
-// Event type — fed into the driver
-// =============================================================================
-
-struct MarketTick {
-    symbol: &'static str,
-    price: f64,
-}
-
-// =============================================================================
-// Pipeline stage functions
-// =============================================================================
-
-/// Compares tick price against cached price. Emits symbol into SignalBuffer
-/// if delta exceeds threshold.
-fn check_signals(
-    cache: Res<PriceCache>,
-    mut signals: ResMut<SignalBuffer>,
-    mut tick_count: Local<u64>,
-    tick: MarketTick,
-) {
-    *tick_count += 1;
-    if let Some(&prev) = cache.prices.get(tick.symbol) {
-        let delta = (tick.price - prev).abs();
-        if delta > 50.0 {
-            println!(
-                "  [check_signals] tick #{}: {} moved {:.2} — signal",
-                *tick_count, tick.symbol, delta
-            );
-            signals.signals.push(tick.symbol);
-        }
-    }
-}
-
-/// Updates the price cache with the latest price.
-fn update_price(mut cache: ResMut<PriceCache>, tick: MarketTick) {
-    println!("  [update_price] {} = {:.2}", tick.symbol, tick.price);
-    cache.prices.insert(tick.symbol, tick.price);
-}
-
-// =============================================================================
-// Plugin — resource registration
-// =============================================================================
+// ── Plugin ──────────────────────────────────────────────────────────────
 
 struct TradingPlugin {
     initial_prices: Vec<(&'static str, f64)>,
@@ -128,18 +116,52 @@ impl Plugin for TradingPlugin {
     }
 }
 
-// =============================================================================
-// Driver — market data event source
-// =============================================================================
+// ── Pipeline stages ─────────────────────────────────────────────────────
+
+/// Compare tick price against cache. Emit signal if delta > threshold.
+fn check_signals(
+    cache: Res<PriceCache>,
+    mut signals: ResMut<SignalBuffer>,
+    mut tick_count: Local<u64>,
+    tick: MarketTick,
+) -> MarketTick {
+    *tick_count += 1;
+    if let Some(&prev) = cache.prices.get(tick.symbol) {
+        let delta = (tick.price - prev).abs();
+        if delta > 50.0 {
+            signals.signals.push(tick.symbol);
+        }
+    }
+    tick
+}
+
+/// Update the price cache with the latest price.
+fn update_price(mut cache: ResMut<PriceCache>, tick: MarketTick) -> MarketTick {
+    cache.prices.insert(tick.symbol, tick.price);
+    tick
+}
+
+/// Count accepted trades against risk limits.
+fn count_trades(
+    limits: Res<RiskLimits>,
+    mut signals: ResMut<SignalBuffer>,
+    mut orders: ResMut<OrderCount>,
+    _tick: MarketTick,
+) {
+    let cap = limits.max_signals_per_tick;
+    for _symbol in signals.signals.drain(..) {
+        if orders.0 < cap {
+            orders.0 += 1;
+        }
+    }
+}
+
+// ── Driver ──────────────────────────────────────────────────────────────
 
 struct MarketDataInstaller;
 
-/// Handle returned by driver installation. Owns the processing pipeline
-/// and pre-resolved system for dispatch.
 struct MarketDataHandle {
-    /// Pipeline: MarketTick → check_signals → update_price
-    check: Box<dyn System<MarketTick>>,
-    update: Box<dyn System<MarketTick>>,
+    pipeline: Box<dyn Handler<MarketTick>>,
 }
 
 impl Driver for MarketDataInstaller {
@@ -147,171 +169,191 @@ impl Driver for MarketDataInstaller {
 
     fn install(self, world: &mut WorldBuilder) -> MarketDataHandle {
         let r = world.registry_mut();
+        let pipeline = PipelineStart::<MarketTick>::new()
+            .stage(check_signals, r)
+            .stage(update_price, r)
+            .stage(count_trades, r)
+            .build();
         MarketDataHandle {
-            check: Box::new(check_signals.into_system(r)),
-            update: Box::new(update_price.into_system(r)),
+            pipeline: Box::new(pipeline),
         }
     }
 }
 
 impl MarketDataHandle {
-    /// Poll: process a batch of market ticks.
+    /// Process a batch of market ticks.
     ///
-    /// For each tick: check signals (against previous cache), then update
-    /// cache. Order matters — signal detection uses the old cache.
+    /// Advances sequence once per batch — all ticks share the same sequence
+    /// number. This amortizes the sequence bump but means `inputs_changed()`
+    /// cannot distinguish individual events within a batch. For per-event
+    /// change detection, move `next_sequence()` inside the loop.
     fn poll(&mut self, world: &mut World, ticks: &[MarketTick]) {
+        if ticks.is_empty() {
+            return;
+        }
+        world.next_sequence();
         for tick in ticks {
-            // Re-create MarketTick since we can't move out of a slice ref.
-            let t = MarketTick {
-                symbol: tick.symbol,
-                price: tick.price,
-            };
-            self.check.run(world, t);
-
-            let t = MarketTick {
-                symbol: tick.symbol,
-                price: tick.price,
-            };
-            self.update.run(world, t);
+            self.pipeline.run(world, *tick);
         }
     }
 }
 
-// =============================================================================
-// Trade counting — runs after market data processing
-// =============================================================================
-
-fn count_trades(world: &mut World) {
-    let cap = world.resource::<RiskLimits>().max_signals_per_tick;
-
-    // Drain signals, count trades.
-    let signals: Vec<&'static str> = world
-        .resource_mut::<SignalBuffer>()
-        .signals
-        .drain(..)
-        .collect();
-
-    let count = world.resource_mut::<OrderCount>();
-    let mut accepted = 0u64;
-    for symbol in &signals {
-        if accepted >= cap {
-            println!(
-                "  [count_trades] SKIPPED signal for {} (risk limit: {})",
-                symbol, cap
-            );
-            continue;
-        }
-        count.0 += 1;
-        accepted += 1;
-        println!("  [count_trades] signal #{} for {}", count.0, symbol);
-    }
-}
-
-// =============================================================================
-// main — the executor loop
-// =============================================================================
+// ── main ────────────────────────────────────────────────────────────────
 
 fn main() {
     // -- Build ----------------------------------------------------------------
 
     let mut wb = WorldBuilder::new();
-
     wb.install_plugin(TradingPlugin {
         initial_prices: vec![("BTC", 50_000.0), ("ETH", 3_000.0)],
-        risk_cap: 2,
+        risk_cap: 100,
     });
-
     let mut md = wb.install_driver(MarketDataInstaller);
-
     let mut world = wb.build();
 
-    // -- Tick 0 ---------------------------------------------------------------
+    // Standalone handler — demonstrates change detection.
+    fn on_signal(signals: Res<SignalBuffer>, _event: ()) {
+        black_box(signals.signals.len());
+    }
+    let mut signal_handler = on_signal.into_handler(world.registry_mut());
 
-    println!("=== Tick 0 ===\n");
+    // -- Correctness check ----------------------------------------------------
 
-    md.poll(
-        &mut world,
-        &[
-            MarketTick {
-                symbol: "BTC",
-                price: 50_100.0,
-            },
-            MarketTick {
-                symbol: "ETH",
-                price: 3_010.0,
-            },
-            MarketTick {
-                symbol: "BTC",
-                price: 49_900.0,
-            },
-        ],
+    let ticks = [
+        MarketTick {
+            symbol: "BTC",
+            price: 50_100.0,
+        }, // delta=100 > 50 → signal
+        MarketTick {
+            symbol: "ETH",
+            price: 3_010.0,
+        }, // delta=10 < 50 → no signal
+        MarketTick {
+            symbol: "BTC",
+            price: 49_900.0,
+        }, // delta=200 > 50 → signal
+    ];
+
+    md.poll(&mut world, &ticks);
+
+    // 2 signals accepted, risk cap=100 so both go through.
+    assert_eq!(world.resource::<OrderCount>().0, 2);
+
+    // Change detection: SignalBuffer was modified → handler should run.
+    assert!(signal_handler.inputs_changed(&world));
+    signal_handler.run(&mut world, ());
+
+    // Advance sequence, no new writes → handler should skip.
+    world.next_sequence();
+    assert!(!signal_handler.inputs_changed(&world));
+
+    println!("Correctness checks passed.\n");
+
+    // -- Latency measurement --------------------------------------------------
+
+    const WARMUP: usize = 1_000;
+    const ITERATIONS: usize = 1_000;
+
+    // Ticks that exercise the full pipeline path (signal detection + cache write).
+    let bench_ticks = [
+        MarketTick {
+            symbol: "BTC",
+            price: 50_100.0,
+        },
+        MarketTick {
+            symbol: "ETH",
+            price: 3_100.0,
+        },
+        MarketTick {
+            symbol: "BTC",
+            price: 50_200.0,
+        },
+        MarketTick {
+            symbol: "ETH",
+            price: 3_200.0,
+        },
+    ];
+
+    println!(
+        "=== nexus-rt Dispatch Latency (cycles, {} iterations) ===\n",
+        ITERATIONS
     );
-    count_trades(&mut world);
-    world.next_sequence();
-
-    // -- Tick 1 ---------------------------------------------------------------
-
-    println!("\n=== Tick 1 ===\n");
-
-    md.poll(
-        &mut world,
-        &[
-            MarketTick {
-                symbol: "BTC",
-                price: 50_200.0,
-            },
-            MarketTick {
-                symbol: "ETH",
-                price: 3_015.0,
-            },
-            MarketTick {
-                symbol: "BTC",
-                price: 50_500.0,
-            },
-        ],
+    println!(
+        "{:<44} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
     );
-    count_trades(&mut world);
-    world.next_sequence();
+    println!("{}", "-".repeat(72));
 
-    // -- Tick 2 (no events) ---------------------------------------------------
-
-    println!("\n=== Tick 2 (no events) ===\n");
-
-    md.poll(&mut world, &[]);
-    count_trades(&mut world);
-    world.next_sequence();
-
-    println!("[dispatch] no events — nothing to process");
-
-    // -- Results --------------------------------------------------------------
-
-    println!("\n=== Results ===\n");
-
+    // Single tick through dyn pipeline
     {
-        let cache = world.resource::<PriceCache>();
-        println!("PriceCache:");
-        for (sym, price) in &cache.prices {
-            println!("  {sym} = {price:.2}");
+        let tick = bench_ticks[0];
+        for _ in 0..WARMUP {
+            world.next_sequence();
+            md.pipeline.run(&mut world, black_box(tick));
         }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            world.next_sequence();
+            let start = rdtsc_start();
+            md.pipeline.run(&mut world, black_box(tick));
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        report("single tick (dyn pipeline, 3 stages)", &mut samples);
     }
 
-    let count = world.resource::<OrderCount>().0;
-    println!("OrderCount: {count}");
+    // Standalone handler (1 param, Res<T>)
+    {
+        for _ in 0..WARMUP {
+            black_box(());
+            signal_handler.run(&mut world, ());
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let start = rdtsc_start();
+            black_box(());
+            signal_handler.run(&mut world, ());
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        report("handler dispatch (1 param, Res<T>)", &mut samples);
+    }
 
-    // Tick 0: check_signals compares against initial cache (BTC=50000, ETH=3000)
-    //   BTC=50100: delta=100 > 50 → signal
-    //   ETH=3010:  delta=10 < 50 → no signal
-    //   BTC=49900: delta=200 > 50 → signal (vs updated 50100)
-    //   count_trades: 2 signals, cap=2 → both accepted. OrderCount=2.
-    //
-    // Tick 1: check_signals compares against tick 0 cache (BTC=49900, ETH=3010)
-    //   BTC=50200: delta=300 > 50 → signal (vs 49900)
-    //   ETH=3015:  delta=5 < 50 → no signal
-    //   BTC=50500: delta=300 > 50 → signal (vs updated 50200)
-    //   count_trades: 2 signals, cap=2 → both accepted. OrderCount=4.
-    //
-    // Tick 2: no events → no signals. OrderCount unchanged.
-    assert_eq!(count, 4, "expected 4 trade signals across all ticks");
+    // 4-tick batch through driver poll
+    {
+        for _ in 0..WARMUP {
+            md.poll(&mut world, &bench_ticks);
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let start = rdtsc_start();
+            md.poll(&mut world, black_box(&bench_ticks));
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        let mut per_tick: Vec<u64> = samples
+            .iter()
+            .map(|&s| s / bench_ticks.len() as u64)
+            .collect();
+        report("4-tick poll (total)", &mut samples);
+        report("4-tick poll (per tick)", &mut per_tick);
+    }
 
-    println!("\nDone.");
+    // Change detection
+    {
+        world.next_sequence(); // ensure stale
+        for _ in 0..WARMUP {
+            black_box(signal_handler.inputs_changed(&world));
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let start = rdtsc_start();
+            black_box(signal_handler.inputs_changed(&world));
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        report("inputs_changed (1 param, stale)", &mut samples);
+    }
+
+    println!();
 }

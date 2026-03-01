@@ -10,14 +10,14 @@
 //!
 //! Two dispatch modes:
 //! - `run()` — direct call, no boxing, works with borrowed inputs
-//! - `build()` — box into `Pipeline<In>`, implements `System<In>`
+//! - `build()` — box into `Pipeline<In>`, implements `Handler<In>`
 //!
 //! Run with:
 //! ```bash
 //! cargo run -p nexus-rt --example pipeline
 //! ```
 
-use nexus_rt::{PipelineStart, ResMut, System, WorldBuilder};
+use nexus_rt::{Handler, PipelineStart, ResMut, WorldBuilder};
 
 struct PriceCache {
     latest: f64,
@@ -188,9 +188,9 @@ fn main() {
     println!("\n  Errors: {errors}");
     assert_eq!(errors, 2);
 
-    // --- Build into System ---
+    // --- Build into Handler ---
 
-    println!("\n=== Pipeline as System ===\n");
+    println!("\n=== Pipeline as Handler ===\n");
 
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);

@@ -1,4 +1,4 @@
-//! Pipeline + System dispatch codegen inspection + latency benchmark.
+//! Pipeline + Handler dispatch codegen inspection + latency benchmark.
 //!
 //! Run asm inspection (pipelines):
 //! ```bash
@@ -8,12 +8,12 @@
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::boxed_pipeline_run
 //! ```
 //!
-//! Run asm inspection (System dispatch):
+//! Run asm inspection (Handler dispatch):
 //! ```bash
-//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_system_res_read
-//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_system_res_mut
-//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_system_two_res
-//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_dyn_system
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_handler_res_read
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_handler_res_mut
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_handler_two_res
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_dyn_handler
 //! ```
 //!
 //! Run benchmark:
@@ -23,7 +23,7 @@
 
 use std::hint::black_box;
 
-use nexus_rt::{IntoSystem, PipelineStart, Res, ResMut, System, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, PipelineStart, Res, ResMut, WorldBuilder};
 
 // =============================================================================
 // Bench infrastructure
@@ -129,7 +129,7 @@ pub fn world_access_run(
 /// Built Pipeline through dyn dispatch.
 #[inline(never)]
 pub fn boxed_pipeline_run(
-    p: &mut dyn nexus_rt::System<u64>,
+    p: &mut dyn nexus_rt::Handler<u64>,
     world: &mut nexus_rt::World,
     input: u64,
 ) {
@@ -184,44 +184,48 @@ fn ic_8p(
 }
 
 // =============================================================================
-// System dispatch probes — SystemParam fetch hot path
+// Handler dispatch probes — SystemParam fetch hot path
 // =============================================================================
 
-fn system_res_read(counter: Res<u64>, input: u64) {
+fn handler_res_read(counter: Res<u64>, input: u64) {
     black_box((*counter).wrapping_add(input));
 }
 
-fn system_res_mut_write(mut counter: ResMut<u64>, input: u64) {
+fn handler_res_mut_write(mut counter: ResMut<u64>, input: u64) {
     *counter = (*counter).wrapping_add(input);
 }
 
-fn system_two_res(a: Res<u64>, b: Res<u32>, input: u64) {
+fn handler_two_res(a: Res<u64>, b: Res<u32>, input: u64) {
     black_box((*a).wrapping_add(input).wrapping_add(*b as u64));
 }
 
-/// Monomorphized System dispatch with Res<u64>.
-/// Full path: System::run → SystemParam::fetch → World::get_ptr + changed_at + current_sequence.
+/// Monomorphized Handler dispatch with Res<u64>.
+/// Full path: Handler::run → SystemParam::fetch → World::get_ptr + changed_at + current_sequence.
 #[inline(never)]
-pub fn probe_system_res_read(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
+pub fn probe_handler_res_read(
+    sys: &mut impl Handler<u64>,
+    world: &mut nexus_rt::World,
+    input: u64,
+) {
     sys.run(world, input);
 }
 
-/// Monomorphized System dispatch with ResMut<u64>.
+/// Monomorphized Handler dispatch with ResMut<u64>.
 /// Full path: fetch + DerefMut stamps changed_at on write.
 #[inline(never)]
-pub fn probe_system_res_mut(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
+pub fn probe_handler_res_mut(sys: &mut impl Handler<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
-/// Monomorphized System dispatch with two Res params (tuple fetch).
+/// Monomorphized Handler dispatch with two Res params (tuple fetch).
 #[inline(never)]
-pub fn probe_system_two_res(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
+pub fn probe_handler_two_res(sys: &mut impl Handler<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
-/// Dyn-dispatched System — vtable call + SystemParam fetch.
+/// Dyn-dispatched Handler — vtable call + SystemParam fetch.
 #[inline(never)]
-pub fn probe_dyn_system(sys: &mut dyn System<u64>, world: &mut nexus_rt::World, input: u64) {
+pub fn probe_dyn_handler(sys: &mut dyn Handler<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
 }
 
@@ -317,13 +321,13 @@ fn main() {
         .map(|x: u64| x.wrapping_mul(2), r)
         .unwrap_or(0);
 
-    // --- System dispatch setup ---
+    // --- Handler dispatch setup ---
 
-    let mut sys_res = system_res_read.into_system(world.registry_mut());
-    let mut sys_res_mut = system_res_mut_write.into_system(world.registry_mut());
-    let mut sys_two = system_two_res.into_system(world.registry_mut());
-    let mut sys_dyn: Box<dyn System<u64>> =
-        Box::new(system_res_read.into_system(world.registry_mut()));
+    let mut sys_res = handler_res_read.into_handler(world.registry_mut());
+    let mut sys_res_mut = handler_res_mut_write.into_handler(world.registry_mut());
+    let mut sys_two = handler_two_res.into_handler(world.registry_mut());
+    let mut sys_dyn: Box<dyn Handler<u64>> =
+        Box::new(handler_res_read.into_handler(world.registry_mut()));
 
     // --- Pipeline benchmarks ---
 
@@ -366,32 +370,32 @@ fn main() {
         catch_pipeline.run(&mut world, black_box(input))
     });
 
-    // --- System dispatch benchmarks ---
+    // --- Handler dispatch benchmarks ---
 
     println!();
-    print_header("System Dispatch Latency (cycles)");
+    print_header("Handler Dispatch Latency (cycles)");
 
-    bench_batched("System + Res<u64> (read)", || {
+    bench_batched("Handler + Res<u64> (read)", || {
         input = input.wrapping_add(1);
-        probe_system_res_read(&mut sys_res, &mut world, black_box(input));
+        probe_handler_res_read(&mut sys_res, &mut world, black_box(input));
         0
     });
 
-    bench_batched("System + ResMut<u64> (write+stamp)", || {
+    bench_batched("Handler + ResMut<u64> (write+stamp)", || {
         input = input.wrapping_add(1);
-        probe_system_res_mut(&mut sys_res_mut, &mut world, black_box(input));
+        probe_handler_res_mut(&mut sys_res_mut, &mut world, black_box(input));
         0
     });
 
-    bench_batched("System + 2x Res (tuple fetch)", || {
+    bench_batched("Handler + 2x Res (tuple fetch)", || {
         input = input.wrapping_add(1);
-        probe_system_two_res(&mut sys_two, &mut world, black_box(input));
+        probe_handler_two_res(&mut sys_two, &mut world, black_box(input));
         0
     });
 
-    bench_batched("Box<dyn System> + Res<u64>", || {
+    bench_batched("Box<dyn Handler> + Res<u64>", || {
         input = input.wrapping_add(1);
-        probe_dyn_system(&mut *sys_dyn, &mut world, black_box(input));
+        probe_dyn_handler(&mut *sys_dyn, &mut world, black_box(input));
         0
     });
 
@@ -517,7 +521,7 @@ fn main() {
     println!();
     print_header("inputs_changed Latency (cycles)");
 
-    // Build a world with enough resources for 8-param systems.
+    // Build a world with enough resources for 8-param handlers.
     let mut ic_wb = WorldBuilder::new();
     ic_wb.register::<u64>(0);
     ic_wb.register::<u32>(0);
@@ -530,10 +534,10 @@ fn main() {
     let mut ic_world = ic_wb.build();
     let ic_r = ic_world.registry_mut();
 
-    let ic1 = ic_1p.into_system(ic_r);
-    let ic2 = ic_2p.into_system(ic_r);
-    let ic4 = ic_4p.into_system(ic_r);
-    let ic8 = ic_8p.into_system(ic_r);
+    let ic1 = ic_1p.into_handler(ic_r);
+    let ic2 = ic_2p.into_handler(ic_r);
+    let ic4 = ic_4p.into_handler(ic_r);
+    let ic8 = ic_8p.into_handler(ic_r);
 
     // Tick 0: all changed (changed_at == current_sequence).
     bench_batched("inputs_changed 1-param (changed)", || {

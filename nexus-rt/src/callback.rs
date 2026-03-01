@@ -1,15 +1,18 @@
-//! Context-owning system dispatch.
+//! Context-owning handler dispatch.
 //!
-//! [`Callback`] is [`FunctionSystem`](crate::FunctionSystem) with one extra
-//! field: an owned context `C`. The function convention is
+//! [`Callback`] is the unified dispatch type in nexus-rt. Context-free
+//! handlers use `Callback<(), CtxFree<F>, P>` (via [`IntoHandler`](crate::IntoHandler));
+//! context-owning handlers use `Callback<C, F, P>` (via [`IntoCallback`]).
+//!
+//! The function convention for context-owning callbacks is
 //! `fn handler(ctx: &mut C, params: Res<T>..., event: E)` — context first,
 //! [`SystemParam`]-resolved resources in the middle, event last.
 //!
 //! Same HRTB double-bound pattern, same macro generation, same ~2-cycle
 //! dispatch. Named functions only (same closure limitation as
-//! [`IntoSystem`](crate::IntoSystem)).
+//! [`IntoHandler`](crate::IntoHandler)).
 
-use crate::System;
+use crate::Handler;
 use crate::system::SystemParam;
 use crate::world::{Registry, World};
 
@@ -17,18 +20,20 @@ use crate::world::{Registry, World};
 // Callback<C, F, Params>
 // =============================================================================
 
-/// Context-owning system. Stores per-callback state alongside
+/// Unified dispatch type. Stores per-callback context alongside
 /// pre-resolved resource access.
 ///
-/// Created via [`IntoCallback::into_callback`]. Function convention:
-/// `fn handler(ctx: &mut C, params: Res<T>..., event: E)`.
+/// - Context-free handlers: `Callback<(), CtxFree<F>, P>` — created via
+///   [`IntoHandler::into_handler`](crate::IntoHandler::into_handler).
+/// - Context-owning handlers: `Callback<C, F, P>` — created via
+///   [`IntoCallback::into_callback`].
 ///
-/// Context first. SystemParams in the middle. Event last.
+/// Both implement [`Handler<E>`].
 ///
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, System};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler};
 ///
 /// struct Ctx { count: u64 }
 ///
@@ -50,9 +55,9 @@ use crate::world::{Registry, World};
 pub struct Callback<C, F, Params: SystemParam> {
     /// Per-callback owned state. Accessible outside dispatch.
     pub ctx: C,
-    f: F,
-    state: Params::State,
-    name: &'static str,
+    pub(crate) f: F,
+    pub(crate) state: Params::State,
+    pub(crate) name: &'static str,
 }
 
 // =============================================================================
@@ -61,7 +66,7 @@ pub struct Callback<C, F, Params: SystemParam> {
 
 /// Converts a named function into a [`Callback`].
 ///
-/// Identical to [`IntoSystem`](crate::IntoSystem) but injects `&mut C` as
+/// Identical to [`IntoHandler`](crate::IntoHandler) but injects `&mut C` as
 /// the first parameter. [`ResourceId`](crate::ResourceId)s resolved via
 /// `registry.id::<T>()` at call time — panics if any resource is not
 /// registered.
@@ -76,7 +81,7 @@ pub struct Callback<C, F, Params: SystemParam> {
 /// Panics if any [`SystemParam`] resource is not registered.
 pub trait IntoCallback<C, E, Params> {
     /// The concrete Callback type produced.
-    type Callback: System<E>;
+    type Callback: Handler<E>;
 
     /// Convert this function + context into a Callback.
     fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback;
@@ -99,7 +104,7 @@ impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> IntoCallback<C, E, ()> for F 
     }
 }
 
-impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> System<E> for Callback<C, F, ()> {
+impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> Handler<E> for Callback<C, F, ()> {
     fn run(&mut self, _world: &mut World, event: E) {
         (self.f)(&mut self.ctx, event);
     }
@@ -147,7 +152,7 @@ macro_rules! impl_into_callback {
         }
 
         impl<C: 'static, E, F: 'static, $($P: SystemParam + 'static),+>
-            System<E> for Callback<C, F, ($($P,)+)>
+            Handler<E> for Callback<C, F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut(&mut C, $($P,)+ E) +
@@ -511,10 +516,10 @@ mod tests {
         }
     }
 
-    // -- System<E> interface --------------------------------------------------
+    // -- Handler<E> interface -------------------------------------------------
 
     #[test]
-    fn box_dyn_system() {
+    fn box_dyn_handler() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
         let mut world = builder.build();
@@ -524,7 +529,7 @@ mod tests {
         }
 
         let cb = add_ctx.into_callback(10u64, world.registry_mut());
-        let mut boxed: Box<dyn System<u64>> = Box::new(cb);
+        let mut boxed: Box<dyn Handler<u64>> = Box::new(cb);
         boxed.run(&mut world, 5u64);
         // 0 + 5 + 10 = 15
         assert_eq!(*world.resource::<u64>(), 15);
@@ -546,10 +551,10 @@ mod tests {
         let cb_add = add.into_callback(3u64, world.registry_mut());
         let cb_mul = mul.into_callback(2u64, world.registry_mut());
 
-        let mut systems: Vec<Box<dyn System<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
+        let mut handlers: Vec<Box<dyn Handler<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
 
-        for sys in systems.iter_mut() {
-            sys.run(&mut world, ());
+        for h in handlers.iter_mut() {
+            h.run(&mut world, ());
         }
         // 0 + 3 = 3, then 3 * 2 = 6
         assert_eq!(*world.resource::<u64>(), 6);
@@ -576,8 +581,8 @@ mod tests {
     // -- Integration ----------------------------------------------------------
 
     #[test]
-    fn callback_interop_with_function_system() {
-        use crate::IntoSystem;
+    fn callback_interop_with_handler() {
+        use crate::IntoHandler;
 
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
@@ -590,13 +595,13 @@ mod tests {
             *val *= *ctx;
         }
 
-        let sys = sys_add.into_system(world.registry_mut());
+        let sys = sys_add.into_handler(world.registry_mut());
         let cb = cb_mul.into_callback(3u64, world.registry_mut());
 
-        let mut systems: Vec<Box<dyn System<u64>>> = vec![Box::new(sys), Box::new(cb)];
+        let mut handlers: Vec<Box<dyn Handler<u64>>> = vec![Box::new(sys), Box::new(cb)];
 
-        for s in systems.iter_mut() {
-            s.run(&mut world, 5u64);
+        for h in handlers.iter_mut() {
+            h.run(&mut world, 5u64);
         }
         // 0 + 5 = 5, then 5 * 3 = 15
         assert_eq!(*world.resource::<u64>(), 15);

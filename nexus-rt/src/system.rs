@@ -2,6 +2,7 @@
 
 use std::ops::{Deref, DerefMut};
 
+use crate::callback::Callback;
 use crate::resource::{Res, ResMut};
 use crate::world::{Registry, ResourceId, World};
 
@@ -44,14 +45,14 @@ pub trait SystemParam {
     /// Returns `true` if any resource this param depends on was modified
     /// during the current sequence.
     ///
-    /// Used by drivers to skip systems whose inputs haven't changed.
+    /// Used by drivers to skip handlers whose inputs haven't changed.
     fn any_changed(state: &Self::State, world: &World) -> bool;
 
     /// The ResourceId this param accesses, if any.
     ///
     /// Returns `None` for params that don't access World resources
     /// (e.g. `Local<T>`). Used by [`Registry::check_access`] to enforce
-    /// one borrow per resource per system.
+    /// one borrow per resource per handler.
     fn resource_id(state: &Self::State) -> Option<ResourceId> {
         let _ = state;
         None
@@ -203,7 +204,7 @@ impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
 // Tuple impls
 // =============================================================================
 
-/// Unit impl — event-only systems with no resource parameters.
+/// Unit impl — event-only handlers with no resource parameters.
 impl SystemParam for () {
     type State = ();
     type Item<'w> = ();
@@ -261,13 +262,15 @@ macro_rules! all_tuples {
 all_tuples!(impl_system_param_tuple);
 
 // =============================================================================
-// Local<T> — per-system state
+// Local<T> — per-handler state
 // =============================================================================
 
-/// Per-system local state. Stored inside [`FunctionSystem`], not in [`World`].
+/// Per-handler local state. Stored inside the dispatch wrapper (e.g.
+/// [`Callback`] or pipeline [`Stage`](crate::Stage)), not in [`World`].
 ///
-/// Initialized with [`Default::default()`] at system creation time. Mutated
-/// freely at dispatch time — each system instance has its own independent copy.
+/// Initialized with [`Default::default()`] at handler creation time. Mutated
+/// freely at dispatch time — each handler/stage instance has its own
+/// independent copy.
 ///
 /// # Examples
 ///
@@ -313,45 +316,45 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
 
     #[inline(always)]
     unsafe fn fetch<'s>(_world: &'s World, state: &'s mut T) -> Local<'s, T> {
-        // SAFETY: FunctionSystem owns state exclusively. Single-threaded
-        // dispatch ensures no aliasing. Lifetime 's is bounded by the
-        // system's run() call.
+        // SAFETY: The dispatch wrapper (Callback or Stage) owns state
+        // exclusively. Single-threaded dispatch ensures no aliasing.
+        // Lifetime 's is bounded by the handler/stage's run() call.
         Local::new(state)
     }
 
     fn any_changed(_state: &T, _world: &World) -> bool {
-        // Local state is per-system, not a World resource — never "changed."
+        // Local state is per-handler, not a World resource — never "changed."
         false
     }
 }
 
 // =============================================================================
-// System<E> — object-safe dispatch trait
+// Handler<E> — object-safe dispatch trait
 // =============================================================================
 
-/// Object-safe dispatch trait for systems.
+/// Object-safe dispatch trait for event handlers.
 ///
-/// Enables `Box<dyn System<E>>` for type-erased heterogeneous dispatch.
+/// Enables `Box<dyn Handler<E>>` for type-erased heterogeneous dispatch.
 /// Storage and scheduling are the driver's responsibility — this trait
 /// only defines the dispatch interface.
 ///
 /// Takes `&mut World` — drivers call this directly in their poll loop.
-pub trait System<E> {
-    /// Run this system with the given event.
+pub trait Handler<E> {
+    /// Run this handler with the given event.
     fn run(&mut self, world: &mut World, event: E);
 
     /// Returns `true` if any input resource was modified this sequence.
     ///
-    /// Default returns `true` (always run). [`FunctionSystem`] overrides
+    /// Default returns `true` (always run). [`Callback`] overrides
     /// by checking its state via [`SystemParam::any_changed`].
     fn inputs_changed(&self, world: &World) -> bool {
         let _ = world;
         true
     }
 
-    /// Returns the system's name.
+    /// Returns the handler's name.
     ///
-    /// Default returns `"<unnamed>"`. [`FunctionSystem`] captures the
+    /// Default returns `"<unnamed>"`. [`Callback`] captures the
     /// function's [`type_name`](std::any::type_name) at construction time.
     fn name(&self) -> &'static str {
         "<unnamed>"
@@ -359,38 +362,46 @@ pub trait System<E> {
 }
 
 // =============================================================================
-// FunctionSystem — concrete System impl
+// CtxFree<F> — coherence wrapper for context-free handlers
 // =============================================================================
 
-/// A system backed by a plain function. Created via [`IntoSystem`].
+/// Wrapper that marks a function as context-free.
 ///
-/// `pub` because it appears as [`IntoSystem::System`], but users don't
-/// construct it directly — they call [`IntoSystem::into_system`].
-pub struct FunctionSystem<F, Params: SystemParam> {
-    f: F,
-    state: Params::State,
-    name: &'static str,
-}
+/// Prevents coherence overlap between the context-owning and context-free
+/// [`Handler`] impls on [`Callback`]. `CtxFree<F>` is a plain struct and
+/// can never satisfy `FnMut` bounds, so the compiler proves the two impls
+/// are disjoint.
+///
+/// Users don't construct this directly — [`IntoHandler`] wraps the
+/// function automatically.
+#[doc(hidden)]
+pub struct CtxFree<F>(pub(crate) F);
+
+/// Type alias for context-free handlers (no owned context).
+///
+/// This is `Callback<(), CtxFree<F>, Params>` — the `ctx: ()` field
+/// is a ZST (zero bytes), identical codegen to the old `FunctionSystem`.
+pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 
 // =============================================================================
-// IntoSystem — conversion trait
+// IntoHandler — conversion trait
 // =============================================================================
 
-/// Converts a plain function into a [`System`].
+/// Converts a plain function into a [`Handler`].
 ///
 /// Event `E` is always the last function parameter. Everything before
 /// it is resolved as [`SystemParam`] from a [`Registry`].
 ///
 /// # Named functions only
 ///
-/// Closures do not work with `IntoSystem` due to Rust's HRTB inference
+/// Closures do not work with `IntoHandler` due to Rust's HRTB inference
 /// limitations with GATs. Use named `fn` items instead. This is the same
 /// limitation as Bevy's system registration.
 ///
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{Res, ResMut, IntoSystem, WorldBuilder};
+/// use nexus_rt::{Res, ResMut, IntoHandler, WorldBuilder};
 ///
 /// fn tick(counter: Res<u64>, mut flag: ResMut<bool>, event: u32) {
 ///     if event > 0 {
@@ -402,40 +413,41 @@ pub struct FunctionSystem<F, Params: SystemParam> {
 /// builder.register::<u64>(0);
 /// builder.register::<bool>(false);
 ///
-/// let mut system = tick.into_system(builder.registry_mut());
+/// let mut handler = tick.into_handler(builder.registry_mut());
 /// ```
-pub trait IntoSystem<E, Params> {
-    /// The concrete system type produced.
-    type System: System<E> + 'static;
+pub trait IntoHandler<E, Params> {
+    /// The concrete handler type produced.
+    type Handler: Handler<E> + 'static;
 
-    /// Convert this function into a system, resolving parameters from the registry.
-    fn into_system(self, registry: &mut Registry) -> Self::System;
+    /// Convert this function into a handler, resolving parameters from the registry.
+    fn into_handler(self, registry: &mut Registry) -> Self::Handler;
 }
 
 // =============================================================================
-// Per-arity impls via macro
+// Per-arity impls via macro — context-free path (Callback<(), CtxFree<F>, P>)
 // =============================================================================
 
-// Arity 0: fn(E) — event-only system, no resource params.
-impl<E, F: FnMut(E) + 'static> IntoSystem<E, ()> for F {
-    type System = FunctionSystem<F, ()>;
+// Arity 0: fn(E) — event-only handler, no resource params.
+impl<E, F: FnMut(E) + 'static> IntoHandler<E, ()> for F {
+    type Handler = Callback<(), CtxFree<F>, ()>;
 
-    fn into_system(self, registry: &mut Registry) -> Self::System {
-        FunctionSystem {
-            f: self,
+    fn into_handler(self, registry: &mut Registry) -> Self::Handler {
+        Callback {
+            ctx: (),
+            f: CtxFree(self),
             state: <() as SystemParam>::init(registry),
             name: std::any::type_name::<F>(),
         }
     }
 }
 
-impl<E, F: FnMut(E) + 'static> System<E> for FunctionSystem<F, ()> {
+impl<E, F: FnMut(E) + 'static> Handler<E> for Callback<(), CtxFree<F>, ()> {
     fn run(&mut self, _world: &mut World, event: E) {
-        (self.f)(event);
+        (self.f.0)(event);
     }
 
     fn inputs_changed(&self, _world: &World) -> bool {
-        // Event-only system — no resource dependencies to check.
+        // Event-only handler — no resource dependencies to check.
         // Always returns true so drivers never skip it.
         true
     }
@@ -445,9 +457,9 @@ impl<E, F: FnMut(E) + 'static> System<E> for FunctionSystem<F, ()> {
     }
 }
 
-macro_rules! impl_into_system {
+macro_rules! impl_into_handler {
     ($($P:ident),+) => {
-        impl<E, F: 'static, $($P: SystemParam + 'static),+> IntoSystem<E, ($($P,)+)> for F
+        impl<E, F: 'static, $($P: SystemParam + 'static),+> IntoHandler<E, ($($P,)+)> for F
         where
             // Double-bound pattern (from Bevy):
             // - First bound: compiler uses P directly to infer SystemParam
@@ -457,9 +469,9 @@ macro_rules! impl_into_system {
             //   fetched items at any lifetime.
             for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
         {
-            type System = FunctionSystem<F, ($($P,)+)>;
+            type Handler = Callback<(), CtxFree<F>, ($($P,)+)>;
 
-            fn into_system(self, registry: &mut Registry) -> Self::System {
+            fn into_handler(self, registry: &mut Registry) -> Self::Handler {
                 let state = <($($P,)+) as SystemParam>::init(registry);
                 {
                     #[allow(non_snake_case)]
@@ -471,11 +483,17 @@ macro_rules! impl_into_system {
                         )+
                     ]);
                 }
-                FunctionSystem { f: self, state, name: std::any::type_name::<F>() }
+                Callback {
+                    ctx: (),
+                    f: CtxFree(self),
+                    state,
+                    name: std::any::type_name::<F>(),
+                }
             }
         }
 
-        impl<E, F: 'static, $($P: SystemParam + 'static),+> System<E> for FunctionSystem<F, ($($P,)+)>
+        impl<E, F: 'static, $($P: SystemParam + 'static),+> Handler<E>
+            for Callback<(), CtxFree<F>, ($($P,)+)>
         where
             for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
         {
@@ -497,7 +515,7 @@ macro_rules! impl_into_system {
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
                 };
-                call_inner(&mut self.f, $($P,)+ event);
+                call_inner(&mut self.f.0, $($P,)+ event);
             }
 
             fn inputs_changed(&self, world: &World) -> bool {
@@ -511,7 +529,7 @@ macro_rules! impl_into_system {
     };
 }
 
-all_tuples!(impl_into_system);
+all_tuples!(impl_into_handler);
 
 // =============================================================================
 // Tests
@@ -585,7 +603,7 @@ mod tests {
         let () = unsafe { <() as SystemParam>::fetch(&world, &mut state) };
     }
 
-    // -- System dispatch tests ------------------------------------------------
+    // -- Handler dispatch tests -----------------------------------------------
 
     fn event_only_handler(event: u32) {
         assert_eq!(event, 42);
@@ -594,7 +612,7 @@ mod tests {
     #[test]
     fn event_only_system() {
         let mut world = WorldBuilder::new().build();
-        let mut sys = event_only_handler.into_system(world.registry_mut());
+        let mut sys = event_only_handler.into_handler(world.registry_mut());
         sys.run(&mut world, 42u32);
     }
 
@@ -609,7 +627,7 @@ mod tests {
         builder.register::<u64>(10);
         let mut world = builder.build();
 
-        let mut sys = one_res_handler.into_system(world.registry_mut());
+        let mut sys = one_res_handler.into_handler(world.registry_mut());
         sys.run(&mut world, 5u32);
     }
 
@@ -625,7 +643,7 @@ mod tests {
         builder.register::<u64>(10).register::<bool>(true);
         let mut world = builder.build();
 
-        let mut sys = two_res_handler.into_system(world.registry_mut());
+        let mut sys = two_res_handler.into_handler(world.registry_mut());
         sys.run(&mut world, 7u32);
     }
 
@@ -639,7 +657,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let mut sys = accumulate.into_system(world.registry_mut());
+        let mut sys = accumulate.into_handler(world.registry_mut());
 
         sys.run(&mut world, 10u64);
         sys.run(&mut world, 5u64);
@@ -647,11 +665,11 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 15);
     }
 
-    fn add_system(mut counter: ResMut<u64>, event: u64) {
+    fn add_handler(mut counter: ResMut<u64>, event: u64) {
         *counter += event;
     }
 
-    fn mul_system(mut counter: ResMut<u64>, event: u64) {
+    fn mul_handler(mut counter: ResMut<u64>, event: u64) {
         *counter *= event;
     }
 
@@ -661,13 +679,13 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let sys_a = add_system.into_system(world.registry_mut());
-        let sys_b = mul_system.into_system(world.registry_mut());
+        let sys_a = add_handler.into_handler(world.registry_mut());
+        let sys_b = mul_handler.into_handler(world.registry_mut());
 
-        let mut systems: Vec<Box<dyn System<u64>>> = vec![Box::new(sys_a), Box::new(sys_b)];
+        let mut handlers: Vec<Box<dyn Handler<u64>>> = vec![Box::new(sys_a), Box::new(sys_b)];
 
-        for sys in systems.iter_mut() {
-            sys.run(&mut world, 3u64);
+        for h in handlers.iter_mut() {
+            h.run(&mut world, 3u64);
         }
         // 0 + 3 = 3, then 3 * 3 = 9
         assert_eq!(*world.resource::<u64>(), 9);
@@ -682,7 +700,7 @@ mod tests {
     #[test]
     fn local_default_init() {
         let mut world = WorldBuilder::new().build();
-        let mut sys = local_counter.into_system(world.registry_mut());
+        let mut sys = local_counter.into_handler(world.registry_mut());
         // Ran once — count should be 1 (started at 0). No panic means init worked.
         sys.run(&mut world, 1u32);
     }
@@ -698,7 +716,7 @@ mod tests {
             *total = *count;
         }
 
-        let mut sys = accumulate_local.into_system(world.registry_mut());
+        let mut sys = accumulate_local.into_handler(world.registry_mut());
         sys.run(&mut world, 0u32);
         sys.run(&mut world, 0u32);
         sys.run(&mut world, 0u32);
@@ -717,8 +735,8 @@ mod tests {
             *total += *count;
         }
 
-        let mut sys_a = inc_local.into_system(world.registry_mut());
-        let mut sys_b = inc_local.into_system(world.registry_mut());
+        let mut sys_a = inc_local.into_handler(world.registry_mut());
+        let mut sys_b = inc_local.into_handler(world.registry_mut());
 
         sys_a.run(&mut world, 0u32); // local=1, total=0+1=1
         sys_b.run(&mut world, 0u32); // local=1, total=1+1=2
@@ -766,14 +784,14 @@ mod tests {
         }
     }
 
-    fn optional_system(opt: Option<Res<String>>, _event: u32) {
+    fn optional_handler(opt: Option<Res<String>>, _event: u32) {
         assert!(opt.is_none());
     }
 
     #[test]
-    fn option_in_system() {
+    fn option_in_handler() {
         let mut world = WorldBuilder::new().build();
-        let mut sys = optional_system.into_system(world.registry_mut());
+        let mut sys = optional_handler.into_handler(world.registry_mut());
         sys.run(&mut world, 0u32);
     }
 
@@ -789,7 +807,7 @@ mod tests {
             let _ = *val;
         }
 
-        let sys = reader.into_system(world.registry_mut());
+        let sys = reader.into_handler(world.registry_mut());
 
         // Tick 0: changed_at=0, current_sequence=0 → inputs changed
         assert!(sys.inputs_changed(&world));
@@ -814,14 +832,14 @@ mod tests {
             let _ = *flag;
         }
 
-        let sys = reads_bool.into_system(world.registry_mut());
+        let sys = reads_bool.into_handler(world.registry_mut());
 
         world.next_sequence(); // tick=1
 
         // Only stamp u64, not bool
         *world.resource_mut::<u64>() = 42;
 
-        // System reads bool, which wasn't stamped → not changed
+        // Handler reads bool, which wasn't stamped → not changed
         assert!(!sys.inputs_changed(&world));
     }
 
@@ -834,18 +852,18 @@ mod tests {
             let _ = opt;
         }
 
-        let sys = optional_sys.into_system(world.registry_mut());
+        let sys = optional_sys.into_handler(world.registry_mut());
         assert!(!sys.inputs_changed(&world));
     }
 
     #[test]
-    fn inputs_changed_event_only_system() {
+    fn inputs_changed_event_only_handler() {
         let mut world = WorldBuilder::new().build();
 
         fn event_handler(_e: u32) {}
 
-        let sys = event_handler.into_system(world.registry_mut());
-        // Event-only systems always run — drivers must not skip them.
+        let sys = event_handler.into_handler(world.registry_mut());
+        // Event-only handlers always run — drivers must not skip them.
         assert!(sys.inputs_changed(&world));
     }
 
@@ -862,7 +880,7 @@ mod tests {
             let _ = (*a, *b);
         }
 
-        let _sys = bad.into_system(world.registry_mut());
+        let _sys = bad.into_handler(world.registry_mut());
     }
 
     #[test]
@@ -876,7 +894,7 @@ mod tests {
             let _ = (&*a, &*b);
         }
 
-        let _sys = bad.into_system(world.registry_mut());
+        let _sys = bad.into_handler(world.registry_mut());
     }
 
     #[test]
@@ -890,7 +908,7 @@ mod tests {
             let _ = (*a, &*b);
         }
 
-        let _sys = bad.into_system(world.registry_mut());
+        let _sys = bad.into_handler(world.registry_mut());
     }
 
     #[test]
@@ -904,7 +922,7 @@ mod tests {
             let _ = (*a, &*b);
         }
 
-        let _sys = ok.into_system(world.registry_mut());
+        let _sys = ok.into_handler(world.registry_mut());
     }
 
     #[test]
@@ -917,7 +935,7 @@ mod tests {
             let _ = (&*local, &*val);
         }
 
-        let _sys = ok.into_system(world.registry_mut());
+        let _sys = ok.into_handler(world.registry_mut());
     }
 
     #[test]
@@ -936,8 +954,8 @@ mod tests {
             let _ = (*val, *flag);
         }
 
-        let mut writer_sys = writer.into_system(world.registry_mut());
-        let mut observer_sys = observer.into_system(world.registry_mut());
+        let mut writer_sys = writer.into_handler(world.registry_mut());
+        let mut observer_sys = observer.into_handler(world.registry_mut());
 
         // Tick 0: everything is "changed"
         writer_sys.run(&mut world, ());

@@ -9,8 +9,12 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+smartptr = ["dep:nexus-smartptr"]
+
 [dependencies]
 rustc-hash = "2"
+nexus-smartptr = { version = "0.1", path = "../nexus-smartptr", optional = true }
 
 [lints]
 workspace = true

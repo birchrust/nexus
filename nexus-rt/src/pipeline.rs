@@ -75,7 +75,7 @@ pub trait StageCall<In, Out> {
 ///
 /// SystemParams first, stage input last, returns output. Arity 0 (no
 /// SystemParams) supports closures. Arities 1+ require named functions
-/// (same HRTB+GAT limitation as [`IntoSystem`](crate::IntoSystem)).
+/// (same HRTB+GAT limitation as [`IntoHandler`](crate::IntoHandler)).
 ///
 /// # Examples
 ///
@@ -208,7 +208,7 @@ all_tuples!(impl_into_stage);
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart, System};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart, Handler};
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(10);
@@ -672,7 +672,7 @@ where
     ///
     /// The returned pipeline is a concrete, monomorphized type — no boxing,
     /// no virtual dispatch. Call `.run()` directly for zero-cost execution,
-    /// or wrap in `Box<dyn System<In>>` when type erasure is needed.
+    /// or wrap in `Box<dyn Handler<In>>` when type erasure is needed.
     ///
     /// Only available when the pipeline ends with `()`. If your chain
     /// produces a value, add a final `.stage()` that consumes the output.
@@ -717,18 +717,18 @@ where
 // Pipeline<In, F> — built pipeline
 // =============================================================================
 
-/// Built stage pipeline implementing [`System<In>`](crate::System).
+/// Built stage pipeline implementing [`Handler<In>`](crate::Handler).
 ///
 /// Created by [`PipelineBuilder::build`]. The entire pipeline chain is
 /// monomorphized at compile time — no boxing, no virtual dispatch.
 /// Call `.run()` directly for zero-cost execution, or wrap in
-/// `Box<dyn System<In>>` when you need type erasure (single box).
+/// `Box<dyn Handler<In>>` when you need type erasure (single box).
 pub struct Pipeline<In, F> {
     chain: F,
     _marker: PhantomData<fn(In)>,
 }
 
-impl<In: 'static, F: FnMut(&mut World, In) + 'static> crate::System<In> for Pipeline<In, F> {
+impl<In: 'static, F: FnMut(&mut World, In) + 'static> crate::Handler<In> for Pipeline<In, F> {
     fn run(&mut self, world: &mut World, event: In) {
         (self.chain)(world, event);
     }
@@ -806,7 +806,7 @@ impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Local, Res, ResMut, System, WorldBuilder};
+    use crate::{Handler, Local, Res, ResMut, WorldBuilder};
 
     // =========================================================================
     // Core dispatch
@@ -1074,7 +1074,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Build + System
+    // Build + Handler
     // =========================================================================
 
     #[test]

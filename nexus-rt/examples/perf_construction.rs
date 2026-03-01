@@ -1,8 +1,8 @@
-//! Construction-time latency benchmark for `into_system`, `into_callback`,
+//! Construction-time latency benchmark for `into_handler`, `into_callback`,
 //! and `into_stage`.
 //!
 //! Measures the cold-path cost of resolving SystemParam state + access
-//! conflict detection at various arities. This is paid once per system
+//! conflict detection at various arities. This is paid once per handler
 //! at build time — never on the dispatch hot path.
 //!
 //! Run with:
@@ -12,7 +12,7 @@
 
 use std::hint::black_box;
 
-use nexus_rt::{IntoCallback, IntoSystem, Local, PipelineStart, Res, ResMut, WorldBuilder};
+use nexus_rt::{IntoCallback, IntoHandler, Local, PipelineStart, Res, ResMut, WorldBuilder};
 
 // =============================================================================
 // Bench infrastructure (same as perf_pipeline.rs)
@@ -78,7 +78,7 @@ fn print_header(title: &str) {
 }
 
 // =============================================================================
-// System functions at various arities
+// Handler functions at various arities
 // =============================================================================
 
 fn sys_1p(_a: Res<u64>, _e: ()) {}
@@ -141,35 +141,35 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    print_header("into_system Construction (cycles)");
+    print_header("into_handler Construction (cycles)");
 
-    bench_batched("into_system  1-param (Res<u64>)", || {
-        let _ = black_box(sys_1p.into_system(r));
+    bench_batched("into_handler  1-param (Res<u64>)", || {
+        let _ = black_box(sys_1p.into_handler(r));
         0
     });
 
-    bench_batched("into_system  2-param (Res + ResMut)", || {
-        let _ = black_box(sys_2p.into_system(r));
+    bench_batched("into_handler  2-param (Res + ResMut)", || {
+        let _ = black_box(sys_2p.into_handler(r));
         0
     });
 
-    bench_batched("into_system  4-param", || {
-        let _ = black_box(sys_4p.into_system(r));
+    bench_batched("into_handler  4-param", || {
+        let _ = black_box(sys_4p.into_handler(r));
         0
     });
 
-    bench_batched("into_system  8-param", || {
-        let _ = black_box(sys_8p.into_system(r));
+    bench_batched("into_handler  8-param", || {
+        let _ = black_box(sys_8p.into_handler(r));
         0
     });
 
-    bench_batched("into_system  2-param (Local + ResMut)", || {
-        let _ = black_box(sys_local.into_system(r));
+    bench_batched("into_handler  2-param (Local + ResMut)", || {
+        let _ = black_box(sys_local.into_handler(r));
         0
     });
 
-    bench_batched("into_system  2-param (Option<Res> + ResMut)", || {
-        let _ = black_box(sys_option.into_system(r));
+    bench_batched("into_handler  2-param (Option<Res> + ResMut)", || {
+        let _ = black_box(sys_option.into_handler(r));
         0
     });
 
