@@ -50,6 +50,8 @@
 //!
 //! # Sizing Reference
 //!
+//! Capacities shown for 64-bit targets (pointer size = 8 bytes):
+//!
 //! | Marker | Total size | `?Sized` value capacity | `Sized` capacity |
 //! |--------|-----------|------------------------|-----------------|
 //! | `B16`  | 16 bytes  | 8 bytes   | 16 bytes |
@@ -58,7 +60,7 @@
 //! | `B128` | 128 bytes | 120 bytes | 128 bytes |
 //! | `B256` | 256 bytes | 248 bytes | 256 bytes |
 //!
-//! For `Flex`, subtract an additional 8 bytes (heap pointer / discriminant).
+//! For `Flex`, subtract an additional pointer-sized word (heap pointer / discriminant).
 
 #![warn(missing_docs)]
 
@@ -69,17 +71,18 @@ mod meta;
 pub use flat::Flat;
 pub use flex::Flex;
 
-/// Marker trait for inline buffer sizes.
+/// Inline buffer storage type.
 ///
-/// Each implementor is a zero-sized type representing a fixed buffer capacity
-/// with `usize` alignment (8 bytes on 64-bit).
+/// Each implementor is a `repr(C, align(8))` byte array that [`Flat`] and
+/// [`Flex`] use directly as their backing store. `size_of::<Self>()` is the
+/// total capacity in bytes and must be a multiple of 8.
 ///
 /// Use [`define_buffer!`] to create custom sizes.
 ///
 /// # Safety
 ///
 /// `CAPACITY` must equal `size_of::<Self>()`. Implementors must be
-/// `repr(C, align(8))` with the correct size.
+/// `repr(C, align(8))` with size equal to `CAPACITY`.
 pub unsafe trait Buffer: Sized {
     /// Total buffer capacity in bytes.
     const CAPACITY: usize;
@@ -169,7 +172,7 @@ pub type Flex256<T> = Flex<T, B256>;
 /// # Panics
 ///
 /// Panics if the concrete value doesn't fit in the buffer (after
-/// reserving 8 bytes for metadata on `?Sized` targets).
+/// reserving one pointer-sized word for metadata on `?Sized` targets).
 ///
 /// # Examples
 ///

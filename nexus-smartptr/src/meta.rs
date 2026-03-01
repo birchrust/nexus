@@ -165,6 +165,22 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_slice() {
+        let val: [u32; 4] = [10, 20, 30, 40];
+        let slice: &[u32] = &val;
+        let slice_ptr: *const [u32] = slice as *const [u32];
+
+        let meta = extract_metadata(slice_ptr);
+        let data = val.as_ptr() as *const ();
+
+        // SAFETY: data points to val, meta carries the slice length.
+        let reconstructed: *const [u32] = unsafe { make_ptr(data, meta) };
+        let recovered = unsafe { &*reconstructed };
+        assert_eq!(recovered.len(), 4);
+        assert_eq!(recovered, &[10, 20, 30, 40]);
+    }
+
+    #[test]
     fn is_fat_ptr_correct() {
         assert!(!is_fat_ptr::<u64>());
         assert!(!is_fat_ptr::<String>());

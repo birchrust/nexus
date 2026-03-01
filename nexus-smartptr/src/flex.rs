@@ -56,8 +56,8 @@ const fn assert_flex_buffer<T: ?Sized, B: Buffer>() {
 /// The heap pointer slot doubles as the inline/heap discriminant
 /// (null = inline, non-null = heap address).
 ///
-/// - **?Sized T**: `[metadata(8)][heap_ptr(8)][value(B − 16)]`
-/// - **Sized T**: `[heap_ptr(8)][value(B − 8)]`
+/// - **?Sized T**: `[metadata(ptr)][heap_ptr(ptr)][value(B − 2*ptr)]`
+/// - **Sized T**: `[heap_ptr(ptr)][value(B − ptr)]`
 ///
 /// Use the [`flex!`](crate::flex!) macro for `?Sized` construction,
 /// or [`Flex::new`] for `Sized` types.

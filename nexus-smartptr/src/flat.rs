@@ -25,7 +25,7 @@ const fn assert_flat_buffer<T: ?Sized, B: Buffer>() {
     if meta::is_fat_ptr::<T>() {
         assert!(
             B::CAPACITY >= META_SIZE,
-            "Flat: buffer must be at least 8 bytes for ?Sized types"
+            "Flat: buffer must be at least pointer-sized for ?Sized types"
         );
     }
 }
@@ -36,14 +36,14 @@ const fn assert_flat_buffer<T: ?Sized, B: Buffer>() {
 /// The total struct size equals `size_of::<B>()`.
 ///
 /// - **Sized T**: full buffer capacity, value at offset 0.
-/// - **?Sized T**: 8 bytes reserved for metadata, value at offset 8.
+/// - **?Sized T**: one pointer-sized word reserved for metadata, value follows.
 ///
 /// Use the [`flat!`](crate::flat!) macro for `?Sized` construction,
 /// or [`Flat::new`] for `Sized` types.
 ///
 /// # Compile-time safety
 ///
-/// The `?Sized` metadata overhead (8 bytes) is validated at compile time
+/// The `?Sized` metadata overhead (one pointer-sized word) is validated at compile time
 /// for hand-implemented [`Buffer`](crate::Buffer) types. All predefined
 /// buffers (`B16`+) satisfy this constraint.
 #[repr(C)]
@@ -57,7 +57,7 @@ impl<T: ?Sized, B: Buffer> Flat<T, B> {
     /// Returns the usable value capacity in bytes.
     ///
     /// For `Sized` types, this is the full buffer. For `?Sized` types,
-    /// 8 bytes are reserved for pointer metadata (vtable or slice length).
+    /// one pointer-sized word is reserved for metadata (vtable or slice length).
     pub const fn capacity() -> usize {
         if meta::is_fat_ptr::<T>() {
             B::CAPACITY - META_SIZE

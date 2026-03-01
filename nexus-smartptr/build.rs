@@ -17,6 +17,18 @@ struct FatPtr {
 }
 
 fn main() {
+    // This assertion runs on the host. Warn if cross-compiling, since
+    // host layout may differ from target layout.
+    let host = std::env::var("HOST").unwrap_or_default();
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if host != target {
+        panic!(
+            "nexus-smartptr: cross-compilation detected (host={host}, target={target}). \
+             Fat pointer layout assertion only validates the host. \
+             Cross-compiled targets are not verified."
+        );
+    }
+
     let val = ProbeImpl;
     let data_ptr: *const u8 = &raw const val as *const u8;
     let trait_ptr: *const dyn Probe = &val as &dyn Probe;
