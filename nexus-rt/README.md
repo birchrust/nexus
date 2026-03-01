@@ -188,12 +188,6 @@ Option and Result combinators (`.map()`, `.and_then()`, `.catch()`,
 `.filter()`, `.unwrap_or()`, etc.) enable typed flow control without
 runtime overhead.
 
-### Events — buffer types
-
-`Events<T>`, `EventWriter<T>`, `EventReader<T>` integrate as system
-parameters. `EventReader` supports both `iter()` (peek) and `drain()`
-(consume).
-
 ### Change detection
 
 Each resource tracks a `changed_at` sequence number. `Res::is_changed()`
@@ -210,7 +204,7 @@ struct MyPlugin { /* config */ }
 impl Plugin for MyPlugin {
     fn build(self, world: &mut WorldBuilder) {
         world.register(MyState::new());
-        world.register_default::<Events<MyEvent>>();
+        world.register(MyConfig::default());
     }
 }
 
@@ -306,8 +300,6 @@ eliminates runtime bookkeeping.
   plugin registration, driver installation, explicit poll loop
 - [`pipeline`](examples/pipeline.rs) — Pipeline composition: bare value,
   Option, Result with catch, build into System
-- [`events`](examples/events.rs) — Event buffers: peek with `iter()`,
-  consume with `drain()`
 - [`local_state`](examples/local_state.rs) — Per-system state with
   `Local<T>`, independent across system instances
 - [`optional_resources`](examples/optional_resources.rs) — Optional
