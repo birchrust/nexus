@@ -7,6 +7,28 @@ user code runs as systems dispatched over shared state. It is **not** an
 async runtime — there is no task scheduler, no work stealing, no `Future`
 polling. Your `main()` is the executor.
 
+## Design
+
+`nexus-rt` is heavily inspired by [Bevy ECS](https://bevyengine.org/).
+Systems as plain functions, `SystemParam` for declarative dependency
+injection, `Res<T>` / `ResMut<T>` wrappers, change detection via
+sequence stamps, the `Plugin` trait for composable registration — these
+are Bevy's ideas, and in many cases the implementation follows Bevy's
+patterns closely (including the HRTB double-bound trick that makes
+`IntoSystem` work). Credit where it's due: Bevy's system model is
+an excellent piece of API design.
+
+Where `nexus-rt` diverges is the target workload. Bevy is built for
+simulation: many entities mutated per frame, parallel schedules,
+component queries over archetypes. `nexus-rt` is built for event-driven
+systems: singleton resources, sequential dispatch, and monotonic sequence
+numbers instead of frame ticks. There are no entities, no components,
+no archetypes — just a typed resource store where each event advances
+a sequence counter and causality is tracked per-resource.
+
+The result is a much smaller surface area tuned for low-latency event
+processing rather than game-world state management.
+
 ## Architecture
 
 ```text
