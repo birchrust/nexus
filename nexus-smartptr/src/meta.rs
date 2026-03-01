@@ -14,6 +14,14 @@
 
 use core::mem::{self, size_of};
 
+// Compile-time assertion (runs for the target): fat pointers must be exactly
+// two pointer-sized words. If this fails, the target has an unexpected pointer
+// layout and the decomposition logic is unsound.
+const _: () = assert!(
+    size_of::<*const dyn core::fmt::Display>() == 2 * size_of::<usize>(),
+    "nexus-smartptr: fat pointers must be exactly 2 words (data + metadata)"
+);
+
 /// Opaque pointer metadata.
 ///
 /// For fat pointers: stores the vtable pointer (trait objects) or length (slices).

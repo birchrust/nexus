@@ -29,18 +29,20 @@ const PTR_SIZE: usize = mem::size_of::<*mut u8>();
 
 /// Compile-time check that the buffer can hold the overhead fields.
 ///
-/// For ?Sized T: B::CAPACITY >= 16 (metadata + heap pointer).
-/// For Sized T: B::CAPACITY >= 8 (heap pointer only).
+/// For ?Sized T: B::CAPACITY >= 2 * pointer size (metadata + heap pointer).
+/// For Sized T: B::CAPACITY >= pointer size (heap pointer only).
 const fn assert_flex_buffer<T: ?Sized, B: Buffer>() {
-    let overhead = if meta::is_fat_ptr::<T>() {
-        META_SIZE + PTR_SIZE
+    if meta::is_fat_ptr::<T>() {
+        assert!(
+            B::CAPACITY >= META_SIZE + PTR_SIZE,
+            "Flex: buffer too small for ?Sized overhead (metadata + heap pointer)"
+        );
     } else {
-        PTR_SIZE
-    };
-    assert!(
-        B::CAPACITY >= overhead,
-        "Flex: buffer too small for overhead (metadata + heap pointer)"
-    );
+        assert!(
+            B::CAPACITY >= PTR_SIZE,
+            "Flex: buffer too small for Sized overhead (heap pointer)"
+        );
+    }
 }
 
 /// Inline storage with heap fallback for `?Sized` types.

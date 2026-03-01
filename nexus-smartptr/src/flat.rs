@@ -60,7 +60,7 @@ impl<T: ?Sized, B: Buffer> Flat<T, B> {
     /// one pointer-sized word is reserved for metadata (vtable or slice length).
     pub const fn capacity() -> usize {
         if meta::is_fat_ptr::<T>() {
-            B::CAPACITY - META_SIZE
+            B::CAPACITY.saturating_sub(META_SIZE)
         } else {
             B::CAPACITY
         }
