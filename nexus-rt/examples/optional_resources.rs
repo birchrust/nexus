@@ -1,10 +1,10 @@
 //! Optional resource dependencies with `Option<Res<T>>` / `Option<ResMut<T>>`.
 //!
-//! Systems that use `Option<Res<T>>` or `Option<ResMut<T>>` will run
+//! Handlers that use `Option<Res<T>>` or `Option<ResMut<T>>` will run
 //! regardless of whether `T` is registered in World:
 //!
-//! - **Registered:** the system receives `Some(Res<T>)` / `Some(ResMut<T>)`
-//! - **Not registered:** the system receives `None`
+//! - **Registered:** the handler receives `Some(Res<T>)` / `Some(ResMut<T>)`
+//! - **Not registered:** the handler receives `None`
 //!
 //! This is resolved at build time via `registry.try_id::<T>()`. There is
 //! no runtime overhead — the Option<ResourceId> state is cached once.
@@ -19,7 +19,7 @@
 //! cargo run -p nexus-rt --example optional_resources
 //! ```
 
-use nexus_rt::{IntoSystem, Res, ResMut, System, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
 
 // -- Domain types ------------------------------------------------------------
 
@@ -37,7 +37,7 @@ struct Metrics {
     events_processed: u64,
 }
 
-// -- Systems -----------------------------------------------------------------
+// -- Handlers ----------------------------------------------------------------
 
 /// Always runs. Uses Config (required) and DebugLog (optional).
 fn process_event(config: Res<Config>, mut debug: Option<ResMut<DebugLog>>, value: f64) {
@@ -81,8 +81,8 @@ fn main() {
             });
         let mut world = builder.build();
 
-        let mut process = process_event.into_system(world.registry_mut());
-        let mut track = track_metrics.into_system(world.registry_mut());
+        let mut process = process_event.into_handler(world.registry_mut());
+        let mut track = track_metrics.into_handler(world.registry_mut());
 
         for value in [3.0, 7.5, 1.2] {
             process.run(&mut world, value);
@@ -104,8 +104,8 @@ fn main() {
         // DebugLog and Metrics intentionally not registered.
         let mut world = builder.build();
 
-        let mut process = process_event.into_system(world.registry_mut());
-        let mut track = track_metrics.into_system(world.registry_mut());
+        let mut process = process_event.into_handler(world.registry_mut());
+        let mut track = track_metrics.into_handler(world.registry_mut());
 
         for value in [3.0, 7.5] {
             process.run(&mut world, value);
@@ -113,7 +113,7 @@ fn main() {
             println!();
         }
 
-        println!("Systems ran cleanly without optional resources.");
+        println!("Handlers ran cleanly without optional resources.");
     }
 
     println!("\nDone.");

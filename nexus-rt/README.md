@@ -3,19 +3,19 @@
 Single-threaded, event-driven runtime primitives with pre-resolved dispatch.
 
 `nexus-rt` provides the building blocks for constructing runtimes where
-user code runs as systems dispatched over shared state. It is **not** an
+user code runs as handlers dispatched over shared state. It is **not** an
 async runtime — there is no task scheduler, no work stealing, no `Future`
 polling. Your `main()` is the executor.
 
 ## Design
 
 `nexus-rt` is heavily inspired by [Bevy ECS](https://bevyengine.org/).
-Systems as plain functions, `SystemParam` for declarative dependency
+Handlers as plain functions, `SystemParam` for declarative dependency
 injection, `Res<T>` / `ResMut<T>` wrappers, change detection via
 sequence stamps, the `Plugin` trait for composable registration — these
 are Bevy's ideas, and in many cases the implementation follows Bevy's
 patterns closely (including the HRTB double-bound trick that makes
-`IntoSystem` work). Credit where it's due: Bevy's system model is
+`IntoHandler` work). Credit where it's due: Bevy's system model is
 an excellent piece of API design.
 
 Where `nexus-rt` diverges is the target workload. Bevy is built for
@@ -55,7 +55,7 @@ processing rather than game-world state management.
                    │  ResourceIds     │               │  2. get resources    │
                    │                  │               │  3. poll IO source   │
                    │  Owns pipeline   │               │  4. dispatch events  │
-                   │  or systems      │               │     via pipeline     │
+                   │  or handlers     │               │     via pipeline     │
                    └──────────────────┘               └──────────────────────┘
 ```
 
@@ -78,7 +78,7 @@ processing rather than game-world state management.
 |------|---------|----------|
 | **Pipeline** | Pre-resolved stage chains inside drivers. The workhorse. | ~2 cycles p50 |
 | **Callback** | Dynamic per-instance context + pre-resolved params. | ~2 cycles p50 |
-| **System** | `Box<dyn System<E>>` for type-erased dispatch. | ~2 cycles p50 |
+| **Handler** | `Box<dyn Handler<E>>` for type-erased dispatch. | ~2 cycles p50 |
 
 All tiers resolve `SystemParam` state at build time. Dispatch-time cost is
 a bounds-checked index into a `Vec` — no hashing, no searching.
@@ -86,7 +86,7 @@ a bounds-checked index into a `Vec` — no hashing, no searching.
 ## Quick Start
 
 ```rust
-use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System};
+use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
 
 let mut builder = WorldBuilder::new();
 builder.register::<u64>(0);
@@ -96,9 +96,9 @@ fn tick(mut counter: ResMut<u64>, event: u32) {
     *counter += event as u64;
 }
 
-let mut system = tick.into_system(world.registry_mut());
+let mut handler = tick.into_handler(world.registry_mut());
 
-system.run(&mut world, 10u32);
+handler.run(&mut world, 10u32);
 
 assert_eq!(*world.resource::<u64>(), 10);
 ```
@@ -213,7 +213,7 @@ the per-item chain identically to the single-event pipeline.
 ### Change detection
 
 Each resource tracks a `changed_at` sequence number. `Res::is_changed()`
-and `System::inputs_changed()` compare against the world's current
+and `Handler::inputs_changed()` compare against the world's current
 sequence. Drivers call `world.next_sequence()` before each event dispatch.
 
 ### Plugin — composable registration
@@ -233,15 +233,30 @@ impl Plugin for MyPlugin {
 wb.install_plugin(MyPlugin { /* ... */ });
 ```
 
-### Local — per-system state
+### Local — per-handler state
 
-`Local<T>` is state stored inside the system instance, not in World.
-Useful for counters, caches, or any per-system accumulator.
+`Local<T>` is state stored inside the handler instance, not in World.
+Useful for counters, caches, or any per-handler accumulator.
 
-### Callback — context-owning systems
+### Callback — context-owning handlers
 
-`Callback<C, F, Params>` is a system with per-instance owned context.
+`Callback<C, F, Params>` is a handler with per-instance owned context.
 Convention: `fn handler(ctx: &mut C, params..., event: E)`.
+
+### Virtual / FlatVirtual / FlexVirtual — storage aliases
+
+Type aliases for type-erased handler storage:
+
+```rust
+use nexus_rt::Virtual;
+
+// Heap-allocated (default)
+let handler: Virtual<Event> = Box::new(my_handler.into_handler(registry));
+
+// Behind "smartptr" feature — inline storage via nexus-smartptr
+// use nexus_rt::FlatVirtual;
+// let handler: FlatVirtual<Event> = flat!(my_handler.into_handler(registry));
+```
 
 ## Performance
 
@@ -255,9 +270,9 @@ boost disabled.
 | Baseline hand-written fn | 2 | 3 | 4 |
 | 3-stage pipeline (bare) | 2 | 2 | 4 |
 | 3-stage pipeline (Res\<T\>) | 2 | 3 | 5 |
-| System + Res\<T\> (read) | 2 | 4 | 5 |
-| System + ResMut\<T\> (write) | 3 | 8 | 8 |
-| Box\<dyn System\> | 2 | 9 | 9 |
+| Handler + Res\<T\> (read) | 2 | 4 | 5 |
+| Handler + ResMut\<T\> (write) | 3 | 8 | 8 |
+| Box\<dyn Handler\> | 2 | 9 | 9 |
 | inputs_changed (1 param) | 1 | 1 | 2 |
 | inputs_changed (8 params) | 4 | 6 | 9 |
 
@@ -282,9 +297,9 @@ Batch dispatch amortizes to ~1.3 cycles/item for compute-heavy chains
 
 | Operation | p50 | p99 | p999 |
 |-----------|-----|-----|------|
-| into_system (1 param) | 21 | 30 | 79 |
-| into_system (4 params) | 45 | 86 | 147 |
-| into_system (8 params) | 93 | 156 | 221 |
+| into_handler (1 param) | 21 | 30 | 79 |
+| into_handler (4 params) | 45 | 86 | 147 |
+| into_handler (8 params) | 93 | 156 | 221 |
 | .stage() (2 params) | 28 | 48 | 96 |
 
 Construction cost is paid once at build time, never on the dispatch
@@ -301,7 +316,7 @@ taskset -c 0 cargo run --release -p nexus-rt --example perf_construction
 
 ### Named functions only
 
-`IntoSystem`, `IntoCallback`, and `IntoStage` (arity 1+) require named
+`IntoHandler`, `IntoCallback`, and `IntoStage` (arity 1+) require named
 `fn` items — closures do not work due to Rust's HRTB inference limitations
 with GATs. This is the same limitation as Bevy's system registration.
 
@@ -335,9 +350,9 @@ eliminates runtime bookkeeping.
 - [`mock_runtime`](examples/mock_runtime.rs) — Complete driver model:
   plugin registration, driver installation, explicit poll loop
 - [`pipeline`](examples/pipeline.rs) — Pipeline composition: bare value,
-  Option, Result with catch, build into System
-- [`local_state`](examples/local_state.rs) — Per-system state with
-  `Local<T>`, independent across system instances
+  Option, Result with catch, build into Handler
+- [`local_state`](examples/local_state.rs) — Per-handler state with
+  `Local<T>`, independent across handler instances
 - [`optional_resources`](examples/optional_resources.rs) — Optional
   dependencies with `Option<Res<T>>` / `Option<ResMut<T>>`
 - [`perf_pipeline`](examples/perf_pipeline.rs) — Dispatch latency

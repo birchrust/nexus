@@ -3,7 +3,7 @@
 //! Runtime primitives for single-threaded, event-driven systems.
 //!
 //! `nexus-rt` provides the building blocks for constructing runtimes where
-//! user code runs as systems dispatched over shared state. It is **not** an
+//! user code runs as handlers dispatched over shared state. It is **not** an
 //! async runtime — there is no task scheduler, no work stealing, no `Future`
 //! polling. Instead, it provides:
 //!
@@ -11,16 +11,16 @@
 //!   registered type gets a dense index ([`ResourceId`]) for ~3-cycle
 //!   dispatch-time access.
 //!
-//! - **Resources** — [`Res`] and [`ResMut`] are what users see in system
+//! - **Resources** — [`Res`] and [`ResMut`] are what users see in handler
 //!   function signatures. They deref to the inner value transparently.
 //!
-//! - **Systems** — The [`SystemParam`] trait resolves state at build time
-//!   and produces references at dispatch time. [`IntoSystem`] converts
-//!   plain functions into [`System`] trait objects for type-erased dispatch.
+//! - **Handlers** — The [`SystemParam`] trait resolves state at build time
+//!   and produces references at dispatch time. [`IntoHandler`] converts
+//!   plain functions into [`Handler`] trait objects for type-erased dispatch.
 //!
 //! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
 //!   chain. Stages transform data using `Option` and `Result` for flow
-//!   control. [`Pipeline`] implements [`System`] for direct or boxed dispatch.
+//!   control. [`Pipeline`] implements [`Handler`] for direct or boxed dispatch.
 //!   [`BatchPipeline`] owns a pre-allocated input buffer and runs each item
 //!   through the same chain independently — errors on one item don't affect
 //!   subsequent items.
@@ -35,7 +35,7 @@
 //! # Quick Start
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System};
+//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
 //!
 //! let mut builder = WorldBuilder::new();
 //! builder.register::<u64>(0);
@@ -45,9 +45,9 @@
 //!     *counter += event as u64;
 //! }
 //!
-//! let mut system = tick.into_system(world.registry_mut());
+//! let mut handler = tick.into_handler(world.registry_mut());
 //!
-//! system.run(&mut world, 10u32);
+//! handler.run(&mut world, 10u32);
 //!
 //! assert_eq!(*world.resource::<u64>(), 10);
 //! ```
@@ -61,7 +61,7 @@
 //! 2. The type parameter matches the type registered at that ID.
 //! 3. No mutable aliasing — at most one `&mut T` exists per value at any time.
 //!
-//! User-facing APIs (`resource`, `resource_mut`, `System::run`) are fully safe.
+//! User-facing APIs (`resource`, `resource_mut`, `Handler::run`) are fully safe.
 
 #![warn(missing_docs)]
 
@@ -80,5 +80,21 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
-pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
+pub use system::{CtxFree, Handler, HandlerFn, IntoHandler, Local, SystemParam};
 pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
+
+/// Type alias for a boxed, type-erased [`Handler`].
+pub type Virtual<E> = Box<dyn Handler<E>>;
+
+/// Type alias for an inline [`Handler`] using [`nexus_smartptr::Flat`].
+///
+/// Stores the handler inline (no heap allocation). Panics if the concrete
+/// handler doesn't fit in the buffer.
+#[cfg(feature = "smartptr")]
+pub type FlatVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flat<dyn Handler<E>, B>;
+
+/// Type alias for an inline [`Handler`] with heap fallback using [`nexus_smartptr::Flex`].
+///
+/// Stores inline if the handler fits, otherwise heap-allocates.
+#[cfg(feature = "smartptr")]
+pub type FlexVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flex<dyn Handler<E>, B>;

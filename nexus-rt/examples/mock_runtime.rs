@@ -16,7 +16,7 @@
 //! - `Driver` / `Plugin` — composable installation and registration
 //! - `Pipeline` — pre-resolved processing chain inside the driver
 //! - `Res<T>` / `ResMut<T>` — resource access via pre-resolved IDs
-//! - `Local<T>` — per-system state (tick counter on check_signals)
+//! - `Local<T>` — per-handler state (tick counter on check_signals)
 //! - `Option<Res<T>>` — optional dependencies (risk limits)
 //! - Change detection: tick = event sequence number
 //!
@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use nexus_rt::{Driver, IntoSystem, Local, Plugin, Res, ResMut, System, World, WorldBuilder};
+use nexus_rt::{Driver, Handler, IntoHandler, Local, Plugin, Res, ResMut, World, WorldBuilder};
 
 // =============================================================================
 // Domain types (World resources)
@@ -135,11 +135,11 @@ impl Plugin for TradingPlugin {
 struct MarketDataInstaller;
 
 /// Handle returned by driver installation. Owns the processing pipeline
-/// and pre-resolved system for dispatch.
+/// and pre-resolved handler for dispatch.
 struct MarketDataHandle {
     /// Pipeline: MarketTick → check_signals → update_price
-    check: Box<dyn System<MarketTick>>,
-    update: Box<dyn System<MarketTick>>,
+    check: Box<dyn Handler<MarketTick>>,
+    update: Box<dyn Handler<MarketTick>>,
 }
 
 impl Driver for MarketDataInstaller {
@@ -148,8 +148,8 @@ impl Driver for MarketDataInstaller {
     fn install(self, world: &mut WorldBuilder) -> MarketDataHandle {
         let r = world.registry_mut();
         MarketDataHandle {
-            check: Box::new(check_signals.into_system(r)),
-            update: Box::new(update_price.into_system(r)),
+            check: Box::new(check_signals.into_handler(r)),
+            update: Box::new(update_price.into_handler(r)),
         }
     }
 }
