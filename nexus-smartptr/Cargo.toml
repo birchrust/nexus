@@ -1,0 +1,16 @@
+[package]
+name = "nexus-smartptr"
+version = "0.1.0"
+description = "Inline smart pointers for trait objects — Flat (inline-only) and Flex (inline with heap fallback)"
+readme = "ROADMAP.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
