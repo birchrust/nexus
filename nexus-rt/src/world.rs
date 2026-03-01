@@ -906,14 +906,12 @@ mod tests {
 
     #[test]
     fn register_default_works() {
-        use crate::event::Events;
-
         let mut builder = WorldBuilder::new();
-        builder.register_default::<Events<u32>>();
+        builder.register_default::<Vec<u32>>();
         let world = builder.build();
 
-        let events = world.resource::<Events<u32>>();
-        assert!(events.is_empty());
+        let v = world.resource::<Vec<u32>>();
+        assert!(v.is_empty());
     }
 
     // -- Sequence / change detection tests ----------------------------------------

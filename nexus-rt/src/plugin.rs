@@ -15,7 +15,7 @@ use crate::world::WorldBuilder;
 /// impl Plugin for TradingPlugin {
 ///     fn build(self, world: &mut WorldBuilder) {
 ///         world.register(PriceCache::new());
-///         world.register_default::<Events<TradeSignal>>();
+///         world.register(TradeState::default());
 ///     }
 /// }
 ///

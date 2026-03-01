@@ -18,9 +18,6 @@
 //!   and produces references at dispatch time. [`IntoSystem`] converts
 //!   plain functions into [`System`] trait objects for type-erased dispatch.
 //!
-//! - **Events** — [`Events`], [`EventWriter`], and [`EventReader`] provide
-//!   simple event buffer types that integrate as system parameters.
-//!
 //! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
 //!   chain. Stages transform data using `Option` and `Result` for flow
 //!   control. [`Pipeline`] implements [`System`] for direct or boxed dispatch.
@@ -67,7 +64,6 @@
 
 mod callback;
 mod driver;
-mod event;
 pub mod pipeline;
 mod plugin;
 mod resource;
@@ -76,7 +72,6 @@ mod world;
 
 pub use callback::{Callback, IntoCallback};
 pub use driver::Driver;
-pub use event::{EventReader, EventWriter, Events};
 pub use pipeline::{IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart};
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
