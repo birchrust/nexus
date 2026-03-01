@@ -1,0 +1,28 @@
+//! Plugin trait for composable resource registration.
+
+use crate::world::WorldBuilder;
+
+/// Composable unit of resource registration.
+///
+/// Plugins register resources into a [`WorldBuilder`]. The runtime is
+/// assembled by installing plugins via [`WorldBuilder::install_plugin`].
+///
+/// # Examples
+///
+/// ```ignore
+/// struct TradingPlugin;
+///
+/// impl Plugin for TradingPlugin {
+///     fn build(self, world: &mut WorldBuilder) {
+///         world.register(PriceCache::new());
+///         world.register_default::<Events<TradeSignal>>();
+///     }
+/// }
+///
+/// let mut wb = WorldBuilder::new();
+/// wb.install_plugin(TradingPlugin);
+/// ```
+pub trait Plugin {
+    /// Register resources into the world.
+    fn build(self, world: &mut WorldBuilder);
+}

@@ -1,0 +1,16 @@
+[package]
+name = "nexus-rt"
+version = "0.1.0"
+description = "Single-threaded, event-driven runtime primitives with pre-resolved dispatch"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+rustc-hash = "2"
+
+[lints]
+workspace = true

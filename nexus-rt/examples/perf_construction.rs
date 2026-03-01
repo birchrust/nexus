@@ -1,0 +1,203 @@
+//! Construction-time latency benchmark for `into_system`, `into_callback`,
+//! and `into_stage`.
+//!
+//! Measures the cold-path cost of resolving SystemParam state + access
+//! conflict detection at various arities. This is paid once per system
+//! at build time — never on the dispatch hot path.
+//!
+//! Run with:
+//! ```bash
+//! taskset -c 0 cargo run --release -p nexus-rt --example perf_construction
+//! ```
+
+use std::hint::black_box;
+
+use nexus_rt::{IntoCallback, IntoSystem, Local, PipelineStart, Res, ResMut, WorldBuilder};
+
+// =============================================================================
+// Bench infrastructure (same as perf_pipeline.rs)
+// =============================================================================
+
+const ITERATIONS: usize = 100_000;
+const WARMUP: usize = 10_000;
+const BATCH: u64 = 100;
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+fn rdtsc_start() -> u64 {
+    unsafe {
+        core::arch::x86_64::_mm_lfence();
+        core::arch::x86_64::_rdtsc()
+    }
+}
+
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+fn rdtsc_end() -> u64 {
+    unsafe {
+        let mut aux = 0u32;
+        let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
+        core::arch::x86_64::_mm_lfence();
+        tsc
+    }
+}
+
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    let idx = ((sorted.len() as f64) * p / 100.0) as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn bench_batched<F: FnMut() -> u64>(name: &str, mut f: F) -> (u64, u64, u64) {
+    for _ in 0..WARMUP {
+        black_box(f());
+    }
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            black_box(f());
+        }
+        let end = rdtsc_end();
+        samples.push(end.wrapping_sub(start) / BATCH);
+    }
+    samples.sort_unstable();
+    let p50 = percentile(&samples, 50.0);
+    let p99 = percentile(&samples, 99.0);
+    let p999 = percentile(&samples, 99.9);
+    println!("{:<50} {:>8} {:>8} {:>8}", name, p50, p99, p999);
+    (p50, p99, p999)
+}
+
+fn print_header(title: &str) {
+    println!("=== {} ===\n", title);
+    println!(
+        "{:<50} {:>8} {:>8} {:>8}",
+        "Operation", "p50", "p99", "p999"
+    );
+    println!("{}", "-".repeat(78));
+}
+
+// =============================================================================
+// System functions at various arities
+// =============================================================================
+
+fn sys_1p(_a: Res<u64>, _e: ()) {}
+fn sys_2p(_a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
+fn sys_4p(_a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
+
+#[allow(clippy::too_many_arguments)]
+fn sys_8p(
+    _a: Res<u64>,
+    _b: ResMut<u32>,
+    _c: Res<bool>,
+    _d: Res<f64>,
+    _e2: Res<i64>,
+    _f: Res<i32>,
+    _g: Res<u8>,
+    _h: ResMut<u16>,
+    _e: (),
+) {
+}
+
+// With Local (no World resource — skipped by check_access)
+fn sys_local(_a: Local<u64>, _b: ResMut<u32>, _e: ()) {}
+
+// With Option (try_id path in init)
+fn sys_option(_a: Option<Res<u64>>, _b: ResMut<u32>, _e: ()) {}
+
+// =============================================================================
+// Callback functions
+// =============================================================================
+
+fn cb_2p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
+fn cb_4p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
+
+// =============================================================================
+// Stage functions
+// =============================================================================
+
+fn stage_2p(_a: Res<u64>, _b: ResMut<u32>, _x: u32) -> u32 {
+    0
+}
+fn stage_4p(_a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _x: u32) -> u32 {
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
+fn main() {
+    // Register enough types to exercise the check_access bitset.
+    let mut wb = WorldBuilder::new();
+    wb.register::<u64>(0);
+    wb.register::<u32>(0);
+    wb.register::<bool>(false);
+    wb.register::<f64>(0.0);
+    wb.register::<i64>(0);
+    wb.register::<i32>(0);
+    wb.register::<u8>(0);
+    wb.register::<u16>(0);
+    let mut world = wb.build();
+    let r = world.registry_mut();
+
+    print_header("into_system Construction (cycles)");
+
+    bench_batched("into_system  1-param (Res<u64>)", || {
+        let _ = black_box(sys_1p.into_system(r));
+        0
+    });
+
+    bench_batched("into_system  2-param (Res + ResMut)", || {
+        let _ = black_box(sys_2p.into_system(r));
+        0
+    });
+
+    bench_batched("into_system  4-param", || {
+        let _ = black_box(sys_4p.into_system(r));
+        0
+    });
+
+    bench_batched("into_system  8-param", || {
+        let _ = black_box(sys_8p.into_system(r));
+        0
+    });
+
+    bench_batched("into_system  2-param (Local + ResMut)", || {
+        let _ = black_box(sys_local.into_system(r));
+        0
+    });
+
+    bench_batched("into_system  2-param (Option<Res> + ResMut)", || {
+        let _ = black_box(sys_option.into_system(r));
+        0
+    });
+
+    println!();
+    print_header("into_callback Construction (cycles)");
+
+    bench_batched("into_callback 2-param (Res + ResMut)", || {
+        let _ = black_box(cb_2p.into_callback(0u64, r));
+        0
+    });
+
+    bench_batched("into_callback 4-param", || {
+        let _ = black_box(cb_4p.into_callback(0u64, r));
+        0
+    });
+
+    println!();
+    print_header("into_stage Construction (cycles)");
+
+    bench_batched(".stage() 2-param (Res + ResMut)", || {
+        let _ = black_box(PipelineStart::<u32>::new().stage(stage_2p, r));
+        0
+    });
+
+    bench_batched(".stage() 4-param", || {
+        let _ = black_box(PipelineStart::<u32>::new().stage(stage_4p, r));
+        0
+    });
+
+    println!();
+}
