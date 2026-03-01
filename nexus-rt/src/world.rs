@@ -45,14 +45,15 @@ use rustc_hash::FxHashMap;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ResourceId(usize);
 
-/// Monotonic epoch counter for change detection.
+/// Monotonic event sequence number for change detection.
 ///
-/// Resources record the tick at which they were last written.
-/// A resource is considered "changed" if its `changed_at` equals
-/// the world's `current_tick`. Wrapping is harmless — only equality
-/// is checked.
+/// Each event processed by a driver is assigned a unique sequence number
+/// via [`World::next_sequence`]. Resources record the sequence at which
+/// they were last written. A resource is considered "changed" if its
+/// `changed_at` equals the world's `current_sequence`. Wrapping is
+/// harmless — only equality is checked.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub struct Tick(pub(crate) u64);
+pub struct Sequence(pub(crate) u64);
 
 /// Type-erased drop function. Monomorphized at registration time so we
 /// can reconstruct and drop the original `Box<T>` from a `*mut u8`.
@@ -196,7 +197,7 @@ impl Registry {
 #[repr(C)]
 pub(crate) struct ResourceSlot {
     pub(crate) ptr: *mut u8,
-    pub(crate) changed_at: Cell<Tick>,
+    pub(crate) changed_at: Cell<Sequence>,
 }
 
 /// Internal storage for type-erased resource pointers and their destructors.
@@ -231,7 +232,7 @@ impl Storage {
 
 // SAFETY: Storage exclusively owns the heap allocations behind its raw pointers.
 // They are not aliased or shared. Transferring ownership to another thread is safe.
-// Cell<Tick> is !Sync but we're transferring ownership, not sharing.
+// Cell<Sequence> is !Sync but we're transferring ownership, not sharing.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for Storage {}
 
@@ -319,7 +320,7 @@ impl WorldBuilder {
         self.registry.indices.insert(type_id, id);
         self.storage.slots.push(ResourceSlot {
             ptr,
-            changed_at: Cell::new(Tick(0)),
+            changed_at: Cell::new(Sequence(0)),
         });
         self.storage.drop_fns.push(drop_resource::<T>);
         self
@@ -389,7 +390,7 @@ impl WorldBuilder {
         World {
             registry: self.registry,
             storage: self.storage,
-            current_tick: Tick(0),
+            current_sequence: Sequence(0),
             _not_sync: PhantomData,
         }
     }
@@ -430,9 +431,9 @@ pub struct World {
     storage: Storage,
     /// Current epoch tick. Advanced by the driver at the
     /// end of each dispatch pass.
-    current_tick: Tick,
+    current_sequence: Sequence,
     /// World must not be shared across threads — it holds interior-mutable
-    /// `Cell<Tick>` values accessed through `&self`. `!Sync` enforced by
+    /// `Cell<Sequence>` values accessed through `&self`. `!Sync` enforced by
     /// `PhantomData<Cell<()>>`.
     _not_sync: PhantomData<Cell<()>>,
 }
@@ -532,7 +533,9 @@ impl World {
             type_name::<T>(),
         );
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.slots[id.0].changed_at.set(self.current_tick);
+        self.storage.slots[id.0]
+            .changed_at
+            .set(self.current_sequence);
         // SAFETY: id resolved from our own registry. &mut self ensures
         // exclusive access — no other references can exist. Null check above.
         unsafe { self.get_mut(id) }
@@ -555,7 +558,9 @@ impl World {
     pub fn with_mut<T: 'static, R>(&mut self, f: impl FnOnce(&mut T, &mut Self) -> R) -> R {
         let id = self.registry.id::<T>();
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.slots[id.0].changed_at.set(self.current_tick);
+        self.storage.slots[id.0]
+            .changed_at
+            .set(self.current_sequence);
         // Yank the pointer out — the closure cannot reach T through &mut World.
         let ptr = std::mem::replace(&mut self.storage.slots[id.0].ptr, std::ptr::null_mut());
         // SAFETY: ptr was produced by Box::into_raw in register(), type T
@@ -568,20 +573,22 @@ impl World {
     }
 
     // =========================================================================
-    // Tick / change detection
+    // Sequence / change detection
     // =========================================================================
 
-    /// Returns the current epoch tick.
-    pub fn current_tick(&self) -> Tick {
-        self.current_tick
+    /// Returns the current event sequence number.
+    pub fn current_sequence(&self) -> Sequence {
+        self.current_sequence
     }
 
-    /// Advance the epoch tick by one (wrapping).
+    /// Advance to the next event sequence number and return it.
     ///
-    /// Called by the driver at the end of each dispatch pass.
-    /// Wrapping is harmless — only equality is checked.
-    pub fn advance_tick(&mut self) {
-        self.current_tick = Tick(self.current_tick.0.wrapping_add(1));
+    /// Drivers call this before dispatching each event. The returned
+    /// sequence number identifies the event being processed. Resources
+    /// mutated during dispatch will record this sequence in `changed_at`.
+    pub fn next_sequence(&mut self) -> Sequence {
+        self.current_sequence = Sequence(self.current_sequence.0.wrapping_add(1));
+        self.current_sequence
     }
 
     // =========================================================================
@@ -665,7 +672,7 @@ impl World {
     /// `id` must have been returned by [`WorldBuilder::register`] for
     /// the same builder that produced this container.
     #[inline(always)]
-    pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Tick {
+    pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Sequence {
         unsafe { self.storage.slots.get_unchecked(id.0).changed_at.get() }
     }
 
@@ -676,7 +683,7 @@ impl World {
     /// `id` must have been returned by [`WorldBuilder::register`] for
     /// the same builder that produced this container.
     #[inline(always)]
-    pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Tick> {
+    pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Sequence> {
         unsafe { &self.storage.slots.get_unchecked(id.0).changed_at }
     }
 
@@ -694,7 +701,7 @@ impl World {
                 .slots
                 .get_unchecked(id.0)
                 .changed_at
-                .set(self.current_tick);
+                .set(self.current_sequence);
         }
     }
 }
@@ -1001,37 +1008,37 @@ mod tests {
         assert!(events.is_empty());
     }
 
-    // -- Tick / change detection tests ----------------------------------------
+    // -- Sequence / change detection tests ----------------------------------------
 
     #[test]
     fn tick_default_is_zero() {
-        assert_eq!(Tick::default(), Tick(0));
+        assert_eq!(Sequence::default(), Sequence(0));
     }
 
     #[test]
-    fn advance_tick_increments() {
+    fn next_sequence_increments() {
         let mut world = WorldBuilder::new().build();
-        assert_eq!(world.current_tick(), Tick(0));
-        world.advance_tick();
-        assert_eq!(world.current_tick(), Tick(1));
-        world.advance_tick();
-        assert_eq!(world.current_tick(), Tick(2));
+        assert_eq!(world.current_sequence(), Sequence(0));
+        world.next_sequence();
+        assert_eq!(world.current_sequence(), Sequence(1));
+        world.next_sequence();
+        assert_eq!(world.current_sequence(), Sequence(2));
     }
 
     #[test]
-    fn resource_registered_at_current_tick() {
-        // Resources registered at build time get changed_at=Tick(0).
-        // World starts at current_tick=Tick(0). So they match — "changed."
+    fn resource_registered_at_current_sequence() {
+        // Resources registered at build time get changed_at=Sequence(0).
+        // World starts at current_sequence=Sequence(0). So they match — "changed."
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(42);
         let world = builder.build();
 
         let id = world.id::<u64>();
         unsafe {
-            assert_eq!(world.changed_at(id), Tick(0));
-            assert_eq!(world.current_tick(), Tick(0));
-            // changed_at == current_tick → "changed"
-            assert_eq!(world.changed_at(id), world.current_tick());
+            assert_eq!(world.changed_at(id), Sequence(0));
+            assert_eq!(world.current_sequence(), Sequence(0));
+            // changed_at == current_sequence → "changed"
+            assert_eq!(world.changed_at(id), world.current_sequence());
         }
     }
 
@@ -1041,18 +1048,18 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
         let id = world.id::<u64>();
 
-        // changed_at is still 0, current_tick is 1 → not changed
+        // changed_at is still 0, current_sequence is 1 → not changed
         unsafe {
-            assert_eq!(world.changed_at(id), Tick(0));
+            assert_eq!(world.changed_at(id), Sequence(0));
         }
 
-        // resource_mut stamps changed_at to current_tick
+        // resource_mut stamps changed_at to current_sequence
         *world.resource_mut::<u64>() = 99;
         unsafe {
-            assert_eq!(world.changed_at(id), Tick(1));
+            assert_eq!(world.changed_at(id), Sequence(1));
         }
     }
 
@@ -1062,11 +1069,11 @@ mod tests {
         builder.register::<u64>(0).register::<bool>(false);
         let mut world = builder.build();
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
         let id = world.id::<u64>();
 
         unsafe {
-            assert_eq!(world.changed_at(id), Tick(0));
+            assert_eq!(world.changed_at(id), Sequence(0));
         }
 
         world.with_mut::<u64, _>(|val, _world| {
@@ -1074,7 +1081,7 @@ mod tests {
         });
 
         unsafe {
-            assert_eq!(world.changed_at(id), Tick(1));
+            assert_eq!(world.changed_at(id), Sequence(1));
         }
     }
 }

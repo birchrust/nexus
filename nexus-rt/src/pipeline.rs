@@ -1075,4 +1075,177 @@ mod tests {
         p.run(&mut world, 0);
         assert_eq!(*world.resource::<u64>(), 3);
     }
+
+    // =========================================================================
+    // Option combinators (extended)
+    // =========================================================================
+
+    #[test]
+    fn option_unwrap_or_some() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| -> Option<u32> { Some(x) }, r)
+            .unwrap_or(99);
+        assert_eq!(p.run(&mut world, 5), 5);
+    }
+
+    #[test]
+    fn option_unwrap_or_none() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Option<u32> { None }, r)
+            .unwrap_or(99);
+        assert_eq!(p.run(&mut world, 5), 99);
+    }
+
+    #[test]
+    fn option_unwrap_or_else() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Option<u32> { None }, r)
+            .unwrap_or_else(|_w| 42);
+        assert_eq!(p.run(&mut world, 0), 42);
+    }
+
+    #[test]
+    fn option_ok_or() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Option<u32> { None }, r)
+            .ok_or("missing");
+        assert_eq!(p.run(&mut world, 0), Err("missing"));
+    }
+
+    #[test]
+    fn option_ok_or_some() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| -> Option<u32> { Some(x) }, r)
+            .ok_or("missing");
+        assert_eq!(p.run(&mut world, 7), Ok(7));
+    }
+
+    #[test]
+    fn option_ok_or_else() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Option<u32> { None }, r)
+            .ok_or_else(|_w| "computed");
+        assert_eq!(p.run(&mut world, 0), Err("computed"));
+    }
+
+    #[test]
+    fn option_inspect_passes_through() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| -> Option<u32> { Some(x) }, r)
+            .inspect(|_w, _val| {});
+        // inspect should pass through the value unchanged.
+        assert_eq!(p.run(&mut world, 10), Some(10));
+    }
+
+    // =========================================================================
+    // Result combinators (extended)
+    // =========================================================================
+
+    #[test]
+    fn result_map_err() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Result<u32, i32> { Err(-1) }, r)
+            .map_err(|_w, e| e.to_string());
+        assert_eq!(p.run(&mut world, 0), Err("-1".to_string()));
+    }
+
+    #[test]
+    fn result_map_err_ok_passthrough() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| -> Result<u32, i32> { Ok(x) }, r)
+            .map_err(|_w, e| e.to_string());
+        assert_eq!(p.run(&mut world, 5), Ok(5));
+    }
+
+    #[test]
+    fn result_or_else() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Result<u32, &str> { Err("fail") }, r)
+            .or_else(|_w, _e| Ok::<u32, &str>(42));
+        assert_eq!(p.run(&mut world, 0), Ok(42));
+    }
+
+    #[test]
+    fn result_inspect_passes_through() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| -> Result<u32, &str> { Ok(x) }, r)
+            .inspect(|_w, _val| {});
+        // inspect should pass through Ok unchanged.
+        assert_eq!(p.run(&mut world, 7), Ok(7));
+    }
+
+    #[test]
+    fn result_inspect_err_passes_through() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Result<u32, &str> { Err("bad") }, r)
+            .inspect_err(|_w, _e| {});
+        // inspect_err should pass through Err unchanged.
+        assert_eq!(p.run(&mut world, 0), Err("bad"));
+    }
+
+    #[test]
+    fn result_ok_converts() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| -> Result<u32, &str> { Ok(x) }, r)
+            .ok();
+        assert_eq!(p.run(&mut world, 5), Some(5));
+    }
+
+    #[test]
+    fn result_ok_drops_err() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Result<u32, &str> { Err("gone") }, r)
+            .ok();
+        assert_eq!(p.run(&mut world, 0), None);
+    }
+
+    #[test]
+    fn result_unwrap_or() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Result<u32, &str> { Err("x") }, r)
+            .unwrap_or(99);
+        assert_eq!(p.run(&mut world, 0), 99);
+    }
+
+    #[test]
+    fn result_unwrap_or_else() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|_x: u32| -> Result<u32, i32> { Err(-5) }, r)
+            .unwrap_or_else(|_w, e| e.unsigned_abs());
+        assert_eq!(p.run(&mut world, 0), 5);
+    }
 }

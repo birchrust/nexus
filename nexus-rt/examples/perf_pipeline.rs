@@ -200,7 +200,7 @@ fn system_two_res(a: Res<u64>, b: Res<u32>, input: u64) {
 }
 
 /// Monomorphized System dispatch with Res<u64>.
-/// Full path: System::run → SystemParam::fetch → World::get_ptr + changed_at + current_tick.
+/// Full path: System::run → SystemParam::fetch → World::get_ptr + changed_at + current_sequence.
 #[inline(never)]
 pub fn probe_system_res_read(sys: &mut impl System<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
@@ -396,7 +396,7 @@ fn main() {
     let ic4 = ic_4p.into_system(ic_r);
     let ic8 = ic_8p.into_system(ic_r);
 
-    // Tick 0: all changed (changed_at == current_tick).
+    // Tick 0: all changed (changed_at == current_sequence).
     bench_batched("inputs_changed 1-param (changed)", || {
         if ic1.inputs_changed(&ic_world) { 1 } else { 0 }
     });
@@ -414,7 +414,7 @@ fn main() {
     });
 
     // Advance tick so inputs are stale.
-    ic_world.advance_tick();
+    ic_world.next_sequence();
 
     bench_batched("inputs_changed 1-param (stale)", || {
         if ic1.inputs_changed(&ic_world) { 1 } else { 0 }

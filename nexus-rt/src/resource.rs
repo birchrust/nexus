@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
 
-use crate::world::Tick;
+use crate::world::Sequence;
 
 /// Shared reference to a resource in [`World`](crate::World).
 ///
@@ -14,22 +14,22 @@ use crate::world::Tick;
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
 pub struct Res<'w, T: 'static> {
     value: &'w T,
-    changed_at: Tick,
-    current_tick: Tick,
+    changed_at: Sequence,
+    current_sequence: Sequence,
 }
 
 impl<'w, T: 'static> Res<'w, T> {
-    pub(crate) fn new(value: &'w T, changed_at: Tick, current_tick: Tick) -> Self {
+    pub(crate) fn new(value: &'w T, changed_at: Sequence, current_sequence: Sequence) -> Self {
         Self {
             value,
             changed_at,
-            current_tick,
+            current_sequence,
         }
     }
 
-    /// Returns `true` if the resource was modified during the current tick.
+    /// Returns `true` if the resource was modified during the current sequence.
     pub fn is_changed(&self) -> bool {
-        self.changed_at == self.current_tick
+        self.changed_at == self.current_sequence
     }
 }
 
@@ -46,28 +46,32 @@ impl<T: 'static> Deref for Res<'_, T> {
 ///
 /// Appears in system function signatures to declare a write dependency.
 /// Derefs to the inner value transparently. Stamps the resource's
-/// `changed_at` tick on [`DerefMut`] — the act of writing is the
+/// `changed_at` sequence on [`DerefMut`] — the act of writing is the
 /// change signal.
 ///
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
 pub struct ResMut<'w, T: 'static> {
     value: &'w mut T,
-    changed_at: &'w Cell<Tick>,
-    current_tick: Tick,
+    changed_at: &'w Cell<Sequence>,
+    current_sequence: Sequence,
 }
 
 impl<'w, T: 'static> ResMut<'w, T> {
-    pub(crate) fn new(value: &'w mut T, changed_at: &'w Cell<Tick>, current_tick: Tick) -> Self {
+    pub(crate) fn new(
+        value: &'w mut T,
+        changed_at: &'w Cell<Sequence>,
+        current_sequence: Sequence,
+    ) -> Self {
         Self {
             value,
             changed_at,
-            current_tick,
+            current_sequence,
         }
     }
 
-    /// Returns `true` if the resource was modified during the current tick.
+    /// Returns `true` if the resource was modified during the current sequence.
     pub fn is_changed(&self) -> bool {
-        self.changed_at.get() == self.current_tick
+        self.changed_at.get() == self.current_sequence
     }
 }
 
@@ -83,7 +87,7 @@ impl<T: 'static> Deref for ResMut<'_, T> {
 impl<T: 'static> DerefMut for ResMut<'_, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        self.changed_at.set(self.current_tick);
+        self.changed_at.set(self.current_sequence);
         self.value
     }
 }
@@ -95,14 +99,14 @@ mod tests {
     #[test]
     fn res_deref() {
         let val = 42u64;
-        let res = Res::new(&val, Tick::default(), Tick::default());
+        let res = Res::new(&val, Sequence::default(), Sequence::default());
         assert_eq!(*res, 42);
     }
 
     #[test]
     fn res_is_changed() {
         let val = 42u64;
-        let tick = Tick::default();
+        let tick = Sequence::default();
         let res = Res::new(&val, tick, tick);
         assert!(res.is_changed());
     }
@@ -110,16 +114,16 @@ mod tests {
     #[test]
     fn res_not_changed() {
         let val = 42u64;
-        // changed_at=0, current_tick=1 → not changed
-        let res = Res::new(&val, Tick::default(), Tick(1));
+        // changed_at=0, current_sequence=1 → not changed
+        let res = Res::new(&val, Sequence::default(), Sequence(1));
         assert!(!res.is_changed());
     }
 
     #[test]
     fn res_mut_deref_mut() {
         let mut val = 1u64;
-        let changed_at = Cell::new(Tick::default());
-        let mut res = ResMut::new(&mut val, &changed_at, Tick::default());
+        let changed_at = Cell::new(Sequence::default());
+        let mut res = ResMut::new(&mut val, &changed_at, Sequence::default());
         *res = 99;
         assert_eq!(*res, 99);
         drop(res);
@@ -129,39 +133,39 @@ mod tests {
     #[test]
     fn res_mut_deref_mut_stamps() {
         let mut val = 1u64;
-        let changed_at = Cell::new(Tick(0));
-        let current = Tick(5);
+        let changed_at = Cell::new(Sequence(0));
+        let current = Sequence(5);
         let mut res = ResMut::new(&mut val, &changed_at, current);
 
         // Before DerefMut — changed_at is still 0
-        assert_eq!(changed_at.get(), Tick(0));
+        assert_eq!(changed_at.get(), Sequence(0));
 
         *res = 99;
 
-        // After DerefMut — changed_at stamped to current_tick
-        assert_eq!(changed_at.get(), Tick(5));
+        // After DerefMut — changed_at stamped to current_sequence
+        assert_eq!(changed_at.get(), Sequence(5));
     }
 
     #[test]
     fn res_mut_deref_does_not_stamp() {
         let mut val = 42u64;
-        let changed_at = Cell::new(Tick(0));
-        let current = Tick(5);
+        let changed_at = Cell::new(Sequence(0));
+        let current = Sequence(5);
         let res = ResMut::new(&mut val, &changed_at, current);
 
         // Deref (shared) — read only, should not stamp
         let _ = *res;
-        assert_eq!(changed_at.get(), Tick(0));
+        assert_eq!(changed_at.get(), Sequence(0));
     }
 
     #[test]
     fn res_mut_is_changed() {
         let mut val = 1u64;
-        let changed_at = Cell::new(Tick(3));
-        let res = ResMut::new(&mut val, &changed_at, Tick(3));
+        let changed_at = Cell::new(Sequence(3));
+        let res = ResMut::new(&mut val, &changed_at, Sequence(3));
         assert!(res.is_changed());
 
-        let res2 = ResMut::new(&mut val, &changed_at, Tick(4));
+        let res2 = ResMut::new(&mut val, &changed_at, Sequence(4));
         assert!(!res2.is_changed());
     }
 }

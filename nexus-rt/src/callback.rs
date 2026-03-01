@@ -66,6 +66,11 @@ pub struct Callback<C, F, Params: SystemParam> {
 /// `registry.id::<T>()` at call time — panics if any resource is not
 /// registered.
 ///
+/// # Named functions only
+///
+/// Closures do not work with `IntoCallback` due to Rust's HRTB inference
+/// limitations with GATs. Use named `fn` items instead.
+///
 /// # Panics
 ///
 /// Panics if any [`SystemParam`] resource is not registered.
@@ -101,7 +106,7 @@ impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> System<E> for Callback<C, F, 
 
     fn inputs_changed(&self, _world: &World) -> bool {
         // Context-only callback — no resource dependencies to check.
-        // Always returns true so the scheduler never skips it.
+        // Always returns true so the drivers never skip it.
         true
     }
 
@@ -458,10 +463,10 @@ mod tests {
 
         let cb = reads_resource.into_callback(0u64, world.registry_mut());
 
-        // Tick 0: changed_at=0, current_tick=0 → changed
+        // Seq 0: changed_at=0, current_sequence=0 → changed
         assert!(cb.inputs_changed(&world));
 
-        world.advance_tick();
+        world.next_sequence();
         assert!(!cb.inputs_changed(&world));
 
         *world.resource_mut::<u64>() = 42;
@@ -494,15 +499,15 @@ mod tests {
 
         let mut cb = stamps_writer.into_callback(0u64, world.registry_mut());
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
         let id = world.id::<u64>();
         unsafe {
-            assert_eq!(world.changed_at(id), crate::Tick(0));
+            assert_eq!(world.changed_at(id), crate::Sequence(0));
         }
 
         cb.run(&mut world, ());
         unsafe {
-            assert_eq!(world.changed_at(id), crate::Tick(1));
+            assert_eq!(world.changed_at(id), crate::Sequence(1));
         }
     }
 

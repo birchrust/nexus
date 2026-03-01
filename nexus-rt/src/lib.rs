@@ -82,4 +82,4 @@ pub use pipeline::{IntoStage, Pipeline, PipelineBuilder, PipelineOutput, Pipelin
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
 pub use system::{FunctionSystem, IntoSystem, Local, System, SystemParam};
-pub use world::{Registry, ResourceId, Tick, World, WorldBuilder};
+pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};

@@ -121,7 +121,7 @@ impl<T: 'static> SystemParam for EventWriter<'_, T> {
                 ResMut::new(
                     world.get_mut::<Events<T>>(id),
                     world.changed_at_cell(id),
-                    world.current_tick(),
+                    world.current_sequence(),
                 )
             },
         }
@@ -129,7 +129,7 @@ impl<T: 'static> SystemParam for EventWriter<'_, T> {
 
     fn any_changed(state: &ResourceId, world: &World) -> bool {
         // SAFETY: state was produced by init() on the same registry.
-        unsafe { world.changed_at(*state) == world.current_tick() }
+        unsafe { world.changed_at(*state) == world.current_sequence() }
     }
 
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
@@ -201,7 +201,7 @@ impl<T: 'static> SystemParam for EventReader<'_, T> {
                 ResMut::new(
                     world.get_mut::<Events<T>>(id),
                     world.changed_at_cell(id),
-                    world.current_tick(),
+                    world.current_sequence(),
                 )
             },
         }
@@ -209,7 +209,7 @@ impl<T: 'static> SystemParam for EventReader<'_, T> {
 
     fn any_changed(state: &ResourceId, world: &World) -> bool {
         // SAFETY: state was produced by init() on the same registry.
-        unsafe { world.changed_at(*state) == world.current_tick() }
+        unsafe { world.changed_at(*state) == world.current_sequence() }
     }
 
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
@@ -336,13 +336,13 @@ mod tests {
         let writer_sys = write_events.into_system(world.registry_mut());
         let reader_sys = read_events.into_system(world.registry_mut());
 
-        // Tick 0: Events registered at tick=0, current_tick=0 → changed
+        // Seq 0: Events registered at seq=0, current_sequence=0 → changed
         assert!(writer_sys.inputs_changed(&world));
         assert!(reader_sys.inputs_changed(&world));
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
 
-        // Tick 1: Events changed_at=0, current_tick=1 → not changed
+        // Seq 1: Events changed_at=0, current_sequence=1 → not changed
         assert!(!writer_sys.inputs_changed(&world));
         assert!(!reader_sys.inputs_changed(&world));
     }
@@ -369,12 +369,12 @@ mod tests {
         builder.register_default::<Events<u32>>();
         let mut world = builder.build();
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
 
         let events_id = world.id::<Events<u32>>();
         // Events registered at tick=0, now at tick=1 → not changed
         unsafe {
-            assert_ne!(world.changed_at(events_id), world.current_tick());
+            assert_ne!(world.changed_at(events_id), world.current_sequence());
         }
 
         // EventWriter::send → DerefMut on inner ResMut → stamps
@@ -382,7 +382,7 @@ mod tests {
         writer_sys.run(&mut world, 1u32);
 
         unsafe {
-            assert_eq!(world.changed_at(events_id), world.current_tick());
+            assert_eq!(world.changed_at(events_id), world.current_sequence());
         }
     }
 }

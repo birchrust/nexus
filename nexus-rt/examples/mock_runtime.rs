@@ -247,7 +247,7 @@ fn main() {
         ],
     );
     count_trades(&mut world);
-    world.advance_tick();
+    world.next_sequence();
 
     // -- Tick 1 ---------------------------------------------------------------
 
@@ -271,7 +271,7 @@ fn main() {
         ],
     );
     count_trades(&mut world);
-    world.advance_tick();
+    world.next_sequence();
 
     // -- Tick 2 (no events) ---------------------------------------------------
 
@@ -279,7 +279,7 @@ fn main() {
 
     md.poll(&mut world, &[]);
     count_trades(&mut world);
-    world.advance_tick();
+    world.next_sequence();
 
     println!("[dispatch] no events — nothing to process");
 

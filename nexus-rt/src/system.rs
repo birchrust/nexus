@@ -77,14 +77,14 @@ impl<T: 'static> SystemParam for Res<'_, T> {
             Res::new(
                 world.get::<T>(id),
                 world.changed_at(id),
-                world.current_tick(),
+                world.current_sequence(),
             )
         }
     }
 
     fn any_changed(state: &ResourceId, world: &World) -> bool {
         // SAFETY: state was produced by init() on the same registry.
-        unsafe { world.changed_at(*state) == world.current_tick() }
+        unsafe { world.changed_at(*state) == world.current_sequence() }
     }
 
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
@@ -111,14 +111,14 @@ impl<T: 'static> SystemParam for ResMut<'_, T> {
             ResMut::new(
                 world.get_mut::<T>(id),
                 world.changed_at_cell(id),
-                world.current_tick(),
+                world.current_sequence(),
             )
         }
     }
 
     fn any_changed(state: &ResourceId, world: &World) -> bool {
         // SAFETY: state was produced by init() on the same registry.
-        unsafe { world.changed_at(*state) == world.current_tick() }
+        unsafe { world.changed_at(*state) == world.current_sequence() }
     }
 
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
@@ -144,7 +144,7 @@ impl<T: 'static> SystemParam for Option<Res<'_, T>> {
             Res::new(
                 world.get::<T>(id),
                 world.changed_at(id),
-                world.current_tick(),
+                world.current_sequence(),
             )
         })
     }
@@ -152,7 +152,7 @@ impl<T: 'static> SystemParam for Option<Res<'_, T>> {
     fn any_changed(state: &Option<ResourceId>, world: &World) -> bool {
         state.is_some_and(|id| {
             // SAFETY: id was produced by init() on the same registry.
-            unsafe { world.changed_at(id) == world.current_tick() }
+            unsafe { world.changed_at(id) == world.current_sequence() }
         })
     }
 
@@ -182,7 +182,7 @@ impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
             ResMut::new(
                 world.get_mut::<T>(id),
                 world.changed_at_cell(id),
-                world.current_tick(),
+                world.current_sequence(),
             )
         })
     }
@@ -190,7 +190,7 @@ impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
     fn any_changed(state: &Option<ResourceId>, world: &World) -> bool {
         state.is_some_and(|id| {
             // SAFETY: id was produced by init() on the same registry.
-            unsafe { world.changed_at(id) == world.current_tick() }
+            unsafe { world.changed_at(id) == world.current_sequence() }
         })
     }
 
@@ -382,6 +382,12 @@ pub struct FunctionSystem<F, Params: SystemParam> {
 ///
 /// Event `E` is always the last function parameter. Everything before
 /// it is resolved as [`SystemParam`] from a [`Registry`].
+///
+/// # Named functions only
+///
+/// Closures do not work with `IntoSystem` due to Rust's HRTB inference
+/// limitations with GATs. Use named `fn` items instead. This is the same
+/// limitation as Bevy's system registration.
 ///
 /// # Examples
 ///
@@ -787,12 +793,12 @@ mod tests {
 
         let sys = reader.into_system(world.registry_mut());
 
-        // Tick 0: changed_at=0, current_tick=0 → inputs changed
+        // Tick 0: changed_at=0, current_sequence=0 → inputs changed
         assert!(sys.inputs_changed(&world));
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
 
-        // Tick 1: changed_at=0, current_tick=1 → not changed
+        // Tick 1: changed_at=0, current_sequence=1 → not changed
         assert!(!sys.inputs_changed(&world));
 
         // Stamp u64 at tick=1
@@ -812,7 +818,7 @@ mod tests {
 
         let sys = reads_bool.into_system(world.registry_mut());
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
 
         // Only stamp u64, not bool
         *world.resource_mut::<u64>() = 42;
@@ -922,13 +928,13 @@ mod tests {
         builder.register::<u64>(0).register::<bool>(false);
         let mut world = builder.build();
 
-        // Tick 0: all resources changed_at=0, current_tick=0 → changed.
+        // Tick 0: all resources changed_at=0, current_sequence=0 → changed.
         fn writer(mut val: ResMut<u64>, _e: ()) {
             *val = 42;
         }
         fn observer(val: Res<u64>, flag: Res<bool>, _e: ()) {
-            // On tick 0: both are "changed" (changed_at == current_tick == 0).
-            // After advance_tick: only u64 should be changed (writer stamps it).
+            // On tick 0: both are "changed" (changed_at == current_sequence == 0).
+            // After next_sequence: only u64 should be changed (writer stamps it).
             let _ = (*val, *flag);
         }
 
@@ -939,7 +945,7 @@ mod tests {
         writer_sys.run(&mut world, ());
         observer_sys.run(&mut world, ());
 
-        world.advance_tick(); // tick=1
+        world.next_sequence(); // tick=1
 
         // Tick 1: writer runs → stamps u64 to tick=1.
         // bool was not written → still at tick=0.
@@ -948,8 +954,8 @@ mod tests {
         let u64_id = world.id::<u64>();
         let bool_id = world.id::<bool>();
         unsafe {
-            assert_eq!(world.changed_at(u64_id), world.current_tick());
-            assert_ne!(world.changed_at(bool_id), world.current_tick());
+            assert_eq!(world.changed_at(u64_id), world.current_sequence());
+            assert_ne!(world.changed_at(bool_id), world.current_sequence());
         }
     }
 }
