@@ -661,12 +661,12 @@ impl PipelineOutput for () {}
 impl PipelineOutput for Option<()> {}
 
 // =============================================================================
-// build — when Out: PipelineOutput (i.e., Out = ())
+// build — when Out = ()
 // =============================================================================
 
-impl<In: 'static, Out: PipelineOutput, Chain> PipelineBuilder<In, Out, Chain>
+impl<In: 'static, Chain> PipelineBuilder<In, (), Chain>
 where
-    Chain: FnMut(&mut World, In) -> Out + 'static,
+    Chain: FnMut(&mut World, In) + 'static,
 {
     /// Finalize the pipeline into a [`Pipeline`].
     ///
@@ -682,13 +682,26 @@ where
             _marker: PhantomData,
         }
     }
+}
 
+// =============================================================================
+// build_batch — when Out: PipelineOutput (() or Option<()>)
+// =============================================================================
+
+impl<In: 'static, Out: PipelineOutput, Chain> PipelineBuilder<In, Out, Chain>
+where
+    Chain: FnMut(&mut World, In) -> Out + 'static,
+{
     /// Finalize into a [`BatchPipeline`] with a pre-allocated input buffer.
     ///
-    /// Same pipeline chain as [`build`](Self::build), but the pipeline owns
-    /// an input buffer that drivers fill between dispatch cycles. Each call
-    /// to [`BatchPipeline::run`] drains the buffer, running every item
-    /// through the chain independently.
+    /// Same pipeline chain as [`build`](PipelineBuilder::build), but the
+    /// pipeline owns an input buffer that drivers fill between dispatch
+    /// cycles. Each call to [`BatchPipeline::run`] drains the buffer,
+    /// running every item through the chain independently.
+    ///
+    /// Available when the pipeline ends with `()` or `Option<()>` (e.g.
+    /// after `.catch()` or `.filter()`). Pipelines producing values need
+    /// a final `.stage()` that consumes the output.
     ///
     /// `capacity` is the initial allocation — the buffer can grow if needed,
     /// but sizing it for the expected batch size avoids reallocation.
