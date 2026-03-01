@@ -190,7 +190,7 @@ runtime overhead.
 
 ### Batch pipeline — per-item processing over a buffer
 
-`build_batch(capacity)` produces a [`BatchPipeline`] that owns a
+`build_batch(capacity)` produces a `BatchPipeline` that owns a
 pre-allocated input buffer. Each item flows through the same chain
 independently — errors are handled per-item, not per-batch.
 
