@@ -7,8 +7,12 @@
 //!
 //! Read/write pointer words directly via `ptr::read`/`ptr::write` to preserve
 //! provenance. Never round-trips through `usize`.
+//!
+//! Note: relies on the de facto stable fat pointer layout `(data, metadata)`.
+//! `core::ptr::metadata` / `from_raw_parts` would be preferable but remain
+//! unstable (`ptr_metadata`, tracking issue #81513). Migrate when stabilized.
 
-use core::mem::{MaybeUninit, size_of};
+use core::mem::{self, size_of};
 
 /// Opaque pointer metadata.
 ///
@@ -58,7 +62,7 @@ pub(crate) fn extract_metadata<T: ?Sized>(ptr: *const T) -> Metadata {
 ///   same concrete type that will be accessed through the returned pointer.
 #[inline(always)]
 pub(crate) unsafe fn make_ptr<T: ?Sized>(data: *const (), meta: Metadata) -> *const T {
-    let mut result: MaybeUninit<*const T> = MaybeUninit::uninit();
+    let mut result: mem::MaybeUninit<*const T> = mem::MaybeUninit::uninit();
     let words = result.as_mut_ptr().cast::<*const ()>();
     unsafe {
         words.write(data);

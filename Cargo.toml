@@ -12,7 +12,8 @@ members = [
 	"nexus-queue",
 	"nexus-rt",
 	"nexus-slab",
-	"nexus-slot", "nexus-smartptr",
+	"nexus-slot",
+	"nexus-smartptr",
 ]
 
 [workspace.package]

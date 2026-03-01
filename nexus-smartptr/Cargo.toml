@@ -2,7 +2,7 @@
 name = "nexus-smartptr"
 version = "0.1.0"
 description = "Inline smart pointers for trait objects — Flat (inline-only) and Flex (inline with heap fallback)"
-readme = "ROADMAP.md"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
