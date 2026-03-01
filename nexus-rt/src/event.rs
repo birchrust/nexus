@@ -1,8 +1,10 @@
 //! Event buffer types for inter-system communication.
 //!
 //! [`Events<T>`] is a simple buffer registered as a resource in [`World`].
-//! Systems read and write events through [`EventWriter<T>`] (single writer,
-//! exclusive access) and [`EventReader<T>`] (multiple readers, shared access).
+//! Systems read and write events through [`EventWriter<T>`] and
+//! [`EventReader<T>`], both of which take exclusive access to the underlying
+//! buffer. Multiple readers can coexist across sequential system dispatches,
+//! but not within the same system.
 //!
 //! Clearing is the runtime/driver's responsibility — call
 //! [`Events::clear`] or [`Events::drain`] between dispatch cycles.

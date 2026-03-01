@@ -632,7 +632,7 @@ impl World {
     #[inline(always)]
     pub unsafe fn get<T: 'static>(&self, id: ResourceId) -> &T {
         // SAFETY: caller guarantees id was returned by register() on the
-        // builder that produced this container, so id.0 < self.storage.ptrs.len().
+        // builder that produced this container, so id.0 < self.storage.slots.len().
         // T matches the registered type. No mutable alias exists.
         unsafe { &*(self.get_ptr(id) as *const T) }
     }
@@ -654,7 +654,7 @@ impl World {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut<T: 'static>(&self, id: ResourceId) -> &mut T {
         // SAFETY: caller guarantees id was returned by register() on the
-        // builder that produced this container, so id.0 < self.storage.ptrs.len().
+        // builder that produced this container, so id.0 < self.storage.slots.len().
         // T matches the registered type. No aliases exist.
         unsafe { &mut *(self.get_ptr(id) as *mut T) }
     }
