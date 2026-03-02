@@ -102,7 +102,7 @@ pub type FlatVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flat<dyn Hand
 pub type FlexVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flex<dyn Handler<E>, B>;
 
 #[cfg(feature = "timer")]
-pub use timer::{TimerDriver, TimerHandle, TimerWheel};
+pub use timer::{BoxedTimers, Periodic, TimerConfig, TimerDriver, TimerHandle, TimerWheel};
 
 #[cfg(all(feature = "timer", feature = "smartptr"))]
-pub use timer::{FlexTimerWheel, InlineTimerWheel};
+pub use timer::{FlexTimerWheel, FlexTimers, InlineTimerWheel, InlineTimers};

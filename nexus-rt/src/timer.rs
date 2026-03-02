@@ -47,7 +47,7 @@
 //!
 //! let mut builder = WorldBuilder::new();
 //! builder.register::<bool>(false);
-//! let mut timer = builder.install_driver(TimerDriver::new(256));
+//! let mut timer: TimerHandle = builder.install_driver(TimerDriver::new(256));
 //! let mut world = builder.build();
 //!
 //! // Schedule a one-shot timer
@@ -63,7 +63,7 @@
 
 use std::marker::PhantomData;
 use std::ops::DerefMut;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use nexus_timer::Wheel;
 
@@ -89,6 +89,88 @@ pub type InlineTimerWheel = Wheel<crate::FlatVirtual<Instant, nexus_smartptr::B2
 /// Type alias for a timer wheel using inline storage with heap fallback.
 #[cfg(feature = "smartptr")]
 pub type FlexTimerWheel = Wheel<crate::FlexVirtual<Instant, nexus_smartptr::B256>>;
+
+/// Configuration trait for generic timer code.
+///
+/// ZST annotation type that bundles the handler storage type with a
+/// wrapping function. Library code parameterized over `C: TimerConfig`
+/// can schedule, cancel, and wrap handlers without knowing the concrete
+/// storage strategy.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::time::Instant;
+/// use nexus_rt::timer::{BoxedTimers, TimerConfig};
+/// use nexus_rt::{Handler, World};
+/// use nexus_timer::Wheel;
+///
+/// fn schedule_heartbeat<C: TimerConfig>(
+///     world: &mut World,
+///     handler: impl Handler<Instant> + 'static,
+///     deadline: Instant,
+/// ) {
+///     world.resource_mut::<Wheel<C::Storage>>()
+///         .schedule_forget(deadline, C::wrap(handler));
+/// }
+/// ```
+pub trait TimerConfig: Send + 'static {
+    /// The handler storage type (e.g. `Box<dyn Handler<Instant>>`).
+    type Storage: DerefMut<Target = dyn Handler<Instant>> + Send + 'static;
+
+    /// Wrap a concrete handler into the storage type.
+    fn wrap(handler: impl Handler<Instant> + 'static) -> Self::Storage;
+}
+
+/// Boxed timer configuration — heap-allocates each handler.
+///
+/// This is the default and most flexible option. Zero-overhead for
+/// `Option<Box<T>>` due to niche optimization.
+pub struct BoxedTimers;
+
+impl TimerConfig for BoxedTimers {
+    type Storage = Box<dyn Handler<Instant>>;
+
+    fn wrap(handler: impl Handler<Instant> + 'static) -> Self::Storage {
+        Box::new(handler)
+    }
+}
+
+/// Inline timer configuration — stores handlers in a fixed-size buffer.
+///
+/// Panics if a handler exceeds the buffer size (256 bytes).
+/// Realistic timer callbacks (0-2 resources + context) are 24-104 bytes.
+#[cfg(feature = "smartptr")]
+pub struct InlineTimers;
+
+#[cfg(feature = "smartptr")]
+impl TimerConfig for InlineTimers {
+    type Storage = crate::FlatVirtual<Instant, nexus_smartptr::B256>;
+
+    fn wrap(handler: impl Handler<Instant> + 'static) -> Self::Storage {
+        let ptr: *const dyn Handler<Instant> = &handler;
+        // SAFETY: ptr's metadata (vtable) corresponds to handler's concrete type.
+        unsafe { nexus_smartptr::Flat::new_raw(handler, ptr) }
+    }
+}
+
+/// Flex timer configuration — inline with heap fallback.
+///
+/// Stores inline if the handler fits in 256 bytes, otherwise
+/// heap-allocates. No panics.
+#[cfg(feature = "smartptr")]
+pub struct FlexTimers;
+
+#[cfg(feature = "smartptr")]
+impl TimerConfig for FlexTimers {
+    type Storage = crate::FlexVirtual<Instant, nexus_smartptr::B256>;
+
+    fn wrap(handler: impl Handler<Instant> + 'static) -> Self::Storage {
+        let ptr: *const dyn Handler<Instant> = &handler;
+        // SAFETY: ptr's metadata (vtable) corresponds to handler's concrete type.
+        unsafe { nexus_smartptr::Flex::new_raw(handler, ptr) }
+    }
+}
 
 /// Timer driver installer — generic over handler storage.
 ///
@@ -180,6 +262,104 @@ where
         // SAFETY: wheel_id from install(). Type matches. &World = shared access.
         let wheel = unsafe { world.get::<Wheel<S>>(self.wheel_id) };
         wheel.is_empty()
+    }
+}
+
+/// Periodic timer wrapper — automatically reschedules after each firing.
+///
+/// Wraps any handler storage and re-inserts itself into the wheel after
+/// each `run()` call. The inner handler fires, then `Periodic` wraps it
+/// back up and schedules `now + interval`.
+///
+/// Uses `Option` internally to move the inner handler out of `&mut self`
+/// during dispatch. For `Box<dyn Handler>`, this is zero-cost due to
+/// niche optimization (`Option<Box<T>>` is pointer-sized).
+///
+/// # Cancellation
+///
+/// If the periodic timer is cancelled (via [`Wheel::cancel`]) or dropped
+/// during shutdown, the inner handler is dropped normally — no leak.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::time::{Duration, Instant};
+/// use nexus_rt::{IntoHandler, ResMut};
+/// use nexus_rt::timer::{Periodic, TimerWheel};
+///
+/// fn heartbeat(mut counter: ResMut<u64>, _now: Instant) {
+///     *counter += 1;
+/// }
+///
+/// let handler = heartbeat.into_handler(world.registry());
+/// let periodic = Periodic::boxed(handler, Duration::from_millis(100));
+/// world.resource_mut::<TimerWheel>()
+///     .schedule_forget(Instant::now(), Box::new(periodic));
+/// ```
+pub struct Periodic<C: TimerConfig = BoxedTimers> {
+    inner: Option<C::Storage>,
+    interval: Duration,
+    _config: PhantomData<C>,
+}
+
+impl Periodic<BoxedTimers> {
+    /// Create a periodic wrapper using boxed handler storage.
+    ///
+    /// Convenience constructor — equivalent to `Periodic::<BoxedTimers>::new(...)`.
+    pub fn boxed(handler: impl Handler<Instant> + 'static, interval: Duration) -> Self {
+        Periodic {
+            inner: Some(Box::new(handler)),
+            interval,
+            _config: PhantomData,
+        }
+    }
+}
+
+impl<C: TimerConfig> Periodic<C> {
+    /// Create a periodic wrapper with the given config's storage strategy.
+    pub fn new(storage: C::Storage, interval: Duration) -> Self {
+        Periodic {
+            inner: Some(storage),
+            interval,
+            _config: PhantomData,
+        }
+    }
+
+    /// Unwrap the inner handler storage, if present.
+    ///
+    /// Returns `None` only if the periodic has already fired and not yet
+    /// been re-wrapped (transient state during `Handler::run`).
+    pub fn into_inner(self) -> Option<C::Storage> {
+        self.inner
+    }
+}
+
+impl<C: TimerConfig> Handler<Instant> for Periodic<C> {
+    fn run(&mut self, world: &mut World, now: Instant) {
+        let mut inner = self
+            .inner
+            .take()
+            .expect("periodic handler already consumed");
+
+        // Fire the inner handler
+        inner.deref_mut().run(world, now);
+
+        // Re-wrap and reschedule
+        let next = Periodic::<C> {
+            inner: Some(inner),
+            interval: self.interval,
+            _config: PhantomData,
+        };
+        let deadline = now + self.interval;
+        world
+            .resource_mut::<Wheel<C::Storage>>()
+            .schedule_forget(deadline, C::wrap(next));
+    }
+
+    fn inputs_changed(&self, world: &World) -> bool {
+        self.inner
+            .as_deref()
+            .is_some_and(|h| h.inputs_changed(world))
     }
 }
 
@@ -462,5 +642,81 @@ mod tests {
 
         // Clean up zombie handle
         world.resource_mut::<TimerWheel>().cancel(handle);
+    }
+
+    #[test]
+    fn periodic_fires_repeatedly() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut timer: TimerHandle = builder.install_driver(TimerDriver::new(64));
+        let mut world = builder.build();
+
+        fn tick(mut counter: ResMut<u64>, _now: Instant) {
+            *counter += 1;
+        }
+
+        let now = Instant::now();
+        let interval = Duration::from_millis(10);
+        let handler = tick.into_handler(world.registry());
+        let periodic = Periodic::boxed(handler, interval);
+        world
+            .resource_mut::<TimerWheel>()
+            .schedule_forget(now, Box::new(periodic));
+
+        // First firing
+        timer.poll(&mut world, now);
+        assert_eq!(*world.resource::<u64>(), 1);
+
+        // Second firing (rescheduled to now + 10ms)
+        timer.poll(&mut world, now + interval);
+        assert_eq!(*world.resource::<u64>(), 2);
+
+        // Third firing (rescheduled to now + 20ms)
+        timer.poll(&mut world, now + interval * 2);
+        assert_eq!(*world.resource::<u64>(), 3);
+
+        // Still active — periodic never stops on its own
+        assert!(!timer.is_empty(&world));
+    }
+
+    #[test]
+    fn periodic_cancel_drops_inner() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<bool>(false);
+        let mut timer: TimerHandle = builder.install_driver(TimerDriver::new(64));
+        let mut world = builder.build();
+
+        fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+            *flag = true;
+        }
+
+        let now = Instant::now();
+        let handler = on_fire.into_handler(world.registry());
+        let periodic = Periodic::boxed(handler, Duration::from_millis(50));
+        let handle = world
+            .resource_mut::<TimerWheel>()
+            .schedule(now + Duration::from_millis(50), Box::new(periodic));
+
+        // Cancel before it fires
+        let cancelled = world.resource_mut::<TimerWheel>().cancel(handle);
+        assert!(cancelled.is_some());
+
+        // Poll — nothing fires
+        let fired = timer.poll(&mut world, now + Duration::from_millis(100));
+        assert_eq!(fired, 0);
+        assert!(!*world.resource::<bool>());
+    }
+
+    #[test]
+    fn periodic_into_inner_recovers_handler() {
+        let mut builder = WorldBuilder::new();
+        let _timer: TimerHandle = builder.install_driver(TimerDriver::new(64));
+        let world = builder.build();
+
+        fn noop(_now: Instant) {}
+
+        let handler = noop.into_handler(world.registry());
+        let periodic = Periodic::boxed(handler, Duration::from_millis(10));
+        assert!(periodic.into_inner().is_some());
     }
 }
