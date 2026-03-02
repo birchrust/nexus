@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use nexus_slab::{Full, bounded, unbounded};
 
-use crate::entry::{EntryPtr, WheelEntry, entry_ref, null_entry};
+use crate::entry::{EntryPtr, WheelEntry, entry_ref};
 use crate::handle::TimerHandle;
 use crate::level::Level;
 use crate::store::{BoundedStore, SlabStore, UnboundedStore};
@@ -39,7 +39,7 @@ use crate::store::{BoundedStore, SlabStore, UnboundedStore};
 /// // Custom config
 /// let wheel: Wheel<u64> = WheelBuilder::default()
 ///     .tick_duration(Duration::from_micros(100))
-///     .slots_per_level(128)
+///     .slots_per_level(32)
 ///     .unbounded(4096)
 ///     .build(now);
 /// ```
@@ -119,21 +119,21 @@ impl WheelBuilder {
             "slots_per_level must be a power of 2, got {}",
             self.slots_per_level
         );
+        assert!(
+            self.slots_per_level <= 64,
+            "slots_per_level must be <= 64 (u64 bitmask), got {}",
+            self.slots_per_level
+        );
         assert!(self.num_levels > 0, "num_levels must be > 0");
+        assert!(
+            self.num_levels <= 8,
+            "num_levels must be <= 8 (u8 bitmask), got {}",
+            self.num_levels
+        );
         assert!(self.clk_shift > 0, "clk_shift must be > 0");
         assert!(
             !self.tick_duration.is_zero(),
             "tick_duration must be non-zero"
-        );
-        assert!(
-            u8::try_from(self.num_levels).is_ok(),
-            "num_levels must fit in u8, got {}",
-            self.num_levels
-        );
-        assert!(
-            u16::try_from(self.slots_per_level).is_ok(),
-            "slots_per_level must fit in u16, got {}",
-            self.slots_per_level
         );
         let max_shift = (self.num_levels - 1) as u64 * self.clk_shift as u64;
         assert!(
@@ -180,8 +180,8 @@ impl UnboundedWheelBuilder {
             current_ticks: 0,
             tick_ns: self.config.tick_ns(),
             epoch: now,
+            active_levels: 0,
             len: 0,
-            bookmark: PollBookmark::new(),
             _marker: PhantomData,
         }
     }
@@ -214,47 +214,10 @@ impl BoundedWheelBuilder {
             current_ticks: 0,
             tick_ns: self.config.tick_ns(),
             epoch: now,
+            active_levels: 0,
             len: 0,
-            bookmark: PollBookmark::new(),
             _marker: PhantomData,
         }
-    }
-}
-
-// =============================================================================
-// Poll bookmark — for resumable poll_with_limit
-// =============================================================================
-
-/// Bookmark for resumable polling.
-///
-/// Tracks the position within the active-slot walk so `poll_with_limit` can
-/// resume where it left off on the next call.
-struct PollBookmark<T> {
-    /// Current level index being polled.
-    level: usize,
-    /// Current slot pointer within the active-slot list (null = start of level).
-    slot: *mut crate::level::WheelSlot<T>,
-    /// Current entry pointer within the slot's entry DLL (null = start of slot).
-    entry: EntryPtr<T>,
-    /// The tick value this bookmark was created for.
-    ticks: u64,
-}
-
-impl<T> PollBookmark<T> {
-    fn new() -> Self {
-        PollBookmark {
-            level: 0,
-            slot: std::ptr::null_mut(),
-            entry: null_entry(),
-            ticks: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.level = 0;
-        self.slot = std::ptr::null_mut();
-        self.entry = null_entry();
-        self.ticks = 0;
     }
 }
 
@@ -281,24 +244,22 @@ pub struct TimerWheel<
     slab: S,
     levels: Vec<Level<T>>,
     num_levels: usize,
+    active_levels: u8,
     current_ticks: u64,
     tick_ns: u64,
     epoch: Instant,
     len: usize,
-    bookmark: PollBookmark<T>,
     _marker: PhantomData<*const ()>, // !Send (overridden below), !Sync
 }
 
 // SAFETY: TimerWheel<T, S> exclusively owns all memory behind its raw pointers.
 //
 // Pointer inventory and ownership:
-// - `PollBookmark::entry` — points into slab-owned memory (SlotCell in a
-//   slab chunk). Slab chunks are Vec<SlotCell<T>> heap allocations.
-// - `Level::active_head` / Slot `entry_head` — same: pointers into slab
-//   chunks.
+// - Slot `entry_head`/`entry_tail` — point into slab-owned memory (SlotCell
+//   in a slab chunk). Slab chunks are Vec<SlotCell<T>> heap allocations.
 // - DLL links (`WheelEntry::prev`, `WheelEntry::next`) — point to other
 //   SlotCells in the same slab.
-// - `Level::slots` — `Box<[Slot<T>]>`, owned by the level.
+// - `Level::slots` — `Box<[WheelSlot<T>]>`, owned by the level.
 //
 // All pointed-to memory lives inside owned collections (Vec, Box<[T]>).
 // When TimerWheel is moved, the heap allocations stay at their addresses —
@@ -549,33 +510,14 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let now_ticks = self.instant_to_ticks(now);
         self.current_ticks = now_ticks;
 
-        // If now changed since the bookmark, reset
-        if self.bookmark.ticks != now_ticks {
-            self.bookmark.reset();
-            self.bookmark.ticks = now_ticks;
-        }
-
         let mut fired = 0;
-        let num_levels = self.num_levels;
+        let mut mask = self.active_levels;
 
-        let mut lvl_idx = self.bookmark.level;
-        while lvl_idx < num_levels && fired < limit {
+        while mask != 0 && fired < limit {
+            let lvl_idx = mask.trailing_zeros() as usize;
+            mask &= mask - 1; // clear lowest set bit
             fired += self.poll_level(lvl_idx, now_ticks, limit - fired, buf);
-
-            if fired >= limit && lvl_idx < num_levels {
-                // Bookmark was updated inside poll_level
-                return fired;
-            }
-
-            // Level fully drained — advance to next
-            self.bookmark.slot = std::ptr::null_mut();
-            self.bookmark.entry = null_entry();
-            lvl_idx += 1;
-            self.bookmark.level = lvl_idx;
         }
-
-        // All levels fully polled — reset bookmark
-        self.bookmark.reset();
         fired
     }
 
@@ -586,24 +528,27 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     pub fn next_deadline(&self) -> Option<Instant> {
         let mut min_ticks: Option<u64> = None;
 
-        for level in &self.levels {
-            let mut slot_ptr = level.active_head();
-            while !slot_ptr.is_null() {
-                // SAFETY: slot_ptr is in the active list, therefore valid
-                let slot = unsafe { &*slot_ptr };
+        let mut lvl_mask = self.active_levels;
+        while lvl_mask != 0 {
+            let lvl_idx = lvl_mask.trailing_zeros() as usize;
+            lvl_mask &= lvl_mask - 1;
+
+            let level = &self.levels[lvl_idx];
+            let mut slot_mask = level.active_slots();
+            while slot_mask != 0 {
+                let slot_idx = slot_mask.trailing_zeros() as usize;
+                slot_mask &= slot_mask - 1;
+
+                let slot = level.slot(slot_idx);
                 let mut entry_ptr = slot.entry_head();
 
                 while !entry_ptr.is_null() {
-                    // SAFETY: entry_ptr is in this slot's DLL, therefore valid
+                    // SAFETY: entry_ptr is in this slot's DLL
                     let entry = unsafe { entry_ref(entry_ptr) };
                     let dt = entry.deadline_ticks();
-
                     min_ticks = Some(min_ticks.map_or(dt, |current| current.min(dt)));
-
                     entry_ptr = entry.next();
                 }
-
-                slot_ptr = slot.active_next();
             }
         }
 
@@ -673,25 +618,19 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn insert_entry(&mut self, entry_ptr: EntryPtr<T>, deadline_ticks: u64) {
         let lvl_idx = self.select_level(deadline_ticks);
-        let level = &self.levels[lvl_idx];
-        let slot_idx = level.slot_index(deadline_ticks);
-        let slot_ptr = level.slot_ptr(slot_idx);
-        let slot = level.slot(slot_idx);
+        let slot_idx = self.levels[lvl_idx].slot_index(deadline_ticks);
 
         // Record location on the entry for O(1) lookup at cancel time.
         // SAFETY: entry_ptr is valid (just allocated)
         let entry = unsafe { entry_ref(entry_ptr) };
         entry.set_location(lvl_idx as u8, slot_idx as u16);
 
-        let was_empty = slot.is_empty();
-
         // SAFETY: entry_ptr is valid (just allocated), not in any DLL yet
-        unsafe { slot.push_entry(entry_ptr) };
+        unsafe { self.levels[lvl_idx].slot(slot_idx).push_entry(entry_ptr) };
 
-        if was_empty {
-            // SAFETY: slot_ptr is within this level, not already in active list
-            unsafe { level.link_active(slot_ptr) };
-        }
+        // Activate slot and level (idempotent — OR is a no-op if already set)
+        self.levels[lvl_idx].activate_slot(slot_idx);
+        self.active_levels |= 1 << lvl_idx;
     }
 
     /// Removes an entry from its level's slot DLL.
@@ -708,16 +647,14 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let lvl_idx = entry.level() as usize;
         let slot_idx = entry.slot_idx() as usize;
 
-        let level = &self.levels[lvl_idx];
-        let slot_ptr = level.slot_ptr(slot_idx);
-        let slot = level.slot(slot_idx);
-
         // SAFETY: entry_ptr is in this slot's DLL (invariant from insert_entry)
-        unsafe { slot.remove_entry(entry_ptr) };
+        unsafe { self.levels[lvl_idx].slot(slot_idx).remove_entry(entry_ptr) };
 
-        if slot.is_empty() {
-            // SAFETY: slot_ptr was in the active list (had entries)
-            unsafe { level.unlink_active(slot_ptr) };
+        if self.levels[lvl_idx].slot(slot_idx).is_empty() {
+            self.levels[lvl_idx].deactivate_slot(slot_idx);
+            if !self.levels[lvl_idx].is_active() {
+                self.active_levels &= !(1 << lvl_idx);
+            }
         }
     }
 
@@ -756,7 +693,6 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
     /// Polls a single level for expired entries up to `limit`.
     ///
-    /// Updates the bookmark for resumability.
     fn poll_level(
         &mut self,
         lvl_idx: usize,
@@ -765,30 +701,18 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         buf: &mut Vec<T>,
     ) -> usize {
         let mut fired = 0;
+        let mut mask = self.levels[lvl_idx].active_slots();
 
-        let level = &self.levels[lvl_idx];
+        while mask != 0 && fired < limit {
+            let slot_idx = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
 
-        // Resume from bookmark or start from active_head
-        let mut slot_ptr = if self.bookmark.level == lvl_idx && !self.bookmark.slot.is_null() {
-            self.bookmark.slot
-        } else {
-            level.active_head()
-        };
-
-        while !slot_ptr.is_null() && fired < limit {
-            // SAFETY: slot_ptr is in the active list
+            let slot_ptr = self.levels[lvl_idx].slot(slot_idx) as *const crate::level::WheelSlot<T>;
+            // SAFETY: slot_ptr points into self.levels[lvl_idx].slots
+            // (Box<[WheelSlot<T>]>), a stable heap allocation. fire_entry
+            // only mutates self.slab and self.len, not self.levels.
             let slot = unsafe { &*slot_ptr };
-            let next_slot = slot.active_next();
-
-            // Resume entry position or start from head
-            let mut entry_ptr = if self.bookmark.level == lvl_idx
-                && self.bookmark.slot == slot_ptr
-                && !self.bookmark.entry.is_null()
-            {
-                self.bookmark.entry
-            } else {
-                slot.entry_head()
-            };
+            let mut entry_ptr = slot.entry_head();
 
             while !entry_ptr.is_null() && fired < limit {
                 // SAFETY: entry_ptr is in this slot's DLL
@@ -796,8 +720,6 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                 let next_entry = entry.next();
 
                 if entry.deadline_ticks() <= now_ticks {
-                    // Expired — unlink from DLL then fire
-                    // SAFETY: entry_ptr is in this slot's DLL
                     unsafe { slot.remove_entry(entry_ptr) };
 
                     if let Some(value) = self.fire_entry(entry_ptr) {
@@ -809,42 +731,16 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                 entry_ptr = next_entry;
             }
 
-            // If we hit the limit, bookmark for resumption
-            if fired >= limit {
-                self.bookmark.level = lvl_idx;
-                if entry_ptr.is_null() {
-                    // Slot exhausted on the exact fire that hit limit —
-                    // bookmark the next slot so we don't skip it.
-                    self.bookmark.slot = next_slot;
-                    self.bookmark.entry = null_entry();
-                } else {
-                    // Mid-slot: resume from this entry next call
-                    self.bookmark.slot = slot_ptr;
-                    self.bookmark.entry = entry_ptr;
-                }
-
-                // Check if slot became empty after removals
-                if slot.is_empty() {
-                    let level = &self.levels[lvl_idx];
-                    // SAFETY: slot_ptr was in the active list
-                    unsafe { level.unlink_active(slot_ptr) };
-                }
-                return fired;
-            }
-
-            // Check if slot became empty after removals
             if slot.is_empty() {
-                let level = &self.levels[lvl_idx];
-                // SAFETY: slot_ptr was in the active list
-                unsafe { level.unlink_active(slot_ptr) };
+                self.levels[lvl_idx].deactivate_slot(slot_idx);
             }
-
-            slot_ptr = next_slot;
         }
 
-        // Level fully polled (or empty)
-        self.bookmark.slot = std::ptr::null_mut();
-        self.bookmark.entry = null_entry();
+        // Deactivate level if all slots drained
+        if !self.levels[lvl_idx].is_active() {
+            self.active_levels &= !(1 << lvl_idx);
+        }
+
         fired
     }
 }
@@ -855,16 +751,19 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
 impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> Drop for TimerWheel<T, S> {
     fn drop(&mut self) {
-        // Walk all active-slot lists and free every entry.
-        // Active entries have Some(value) — slab.free calls drop_in_place which
-        // drops the WheelEntry, and the Option<T> inside it drops the T.
-        for level in &self.levels {
-            let mut slot_ptr = level.active_head();
-            while !slot_ptr.is_null() {
-                // SAFETY: slot_ptr is in the active list
-                let slot = unsafe { &*slot_ptr };
-                let next_slot = slot.active_next();
+        // Walk active levels and slots via bitmasks, free every entry.
+        let mut lvl_mask = self.active_levels;
+        while lvl_mask != 0 {
+            let lvl_idx = lvl_mask.trailing_zeros() as usize;
+            lvl_mask &= lvl_mask - 1;
 
+            let level = &self.levels[lvl_idx];
+            let mut slot_mask = level.active_slots();
+            while slot_mask != 0 {
+                let slot_idx = slot_mask.trailing_zeros() as usize;
+                slot_mask &= slot_mask - 1;
+
+                let slot = level.slot(slot_idx);
                 let mut entry_ptr = slot.entry_head();
                 while !entry_ptr.is_null() {
                     // SAFETY: entry_ptr is in this slot's DLL
@@ -876,8 +775,6 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> Drop for TimerWheel<T, S> {
 
                     entry_ptr = next_entry;
                 }
-
-                slot_ptr = next_slot;
             }
         }
     }

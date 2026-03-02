@@ -1,16 +1,15 @@
 //! Timer wheel level — one tier in the hierarchical wheel.
 //!
 //! Each level has `slots_per_level` slots (default 64). Entries are placed
-//! into slots based on their deadline. Non-empty slots are linked into an
-//! intrusive doubly-linked "active-slot" list so poll/next_deadline only
-//! visit slots that actually contain entries.
+//! into slots based on their deadline. Non-empty slots are tracked via a
+//! `u64` bitmask so poll/next_deadline only visit slots that actually
+//! contain entries.
 //!
-//! Two separate DLLs operate here:
-//! 1. **Entry DLL** — per-slot list of entries (WheelEntry prev/next).
-//! 2. **Active-slot DLL** — per-level list of non-empty slots.
+//! Two structures operate here:
+//! 1. **Entry DLL** — per-slot doubly-linked list of entries (WheelEntry prev/next).
+//! 2. **Active-slot bitmask** — per-level `u64`, one bit per non-empty slot.
 
 use std::cell::Cell;
-use std::ptr;
 
 use crate::entry::{EntryPtr, entry_ref, null_entry};
 
@@ -20,29 +19,20 @@ use crate::entry::{EntryPtr, entry_ref, null_entry};
 
 /// A single slot in a timer wheel level.
 ///
-/// Contains the head/tail of the entry DLL and links for the active-slot DLL.
+/// Contains the head/tail of the entry DLL. Active-slot tracking is handled
+/// by the parent level's bitmask, not by per-slot DLL links.
 pub(crate) struct WheelSlot<T> {
     /// Head of the entry DLL (first entry in this slot, or null).
     entry_head: Cell<EntryPtr<T>>,
     /// Tail of the entry DLL (last entry, for O(1) append).
     entry_tail: Cell<EntryPtr<T>>,
-    /// Previous non-empty slot in the level's active-slot list (or null).
-    active_prev: Cell<*mut WheelSlot<T>>,
-    /// Next non-empty slot in the level's active-slot list (or null).
-    active_next: Cell<*mut WheelSlot<T>>,
-    /// This slot's index within the level (for diagnostics).
-    #[allow(dead_code)]
-    slot_index: u32,
 }
 
 impl<T: 'static> WheelSlot<T> {
-    fn new(slot_index: u32) -> Self {
+    fn new() -> Self {
         WheelSlot {
             entry_head: Cell::new(null_entry()),
             entry_tail: Cell::new(null_entry()),
-            active_prev: Cell::new(ptr::null_mut()),
-            active_next: Cell::new(ptr::null_mut()),
-            slot_index,
         }
     }
 
@@ -50,13 +40,6 @@ impl<T: 'static> WheelSlot<T> {
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.entry_head.get().is_null()
-    }
-
-    /// Returns this slot's index within the level.
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn slot_index(&self) -> u32 {
-        self.slot_index
     }
 
     // =========================================================================
@@ -129,12 +112,6 @@ impl<T: 'static> WheelSlot<T> {
     pub(crate) fn entry_head(&self) -> EntryPtr<T> {
         self.entry_head.get()
     }
-
-    /// Returns the next non-empty slot in the active-slot list (or null).
-    #[inline]
-    pub(crate) fn active_next(&self) -> *mut WheelSlot<T> {
-        self.active_next.get()
-    }
 }
 
 // =============================================================================
@@ -143,13 +120,15 @@ impl<T: 'static> WheelSlot<T> {
 
 /// One level (tier) in the hierarchical timer wheel.
 ///
-/// All levels have the same number of slots (`slots_per_level`). Higher levels
-/// cover wider time ranges with coarser granularity.
+/// All levels have the same number of slots (`slots_per_level`, max 64).
+/// Higher levels cover wider time ranges with coarser granularity.
+/// Non-empty slots are tracked via a `u64` bitmask for O(1) activation
+/// checks and branch-free iteration.
 pub(crate) struct Level<T> {
     /// Slot storage — `slots_per_level` slots, heap-allocated once at construction.
     slots: Box<[WheelSlot<T>]>,
-    /// Head of the active-slot DLL (first non-empty slot, or null).
-    active_head: Cell<*mut WheelSlot<T>>,
+    /// Bitmask of non-empty slots. Bit `i` is set iff `slots[i]` has entries.
+    active_slots: Cell<u64>,
     /// Bit shift for this level: `level_index * clk_shift`.
     /// Level 0 shift = 0, level 1 shift = clk_shift, level 2 = 2*clk_shift, ...
     shift: u32,
@@ -164,13 +143,11 @@ impl<T: 'static> Level<T> {
     pub(crate) fn new(slots_per_level: usize, level_index: usize, clk_shift: u32) -> Self {
         let shift = (level_index as u32) * clk_shift;
 
-        let slots: Vec<WheelSlot<T>> = (0..slots_per_level)
-            .map(|i| WheelSlot::new(i as u32))
-            .collect();
+        let slots: Vec<WheelSlot<T>> = (0..slots_per_level).map(|_| WheelSlot::new()).collect();
 
         Level {
             slots: slots.into_boxed_slice(),
-            active_head: Cell::new(ptr::null_mut()),
+            active_slots: Cell::new(0),
             shift,
             mask: slots_per_level - 1,
             range: (slots_per_level as u64) << shift,
@@ -203,81 +180,41 @@ impl<T: 'static> Level<T> {
         ((deadline_ticks >> self.shift) as usize) & self.mask
     }
 
-    /// Returns a pointer to the slot at the given index.
-    #[inline]
-    pub(crate) fn slot_ptr(&self, index: usize) -> *mut WheelSlot<T> {
-        debug_assert!(index < self.slots.len());
-        // SAFETY: index is within bounds (checked in debug). We return a *mut
-        // from a &self reference — sound because all mutation goes through Cell.
-        self.slots.as_ptr().cast_mut().wrapping_add(index)
-    }
-
     /// Returns a reference to the slot at the given index.
     #[inline]
     pub(crate) fn slot(&self, index: usize) -> &WheelSlot<T> {
         debug_assert!(index < self.slots.len());
-        unsafe { &*self.slot_ptr(index) }
+        &self.slots[index]
     }
 
     // =========================================================================
-    // Active-slot DLL operations
+    // Active-slot bitmask operations
     // =========================================================================
 
-    /// Links a slot into the active-slot list (called when first entry added).
-    ///
-    /// # Safety
-    ///
-    /// `slot_ptr` must point to a slot within this level. The slot must not
-    /// already be in the active list.
+    /// Marks a slot as active (has entries).
     #[inline]
-    pub(crate) unsafe fn link_active(&self, slot_ptr: *mut WheelSlot<T>) {
-        // SAFETY: slot_ptr is valid (caller guarantee)
-        let slot = unsafe { &*slot_ptr };
-        slot.active_prev.set(ptr::null_mut());
-
-        let head = self.active_head.get();
-        slot.active_next.set(head);
-
-        if !head.is_null() {
-            // SAFETY: head is valid (was previously linked)
-            unsafe { &*head }.active_prev.set(slot_ptr);
-        }
-        self.active_head.set(slot_ptr);
+    pub(crate) fn activate_slot(&self, slot_idx: usize) {
+        self.active_slots
+            .set(self.active_slots.get() | (1 << slot_idx));
     }
 
-    /// Unlinks a slot from the active-slot list (called when last entry removed).
-    ///
-    /// # Safety
-    ///
-    /// `slot_ptr` must be currently in this level's active list.
+    /// Marks a slot as inactive (empty).
     #[inline]
-    pub(crate) unsafe fn unlink_active(&self, slot_ptr: *mut WheelSlot<T>) {
-        // SAFETY: slot_ptr is valid (caller guarantee)
-        let slot = unsafe { &*slot_ptr };
-        let prev = slot.active_prev.get();
-        let next = slot.active_next.get();
-
-        if prev.is_null() {
-            // Slot was the head
-            self.active_head.set(next);
-        } else {
-            // SAFETY: prev is valid (was linked)
-            unsafe { &*prev }.active_next.set(next);
-        }
-
-        if !next.is_null() {
-            // SAFETY: next is valid (was linked)
-            unsafe { &*next }.active_prev.set(prev);
-        }
-
-        slot.active_prev.set(ptr::null_mut());
-        slot.active_next.set(ptr::null_mut());
+    pub(crate) fn deactivate_slot(&self, slot_idx: usize) {
+        self.active_slots
+            .set(self.active_slots.get() & !(1 << slot_idx));
     }
 
-    /// Returns the head of the active-slot list (or null if no active slots).
+    /// Returns the bitmask of active (non-empty) slots.
     #[inline]
-    pub(crate) fn active_head(&self) -> *mut WheelSlot<T> {
-        self.active_head.get()
+    pub(crate) fn active_slots(&self) -> u64 {
+        self.active_slots.get()
+    }
+
+    /// Returns true if any slot in this level has entries.
+    #[inline]
+    pub(crate) fn is_active(&self) -> bool {
+        self.active_slots.get() != 0
     }
 
     /// Returns the number of slots per level.
@@ -307,7 +244,7 @@ mod tests {
     #[test]
     fn slot_push_remove_single() {
         let slab = unbounded::Slab::<WheelEntry<u64>>::with_chunk_capacity(16);
-        let ws = WheelSlot::<u64>::new(0);
+        let ws = WheelSlot::<u64>::new();
 
         assert!(ws.is_empty());
 
@@ -325,7 +262,7 @@ mod tests {
     #[test]
     fn slot_push_remove_multiple() {
         let slab = unbounded::Slab::<WheelEntry<u64>>::with_chunk_capacity(16);
-        let ws = WheelSlot::<u64>::new(0);
+        let ws = WheelSlot::<u64>::new();
 
         let e1 = make_entry(&slab, 10, 1);
         let e2 = make_entry(&slab, 20, 2);
@@ -386,33 +323,27 @@ mod tests {
     }
 
     #[test]
-    fn level_active_slot_list() {
+    fn level_active_slot_bitmask() {
         let lvl = Level::<u64>::new(64, 0, 3);
 
-        assert!(lvl.active_head().is_null());
+        assert!(!lvl.is_active());
+        assert_eq!(lvl.active_slots(), 0);
 
-        let s0 = lvl.slot_ptr(0);
-        let s5 = lvl.slot_ptr(5);
+        lvl.activate_slot(5);
+        assert!(lvl.is_active());
+        assert_eq!(lvl.active_slots(), 1 << 5);
 
-        // Link two slots
-        unsafe {
-            lvl.link_active(s0);
-            lvl.link_active(s5);
-        }
+        lvl.activate_slot(10);
+        assert_eq!(lvl.active_slots(), (1 << 5) | (1 << 10));
 
-        // s5 is now the head (prepend)
-        assert_eq!(lvl.active_head(), s5);
-        unsafe {
-            assert_eq!((*s5).active_next.get(), s0);
-            assert!((*s0).active_next.get().is_null());
-        }
+        // Idempotent
+        lvl.activate_slot(5);
+        assert_eq!(lvl.active_slots(), (1 << 5) | (1 << 10));
 
-        // Unlink s5 (head)
-        unsafe { lvl.unlink_active(s5) };
-        assert_eq!(lvl.active_head(), s0);
+        lvl.deactivate_slot(5);
+        assert_eq!(lvl.active_slots(), 1 << 10);
 
-        // Unlink s0 (last)
-        unsafe { lvl.unlink_active(s0) };
-        assert!(lvl.active_head().is_null());
+        lvl.deactivate_slot(10);
+        assert!(!lvl.is_active());
     }
 }
