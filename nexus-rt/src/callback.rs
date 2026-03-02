@@ -46,7 +46,7 @@ use crate::world::{Registry, World};
 /// builder.register::<u64>(0);
 /// let mut world = builder.build();
 ///
-/// let mut cb = handler.into_callback(Ctx { count: 0 }, world.registry_mut());
+/// let mut cb = handler.into_callback(Ctx { count: 0 }, world.registry());
 /// cb.run(&mut world, 10u32);
 ///
 /// assert_eq!(cb.ctx.count, 1);
@@ -84,17 +84,17 @@ pub trait IntoCallback<C, E, Params> {
     type Callback: Handler<E>;
 
     /// Convert this function + context into a Callback.
-    fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback;
+    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback;
 }
 
 // =============================================================================
 // Arity 0: fn(ctx: &mut C, E) — context + event only, no SystemParam
 // =============================================================================
 
-impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> IntoCallback<C, E, ()> for F {
+impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> IntoCallback<C, E, ()> for F {
     type Callback = Callback<C, F, ()>;
 
-    fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback {
+    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
         Callback {
             ctx,
             f: self,
@@ -104,7 +104,7 @@ impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> IntoCallback<C, E, ()> for F 
     }
 }
 
-impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> Handler<E> for Callback<C, F, ()> {
+impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> Handler<E> for Callback<C, F, ()> {
     fn run(&mut self, _world: &mut World, event: E) {
         (self.f)(&mut self.ctx, event);
     }
@@ -126,7 +126,7 @@ impl<C: 'static, E, F: FnMut(&mut C, E) + 'static> Handler<E> for Callback<C, F,
 
 macro_rules! impl_into_callback {
     ($($P:ident),+) => {
-        impl<C: 'static, E, F: 'static, $($P: SystemParam + 'static),+>
+        impl<C: Send + 'static, E, F: Send + 'static, $($P: SystemParam + 'static),+>
             IntoCallback<C, E, ($($P,)+)> for F
         where
             for<'a> &'a mut F:
@@ -135,7 +135,7 @@ macro_rules! impl_into_callback {
         {
             type Callback = Callback<C, F, ($($P,)+)>;
 
-            fn into_callback(self, ctx: C, registry: &mut Registry) -> Self::Callback {
+            fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
                 let state = <($($P,)+) as SystemParam>::init(registry);
                 {
                     #[allow(non_snake_case)]
@@ -151,7 +151,7 @@ macro_rules! impl_into_callback {
             }
         }
 
-        impl<C: 'static, E, F: 'static, $($P: SystemParam + 'static),+>
+        impl<C: Send + 'static, E, F: Send + 'static, $($P: SystemParam + 'static),+>
             Handler<E> for Callback<C, F, ($($P,)+)>
         where
             for<'a> &'a mut F:

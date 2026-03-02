@@ -54,7 +54,7 @@ let now = Instant::now();
 // Custom tick duration and slot count
 let wheel: Wheel<u64> = WheelBuilder::default()
     .tick_duration(Duration::from_micros(100))
-    .slots_per_level(128)
+    .slots_per_level(32)
     .unbounded(4096)
     .build(now);
 ```

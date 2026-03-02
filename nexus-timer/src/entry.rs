@@ -44,7 +44,7 @@ pub struct WheelEntry<T> {
     prev: Cell<EntryPtr<T>>,
     next: Cell<EntryPtr<T>>,
     // Deadline — compared during poll (hot)
-    deadline_ticks: u64,
+    deadline_ticks: Cell<u64>,
     // Refcount — 1=wheel only (fire-and-forget), 2=wheel+handle
     refs: Cell<u8>,
     // Location — set at insertion, read at cancel. Avoids recomputing level
@@ -64,7 +64,7 @@ impl<T> WheelEntry<T> {
         WheelEntry {
             prev: Cell::new(null_entry()),
             next: Cell::new(null_entry()),
-            deadline_ticks,
+            deadline_ticks: Cell::new(deadline_ticks),
             refs: Cell::new(refs),
             level: Cell::new(0),
             slot_idx: Cell::new(0),
@@ -102,7 +102,13 @@ impl<T> WheelEntry<T> {
 
     #[inline]
     pub(crate) fn deadline_ticks(&self) -> u64 {
-        self.deadline_ticks
+        self.deadline_ticks.get()
+    }
+
+    /// Updates the deadline ticks for rescheduling.
+    #[inline]
+    pub(crate) fn set_deadline_ticks(&self, ticks: u64) {
+        self.deadline_ticks.set(ticks);
     }
 
     // =========================================================================

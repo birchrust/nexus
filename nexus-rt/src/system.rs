@@ -21,7 +21,11 @@ use crate::world::{Registry, ResourceId, World};
 /// a reference in ~3 cycles.
 pub trait SystemParam {
     /// Opaque state cached at build time (e.g. [`ResourceId`]).
-    type State;
+    ///
+    /// `Send` is required because state is stored in handler types
+    /// ([`Callback`]), and handlers must be `Send` (they live in
+    /// [`World`], which is `Send`).
+    type State: Send;
 
     /// The item produced at dispatch time.
     type Item<'w>;
@@ -280,17 +284,17 @@ all_tuples!(impl_system_param_tuple);
 ///     println!("event #{}: {}", *count, event);
 /// }
 /// ```
-pub struct Local<'s, T: Default + 'static> {
+pub struct Local<'s, T: Default + Send + 'static> {
     value: &'s mut T,
 }
 
-impl<'s, T: Default + 'static> Local<'s, T> {
+impl<'s, T: Default + Send + 'static> Local<'s, T> {
     pub(crate) fn new(value: &'s mut T) -> Self {
         Self { value }
     }
 }
 
-impl<T: Default + 'static> Deref for Local<'_, T> {
+impl<T: Default + Send + 'static> Deref for Local<'_, T> {
     type Target = T;
 
     #[inline(always)]
@@ -299,14 +303,14 @@ impl<T: Default + 'static> Deref for Local<'_, T> {
     }
 }
 
-impl<T: Default + 'static> DerefMut for Local<'_, T> {
+impl<T: Default + Send + 'static> DerefMut for Local<'_, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         self.value
     }
 }
 
-impl<T: Default + 'static> SystemParam for Local<'_, T> {
+impl<T: Default + Send + 'static> SystemParam for Local<'_, T> {
     type State = T;
     type Item<'s> = Local<'s, T>;
 
@@ -329,6 +333,50 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
 }
 
 // =============================================================================
+// RegistryRef — read-only access to the type registry during dispatch
+// =============================================================================
+
+/// Read-only access to the [`Registry`] during handler dispatch.
+///
+/// Allows handlers to create new handlers at runtime by calling
+/// [`into_handler`](crate::IntoHandler::into_handler) or
+/// [`into_callback`](crate::IntoCallback::into_callback) on the
+/// borrowed registry.
+///
+/// No [`ResourceId`] needed — the registry is part of [`World`]'s
+/// structure, not a registered resource.
+pub struct RegistryRef<'w> {
+    registry: &'w Registry,
+}
+
+impl Deref for RegistryRef<'_> {
+    type Target = Registry;
+
+    #[inline(always)]
+    fn deref(&self) -> &Registry {
+        self.registry
+    }
+}
+
+impl SystemParam for RegistryRef<'_> {
+    type State = ();
+    type Item<'w> = RegistryRef<'w>;
+
+    fn init(_registry: &Registry) {}
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> RegistryRef<'w> {
+        RegistryRef {
+            registry: world.registry(),
+        }
+    }
+
+    fn any_changed((): &(), _: &World) -> bool {
+        false
+    }
+}
+
+// =============================================================================
 // Handler<E> — object-safe dispatch trait
 // =============================================================================
 
@@ -338,8 +386,13 @@ impl<T: Default + 'static> SystemParam for Local<'_, T> {
 /// Storage and scheduling are the driver's responsibility — this trait
 /// only defines the dispatch interface.
 ///
+/// `Send` is required because handlers live in [`World`] (via driver
+/// storage like timer wheels), and `World` is `Send`. All concrete
+/// handler types ([`Callback`], [`HandlerFn`]) satisfy this automatically
+/// for typical usage (function pointers, `ResourceId` state, `Send` context).
+///
 /// Takes `&mut World` — drivers call this directly in their poll loop.
-pub trait Handler<E> {
+pub trait Handler<E>: Send {
     /// Run this handler with the given event.
     fn run(&mut self, world: &mut World, event: E);
 
@@ -413,14 +466,14 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 /// builder.register::<u64>(0);
 /// builder.register::<bool>(false);
 ///
-/// let mut handler = tick.into_handler(builder.registry_mut());
+/// let mut handler = tick.into_handler(builder.registry());
 /// ```
 pub trait IntoHandler<E, Params> {
     /// The concrete handler type produced.
     type Handler: Handler<E> + 'static;
 
     /// Convert this function into a handler, resolving parameters from the registry.
-    fn into_handler(self, registry: &mut Registry) -> Self::Handler;
+    fn into_handler(self, registry: &Registry) -> Self::Handler;
 }
 
 // =============================================================================
@@ -428,10 +481,10 @@ pub trait IntoHandler<E, Params> {
 // =============================================================================
 
 // Arity 0: fn(E) — event-only handler, no resource params.
-impl<E, F: FnMut(E) + 'static> IntoHandler<E, ()> for F {
+impl<E, F: FnMut(E) + Send + 'static> IntoHandler<E, ()> for F {
     type Handler = Callback<(), CtxFree<F>, ()>;
 
-    fn into_handler(self, registry: &mut Registry) -> Self::Handler {
+    fn into_handler(self, registry: &Registry) -> Self::Handler {
         Callback {
             ctx: (),
             f: CtxFree(self),
@@ -441,7 +494,7 @@ impl<E, F: FnMut(E) + 'static> IntoHandler<E, ()> for F {
     }
 }
 
-impl<E, F: FnMut(E) + 'static> Handler<E> for Callback<(), CtxFree<F>, ()> {
+impl<E, F: FnMut(E) + Send + 'static> Handler<E> for Callback<(), CtxFree<F>, ()> {
     fn run(&mut self, _world: &mut World, event: E) {
         (self.f.0)(event);
     }
@@ -459,7 +512,7 @@ impl<E, F: FnMut(E) + 'static> Handler<E> for Callback<(), CtxFree<F>, ()> {
 
 macro_rules! impl_into_handler {
     ($($P:ident),+) => {
-        impl<E, F: 'static, $($P: SystemParam + 'static),+> IntoHandler<E, ($($P,)+)> for F
+        impl<E, F: Send + 'static, $($P: SystemParam + 'static),+> IntoHandler<E, ($($P,)+)> for F
         where
             // Double-bound pattern (from Bevy):
             // - First bound: compiler uses P directly to infer SystemParam
@@ -471,7 +524,7 @@ macro_rules! impl_into_handler {
         {
             type Handler = Callback<(), CtxFree<F>, ($($P,)+)>;
 
-            fn into_handler(self, registry: &mut Registry) -> Self::Handler {
+            fn into_handler(self, registry: &Registry) -> Self::Handler {
                 let state = <($($P,)+) as SystemParam>::init(registry);
                 {
                     #[allow(non_snake_case)]
@@ -492,7 +545,7 @@ macro_rules! impl_into_handler {
             }
         }
 
-        impl<E, F: 'static, $($P: SystemParam + 'static),+> Handler<E>
+        impl<E, F: Send + 'static, $($P: SystemParam + 'static),+> Handler<E>
             for Callback<(), CtxFree<F>, ($($P,)+)>
         where
             for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
