@@ -1,0 +1,183 @@
+# nexus-timer
+
+High-performance timer wheel with O(1) insert and cancel.
+
+## Why This Crate?
+
+Standard timer implementations (priority queues, sorted trees) have
+O(log n) insert or O(log n) cancel. Timer wheels give O(1) for both by
+hashing deadlines into coarse-grained slots across multiple levels.
+
+`nexus-timer` is a hierarchical timer wheel inspired by the Linux kernel's
+timer infrastructure (Gleixner 2016):
+
+- **No cascade** — once placed, an entry never moves between levels.
+  Poll checks each entry's exact deadline. This eliminates the latency
+  spikes that cascading timer wheels exhibit.
+- **Intrusive active-slot lists** — only non-empty slots are visited
+  during poll and next-deadline queries. No bitmap, no full scan.
+- **Embedded refcounting** — lightweight `Cell<u8>` refcount per entry
+  enables fire-and-forget timers alongside cancellable timers without
+  external reference-counting machinery.
+- **Slab-backed storage** — entries live in a
+  [`nexus-slab`](https://crates.io/crates/nexus-slab) allocator. No
+  heap allocation per timer after init.
+
+## Quick Start
+
+```rust
+use std::time::{Duration, Instant};
+use nexus_timer::Wheel;
+
+let now = Instant::now();
+let mut wheel: Wheel<u64> = Wheel::unbounded(4096, now);
+
+// Schedule a timer 100ms from now
+let handle = wheel.schedule(now + Duration::from_millis(100), 42u64);
+
+// Cancel before it fires — get the value back
+let value = wheel.cancel(handle);
+assert_eq!(value, Some(42));
+```
+
+## Configuration
+
+Default parameters match the Linux kernel timer wheel (1ms tick,
+64 slots/level, 8x multiplier, 7 levels — ~4.7 hour range).
+
+```rust
+use std::time::{Duration, Instant};
+use nexus_timer::{Wheel, WheelBuilder};
+
+let now = Instant::now();
+
+// Custom tick duration and slot count
+let wheel: Wheel<u64> = WheelBuilder::default()
+    .tick_duration(Duration::from_micros(100))
+    .slots_per_level(128)
+    .unbounded(4096)
+    .build(now);
+```
+
+The builder uses a typestate pattern — configuration setters are only
+available before selecting bounded or unbounded mode:
+
+```text
+WheelBuilder  ─.unbounded(chunk_cap)─▶  UnboundedWheelBuilder  ─.build(now)─▶  Wheel<T>
+              ─.bounded(cap)──────────▶  BoundedWheelBuilder    ─.build(now)─▶  BoundedWheel<T>
+```
+
+## Bounded vs Unbounded
+
+| | `Wheel<T>` (unbounded) | `BoundedWheel<T>` |
+|---|---|---|
+| Storage | Growable slab (chunks) | Fixed-capacity slab |
+| Schedule | `schedule()` — always succeeds | `try_schedule()` — returns `Err(Full)` |
+| Use case | Unknown timer count | Known upper bound, zero growth |
+
+```rust
+use std::time::{Duration, Instant};
+use nexus_timer::BoundedWheel;
+
+let now = Instant::now();
+let mut wheel: BoundedWheel<u64> = BoundedWheel::bounded(1024, now);
+
+let handle = wheel.try_schedule(now + Duration::from_millis(50), 42).unwrap();
+wheel.cancel(handle);
+```
+
+## API
+
+### Scheduling
+
+| Method | Wheel | Returns | Notes |
+|---|---|---|---|
+| `schedule(deadline, value)` | Unbounded | `TimerHandle<T>` | Always succeeds |
+| `schedule_forget(deadline, value)` | Unbounded | `()` | Fire-and-forget, no handle |
+| `try_schedule(deadline, value)` | Bounded | `Result<TimerHandle<T>, Full<T>>` | Fails at capacity |
+| `try_schedule_forget(deadline, value)` | Bounded | `Result<(), Full<T>>` | Fire-and-forget, fails at capacity |
+
+### Cancellation
+
+| Method | Returns | Notes |
+|---|---|---|
+| `cancel(handle)` | `Option<T>` | `Some(T)` if active, `None` if already fired |
+| `free(handle)` | `()` | Releases handle, timer stays as fire-and-forget |
+
+### Polling
+
+| Method | Returns | Notes |
+|---|---|---|
+| `poll(now, buf)` | `usize` | Fires all expired, appends values to `buf` |
+| `poll_with_limit(now, limit, buf)` | `usize` | Fires up to `limit`, resumable on next call |
+
+### Query
+
+| Method | Returns | Notes |
+|---|---|---|
+| `next_deadline()` | `Option<Instant>` | Earliest deadline across all levels |
+| `len()` | `usize` | Number of active timers |
+| `is_empty()` | `bool` | Whether the wheel is empty |
+
+## Design
+
+### Level Structure
+
+```text
+Level 0:  64 slots × 1ms   =     64ms range
+Level 1:  64 slots × 8ms   =    512ms range
+Level 2:  64 slots × 64ms  =  4,096ms range
+Level 3:  64 slots × 512ms = 32,768ms range
+  ...
+Level 6:                    ≈  4.7 hour range
+```
+
+Each level covers 8x the time range of the previous (configurable via
+`clk_shift`). A timer is placed in the coarsest level that can represent
+its deadline. Once placed, it never moves.
+
+### Handle Lifecycle
+
+Handles returned by `schedule()` / `try_schedule()` are move-only tokens
+that **must** be consumed via `cancel()` or `free()`. Dropping a handle
+without consuming it is a programming error (caught by `debug_assert!`
+in debug builds).
+
+```text
+schedule() ─▶ TimerHandle ─┬─ cancel() ─▶ Option<T>
+                            └─ free()   ─▶ (fire-and-forget)
+```
+
+## Performance
+
+All measurements in CPU cycles, Intel Core Ultra 7 155H, pinned to
+physical core, turbo boost disabled. 50k samples, 5k warmup.
+
+| Operation | p50 | p90 | p99 | p999 |
+|---|---|---|---|---|
+| schedule + cancel (paired) | **48** | 50 | 80 | 82 |
+| schedule_forget | **40** | 42 | 44 | 72 |
+| cancel (pre-scheduled) | **26** | 28 | 30 | 38 |
+| poll (per entry, 100 batch) | **8** | 8 | 16 | 30 |
+| poll (empty wheel) | **54** | 56 | 58 | 116 |
+| sched+cancel @100k active | **48** | 52 | 58 | 92 |
+
+Schedule + cancel is **48 cycles** at p50 regardless of wheel population
+(100k active timers shows identical p50). Poll fires at **8 cycles per
+entry** in batch. Tail latency stays tight — p999 for the core
+schedule+cancel path is 82 cycles.
+
+```bash
+cargo build --release --example perf_timer -p nexus-timer
+taskset -c 0 ./target/release/examples/perf_timer
+```
+
+### Thread Safety
+
+`!Send`, `!Sync`. Timer wheels are designed for single-threaded event
+loops — no locking, no atomic operations on the hot path.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT License](LICENSE-MIT) at your option.
