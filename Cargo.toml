@@ -12,6 +12,7 @@ members = [
 	"nexus-queue",
 	"nexus-rt",
 	"nexus-slab",
+	"nexus-timer",
 	"nexus-slot",
 	"nexus-smartptr",
 ]

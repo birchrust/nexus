@@ -1,0 +1,24 @@
+[package]
+name = "nexus-timer"
+version = "1.0.0"
+description = "High-performance timer wheel with O(1) insert and cancel"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["timer", "timer-wheel", "low-latency", "event-driven"]
+categories = ["data-structures"]
+
+[dependencies]
+nexus-slab = { version = "0.11.2", path = "../nexus-slab" }
+
+[dev-dependencies]
+proptest = "1.4"
+seq-macro.workspace = true
+
+[[example]]
+name = "perf_timer"
+harness = false
+
+[lints]
+workspace = true
