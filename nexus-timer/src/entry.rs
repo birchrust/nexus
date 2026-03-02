@@ -167,8 +167,10 @@ impl<T> WheelEntry<T> {
 ///
 /// - `ptr` must be non-null.
 /// - `ptr` must point to an occupied `SlotCell<WheelEntry<T>>` within a live slab.
+/// - The returned reference must not outlive the slab allocation (i.e. must not
+///   be held across a `free_ptr` call on the same slot).
 #[inline]
-pub(crate) unsafe fn entry_ref<T>(ptr: EntryPtr<T>) -> &'static WheelEntry<T> {
+pub(crate) unsafe fn entry_ref<'a, T>(ptr: EntryPtr<T>) -> &'a WheelEntry<T> {
     // SAFETY: SlotCell is a union; when occupied, the `value` field is active.
     // The value is `ManuallyDrop<MaybeUninit<WheelEntry<T>>>`, and we know it's
     // initialized because the slot was allocated via slab.alloc/try_alloc.

@@ -125,6 +125,27 @@ impl WheelBuilder {
             !self.tick_duration.is_zero(),
             "tick_duration must be non-zero"
         );
+        assert!(
+            u8::try_from(self.num_levels).is_ok(),
+            "num_levels must fit in u8, got {}",
+            self.num_levels
+        );
+        assert!(
+            u16::try_from(self.slots_per_level).is_ok(),
+            "slots_per_level must fit in u16, got {}",
+            self.slots_per_level
+        );
+        let max_shift = (self.num_levels - 1) as u64 * self.clk_shift as u64;
+        assert!(
+            max_shift < 64,
+            "(num_levels - 1) * clk_shift must be < 64, got {}",
+            max_shift
+        );
+        let slots_log2 = self.slots_per_level.trailing_zeros() as u64;
+        assert!(
+            slots_log2 + max_shift < 64,
+            "slots_per_level << max_shift would overflow u64"
+        );
     }
 
     fn tick_ns(&self) -> u64 {
@@ -728,11 +749,19 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                 entry_ptr = next_entry;
             }
 
-            // If we exhausted limit mid-slot, bookmark for resumption
-            if fired >= limit && entry_ptr != null_entry() {
+            // If we hit the limit, bookmark for resumption
+            if fired >= limit {
                 self.bookmark.level = lvl_idx;
-                self.bookmark.slot = slot_ptr;
-                self.bookmark.entry = entry_ptr;
+                if entry_ptr.is_null() {
+                    // Slot exhausted on the exact fire that hit limit —
+                    // bookmark the next slot so we don't skip it.
+                    self.bookmark.slot = next_slot;
+                    self.bookmark.entry = null_entry();
+                } else {
+                    // Mid-slot: resume from this entry next call
+                    self.bookmark.slot = slot_ptr;
+                    self.bookmark.entry = entry_ptr;
+                }
 
                 // Check if slot became empty after removals
                 if slot.is_empty() {

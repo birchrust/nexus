@@ -26,6 +26,7 @@ use crate::entry::EntryPtr;
 /// # Size
 ///
 /// 8 bytes (one pointer). `!Send`, `!Sync`, `!Clone`, `!Copy`.
+#[must_use = "handles must be consumed via cancel() or free(), dropping leaks the timer slot"]
 pub struct TimerHandle<T> {
     pub(crate) ptr: EntryPtr<T>,
     // !Send, !Sync
