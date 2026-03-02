@@ -135,6 +135,7 @@ impl WheelBuilder {
 /// Terminal builder for an unbounded timer wheel.
 ///
 /// Created via [`WheelBuilder::unbounded`]. The only method is `.build()`.
+#[derive(Debug)]
 pub struct UnboundedWheelBuilder {
     config: WheelBuilder,
     chunk_capacity: usize,
@@ -168,6 +169,7 @@ impl UnboundedWheelBuilder {
 /// Terminal builder for a bounded timer wheel.
 ///
 /// Created via [`WheelBuilder::bounded`]. The only method is `.build()`.
+#[derive(Debug)]
 pub struct BoundedWheelBuilder {
     config: WheelBuilder,
     capacity: usize,

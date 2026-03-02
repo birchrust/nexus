@@ -11,7 +11,7 @@ use std::hint::black_box;
 use std::mem;
 use std::time::{Duration, Instant};
 
-use nexus_timer::{Wheel, WheelBuilder};
+use nexus_timer::Wheel;
 
 const SAMPLES: usize = 50_000;
 const WARMUP: usize = 5_000;
@@ -59,13 +59,10 @@ fn print_row(label: &str, samples: &mut [u64]) {
 
 fn main() {
     let now = Instant::now();
-    let config = WheelBuilder::default();
-
     println!(
         "TIMER WHEEL LATENCY (cycles/op) — {} samples, {} warmup",
         SAMPLES, WARMUP
     );
-    println!("Config: {:?}", config);
     println!("================================================================\n");
 
     // Pre-compute deadlines so Instant arithmetic is not in the timed path.
