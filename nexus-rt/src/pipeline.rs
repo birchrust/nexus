@@ -92,7 +92,7 @@ pub trait IntoStage<In, Out, Params> {
     type Stage: StageCall<In, Out>;
 
     /// Resolve SystemParam state from the registry and produce a stage.
-    fn into_stage(self, registry: &mut Registry) -> Self::Stage;
+    fn into_stage(self, registry: &Registry) -> Self::Stage;
 }
 
 // =============================================================================
@@ -109,7 +109,7 @@ impl<In, Out, F: FnMut(In) -> Out + 'static> StageCall<In, Out> for Stage<F, ()>
 impl<In, Out, F: FnMut(In) -> Out + 'static> IntoStage<In, Out, ()> for F {
     type Stage = Stage<F, ()>;
 
-    fn into_stage(self, registry: &mut Registry) -> Self::Stage {
+    fn into_stage(self, registry: &Registry) -> Self::Stage {
         Stage {
             f: self,
             state: <() as SystemParam>::init(registry),
@@ -162,7 +162,7 @@ macro_rules! impl_into_stage {
         {
             type Stage = Stage<F, ($($P,)+)>;
 
-            fn into_stage(self, registry: &mut Registry) -> Self::Stage {
+            fn into_stage(self, registry: &Registry) -> Self::Stage {
                 let state = <($($P,)+) as SystemParam>::init(registry);
                 {
                     #[allow(non_snake_case)]
@@ -243,7 +243,7 @@ impl<In> PipelineStart<In> {
     pub fn stage<Out, Params, S: IntoStage<In, Out, Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out + use<In, Out, Params, S>> {
         let mut resolved = f.into_stage(registry);
         PipelineBuilder {
@@ -292,7 +292,7 @@ where
     pub fn stage<NewOut, Params, S: IntoStage<Out, NewOut, Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<
         In,
         NewOut,
@@ -329,7 +329,7 @@ where
     pub fn map<U, Params, S: IntoStage<T, U, Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<
         In,
         Option<U>,
@@ -349,7 +349,7 @@ where
     pub fn and_then<U, Params, S: IntoStage<T, Option<U>, Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<
         In,
         Option<U>,
@@ -482,7 +482,7 @@ where
     pub fn map<U, Params, S: IntoStage<T, U, Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<
         In,
         Result<U, E>,
@@ -502,7 +502,7 @@ where
     pub fn and_then<U, Params, S: IntoStage<T, Result<U, E>, Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<
         In,
         Result<U, E>,
@@ -525,7 +525,7 @@ where
     pub fn catch<Params, S: IntoStage<E, (), Params>>(
         self,
         f: S,
-        registry: &mut Registry,
+        registry: &Registry,
     ) -> PipelineBuilder<
         In,
         Option<T>,
@@ -728,7 +728,9 @@ pub struct Pipeline<In, F> {
     _marker: PhantomData<fn(In)>,
 }
 
-impl<In: 'static, F: FnMut(&mut World, In) + 'static> crate::Handler<In> for Pipeline<In, F> {
+impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
+    for Pipeline<In, F>
+{
     fn run(&mut self, world: &mut World, event: In) {
         (self.chain)(world, event);
     }

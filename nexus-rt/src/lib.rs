@@ -45,7 +45,7 @@
 //!     *counter += event as u64;
 //! }
 //!
-//! let mut handler = tick.into_handler(world.registry_mut());
+//! let mut handler = tick.into_handler(world.registry());
 //!
 //! handler.run(&mut world, 10u32);
 //!
@@ -71,6 +71,8 @@ pub mod pipeline;
 mod plugin;
 mod resource;
 mod system;
+#[cfg(feature = "timer")]
+pub mod timer;
 mod world;
 
 pub use callback::{Callback, IntoCallback};
@@ -80,7 +82,7 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
-pub use system::{CtxFree, Handler, HandlerFn, IntoHandler, Local, SystemParam};
+pub use system::{CtxFree, Handler, HandlerFn, IntoHandler, Local, RegistryRef, SystemParam};
 pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
 
 /// Type alias for a boxed, type-erased [`Handler`].
@@ -98,3 +100,9 @@ pub type FlatVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flat<dyn Hand
 /// Stores inline if the handler fits, otherwise heap-allocates.
 #[cfg(feature = "smartptr")]
 pub type FlexVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flex<dyn Handler<E>, B>;
+
+#[cfg(feature = "timer")]
+pub use timer::{TimerDriver, TimerHandle, TimerWheel};
+
+#[cfg(all(feature = "timer", feature = "smartptr"))]
+pub use timer::{FlexTimerWheel, InlineTimerWheel};

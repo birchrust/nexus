@@ -270,7 +270,10 @@ impl<T> PollBookmark<T> {
 ///
 /// # Thread Safety
 ///
-/// `!Send`, `!Sync`. Must be used from a single thread.
+/// `Send` but `!Sync`. Can be moved to a thread at setup but must not
+/// be shared. All internal raw pointers point into owned allocations
+/// (slab chunks, level slot arrays) — moving the wheel moves the heap
+/// data with it.
 pub struct TimerWheel<
     T: 'static,
     S: SlabStore<Item = WheelEntry<T>> = unbounded::Slab<WheelEntry<T>>,
@@ -283,8 +286,35 @@ pub struct TimerWheel<
     epoch: Instant,
     len: usize,
     bookmark: PollBookmark<T>,
-    _marker: PhantomData<*const ()>, // !Send, !Sync
+    _marker: PhantomData<*const ()>, // !Send (overridden below), !Sync
 }
+
+// SAFETY: TimerWheel<T, S> exclusively owns all memory behind its raw pointers.
+//
+// Pointer inventory and ownership:
+// - `PollBookmark::entry` — points into slab-owned memory (SlotCell in a
+//   slab chunk). Slab chunks are Vec<SlotCell<T>> heap allocations.
+// - `Level::active_head` / Slot `entry_head` — same: pointers into slab
+//   chunks.
+// - DLL links (`WheelEntry::prev`, `WheelEntry::next`) — point to other
+//   SlotCells in the same slab.
+// - `Level::slots` — `Box<[Slot<T>]>`, owned by the level.
+//
+// All pointed-to memory lives inside owned collections (Vec, Box<[T]>).
+// When TimerWheel is moved, the heap allocations stay at their addresses —
+// the internal pointers remain valid. No thread-local state. No shared
+// ownership.
+//
+// T: Send is required because timer values cross the thread boundary with
+// the wheel.
+//
+// Outstanding TimerHandle<T> values are !Send and cannot follow the wheel
+// across threads. They become inert — consuming them requires &mut
+// TimerWheel which the original thread no longer has. The debug_assert in
+// TimerHandle::drop catches this as a programming error. Worst case is a
+// slot leak (refcount stuck at 1), not unsoundness.
+#[allow(clippy::non_send_fields_in_send_ty)]
+unsafe impl<T: Send + 'static, S: SlabStore<Item = WheelEntry<T>>> Send for TimerWheel<T, S> {}
 
 /// A timer wheel backed by a fixed-capacity slab.
 pub type BoundedWheel<T> = TimerWheel<T, bounded::Slab<WheelEntry<T>>>;
@@ -470,6 +500,36 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
             unsafe { self.slab.free_ptr(ptr) };
         }
         // new_refs == 1: timer is now fire-and-forget, stays in wheel
+    }
+
+    /// Reschedules an active timer to a new deadline.
+    ///
+    /// Moves the entry from its current slot to the correct slot for
+    /// `new_deadline` without extracting or reconstructing the value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the timer has already fired (zombie handle). Only active
+    /// timers (refs == 2) can be rescheduled.
+    ///
+    /// Consumes and returns a new handle (same entry, new position).
+    pub fn reschedule(&mut self, handle: TimerHandle<T>, new_deadline: Instant) -> TimerHandle<T> {
+        let ptr = handle.ptr;
+        mem::forget(handle);
+
+        // SAFETY: handle guarantees ptr is valid
+        let entry = unsafe { entry_ref(ptr) };
+        assert_eq!(entry.refs(), 2, "cannot reschedule a fired timer");
+
+        // Remove from current position
+        self.remove_entry(ptr);
+
+        // Update deadline and reinsert
+        let new_ticks = self.instant_to_ticks(new_deadline);
+        entry.set_deadline_ticks(new_ticks);
+        self.insert_entry(ptr, new_ticks);
+
+        TimerHandle::new(ptr)
     }
 
     /// Fires all expired timers, collecting their values into `buf`.
@@ -834,6 +894,18 @@ mod tests {
 
     fn ms(millis: u64) -> Duration {
         Duration::from_millis(millis)
+    }
+
+    // -------------------------------------------------------------------------
+    // Thread safety
+    // -------------------------------------------------------------------------
+
+    fn _assert_send<T: Send>() {}
+
+    #[test]
+    fn wheel_is_send() {
+        _assert_send::<Wheel<u64>>();
+        _assert_send::<BoundedWheel<u64>>();
     }
 
     // -------------------------------------------------------------------------
@@ -1410,6 +1482,74 @@ mod tests {
 
         buf.sort();
         assert_eq!(buf, expected);
+    }
+
+    // -------------------------------------------------------------------------
+    // Reschedule
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn reschedule_moves_deadline() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = Wheel::unbounded(1024, now);
+
+        let h = wheel.schedule(now + ms(100), 42);
+        assert_eq!(wheel.len(), 1);
+
+        // Reschedule to earlier
+        let h = wheel.reschedule(h, now + ms(50));
+        assert_eq!(wheel.len(), 1);
+
+        // Should NOT fire at 40ms
+        let mut buf = Vec::new();
+        let fired = wheel.poll(now + ms(40), &mut buf);
+        assert_eq!(fired, 0);
+
+        // Should fire at 50ms
+        let fired = wheel.poll(now + ms(55), &mut buf);
+        assert_eq!(fired, 1);
+        assert_eq!(buf, vec![42]);
+
+        // Clean up zombie
+        wheel.cancel(h);
+    }
+
+    #[test]
+    fn reschedule_to_later() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = Wheel::unbounded(1024, now);
+
+        let h = wheel.schedule(now + ms(50), 7);
+
+        // Reschedule to later
+        let h = wheel.reschedule(h, now + ms(200));
+
+        // Should NOT fire at original deadline
+        let mut buf = Vec::new();
+        let fired = wheel.poll(now + ms(60), &mut buf);
+        assert_eq!(fired, 0);
+
+        // Should fire at new deadline
+        let fired = wheel.poll(now + ms(210), &mut buf);
+        assert_eq!(fired, 1);
+        assert_eq!(buf, vec![7]);
+
+        wheel.cancel(h);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot reschedule a fired timer")]
+    fn reschedule_panics_on_zombie() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = Wheel::unbounded(1024, now);
+
+        let h = wheel.schedule(now + ms(10), 42);
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(20), &mut buf);
+
+        // h is now a zombie — reschedule should panic
+        let _h = wheel.reschedule(h, now + ms(100));
     }
 }
 

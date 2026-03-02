@@ -7,7 +7,7 @@
 //!
 //! The type [`Registry`] maps types to dense indices. It is shared between
 //! [`WorldBuilder`] and [`World`], and is passed to [`SystemParam::init`] and
-//! [`IntoSystem::into_system`] so that systems can resolve their parameter
+//! [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) so that systems can resolve their parameter
 //! state during driver setup — before or after `build()`.
 //!
 //! # Lifecycle
@@ -27,7 +27,7 @@
 //! [`ResourceId`] values are valid for the lifetime of the [`World`] container.
 
 use std::any::{TypeId, type_name};
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 
 use rustc_hash::FxHashMap;
@@ -80,7 +80,7 @@ pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
 /// Type-to-index mapping shared between [`WorldBuilder`] and [`World`].
 ///
 /// Contains only the type registry — no storage, no pointers. Passed to
-/// [`IntoSystem::into_system`](crate::IntoSystem::into_system) and
+/// [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) and
 /// [`SystemParam::init`](crate::SystemParam::init) so systems can resolve
 /// [`ResourceId`]s during driver setup.
 ///
@@ -88,15 +88,20 @@ pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
 pub struct Registry {
     indices: FxHashMap<TypeId, ResourceId>,
     /// Scratch bitset reused across [`check_access`](Self::check_access) calls.
-    /// Allocated once on the first call with >64 resources, then reused.
-    scratch: Vec<u64>,
+    /// Allocated once on the first call with >128 resources, then reused.
+    ///
+    /// Interior mutability via `UnsafeCell` — only accessed in `check_access`,
+    /// which is single-threaded and non-reentrant. `UnsafeCell` makes
+    /// `Registry` `!Sync` automatically, which is correct — `World` is
+    /// already `!Sync`.
+    scratch: UnsafeCell<Vec<u64>>,
 }
 
 impl Registry {
     pub(crate) fn new() -> Self {
         Self {
             indices: FxHashMap::default(),
-            scratch: Vec::new(),
+            scratch: UnsafeCell::new(Vec::new()),
         }
     }
 
@@ -147,7 +152,7 @@ impl Registry {
     ///
     /// Panics if any resource is accessed by more than one parameter.
     #[cold]
-    pub fn check_access(&mut self, accesses: &[(Option<ResourceId>, &str)]) {
+    pub fn check_access(&self, accesses: &[(Option<ResourceId>, &str)]) {
         let n = self.len();
         if n == 0 {
             return;
@@ -169,20 +174,24 @@ impl Registry {
             }
         } else {
             // Slow path: reusable heap buffer.
+            // SAFETY: single-threaded access guaranteed by !Sync on Registry
+            // (UnsafeCell is !Sync). check_access is non-reentrant — it runs,
+            // uses scratch, and returns. No aliasing possible.
+            let scratch = unsafe { &mut *self.scratch.get() };
             let words = n.div_ceil(64);
-            self.scratch.resize(words, 0);
-            self.scratch.fill(0);
+            scratch.resize(words, 0);
+            scratch.fill(0);
             for &(id, name) in accesses {
                 let Some(id) = id else { continue };
                 let word = id.0 / 64;
                 let bit = 1u64 << (id.0 % 64);
                 assert!(
-                    self.scratch[word] & bit == 0,
+                    scratch[word] & bit == 0,
                     "conflicting access: resource borrowed by `{}` is already \
                      borrowed by another parameter in the same system",
                     name,
                 );
-                self.scratch[word] |= bit;
+                scratch[word] |= bit;
             }
         }
     }
@@ -332,20 +341,19 @@ impl WorldBuilder {
 
     /// Returns a shared reference to the type registry.
     ///
-    /// Use this for read-only queries. For construction-time calls
-    /// like [`into_system`](crate::IntoSystem::into_system), use
-    /// [`registry_mut`](Self::registry_mut) instead.
+    /// Use this for construction-time calls like
+    /// [`into_handler`](crate::IntoHandler::into_handler),
+    /// [`into_callback`](crate::IntoCallback::into_callback), and
+    /// [`into_stage`](crate::IntoStage::into_stage).
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
 
     /// Returns a mutable reference to the type registry.
     ///
-    /// Needed at construction time for
-    /// [`into_system`](crate::IntoSystem::into_system),
-    /// [`into_callback`](crate::IntoCallback::into_callback), and
-    /// [`into_stage`](crate::IntoStage::into_stage)
-    /// which call [`Registry::check_access`].
+    /// Rarely needed — [`registry()`](Self::registry) suffices for
+    /// construction-time calls. Exists for direct mutation of the
+    /// registry if needed.
     pub fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
     }
@@ -442,20 +450,17 @@ impl World {
     /// Returns a shared reference to the type registry.
     ///
     /// Use this for read-only queries (e.g. [`id`](Registry::id),
-    /// [`contains`](Registry::contains)). For construction-time calls
-    /// like [`into_system`](crate::IntoSystem::into_system), use
-    /// [`registry_mut`](Self::registry_mut) instead.
+    /// [`contains`](Registry::contains)) and construction-time calls
+    /// like [`into_handler`](crate::IntoHandler::into_handler).
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
 
     /// Returns a mutable reference to the type registry.
     ///
-    /// Needed at construction time for
-    /// [`into_system`](crate::IntoSystem::into_system),
-    /// [`into_callback`](crate::IntoCallback::into_callback), and
-    /// [`into_stage`](crate::IntoStage::into_stage)
-    /// which call [`Registry::check_access`].
+    /// Rarely needed — [`registry()`](Self::registry) suffices for
+    /// construction-time calls. Exists for direct mutation of the
+    /// registry if needed.
     pub fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
     }
