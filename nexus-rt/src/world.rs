@@ -45,6 +45,12 @@ use rustc_hash::FxHashMap;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ResourceId(usize);
 
+impl std::fmt::Display for ResourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Monotonic event sequence number for change detection.
 ///
 /// Each event processed by a driver is assigned a unique sequence number
@@ -54,6 +60,12 @@ pub struct ResourceId(usize);
 /// harmless — only equality is checked.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Sequence(pub(crate) u64);
+
+impl std::fmt::Display for Sequence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// Type-erased drop function. Monomorphized at registration time so we
 /// can reconstruct and drop the original `Box<T>` from a `*mut u8`.
@@ -279,11 +291,10 @@ impl Drop for Storage {
 /// use nexus_rt::WorldBuilder;
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(42);
+/// let id = builder.register::<u64>(42);
 /// builder.register::<bool>(true);
 /// let world = builder.build();
 ///
-/// let id = world.id::<u64>();
 /// unsafe {
 ///     assert_eq!(*world.get::<u64>(id), 42);
 /// }
@@ -302,7 +313,7 @@ impl WorldBuilder {
         }
     }
 
-    /// Register a resource.
+    /// Register a resource and return its [`ResourceId`].
     ///
     /// The value is heap-allocated via `Box` and ownership is transferred
     /// to the container. The pointer is stable for the lifetime of the
@@ -312,7 +323,7 @@ impl WorldBuilder {
     ///
     /// Panics if a resource of the same type is already registered.
     #[cold]
-    pub fn register<T: Send + 'static>(&mut self, value: T) -> &mut Self {
+    pub fn register<T: Send + 'static>(&mut self, value: T) -> ResourceId {
         let type_id = TypeId::of::<T>();
         assert!(
             !self.registry.indices.contains_key(&type_id),
@@ -328,14 +339,44 @@ impl WorldBuilder {
             changed_at: Cell::new(Sequence(0)),
         });
         self.storage.drop_fns.push(drop_resource::<T>);
-        self
+        id
     }
 
-    /// Register a resource using its [`Default`] value.
+    /// Register a resource using its [`Default`] value and return its
+    /// [`ResourceId`].
     ///
     /// Equivalent to `self.register::<T>(T::default())`.
     #[cold]
-    pub fn register_default<T: Default + Send + 'static>(&mut self) -> &mut Self {
+    pub fn register_default<T: Default + Send + 'static>(&mut self) -> ResourceId {
+        self.register(T::default())
+    }
+
+    /// Ensure a resource is registered, returning its [`ResourceId`].
+    ///
+    /// If the type is already registered, returns the existing ID and
+    /// drops `value`. If not, registers it and returns the new ID.
+    ///
+    /// Use [`register`](Self::register) when duplicate registration is a
+    /// bug that should panic. Use `ensure` when multiple plugins or
+    /// drivers may independently need the same resource type.
+    #[cold]
+    pub fn ensure<T: Send + 'static>(&mut self, value: T) -> ResourceId {
+        if let Some(id) = self.registry.try_id::<T>() {
+            return id;
+        }
+        self.register(value)
+    }
+
+    /// Ensure a resource is registered using its [`Default`] value,
+    /// returning its [`ResourceId`].
+    ///
+    /// If the type is already registered, returns the existing ID.
+    /// If not, registers `T::default()` and returns the new ID.
+    #[cold]
+    pub fn ensure_default<T: Default + Send + 'static>(&mut self) -> ResourceId {
+        if let Some(id) = self.registry.try_id::<T>() {
+            return id;
+        }
         self.register(T::default())
     }
 
@@ -689,9 +730,8 @@ mod tests {
     #[test]
     fn register_and_build() {
         let mut builder = WorldBuilder::new();
-        builder
-            .register::<Price>(Price { value: 100.0 })
-            .register::<Venue>(Venue { name: "test" });
+        builder.register::<Price>(Price { value: 100.0 });
+        builder.register::<Venue>(Venue { name: "test" });
         let world = builder.build();
         assert_eq!(world.len(), 2);
     }
@@ -699,14 +739,12 @@ mod tests {
     #[test]
     fn resource_ids_are_sequential() {
         let mut builder = WorldBuilder::new();
-        builder
-            .register::<Price>(Price { value: 0.0 })
-            .register::<Venue>(Venue { name: "" })
-            .register::<Config>(Config { max_orders: 0 });
-        let world = builder.build();
-        assert_eq!(world.id::<Price>(), ResourceId(0));
-        assert_eq!(world.id::<Venue>(), ResourceId(1));
-        assert_eq!(world.id::<Config>(), ResourceId(2));
+        let id0 = builder.register::<Price>(Price { value: 0.0 });
+        let id1 = builder.register::<Venue>(Venue { name: "" });
+        let id2 = builder.register::<Config>(Config { max_orders: 0 });
+        assert_eq!(id0, ResourceId(0));
+        assert_eq!(id1, ResourceId(1));
+        assert_eq!(id2, ResourceId(2));
     }
 
     #[test]
@@ -804,16 +842,12 @@ mod tests {
     #[test]
     fn multiple_types_independent() {
         let mut builder = WorldBuilder::new();
-        builder
-            .register::<Price>(Price { value: 10.0 })
-            .register::<Venue>(Venue { name: "CB" })
-            .register::<Config>(Config { max_orders: 500 });
+        let price_id = builder.register::<Price>(Price { value: 10.0 });
+        let venue_id = builder.register::<Venue>(Venue { name: "CB" });
+        let config_id = builder.register::<Config>(Config { max_orders: 500 });
         let world = builder.build();
 
         unsafe {
-            let price_id = world.id::<Price>();
-            let venue_id = world.id::<Venue>();
-            let config_id = world.id::<Config>();
             assert_eq!(world.get::<Price>(price_id).value, 10.0);
             assert_eq!(world.get::<Venue>(venue_id).name, "CB");
             assert_eq!(world.get::<Config>(config_id).max_orders, 500);
@@ -912,11 +946,56 @@ mod tests {
     #[test]
     fn register_default_works() {
         let mut builder = WorldBuilder::new();
-        builder.register_default::<Vec<u32>>();
+        let id = builder.register_default::<Vec<u32>>();
         let world = builder.build();
 
+        assert_eq!(id, world.id::<Vec<u32>>());
         let v = world.resource::<Vec<u32>>();
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn ensure_registers_new_type() {
+        let mut builder = WorldBuilder::new();
+        let id = builder.ensure::<u64>(42);
+        let world = builder.build();
+
+        assert_eq!(id, world.id::<u64>());
+        assert_eq!(*world.resource::<u64>(), 42);
+    }
+
+    #[test]
+    fn ensure_returns_existing_id() {
+        let mut builder = WorldBuilder::new();
+        let id1 = builder.register::<u64>(42);
+        let id2 = builder.ensure::<u64>(99);
+        assert_eq!(id1, id2);
+
+        // Original value preserved, new value dropped.
+        let world = builder.build();
+        assert_eq!(*world.resource::<u64>(), 42);
+    }
+
+    #[test]
+    fn ensure_default_registers_new_type() {
+        let mut builder = WorldBuilder::new();
+        let id = builder.ensure_default::<Vec<u32>>();
+        let world = builder.build();
+
+        assert_eq!(id, world.id::<Vec<u32>>());
+        assert!(world.resource::<Vec<u32>>().is_empty());
+    }
+
+    #[test]
+    fn ensure_default_returns_existing_id() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<Vec<u32>>(vec![1, 2, 3]);
+        let id = builder.ensure_default::<Vec<u32>>();
+        let world = builder.build();
+
+        assert_eq!(id, world.id::<Vec<u32>>());
+        // Original value preserved.
+        assert_eq!(*world.resource::<Vec<u32>>(), vec![1, 2, 3]);
     }
 
     // -- Sequence / change detection tests ----------------------------------------
@@ -1006,8 +1085,7 @@ mod tests {
             type Handle = TestHandle;
 
             fn install(self, world: &mut WorldBuilder) -> TestHandle {
-                world.register::<u64>(0);
-                let counter_id = world.registry().id::<u64>();
+                let counter_id = world.register::<u64>(0);
                 TestHandle { counter_id }
             }
         }

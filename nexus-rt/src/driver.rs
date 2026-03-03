@@ -27,10 +27,8 @@ use crate::world::WorldBuilder;
 ///     type Handle = IoHandle;
 ///
 ///     fn install(self, world: &mut WorldBuilder) -> IoHandle {
-///         world.register(Poller::new());
-///         world.register(MioEvents::with_capacity(self.capacity));
-///         let poller_id = world.registry().id::<Poller>();
-///         let events_id = world.registry().id::<MioEvents>();
+///         let poller_id = world.register(Poller::new());
+///         let events_id = world.register(MioEvents::with_capacity(self.capacity));
 ///         IoHandle { poller_id, events_id }
 ///     }
 /// }

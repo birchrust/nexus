@@ -181,16 +181,30 @@ impl TimerConfig for FlexTimers {
 /// [`Wheel<S>`] resource and returns a [`TimerHandle`] for poll-time use.
 pub struct TimerDriver<S = Box<dyn Handler<Instant>>> {
     chunk_capacity: usize,
+    wheel_config: Option<nexus_timer::WheelBuilder>,
     _marker: PhantomData<S>,
 }
 
 impl<S> TimerDriver<S> {
     /// Creates a new timer driver installer with the given slab chunk capacity.
+    ///
+    /// Uses default wheel configuration (1ms tick, 64 slots, 7 levels).
     pub fn new(chunk_capacity: usize) -> Self {
         TimerDriver {
             chunk_capacity,
+            wheel_config: None,
             _marker: PhantomData,
         }
+    }
+
+    /// Sets a custom wheel configuration.
+    ///
+    /// Use this when the default 1ms tick resolution isn't sufficient.
+    /// The `chunk_capacity` from [`new`](Self::new) is still used for
+    /// slab allocation.
+    pub fn with_config(mut self, config: nexus_timer::WheelBuilder) -> Self {
+        self.wheel_config = Some(config);
+        self
     }
 }
 
@@ -203,13 +217,28 @@ pub struct TimerHandle<S = Box<dyn Handler<Instant>>> {
     buf: Vec<S>,
 }
 
+impl<S> std::fmt::Debug for TimerHandle<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TimerHandle")
+            .field("wheel_id", &self.wheel_id)
+            .field("buf_len", &self.buf.len())
+            .finish()
+    }
+}
+
 impl<S: Send + 'static> Driver for TimerDriver<S> {
     type Handle = TimerHandle<S>;
 
     fn install(self, world: &mut WorldBuilder) -> TimerHandle<S> {
-        world.register::<Wheel<S>>(Wheel::unbounded(self.chunk_capacity, Instant::now()));
+        let now = Instant::now();
+        let cap = self.chunk_capacity;
+        let wheel = self.wheel_config.map_or_else(
+            || Wheel::unbounded(cap, now),
+            |c| c.unbounded(cap).build(now),
+        );
+        let wheel_id = world.register::<Wheel<S>>(wheel);
         TimerHandle {
-            wheel_id: world.registry().id::<Wheel<S>>(),
+            wheel_id,
             buf: Vec::new(),
         }
     }
@@ -302,6 +331,15 @@ pub struct Periodic<C: TimerConfig = BoxedTimers> {
     _config: PhantomData<C>,
 }
 
+impl<C: TimerConfig> std::fmt::Debug for Periodic<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Periodic")
+            .field("has_inner", &self.inner.is_some())
+            .field("interval", &self.interval)
+            .finish()
+    }
+}
+
 impl Periodic<BoxedTimers> {
     /// Create a periodic wrapper using boxed handler storage.
     ///
@@ -323,6 +361,20 @@ impl<C: TimerConfig> Periodic<C> {
             interval,
             _config: PhantomData,
         }
+    }
+
+    /// Create a periodic wrapper, wrapping the handler via [`TimerConfig::wrap`].
+    pub fn wrap(handler: impl Handler<Instant> + 'static, interval: Duration) -> Self {
+        Periodic {
+            inner: Some(C::wrap(handler)),
+            interval,
+            _config: PhantomData,
+        }
+    }
+
+    /// Returns the repetition interval.
+    pub fn interval(&self) -> Duration {
+        self.interval
     }
 
     /// Unwrap the inner handler storage, if present.

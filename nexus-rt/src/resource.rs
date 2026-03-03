@@ -33,6 +33,12 @@ impl<'w, T: 'static> Res<'w, T> {
     }
 }
 
+impl<T: std::fmt::Debug + 'static> std::fmt::Debug for Res<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.value.fmt(f)
+    }
+}
+
 impl<T: 'static> Deref for Res<'_, T> {
     type Target = T;
 
@@ -72,6 +78,12 @@ impl<'w, T: 'static> ResMut<'w, T> {
     /// Returns `true` if the resource was modified during the current sequence.
     pub fn is_changed(&self) -> bool {
         self.changed_at.get() == self.current_sequence
+    }
+}
+
+impl<T: std::fmt::Debug + 'static> std::fmt::Debug for ResMut<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.value.fmt(f)
     }
 }
 

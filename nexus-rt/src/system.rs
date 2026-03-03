@@ -294,6 +294,12 @@ impl<'s, T: Default + Send + 'static> Local<'s, T> {
     }
 }
 
+impl<T: Default + Send + std::fmt::Debug + 'static> std::fmt::Debug for Local<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.value.fmt(f)
+    }
+}
+
 impl<T: Default + Send + 'static> Deref for Local<'_, T> {
     type Target = T;
 
@@ -629,7 +635,8 @@ mod tests {
     #[test]
     fn tuple_system_param() {
         let mut builder = WorldBuilder::new();
-        builder.register::<u64>(10).register::<bool>(true);
+        builder.register::<u64>(10);
+        builder.register::<bool>(true);
         let mut world = builder.build();
 
         let mut state = <(Res<u64>, ResMut<bool>) as SystemParam>::init(world.registry_mut());
@@ -693,7 +700,8 @@ mod tests {
     #[test]
     fn two_res_and_event() {
         let mut builder = WorldBuilder::new();
-        builder.register::<u64>(10).register::<bool>(true);
+        builder.register::<u64>(10);
+        builder.register::<bool>(true);
         let mut world = builder.build();
 
         let mut sys = two_res_handler.into_handler(world.registry_mut());
@@ -878,7 +886,8 @@ mod tests {
     #[test]
     fn inputs_changed_false_when_not_stamped() {
         let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0).register::<bool>(false);
+        builder.register::<u64>(0);
+        builder.register::<bool>(false);
         let mut world = builder.build();
 
         fn reads_bool(flag: Res<bool>, _e: ()) {
@@ -994,7 +1003,8 @@ mod tests {
     #[test]
     fn end_to_end_change_detection() {
         let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0).register::<bool>(false);
+        builder.register::<u64>(0);
+        builder.register::<bool>(false);
         let mut world = builder.build();
 
         // Tick 0: all resources changed_at=0, current_sequence=0 → changed.
