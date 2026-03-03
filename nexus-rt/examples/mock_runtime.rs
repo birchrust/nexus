@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 
 use nexus_rt::{
-    Driver, Handler, IntoHandler, Local, PipelineStart, Plugin, Res, ResMut, World, WorldBuilder,
+    Handler, Installer, IntoHandler, Local, PipelineStart, Plugin, Res, ResMut, World, WorldBuilder,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────
@@ -164,8 +164,8 @@ struct MarketDataHandle {
     pipeline: Box<dyn Handler<MarketTick>>,
 }
 
-impl Driver for MarketDataInstaller {
-    type Handle = MarketDataHandle;
+impl Installer for MarketDataInstaller {
+    type Poller = MarketDataHandle;
 
     fn install(self, world: &mut WorldBuilder) -> MarketDataHandle {
         let r = world.registry_mut();
