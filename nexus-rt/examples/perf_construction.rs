@@ -1,7 +1,7 @@
 //! Construction-time latency benchmark for `into_handler`, `into_callback`,
 //! and `into_stage`.
 //!
-//! Measures the cold-path cost of resolving SystemParam state + access
+//! Measures the cold-path cost of resolving Param state + access
 //! conflict detection at various arities. This is paid once per handler
 //! at build time — never on the dispatch hot path.
 //!

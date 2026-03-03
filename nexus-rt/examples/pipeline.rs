@@ -1,7 +1,7 @@
-//! Pre-resolved pipeline composition using SystemParam stages.
+//! Pre-resolved pipeline composition using Param stages.
 //!
-//! Pipeline stages are named functions whose SystemParam dependencies are
-//! resolved at build time. Arity-0 stages (no SystemParams) also accept
+//! Pipeline stages are named functions whose Param dependencies are
+//! resolved at build time. Arity-0 stages (no Params) also accept
 //! closures.
 //!
 //! IntoStage-based methods (`.stage()`, `.map()`, `.and_then()`, `.catch()`)
@@ -44,7 +44,7 @@ enum ProcessError {
     UnknownSymbol,
 }
 
-// --- Stage functions: SystemParams first, stage input last ---
+// --- Stage functions: Params first, stage input last ---
 
 fn validate(tick: MarketTick) -> Result<MarketTick, ProcessError> {
     if tick.price <= 0.0 {

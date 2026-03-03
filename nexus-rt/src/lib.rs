@@ -14,7 +14,7 @@
 //! - **Resources** — [`Res`] and [`ResMut`] are what users see in handler
 //!   function signatures. They deref to the inner value transparently.
 //!
-//! - **Handlers** — The [`SystemParam`] trait resolves state at build time
+//! - **Handlers** — The [`Param`] trait resolves state at build time
 //!   and produces references at dispatch time. [`IntoHandler`] converts
 //!   plain functions into [`Handler`] trait objects for type-erased dispatch.
 //!
@@ -62,32 +62,55 @@
 //! 3. No mutable aliasing — at most one `&mut T` exists per value at any time.
 //!
 //! User-facing APIs (`resource`, `resource_mut`, `Handler::run`) are fully safe.
+//!
+//! # Bevy Analogies
+//!
+//! nexus-rt borrows heavily from Bevy ECS's system model. If you know
+//! Bevy, these mappings may help:
+//!
+//! | nexus-rt | Bevy | Notes |
+//! |----------|------|-------|
+//! | [`Param`] | `SystemParam` | Two-phase init/fetch |
+//! | [`Res<T>`] | `Res<T>` | Shared resource read |
+//! | [`ResMut<T>`] | `ResMut<T>` | Exclusive resource write |
+//! | [`Local<T>`] | `Local<T>` | Per-handler state |
+//! | [`Handler<E>`] | `System` trait | Object-safe dispatch |
+//! | [`IntoHandler`] | `IntoSystem` | fn → handler conversion |
+//! | [`Plugin`] | `Plugin` | Composable registration |
+//! | [`World`] | `World` | Singletons only (no ECS) |
 
 #![warn(missing_docs)]
 
 mod callback;
 mod driver;
+mod handler;
 #[cfg(feature = "mio")]
 pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
-mod system;
 #[cfg(feature = "timer")]
 pub mod timer;
 mod world;
 
 pub use callback::{Callback, IntoCallback};
 pub use driver::Installer;
+pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
     BatchPipeline, IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart,
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
-pub use system::{CtxFree, Handler, HandlerFn, IntoHandler, Local, RegistryRef, SystemParam};
 pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
 
 /// Type alias for a boxed, type-erased [`Handler`].
+///
+/// Use `Virtual<E>` when you need to store heterogeneous handlers in a
+/// collection (e.g. `Vec<Virtual<E>>`). One heap allocation per handler.
+///
+/// For inline storage (no heap), see [`FlatVirtual`] (panics if handler
+/// doesn't fit) or [`FlexVirtual`] (inline with heap fallback). Both
+/// require the `smartptr` feature.
 pub type Virtual<E> = Box<dyn Handler<E>>;
 
 /// Type alias for an inline [`Handler`] using [`nexus_smartptr::Flat`].

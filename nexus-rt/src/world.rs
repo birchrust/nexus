@@ -6,8 +6,8 @@
 //! [`build()`](WorldBuilder::build).
 //!
 //! The type [`Registry`] maps types to dense indices. It is shared between
-//! [`WorldBuilder`] and [`World`], and is passed to [`SystemParam::init`] and
-//! [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) so that systems can resolve their parameter
+//! [`WorldBuilder`] and [`World`], and is passed to [`Param::init`] and
+//! [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) so that handlers can resolve their parameter
 //! state during driver setup — before or after `build()`.
 //!
 //! # Lifecycle
@@ -17,7 +17,7 @@
 //! builder.register::<PriceCache>(value);
 //! builder.register::<TimerDriver>(value);
 //!
-//! // Drivers can resolve systems against builder.registry()
+//! // Drivers can resolve handlers against builder.registry()
 //! // before World is built.
 //!
 //! let world = builder.build();  // → World (frozen)
@@ -94,7 +94,7 @@ pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
 ///
 /// Contains only the type registry — no storage, no pointers. Passed to
 /// [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) and
-/// [`SystemParam::init`](crate::SystemParam::init) so systems can resolve
+/// [`Param::init`](crate::Param::init) so handlers can resolve
 /// [`ResourceId`]s during driver setup.
 ///
 /// Obtained via [`WorldBuilder::registry()`] or [`World::registry()`].
@@ -154,7 +154,7 @@ impl Registry {
     /// Validate that a set of parameter accesses don't conflict.
     ///
     /// Two accesses conflict when they target the same ResourceId.
-    /// Called at construction time by `into_system`, `into_callback`,
+    /// Called at construction time by `into_handler`, `into_callback`,
     /// and `into_stage`.
     ///
     /// Fast path (≤128 resources): single `u128` on the stack, zero heap.
@@ -180,7 +180,7 @@ impl Registry {
                 assert!(
                     seen & bit == 0,
                     "conflicting access: resource borrowed by `{}` is already \
-                     borrowed by another parameter in the same system",
+                     borrowed by another parameter in the same handler",
                     name,
                 );
                 seen |= bit;
@@ -201,7 +201,7 @@ impl Registry {
                 assert!(
                     scratch[word] & bit == 0,
                     "conflicting access: resource borrowed by `{}` is already \
-                     borrowed by another parameter in the same system",
+                     borrowed by another parameter in the same handler",
                     name,
                 );
                 scratch[word] |= bit;
@@ -284,7 +284,7 @@ impl Drop for Storage {
 /// dense [`ResourceId`] index (0, 1, 2, ...).
 ///
 /// The [`registry()`](Self::registry) method exposes the type-to-index mapping
-/// so that drivers can resolve systems against the builder before `build()`.
+/// so that drivers can resolve handlers against the builder before `build()`.
 ///
 /// # Examples
 ///
@@ -456,6 +456,9 @@ impl Default for WorldBuilder {
 
 /// Frozen singleton resource storage.
 ///
+/// Analogous to Bevy's `World`, but restricted to singleton resources
+/// (no entities, no components, no archetypes).
+///
 /// Created by [`WorldBuilder::build()`]. Resources are indexed by dense
 /// [`ResourceId`] for O(1) dispatch-time access (~3 cycles per fetch).
 ///
@@ -467,7 +470,7 @@ impl Default for WorldBuilder {
 /// # Unsafe API (framework internals)
 ///
 /// The low-level `get` / `get_mut` methods are `unsafe` — used by
-/// [`SystemParam::fetch`](crate::SystemParam) for ~3-cycle dispatch.
+/// [`Param::fetch`](crate::Param) for ~3-cycle dispatch.
 /// The caller must ensure no mutable aliasing.
 pub struct World {
     /// Type-to-index mapping. Same registry used during build.
@@ -571,6 +574,42 @@ impl World {
         // SAFETY: id resolved from our own registry. &mut self ensures
         // exclusive access — no other references can exist.
         unsafe { self.get_mut(id) }
+    }
+
+    // =========================================================================
+    // One-shot dispatch
+    // =========================================================================
+
+    /// Run a handler once with full Param resolution.
+    ///
+    /// Intended for one-shot initialization after [`build()`](WorldBuilder::build).
+    /// The handler receives `()` as the event — the event parameter is
+    /// discarded. Named functions only (same closure limitation as
+    /// [`IntoHandler`](crate::IntoHandler)).
+    ///
+    /// Can be called multiple times for phased initialization.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn startup(
+    ///     mut driver: ResMut<MioDriver>,
+    ///     mut listener: ResMut<Listener>,
+    ///     _event: (),
+    /// ) {
+    ///     // wire drivers to IO sources...
+    /// }
+    ///
+    /// let mut world = wb.build();
+    /// world.run_startup(startup);
+    /// ```
+    pub fn run_startup<F, Params>(&mut self, f: F)
+    where
+        F: crate::IntoHandler<(), Params>,
+    {
+        use crate::Handler;
+        let mut handler = f.into_handler(&self.registry);
+        handler.run(self, ());
     }
 
     // =========================================================================
@@ -1052,6 +1091,50 @@ mod tests {
         unsafe {
             assert_eq!(world.changed_at(id), Sequence(1));
         }
+    }
+
+    // -- run_startup tests ----------------------------------------------------
+
+    #[test]
+    fn run_startup_dispatches_handler() {
+        use crate::ResMut;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<bool>(false);
+        let mut world = builder.build();
+
+        fn init(mut counter: ResMut<u64>, mut flag: ResMut<bool>, _event: ()) {
+            *counter = 42;
+            *flag = true;
+        }
+
+        world.run_startup(init);
+
+        assert_eq!(*world.resource::<u64>(), 42);
+        assert!(*world.resource::<bool>());
+    }
+
+    #[test]
+    fn run_startup_multiple_phases() {
+        use crate::ResMut;
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        fn phase1(mut counter: ResMut<u64>, _event: ()) {
+            *counter += 10;
+        }
+
+        fn phase2(mut counter: ResMut<u64>, _event: ()) {
+            *counter += 5;
+        }
+
+        world.run_startup(phase1);
+        world.run_startup(phase2);
+
+        assert_eq!(*world.resource::<u64>(), 15);
     }
 
     // -- Plugin / Driver tests ------------------------------------------------

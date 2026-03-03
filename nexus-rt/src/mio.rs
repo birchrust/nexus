@@ -42,7 +42,7 @@ use std::ops::DerefMut;
 use std::time::Duration;
 
 use crate::driver::Installer;
-use crate::system::Handler;
+use crate::handler::Handler;
 use crate::world::{ResourceId, World, WorldBuilder};
 
 /// Default mio events buffer capacity.

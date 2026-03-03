@@ -6,14 +6,30 @@
 //!
 //! The function convention for context-owning callbacks is
 //! `fn handler(ctx: &mut C, params: Res<T>..., event: E)` — context first,
-//! [`SystemParam`]-resolved resources in the middle, event last.
+//! [`Param`]-resolved resources in the middle, event last.
 //!
 //! Same HRTB double-bound pattern, same macro generation, same ~2-cycle
 //! dispatch. Named functions only (same closure limitation as
 //! [`IntoHandler`](crate::IntoHandler)).
+//!
+//! # When to use Callback
+//!
+//! Use [`Callback`] over [`IntoHandler`](crate::IntoHandler) when each
+//! handler instance needs its own private state that isn't shared via
+//! [`World`](crate::World):
+//!
+//! - **Per-timer context** — each timer carries its own order ID, retry
+//!   count, or deadline metadata.
+//! - **Per-connection state** — each socket handler carries its own codec
+//!   state, read buffer, or session context.
+//! - **Protocol state machines** — each handler instance tracks its own
+//!   position in a protocol handshake or reconnection sequence.
+//!
+//! The `ctx` field is `pub`, so drivers can read or mutate it between
+//! dispatches (e.g. to update a deadline or check a counter).
 
 use crate::Handler;
-use crate::system::SystemParam;
+use crate::handler::Param;
 use crate::world::{Registry, World};
 
 // =============================================================================
@@ -52,7 +68,7 @@ use crate::world::{Registry, World};
 /// assert_eq!(cb.ctx.count, 1);
 /// assert_eq!(*world.resource::<u64>(), 10);
 /// ```
-pub struct Callback<C, F, Params: SystemParam> {
+pub struct Callback<C, F, Params: Param> {
     /// Per-callback owned state. Accessible outside dispatch.
     pub ctx: C,
     pub(crate) f: F,
@@ -71,14 +87,45 @@ pub struct Callback<C, F, Params: SystemParam> {
 /// `registry.id::<T>()` at call time — panics if any resource is not
 /// registered.
 ///
+/// Use `IntoCallback` when each handler instance needs its own private
+/// state. For stateless handlers (or state shared via [`World`](crate::World)),
+/// prefer [`IntoHandler`](crate::IntoHandler).
+///
 /// # Named functions only
 ///
 /// Closures do not work with `IntoCallback` due to Rust's HRTB inference
 /// limitations with GATs. Use named `fn` items instead.
 ///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler};
+///
+/// struct TimerCtx { order_id: u64, fires: u64 }
+///
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+///     ctx.fires += 1;
+///     *counter += ctx.order_id;
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// let mut world = builder.build();
+///
+/// let mut cb = on_timeout.into_callback(
+///     TimerCtx { order_id: 42, fires: 0 },
+///     world.registry(),
+/// );
+/// cb.run(&mut world, ());
+///
+/// assert_eq!(cb.ctx.fires, 1);
+/// assert_eq!(*world.resource::<u64>(), 42);
+/// ```
+///
 /// # Panics
 ///
-/// Panics if any [`SystemParam`] resource is not registered.
+/// Panics if any [`Param`] resource is not registered in the
+/// [`Registry`](crate::Registry).
 pub trait IntoCallback<C, E, Params> {
     /// The concrete Callback type produced.
     type Callback: Handler<E>;
@@ -88,7 +135,7 @@ pub trait IntoCallback<C, E, Params> {
 }
 
 // =============================================================================
-// Arity 0: fn(ctx: &mut C, E) — context + event only, no SystemParam
+// Arity 0: fn(ctx: &mut C, E) — context + event only, no Param
 // =============================================================================
 
 impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> IntoCallback<C, E, ()> for F {
@@ -98,7 +145,7 @@ impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> IntoCallback<C,
         Callback {
             ctx,
             f: self,
-            state: <() as SystemParam>::init(registry),
+            state: <() as Param>::init(registry),
             name: std::any::type_name::<F>(),
         }
     }
@@ -126,7 +173,7 @@ impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> Handler<E> for 
 
 macro_rules! impl_into_callback {
     ($($P:ident),+) => {
-        impl<C: Send + 'static, E, F: Send + 'static, $($P: SystemParam + 'static),+>
+        impl<C: Send + 'static, E, F: Send + 'static, $($P: Param + 'static),+>
             IntoCallback<C, E, ($($P,)+)> for F
         where
             for<'a> &'a mut F:
@@ -136,13 +183,13 @@ macro_rules! impl_into_callback {
             type Callback = Callback<C, F, ($($P,)+)>;
 
             fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
-                let state = <($($P,)+) as SystemParam>::init(registry);
+                let state = <($($P,)+) as Param>::init(registry);
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
                     registry.check_access(&[
                         $(
-                            (<$P as SystemParam>::resource_id($P),
+                            (<$P as Param>::resource_id($P),
                              std::any::type_name::<$P>()),
                         )+
                     ]);
@@ -151,7 +198,7 @@ macro_rules! impl_into_callback {
             }
         }
 
-        impl<C: Send + 'static, E, F: Send + 'static, $($P: SystemParam + 'static),+>
+        impl<C: Send + 'static, E, F: Send + 'static, $($P: Param + 'static),+>
             Handler<E> for Callback<C, F, ($($P,)+)>
         where
             for<'a> &'a mut F:
@@ -174,13 +221,13 @@ macro_rules! impl_into_callback {
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
                 let ($($P,)+) = unsafe {
-                    <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
                 call_inner(&mut self.f, &mut self.ctx, $($P,)+ event);
             }
 
             fn inputs_changed(&self, world: &World) -> bool {
-                <($($P,)+) as SystemParam>::any_changed(&self.state, world)
+                <($($P,)+) as Param>::any_changed(&self.state, world)
             }
 
             fn name(&self) -> &'static str {

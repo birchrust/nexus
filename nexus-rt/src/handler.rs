@@ -1,4 +1,4 @@
-//! System parameter resolution and dispatch primitives.
+//! Handler parameter resolution and dispatch primitives.
 
 use std::ops::{Deref, DerefMut};
 
@@ -7,19 +7,35 @@ use crate::resource::{Res, ResMut};
 use crate::world::{Registry, ResourceId, World};
 
 // =============================================================================
-// SystemParam
+// Param
 // =============================================================================
 
 /// Trait for types that can be resolved from a [`Registry`] at build time
 /// and fetched from [`World`] at dispatch time.
 ///
-/// Build time: [`init`](Self::init) resolves opaque state (e.g. a
-/// [`ResourceId`]) from the registry. This panics if the required type
-/// isn't registered — giving an early build-time error.
+/// Analogous to Bevy's `SystemParam`.
 ///
-/// Dispatch time: [`fetch`](Self::fetch) uses the cached state to produce
-/// a reference in ~3 cycles.
-pub trait SystemParam {
+/// Two-phase resolution:
+///
+/// 1. **Build time** — [`init`](Self::init) resolves opaque state (e.g. a
+///    [`ResourceId`]) from the registry. This panics if the required type
+///    isn't registered — giving an early build-time error.
+/// 2. **Dispatch time** — [`fetch`](Self::fetch) uses the cached state to
+///    produce a reference in ~3 cycles.
+///
+/// # Built-in impls
+///
+/// | Param | State | Description |
+/// |-------|-------|-------------|
+/// | [`Res<T>`] | `ResourceId` | Shared read |
+/// | [`ResMut<T>`] | `ResourceId` | Exclusive write (stamps on `DerefMut`) |
+/// | [`Option<Res<T>>`] | `Option<ResourceId>` | Optional shared read |
+/// | [`Option<ResMut<T>>`] | `Option<ResourceId>` | Optional exclusive write |
+/// | [`Local<T>`] | `T` | Per-handler state (not in World) |
+/// | [`RegistryRef`] | `()` | Read-only registry access |
+/// | `()` | `()` | Event-only handlers |
+/// | Tuples of params | Tuple of states | Up to 8 params |
+pub trait Param {
     /// Opaque state cached at build time (e.g. [`ResourceId`]).
     ///
     /// `Send` is required because state is stored in handler types
@@ -65,7 +81,7 @@ pub trait SystemParam {
 
 // -- Res<T> ------------------------------------------------------------------
 
-impl<T: 'static> SystemParam for Res<'_, T> {
+impl<T: 'static> Param for Res<'_, T> {
     type State = ResourceId;
     type Item<'w> = Res<'w, T>;
 
@@ -99,7 +115,7 @@ impl<T: 'static> SystemParam for Res<'_, T> {
 
 // -- ResMut<T> ---------------------------------------------------------------
 
-impl<T: 'static> SystemParam for ResMut<'_, T> {
+impl<T: 'static> Param for ResMut<'_, T> {
     type State = ResourceId;
     type Item<'w> = ResMut<'w, T>;
 
@@ -133,7 +149,7 @@ impl<T: 'static> SystemParam for ResMut<'_, T> {
 
 // -- Option<Res<T>> ----------------------------------------------------------
 
-impl<T: 'static> SystemParam for Option<Res<'_, T>> {
+impl<T: 'static> Param for Option<Res<'_, T>> {
     type State = Option<ResourceId>;
     type Item<'w> = Option<Res<'w, T>>;
 
@@ -168,7 +184,7 @@ impl<T: 'static> SystemParam for Option<Res<'_, T>> {
 
 // -- Option<ResMut<T>> -------------------------------------------------------
 
-impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
+impl<T: 'static> Param for Option<ResMut<'_, T>> {
     type State = Option<ResourceId>;
     type Item<'w> = Option<ResMut<'w, T>>;
 
@@ -209,7 +225,7 @@ impl<T: 'static> SystemParam for Option<ResMut<'_, T>> {
 // =============================================================================
 
 /// Unit impl — event-only handlers with no resource parameters.
-impl SystemParam for () {
+impl Param for () {
     type State = ();
     type Item<'w> = ();
 
@@ -223,9 +239,9 @@ impl SystemParam for () {
     }
 }
 
-macro_rules! impl_system_param_tuple {
+macro_rules! impl_param_tuple {
     ($($P:ident),+) => {
-        impl<$($P: SystemParam),+> SystemParam for ($($P,)+) {
+        impl<$($P: Param),+> Param for ($($P,)+) {
             type State = ($($P::State,)+);
             type Item<'w> = ($($P::Item<'w>,)+);
 
@@ -263,7 +279,7 @@ macro_rules! all_tuples {
     };
 }
 
-all_tuples!(impl_system_param_tuple);
+all_tuples!(impl_param_tuple);
 
 // =============================================================================
 // Local<T> — per-handler state
@@ -271,6 +287,8 @@ all_tuples!(impl_system_param_tuple);
 
 /// Per-handler local state. Stored inside the dispatch wrapper (e.g.
 /// [`Callback`] or pipeline [`Stage`](crate::Stage)), not in [`World`].
+///
+/// Analogous to Bevy's `Local<T>`.
 ///
 /// Initialized with [`Default::default()`] at handler creation time. Mutated
 /// freely at dispatch time — each handler/stage instance has its own
@@ -316,7 +334,7 @@ impl<T: Default + Send + 'static> DerefMut for Local<'_, T> {
     }
 }
 
-impl<T: Default + Send + 'static> SystemParam for Local<'_, T> {
+impl<T: Default + Send + 'static> Param for Local<'_, T> {
     type State = T;
     type Item<'s> = Local<'s, T>;
 
@@ -364,7 +382,7 @@ impl Deref for RegistryRef<'_> {
     }
 }
 
-impl SystemParam for RegistryRef<'_> {
+impl Param for RegistryRef<'_> {
     type State = ();
     type Item<'w> = RegistryRef<'w>;
 
@@ -388,6 +406,8 @@ impl SystemParam for RegistryRef<'_> {
 
 /// Object-safe dispatch trait for event handlers.
 ///
+/// Analogous to Bevy's `System` trait.
+///
 /// Enables `Box<dyn Handler<E>>` for type-erased heterogeneous dispatch.
 /// Storage and scheduling are the driver's responsibility — this trait
 /// only defines the dispatch interface.
@@ -405,7 +425,7 @@ pub trait Handler<E>: Send {
     /// Returns `true` if any input resource was modified this sequence.
     ///
     /// Default returns `true` (always run). [`Callback`] overrides
-    /// by checking its state via [`SystemParam::any_changed`].
+    /// by checking its state via [`Param::any_changed`].
     fn inputs_changed(&self, world: &World) -> bool {
         let _ = world;
         true
@@ -439,7 +459,11 @@ pub struct CtxFree<F>(pub(crate) F);
 /// Type alias for context-free handlers (no owned context).
 ///
 /// This is `Callback<(), CtxFree<F>, Params>` — the `ctx: ()` field
-/// is a ZST (zero bytes), identical codegen to the old `FunctionSystem`.
+/// is a ZST (zero bytes), identical codegen.
+///
+/// Created by [`IntoHandler::into_handler`]. Use [`HandlerFn`] in type
+/// annotations when you need to name the concrete type rather than
+/// `Box<dyn Handler<E>>`.
 pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 
 // =============================================================================
@@ -448,8 +472,10 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 
 /// Converts a plain function into a [`Handler`].
 ///
+/// Analogous to Bevy's `IntoSystem`.
+///
 /// Event `E` is always the last function parameter. Everything before
-/// it is resolved as [`SystemParam`] from a [`Registry`].
+/// it is resolved as [`Param`] from a [`Registry`].
 ///
 /// # Named functions only
 ///
@@ -494,7 +520,7 @@ impl<E, F: FnMut(E) + Send + 'static> IntoHandler<E, ()> for F {
         Callback {
             ctx: (),
             f: CtxFree(self),
-            state: <() as SystemParam>::init(registry),
+            state: <() as Param>::init(registry),
             name: std::any::type_name::<F>(),
         }
     }
@@ -518,10 +544,10 @@ impl<E, F: FnMut(E) + Send + 'static> Handler<E> for Callback<(), CtxFree<F>, ()
 
 macro_rules! impl_into_handler {
     ($($P:ident),+) => {
-        impl<E, F: Send + 'static, $($P: SystemParam + 'static),+> IntoHandler<E, ($($P,)+)> for F
+        impl<E, F: Send + 'static, $($P: Param + 'static),+> IntoHandler<E, ($($P,)+)> for F
         where
             // Double-bound pattern (from Bevy):
-            // - First bound: compiler uses P directly to infer SystemParam
+            // - First bound: compiler uses P directly to infer Param
             //   types from the function signature (GATs aren't injective,
             //   so P::Item<'w> alone can't determine P).
             // - Second bound: verifies the function is callable with the
@@ -531,13 +557,13 @@ macro_rules! impl_into_handler {
             type Handler = Callback<(), CtxFree<F>, ($($P,)+)>;
 
             fn into_handler(self, registry: &Registry) -> Self::Handler {
-                let state = <($($P,)+) as SystemParam>::init(registry);
+                let state = <($($P,)+) as Param>::init(registry);
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
                     registry.check_access(&[
                         $(
-                            (<$P as SystemParam>::resource_id($P),
+                            (<$P as Param>::resource_id($P),
                              std::any::type_name::<$P>()),
                         )+
                     ]);
@@ -551,7 +577,7 @@ macro_rules! impl_into_handler {
             }
         }
 
-        impl<E, F: Send + 'static, $($P: SystemParam + 'static),+> Handler<E>
+        impl<E, F: Send + 'static, $($P: Param + 'static),+> Handler<E>
             for Callback<(), CtxFree<F>, ($($P,)+)>
         where
             for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
@@ -572,13 +598,13 @@ macro_rules! impl_into_handler {
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
                 let ($($P,)+) = unsafe {
-                    <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
                 call_inner(&mut self.f.0, $($P,)+ event);
             }
 
             fn inputs_changed(&self, world: &World) -> bool {
-                <($($P,)+) as SystemParam>::any_changed(&self.state, world)
+                <($($P,)+) as Param>::any_changed(&self.state, world)
             }
 
             fn name(&self) -> &'static str {
@@ -599,58 +625,58 @@ mod tests {
     use super::*;
     use crate::WorldBuilder;
 
-    // -- SystemParam tests ----------------------------------------------------
+    // -- Param tests ----------------------------------------------------
 
     #[test]
-    fn res_system_param() {
+    fn res_param() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(42);
         let mut world = builder.build();
 
-        let mut state = <Res<u64> as SystemParam>::init(world.registry_mut());
+        let mut state = <Res<u64> as Param>::init(world.registry_mut());
         // SAFETY: state from init on same registry, no aliasing.
-        let res = unsafe { <Res<u64> as SystemParam>::fetch(&world, &mut state) };
+        let res = unsafe { <Res<u64> as Param>::fetch(&world, &mut state) };
         assert_eq!(*res, 42);
     }
 
     #[test]
-    fn res_mut_system_param() {
+    fn res_mut_param() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(1);
         let mut world = builder.build();
 
-        let mut state = <ResMut<u64> as SystemParam>::init(world.registry_mut());
+        let mut state = <ResMut<u64> as Param>::init(world.registry_mut());
         // SAFETY: state from init on same registry, no aliasing.
         unsafe {
-            let mut res = <ResMut<u64> as SystemParam>::fetch(&world, &mut state);
+            let mut res = <ResMut<u64> as Param>::fetch(&world, &mut state);
             *res = 99;
         }
         unsafe {
-            let mut read_state = <Res<u64> as SystemParam>::init(world.registry_mut());
-            let res = <Res<u64> as SystemParam>::fetch(&world, &mut read_state);
+            let mut read_state = <Res<u64> as Param>::init(world.registry_mut());
+            let res = <Res<u64> as Param>::fetch(&world, &mut read_state);
             assert_eq!(*res, 99);
         }
     }
 
     #[test]
-    fn tuple_system_param() {
+    fn tuple_param() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(10);
         builder.register::<bool>(true);
         let mut world = builder.build();
 
-        let mut state = <(Res<u64>, ResMut<bool>) as SystemParam>::init(world.registry_mut());
+        let mut state = <(Res<u64>, ResMut<bool>) as Param>::init(world.registry_mut());
         // SAFETY: different types, no aliasing.
         unsafe {
             let (counter, mut flag) =
-                <(Res<u64>, ResMut<bool>) as SystemParam>::fetch(&world, &mut state);
+                <(Res<u64>, ResMut<bool>) as Param>::fetch(&world, &mut state);
             assert_eq!(*counter, 10);
             assert!(*flag);
             *flag = false;
         }
         unsafe {
-            let mut read_state = <Res<bool> as SystemParam>::init(world.registry_mut());
-            let res = <Res<bool> as SystemParam>::fetch(&world, &mut read_state);
+            let mut read_state = <Res<bool> as Param>::init(world.registry_mut());
+            let res = <Res<bool> as Param>::fetch(&world, &mut read_state);
             assert!(!*res);
         }
     }
@@ -658,9 +684,9 @@ mod tests {
     #[test]
     fn empty_tuple_param() {
         let mut world = WorldBuilder::new().build();
-        let mut state = <() as SystemParam>::init(world.registry_mut());
+        let mut state = <() as Param>::init(world.registry_mut());
         // SAFETY: no params to alias.
-        let () = unsafe { <() as SystemParam>::fetch(&world, &mut state) };
+        let () = unsafe { <() as Param>::fetch(&world, &mut state) };
     }
 
     // -- Handler dispatch tests -----------------------------------------------
@@ -670,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn event_only_system() {
+    fn event_only_dispatch() {
         let mut world = WorldBuilder::new().build();
         let mut sys = event_only_handler.into_handler(world.registry_mut());
         sys.run(&mut world, 42u32);
@@ -786,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn local_independent_per_system() {
+    fn local_independent_per_handler() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
         let mut world = builder.build();
@@ -811,8 +837,8 @@ mod tests {
     #[test]
     fn option_res_none_when_missing() {
         let mut world = WorldBuilder::new().build();
-        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry_mut());
-        let opt = unsafe { <Option<Res<u64>> as SystemParam>::fetch(&world, &mut state) };
+        let mut state = <Option<Res<u64>> as Param>::init(world.registry_mut());
+        let opt = unsafe { <Option<Res<u64>> as Param>::fetch(&world, &mut state) };
         assert!(opt.is_none());
     }
 
@@ -822,8 +848,8 @@ mod tests {
         builder.register::<u64>(42);
         let mut world = builder.build();
 
-        let mut state = <Option<Res<u64>> as SystemParam>::init(world.registry_mut());
-        let opt = unsafe { <Option<Res<u64>> as SystemParam>::fetch(&world, &mut state) };
+        let mut state = <Option<Res<u64>> as Param>::init(world.registry_mut());
+        let opt = unsafe { <Option<Res<u64>> as Param>::fetch(&world, &mut state) };
         assert_eq!(*opt.unwrap(), 42);
     }
 
@@ -833,14 +859,14 @@ mod tests {
         builder.register::<u64>(1);
         let mut world = builder.build();
 
-        let mut state = <Option<ResMut<u64>> as SystemParam>::init(world.registry_mut());
+        let mut state = <Option<ResMut<u64>> as Param>::init(world.registry_mut());
         unsafe {
-            let opt = <Option<ResMut<u64>> as SystemParam>::fetch(&world, &mut state);
+            let opt = <Option<ResMut<u64>> as Param>::fetch(&world, &mut state);
             *opt.unwrap() = 99;
         }
         unsafe {
-            let mut read_state = <Res<u64> as SystemParam>::init(world.registry_mut());
-            let res = <Res<u64> as SystemParam>::fetch(&world, &mut read_state);
+            let mut read_state = <Res<u64> as Param>::init(world.registry_mut());
+            let res = <Res<u64> as Param>::fetch(&world, &mut read_state);
             assert_eq!(*res, 99);
         }
     }

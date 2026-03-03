@@ -10,7 +10,7 @@ polling. Your `main()` is the executor.
 ## Design
 
 `nexus-rt` is heavily inspired by [Bevy ECS](https://bevyengine.org/).
-Handlers as plain functions, `SystemParam` for declarative dependency
+Handlers as plain functions, `Param` for declarative dependency
 injection, `Res<T>` / `ResMut<T>` wrappers, change detection via
 sequence stamps, the `Plugin` trait for composable registration — these
 are Bevy's ideas, and in many cases the implementation follows Bevy's
@@ -80,7 +80,7 @@ processing rather than game-world state management.
 | **Callback** | Dynamic per-instance context + pre-resolved params. | ~2 cycles p50 |
 | **Handler** | `Box<dyn Handler<E>>` for type-erased dispatch. | ~2 cycles p50 |
 
-All tiers resolve `SystemParam` state at build time. Dispatch-time cost is
+All tiers resolve `Param` state at build time. Dispatch-time cost is
 a bounds-checked index into a `Vec` — no hashing, no searching.
 
 ## Quick Start
@@ -156,11 +156,16 @@ loop {
 Type-erased resource storage with dense `ResourceId` indexing. ~3 cycles
 per dispatch-time access. Frozen after build — no inserts, no removes.
 
-### Res / ResMut — system parameters
+*(Bevy analogy: `World`, but singletons only — no entities, no components,
+no archetypes.)*
+
+### Res / ResMut — resource parameters
 
 Declare resource dependencies in function signatures. `Res<T>` for shared
 reads, `ResMut<T>` for exclusive writes. `ResMut` stamps `changed_at` on
 `DerefMut` — the act of writing is the change signal.
+
+*(Bevy analogy: `Res<T>` and `ResMut<T>`, same names and semantics.)*
 
 ```rust
 fn process(config: Res<Config>, mut state: ResMut<State>, event: Event) {
@@ -168,10 +173,62 @@ fn process(config: Res<Config>, mut state: ResMut<State>, event: Event) {
 }
 ```
 
+### Optional resources
+
+`Option<Res<T>>` and `Option<ResMut<T>>` resolve to `None` if the type
+was not registered, rather than panicking at build time. Useful for
+handlers that can operate with or without a particular resource.
+
+```rust
+fn maybe_log(logger: Option<Res<Logger>>, event: u32) {
+    if let Some(log) = logger {
+        log.info(event);
+    }
+}
+```
+
+### Param — build-time / dispatch-time resolution
+
+The `Param` trait is the mechanism behind `Res<T>`, `ResMut<T>`,
+`Local<T>`, and all other handler parameters. Two-phase resolution:
+
+1. **Build time** — `Param::init(registry)` resolves opaque state (e.g.
+   a `ResourceId`) and panics if the required type isn't registered.
+2. **Dispatch time** — `Param::fetch(world, state)` uses the cached state
+   to produce a reference in ~3 cycles.
+
+*(Bevy analogy: `SystemParam`.)*
+
+Built-in impls: `Res<T>`, `ResMut<T>`, `Option<Res<T>>`,
+`Option<ResMut<T>>`, `Local<T>`, `RegistryRef`, `()`, and tuples up to
+8 params.
+
+### Handler / IntoHandler — fn-to-handler conversion
+
+`IntoHandler` converts a plain `fn` into a `Handler` trait object.
+Event `E` is always the last parameter; everything before it is resolved
+as `Param` from a `Registry`.
+
+*(Bevy analogy: `IntoSystem` / `System` trait.)*
+
+```rust
+fn tick(counter: Res<u64>, mut flag: ResMut<bool>, event: u32) {
+    if event > 0 {
+        *flag = true;
+    }
+}
+
+let mut handler = tick.into_handler(registry);
+handler.run(&mut world, 10u32);
+```
+
+Named functions only — closures do not work with `IntoHandler` due to
+Rust's HRTB inference limitations with GATs (same limitation as Bevy).
+
 ### Pipeline — pre-resolved processing chains
 
 Typed composition chains where each stage is a named function with
-`SystemParam` dependencies resolved at build time.
+`Param` dependencies resolved at build time.
 
 ```rust
 let mut pipeline = PipelineStart::<Order>::new()
@@ -186,7 +243,8 @@ pipeline.run(&mut world, order);
 
 Option and Result combinators (`.map()`, `.and_then()`, `.catch()`,
 `.filter()`, `.unwrap_or()`, etc.) enable typed flow control without
-runtime overhead.
+runtime overhead. `Pipeline` implements `Handler<In>`, so it can be
+boxed or stored alongside other handlers.
 
 ### Batch pipeline — per-item processing over a buffer
 
@@ -212,13 +270,34 @@ the per-item chain identically to the single-event pipeline.
 
 ### Change detection
 
-Each resource tracks a `changed_at` sequence number. `Res::is_changed()`
-and `Handler::inputs_changed()` compare against the world's current
-sequence. Drivers call `world.next_sequence()` before each event dispatch.
+Each resource tracks a `changed_at` sequence number. Drivers call
+`world.next_sequence()` before each event dispatch to advance the
+sequence counter.
+
+```rust
+// Read side — check if a resource was modified this sequence
+fn observer(val: Res<u64>, _event: ()) {
+    if val.is_changed() {
+        // val was written during the current sequence
+    }
+}
+
+// Write side — ResMut stamps changed_at on DerefMut automatically
+fn writer(mut val: ResMut<u64>, _event: ()) {
+    *val = 42; // stamps changed_at = current_sequence
+}
+
+// Driver side — skip handlers whose inputs haven't changed
+if handler.inputs_changed(&world) {
+    handler.run(&mut world, event);
+}
+```
 
 ### Plugin — composable registration
 
-Fire-and-forget resource registration units. Consumed by `WorldBuilder`:
+Fire-and-forget resource registration units. Consumed by `WorldBuilder`.
+
+*(Bevy analogy: `Plugin`.)*
 
 ```rust
 struct MyPlugin { /* config */ }
@@ -236,12 +315,97 @@ wb.install_plugin(MyPlugin { /* ... */ });
 ### Local — per-handler state
 
 `Local<T>` is state stored inside the handler instance, not in World.
-Useful for counters, caches, or any per-handler accumulator.
+Initialized with `Default::default()` at handler creation time. Each
+handler instance gets its own independent copy — two handlers created
+from the same function have separate `Local` values.
+
+*(Bevy analogy: `Local<T>`.)*
+
+```rust
+fn count_events(mut count: Local<u64>, mut total: ResMut<u64>, _event: u32) {
+    *count += 1;
+    *total = *count;
+}
+
+let mut handler_a = count_events.into_handler(registry);
+let mut handler_b = count_events.into_handler(registry);
+
+handler_a.run(&mut world, 0);  // handler_a local=1
+handler_b.run(&mut world, 0);  // handler_b local=1 (independent)
+handler_a.run(&mut world, 0);  // handler_a local=2
+```
 
 ### Callback — context-owning handlers
 
 `Callback<C, F, Params>` is a handler with per-instance owned context.
-Convention: `fn handler(ctx: &mut C, params..., event: E)`.
+Use it when each handler instance needs private state that isn't shared
+via World — per-timer metadata, per-connection codec state, protocol
+state machines.
+
+Convention: `fn handler(ctx: &mut C, params..., event: E)` — context
+first, `Param`-resolved resources in the middle, event last.
+
+```rust
+struct TimerCtx { order_id: u64, fires: u64 }
+
+fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+    ctx.fires += 1;
+    *counter += ctx.order_id;
+}
+
+let mut cb = on_timeout.into_callback(
+    TimerCtx { order_id: 42, fires: 0 },
+    registry,
+);
+cb.run(&mut world, ());
+
+// Context is pub — accessible outside dispatch
+assert_eq!(cb.ctx.fires, 1);
+```
+
+### RegistryRef — runtime handler creation
+
+`RegistryRef` is a `Param` that provides read-only access to the
+`Registry` during handler dispatch. Enables handlers to create new
+handlers at runtime via `IntoHandler::into_handler` or
+`IntoCallback::into_callback`.
+
+```rust
+fn spawner(reg: RegistryRef, _event: ()) {
+    let handler = some_fn.into_handler(&reg);
+    // store handler somewhere...
+}
+```
+
+### Installer — event source installation
+
+`Installer` is the install-time trait for event sources. The installer
+registers its resources into `WorldBuilder` and returns a concrete
+poller whose `poll()` method drives the event lifecycle. See the
+[Driver Model](#driver-model) section for the full pattern.
+
+### Timer driver (feature: `timer`)
+
+Integrates `nexus_timer::Wheel` as a driver. `TimerInstaller` registers
+the wheel into `WorldBuilder` and returns a `TimerPoller`.
+
+- `TimerPoller::poll(world, now)` drains expired timers and fires handlers
+- Handlers reschedule themselves via `ResMut<TimerWheel<S>>`
+- `Periodic` helper for recurring timers
+- Inline storage variants behind `smartptr` feature: `InlineTimerWheel`,
+  `FlexTimerWheel`
+
+### Mio driver (feature: `mio`)
+
+Integrates `mio` as an IO driver. `MioInstaller` registers the
+`MioDriver` (wrapping `mio::Poll` + handler slab) and returns a
+`MioPoller`.
+
+- `MioPoller::poll(world, timeout)` polls for readiness and fires handlers
+- Move-out-fire pattern: handler is removed from slab, fired, and must
+  re-insert itself to receive more events
+- Stale tokens (already removed) are silently skipped
+- Inline storage variants behind `smartptr` feature: `InlineMio`, `FlexMio`
 
 ### Virtual / FlatVirtual / FlexVirtual — storage aliases
 
@@ -257,6 +421,10 @@ let handler: Virtual<Event> = Box::new(my_handler.into_handler(registry));
 // use nexus_rt::FlatVirtual;
 // let handler: FlatVirtual<Event> = flat!(my_handler.into_handler(registry));
 ```
+
+`Virtual<E>` for heap-allocated. `FlatVirtual<E>` for fixed inline
+(panics if handler doesn't fit). `FlexVirtual<E>` for inline with
+heap fallback.
 
 ## Performance
 
@@ -320,12 +488,12 @@ taskset -c 0 cargo run --release -p nexus-rt --example perf_construction
 `fn` items — closures do not work due to Rust's HRTB inference limitations
 with GATs. This is the same limitation as Bevy's system registration.
 
-Arity-0 pipeline stages (no `SystemParam`) do accept closures:
+Arity-0 pipeline stages (no `Param`) do accept closures:
 ```rust
 // Works — arity-0 closure
 pipeline.stage(|x: u32| x * 2, registry);
 
-// Does NOT work — arity-1 closure with SystemParam
+// Does NOT work — arity-1 closure with Param
 // pipeline.stage(|config: Res<Config>, x: u32| x, registry);
 
 // Works — named function

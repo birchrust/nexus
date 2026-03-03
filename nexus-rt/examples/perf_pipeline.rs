@@ -184,7 +184,7 @@ fn ic_8p(
 }
 
 // =============================================================================
-// Handler dispatch probes — SystemParam fetch hot path
+// Handler dispatch probes — Param fetch hot path
 // =============================================================================
 
 fn handler_res_read(counter: Res<u64>, input: u64) {
@@ -200,7 +200,7 @@ fn handler_two_res(a: Res<u64>, b: Res<u32>, input: u64) {
 }
 
 /// Monomorphized Handler dispatch with Res<u64>.
-/// Full path: Handler::run → SystemParam::fetch → World::get_ptr + changed_at + current_sequence.
+/// Full path: Handler::run → Param::fetch → World::get_ptr + changed_at + current_sequence.
 #[inline(never)]
 pub fn probe_handler_res_read(
     sys: &mut impl Handler<u64>,
@@ -223,7 +223,7 @@ pub fn probe_handler_two_res(sys: &mut impl Handler<u64>, world: &mut nexus_rt::
     sys.run(world, input);
 }
 
-/// Dyn-dispatched Handler — vtable call + SystemParam fetch.
+/// Dyn-dispatched Handler — vtable call + Param fetch.
 #[inline(never)]
 pub fn probe_dyn_handler(sys: &mut dyn Handler<u64>, world: &mut nexus_rt::World, input: u64) {
     sys.run(world, input);
