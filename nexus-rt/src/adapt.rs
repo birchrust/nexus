@@ -11,8 +11,8 @@ use crate::world::World;
 /// decode returns `None` (wrong template, decode error, filtered, etc.).
 ///
 /// The decode function takes `Wire` by value. For reference types like
-/// SBE flyweight decoders (`MessageHeaderDecoder<ReadBuf<'a>>`), this
-/// is already a borrow — no double indirection.
+/// SBE flyweight decoders (`ReadBuf<'a>`), this is already a borrow -
+/// no double indirection.
 ///
 /// Both the decode function and inner handler are concrete types —
 /// monomorphizes to a direct call chain with no vtable overhead.
