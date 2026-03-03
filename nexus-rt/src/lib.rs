@@ -90,6 +90,7 @@ pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
+pub mod testing;
 #[cfg(feature = "timer")]
 pub mod timer;
 mod world;
