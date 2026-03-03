@@ -71,14 +71,13 @@ fn main() {
     println!("=== Scenario 1: All optional resources present ===\n");
     {
         let mut builder = WorldBuilder::new();
-        builder
-            .register(Config { threshold: 5.0 })
-            .register(DebugLog {
-                entries: Vec::new(),
-            })
-            .register(Metrics {
-                events_processed: 0,
-            });
+        builder.register(Config { threshold: 5.0 });
+        builder.register(DebugLog {
+            entries: Vec::new(),
+        });
+        builder.register(Metrics {
+            events_processed: 0,
+        });
         let mut world = builder.build();
 
         let mut process = process_event.into_handler(world.registry_mut());
