@@ -301,7 +301,9 @@ where
     /// 2. Drain handlers from the slab into an internal buffer
     /// 3. Fire each handler with its event
     ///
-    /// Returns the number of handlers fired.
+    /// Returns [`Ok`] with the number of handlers fired on success.
+    /// Returns [`Err`] if [`mio::Poll::poll`] fails; the error is
+    /// propagated unchanged from the underlying mio call.
     ///
     /// Stale tokens (handler already removed) are silently skipped.
     ///
@@ -355,7 +357,6 @@ where
 mod tests {
     use super::*;
     use crate::{IntoHandler, ResMut, WorldBuilder};
-    use std::net::SocketAddr;
 
     #[test]
     fn install_registers_driver() {
@@ -377,34 +378,23 @@ mod tests {
     }
 
     #[test]
-    fn tcp_readiness_fires_handler() {
+    fn waker_fires_handler() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
         let mut poller: MioPoller = builder.install_driver(MioInstaller::new());
         let mut world = builder.build();
 
-        // Create a TCP listener on an ephemeral port
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = ::mio::net::TcpListener::bind(addr).unwrap();
-        let actual_addr = listener.local_addr().unwrap();
-
-        // Handler that sets flag to true
-        fn on_readable(mut flag: ResMut<bool>, _event: ::mio::event::Event) {
+        fn on_wake(mut flag: ResMut<bool>, _event: ::mio::event::Event) {
             *flag = true;
         }
 
-        let handler = on_readable.into_handler(world.registry());
+        let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        driver
-            .registry()
-            .register(&mut listener, token.into(), ::mio::Interest::READABLE)
-            .unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
 
-        // Connect to trigger readable on listener
-        let _stream = std::net::TcpStream::connect(actual_addr).unwrap();
+        waker.wake().unwrap();
 
-        // Poll — handler should fire
         let fired = poller
             .poll(&mut world, Some(Duration::from_millis(100)))
             .unwrap();
@@ -413,46 +403,37 @@ mod tests {
     }
 
     #[test]
-    fn handler_reregisters() {
+    fn handler_fires_twice_with_waker() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
         let mut poller: MioPoller = builder.install_driver(MioInstaller::new());
         let mut world = builder.build();
 
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = ::mio::net::TcpListener::bind(addr).unwrap();
-        let actual_addr = listener.local_addr().unwrap();
-
-        fn on_accept(mut counter: ResMut<u64>, _event: ::mio::event::Event) {
+        fn on_wake(mut counter: ResMut<u64>, _event: ::mio::event::Event) {
             *counter += 1;
         }
 
-        // First registration
-        let handler = on_accept.into_handler(world.registry());
+        // Create waker — only one allowed per Poll instance.
+        let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        driver
-            .registry()
-            .register(&mut listener, token.into(), ::mio::Interest::READABLE)
-            .unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
 
-        let _stream1 = std::net::TcpStream::connect(actual_addr).unwrap();
+        waker.wake().unwrap();
         let fired = poller
             .poll(&mut world, Some(Duration::from_millis(100)))
             .unwrap();
         assert_eq!(fired, 1);
         assert_eq!(*world.resource::<u64>(), 1);
 
-        // Re-register after first fire
-        let handler2 = on_accept.into_handler(world.registry());
+        // Re-insert handler. Slab reuses the freed slot, so the token
+        // matches the waker's registration.
+        let handler2 = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token2 = driver.insert(Box::new(handler2));
-        driver
-            .registry()
-            .reregister(&mut listener, token2.into(), ::mio::Interest::READABLE)
-            .unwrap();
+        assert_eq!(token, token2, "slab must reuse freed slot");
 
-        let _stream2 = std::net::TcpStream::connect(actual_addr).unwrap();
+        waker.wake().unwrap();
         let fired = poller
             .poll(&mut world, Some(Duration::from_millis(100)))
             .unwrap();
@@ -467,28 +448,20 @@ mod tests {
         let mut poller: MioPoller = builder.install_driver(MioInstaller::new());
         let mut world = builder.build();
 
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = ::mio::net::TcpListener::bind(addr).unwrap();
-        let actual_addr = listener.local_addr().unwrap();
-
-        fn on_readable(mut flag: ResMut<bool>, _event: ::mio::event::Event) {
+        fn on_wake(mut flag: ResMut<bool>, _event: ::mio::event::Event) {
             *flag = true;
         }
 
-        let handler = on_readable.into_handler(world.registry());
+        let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        driver
-            .registry()
-            .register(&mut listener, token.into(), ::mio::Interest::READABLE)
-            .unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
 
-        // Remove handler before polling
+        // Remove handler before waking
         let driver = world.resource_mut::<MioDriver>();
         let _removed = driver.remove(token);
 
-        // Connect to trigger the event
-        let _stream = std::net::TcpStream::connect(actual_addr).unwrap();
+        waker.wake().unwrap();
 
         // Poll — stale token, handler should NOT fire
         let fired = poller
@@ -505,23 +478,16 @@ mod tests {
         let mut poller: MioPoller = builder.install_driver(MioInstaller::new());
         let mut world = builder.build();
 
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = ::mio::net::TcpListener::bind(addr).unwrap();
-        let actual_addr = listener.local_addr().unwrap();
-
-        fn on_readable(mut counter: ResMut<u64>, _event: ::mio::event::Event) {
+        fn on_wake(mut counter: ResMut<u64>, _event: ::mio::event::Event) {
             *counter += 1;
         }
 
-        let handler = on_readable.into_handler(world.registry());
+        let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        driver
-            .registry()
-            .register(&mut listener, token.into(), ::mio::Interest::READABLE)
-            .unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
 
-        let _stream = std::net::TcpStream::connect(actual_addr).unwrap();
+        waker.wake().unwrap();
 
         let seq_before = world.current_sequence();
         poller
