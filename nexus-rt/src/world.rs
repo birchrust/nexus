@@ -422,10 +422,10 @@ impl WorldBuilder {
         self
     }
 
-    /// Install a driver. The driver is consumed, registers its resources
-    /// into this builder, and returns a concrete handle for dispatch-time
+    /// Install a driver. The installer is consumed, registers its resources
+    /// into this builder, and returns a concrete poller for dispatch-time
     /// polling.
-    pub fn install_driver<D: crate::driver::Driver>(&mut self, driver: D) -> D::Handle {
+    pub fn install_driver<D: crate::driver::Installer>(&mut self, driver: D) -> D::Poller {
         driver.install(self)
     }
 
@@ -1082,8 +1082,8 @@ mod tests {
             counter_id: ResourceId,
         }
 
-        impl crate::driver::Driver for TestInstaller {
-            type Handle = TestHandle;
+        impl crate::driver::Installer for TestInstaller {
+            type Poller = TestHandle;
 
             fn install(self, world: &mut WorldBuilder) -> TestHandle {
                 let counter_id = world.register::<u64>(0);

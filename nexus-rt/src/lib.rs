@@ -25,9 +25,9 @@
 //!   through the same chain independently — errors on one item don't affect
 //!   subsequent items.
 //!
-//! - **Driver** — [`Driver`] is the install-time trait for event sources.
+//! - **Installer** — [`Installer`] is the install-time trait for event sources.
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
-//!   concrete handle whose `poll()` method drives the event lifecycle.
+//!   concrete poller whose `poll()` method drives the event lifecycle.
 //!
 //! - **Plugin** — [`Plugin`] is a composable unit of resource registration.
 //!   [`WorldBuilder::install_plugin`] consumes a plugin to configure state.
@@ -67,6 +67,8 @@
 
 mod callback;
 mod driver;
+#[cfg(feature = "mio")]
+pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
@@ -76,7 +78,7 @@ pub mod timer;
 mod world;
 
 pub use callback::{Callback, IntoCallback};
-pub use driver::Driver;
+pub use driver::Installer;
 pub use pipeline::{
     BatchPipeline, IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart,
 };
@@ -101,8 +103,14 @@ pub type FlatVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flat<dyn Hand
 #[cfg(feature = "smartptr")]
 pub type FlexVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flex<dyn Handler<E>, B>;
 
+#[cfg(feature = "mio")]
+pub use self::mio::{BoxedMio, MioConfig, MioDriver, MioInstaller, MioPoller, MioToken};
+
+#[cfg(all(feature = "mio", feature = "smartptr"))]
+pub use self::mio::{FlexMio, InlineMio};
+
 #[cfg(feature = "timer")]
-pub use timer::{BoxedTimers, Periodic, TimerConfig, TimerDriver, TimerHandle, TimerWheel};
+pub use timer::{BoxedTimers, Periodic, TimerConfig, TimerInstaller, TimerPoller, TimerWheel};
 
 #[cfg(all(feature = "timer", feature = "smartptr"))]
 pub use timer::{FlexTimerWheel, FlexTimers, InlineTimerWheel, InlineTimers};
