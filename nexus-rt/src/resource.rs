@@ -1,4 +1,40 @@
-//! Shared and mutable resource references for system parameters.
+//! Shared and mutable resource references for handler parameters.
+//!
+//! [`Res<T>`] and [`ResMut<T>`] appear in handler function signatures to
+//! declare read and write dependencies on [`World`](crate::World) resources.
+//! They are produced by [`Param::fetch`](crate::Param::fetch) during dispatch
+//! and deref to the inner `T` transparently.
+//!
+//! Both carry change-detection metadata: [`is_changed()`](Res::is_changed)
+//! compares the resource's `changed_at` stamp against the world's current
+//! sequence. [`ResMut`] stamps `changed_at` on [`DerefMut`] — the act of
+//! writing is the change signal, no manual marking needed.
+//!
+//! For optional dependencies, use [`Option<Res<T>>`] or
+//! [`Option<ResMut<T>>`] — these resolve to `None` if the type was not
+//! registered, rather than panicking at build time.
+//!
+//! # Examples
+//!
+//! ```
+//! use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler};
+//!
+//! fn process(config: Res<u64>, mut state: ResMut<bool>, _event: ()) {
+//!     if *config > 10 {
+//!         *state = true; // stamps changed_at
+//!     }
+//! }
+//!
+//! let mut builder = WorldBuilder::new();
+//! builder.register::<u64>(42);
+//! builder.register::<bool>(false);
+//! let mut world = builder.build();
+//!
+//! let mut handler = process.into_handler(world.registry());
+//! handler.run(&mut world, ());
+//!
+//! assert!(*world.resource::<bool>());
+//! ```
 
 use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
@@ -7,9 +43,14 @@ use crate::world::Sequence;
 
 /// Shared reference to a resource in [`World`](crate::World).
 ///
-/// Appears in system function signatures to declare a read dependency.
+/// Analogous to Bevy's `Res<T>`.
+///
+/// Appears in handler function signatures to declare a read dependency.
 /// Derefs to the inner value transparently. Carries change-detection
 /// metadata — call [`is_changed`](Self::is_changed) to check.
+///
+/// For exclusive write access, use [`ResMut<T>`]. For optional read
+/// access (no panic if unregistered), use [`Option<Res<T>>`].
 ///
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
 pub struct Res<'w, T: 'static> {
@@ -50,10 +91,15 @@ impl<T: 'static> Deref for Res<'_, T> {
 
 /// Mutable reference to a resource in [`World`](crate::World).
 ///
-/// Appears in system function signatures to declare a write dependency.
+/// Analogous to Bevy's `ResMut<T>`.
+///
+/// Appears in handler function signatures to declare a write dependency.
 /// Derefs to the inner value transparently. Stamps the resource's
 /// `changed_at` sequence on [`DerefMut`] — the act of writing is the
 /// change signal.
+///
+/// For shared read access, use [`Res<T>`]. For optional write access
+/// (no panic if unregistered), use [`Option<ResMut<T>>`].
 ///
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
 pub struct ResMut<'w, T: 'static> {

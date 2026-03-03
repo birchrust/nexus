@@ -25,7 +25,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use nexus_rt::{
-    Handler, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef, ResMut,
+    IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef, ResMut,
     TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
 };
 
@@ -90,7 +90,7 @@ struct Stats {
 /// Startup handler — runs once after build to wire drivers to sources.
 ///
 /// Initial registration needs simultaneous access to MioDriver, Listener,
-/// and TimerWheel. Inside a handler, SystemParam provides disjoint borrows
+/// and TimerWheel. Inside a handler, Param provides disjoint borrows
 /// automatically.
 ///
 /// TODO: nexus-rt should offer a `WorldBuilder::on_startup(fn)` that runs
@@ -223,7 +223,7 @@ fn main() {
 
     // == Startup ==============================================================
 
-    startup.into_handler(world.registry()).run(&mut world, ());
+    world.run_startup(startup);
 
     // Spawn echo clients.
     for _ in 0..CLIENT_COUNT {

@@ -2,10 +2,10 @@
 // PipelineBuilder<In, Out, impl FnMut(...)>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
 
-//! Pre-resolved pipeline dispatch using [`SystemParam`] stages.
+//! Pre-resolved pipeline dispatch using [`Param`] stages.
 //!
 //! [`PipelineStart`] begins a typed composition chain where each stage
-//! is a named function with [`SystemParam`] dependencies resolved at build
+//! is a named function with [`Param`] dependencies resolved at build
 //! time. The result is a monomorphized closure chain where dispatch-time
 //! resource access is ~3 cycles per fetch (pre-resolved [`ResourceId`](crate::ResourceId)),
 //! not a HashMap lookup.
@@ -16,7 +16,7 @@
 //!
 //! # Stage function convention
 //!
-//! SystemParams first, stage input last, returns output:
+//! Params first, stage input last, returns output:
 //!
 //! ```ignore
 //! fn validate(config: Res<Config>, order: Order) -> Option<ValidOrder> { .. }
@@ -35,19 +35,19 @@
 
 use std::marker::PhantomData;
 
-use crate::system::SystemParam;
+use crate::handler::Param;
 use crate::world::{Registry, World};
 
 // =============================================================================
-// Stage — pre-resolved stage with SystemParam state
+// Stage — pre-resolved stage with Param state
 // =============================================================================
 
-/// Internal: pre-resolved stage with cached SystemParam state.
+/// Internal: pre-resolved stage with cached Param state.
 ///
 /// Users don't construct this directly — it's produced by [`IntoStage`] and
 /// captured inside pipeline chain closures.
 #[doc(hidden)]
-pub struct Stage<F, Params: SystemParam> {
+pub struct Stage<F, Params: Param> {
     f: F,
     state: Params::State,
     #[allow(dead_code)]
@@ -73,8 +73,8 @@ pub trait StageCall<In, Out> {
 
 /// Converts a named function into a pre-resolved pipeline stage.
 ///
-/// SystemParams first, stage input last, returns output. Arity 0 (no
-/// SystemParams) supports closures. Arities 1+ require named functions
+/// Params first, stage input last, returns output. Arity 0 (no
+/// Params) supports closures. Arities 1+ require named functions
 /// (same HRTB+GAT limitation as [`IntoHandler`](crate::IntoHandler)).
 ///
 /// # Examples
@@ -91,7 +91,7 @@ pub trait IntoStage<In, Out, Params> {
     /// The concrete resolved stage type.
     type Stage: StageCall<In, Out>;
 
-    /// Resolve SystemParam state from the registry and produce a stage.
+    /// Resolve Param state from the registry and produce a stage.
     fn into_stage(self, registry: &Registry) -> Self::Stage;
 }
 
@@ -112,7 +112,7 @@ impl<In, Out, F: FnMut(In) -> Out + 'static> IntoStage<In, Out, ()> for F {
     fn into_stage(self, registry: &Registry) -> Self::Stage {
         Stage {
             f: self,
-            state: <() as SystemParam>::init(registry),
+            state: <() as Param>::init(registry),
             name: std::any::type_name::<F>(),
         }
     }
@@ -124,7 +124,7 @@ impl<In, Out, F: FnMut(In) -> Out + 'static> IntoStage<In, Out, ()> for F {
 
 macro_rules! impl_into_stage {
     ($($P:ident),+) => {
-        impl<In, Out, F: 'static, $($P: SystemParam + 'static),+>
+        impl<In, Out, F: 'static, $($P: Param + 'static),+>
             StageCall<In, Out> for Stage<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
@@ -147,13 +147,13 @@ macro_rules! impl_into_stage {
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
                 let ($($P,)+) = unsafe {
-                    <($($P,)+) as SystemParam>::fetch(world, &mut self.state)
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
                 call_inner(&mut self.f, $($P,)+ input)
             }
         }
 
-        impl<In, Out, F: 'static, $($P: SystemParam + 'static),+>
+        impl<In, Out, F: 'static, $($P: Param + 'static),+>
             IntoStage<In, Out, ($($P,)+)> for F
         where
             for<'a> &'a mut F:
@@ -163,13 +163,13 @@ macro_rules! impl_into_stage {
             type Stage = Stage<F, ($($P,)+)>;
 
             fn into_stage(self, registry: &Registry) -> Self::Stage {
-                let state = <($($P,)+) as SystemParam>::init(registry);
+                let state = <($($P,)+) as Param>::init(registry);
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
                     registry.check_access(&[
                         $(
-                            (<$P as SystemParam>::resource_id($P),
+                            (<$P as Param>::resource_id($P),
                              std::any::type_name::<$P>()),
                         )+
                     ]);
@@ -202,7 +202,7 @@ all_tuples!(impl_into_stage);
 /// Entry point for building a pre-resolved stage pipeline.
 ///
 /// `In` is the pipeline input type. Call [`.stage()`](Self::stage) to add
-/// the first stage — a named function whose [`SystemParam`] dependencies
+/// the first stage — a named function whose [`Param`] dependencies
 /// are resolved from the registry at build time.
 ///
 /// # Examples
@@ -239,7 +239,7 @@ impl<In> PipelineStart<In> {
         Self(PhantomData)
     }
 
-    /// Add the first stage. SystemParams resolved from the registry.
+    /// Add the first stage. Params resolved from the registry.
     pub fn stage<Out, Params, S: IntoStage<In, Out, Params>>(
         self,
         f: S,
@@ -273,7 +273,7 @@ impl<In> Default for PipelineStart<In> {
 /// monomorphizes the entire chain — zero virtual dispatch through stages.
 ///
 /// IntoStage-based methods (`.stage()`, `.map()`, `.and_then()`, `.catch()`)
-/// take `&Registry` to resolve SystemParam state at build time. Closure-based
+/// take `&Registry` to resolve Param state at build time. Closure-based
 /// methods don't need the registry.
 pub struct PipelineBuilder<In, Out, Chain> {
     chain: Chain,
@@ -288,7 +288,7 @@ impl<In, Out, Chain> PipelineBuilder<In, Out, Chain>
 where
     Chain: FnMut(&mut World, In) -> Out,
 {
-    /// Add a stage. SystemParams resolved from the registry.
+    /// Add a stage. Params resolved from the registry.
     pub fn stage<NewOut, Params, S: IntoStage<Out, NewOut, Params>>(
         self,
         f: S,
@@ -723,6 +723,11 @@ where
 /// monomorphized at compile time — no boxing, no virtual dispatch.
 /// Call `.run()` directly for zero-cost execution, or wrap in
 /// `Box<dyn Handler<In>>` when you need type erasure (single box).
+///
+/// Implements [`Handler<In>`](crate::Handler), so it can be stored in
+/// driver handler collections alongside [`Callback`](crate::Callback)
+/// and [`HandlerFn`](crate::HandlerFn). For batch processing, see
+/// [`BatchPipeline`].
 pub struct Pipeline<In, F> {
     chain: F,
     _marker: PhantomData<fn(In)>,
@@ -1080,7 +1085,7 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn build_produces_system() {
+    fn build_produces_handler() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();

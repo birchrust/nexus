@@ -4,6 +4,8 @@ use crate::world::WorldBuilder;
 
 /// Composable unit of resource registration.
 ///
+/// Analogous to Bevy's `Plugin`.
+///
 /// Plugins register resources into a [`WorldBuilder`]. The runtime is
 /// assembled by installing plugins via [`WorldBuilder::install_plugin`].
 ///
