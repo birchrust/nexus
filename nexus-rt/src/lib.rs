@@ -82,6 +82,7 @@
 #![warn(missing_docs)]
 
 mod callback;
+mod catch_unwind;
 mod driver;
 mod handler;
 #[cfg(feature = "mio")]
@@ -94,6 +95,7 @@ pub mod timer;
 mod world;
 
 pub use callback::{Callback, IntoCallback};
+pub use catch_unwind::CatchAssertUnwindSafe;
 pub use driver::Installer;
 pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
