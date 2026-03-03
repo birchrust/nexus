@@ -81,6 +81,7 @@
 
 #![warn(missing_docs)]
 
+mod adapt;
 mod callback;
 mod catch_unwind;
 mod driver;
@@ -95,6 +96,7 @@ pub mod testing;
 pub mod timer;
 mod world;
 
+pub use adapt::Adapt;
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use driver::Installer;
