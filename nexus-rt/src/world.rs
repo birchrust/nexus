@@ -41,7 +41,8 @@ use rustc_hash::FxHashMap;
 /// Assigned sequentially at registration (0, 1, 2, ...). Used as a direct
 /// index into internal storage at dispatch time — no hashing, no searching.
 ///
-/// Only obtained from [`Registry::id`], [`World::id`], or their `try_` variants.
+/// Obtained from [`WorldBuilder::register`], [`WorldBuilder::ensure`],
+/// [`Registry::id`], [`World::id`], or their `try_` / `_default` variants.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ResourceId(usize);
 
