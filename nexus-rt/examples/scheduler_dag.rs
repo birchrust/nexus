@@ -128,10 +128,15 @@ fn main() {
         );
     }
 
-    // Verify: third pass should skip because mid didn't change
-    // (50_200 → 50_200, no DerefMut → changed_after returns false)
+    // Note: pass 3 runs all systems even though the mid price didn't
+    // change (50_200 → 50_200). compute_theo sees changed_after as true
+    // because the handler stamps changed_at via DerefMut unconditionally.
+    //
+    // The system's bool return is the correct propagation control:
+    // compute_theo could compare old vs new theo and return false when
+    // its output didn't change, stopping downstream regardless of what
+    // the handler stamped.
 
-    println!("\nDone. Pass 3 ran all systems because the handler always writes via DerefMut.");
-    println!("To get skip behavior, the handler must check before writing:");
-    println!("  if mid.0 != new_price {{ mid.0 = new_price; }}");
+    println!("\nDone. The system's bool return controls propagation —");
+    println!("return false when outputs didn't change to skip downstream.");
 }

@@ -64,10 +64,12 @@ pub struct SystemFn<F, Params: Param> {
 /// The function signature is `fn(params...) -> bool` — no event parameter.
 /// Parameters are resolved from a [`Registry`] at conversion time.
 ///
-/// # Named functions only
+/// # Closures vs named functions
 ///
-/// Same closure limitation as [`IntoHandler`](crate::IntoHandler) —
-/// Rust's HRTB inference with GATs doesn't work for closures.
+/// Zero-parameter systems (`fn() -> bool`) accept closures. For
+/// parameterized systems (one or more [`Param`] arguments), Rust's
+/// HRTB + GAT inference fails on closures — use named functions.
+/// Same limitation as [`IntoHandler`](crate::IntoHandler).
 ///
 /// # Examples
 ///
