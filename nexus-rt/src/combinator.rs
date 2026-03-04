@@ -10,6 +10,9 @@
 //!   handlers. One heap allocation per handler, zero clones at
 //!   dispatch.
 //!
+//! Both combinators implement `Handler<E>` — they take ownership of
+//! the event, borrow it, and forward `&E` to each child handler.
+//!
 //! Handlers inside combinators must implement `for<'e> Handler<&'e E>`
 //! — they receive the event by reference. Use [`Cloned`](crate::Cloned)
 //! or [`Owned`](crate::Owned) to adapt owned-event handlers.
@@ -18,7 +21,7 @@
 //!
 //! ```
 //! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
-//! use nexus_rt::{FanOut, Broadcast, Cloned};
+//! use nexus_rt::{fan_out, Broadcast, Cloned};
 //!
 //! fn write_a(mut sink: ResMut<u64>, event: &u32) {
 //!     *sink += *event as u64;
@@ -36,7 +39,7 @@
 //! // Static 2-way fan-out
 //! let h1 = write_a.into_handler(world.registry());
 //! let h2 = write_b.into_handler(world.registry());
-//! let mut fan = FanOut((h1, h2));
+//! let mut fan = fan_out!(h1, h2);
 //! fan.run(&mut world, 5u32);
 //! assert_eq!(*world.resource::<u64>(), 5);
 //! assert_eq!(*world.resource::<i64>(), 5);
@@ -46,15 +49,48 @@ use crate::Handler;
 use crate::world::World;
 
 // =============================================================================
+// fan_out! macro
+// =============================================================================
+
+/// Constructs a [`FanOut`] combinator from 2-8 handlers.
+///
+/// Syntactic sugar for `FanOut((h1, h2, ...))` — avoids the
+/// double-parentheses of tuple struct construction.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, fan_out};
+///
+/// fn inc(mut n: ResMut<u64>, event: &u32) { *n += *event as u64; }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// let mut world = builder.build();
+///
+/// let h1 = inc.into_handler(world.registry());
+/// let h2 = inc.into_handler(world.registry());
+/// let mut fan = fan_out!(h1, h2);
+/// fan.run(&mut world, 1u32);
+/// assert_eq!(*world.resource::<u64>(), 2);
+/// ```
+#[macro_export]
+macro_rules! fan_out {
+    ($($handler:expr),+ $(,)?) => {
+        $crate::FanOut(($($handler,)+))
+    };
+}
+
+// =============================================================================
 // FanOut<T> — static tuple fan-out
 // =============================================================================
 
-/// Static fan-out combinator. Dispatches a single event to N handlers
-/// by reference.
+/// Static fan-out combinator. Takes ownership of an event, borrows it,
+/// and dispatches `&E` to N handlers.
 ///
-/// `T` is a tuple of handlers — construct directly: `FanOut((a, b))`
-/// or `FanOut((a, b, c))`. Macro-generated [`Handler<E>`] impls for
-/// tuple arities 2 through 8.
+/// `T` is a tuple of handlers — construct via the [`fan_out!`] macro
+/// or directly: `FanOut((a, b))`. Macro-generated [`Handler<E>`]
+/// impls for tuple arities 2 through 8.
 ///
 /// Each handler in the tuple must implement `for<'e> Handler<&'e E>`.
 /// To include an owned-event handler, wrap it in
@@ -144,8 +180,9 @@ where
     }
 }
 
-/// Dynamic fan-out combinator. Dispatches a single event to N
-/// handlers by reference, where N is determined at runtime.
+/// Dynamic fan-out combinator. Takes ownership of an event, borrows
+/// it, and dispatches `&E` to N handlers, where N is determined at
+/// runtime.
 ///
 /// One heap allocation per handler (boxing). Zero clones at dispatch
 /// — each handler receives `&E`.
@@ -210,7 +247,7 @@ impl<E> Broadcast<E> {
     }
 }
 
-impl<E: Send + 'static> Handler<E> for Broadcast<E> {
+impl<E> Handler<E> for Broadcast<E> {
     fn run(&mut self, world: &mut World, event: E) {
         for h in &mut self.handlers {
             h.run_ref(world, &event);
@@ -258,7 +295,7 @@ mod tests {
 
         let h1 = write_u64.into_handler(world.registry());
         let h2 = write_i64.into_handler(world.registry());
-        let mut fan = FanOut((h1, h2));
+        let mut fan = fan_out!(h1, h2);
         fan.run(&mut world, 5u32);
         assert_eq!(*world.resource::<u64>(), 5);
         assert_eq!(*world.resource::<i64>(), 10);
@@ -275,7 +312,7 @@ mod tests {
         let h1 = write_u64.into_handler(world.registry());
         let h2 = write_i64.into_handler(world.registry());
         let h3 = write_f64.into_handler(world.registry());
-        let mut fan = FanOut((h1, h2, h3));
+        let mut fan = fan_out!(h1, h2, h3);
         fan.run(&mut world, 10u32);
         assert_eq!(*world.resource::<u64>(), 10);
         assert_eq!(*world.resource::<i64>(), 20);
@@ -290,7 +327,7 @@ mod tests {
 
         let ref_h = write_u64.into_handler(world.registry());
         let owned_h = owned_handler.into_handler(world.registry());
-        let mut fan = FanOut((ref_h, Cloned(owned_h)));
+        let mut fan = fan_out!(ref_h, Cloned(owned_h));
         fan.run(&mut world, 3u32);
         assert_eq!(*world.resource::<u64>(), 33); // 3 + 30
     }
@@ -304,7 +341,7 @@ mod tests {
 
         let h1 = write_u64.into_handler(world.registry());
         let h2 = write_i64.into_handler(world.registry());
-        let mut boxed: Box<dyn Handler<u32>> = Box::new(FanOut((h1, h2)));
+        let mut boxed: Box<dyn Handler<u32>> = Box::new(fan_out!(h1, h2));
         boxed.run(&mut world, 7u32);
         assert_eq!(*world.resource::<u64>(), 7);
         assert_eq!(*world.resource::<i64>(), 14);
