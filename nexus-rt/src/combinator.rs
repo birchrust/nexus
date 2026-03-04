@@ -76,6 +76,9 @@ use crate::world::World;
 /// ```
 #[macro_export]
 macro_rules! fan_out {
+    ($handler:expr $(,)?) => {
+        compile_error!("fan_out! requires at least 2 handlers");
+    };
     ($($handler:expr),+ $(,)?) => {
         $crate::FanOut(($($handler,)+))
     };
