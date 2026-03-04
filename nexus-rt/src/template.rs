@@ -11,12 +11,15 @@
 //! # Constraints
 //!
 //! - **`P::State: Copy`** — required for `generate()` to stamp copies.
-//!   Excludes [`Local<T>`](crate::Local) (per-instance state is
+//!   This effectively rules out [`Local<T>`](crate::Local) when the
+//!   per-instance state is not `Copy` (non-duplicable state is
 //!   incompatible with template stamping). All World-backed params
 //!   ([`Res`](crate::Res), [`ResMut`](crate::ResMut), `Option` variants)
 //!   have `State = ResourceId` which is `Copy`.
-//! - **Named functions only** — `F` must be a ZST (zero-sized type).
-//!   Closures and function pointers are rejected at compile time.
+//! - **Zero-sized, non-capturing callables only** — `F` must be a ZST
+//!   (zero-sized type). Capturing closures and function pointers are
+//!   rejected at compile time; captureless closures and function items
+//!   are allowed.
 //!
 //! # Examples
 //!
