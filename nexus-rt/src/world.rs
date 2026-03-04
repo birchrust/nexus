@@ -438,10 +438,12 @@ impl WorldBuilder {
 
     /// Freeze the builder into an immutable [`World`] container.
     ///
-    /// After this call, no more resources can be registered. All
-    /// [`ResourceId`] values remain valid for the lifetime of the
-    /// returned [`World`].
-    pub fn build(self) -> World {
+    /// Automatically registers a [`Shutdown`](crate::shutdown::Shutdown)
+    /// resource if one wasn't already registered. After this call, no
+    /// more resources can be registered. All [`ResourceId`] values
+    /// remain valid for the lifetime of the returned [`World`].
+    pub fn build(mut self) -> World {
+        self.ensure(crate::shutdown::Shutdown::new());
         World {
             registry: self.registry,
             storage: self.storage,
@@ -620,6 +622,20 @@ impl World {
     }
 
     // =========================================================================
+    // Shutdown
+    // =========================================================================
+
+    /// Returns a [`ShutdownHandle`](crate::shutdown::ShutdownHandle)
+    /// sharing the same flag as the [`Shutdown`](crate::shutdown::Shutdown)
+    /// resource.
+    ///
+    /// The handle is owned by the event loop and checked each iteration.
+    /// Handlers trigger shutdown via `Res<Shutdown>::shutdown()`.
+    pub fn shutdown_handle(&self) -> crate::shutdown::ShutdownHandle {
+        self.resource::<crate::shutdown::Shutdown>().handle()
+    }
+
+    // =========================================================================
     // Sequence / change detection
     // =========================================================================
 
@@ -786,7 +802,8 @@ mod tests {
         builder.register::<Price>(Price { value: 100.0 });
         builder.register::<Venue>(Venue { name: "test" });
         let world = builder.build();
-        assert_eq!(world.len(), 2);
+        // +1 for auto-registered Shutdown.
+        assert_eq!(world.len(), 3);
     }
 
     #[test]
@@ -859,8 +876,9 @@ mod tests {
     #[test]
     fn empty_builder_builds_empty_world() {
         let world = WorldBuilder::new().build();
-        assert_eq!(world.len(), 0);
-        assert!(world.is_empty());
+        // Shutdown is auto-registered by build().
+        assert_eq!(world.len(), 1);
+        assert!(world.contains::<crate::shutdown::Shutdown>());
     }
 
     #[test]
