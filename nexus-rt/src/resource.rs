@@ -72,6 +72,19 @@ impl<'w, T: 'static> Res<'w, T> {
     pub fn is_changed(&self) -> bool {
         self.changed_at == self.current_sequence
     }
+
+    /// Returns `true` if the resource was modified after `since`.
+    ///
+    /// Unlike [`is_changed`](Self::is_changed) (equality check against
+    /// current sequence), this uses `>` — suitable for checking whether
+    /// any event since a prior checkpoint wrote this resource.
+    ///
+    /// Relies on numeric ordering of the underlying `u64` counter.
+    /// Not wrap-safe, but at one increment per event the `u64` sequence
+    /// space takes ~584 years at 1 GHz to exhaust.
+    pub fn changed_after(&self, since: Sequence) -> bool {
+        self.changed_at.0 > since.0
+    }
 }
 
 impl<T: std::fmt::Debug + 'static> std::fmt::Debug for Res<'_, T> {
@@ -124,6 +137,19 @@ impl<'w, T: 'static> ResMut<'w, T> {
     /// Returns `true` if the resource was modified during the current sequence.
     pub fn is_changed(&self) -> bool {
         self.changed_at.get() == self.current_sequence
+    }
+
+    /// Returns `true` if the resource was modified after `since`.
+    ///
+    /// Unlike [`is_changed`](Self::is_changed) (equality check against
+    /// current sequence), this uses `>` — suitable for checking whether
+    /// any event since a prior checkpoint wrote this resource.
+    ///
+    /// Relies on numeric ordering of the underlying `u64` counter.
+    /// Not wrap-safe, but at one increment per event the `u64` sequence
+    /// space takes ~584 years at 1 GHz to exhaust.
+    pub fn changed_after(&self, since: Sequence) -> bool {
+        self.changed_at.get().0 > since.0
     }
 }
 
@@ -214,6 +240,32 @@ mod tests {
         // Deref (shared) — read only, should not stamp
         let _ = *res;
         assert_eq!(changed_at.get(), Sequence(0));
+    }
+
+    #[test]
+    fn res_changed_after() {
+        let val = 42u64;
+        // changed_at=3, since=1 → changed after
+        let res = Res::new(&val, Sequence(3), Sequence(5));
+        assert!(res.changed_after(Sequence(1)));
+    }
+
+    #[test]
+    fn res_changed_after_equal_is_false() {
+        let val = 42u64;
+        // changed_at=3, since=3 → NOT changed after (equal, not greater)
+        let res = Res::new(&val, Sequence(3), Sequence(5));
+        assert!(!res.changed_after(Sequence(3)));
+    }
+
+    #[test]
+    fn res_mut_changed_after() {
+        let mut val = 1u64;
+        let changed_at = Cell::new(Sequence(5));
+        let res = ResMut::new(&mut val, &changed_at, Sequence(5));
+        assert!(res.changed_after(Sequence(2)));
+        assert!(!res.changed_after(Sequence(5)));
+        assert!(!res.changed_after(Sequence(7)));
     }
 
     #[test]
