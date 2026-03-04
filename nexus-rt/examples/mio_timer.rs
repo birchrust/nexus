@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 
 use nexus_rt::{
     HandlerTemplate, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef,
-    ResMut, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder, handler_blueprint,
+    Res, ResMut, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
+    handler_blueprint,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────
@@ -111,10 +112,6 @@ struct Stats {
 /// Initial registration needs simultaneous access to MioDriver, Listener,
 /// and TimerWheel. Inside a handler, Param provides disjoint borrows
 /// automatically.
-///
-/// TODO: nexus-rt should offer a `WorldBuilder::on_startup(fn)` that runs
-/// a handler once after `build()` — eliminating the manual
-/// `init.run(&mut world, ())` pattern.
 fn startup(
     mut driver: ResMut<MioDriver>,
     mut listener: ResMut<Listener>,
@@ -195,6 +192,7 @@ fn heartbeat(
     mut conns: ResMut<Connections>,
     mut stats: ResMut<Stats>,
     mut wheel: ResMut<TimerWheel>,
+    shutdown: Res<Shutdown>,
     reg: RegistryRef,
     now: Instant,
 ) {
@@ -205,6 +203,8 @@ fn heartbeat(
     if stats.heartbeats < HEARTBEAT_LIMIT {
         let h = heartbeat.into_handler(&reg);
         wheel.schedule_forget(now + HEARTBEAT_INTERVAL, Box::new(h));
+    } else {
+        shutdown.shutdown();
     }
 }
 
@@ -265,21 +265,16 @@ fn main() {
 
     println!("=== Echo server ({CLIENT_COUNT} clients, {HEARTBEAT_LIMIT} heartbeats) ===\n");
 
-    loop {
+    world.run(|world| {
         let now = Instant::now();
         let timeout = timer_poller
-            .next_deadline(&world)
+            .next_deadline(world)
             .map(|d| d.saturating_duration_since(now))
             .or(Some(Duration::from_millis(100)));
 
-        mio_poller.poll(&mut world, timeout).expect("mio poll");
-        timer_poller.poll(&mut world, Instant::now());
-
-        let stats = world.resource::<Stats>();
-        if stats.heartbeats >= HEARTBEAT_LIMIT && stats.accepts >= CLIENT_COUNT {
-            break;
-        }
-    }
+        mio_poller.poll(world, timeout).expect("mio poll");
+        timer_poller.poll(world, Instant::now());
+    });
 
     // == Results ==============================================================
 
