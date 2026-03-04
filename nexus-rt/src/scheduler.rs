@@ -4,10 +4,42 @@
 //! order. Root systems (no upstream dependencies) always run. Non-root
 //! systems run only if at least one upstream system returned `true`.
 //!
+//! # Propagation model
+//!
+//! Each system returns `bool`. `true` means "my outputs changed, run
+//! downstream systems." `false` means "nothing changed, skip downstream."
+//! When a system has multiple upstreams, it runs if **any** upstream
+//! returned `true` (OR / `any` semantics).
+//!
+//! Propagation is checked via a `u64` bitmask — each system occupies one
+//! bit, and the upstream check is a single AND instruction. This limits
+//! the scheduler to [`MAX_SYSTEMS`] (64) systems.
+//!
+//! # Sequence mechanics
+//!
 //! The global sequence counter is event-only — the scheduler never
 //! calls [`next_sequence`](crate::World::next_sequence). System writes
 //! via [`ResMut`](crate::ResMut) stamp at the current (last event's)
-//! sequence.
+//! sequence. At the end of each pass, [`SchedulerTick`] is updated to
+//! [`current_sequence`](crate::World::current_sequence).
+//!
+//! Systems use [`Res::changed_after`](crate::Res::changed_after) with
+//! [`SchedulerTick::last`] to detect resources modified since the
+//! previous pass.
+//!
+//! # Invariants
+//!
+//! - **Topological order**: Systems execute in an order where all
+//!   upstreams of a system have already completed. Ties are broken by
+//!   insertion order (Kahn's algorithm with FIFO queue).
+//! - **No cycles**: The edge graph must be a DAG. Cycles panic at
+//!   install time with a diagnostic message.
+//! - **Capacity**: At most [`MAX_SYSTEMS`] (64) systems. Exceeding
+//!   this panics at install time.
+//! - **Deterministic**: Same inputs produce the same execution order
+//!   and results. No randomness, no thread-dependent ordering.
+//! - **No sequence bump**: The scheduler never advances the global
+//!   sequence. Event handlers own sequencing; the scheduler observes.
 //!
 //! # Examples
 //!
@@ -145,8 +177,9 @@ pub struct SystemId(usize);
 ///
 /// # Panics
 ///
-/// [`install`](Installer::install) panics if the declared edges form a
-/// cycle.
+/// [`install`](Installer::install) panics if:
+/// - The declared edges form a cycle.
+/// - More than [`MAX_SYSTEMS`] (64) systems were added.
 pub struct SchedulerInstaller {
     systems: Vec<Box<dyn System>>,
     edges: Vec<(usize, usize)>, // (upstream, downstream)
@@ -203,6 +236,17 @@ impl Default for SchedulerInstaller {
     }
 }
 
+/// Maximum number of systems supported by the scheduler.
+///
+/// Propagation uses a `u64` bitmask where each bit represents one
+/// system's result. The upstream check for any system is a single AND
+/// against this bitmask — no iteration over dependency lists.
+///
+/// 64 systems is well beyond typical reconciliation DAG sizes. If a
+/// future use case requires more, the bitmask can be widened to `u128`
+/// or `[u64; N]` without changing the public API.
+pub const MAX_SYSTEMS: usize = 64;
+
 impl Installer for SchedulerInstaller {
     type Poller = SystemScheduler;
 
@@ -210,12 +254,17 @@ impl Installer for SchedulerInstaller {
         let tick_id = world.ensure(SchedulerTick::default());
         let n = self.systems.len();
 
+        assert!(
+            n <= MAX_SYSTEMS,
+            "system scheduler supports at most {MAX_SYSTEMS} systems, got {n}",
+        );
+
         // Build adjacency list and in-degree counts.
         let mut in_degree = vec![0usize; n];
-        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
 
         for &(up, down) in &self.edges {
-            successors[up].push(down);
+            adj[up].push(down);
             in_degree[down] += 1;
         }
 
@@ -230,7 +279,7 @@ impl Installer for SchedulerInstaller {
         let mut order: Vec<usize> = Vec::with_capacity(n);
         while let Some(node) = queue.pop_front() {
             order.push(node);
-            for &succ in &successors[node] {
+            for &succ in &adj[node] {
                 in_degree[succ] -= 1;
                 if in_degree[succ] == 0 {
                     queue.push_back(succ);
@@ -260,18 +309,18 @@ impl Installer for SchedulerInstaller {
             .map(|&old_pos| sorted_systems[old_pos].take().unwrap())
             .collect();
 
-        // Build upstream_positions: for each system in new order,
-        // the new-order positions of its upstream dependencies.
-        let mut upstream_positions: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Build upstream bitmasks: for each system in topological order,
+        // a u64 where bit j is set if system j is an upstream dependency.
+        // Roots have mask 0 (always run).
+        let mut upstream_masks = vec![0u64; n];
         for &(up, down) in &self.edges {
-            upstream_positions[old_to_new[down]].push(old_to_new[up]);
+            upstream_masks[old_to_new[down]] |= 1 << old_to_new[up];
         }
 
         SystemScheduler {
             tick_id,
             systems,
-            upstream_positions,
-            results: vec![false; n],
+            upstream_masks,
         }
     }
 }
@@ -288,21 +337,47 @@ impl Installer for SchedulerInstaller {
 /// This is a user-space driver — the caller decides when and whether
 /// to call [`run`](Self::run).
 ///
+/// # Propagation
+///
 /// Root systems (no upstream) always run. Non-root systems run only if
 /// at least one upstream returned `true`.
+///
+/// # Bitmask implementation
+///
+/// Each system occupies one bit position in a `u64`. During
+/// [`run`](Self::run), a local `results: u64` accumulates which systems
+/// returned `true`. Each system's upstream check is:
+///
+/// ```text
+/// mask == 0              → root, always run
+/// (mask & results) != 0  → at least one upstream returned true
+/// ```
+///
+/// One load, one AND, one branch per system — no heap access for the
+/// propagation check itself. The `results` bitmask lives in a register
+/// for the duration of the loop.
 pub struct SystemScheduler {
     tick_id: ResourceId,
     systems: Vec<Box<dyn System>>,
-    upstream_positions: Vec<Vec<usize>>,
-    results: Vec<bool>,
+    /// Per-system: bit `j` set means system `j` is an upstream dependency.
+    /// `0` = root (always runs).
+    upstream_masks: Vec<u64>,
 }
 
 impl SystemScheduler {
     /// Run all systems with boolean propagation.
     ///
-    /// Root systems (no upstream dependencies) always execute.
-    /// Non-root systems execute only if at least one upstream
-    /// returned `true` (`any` semantics).
+    /// Iterates systems in topological order. For each system:
+    ///
+    /// 1. **Root** (`upstream_mask == 0`): always runs.
+    /// 2. **Non-root** (`upstream_mask & results != 0`): runs if any
+    ///    upstream returned `true`. Skipped otherwise.
+    /// 3. If the system runs and returns `true`, its bit is set in
+    ///    `results`, enabling downstream systems to run.
+    ///
+    /// The `results` bitmask is a local `u64` — the entire propagation
+    /// state fits in a single register. Per-system overhead is one
+    /// load + one AND + one branch (~4 cycles).
     ///
     /// Does NOT call [`next_sequence`](World::next_sequence) — the global
     /// sequence is event-only. System writes via [`ResMut`](crate::ResMut)
@@ -315,17 +390,15 @@ impl SystemScheduler {
     /// Returns the number of systems that actually ran.
     pub fn run(&mut self, world: &mut World) -> usize {
         let mut ran = 0;
-        for i in 0..self.systems.len() {
-            let should_run = self.upstream_positions[i].is_empty()
-                || self.upstream_positions[i]
-                    .iter()
-                    .any(|&up| self.results[up]);
+        let mut results: u64 = 0;
 
-            if should_run {
-                self.results[i] = self.systems[i].run(world);
+        for i in 0..self.systems.len() {
+            let mask = self.upstream_masks[i];
+            if mask == 0 || (mask & results) != 0 {
+                if self.systems[i].run(world) {
+                    results |= 1 << i;
+                }
                 ran += 1;
-            } else {
-                self.results[i] = false;
             }
         }
 
@@ -600,5 +673,18 @@ mod tests {
         scheduler.run(&mut world);
         // 1 * 2 = 2, then 2 * 2 = 4
         assert_eq!(*world.resource::<u64>(), 4);
+    }
+
+    // -- Capacity limit ---------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "at most 64 systems")]
+    fn exceeding_max_systems_panics() {
+        let mut builder = WorldBuilder::new();
+        let mut installer = SchedulerInstaller::new();
+        for _ in 0..=MAX_SYSTEMS {
+            installer.add(false_source, builder.registry());
+        }
+        let _scheduler = builder.install_driver(installer);
     }
 }

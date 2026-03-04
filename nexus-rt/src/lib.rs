@@ -117,7 +117,7 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
-pub use scheduler::{SchedulerInstaller, SchedulerTick, SystemId, SystemScheduler};
+pub use scheduler::{MAX_SYSTEMS, SchedulerInstaller, SchedulerTick, SystemId, SystemScheduler};
 pub use shutdown::{Shutdown, ShutdownHandle};
 pub use system::{IntoSystem, System, SystemFn};
 pub use template::{
