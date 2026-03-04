@@ -31,10 +31,12 @@
 //!
 //! **Closure-based (cold path, `&mut World`):**
 //! `.on_none()`, `.inspect()`, `.inspect_err()`, `.filter()`, `.ok()`,
-//! `.unwrap_or()`, `.unwrap_or_else()`, `.map_err()`, `.or_else()`
+//! `.unwrap_or()`, `.unwrap_or_else()`, `.map_err()`, `.or_else()`,
+//! `.cloned()`, `.dispatch()`
 
 use std::marker::PhantomData;
 
+use crate::Handler;
 use crate::handler::Param;
 use crate::world::{Registry, World};
 
@@ -312,6 +314,77 @@ where
     /// Run the pipeline directly. No boxing, no `'static` on `In`.
     pub fn run(&mut self, world: &mut World, input: In) -> Out {
         (self.chain)(world, input)
+    }
+
+    /// Dispatch pipeline output to a [`Handler<Out>`].
+    ///
+    /// Connects a pipeline's output to any handler — [`HandlerFn`](crate::HandlerFn),
+    /// [`Callback`](crate::Callback), [`Pipeline`], or a combinator like
+    /// [`fan_out!`](crate::fan_out).
+    pub fn dispatch<H: Handler<Out>>(
+        self,
+        mut handler: H,
+    ) -> PipelineBuilder<In, (), impl FnMut(&mut World, In) + use<In, Out, Chain, H>> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let out = chain(world, input);
+                handler.run(world, out);
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// Clone helpers — &T → T transitions
+// =============================================================================
+
+impl<'a, In, T: Clone, Chain> PipelineBuilder<In, &'a T, Chain>
+where
+    Chain: FnMut(&mut World, In) -> &'a T,
+{
+    /// Clone a borrowed output to produce an owned value.
+    ///
+    /// Transitions the pipeline from `&T` to `T`. Uses UFCS
+    /// (`T::clone(val)`) — `val.clone()` on a `&&T` resolves to
+    /// `<&T as Clone>::clone` and returns `&T`, not `T`.
+    pub fn cloned(self) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| T::clone(chain(world, input)),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, In, T: Clone, Chain> PipelineBuilder<In, Option<&'a T>, Chain>
+where
+    Chain: FnMut(&mut World, In) -> Option<&'a T>,
+{
+    /// Clone inner borrowed value. `Option<&T>` → `Option<T>`.
+    pub fn cloned(self) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T>> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| chain(world, input).cloned(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, In, T: Clone, E, Chain> PipelineBuilder<In, Result<&'a T, E>, Chain>
+where
+    Chain: FnMut(&mut World, In) -> Result<&'a T, E>,
+{
+    /// Clone inner borrowed Ok value. `Result<&T, E>` → `Result<T, E>`.
+    pub fn cloned(
+        self,
+    ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| chain(world, input).cloned(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -813,7 +886,7 @@ impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Handler, Local, Res, ResMut, WorldBuilder};
+    use crate::{Handler, IntoHandler, Local, Res, ResMut, WorldBuilder, fan_out};
 
     // =========================================================================
     // Core dispatch
@@ -1514,5 +1587,180 @@ mod tests {
         batch.run(&mut world);
 
         assert_eq!(world.resource::<Vec<u64>>().as_slice(), &[10, 20, 30]);
+    }
+
+    // =========================================================================
+    // Cloned combinator
+    // =========================================================================
+
+    // Named functions for proper lifetime elision (&'a u32 → &'a u32).
+    // Closures get two independent lifetimes and fail to compile.
+    fn ref_identity(x: &u32) -> &u32 {
+        x
+    }
+    fn ref_wrap_some(x: &u32) -> Option<&u32> {
+        Some(x)
+    }
+    fn ref_wrap_none(_x: &u32) -> Option<&u32> {
+        None
+    }
+    fn ref_wrap_ok(x: &u32) -> Result<&u32, String> {
+        Ok(x)
+    }
+    fn ref_wrap_err(_x: &u32) -> Result<&u32, String> {
+        Err("fail".into())
+    }
+
+    #[test]
+    fn cloned_bare() {
+        let mut world = WorldBuilder::new().build();
+        // val before p — val must outlive the pipeline's In = &u32
+        let val = 42u32;
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&u32>::new().stage(ref_identity, r).cloned();
+        assert_eq!(p.run(&mut world, &val), 42u32);
+    }
+
+    #[test]
+    fn cloned_option_some() {
+        let mut world = WorldBuilder::new().build();
+        let val = 42u32;
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&u32>::new()
+            .stage(ref_wrap_some, r)
+            .cloned();
+        assert_eq!(p.run(&mut world, &val), Some(42u32));
+    }
+
+    #[test]
+    fn cloned_option_none() {
+        let mut world = WorldBuilder::new().build();
+        let val = 42u32;
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&u32>::new()
+            .stage(ref_wrap_none, r)
+            .cloned();
+        assert_eq!(p.run(&mut world, &val), None);
+    }
+
+    #[test]
+    fn cloned_result_ok() {
+        let mut world = WorldBuilder::new().build();
+        let val = 42u32;
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&u32>::new().stage(ref_wrap_ok, r).cloned();
+        assert_eq!(p.run(&mut world, &val), Ok(42u32));
+    }
+
+    #[test]
+    fn cloned_result_err() {
+        let mut world = WorldBuilder::new().build();
+        let val = 42u32;
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&u32>::new().stage(ref_wrap_err, r).cloned();
+        assert_eq!(p.run(&mut world, &val), Err("fail".into()));
+    }
+
+    // =========================================================================
+    // Dispatch combinator
+    // =========================================================================
+
+    #[test]
+    fn dispatch_to_handler() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn store(mut out: ResMut<u64>, val: u32) {
+            *out = val as u64;
+        }
+
+        let r = world.registry_mut();
+        let handler = PipelineStart::<u32>::new().stage(store, r).build();
+
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| x * 2, r)
+            .dispatch(handler)
+            .build();
+
+        p.run(&mut world, 5);
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    #[test]
+    fn dispatch_to_fanout() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<i64>(0);
+        let mut world = wb.build();
+
+        fn write_u64(mut sink: ResMut<u64>, event: &u32) {
+            *sink += *event as u64;
+        }
+        fn write_i64(mut sink: ResMut<i64>, event: &u32) {
+            *sink += *event as i64;
+        }
+
+        let h1 = write_u64.into_handler(world.registry());
+        let h2 = write_i64.into_handler(world.registry());
+        let fan = fan_out!(h1, h2);
+
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| x * 2, r)
+            .dispatch(fan)
+            .build();
+
+        p.run(&mut world, 5);
+        assert_eq!(*world.resource::<u64>(), 10);
+        assert_eq!(*world.resource::<i64>(), 10);
+    }
+
+    #[test]
+    fn dispatch_to_broadcast() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn write_u64(mut sink: ResMut<u64>, event: &u32) {
+            *sink += *event as u64;
+        }
+
+        let mut broadcast = crate::Broadcast::<u32>::new();
+        broadcast.add(write_u64.into_handler(world.registry()));
+        broadcast.add(write_u64.into_handler(world.registry()));
+
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .stage(|x: u32| x + 1, r)
+            .dispatch(broadcast)
+            .build();
+
+        p.run(&mut world, 4);
+        assert_eq!(*world.resource::<u64>(), 10); // 5 + 5
+    }
+
+    #[test]
+    fn dispatch_build_produces_handler() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn store(mut out: ResMut<u64>, val: u32) {
+            *out = val as u64;
+        }
+
+        let r = world.registry_mut();
+        let inner = PipelineStart::<u32>::new().stage(store, r).build();
+
+        let mut pipeline: Box<dyn Handler<u32>> = Box::new(
+            PipelineStart::<u32>::new()
+                .stage(|x: u32| x + 1, r)
+                .dispatch(inner)
+                .build(),
+        );
+
+        pipeline.run(&mut world, 9);
+        assert_eq!(*world.resource::<u64>(), 10);
     }
 }
