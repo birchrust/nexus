@@ -29,6 +29,12 @@
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
 //!   concrete poller whose `poll()` method drives the event lifecycle.
 //!
+//! - **Templates** — [`HandlerTemplate`] and [`CallbackTemplate`] resolve
+//!   parameters once, then stamp out handlers via [`generate()`](HandlerTemplate::generate)
+//!   by copying pre-resolved state (~1 cycle). Use when handlers are
+//!   created repeatedly on the hot path (IO re-registration, timer
+//!   rescheduling).
+//!
 //! - **Plugin** — [`Plugin`] is a composable unit of resource registration.
 //!   [`WorldBuilder::install_plugin`] consumes a plugin to configure state.
 //!
@@ -78,6 +84,7 @@
 //! | [`IntoHandler`] | `IntoSystem` | fn → handler conversion |
 //! | [`Plugin`] | `Plugin` | Composable registration |
 //! | [`World`] | `World` | Singletons only (no ECS) |
+//! | [`HandlerTemplate`] | *(no equivalent)* | Resolve-once, stamp-many |
 
 #![warn(missing_docs)]
 
@@ -91,6 +98,7 @@ pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
+pub mod template;
 pub mod testing;
 #[cfg(feature = "timer")]
 pub mod timer;
@@ -106,6 +114,10 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
+pub use template::{
+    Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
+    TemplatedHandler,
+};
 pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
 
 /// Type alias for a boxed, type-erased [`Handler`].

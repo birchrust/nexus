@@ -25,8 +25,8 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use nexus_rt::{
-    IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef, ResMut,
-    TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
+    HandlerTemplate, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef,
+    ResMut, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder, handler_blueprint,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────
@@ -65,6 +65,25 @@ fn report(label: &str, samples: &mut [u64]) {
         percentile(samples, 99.0),
         percentile(samples, 99.9),
     );
+}
+
+fn bench_batched<F: FnMut()>(label: &str, mut f: F) {
+    const ITERS: usize = 100_000;
+    const BATCH: u64 = 100;
+    const WARMUP: usize = 10_000;
+    for _ in 0..WARMUP {
+        f();
+    }
+    let mut samples = Vec::with_capacity(ITERS);
+    for _ in 0..ITERS {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            f();
+        }
+        let end = rdtsc_end();
+        samples.push(end.wrapping_sub(start) / BATCH);
+    }
+    report(label, &mut samples);
 }
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -198,6 +217,9 @@ fn bench_io(mut stats: ResMut<Stats>, _event: mio::event::Event) {
 fn bench_timer(mut stats: ResMut<Stats>, _now: Instant) {
     stats.heartbeats += 1;
 }
+
+handler_blueprint!(BenchIoKey, Event = mio::event::Event, Params = (ResMut<'static, Stats>,));
+handler_blueprint!(BenchTimerKey, Event = Instant, Params = (ResMut<'static, Stats>,));
 
 // ── main ────────────────────────────────────────────────────────────────
 
@@ -466,6 +488,33 @@ fn main() {
             samples.push(end.wrapping_sub(start));
         }
         report("combined loop (1 IO + 1 timer)", &mut samples);
+    }
+
+    // 5. Handler construction: into_handler vs template generate.
+    {
+        let tpl_io = HandlerTemplate::<BenchIoKey>::new(bench_io, world.registry());
+        let tpl_timer = HandlerTemplate::<BenchTimerKey>::new(bench_timer, world.registry());
+
+        println!("\n=== Handler Construction (cycles, batched) ===\n");
+        println!(
+            "{:<52} {:>8} {:>8} {:>8}",
+            "Operation", "p50", "p99", "p999"
+        );
+        println!("{}", "-".repeat(80));
+
+        let r = world.registry();
+        bench_batched("into_handler  (bench_io, 1-param)", || {
+            black_box(bench_io.into_handler(r));
+        });
+        bench_batched("generate      (bench_io, 1-param)", || {
+            black_box(tpl_io.generate());
+        });
+        bench_batched("into_handler  (bench_timer, 1-param)", || {
+            black_box(bench_timer.into_handler(r));
+        });
+        bench_batched("generate      (bench_timer, 1-param)", || {
+            black_box(tpl_timer.generate());
+        });
     }
 
     println!();
