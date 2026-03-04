@@ -91,6 +91,7 @@ pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
+pub mod template;
 pub mod testing;
 #[cfg(feature = "timer")]
 pub mod timer;
@@ -106,6 +107,10 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
+pub use template::{
+    Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
+    TemplatedHandler,
+};
 pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
 
 /// Type alias for a boxed, type-erased [`Handler`].

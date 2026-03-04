@@ -714,7 +714,13 @@ impl World {
     /// the same builder that produced this container.
     #[inline(always)]
     pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Sequence {
-        unsafe { self.storage.slots.get_unchecked(id.0 as usize).changed_at.get() }
+        unsafe {
+            self.storage
+                .slots
+                .get_unchecked(id.0 as usize)
+                .changed_at
+                .get()
+        }
     }
 
     /// Get a reference to the `Cell` tracking a resource's change sequence.
