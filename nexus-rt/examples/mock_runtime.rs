@@ -184,9 +184,8 @@ impl MarketDataHandle {
     /// Process a batch of market ticks.
     ///
     /// Advances sequence once per batch — all ticks share the same sequence
-    /// number. This amortizes the sequence bump but means `inputs_changed()`
-    /// cannot distinguish individual events within a batch. For per-event
-    /// change detection, move `next_sequence()` inside the loop.
+    /// number. For per-event change detection, move `next_sequence()` inside
+    /// the loop.
     fn poll(&mut self, world: &mut World, ticks: &[MarketTick]) {
         if ticks.is_empty() {
             return;
@@ -211,12 +210,6 @@ fn main() {
     let mut md = wb.install_driver(MarketDataInstaller);
     let mut world = wb.build();
 
-    // Standalone handler — demonstrates change detection.
-    fn on_signal(signals: Res<SignalBuffer>, _event: ()) {
-        black_box(signals.signals.len());
-    }
-    let mut signal_handler = on_signal.into_handler(world.registry_mut());
-
     // -- Correctness check ----------------------------------------------------
 
     let ticks = [
@@ -239,15 +232,13 @@ fn main() {
     // 2 signals accepted, risk cap=100 so both go through.
     assert_eq!(world.resource::<OrderCount>().0, 2);
 
-    // Change detection: SignalBuffer was modified → handler should run.
-    assert!(signal_handler.inputs_changed(&world));
-    signal_handler.run(&mut world, ());
-
-    // Advance sequence, no new writes → handler should skip.
-    world.next_sequence();
-    assert!(!signal_handler.inputs_changed(&world));
-
     println!("Correctness checks passed.\n");
+
+    // Standalone handler for dispatch benchmarking.
+    fn on_signal(signals: Res<SignalBuffer>, _event: ()) {
+        black_box(signals.signals.len());
+    }
+    let mut signal_handler = on_signal.into_handler(world.registry_mut());
 
     // -- Latency measurement --------------------------------------------------
 
@@ -337,22 +328,6 @@ fn main() {
             .collect();
         report("4-tick poll (total)", &mut samples);
         report("4-tick poll (per tick)", &mut per_tick);
-    }
-
-    // Change detection
-    {
-        world.next_sequence(); // ensure stale
-        for _ in 0..WARMUP {
-            black_box(signal_handler.inputs_changed(&world));
-        }
-        let mut samples = Vec::with_capacity(ITERATIONS);
-        for _ in 0..ITERATIONS {
-            let start = rdtsc_start();
-            black_box(signal_handler.inputs_changed(&world));
-            let end = rdtsc_end();
-            samples.push(end.wrapping_sub(start));
-        }
-        report("inputs_changed (1 param, stale)", &mut samples);
     }
 
     println!();

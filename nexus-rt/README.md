@@ -288,10 +288,6 @@ fn writer(mut val: ResMut<u64>, _event: ()) {
     *val = 42; // stamps changed_at = current_sequence
 }
 
-// Driver side — skip handlers whose inputs haven't changed
-if handler.inputs_changed(&world) {
-    handler.run(&mut world, event);
-}
 ```
 
 ### Plugin — composable registration
@@ -544,8 +540,6 @@ boost disabled.
 | Handler + Res\<T\> (read) | 2 | 4 | 5 |
 | Handler + ResMut\<T\> (write) | 3 | 8 | 8 |
 | Box\<dyn Handler\> | 2 | 9 | 9 |
-| inputs_changed (1 param) | 1 | 1 | 2 |
-| inputs_changed (8 params) | 4 | 6 | 9 |
 
 Pipeline dispatch matches hand-written code — zero-cost abstraction
 confirmed.

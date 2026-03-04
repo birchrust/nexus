@@ -156,12 +156,6 @@ impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> Handler<E> for 
         (self.f)(&mut self.ctx, event);
     }
 
-    fn inputs_changed(&self, _world: &World) -> bool {
-        // Context-only callback — no resource dependencies to check.
-        // Always returns true so the drivers never skip it.
-        true
-    }
-
     fn name(&self) -> &'static str {
         self.name
     }
@@ -224,10 +218,6 @@ macro_rules! impl_into_callback {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
                 call_inner(&mut self.f, &mut self.ctx, $($P,)+ event);
-            }
-
-            fn inputs_changed(&self, world: &World) -> bool {
-                <($($P,)+) as Param>::any_changed(&self.state, world)
             }
 
             fn name(&self) -> &'static str {
@@ -504,40 +494,6 @@ mod tests {
     }
 
     // -- Change detection -----------------------------------------------------
-
-    fn reads_resource(_ctx: &mut u64, _val: Res<u64>, _e: ()) {}
-
-    #[test]
-    fn inputs_changed_delegates() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        let mut world = builder.build();
-
-        let cb = reads_resource.into_callback(0u64, world.registry_mut());
-
-        // Seq 0: changed_at=0, current_sequence=0 → changed
-        assert!(cb.inputs_changed(&world));
-
-        world.next_sequence();
-        assert!(!cb.inputs_changed(&world));
-
-        *world.resource_mut::<u64>() = 42;
-        assert!(cb.inputs_changed(&world));
-    }
-
-    #[test]
-    fn inputs_changed_true_no_params() {
-        let mut world = WorldBuilder::new().build();
-        let cb = ctx_only_handler.into_callback(
-            TimerCtx {
-                order_id: 0,
-                call_count: 0,
-            },
-            world.registry_mut(),
-        );
-        // Context-only callbacks always run — scheduler must not skip them.
-        assert!(cb.inputs_changed(&world));
-    }
 
     fn stamps_writer(_ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
         *val = 99;

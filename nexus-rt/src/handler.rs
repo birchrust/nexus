@@ -62,12 +62,6 @@ pub trait Param {
     /// - Caller ensures no aliasing violations.
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Self::State) -> Self::Item<'w>;
 
-    /// Returns `true` if any resource this param depends on was modified
-    /// during the current sequence.
-    ///
-    /// Used by drivers to skip handlers whose inputs haven't changed.
-    fn any_changed(state: &Self::State, world: &World) -> bool;
-
     /// The ResourceId this param accesses, if any.
     ///
     /// Returns `None` for params that don't access World resources
@@ -103,11 +97,6 @@ impl<T: 'static> Param for Res<'_, T> {
         }
     }
 
-    fn any_changed(state: &ResourceId, world: &World) -> bool {
-        // SAFETY: state was produced by init() on the same registry.
-        unsafe { world.changed_at(*state) == world.current_sequence() }
-    }
-
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
         Some(*state)
     }
@@ -137,11 +126,6 @@ impl<T: 'static> Param for ResMut<'_, T> {
         }
     }
 
-    fn any_changed(state: &ResourceId, world: &World) -> bool {
-        // SAFETY: state was produced by init() on the same registry.
-        unsafe { world.changed_at(*state) == world.current_sequence() }
-    }
-
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
         Some(*state)
     }
@@ -167,13 +151,6 @@ impl<T: 'static> Param for Option<Res<'_, T>> {
                 world.changed_at(id),
                 world.current_sequence(),
             )
-        })
-    }
-
-    fn any_changed(state: &Option<ResourceId>, world: &World) -> bool {
-        state.is_some_and(|id| {
-            // SAFETY: id was produced by init() on the same registry.
-            unsafe { world.changed_at(id) == world.current_sequence() }
         })
     }
 
@@ -208,13 +185,6 @@ impl<T: 'static> Param for Option<ResMut<'_, T>> {
         })
     }
 
-    fn any_changed(state: &Option<ResourceId>, world: &World) -> bool {
-        state.is_some_and(|id| {
-            // SAFETY: id was produced by init() on the same registry.
-            unsafe { world.changed_at(id) == world.current_sequence() }
-        })
-    }
-
     fn resource_id(state: &Option<ResourceId>) -> Option<ResourceId> {
         *state
     }
@@ -233,10 +203,6 @@ impl Param for () {
 
     #[inline(always)]
     unsafe fn fetch<'w>(_world: &'w World, _state: &'w mut ()) {}
-
-    fn any_changed(_state: &(), _world: &World) -> bool {
-        false
-    }
 }
 
 macro_rules! impl_param_tuple {
@@ -255,12 +221,6 @@ macro_rules! impl_param_tuple {
                 let ($($P,)+) = state;
                 // SAFETY: caller upholds aliasing invariants for all params.
                 unsafe { ($($P::fetch(world, $P),)+) }
-            }
-
-            #[allow(non_snake_case)]
-            fn any_changed(state: &Self::State, world: &World) -> bool {
-                let ($($P,)+) = state;
-                $($P::any_changed($P, world))||+
             }
         }
     };
@@ -349,11 +309,6 @@ impl<T: Default + Send + 'static> Param for Local<'_, T> {
         // Lifetime 's is bounded by the handler/stage's run() call.
         Local::new(state)
     }
-
-    fn any_changed(_state: &T, _world: &World) -> bool {
-        // Local state is per-handler, not a World resource — never "changed."
-        false
-    }
 }
 
 // =============================================================================
@@ -394,10 +349,6 @@ impl Param for RegistryRef<'_> {
             registry: world.registry(),
         }
     }
-
-    fn any_changed((): &(), _: &World) -> bool {
-        false
-    }
 }
 
 // =============================================================================
@@ -421,15 +372,6 @@ impl Param for RegistryRef<'_> {
 pub trait Handler<E>: Send {
     /// Run this handler with the given event.
     fn run(&mut self, world: &mut World, event: E);
-
-    /// Returns `true` if any input resource was modified this sequence.
-    ///
-    /// Default returns `true` (always run). [`Callback`] overrides
-    /// by checking its state via [`Param::any_changed`].
-    fn inputs_changed(&self, world: &World) -> bool {
-        let _ = world;
-        true
-    }
 
     /// Returns the handler's name.
     ///
@@ -531,12 +473,6 @@ impl<E, F: FnMut(E) + Send + 'static> Handler<E> for Callback<(), CtxFree<F>, ()
         (self.f.0)(event);
     }
 
-    fn inputs_changed(&self, _world: &World) -> bool {
-        // Event-only handler — no resource dependencies to check.
-        // Always returns true so drivers never skip it.
-        true
-    }
-
     fn name(&self) -> &'static str {
         self.name
     }
@@ -601,10 +537,6 @@ macro_rules! impl_into_handler {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
                 call_inner(&mut self.f.0, $($P,)+ event);
-            }
-
-            fn inputs_changed(&self, world: &World) -> bool {
-                <($($P,)+) as Param>::any_changed(&self.state, world)
             }
 
             fn name(&self) -> &'static str {
@@ -880,79 +812,6 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let mut sys = optional_handler.into_handler(world.registry_mut());
         sys.run(&mut world, 0u32);
-    }
-
-    // -- Change detection tests -----------------------------------------------
-
-    #[test]
-    fn inputs_changed_true_when_resource_stamped() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        let mut world = builder.build();
-
-        fn reader(val: Res<u64>, _e: ()) {
-            let _ = *val;
-        }
-
-        let sys = reader.into_handler(world.registry_mut());
-
-        // Tick 0: changed_at=0, current_sequence=0 → inputs changed
-        assert!(sys.inputs_changed(&world));
-
-        world.next_sequence(); // tick=1
-
-        // Tick 1: changed_at=0, current_sequence=1 → not changed
-        assert!(!sys.inputs_changed(&world));
-
-        // Stamp u64 at tick=1
-        *world.resource_mut::<u64>() = 42;
-        assert!(sys.inputs_changed(&world));
-    }
-
-    #[test]
-    fn inputs_changed_false_when_not_stamped() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        builder.register::<bool>(false);
-        let mut world = builder.build();
-
-        fn reads_bool(flag: Res<bool>, _e: ()) {
-            let _ = *flag;
-        }
-
-        let sys = reads_bool.into_handler(world.registry_mut());
-
-        world.next_sequence(); // tick=1
-
-        // Only stamp u64, not bool
-        *world.resource_mut::<u64>() = 42;
-
-        // Handler reads bool, which wasn't stamped → not changed
-        assert!(!sys.inputs_changed(&world));
-    }
-
-    #[test]
-    fn inputs_changed_with_optional_none() {
-        // Optional param with no resource registered → always false
-        let mut world = WorldBuilder::new().build();
-
-        fn optional_sys(opt: Option<Res<String>>, _e: ()) {
-            let _ = opt;
-        }
-
-        let sys = optional_sys.into_handler(world.registry_mut());
-        assert!(!sys.inputs_changed(&world));
-    }
-
-    #[test]
-    fn inputs_changed_event_only_handler() {
-        let mut world = WorldBuilder::new().build();
-
-        fn event_handler(_e: u32) {}
-
-        let sys = event_handler.into_handler(world.registry_mut());
-        // Event-only handlers always run — drivers must not skip them.
-        assert!(sys.inputs_changed(&world));
     }
 
     // -- Access conflict detection ----------------------------------------
