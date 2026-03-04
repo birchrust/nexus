@@ -79,6 +79,7 @@ processing rather than game-world state management.
 | **Pipeline** | Pre-resolved stage chains inside drivers. The workhorse. | ~2 cycles p50 |
 | **Callback** | Dynamic per-instance context + pre-resolved params. | ~2 cycles p50 |
 | **Handler** | `Box<dyn Handler<E>>` for type-erased dispatch. | ~2 cycles p50 |
+| **Template** | Pre-resolved handler stamping for re-registration. | ~1 cycle p50 (generate) |
 
 All tiers resolve `Param` state at build time. Dispatch-time cost is
 a bounds-checked index into a `Vec` — no hashing, no searching.
@@ -363,6 +364,92 @@ cb.run(&mut world, ());
 assert_eq!(cb.ctx.fires, 1);
 ```
 
+### HandlerTemplate / CallbackTemplate — resolve once, stamp many
+
+When handlers are created repeatedly on the hot path — IO readiness
+re-registration, timer rescheduling, connection accept loops — each
+`into_handler(registry)` call pays for HashMap lookups to resolve the
+same `ResourceId` values every time.
+
+Templates resolve parameters once, then `generate()` stamps out
+handlers by copying pre-resolved state. ~1 cycle vs ~20-70 cycles
+for `into_handler`.
+
+A [`Blueprint`] declares the event and parameter types. The template
+resolves them against the registry once:
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, Handler};
+use nexus_rt::template::{Blueprint, HandlerTemplate, CallbackTemplate, CallbackBlueprint};
+
+struct OnTick;
+impl Blueprint for OnTick {
+    type Event = u32;
+    type Params = (ResMut<'static, u64>,);
+}
+
+fn tick(mut counter: ResMut<u64>, event: u32) {
+    *counter += event as u64;
+}
+
+let mut builder = WorldBuilder::new();
+builder.register::<u64>(0);
+let mut world = builder.build();
+
+let template = HandlerTemplate::<OnTick>::new(tick, world.registry());
+
+// Stamp out handlers — no HashMap lookups, just Copy.
+let mut h1 = template.generate();
+let mut h2 = template.generate();
+
+h1.run(&mut world, 10);
+h2.run(&mut world, 5);
+assert_eq!(*world.resource::<u64>(), 15);
+```
+
+For context-owning handlers, `CallbackTemplate` works the same way —
+each `generate(ctx)` takes an owned context value:
+
+```rust
+struct TimerCtx { order_id: u64 }
+
+struct OnTimeout;
+impl Blueprint for OnTimeout {
+    type Event = ();
+    type Params = (ResMut<'static, u64>,);
+}
+impl CallbackBlueprint for OnTimeout {
+    type Context = TimerCtx;
+}
+
+fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+    *counter += ctx.order_id;
+}
+
+# let mut builder = WorldBuilder::new();
+# builder.register::<u64>(0);
+# let mut world = builder.build();
+let cb_template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
+let mut cb = cb_template.generate(TimerCtx { order_id: 42 });
+cb.run(&mut world, ());
+assert_eq!(*world.resource::<u64>(), 42);
+```
+
+Convenience macros reduce Blueprint boilerplate:
+
+```rust
+use nexus_rt::handler_blueprint;
+handler_blueprint!(OnTick, Event = u32, Params = (ResMut<'static, u64>,));
+```
+
+**Constraints:**
+- `P::State: Copy` — excludes `Local<T>` with non-Copy state
+  (incompatible with template stamping). All World-backed params
+  (`Res`, `ResMut`, `Option` variants) have `State = ResourceId`
+  which is `Copy`.
+- Zero-sized callables only — named functions and captureless closures.
+  Capturing closures and function pointers are rejected at compile time.
+
 ### RegistryRef — runtime handler creation
 
 `RegistryRef` is a `Param` that provides read-only access to the
@@ -426,6 +513,22 @@ let handler: Virtual<Event> = Box::new(my_handler.into_handler(registry));
 (panics if handler doesn't fit). `FlexVirtual<E>` for inline with
 heap fallback.
 
+## When to Use What
+
+| Situation | Use | Why |
+|-----------|-----|-----|
+| One-time setup, test harness | `IntoHandler` / `IntoCallback` | Simple, direct. Construction cost paid once. |
+| Pipeline stages inside a driver | `Pipeline` / `BatchPipeline` | Zero-cost monomorphized chains, typed flow control. |
+| IO re-registration (accept, echo) | `HandlerTemplate` / `CallbackTemplate` | Handler recreated every event — template eliminates per-event HashMap lookups. |
+| Timer rescheduling | `HandlerTemplate` / `CallbackTemplate` | Same pattern — recurring handlers should not pay construction cost repeatedly. |
+| Type-erased handler storage | `Box<dyn Handler<E>>` / `Virtual<E>` | When you need heterogeneous collections (driver slabs, timer wheels). |
+| Per-instance private state | `Callback` (via `IntoCallback`) or `CallbackTemplate` | Context-owning handlers for connection state, timer metadata, etc. |
+| Composable resource registration | `Plugin` | Fire-and-forget, consumed by `WorldBuilder`. |
+
+**Rule of thumb:** If a handler is created once, use `IntoHandler`. If
+it's created repeatedly on every event (move-out-fire pattern), use a
+template.
+
 ## Performance
 
 All measurements in CPU cycles, pinned to a single core with turbo
@@ -473,11 +576,28 @@ Batch dispatch amortizes to ~1.3 cycles/item for compute-heavy chains
 Construction cost is paid once at build time, never on the dispatch
 hot path.
 
+### Template generation (hot path handler creation)
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| generate (1 param) | 1 | 1 | 2 |
+| generate (2 params) | 1 | 1 | 2 |
+| generate (4 params) | 1 | 1 | 1 |
+| generate (8 params) | 1 | 1 | 1 |
+| generate callback (2 params) | 1 | 2 | 2 |
+| generate callback (4 params) | 1 | 1 | 1 |
+
+`generate()` copies pre-resolved `ResourceId` values — flat 1 cycle
+at every arity. Compare with `into_handler` above: 24-70x faster for
+handlers created on every event (IO re-registration, timer rescheduling).
+
 ### Running benchmarks
 
 ```bash
 taskset -c 0 cargo run --release -p nexus-rt --example perf_pipeline
 taskset -c 0 cargo run --release -p nexus-rt --example perf_construction
+taskset -c 0 cargo run --release -p nexus-rt --example perf_template
+taskset -c 0 cargo run --release -p nexus-rt --example mio_timer --features mio,timer
 ```
 
 ## Limitations
@@ -527,8 +647,12 @@ eliminates runtime bookkeeping.
   benchmarks with codegen inspection probes
 - [`perf_construction`](examples/perf_construction.rs) — Construction-time
   latency benchmarks at various arities
+- [`perf_template`](examples/perf_template.rs) — Template generation
+  vs `into_handler` construction benchmarks
 - [`perf_fetch`](examples/perf_fetch.rs) — Fetch dispatch strategy
   benchmarks
+- [`mio_timer`](examples/mio_timer.rs) — Echo server combining mio
+  and timer drivers with template construction benchmarks
 
 ## License
 
