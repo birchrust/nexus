@@ -44,7 +44,7 @@ use rustc_hash::FxHashMap;
 /// Obtained from [`WorldBuilder::register`], [`WorldBuilder::ensure`],
 /// [`Registry::id`], [`World::id`], or their `try_` / `_default` variants.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ResourceId(usize);
+pub struct ResourceId(u16);
 
 impl std::fmt::Display for ResourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -176,7 +176,7 @@ impl Registry {
             let mut seen = 0u128;
             for &(id, name) in accesses {
                 let Some(id) = id else { continue };
-                let bit = 1u128 << id.0;
+                let bit = 1u128 << id.0 as u32;
                 assert!(
                     seen & bit == 0,
                     "conflicting access: resource borrowed by `{}` is already \
@@ -196,8 +196,8 @@ impl Registry {
             scratch.fill(0);
             for &(id, name) in accesses {
                 let Some(id) = id else { continue };
-                let word = id.0 / 64;
-                let bit = 1u64 << (id.0 % 64);
+                let word = id.0 as usize / 64;
+                let bit = 1u64 << (id.0 as u32 % 64);
                 assert!(
                     scratch[word] & bit == 0,
                     "conflicting access: resource borrowed by `{}` is already \
@@ -332,8 +332,15 @@ impl WorldBuilder {
             type_name::<T>(),
         );
 
+        assert!(
+            u16::try_from(self.storage.slots.len()).is_ok(),
+            "resource limit exceeded ({} registered, max {})",
+            self.storage.slots.len(),
+            usize::from(u16::MAX) + 1,
+        );
+
         let ptr = Box::into_raw(Box::new(value)) as *mut u8;
-        let id = ResourceId(self.storage.slots.len());
+        let id = ResourceId(self.storage.slots.len() as u16);
         self.registry.indices.insert(type_id, id);
         self.storage.slots.push(ResourceSlot {
             ptr,
@@ -568,7 +575,7 @@ impl World {
     pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
         let id = self.registry.id::<T>();
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.slots[id.0]
+        self.storage.slots[id.0 as usize]
             .changed_at
             .set(self.current_sequence);
         // SAFETY: id resolved from our own registry. &mut self ensures
@@ -685,14 +692,14 @@ impl World {
     #[inline(always)]
     pub unsafe fn get_ptr(&self, id: ResourceId) -> *mut u8 {
         debug_assert!(
-            id.0 < self.storage.slots.len(),
+            (id.0 as usize) < self.storage.slots.len(),
             "ResourceId({}) out of bounds (len {})",
             id.0,
             self.storage.slots.len(),
         );
         // SAFETY: caller guarantees id was returned by register() on the
         // builder that produced this container, so id.0 < self.storage.slots.len().
-        unsafe { self.storage.slots.get_unchecked(id.0).ptr }
+        unsafe { self.storage.slots.get_unchecked(id.0 as usize).ptr }
     }
 
     // =========================================================================
@@ -707,7 +714,7 @@ impl World {
     /// the same builder that produced this container.
     #[inline(always)]
     pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Sequence {
-        unsafe { self.storage.slots.get_unchecked(id.0).changed_at.get() }
+        unsafe { self.storage.slots.get_unchecked(id.0 as usize).changed_at.get() }
     }
 
     /// Get a reference to the `Cell` tracking a resource's change sequence.
@@ -718,7 +725,7 @@ impl World {
     /// the same builder that produced this container.
     #[inline(always)]
     pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Sequence> {
-        unsafe { &self.storage.slots.get_unchecked(id.0).changed_at }
+        unsafe { &self.storage.slots.get_unchecked(id.0 as usize).changed_at }
     }
 
     /// Stamp a resource as changed at the current sequence.
@@ -733,7 +740,7 @@ impl World {
         unsafe {
             self.storage
                 .slots
-                .get_unchecked(id.0)
+                .get_unchecked(id.0 as usize)
                 .changed_at
                 .set(self.current_sequence);
         }
