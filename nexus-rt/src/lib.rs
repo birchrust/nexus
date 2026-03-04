@@ -91,6 +91,7 @@
 mod adapt;
 mod callback;
 mod catch_unwind;
+mod combinator;
 mod driver;
 mod handler;
 #[cfg(feature = "mio")]
@@ -110,6 +111,7 @@ mod world;
 pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
+pub use combinator::{Broadcast, FanOut};
 pub use driver::Installer;
 pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
