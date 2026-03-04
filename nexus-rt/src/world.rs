@@ -635,6 +635,39 @@ impl World {
         self.resource::<crate::shutdown::Shutdown>().handle()
     }
 
+    /// Run the event loop until shutdown is triggered.
+    ///
+    /// The closure receives `&mut World` and defines one iteration of
+    /// the poll loop — which drivers to poll, in what order, with what
+    /// timeout. The loop exits when a handler calls
+    /// [`Shutdown::shutdown`](crate::shutdown::Shutdown::shutdown) or
+    /// an external signal flips the flag (see
+    /// [`ShutdownHandle::enable_signals`](crate::shutdown::ShutdownHandle::enable_signals)).
+    ///
+    /// The shutdown flag is resolved once before entering the loop —
+    /// no resource lookup per iteration.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut world = wb.build();
+    /// world.run_startup(startup);
+    ///
+    /// world.run(|world| {
+    ///     let now = Instant::now();
+    ///     let timeout = timer.next_deadline(world)
+    ///         .map(|d| d.saturating_duration_since(now));
+    ///     mio.poll(world, timeout).expect("mio poll");
+    ///     timer.poll(world, now);
+    /// });
+    /// ```
+    pub fn run(&mut self, mut f: impl FnMut(&mut World)) {
+        let flag = self.resource::<crate::shutdown::Shutdown>().flag();
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            f(self);
+        }
+    }
+
     // =========================================================================
     // Sequence / change detection
     // =========================================================================

@@ -56,6 +56,12 @@ impl Shutdown {
         }
     }
 
+    /// Clone the raw flag for use in tight loops without going
+    /// through World resource resolution.
+    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.flag)
+    }
+
     /// Returns `true` if shutdown has been triggered.
     pub fn is_shutdown(&self) -> bool {
         self.flag.load(Ordering::Relaxed)
