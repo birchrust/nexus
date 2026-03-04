@@ -107,7 +107,7 @@ pub mod testing;
 pub mod timer;
 mod world;
 
-pub use adapt::Adapt;
+pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use driver::Installer;
