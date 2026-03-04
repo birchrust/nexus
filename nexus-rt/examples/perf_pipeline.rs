@@ -16,6 +16,17 @@
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_dyn_handler
 //! ```
 //!
+//! Run asm inspection (combinators + adapters):
+//! ```bash
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_cloned_pipeline
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_dispatch_pipeline
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_fanout_2way
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_broadcast
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_cloned_adapter
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_byref_adapter
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_adapt
+//! ```
+//!
 //! Run benchmark:
 //! ```bash
 //! taskset -c 0 cargo run --release -p nexus-rt --example perf_pipeline
@@ -23,7 +34,10 @@
 
 use std::hint::black_box;
 
-use nexus_rt::{Handler, IntoHandler, PipelineStart, Res, ResMut, WorldBuilder};
+use nexus_rt::{
+    Adapt, Broadcast, ByRef, Cloned, Handler, IntoHandler, PipelineStart, Res, ResMut,
+    WorldBuilder, fan_out,
+};
 
 // =============================================================================
 // Bench infrastructure
@@ -208,6 +222,95 @@ pub fn probe_dyn_handler(sys: &mut dyn Handler<u64>, world: &mut nexus_rt::World
 }
 
 // =============================================================================
+// Combinator + Adapter codegen probes
+// =============================================================================
+
+/// Pipeline .cloned(): &u64 → u64 transition.
+/// Should compile to: chain call → move (Copy type elides clone).
+#[inline(never)]
+pub fn probe_cloned_pipeline<'a>(
+    p: &mut nexus_rt::PipelineBuilder<
+        &'a u64,
+        u64,
+        impl FnMut(&mut nexus_rt::World, &'a u64) -> u64,
+    >,
+    world: &mut nexus_rt::World,
+    input: &'a u64,
+) -> u64 {
+    p.run(world, input)
+}
+
+/// Pipeline .dispatch() to built handler.
+/// Should compile to: chain call → direct handler call.
+#[inline(never)]
+pub fn probe_dispatch_pipeline(p: &mut impl Handler<u64>, world: &mut nexus_rt::World, input: u64) {
+    p.run(world, input);
+}
+
+/// FanOut 2-way: monomorphized tuple dispatch.
+/// Should compile to: 2 direct handler calls (no loop).
+#[inline(never)]
+pub fn probe_fanout_2way(h: &mut impl Handler<u64>, world: &mut nexus_rt::World, input: u64) {
+    h.run(world, input);
+}
+
+/// Broadcast 2-way: dynamic dispatch baseline.
+/// Expect: Vec iteration + 2 vtable calls.
+#[inline(never)]
+pub fn probe_broadcast(h: &mut Broadcast<u64>, world: &mut nexus_rt::World, input: u64) {
+    h.run(world, input);
+}
+
+/// Cloned adapter: Handler<u64> wrapped as Handler<&u64>.
+/// For Copy types, clone should be elided entirely.
+#[inline(never)]
+pub fn probe_cloned_adapter(
+    h: &mut Cloned<impl Handler<u64>>,
+    world: &mut nexus_rt::World,
+    input: &u64,
+) {
+    h.run(world, input);
+}
+
+/// ByRef adapter: Handler<&u64> wrapped as Handler<u64>.
+/// Should be zero-cost — just borrows the event.
+#[inline(never)]
+pub fn probe_byref_adapter<H: for<'e> Handler<&'e u64> + Send>(
+    h: &mut ByRef<H>,
+    world: &mut nexus_rt::World,
+    input: u64,
+) {
+    h.run(world, input);
+}
+
+/// Adapt adapter: decode(u64) → Option<u64> → Handler<u64>.
+/// Should be: decode call → branch on None → handler call.
+#[inline(never)]
+pub fn probe_adapt(
+    h: &mut Adapt<impl FnMut(u64) -> Option<u64> + Send, impl Handler<u64>>,
+    world: &mut nexus_rt::World,
+    input: u64,
+) {
+    h.run(world, input);
+}
+
+// =============================================================================
+// Stage functions for combinator/adapter setup
+// =============================================================================
+
+fn ref_identity(x: &u64) -> &u64 {
+    x
+}
+
+fn ref_accumulate(mut total: ResMut<u64>, event: &u64) {
+    *total = total.wrapping_add(*event);
+}
+
+fn decode_u64(x: u64) -> Option<u64> {
+    if x > 0 { Some(x) } else { None }
+}
+
+// =============================================================================
 // Main — benchmark
 // =============================================================================
 
@@ -299,13 +402,47 @@ fn main() {
         .map(|x: u64| x.wrapping_mul(2), r)
         .unwrap_or(0);
 
-    // --- Handler dispatch setup ---
+    // --- Combinator pipeline setup (uses r) ---
+
+    // Pipeline .cloned(): &u64 → u64
+    let input_val = 42u64;
+    let mut cloned_pipe = PipelineStart::<&u64>::new().stage(ref_identity, r).cloned();
+
+    // Pipeline .dispatch(): pipeline → handler
+    let dispatch_inner = PipelineStart::<u64>::new().stage(sink, r).build();
+    let mut dispatch_pipe = PipelineStart::<u64>::new()
+        .stage(|x: u64| x.wrapping_mul(3), r)
+        .dispatch(dispatch_inner)
+        .build();
+
+    // --- Handler dispatch setup (uses world.registry_mut(), r no longer needed) ---
 
     let mut sys_res = handler_res_read.into_handler(world.registry_mut());
     let mut sys_res_mut = handler_res_mut_write.into_handler(world.registry_mut());
     let mut sys_two = handler_two_res.into_handler(world.registry_mut());
     let mut sys_dyn: Box<dyn Handler<u64>> =
         Box::new(handler_res_read.into_handler(world.registry_mut()));
+
+    // --- Combinator + Adapter setup (uses world.registry_mut()) ---
+
+    // FanOut 2-way
+    let fan_h1 = ref_accumulate.into_handler(world.registry_mut());
+    let fan_h2 = ref_accumulate.into_handler(world.registry_mut());
+    let mut fanout = fan_out!(fan_h1, fan_h2);
+
+    // Broadcast 2-way
+    let mut broadcast: Broadcast<u64> = Broadcast::new();
+    broadcast.add(ref_accumulate.into_handler(world.registry_mut()));
+    broadcast.add(ref_accumulate.into_handler(world.registry_mut()));
+
+    // Cloned adapter: Handler<u64> → Handler<&u64>
+    let mut cloned_adapt = Cloned(sink.into_handler(world.registry_mut()));
+
+    // ByRef adapter: Handler<&u64> → Handler<u64>
+    let mut byref_adapt = ByRef(ref_accumulate.into_handler(world.registry_mut()));
+
+    // Adapt adapter: decode → Option → handler
+    let mut adapt_adapt = Adapt::new(decode_u64, sink.into_handler(world.registry_mut()));
 
     // --- Pipeline benchmarks ---
 
@@ -385,6 +522,50 @@ fn main() {
     bench_batched("3-stage pipeline (Res<T>)", || {
         input = input.wrapping_add(1);
         stage_3.run(&mut world, black_box(input))
+    });
+
+    // --- Combinator + Adapter benchmarks ---
+
+    println!();
+    print_header("Combinator + Adapter Latency (cycles)");
+
+    bench_batched("pipeline .cloned() (&u64 → u64)", || {
+        probe_cloned_pipeline(&mut cloned_pipe, &mut world, black_box(&input_val))
+    });
+
+    bench_batched("pipeline .dispatch() → handler", || {
+        input = input.wrapping_add(1);
+        probe_dispatch_pipeline(&mut dispatch_pipe, &mut world, black_box(input));
+        0
+    });
+
+    bench_batched("FanOut 2-way (monomorphized)", || {
+        input = input.wrapping_add(1);
+        probe_fanout_2way(&mut fanout, &mut world, black_box(input));
+        0
+    });
+
+    bench_batched("Broadcast 2-way (dyn dispatch)", || {
+        input = input.wrapping_add(1);
+        probe_broadcast(&mut broadcast, &mut world, black_box(input));
+        0
+    });
+
+    bench_batched("Cloned adapter (u64 Copy)", || {
+        probe_cloned_adapter(&mut cloned_adapt, &mut world, black_box(&input_val));
+        0
+    });
+
+    bench_batched("ByRef adapter", || {
+        input = input.wrapping_add(1);
+        probe_byref_adapter(&mut byref_adapt, &mut world, black_box(input));
+        0
+    });
+
+    bench_batched("Adapt adapter (decode → handler)", || {
+        input = input.wrapping_add(1);
+        probe_adapt(&mut adapt_adapt, &mut world, black_box(input));
+        0
     });
 
     // --- Batch vs Linear throughput (total cycles for 100 items) ---
