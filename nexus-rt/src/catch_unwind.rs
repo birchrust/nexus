@@ -59,10 +59,6 @@ impl<E, H: Handler<E>> Handler<E> for CatchAssertUnwindSafe<H> {
         }));
     }
 
-    fn inputs_changed(&self, world: &World) -> bool {
-        self.handler.inputs_changed(world)
-    }
-
     fn name(&self) -> &'static str {
         self.handler.name()
     }
@@ -108,21 +104,6 @@ mod tests {
 
         // Handler survives — can be called again.
         guarded.run(&mut world, 10);
-    }
-
-    #[test]
-    fn forwards_inputs_changed() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        let mut world = builder.build();
-
-        let handler = normal_handler.into_handler(world.registry());
-        let guarded = CatchAssertUnwindSafe::new(handler);
-
-        assert!(guarded.inputs_changed(&world));
-
-        world.next_sequence();
-        assert!(!guarded.inputs_changed(&world));
     }
 
     #[test]

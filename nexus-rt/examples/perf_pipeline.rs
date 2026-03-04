@@ -162,28 +162,6 @@ fn sub_resource(val: Res<u32>, x: u64) -> u64 {
 }
 
 // =============================================================================
-// inputs_changed probe functions at various arities
-// =============================================================================
-
-fn ic_1p(_a: Res<u64>, _: ()) {}
-fn ic_2p(_a: Res<u64>, _b: Res<u32>, _: ()) {}
-fn ic_4p(_a: Res<u64>, _b: Res<u32>, _c: Res<bool>, _d: Res<f64>, _: ()) {}
-
-#[allow(clippy::too_many_arguments)]
-fn ic_8p(
-    _a: Res<u64>,
-    _b: Res<u32>,
-    _c: Res<bool>,
-    _d: Res<f64>,
-    _e: Res<i64>,
-    _f: Res<i32>,
-    _g: Res<u8>,
-    _h: Res<u16>,
-    _: (),
-) {
-}
-
-// =============================================================================
 // Handler dispatch probes — Param fetch hot path
 // =============================================================================
 
@@ -515,65 +493,6 @@ fn main() {
             percentile(&samples, 99.9),
         );
     }
-
-    // --- inputs_changed cost ---
-
-    println!();
-    print_header("inputs_changed Latency (cycles)");
-
-    // Build a world with enough resources for 8-param handlers.
-    let mut ic_wb = WorldBuilder::new();
-    ic_wb.register::<u64>(0);
-    ic_wb.register::<u32>(0);
-    ic_wb.register::<bool>(false);
-    ic_wb.register::<f64>(0.0);
-    ic_wb.register::<i64>(0);
-    ic_wb.register::<i32>(0);
-    ic_wb.register::<u8>(0);
-    ic_wb.register::<u16>(0);
-    let mut ic_world = ic_wb.build();
-    let ic_r = ic_world.registry_mut();
-
-    let ic1 = ic_1p.into_handler(ic_r);
-    let ic2 = ic_2p.into_handler(ic_r);
-    let ic4 = ic_4p.into_handler(ic_r);
-    let ic8 = ic_8p.into_handler(ic_r);
-
-    // Tick 0: all changed (changed_at == current_sequence).
-    bench_batched("inputs_changed 1-param (changed)", || {
-        if ic1.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    bench_batched("inputs_changed 2-param (changed)", || {
-        if ic2.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    bench_batched("inputs_changed 4-param (changed)", || {
-        if ic4.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    bench_batched("inputs_changed 8-param (changed)", || {
-        if ic8.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    // Advance tick so inputs are stale.
-    ic_world.next_sequence();
-
-    bench_batched("inputs_changed 1-param (stale)", || {
-        if ic1.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    bench_batched("inputs_changed 2-param (stale)", || {
-        if ic2.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    bench_batched("inputs_changed 4-param (stale)", || {
-        if ic4.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
-
-    bench_batched("inputs_changed 8-param (stale)", || {
-        if ic8.inputs_changed(&ic_world) { 1 } else { 0 }
-    });
 
     println!();
 }

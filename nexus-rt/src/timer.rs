@@ -407,12 +407,6 @@ impl<C: TimerConfig> Handler<Instant> for Periodic<C> {
             .resource_mut::<Wheel<C::Storage>>()
             .schedule_forget(deadline, C::wrap(next));
     }
-
-    fn inputs_changed(&self, world: &World) -> bool {
-        self.inner
-            .as_deref()
-            .is_some_and(|h| h.inputs_changed(world))
-    }
 }
 
 #[cfg(test)]

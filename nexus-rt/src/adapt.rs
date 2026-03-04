@@ -72,10 +72,6 @@ where
         }
     }
 
-    fn inputs_changed(&self, world: &World) -> bool {
-        self.inner.inputs_changed(world)
-    }
-
     fn name(&self) -> &'static str {
         self.inner.name()
     }
@@ -145,23 +141,5 @@ mod tests {
         let adapted = Adapt::new(decode_wire, handler);
 
         assert_eq!(adapted.name(), expected);
-    }
-
-    #[test]
-    fn delegates_inputs_changed() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        let mut world = builder.build();
-
-        let handler = accumulate.into_handler(world.registry());
-        let adapted = Adapt::new(decode_wire, handler);
-
-        // Sequence 0: resource changed_at == current_sequence → changed
-        assert!(adapted.inputs_changed(&world));
-
-        world.next_sequence();
-
-        // Sequence 1: resource not written → not changed
-        assert!(!adapted.inputs_changed(&world));
     }
 }
