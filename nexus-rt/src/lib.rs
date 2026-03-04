@@ -98,7 +98,9 @@ pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
+pub mod scheduler;
 pub mod shutdown;
+pub mod system;
 pub mod template;
 pub mod testing;
 #[cfg(feature = "timer")]
@@ -115,7 +117,9 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
+pub use scheduler::{SchedulerInstaller, SchedulerTick, SystemId, SystemScheduler};
 pub use shutdown::{Shutdown, ShutdownHandle};
+pub use system::{IntoSystem, System, SystemFn};
 pub use template::{
     Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
     TemplatedHandler,
