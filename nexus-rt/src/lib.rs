@@ -98,6 +98,7 @@ pub mod mio;
 pub mod pipeline;
 mod plugin;
 mod resource;
+pub mod shutdown;
 pub mod template;
 pub mod testing;
 #[cfg(feature = "timer")]
@@ -114,6 +115,7 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
+pub use shutdown::{Shutdown, ShutdownHandle};
 pub use template::{
     Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
     TemplatedHandler,
