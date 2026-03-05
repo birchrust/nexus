@@ -1,0 +1,406 @@
+//! DAG pipeline examples — typed, by-reference dataflow graphs.
+//!
+//! DAG nodes receive their input by shared reference (`&T`), enabling
+//! fork/merge topologies where multiple arms observe the same value
+//! without cloning. All dispatch is monomorphized at build time.
+//!
+//! Run with:
+//! ```bash
+//! cargo run -p nexus-rt --example dag
+//! ```
+
+use nexus_rt::dag::{DagArmStart, DagStart};
+use nexus_rt::{Handler, Res, ResMut, WorldBuilder};
+
+// =============================================================================
+// Domain types
+// =============================================================================
+
+#[derive(Clone, PartialEq)]
+struct Tick {
+    symbol: &'static str,
+    price: f64,
+    size: u64,
+}
+
+struct PriceCache {
+    latest: f64,
+    updates: u64,
+}
+
+impl PriceCache {
+    fn new() -> Self {
+        Self {
+            latest: 0.0,
+            updates: 0,
+        }
+    }
+}
+
+struct TradeLog {
+    entries: Vec<String>,
+}
+
+impl TradeLog {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+// =============================================================================
+// Root steps — take event E by value
+// =============================================================================
+
+fn extract_price(tick: Tick) -> f64 {
+    tick.price
+}
+
+// =============================================================================
+// Chain steps — take &T by reference (params first, input last)
+// =============================================================================
+
+fn apply_spread(spread: Res<f64>, price: &f64) -> f64 {
+    *price * (1.0 + *spread)
+}
+
+fn store_price(mut cache: ResMut<PriceCache>, price: &f64) {
+    println!("  [store] price={:.2}", price);
+    cache.latest = *price;
+    cache.updates += 1;
+}
+
+fn get_price(tick: &Tick) -> f64 {
+    tick.price
+}
+
+fn log_trade(mut log: ResMut<TradeLog>, tick: &Tick) {
+    let entry = format!("{} {}@{:.2}", tick.symbol, tick.size, tick.price);
+    println!("  [log] {entry}");
+    log.entries.push(entry);
+}
+
+fn log_price(mut log: ResMut<TradeLog>, price: &f64) {
+    let entry = format!("price={price:.2}");
+    println!("  [log] {entry}");
+    log.entries.push(entry);
+}
+
+fn merge_sum(a: &f64, b: &f64) -> f64 {
+    println!("  [merge] {a:.2} + {b:.2} = {:.2}", a + b);
+    a + b
+}
+
+fn count_update(mut ctr: ResMut<u64>, _val: &u32) {
+    *ctr += 1;
+}
+
+fn count_and_print(mut ctr: ResMut<u64>, x: &u32) {
+    println!("  [guard] passed: {x}");
+    *ctr += 1;
+}
+
+// =============================================================================
+// Examples
+// =============================================================================
+
+fn main() {
+    // --- 1. Linear chain: extract → apply spread → store ---
+
+    println!("=== 1. Linear Chain ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    wb.register::<f64>(0.001); // spread
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut linear = DagStart::<Tick>::new()
+        .root(extract_price, reg)
+        .then(apply_spread, reg)
+        .then(store_price, reg)
+        .build();
+
+    linear.run(
+        &mut world,
+        Tick {
+            symbol: "BTC",
+            price: 50_000.0,
+            size: 10,
+        },
+    );
+
+    let cache = world.resource::<PriceCache>();
+    println!(
+        "  cache: latest={:.2}, updates={}\n",
+        cache.latest, cache.updates
+    );
+    assert_eq!(cache.updates, 1);
+    assert!((cache.latest - 50_050.0).abs() < 0.01);
+
+    // --- 2. Diamond: fork into spread + fee arms, merge ---
+    //
+    // Both arms observe the same &f64 — no cloning needed.
+
+    println!("=== 2. Diamond (fork/merge) ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register::<f64>(0.001); // spread
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut diamond = DagStart::<Tick>::new()
+        .root(extract_price, reg)
+        .fork()
+        .arm(|a| a.then(apply_spread, reg))
+        .arm(|b| b.then(|p: &f64| *p * 0.1, reg))
+        .merge(merge_sum, reg)
+        .then(|_v: &f64| {}, reg)
+        .build();
+
+    diamond.run(
+        &mut world,
+        Tick {
+            symbol: "ETH",
+            price: 3_000.0,
+            size: 5,
+        },
+    );
+
+    // --- 3. Fan-out: broadcast to independent sinks ---
+    //
+    // Fork with join() — both arms produce () independently.
+
+    println!("\n=== 3. Fan-out (join) ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    wb.register(TradeLog::new());
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut fanout = DagStart::<Tick>::new()
+        .root(extract_price, reg)
+        .fork()
+        .arm(|a| a.then(store_price, reg))
+        .arm(|b| b.then(log_price, reg))
+        .join()
+        .build();
+
+    for tick in [
+        Tick {
+            symbol: "BTC",
+            price: 50_000.0,
+            size: 10,
+        },
+        Tick {
+            symbol: "ETH",
+            price: 3_000.0,
+            size: 100,
+        },
+    ] {
+        fanout.run(&mut world, tick);
+    }
+
+    let cache = world.resource::<PriceCache>();
+    let log = world.resource::<TradeLog>();
+    println!(
+        "\n  cache: latest={:.2}, updates={}",
+        cache.latest, cache.updates
+    );
+    println!("  log: {} entries", log.entries.len());
+    assert_eq!(cache.updates, 2);
+    assert_eq!(log.entries.len(), 2);
+
+    // --- 4. Route: conditional branching ---
+    //
+    // Arms are pre-built, predicate selects which runs.
+
+    println!("\n=== 4. Route (conditional) ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let high_value = DagArmStart::<f64>::new().then(store_price, reg);
+    let low_value =
+        DagArmStart::<f64>::new().then(|p: &f64| println!("  [skip] low-value price={p:.2}"), reg);
+
+    let mut routed = DagStart::<Tick>::new()
+        .root(extract_price, reg)
+        .route(|_w, price| *price > 10_000.0, high_value, low_value)
+        .build();
+
+    for tick in [
+        Tick {
+            symbol: "BTC",
+            price: 50_000.0,
+            size: 1,
+        },
+        Tick {
+            symbol: "DOGE",
+            price: 0.08,
+            size: 1_000_000,
+        },
+        Tick {
+            symbol: "ETH",
+            price: 3_000.0,
+            size: 10,
+        },
+    ] {
+        println!("  routing {} @ {:.2}...", tick.symbol, tick.price);
+        routed.run(&mut world, tick);
+    }
+
+    let cache = world.resource::<PriceCache>();
+    println!("  cache: updates={} (only >10k)\n", cache.updates);
+    assert_eq!(cache.updates, 1);
+
+    // --- 5a. Tap: inline observation without consuming ---
+
+    println!("=== 5a. Tap (inline observation) ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut tapped = DagStart::<Tick>::new()
+        .root(extract_price, reg)
+        .tap(|_w, price| println!("  [tap] saw price={price:.2}"))
+        .then(store_price, reg)
+        .build();
+
+    tapped.run(
+        &mut world,
+        Tick {
+            symbol: "BTC",
+            price: 55_000.0,
+            size: 5,
+        },
+    );
+    assert_eq!(world.resource::<PriceCache>().updates, 1);
+
+    // --- 5b. Tee: fork off a multi-step side-effect chain ---
+
+    println!("\n=== 5b. Tee (side-effect arm) ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    wb.register(TradeLog::new());
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let log_side = DagArmStart::<Tick>::new().then(log_trade, reg);
+
+    let mut teed = DagStart::<Tick>::new()
+        .root(|t: Tick| t, reg)
+        .tee(log_side)
+        .then(get_price, reg)
+        .then(store_price, reg)
+        .build();
+
+    teed.run(
+        &mut world,
+        Tick {
+            symbol: "ETH",
+            price: 4_000.0,
+            size: 50,
+        },
+    );
+
+    let cache = world.resource::<PriceCache>();
+    let log = world.resource::<TradeLog>();
+    println!("  cache: latest={:.2}", cache.latest);
+    println!("  log: {:?}", log.entries);
+    assert_eq!(cache.updates, 1);
+    assert_eq!(log.entries.len(), 1);
+
+    // --- 6. Dedup: suppress consecutive unchanged values ---
+
+    println!("\n=== 6. Dedup ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register::<u64>(0);
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut deduped = DagStart::<u32>::new()
+        .root(|x: u32| x, reg)
+        .dedup()
+        .inspect(|_w, val| println!("  [dedup] passed: {val:?}"))
+        .map(count_update, reg)
+        .unwrap_or(())
+        .build();
+
+    for &v in &[1, 1, 2, 2, 2, 3, 1] {
+        deduped.run(&mut world, v);
+    }
+
+    let count = *world.resource::<u64>();
+    println!("  updates: {count} (4 unique runs from 7 inputs)\n");
+    assert_eq!(count, 4);
+
+    // --- 7. Guard: filtering ---
+
+    println!("=== 7. Guard ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register::<u64>(0);
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut guarded = DagStart::<u32>::new()
+        .root(|x: u32| x, reg)
+        .guard(|_w, x| *x % 2 == 0)
+        .map(count_and_print, reg)
+        .unwrap_or(())
+        .build();
+
+    for v in 0..6u32 {
+        guarded.run(&mut world, v);
+    }
+
+    let count = *world.resource::<u64>();
+    println!("  even count: {count}");
+    assert_eq!(count, 3);
+
+    // --- 8. Box<dyn Handler>: type erasure ---
+
+    println!("\n=== 8. Box<dyn Handler> ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    wb.register::<f64>(0.001);
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let dag: Box<dyn Handler<Tick>> = Box::new(
+        DagStart::<Tick>::new()
+            .root(extract_price, reg)
+            .then(apply_spread, reg)
+            .then(store_price, reg)
+            .build(),
+    );
+
+    let mut handlers: Vec<Box<dyn Handler<Tick>>> = vec![dag];
+
+    for h in &mut handlers {
+        h.run(
+            &mut world,
+            Tick {
+                symbol: "BTC",
+                price: 60_000.0,
+                size: 1,
+            },
+        );
+    }
+
+    let cache = world.resource::<PriceCache>();
+    println!("  cache: latest={:.2}", cache.latest);
+    assert!((cache.latest - 60_060.0).abs() < 0.01);
+
+    println!("\nDone.");
+}
