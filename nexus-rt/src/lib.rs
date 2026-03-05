@@ -25,6 +25,11 @@
 //!   through the same chain independently — errors on one item don't affect
 //!   subsequent items.
 //!
+//! - **DAG Pipeline** — [`DagBuilder`] declares a typed data-flow graph with
+//!   fan-out and merge. Stages have different input/output types; edges carry
+//!   typed values validated at compile time. [`DagPipeline`] implements
+//!   [`Handler`] for direct or boxed dispatch.
+//!
 //! - **Installer** — [`Installer`] is the install-time trait for event sources.
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
 //!   concrete poller whose `poll()` method drives the event lifecycle.
@@ -92,6 +97,7 @@ mod adapt;
 mod callback;
 mod catch_unwind;
 mod combinator;
+pub mod dag;
 mod driver;
 mod handler;
 #[cfg(feature = "mio")]
@@ -112,6 +118,7 @@ pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
+pub use dag::{DagBuilder, DagPipeline, DagStageId, TypedDag, TypedDagStart};
 pub use driver::Installer;
 pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
