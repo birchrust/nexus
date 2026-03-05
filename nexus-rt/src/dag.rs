@@ -30,6 +30,12 @@
 //! in **that arm only**. Sibling arms execute unconditionally. The merge
 //! step receives whatever each arm produced (including `None`).
 //!
+//! `.tap()` observes the value mid-chain without consuming or changing it.
+//!
+//! `.route()` is binary conditional routing — evaluates a predicate and
+//! executes exactly one of two arms. Both arms must produce the same
+//! output type. For N-ary routing, nest `route` calls.
+//!
 //! To skip an entire fork, resolve Option/Result **before** `.fork()`:
 //!
 //! ```ignore
@@ -481,10 +487,33 @@ where
     }
 }
 
-/// Arm builder seed. Passed to `.arm()` closures.
+/// Arm builder seed. Used in `.arm()` closures and to build arms for
+/// [`.route()`](DagChain::route).
 ///
 /// Call `.then()` to add the first step in this arm.
 pub struct DagArmStart<In>(PhantomData<fn(*const In)>);
+
+impl<In: 'static> DagArmStart<In> {
+    /// Create a new arm builder seed.
+    ///
+    /// Used to build arms passed to [`DagChain::route`] or
+    /// [`DagArm::route`]:
+    ///
+    /// ```ignore
+    /// let fast = DagArmStart::new().then(fast_path, reg);
+    /// let slow = DagArmStart::new().then(slow_path, reg);
+    /// dag.route(predicate, fast, slow)
+    /// ```
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<In: 'static> Default for DagArmStart<In> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<In: 'static> DagArmStart<In> {
     /// Add the first step in this arm. Takes `&In` by reference.
@@ -664,6 +693,75 @@ macro_rules! impl_dag_combinators {
                     chain: move |world: &mut World, $pname: $pty| {
                         let val = chain(world, $pname);
                         if f(world, &val) { Some(val) } else { None }
+                    },
+                    _marker: PhantomData,
+                }
+            }
+
+            /// Observe the current value without consuming or changing it.
+            ///
+            /// The closure receives `&mut World` and `&Out`. The value passes
+            /// through unchanged. Useful for logging, metrics, or debugging
+            /// mid-chain.
+            pub fn tap(
+                self,
+                mut f: impl FnMut(&mut World, &Out) + 'static,
+            ) -> $Builder<$U, Out, impl FnMut(&mut World, $pty) -> Out> {
+                let mut chain = self.chain;
+                $Builder {
+                    chain: move |world: &mut World, $pname: $pty| {
+                        let val = chain(world, $pname);
+                        f(world, &val);
+                        val
+                    },
+                    _marker: PhantomData,
+                }
+            }
+
+            /// Binary conditional routing. Evaluates the predicate on the
+            /// current value, then executes exactly one of two arms.
+            ///
+            /// Both arms receive the value by reference (same as fork arms)
+            /// and must produce the same output type. Build arms with
+            /// [`DagArmStart::new()`] and pass them in. For N-ary routing,
+            /// nest `route` calls in the false arm.
+            ///
+            /// ```ignore
+            /// let fast = DagArmStart::new().then(fast_path, reg).then(store, reg);
+            /// let slow = DagArmStart::new().then(slow_path, reg).then(store, reg);
+            ///
+            /// DagStart::<Order>::new()
+            ///     .root(decode, reg)
+            ///     .route(|_, order| order.priority > 5, fast, slow)
+            ///     .build();
+            /// ```
+            pub fn route<NewOut, C0, C1, P>(
+                self,
+                mut pred: P,
+                on_true: DagArm<Out, NewOut, C0>,
+                on_false: DagArm<Out, NewOut, C1>,
+            ) -> $Builder<
+                $U,
+                NewOut,
+                impl FnMut(&mut World, $pty) -> NewOut + use<$U, Out, NewOut, Chain, C0, C1, P>,
+            >
+            where
+                NewOut: 'static,
+                P: FnMut(&mut World, &Out) -> bool + 'static,
+                C0: FnMut(&mut World, &Out) -> NewOut + 'static,
+                C1: FnMut(&mut World, &Out) -> NewOut + 'static,
+            {
+                let mut chain = self.chain;
+                let mut c0 = on_true.chain;
+                let mut c1 = on_false.chain;
+                $Builder {
+                    chain: move |world: &mut World, $pname: $pty| {
+                        let val = chain(world, $pname);
+                        if pred(world, &val) {
+                            c0(world, &val)
+                        } else {
+                            c1(world, &val)
+                        }
                     },
                     _marker: PhantomData,
                 }
@@ -2545,5 +2643,189 @@ mod tests {
         dag.run(&mut world, 5u32);
         // arm_a: 10, guard fails → None. arm_b: 10.
         assert_eq!(world.resource::<String>().as_str(), "None,10");
+    }
+
+    // -- Tap combinator --
+
+    #[test]
+    fn dag_tap_observes_without_changing() {
+        fn root(x: u32) -> u64 {
+            x as u64 * 2
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(false);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .tap(|w, val| {
+                // Side-effect: record that we observed the value.
+                *w.resource_mut::<bool>() = *val == 10;
+            })
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 10); // value passed through
+        assert!(*world.resource::<bool>()); // tap fired
+    }
+
+    #[test]
+    fn dag_arm_tap() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn double(val: &u64) -> u64 {
+            *val * 2
+        }
+        fn merge_add(a: &u64, b: &u64) -> u64 {
+            *a + *b
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(false);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .fork()
+            .arm(|a| {
+                a.then(double, reg).tap(|w, _v| {
+                    *w.resource_mut::<bool>() = true;
+                })
+            })
+            .arm(|b| b.then(double, reg))
+            .merge(merge_add, reg)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        // arm_a: 10, arm_b: 10, merge: 20
+        assert_eq!(*world.resource::<u64>(), 20);
+        assert!(*world.resource::<bool>()); // tap in arm_a fired
+    }
+
+    // -- Route combinator --
+
+    #[test]
+    fn dag_route_true_arm() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn double(val: &u64) -> u64 {
+            *val * 2
+        }
+        fn triple(val: &u64) -> u64 {
+            *val * 3
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let arm_t = DagArmStart::new().then(double, reg);
+        let arm_f = DagArmStart::new().then(triple, reg);
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .route(|_w, v| *v > 3, arm_t, arm_f)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32); // 5 > 3 → true arm → double → 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    #[test]
+    fn dag_route_false_arm() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn double(val: &u64) -> u64 {
+            *val * 2
+        }
+        fn triple(val: &u64) -> u64 {
+            *val * 3
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let arm_t = DagArmStart::new().then(double, reg);
+        let arm_f = DagArmStart::new().then(triple, reg);
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .route(|_w, v| *v > 10, arm_t, arm_f)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32); // 5 <= 10 → false arm → triple → 15
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn dag_route_nested() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn pass(val: &u64) -> u64 {
+            *val
+        }
+        fn add_100(val: &u64) -> u64 {
+            *val + 100
+        }
+        fn add_200(val: &u64) -> u64 {
+            *val + 200
+        }
+        fn add_300(val: &u64) -> u64 {
+            *val + 300
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // N-ary via nesting: <5 → +100, 5..10 → +200, >=10 → +300
+        let inner_t = DagArmStart::new().then(add_200, reg);
+        let inner_f = DagArmStart::new().then(add_300, reg);
+        let outer_t = DagArmStart::new().then(add_100, reg);
+        let outer_f = DagArmStart::new()
+            .then(pass, reg)
+            .route(|_w, v| *v < 10, inner_t, inner_f);
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .route(|_w, v| *v < 5, outer_t, outer_f)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 3u32); // 3 < 5 → +100 → 103
+        assert_eq!(*world.resource::<u64>(), 103);
+
+        dag.run(&mut world, 7u32); // 7 >= 5, 7 < 10 → +200 → 207
+        assert_eq!(*world.resource::<u64>(), 207);
+
+        dag.run(&mut world, 15u32); // 15 >= 5, 15 >= 10 → +300 → 315
+        assert_eq!(*world.resource::<u64>(), 315);
     }
 }

@@ -32,7 +32,7 @@
 //! **Closure-based (cold path, `&mut World`):**
 //! `.on_none()`, `.inspect()`, `.inspect_err()`, `.filter()`, `.ok()`,
 //! `.unwrap_or()`, `.unwrap_or_else()`, `.map_err()`, `.or_else()`,
-//! `.cloned()`, `.dispatch()`
+//! `.cloned()`, `.dispatch()`, `.tap()`, `.guard()`, `.route()`
 
 use std::marker::PhantomData;
 
@@ -349,6 +349,74 @@ where
             chain: move |world: &mut World, input: In| {
                 let val = chain(world, input);
                 if f(world, &val) { Some(val) } else { None }
+            },
+            _marker: PhantomData,
+        }
+    }
+
+    /// Observe the current value without consuming or changing it.
+    ///
+    /// The closure receives `&mut World` and `&Out`. The value passes
+    /// through unchanged. Useful for logging, metrics, or debugging
+    /// mid-chain.
+    pub fn tap(
+        self,
+        mut f: impl FnMut(&mut World, &Out) + 'static,
+    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                f(world, &val);
+                val
+            },
+            _marker: PhantomData,
+        }
+    }
+
+    /// Binary conditional routing. Evaluates the predicate on the
+    /// current value, then moves it into exactly one of two arms.
+    ///
+    /// Both arms must produce the same output type. Build each arm as
+    /// a sub-pipeline from [`PipelineStart`]. For N-ary routing, nest
+    /// `route` calls in the false arm.
+    ///
+    /// ```ignore
+    /// let large = PipelineStart::new().then(large_check, reg).then(submit, reg);
+    /// let small = PipelineStart::new().then(submit, reg);
+    ///
+    /// PipelineStart::<Order>::new()
+    ///     .then(validate, reg)
+    ///     .route(|_, order| order.size > 1000, large, small)
+    ///     .build();
+    /// ```
+    pub fn route<NewOut, C0, C1, P>(
+        self,
+        mut pred: P,
+        on_true: PipelineBuilder<Out, NewOut, C0>,
+        on_false: PipelineBuilder<Out, NewOut, C1>,
+    ) -> PipelineBuilder<
+        In,
+        NewOut,
+        impl FnMut(&mut World, In) -> NewOut + use<In, Out, NewOut, Chain, C0, C1, P>,
+    >
+    where
+        NewOut: 'static,
+        P: FnMut(&mut World, &Out) -> bool + 'static,
+        C0: FnMut(&mut World, Out) -> NewOut + 'static,
+        C1: FnMut(&mut World, Out) -> NewOut + 'static,
+    {
+        let mut chain = self.chain;
+        let mut c0 = on_true.chain;
+        let mut c1 = on_false.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                if pred(world, &val) {
+                    c0(world, val)
+                } else {
+                    c1(world, val)
+                }
             },
             _marker: PhantomData,
         }
@@ -1817,5 +1885,110 @@ mod tests {
 
         p.run(&mut world, 5u32);
         assert_eq!(*world.resource::<u64>(), 999);
+    }
+
+    // -- Tap combinator --
+
+    #[test]
+    fn pipeline_tap_observes_without_changing() {
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(false);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64 * 2, reg)
+            .tap(|w, val| {
+                *w.resource_mut::<bool>() = *val == 10;
+            })
+            .then(sink, reg);
+
+        p.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 10); // value passed through
+        assert!(*world.resource::<bool>()); // tap fired
+    }
+
+    // -- Route combinator --
+
+    #[test]
+    fn pipeline_route_true_arm() {
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let arm_t = PipelineStart::new().then(|x: u64| x * 2, reg);
+        let arm_f = PipelineStart::new().then(|x: u64| x * 3, reg);
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64, reg)
+            .route(|_w, v| *v > 3, arm_t, arm_f)
+            .then(sink, reg);
+
+        p.run(&mut world, 5u32); // 5 > 3 → true arm → double → 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    #[test]
+    fn pipeline_route_false_arm() {
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let arm_t = PipelineStart::new().then(|x: u64| x * 2, reg);
+        let arm_f = PipelineStart::new().then(|x: u64| x * 3, reg);
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64, reg)
+            .route(|_w, v| *v > 10, arm_t, arm_f)
+            .then(sink, reg);
+
+        p.run(&mut world, 5u32); // 5 <= 10 → false arm → triple → 15
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn pipeline_route_nested() {
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // N-ary via nesting: <5 → +100, 5..10 → +200, >=10 → +300
+        let inner_t = PipelineStart::new().then(|x: u64| x + 200, reg);
+        let inner_f = PipelineStart::new().then(|x: u64| x + 300, reg);
+        let outer_t = PipelineStart::new().then(|x: u64| x + 100, reg);
+        let outer_f =
+            PipelineStart::new()
+                .then(|x: u64| x, reg)
+                .route(|_w, v| *v < 10, inner_t, inner_f);
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64, reg)
+            .route(|_w, v| *v < 5, outer_t, outer_f)
+            .then(sink, reg);
+
+        p.run(&mut world, 3u32); // 3 < 5 → +100 → 103
+        assert_eq!(*world.resource::<u64>(), 103);
+
+        p.run(&mut world, 7u32); // 7 >= 5, 7 < 10 → +200 → 207
+        assert_eq!(*world.resource::<u64>(), 207);
+
+        p.run(&mut world, 15u32); // 15 >= 5, 15 >= 10 → +300 → 315
+        assert_eq!(*world.resource::<u64>(), 315);
     }
 }
