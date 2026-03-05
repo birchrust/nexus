@@ -1,10 +1,10 @@
-//! Pre-resolved pipeline composition using Param stages.
+//! Pre-resolved pipeline composition using Param steps.
 //!
-//! Pipeline stages are named functions whose Param dependencies are
-//! resolved at build time. Arity-0 stages (no Params) also accept
+//! Pipeline steps are named functions whose Param dependencies are
+//! resolved at build time. Arity-0 steps (no Params) also accept
 //! closures.
 //!
-//! IntoStage-based methods (`.stage()`, `.map()`, `.and_then()`, `.catch()`)
+//! IntoStep-based methods (`.then()`, `.map()`, `.and_then()`, `.catch()`)
 //! resolve params from the registry. Closure-based methods (`.filter()`,
 //! `.inspect()`, `.on_none()`, etc.) take `&mut World` for cold-path use.
 //!
@@ -44,7 +44,7 @@ enum ProcessError {
     UnknownSymbol,
 }
 
-// --- Stage functions: Params first, stage input last ---
+// --- Step functions: Params first, step input last ---
 
 fn validate(tick: MarketTick) -> Result<MarketTick, ProcessError> {
     if tick.price <= 0.0 {
@@ -78,7 +78,7 @@ fn accumulate(mut total: ResMut<u64>, x: u32) {
 }
 
 fn main() {
-    // --- Bare value pipeline: arity-0 closure stages ---
+    // --- Bare value pipeline: arity-0 closure steps ---
 
     println!("=== Bare Value Pipeline ===\n");
 
@@ -86,8 +86,8 @@ fn main() {
     let r = world.registry_mut();
 
     let mut bare_pipeline = PipelineStart::<u32>::new()
-        .stage(|x: u32| x * 2, r)
-        .stage(|x: u32| x + 1, r);
+        .then(|x: u32| x * 2, r)
+        .then(|x: u32| x + 1, r);
 
     println!("  5 → {}", bare_pipeline.run(&mut world, 5));
     println!("  10 → {}", bare_pipeline.run(&mut world, 10));
@@ -102,7 +102,7 @@ fn main() {
     let r = world.registry_mut();
 
     let mut option_pipeline = PipelineStart::<MarketTick>::new()
-        .stage(
+        .then(
             |tick: MarketTick| -> Option<MarketTick> {
                 if tick.price > 0.0 { Some(tick) } else { None }
             },
@@ -156,7 +156,7 @@ fn main() {
     let r = world.registry_mut();
 
     let mut result_pipeline = PipelineStart::<MarketTick>::new()
-        .stage(validate, r)
+        .then(validate, r)
         .and_then(check_known, r)
         .catch(count_error, r)
         .map(store_price, r);
@@ -197,7 +197,7 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    let mut pipeline = PipelineStart::<u32>::new().stage(accumulate, r).build();
+    let mut pipeline = PipelineStart::<u32>::new().then(accumulate, r).build();
 
     pipeline.run(&mut world, 10);
     pipeline.run(&mut world, 20);

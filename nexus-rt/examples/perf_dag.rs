@@ -4,7 +4,6 @@
 //! ```bash
 //! cargo asm -p nexus-rt --example perf_dag perf_dag::probe_dag_linear_3
 //! cargo asm -p nexus-rt --example perf_dag perf_dag::probe_dag_diamond
-//! cargo asm -p nexus-rt --example perf_dag perf_dag::probe_dag_dyn
 //! ```
 //!
 //! Run benchmark:
@@ -14,7 +13,7 @@
 
 use std::hint::black_box;
 
-use nexus_rt::dag::{DagBuilder, TypedDagStart};
+use nexus_rt::dag::DagStart;
 use nexus_rt::{Handler, PipelineStart, Res, ResMut, WorldBuilder};
 
 // =============================================================================
@@ -81,7 +80,7 @@ fn print_header(title: &str) {
 }
 
 // =============================================================================
-// DAG stage functions — trivial work to isolate dispatch overhead
+// DAG node functions — trivial work to isolate dispatch overhead
 // =============================================================================
 
 fn root_mul2(x: u32) -> u32 {
@@ -112,11 +111,7 @@ fn merge2_add_sink(mut out: ResMut<u32>, a: &u32, b: &u32) {
     *out = a.wrapping_add(*b);
 }
 
-fn merge4_add(a: &u32, b: &u32, c: &u32, d: &u32) -> u32 {
-    a.wrapping_add(*b).wrapping_add(*c).wrapping_add(*d)
-}
-
-// Pipeline comparison stages (by value)
+// Pipeline comparison steps (by value)
 fn pipe_mul2(x: u32) -> u32 {
     x.wrapping_mul(2)
 }
@@ -129,31 +124,24 @@ fn pipe_sink(mut out: ResMut<u32>, x: u32) {
     *out = x;
 }
 
-// World-accessing DAG stage
+// World-accessing DAG node
 fn scale_by_res(factor: Res<u32>, val: &u32) -> u32 {
     val.wrapping_mul(*factor)
 }
 
 // =============================================================================
-// DAG codegen probes
+// Codegen probes
 // =============================================================================
 
-/// 3-stage linear DAG dispatch: root → add_one → sink.
-/// Expect: ManuallyDrop + root vtable call, 2x vtable calls, drop loop.
+/// DAG linear 3 — monomorphized, zero vtable.
 #[inline(never)]
 pub fn probe_dag_linear_3(p: &mut impl Handler<u32>, world: &mut nexus_rt::World, input: u32) {
     p.run(world, input);
 }
 
-/// Diamond DAG dispatch: root → [a, b] → merge → sink (5 stages).
+/// DAG diamond — monomorphized, zero vtable.
 #[inline(never)]
 pub fn probe_dag_diamond(p: &mut impl Handler<u32>, world: &mut nexus_rt::World, input: u32) {
-    p.run(world, input);
-}
-
-/// DAG through dyn Handler — double vtable indirection.
-#[inline(never)]
-pub fn probe_dag_dyn(p: &mut dyn Handler<u32>, world: &mut nexus_rt::World, input: u32) {
     p.run(world, input);
 }
 
@@ -167,135 +155,26 @@ pub fn probe_pipeline_linear_3(
     p.run(world, input);
 }
 
-/// Typed DAG linear 3 — monomorphized, zero vtable.
-#[inline(never)]
-pub fn probe_typed_dag_linear_3(
-    p: &mut impl Handler<u32>,
-    world: &mut nexus_rt::World,
-    input: u32,
-) {
-    p.run(world, input);
-}
-
-/// Typed DAG diamond — monomorphized, zero vtable.
-#[inline(never)]
-pub fn probe_typed_dag_diamond(p: &mut impl Handler<u32>, world: &mut nexus_rt::World, input: u32) {
-    p.run(world, input);
-}
-
 // =============================================================================
 // DAG topology builders
 // =============================================================================
 
-/// Linear: root → N-2 middle → sink (minimum N=2).
-fn build_linear(n: usize, reg: &nexus_rt::Registry) -> nexus_rt::dag::DagPipeline<u32> {
-    assert!(n >= 2);
-    let mut dag = DagBuilder::<u32>::new();
-    let root = dag.root(root_mul2, reg);
-    let mut prev = root;
-    for _ in 0..n - 2 {
-        let s = dag.stage(add_one, reg);
-        dag.edge(prev, s);
-        prev = s;
-    }
-    let sink = dag.stage(sink_store, reg);
-    dag.edge(prev, sink);
-    dag.build()
-}
-
-/// Fan-out: root → N sinks.
-fn build_fan_out(n: usize, reg: &nexus_rt::Registry) -> nexus_rt::dag::DagPipeline<u32> {
-    let mut dag = DagBuilder::<u32>::new();
-    let root = dag.root(root_mul2, reg);
-    for _ in 0..n {
-        let sink = dag.stage(sink_add, reg);
-        dag.edge(root, sink);
-    }
-    dag.build()
-}
-
-/// Diamond-2: root → [a, b] → merge → sink.
-fn build_diamond_2(reg: &nexus_rt::Registry) -> nexus_rt::dag::DagPipeline<u32> {
-    let mut dag = DagBuilder::<u32>::new();
-    let root = dag.root(root_mul2, reg);
-    let a = dag.stage(add_one, reg);
-    let b = dag.stage(mul3, reg);
-    dag.edge(root, a);
-    dag.edge(root, b);
-    let merge = dag.merge2(a, b, merge2_add, reg);
-    let sink = dag.stage(sink_store, reg);
-    dag.edge(merge, sink);
-    dag.build()
-}
-
-/// Diamond-4: root → [a, b, c, d] → merge4 → sink.
-fn build_diamond_4(reg: &nexus_rt::Registry) -> nexus_rt::dag::DagPipeline<u32> {
-    let mut dag = DagBuilder::<u32>::new();
-    let root = dag.root(root_mul2, reg);
-    let a = dag.stage(add_one, reg);
-    let b = dag.stage(mul3, reg);
-    let c = dag.stage(add_one, reg);
-    let d = dag.stage(mul3, reg);
-    dag.edge(root, a);
-    dag.edge(root, b);
-    dag.edge(root, c);
-    dag.edge(root, d);
-    let merge = dag.merge4(a, b, c, d, merge4_add, reg);
-    let sink = dag.stage(sink_store, reg);
-    dag.edge(merge, sink);
-    dag.build()
-}
-
-/// Complex: root → [a, b]; a → c; b + c → merge → sink.
-/// 5 stages, mixed fan-out + linear + merge.
-fn build_complex(reg: &nexus_rt::Registry) -> nexus_rt::dag::DagPipeline<u32> {
-    let mut dag = DagBuilder::<u32>::new();
-    let root = dag.root(root_mul2, reg);
-    let a = dag.stage(add_one, reg);
-    let b = dag.stage(mul3, reg);
-    dag.edge(root, a);
-    dag.edge(root, b);
-    let c = dag.stage(add_one, reg);
-    dag.edge(a, c);
-    let _merge = dag.merge2(b, c, merge2_add_sink, reg);
-    dag.build()
-}
-
-/// Complex with Res<T>: root → scale → [a, b] → merge → sink.
-/// Tests Param fetch overhead within DAG stages.
-fn build_complex_res(reg: &nexus_rt::Registry) -> nexus_rt::dag::DagPipeline<u32> {
-    let mut dag = DagBuilder::<u32>::new();
-    let root = dag.root(root_mul2, reg);
-    let scaled = dag.stage(scale_by_res, reg);
-    dag.edge(root, scaled);
-    let a = dag.stage(add_one, reg);
-    let b = dag.stage(mul3, reg);
-    dag.edge(scaled, a);
-    dag.edge(scaled, b);
-    let _merge = dag.merge2(a, b, merge2_add_sink, reg);
-    dag.build()
-}
-
-// =============================================================================
-// Typed DAG topology builders (monomorphized)
-// =============================================================================
-
-/// Typed DAG linear 3: root → add_one → sink.
-fn build_typed_linear_3(
+/// DAG linear 3: root → add_one → sink.
+fn build_linear_3(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::TypedDag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
-    TypedDagStart::<u32>::new()
+) -> nexus_rt::Dag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+    DagStart::<u32>::new()
         .root(root_mul2, reg)
         .then(add_one, reg)
         .then(sink_store, reg)
         .build()
 }
 
-/// Typed DAG linear 5: root → add_one × 3 → sink.
-fn build_typed_linear_5(
+/// DAG linear 5: root → add_one × 3 → sink.
+fn build_linear_5(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::TypedDag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
-    TypedDagStart::<u32>::new()
+) -> nexus_rt::Dag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+    DagStart::<u32>::new()
         .root(root_mul2, reg)
         .then(add_one, reg)
         .then(add_one, reg)
@@ -304,11 +183,11 @@ fn build_typed_linear_5(
         .build()
 }
 
-/// Typed DAG diamond-2: root → [a, b] → merge → sink.
-fn build_typed_diamond_2(
+/// DAG diamond-2: root → [a, b] → merge → sink.
+fn build_diamond_2(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::TypedDag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
-    TypedDagStart::<u32>::new()
+) -> nexus_rt::Dag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+    DagStart::<u32>::new()
         .root(root_mul2, reg)
         .fork()
         .arm(|a| a.then(add_one, reg))
@@ -318,11 +197,11 @@ fn build_typed_diamond_2(
         .build()
 }
 
-/// Typed DAG fan-out 2: root → [sink, sink].
-fn build_typed_fan_out_2(
+/// DAG fan-out 2: root → [sink, sink].
+fn build_fan_out_2(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::TypedDag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
-    TypedDagStart::<u32>::new()
+) -> nexus_rt::Dag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+    DagStart::<u32>::new()
         .root(root_mul2, reg)
         .fork()
         .arm(|a| a.then(sink_store, reg))
@@ -331,11 +210,11 @@ fn build_typed_fan_out_2(
         .build()
 }
 
-/// Typed DAG complex: root → [a: add_one → add_one, b: mul3] → merge → sink.
-fn build_typed_complex(
+/// DAG complex: root → [a: add_one → add_one, b: mul3] → merge → sink.
+fn build_complex(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::TypedDag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
-    TypedDagStart::<u32>::new()
+) -> nexus_rt::Dag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+    DagStart::<u32>::new()
         .root(root_mul2, reg)
         .fork()
         .arm(|a| a.then(add_one, reg).then(add_one, reg))
@@ -345,11 +224,11 @@ fn build_typed_complex(
         .build()
 }
 
-/// Typed DAG complex+Res: root → scale → [a, b] → merge → sink.
-fn build_typed_complex_res(
+/// DAG complex+Res: root → scale → [a, b] → merge → sink.
+fn build_complex_res(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::TypedDag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
-    TypedDagStart::<u32>::new()
+) -> nexus_rt::Dag<u32, impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+    DagStart::<u32>::new()
         .root(root_mul2, reg)
         .then(scale_by_res, reg)
         .fork()
@@ -377,60 +256,41 @@ fn main() {
 
     let reg = world.registry();
 
-    let mut dag_lin2 = build_linear(2, reg);
-    let mut dag_lin3 = build_linear(3, reg);
-    let mut dag_lin5 = build_linear(5, reg);
-    let mut dag_lin10 = build_linear(10, reg);
-
-    let mut dag_fan2 = build_fan_out(2, reg);
-    let mut dag_fan4 = build_fan_out(4, reg);
-    let mut dag_fan8 = build_fan_out(8, reg);
-
+    let mut dag_lin3 = build_linear_3(reg);
+    let mut dag_lin5 = build_linear_5(reg);
     let mut dag_dia2 = build_diamond_2(reg);
-    let mut dag_dia4 = build_diamond_4(reg);
-
+    let mut dag_fan2 = build_fan_out_2(reg);
     let mut dag_complex = build_complex(reg);
     let mut dag_complex_res = build_complex_res(reg);
 
-    let mut dag_dyn_lin3: Box<dyn Handler<u32>> = Box::new(build_linear(3, reg));
+    let mut dag_dyn_lin3: Box<dyn Handler<u32>> = Box::new(build_linear_3(reg));
     let mut dag_dyn_dia2: Box<dyn Handler<u32>> = Box::new(build_diamond_2(reg));
 
     let mut pipe3 = PipelineStart::<u32>::new()
-        .stage(pipe_mul2, reg)
-        .stage(pipe_add1, reg)
-        .stage(pipe_sink, reg);
+        .then(pipe_mul2, reg)
+        .then(pipe_add1, reg)
+        .then(pipe_sink, reg);
 
     let mut pipe5 = PipelineStart::<u32>::new()
-        .stage(pipe_mul2, reg)
-        .stage(pipe_add1, reg)
-        .stage(pipe_add1, reg)
-        .stage(pipe_add1, reg)
-        .stage(pipe_sink, reg);
+        .then(pipe_mul2, reg)
+        .then(pipe_add1, reg)
+        .then(pipe_add1, reg)
+        .then(pipe_add1, reg)
+        .then(pipe_sink, reg);
 
     let mut pipe3_boxed = PipelineStart::<u32>::new()
-        .stage(pipe_mul2, reg)
-        .stage(pipe_add1, reg)
-        .stage(pipe_sink, reg)
+        .then(pipe_mul2, reg)
+        .then(pipe_add1, reg)
+        .then(pipe_sink, reg)
         .build();
 
-    // -- Typed DAGs --
-    let mut tdag_lin3 = build_typed_linear_3(reg);
-    let mut tdag_lin5 = build_typed_linear_5(reg);
-    let mut tdag_dia2 = build_typed_diamond_2(reg);
-    let mut tdag_fan2 = build_typed_fan_out_2(reg);
-    let mut tdag_complex = build_typed_complex(reg);
-    let mut tdag_complex_res = build_typed_complex_res(reg);
-
     // Probe DAGs (for cargo-asm, built separately)
-    let mut probe_lin3 = build_linear(3, reg);
+    let mut probe_lin3 = build_linear_3(reg);
     let mut probe_dia2 = build_diamond_2(reg);
-    let mut probe_dyn: Box<dyn Handler<u32>> = Box::new(build_linear(3, reg));
     let mut probe_pipe = PipelineStart::<u32>::new()
-        .stage(pipe_mul2, reg)
-        .stage(pipe_add1, reg)
-        .stage(pipe_sink, reg);
-    let mut probe_tdag_lin3 = build_typed_linear_3(reg);
-    let mut probe_tdag_dia2 = build_typed_diamond_2(reg);
+        .then(pipe_mul2, reg)
+        .then(pipe_add1, reg)
+        .then(pipe_sink, reg);
 
     // reg goes dead here — world can be borrowed mutably below.
 
@@ -438,12 +298,8 @@ fn main() {
 
     let mut input = 1u32;
 
-    print_header("Linear DAG (root → N-2 mid → sink)");
+    print_header("DAG (monomorphized, zero vtable)");
 
-    bench_batched("linear 2 stages", || {
-        input = input.wrapping_add(1);
-        dag_lin2.run(&mut world, black_box(input));
-    });
     bench_batched("linear 3 stages", || {
         input = input.wrapping_add(1);
         dag_lin3.run(&mut world, black_box(input));
@@ -452,47 +308,19 @@ fn main() {
         input = input.wrapping_add(1);
         dag_lin5.run(&mut world, black_box(input));
     });
-    bench_batched("linear 10 stages", || {
-        input = input.wrapping_add(1);
-        dag_lin10.run(&mut world, black_box(input));
-    });
-
-    println!();
-    print_header("Fan-out (root → N sinks)");
-
-    bench_batched("fan-out 2 (3 stages)", || {
-        input = input.wrapping_add(1);
-        dag_fan2.run(&mut world, black_box(input));
-    });
-    bench_batched("fan-out 4 (5 stages)", || {
-        input = input.wrapping_add(1);
-        dag_fan4.run(&mut world, black_box(input));
-    });
-    bench_batched("fan-out 8 (9 stages)", || {
-        input = input.wrapping_add(1);
-        dag_fan8.run(&mut world, black_box(input));
-    });
-
-    println!();
-    print_header("Diamond (root → N middle → merge → sink)");
-
     bench_batched("diamond fan=2 (5 stages)", || {
         input = input.wrapping_add(1);
         dag_dia2.run(&mut world, black_box(input));
     });
-    bench_batched("diamond fan=4 (7 stages)", || {
+    bench_batched("fan-out 2 (join)", || {
         input = input.wrapping_add(1);
-        dag_dia4.run(&mut world, black_box(input));
+        dag_fan2.run(&mut world, black_box(input));
     });
-
-    println!();
-    print_header("Complex Topologies");
-
-    bench_batched("complex (fan+linear+merge, 5 stg)", || {
+    bench_batched("complex (fan+linear+merge)", || {
         input = input.wrapping_add(1);
         dag_complex.run(&mut world, black_box(input));
     });
-    bench_batched("complex+Res<T> (5 stg, Param fetch)", || {
+    bench_batched("complex+Res<T> (Param fetch)", || {
         input = input.wrapping_add(1);
         dag_complex_res.run(&mut world, black_box(input));
     });
@@ -525,42 +353,11 @@ fn main() {
         pipe3_boxed.run(&mut world, black_box(input));
     });
 
-    println!();
-    print_header("Typed DAG (monomorphized, zero vtable)");
-
-    bench_batched("typed linear 3 stages", || {
-        input = input.wrapping_add(1);
-        tdag_lin3.run(&mut world, black_box(input));
-    });
-    bench_batched("typed linear 5 stages", || {
-        input = input.wrapping_add(1);
-        tdag_lin5.run(&mut world, black_box(input));
-    });
-    bench_batched("typed diamond fan=2 (5 stages)", || {
-        input = input.wrapping_add(1);
-        tdag_dia2.run(&mut world, black_box(input));
-    });
-    bench_batched("typed fan-out 2 (join)", || {
-        input = input.wrapping_add(1);
-        tdag_fan2.run(&mut world, black_box(input));
-    });
-    bench_batched("typed complex (fan+linear+merge)", || {
-        input = input.wrapping_add(1);
-        tdag_complex.run(&mut world, black_box(input));
-    });
-    bench_batched("typed complex+Res<T> (Param fetch)", || {
-        input = input.wrapping_add(1);
-        tdag_complex_res.run(&mut world, black_box(input));
-    });
-
     // -- Codegen probes (exercised, not timed) --
 
     probe_dag_linear_3(&mut probe_lin3, &mut world, black_box(42));
     probe_dag_diamond(&mut probe_dia2, &mut world, black_box(42));
-    probe_dag_dyn(&mut *probe_dyn, &mut world, black_box(42));
     probe_pipeline_linear_3(&mut probe_pipe, &mut world, black_box(42));
-    probe_typed_dag_linear_3(&mut probe_tdag_lin3, &mut world, black_box(42));
-    probe_typed_dag_diamond(&mut probe_tdag_dia2, &mut world, black_box(42));
 
     println!();
 }

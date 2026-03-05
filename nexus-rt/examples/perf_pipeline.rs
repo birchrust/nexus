@@ -130,7 +130,7 @@ pub fn option_3stage_run(
     p.run(world, input)
 }
 
-/// Pipeline that reads World via pre-resolved Res<T> stages.
+/// Pipeline that reads World via pre-resolved Res<T> steps.
 #[inline(never)]
 pub fn world_access_run(
     p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
@@ -160,7 +160,7 @@ pub fn baseline_handwritten(world: &mut nexus_rt::World, input: u64) -> u64 {
 }
 
 // =============================================================================
-// Stage functions for World-accessing pipeline
+// Step functions for World-accessing pipeline
 // =============================================================================
 
 fn add_resource(val: Res<u64>, x: u64) -> u64 {
@@ -295,7 +295,7 @@ pub fn probe_adapt(
 }
 
 // =============================================================================
-// Stage functions for combinator/adapter setup
+// Step functions for combinator/adapter setup
 // =============================================================================
 
 fn ref_identity(x: &u64) -> &u64 {
@@ -324,14 +324,14 @@ fn main() {
     // --- Bare 3-stage pipeline (no Option, no World access) ---
 
     let mut bare = PipelineStart::<u64>::new()
-        .stage(|x: u64| x.wrapping_mul(3), r)
-        .stage(|x: u64| x.wrapping_add(7), r)
-        .stage(|x: u64| x >> 1, r);
+        .then(|x: u64| x.wrapping_mul(3), r)
+        .then(|x: u64| x.wrapping_add(7), r)
+        .then(|x: u64| x >> 1, r);
 
     // --- Option 3-stage pipeline ---
 
     let mut option = PipelineStart::<u64>::new()
-        .stage(
+        .then(
             |x: u64| -> Option<u64> { if x > 0 { Some(x) } else { None } },
             r,
         )
@@ -341,22 +341,22 @@ fn main() {
     // --- World-accessing pipeline (pre-resolved via Res<T>) ---
 
     let mut world_resolved = PipelineStart::<u64>::new()
-        .stage(add_resource, r)
-        .stage(mul_resource, r);
+        .then(add_resource, r)
+        .then(mul_resource, r);
 
     // --- World-accessing 3-stage pipeline ---
 
     let mut stage_3 = PipelineStart::<u64>::new()
-        .stage(add_resource, r)
-        .stage(mul_resource, r)
-        .stage(sub_resource, r);
+        .then(add_resource, r)
+        .then(mul_resource, r)
+        .then(sub_resource, r);
 
     // --- Built (boxed) pipeline ---
 
     let mut boxed = PipelineStart::<u64>::new()
-        .stage(|x: u64| x.wrapping_mul(3), r)
-        .stage(|x: u64| x.wrapping_add(7), r)
-        .stage(|_x: u64| {}, r)
+        .then(|x: u64| x.wrapping_mul(3), r)
+        .then(|x: u64| x.wrapping_add(7), r)
+        .then(|_x: u64| {}, r)
         .build();
 
     // --- Batch pipelines (same chains as their linear counterparts) ---
@@ -367,34 +367,34 @@ fn main() {
 
     // Bare: 3 compute stages + sink (same chain for both batch and linear)
     let mut batch_bare = PipelineStart::<u64>::new()
-        .stage(|x: u64| x.wrapping_mul(3), r)
-        .stage(|x: u64| x.wrapping_add(7), r)
-        .stage(sink, r)
+        .then(|x: u64| x.wrapping_mul(3), r)
+        .then(|x: u64| x.wrapping_add(7), r)
+        .then(sink, r)
         .build_batch(1024);
 
     let mut linear_bare = PipelineStart::<u64>::new()
-        .stage(|x: u64| x.wrapping_mul(3), r)
-        .stage(|x: u64| x.wrapping_add(7), r)
-        .stage(sink, r);
+        .then(|x: u64| x.wrapping_mul(3), r)
+        .then(|x: u64| x.wrapping_add(7), r)
+        .then(sink, r);
 
     // Res<T>: 3 world-access stages + sink (same chain for both)
     let mut batch_res = PipelineStart::<u64>::new()
-        .stage(add_resource, r)
-        .stage(mul_resource, r)
-        .stage(sub_resource, r)
-        .stage(sink, r)
+        .then(add_resource, r)
+        .then(mul_resource, r)
+        .then(sub_resource, r)
+        .then(sink, r)
         .build_batch(1024);
 
     let mut linear_res = PipelineStart::<u64>::new()
-        .stage(add_resource, r)
-        .stage(mul_resource, r)
-        .stage(sub_resource, r)
-        .stage(sink, r);
+        .then(add_resource, r)
+        .then(mul_resource, r)
+        .then(sub_resource, r)
+        .then(sink, r);
 
     // --- Result→catch→map→unwrap_or ---
 
     let mut catch_pipeline = PipelineStart::<u64>::new()
-        .stage(
+        .then(
             |x: u64| -> Result<u64, &'static str> { if x > 0 { Ok(x) } else { Err("zero") } },
             r,
         )
@@ -406,12 +406,12 @@ fn main() {
 
     // Pipeline .cloned(): &u64 → u64
     let input_val = 42u64;
-    let mut cloned_pipe = PipelineStart::<&u64>::new().stage(ref_identity, r).cloned();
+    let mut cloned_pipe = PipelineStart::<&u64>::new().then(ref_identity, r).cloned();
 
     // Pipeline .dispatch(): pipeline → handler
-    let dispatch_inner = PipelineStart::<u64>::new().stage(sink, r).build();
+    let dispatch_inner = PipelineStart::<u64>::new().then(sink, r).build();
     let mut dispatch_pipe = PipelineStart::<u64>::new()
-        .stage(|x: u64| x.wrapping_mul(3), r)
+        .then(|x: u64| x.wrapping_mul(3), r)
         .dispatch(dispatch_inner)
         .build();
 
@@ -514,10 +514,10 @@ fn main() {
         0
     });
 
-    // --- Stage pipeline with Res<T> (3-stage) ---
+    // --- Step pipeline with Res<T> (3-step) ---
 
     println!();
-    print_header("Stage Pipeline with Res<T> (cycles)");
+    print_header("Step Pipeline with Res<T> (cycles)");
 
     bench_batched("3-stage pipeline (Res<T>)", || {
         input = input.wrapping_add(1);

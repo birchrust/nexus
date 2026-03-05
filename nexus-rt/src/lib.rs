@@ -19,16 +19,16 @@
 //!   plain functions into [`Handler`] trait objects for type-erased dispatch.
 //!
 //! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
-//!   chain. Stages transform data using `Option` and `Result` for flow
+//!   chain. Steps transform data using `Option` and `Result` for flow
 //!   control. [`Pipeline`] implements [`Handler`] for direct or boxed dispatch.
 //!   [`BatchPipeline`] owns a pre-allocated input buffer and runs each item
 //!   through the same chain independently — errors on one item don't affect
 //!   subsequent items.
 //!
-//! - **DAG Pipeline** — [`DagBuilder`] declares a typed data-flow graph with
-//!   fan-out and merge. Stages have different input/output types; edges carry
-//!   typed values validated at compile time. [`DagPipeline`] implements
-//!   [`Handler`] for direct or boxed dispatch.
+//! - **DAG Pipeline** — [`DagStart`] builds a monomorphized data-flow graph
+//!   with fan-out and merge. Topology is encoded in the type system — no
+//!   vtable dispatch, no arena allocation. [`Dag`] implements [`Handler`]
+//!   for direct or boxed dispatch.
 //!
 //! - **Installer** — [`Installer`] is the install-time trait for event sources.
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
@@ -118,11 +118,11 @@ pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
-pub use dag::{DagBuilder, DagPipeline, DagStageId, TypedDag, TypedDagStart};
+pub use dag::{Dag, DagStart};
 pub use driver::Installer;
 pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
-    BatchPipeline, IntoStage, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart,
+    BatchPipeline, IntoStep, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart,
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};

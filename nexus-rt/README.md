@@ -76,7 +76,7 @@ processing rather than game-world state management.
 
 | Tier | Purpose | Overhead |
 |------|---------|----------|
-| **Pipeline** | Pre-resolved stage chains inside drivers. The workhorse. | ~2 cycles p50 |
+| **Pipeline** | Pre-resolved step chains inside drivers. The workhorse. | ~2 cycles p50 |
 | **Callback** | Dynamic per-instance context + pre-resolved params. | ~2 cycles p50 |
 | **Handler** | `Box<dyn Handler<E>>` for type-erased dispatch. | ~2 cycles p50 |
 | **Template** | Pre-resolved handler stamping for re-registration. | ~1 cycle p50 (generate) |
@@ -228,12 +228,12 @@ Rust's HRTB inference limitations with GATs (same limitation as Bevy).
 
 ### Pipeline — pre-resolved processing chains
 
-Typed composition chains where each stage is a named function with
+Typed composition chains where each step is a named function with
 `Param` dependencies resolved at build time.
 
 ```rust
 let mut pipeline = PipelineStart::<Order>::new()
-    .stage(validate, registry)       // Order → Result<Order, Error>
+    .then(validate, registry)       // Order → Result<Order, Error>
     .and_then(enrich, registry)      // Order → Result<Order, Error>
     .catch(log_error, registry)      // Error → () (side effect)
     .map(submit, registry)           // Order → Receipt
@@ -255,10 +255,10 @@ independently — errors are handled per-item, not per-batch.
 
 ```rust
 let mut batch = PipelineStart::<Order>::new()
-    .stage(validate, registry)       // Order → Result<Order, Error>
+    .then(validate, registry)       // Order → Result<Order, Error>
     .catch(log_error, registry)      // handle error, continue batch
     .map(enrich, registry)           // runs for valid items only
-    .stage(submit, registry)
+    .then(submit, registry)
     .build_batch(1024);
 
 // Driver fills input buffer
@@ -266,7 +266,7 @@ batch.input_mut().extend_from_slice(&orders);
 batch.run(&mut world);  // drains buffer, no allocation
 ```
 
-No intermediate buffers between stages. The compiler monomorphizes
+No intermediate buffers between steps. The compiler monomorphizes
 the per-item chain identically to the single-event pipeline.
 
 ### Change detection
@@ -514,7 +514,7 @@ heap fallback.
 | Situation | Use | Why |
 |-----------|-----|-----|
 | One-time setup, test harness | `IntoHandler` / `IntoCallback` | Simple, direct. Construction cost paid once. |
-| Pipeline stages inside a driver | `Pipeline` / `BatchPipeline` | Zero-cost monomorphized chains, typed flow control. |
+| Pipeline steps inside a driver | `Pipeline` / `BatchPipeline` | Zero-cost monomorphized chains, typed flow control. |
 | IO re-registration (accept, echo) | `HandlerTemplate` / `CallbackTemplate` | Handler recreated every event — template eliminates per-event HashMap lookups. |
 | Timer rescheduling | `HandlerTemplate` / `CallbackTemplate` | Same pattern — recurring handlers should not pay construction cost repeatedly. |
 | Type-erased handler storage | `Box<dyn Handler<E>>` / `Virtual<E>` | When you need heterogeneous collections (driver slabs, timer wheels). |
@@ -565,7 +565,7 @@ Batch dispatch amortizes to ~1.3 cycles/item for compute-heavy chains
 | into_handler (1 param) | 21 | 30 | 79 |
 | into_handler (4 params) | 45 | 86 | 147 |
 | into_handler (8 params) | 93 | 156 | 221 |
-| .stage() (2 params) | 28 | 48 | 96 |
+| .then() (2 params) | 28 | 48 | 96 |
 
 Construction cost is paid once at build time, never on the dispatch
 hot path.
@@ -598,21 +598,21 @@ taskset -c 0 cargo run --release -p nexus-rt --example mio_timer --features mio,
 
 ### Named functions only
 
-`IntoHandler`, `IntoCallback`, and `IntoStage` (arity 1+) require named
+`IntoHandler`, `IntoCallback`, and `IntoStep` (arity 1+) require named
 `fn` items — closures do not work due to Rust's HRTB inference limitations
 with GATs. This is the same limitation as Bevy's system registration.
 
-Arity-0 pipeline stages (no `Param`) do accept closures:
+Arity-0 pipeline steps (no `Param`) do accept closures:
 ```rust
 // Works — arity-0 closure
-pipeline.stage(|x: u32| x * 2, registry);
+pipeline.then(|x: u32| x * 2, registry);
 
 // Does NOT work — arity-1 closure with Param
-// pipeline.stage(|config: Res<Config>, x: u32| x, registry);
+// pipeline.then(|config: Res<Config>, x: u32| x, registry);
 
 // Works — named function
 fn transform(config: Res<Config>, x: u32) -> u32 { x + *config as u32 }
-pipeline.stage(transform, registry);
+pipeline.then(transform, registry);
 ```
 
 ### Single-threaded
