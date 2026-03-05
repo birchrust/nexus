@@ -155,7 +155,7 @@ impl Registry {
     ///
     /// Two accesses conflict when they target the same ResourceId.
     /// Called at construction time by `into_handler`, `into_callback`,
-    /// and `into_stage`.
+    /// and `into_step`.
     ///
     /// Fast path (≤128 resources): single `u128` on the stack, zero heap.
     /// Slow path (>128 resources): reusable `Vec<u64>` owned by Registry —
@@ -393,7 +393,7 @@ impl WorldBuilder {
     /// Use this for construction-time calls like
     /// [`into_handler`](crate::IntoHandler::into_handler),
     /// [`into_callback`](crate::IntoCallback::into_callback), and
-    /// [`into_stage`](crate::IntoStage::into_stage).
+    /// [`into_step`](crate::IntoStep::into_step).
     pub fn registry(&self) -> &Registry {
         &self.registry
     }

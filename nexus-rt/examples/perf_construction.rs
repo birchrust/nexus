@@ -1,5 +1,5 @@
 //! Construction-time latency benchmark for `into_handler`, `into_callback`,
-//! and `into_stage`.
+//! and `into_step`.
 //!
 //! Measures the cold-path cost of resolving Param state + access
 //! conflict detection at various arities. This is paid once per handler
@@ -113,7 +113,7 @@ fn cb_2p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
 fn cb_4p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
 
 // =============================================================================
-// Stage functions
+// Step functions
 // =============================================================================
 
 fn stage_2p(_a: Res<u64>, _b: ResMut<u32>, _x: u32) -> u32 {
@@ -187,15 +187,15 @@ fn main() {
     });
 
     println!();
-    print_header("into_stage Construction (cycles)");
+    print_header("into_step Construction (cycles)");
 
-    bench_batched(".stage() 2-param (Res + ResMut)", || {
-        let _ = black_box(PipelineStart::<u32>::new().stage(stage_2p, r));
+    bench_batched(".then() 2-param (Res + ResMut)", || {
+        let _ = black_box(PipelineStart::<u32>::new().then(stage_2p, r));
         0
     });
 
-    bench_batched(".stage() 4-param", || {
-        let _ = black_box(PipelineStart::<u32>::new().stage(stage_4p, r));
+    bench_batched(".then() 4-param", || {
+        let _ = black_box(PipelineStart::<u32>::new().then(stage_4p, r));
         0
     });
 

@@ -116,7 +116,7 @@ impl Plugin for TradingPlugin {
     }
 }
 
-// ── Pipeline stages ─────────────────────────────────────────────────────
+// ── Pipeline steps ──────────────────────────────────────────────────────
 
 /// Compare tick price against cache. Emit signal if delta > threshold.
 fn check_signals(
@@ -170,9 +170,9 @@ impl Installer for MarketDataInstaller {
     fn install(self, world: &mut WorldBuilder) -> MarketDataHandle {
         let r = world.registry_mut();
         let pipeline = PipelineStart::<MarketTick>::new()
-            .stage(check_signals, r)
-            .stage(update_price, r)
-            .stage(count_trades, r)
+            .then(check_signals, r)
+            .then(update_price, r)
+            .then(count_trades, r)
             .build();
         MarketDataHandle {
             pipeline: Box::new(pipeline),
