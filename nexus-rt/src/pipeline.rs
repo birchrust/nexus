@@ -37,6 +37,7 @@
 use std::marker::PhantomData;
 
 use crate::Handler;
+use crate::dag::DagArm;
 use crate::handler::Param;
 use crate::world::{Registry, World};
 
@@ -418,6 +419,127 @@ where
                     c1(world, val)
                 }
             },
+            _marker: PhantomData,
+        }
+    }
+
+    /// Fork off a multi-step side-effect chain. The arm borrows
+    /// `&Out`, runs to completion (producing `()`), and the
+    /// original value passes through unchanged.
+    ///
+    /// Multi-step version of [`tap`](Self::tap) — the arm has the
+    /// full DAG combinator API with Param resolution. Build with
+    /// [`DagArmStart::new()`](crate::dag::DagArmStart::new).
+    pub fn tee<C>(
+        self,
+        side: DagArm<Out, (), C>,
+    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out>
+    where
+        C: FnMut(&mut World, &Out) + 'static,
+    {
+        let mut chain = self.chain;
+        let mut side_chain = side.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                side_chain(world, &val);
+                val
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// Dedup — suppress unchanged values
+// =============================================================================
+
+impl<In, Out: PartialEq + Clone + 'static, Chain> PipelineBuilder<In, Out, Chain>
+where
+    Chain: FnMut(&mut World, In) -> Out,
+{
+    /// Suppress consecutive unchanged values. Returns `Some(val)`
+    /// when the value differs from the previous invocation, `None`
+    /// when unchanged. First invocation always returns `Some`.
+    ///
+    /// Requires `PartialEq + Clone` — the previous value is stored
+    /// internally for comparison.
+    pub fn dedup(
+        self,
+    ) -> PipelineBuilder<In, Option<Out>, impl FnMut(&mut World, In) -> Option<Out>> {
+        let mut chain = self.chain;
+        let mut prev: Option<Out> = None;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                if prev.as_ref() == Some(&val) {
+                    None
+                } else {
+                    prev = Some(val.clone());
+                    Some(val)
+                }
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// Bool combinators
+// =============================================================================
+
+impl<In, Chain> PipelineBuilder<In, bool, Chain>
+where
+    Chain: FnMut(&mut World, In) -> bool,
+{
+    /// Invert a boolean value.
+    #[allow(clippy::should_implement_trait)]
+    pub fn not(self) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| !chain(world, input),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Short-circuit AND with a second boolean from World state.
+    ///
+    /// If the chain produces `false`, the closure is not called.
+    pub fn and(
+        self,
+        mut f: impl FnMut(&mut World) -> bool + 'static,
+    ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| chain(world, input) && f(world),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Short-circuit OR with a second boolean from World state.
+    ///
+    /// If the chain produces `true`, the closure is not called.
+    pub fn or(
+        self,
+        mut f: impl FnMut(&mut World) -> bool + 'static,
+    ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| chain(world, input) || f(world),
+            _marker: PhantomData,
+        }
+    }
+
+    /// XOR with a second boolean from World state.
+    ///
+    /// Both sides are always evaluated.
+    pub fn xor(
+        self,
+        mut f: impl FnMut(&mut World) -> bool + 'static,
+    ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| chain(world, input) ^ f(world),
             _marker: PhantomData,
         }
     }
@@ -1990,5 +2112,157 @@ mod tests {
 
         p.run(&mut world, 15u32); // 15 >= 5, 15 >= 10 → +300 → 315
         assert_eq!(*world.resource::<u64>(), 315);
+    }
+
+    // -- Tee combinator --
+
+    #[test]
+    fn pipeline_tee_side_effect_chain() {
+        use crate::dag::DagArmStart;
+
+        fn log_step(mut counter: ResMut<u32>, _val: &u64) {
+            *counter += 1;
+        }
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<u32>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let side = DagArmStart::new().then(log_step, reg);
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64 * 2, reg)
+            .tee(side)
+            .then(sink, reg);
+
+        p.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 10); // value passed through
+        assert_eq!(*world.resource::<u32>(), 1); // side-effect fired
+
+        p.run(&mut world, 7u32);
+        assert_eq!(*world.resource::<u64>(), 14);
+        assert_eq!(*world.resource::<u32>(), 2);
+    }
+
+    // -- Dedup combinator --
+
+    #[test]
+    fn pipeline_dedup_suppresses_unchanged() {
+        fn sink(mut out: ResMut<u32>, val: Option<u64>) {
+            if val.is_some() {
+                *out += 1;
+            }
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u32>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64 / 2, reg)
+            .dedup()
+            .then(sink, reg);
+
+        p.run(&mut world, 4u32); // 2 — first, Some
+        assert_eq!(*world.resource::<u32>(), 1);
+
+        p.run(&mut world, 5u32); // 2 — same, None
+        assert_eq!(*world.resource::<u32>(), 1);
+
+        p.run(&mut world, 6u32); // 3 — changed, Some
+        assert_eq!(*world.resource::<u32>(), 2);
+    }
+
+    // -- Bool combinators --
+
+    #[test]
+    fn pipeline_not() {
+        fn sink(mut out: ResMut<bool>, val: bool) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<bool>(false);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x > 5, reg)
+            .not()
+            .then(sink, reg);
+
+        p.run(&mut world, 3u32); // 3 > 5 = false, not = true
+        assert!(*world.resource::<bool>());
+
+        p.run(&mut world, 10u32); // 10 > 5 = true, not = false
+        assert!(!*world.resource::<bool>());
+    }
+
+    #[test]
+    fn pipeline_and() {
+        fn sink(mut out: ResMut<bool>, val: bool) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<bool>(true);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x > 5, reg)
+            .and(|w| *w.resource::<bool>())
+            .then(sink, reg);
+
+        p.run(&mut world, 10u32); // true && true = true
+        assert!(*world.resource::<bool>());
+
+        *world.resource_mut::<bool>() = false;
+        p.run(&mut world, 10u32); // true && false = false
+        assert!(!*world.resource::<bool>());
+    }
+
+    #[test]
+    fn pipeline_or() {
+        fn sink(mut out: ResMut<bool>, val: bool) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<bool>(false);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x > 5, reg)
+            .or(|w| *w.resource::<bool>())
+            .then(sink, reg);
+
+        p.run(&mut world, 3u32); // false || false = false
+        assert!(!*world.resource::<bool>());
+
+        *world.resource_mut::<bool>() = true;
+        p.run(&mut world, 3u32); // false || true = true
+        assert!(*world.resource::<bool>());
+    }
+
+    #[test]
+    fn pipeline_xor() {
+        fn sink(mut out: ResMut<bool>, val: bool) {
+            *out = val;
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<bool>(true);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x > 5, reg)
+            .xor(|w| *w.resource::<bool>())
+            .then(sink, reg);
+
+        p.run(&mut world, 10u32); // true ^ true = false
+        assert!(!*world.resource::<bool>());
     }
 }
