@@ -18,6 +18,27 @@
 //! For dynamic fan-out by reference, use [`FanOut`](crate::FanOut) or
 //! [`Broadcast`](crate::Broadcast).
 //!
+//! # Flow control
+//!
+//! Option and Result combinators (`.guard()`, `.map()`, `.and_then()`,
+//! `.filter()`, `.catch()`, etc.) work on both the main chain and
+//! within arms.
+//!
+//! **Within an arm**, `None` / `Err` short-circuits the remaining steps
+//! in **that arm only**. Sibling arms execute unconditionally. The merge
+//! step receives whatever each arm produced (including `None`).
+//!
+//! To skip an entire fork, resolve Option/Result **before** `.fork()`:
+//!
+//! ```ignore
+//! DagStart::<RawMsg>::new()
+//!     .root(decode, reg)
+//!     .guard(|_w, msg| msg.len() > 0)   // None skips everything below
+//!     .unwrap_or(default)                // → T, enter fork with concrete type
+//!     .fork()
+//!     // arms work with &T, not &Option<T>
+//! ```
+//!
 //! # Node signatures
 //!
 //! The root node takes the event by value. All other nodes take their
@@ -613,6 +634,32 @@ macro_rules! impl_dag_combinators {
                     chain: move |world: &mut World, $pname: $pty| {
                         let out = chain(world, $pname);
                         handler.run(world, out);
+                    },
+                    _marker: PhantomData,
+                }
+            }
+
+            /// Conditionally wrap the output in `Option`. `Some(val)` if
+            /// the predicate returns true, `None` otherwise.
+            ///
+            /// Enters Option-combinator land — follow with `.map()`,
+            /// `.and_then()`, `.filter()`, `.unwrap_or()`, etc.
+            ///
+            /// Within a DAG arm, `None` short-circuits the remaining arm
+            /// steps — sibling arms and the merge step still execute.
+            pub fn guard(
+                self,
+                mut f: impl FnMut(&mut World, &Out) -> bool + 'static,
+            ) -> $Builder<
+                $U,
+                Option<Out>,
+                impl FnMut(&mut World, $pty) -> Option<Out>,
+            > {
+                let mut chain = self.chain;
+                $Builder {
+                    chain: move |world: &mut World, $pname: $pty| {
+                        let val = chain(world, $pname);
+                        if f(world, &val) { Some(val) } else { None }
                     },
                     _marker: PhantomData,
                 }
@@ -2416,5 +2463,87 @@ mod tests {
         dag.run(&mut world, 0u32);
         assert_eq!(*world.resource::<u64>(), 42);
         assert!(*world.resource::<bool>());
+    }
+
+    // -- Guard combinator --
+
+    #[test]
+    fn dag_guard_keeps() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn sink(mut out: ResMut<u64>, val: &Option<u64>) {
+            *out = val.unwrap_or(0);
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .guard(|_w, v| *v > 3)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 5);
+    }
+
+    #[test]
+    fn dag_guard_drops() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn sink(mut out: ResMut<u64>, val: &Option<u64>) {
+            *out = val.unwrap_or(999);
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .guard(|_w, v| *v > 10)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 999);
+    }
+
+    #[test]
+    fn dag_arm_guard() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn double(val: &u64) -> u64 {
+            *val * 2
+        }
+        fn merge_fn(a: &Option<u64>, b: &u64) -> String {
+            format!("{:?},{}", a, b)
+        }
+        fn sink(mut out: ResMut<String>, val: &String) {
+            *out = val.clone();
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<String>(String::new());
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // arm_a: guard drops (5 < 10), arm_b: runs normally
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .fork()
+            .arm(|a| a.then(double, reg).guard(|_w, v| *v > 100))
+            .arm(|b| b.then(double, reg))
+            .merge(merge_fn, reg)
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        // arm_a: 10, guard fails → None. arm_b: 10.
+        assert_eq!(world.resource::<String>().as_str(), "None,10");
     }
 }

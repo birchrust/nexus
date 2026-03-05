@@ -334,6 +334,25 @@ where
             _marker: PhantomData,
         }
     }
+
+    /// Conditionally wrap the output in `Option`. `Some(val)` if
+    /// the predicate returns true, `None` otherwise.
+    ///
+    /// Enters Option-combinator land — follow with `.map()`,
+    /// `.and_then()`, `.filter()`, `.unwrap_or()`, etc.
+    pub fn guard(
+        self,
+        mut f: impl FnMut(&mut World, &Out) -> bool + 'static,
+    ) -> PipelineBuilder<In, Option<Out>, impl FnMut(&mut World, In) -> Option<Out>> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                if f(world, &val) { Some(val) } else { None }
+            },
+            _marker: PhantomData,
+        }
+    }
 }
 
 // =============================================================================
@@ -1758,5 +1777,45 @@ mod tests {
 
         pipeline.run(&mut world, 9);
         assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    // -- Guard combinator --
+
+    #[test]
+    fn pipeline_guard_keeps() {
+        fn sink(mut out: ResMut<u64>, val: Option<u64>) {
+            *out = val.unwrap_or(0);
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64, reg)
+            .guard(|_w, v| *v > 3)
+            .then(sink, reg);
+
+        p.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 5);
+    }
+
+    #[test]
+    fn pipeline_guard_drops() {
+        fn sink(mut out: ResMut<u64>, val: Option<u64>) {
+            *out = val.unwrap_or(999);
+        }
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| x as u64, reg)
+            .guard(|_w, v| *v > 10)
+            .then(sink, reg);
+
+        p.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 999);
     }
 }

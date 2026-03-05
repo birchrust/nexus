@@ -80,6 +80,8 @@ processing rather than game-world state management.
 | **Callback** | Dynamic per-instance context + pre-resolved params. | ~2 cycles p50 |
 | **Handler** | `Box<dyn Handler<E>>` for type-erased dispatch. | ~2 cycles p50 |
 | **Template** | Pre-resolved handler stamping for re-registration. | ~1 cycle p50 (generate) |
+| **DAG** | Monomorphized fan-out / merge data-flow graphs. | ~1-3 cycles p50 |
+| **FanOut / Broadcast** | Static or dynamic fan-out by reference. | ~2 cycles p50 |
 
 All tiers resolve `Param` state at build time. Dispatch-time cost is
 a bounds-checked index into a `Vec` — no hashing, no searching.
@@ -268,6 +270,85 @@ batch.run(&mut world);  // drains buffer, no allocation
 
 No intermediate buffers between steps. The compiler monomorphizes
 the per-item chain identically to the single-event pipeline.
+
+### DAG Pipeline — fan-out, merge, and data-flow graphs
+
+`DagStart` builds a monomorphized data-flow graph where topology is
+encoded in the type system. After monomorphization the entire DAG is
+a single flat function — all values are stack locals, no arena, no
+vtable dispatch.
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, Handler};
+use nexus_rt::dag::DagStart;
+
+let mut wb = WorldBuilder::new();
+wb.register::<u64>(0);
+let mut world = wb.build();
+let reg = world.registry();
+
+fn decode(raw: u32) -> u64 { raw as u64 * 2 }
+fn add_one(val: &u64) -> u64 { *val + 1 }
+fn mul3(val: &u64) -> u64 { *val * 3 }
+fn merge_add(a: &u64, b: &u64) -> u64 { *a + *b }
+fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+
+let mut dag = DagStart::<u32>::new()
+    .root(decode, reg)
+    .fork()
+    .arm(|a| a.then(add_one, reg))
+    .arm(|b| b.then(mul3, reg))
+    .merge(merge_add, reg)
+    .then(store, reg)
+    .build();
+
+dag.run(&mut world, 5u32);
+// root: 10, arm_a: 11, arm_b: 30, merge: 41
+assert_eq!(*world.resource::<u64>(), 41);
+```
+
+Fan-out arms borrow the fork output by reference — no `Clone` needed.
+Option and Result combinators (`.map()`, `.and_then()`, `.catch()`,
+etc.) work on both the main chain and within arms. `Dag` implements
+`Handler<E>`, so it can be boxed or stored alongside other handlers.
+
+For linear chains without fan-out, prefer
+[Pipeline](#pipeline--pre-resolved-processing-chains).
+
+### FanOut / Broadcast — handler-level fan-out
+
+`FanOut` dispatches the same event by reference to a fixed set of
+handlers. Zero allocation, concrete types, monomorphizes to direct
+calls. Macro-generated for arities 2-8.
+
+`Broadcast` is the dynamic variant — stores `Vec<Box<dyn RefHandler<E>>>`
+for runtime-determined handler counts.
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
+use nexus_rt::{fan_out, Broadcast, Cloned};
+
+fn write_a(mut sink: ResMut<u64>, event: &u32) { *sink += *event as u64; }
+fn write_b(mut sink: ResMut<i64>, event: &u32) { *sink += *event as i64; }
+
+let mut builder = WorldBuilder::new();
+builder.register::<u64>(0);
+builder.register::<i64>(0);
+let mut world = builder.build();
+
+let h1 = write_a.into_handler(world.registry());
+let h2 = write_b.into_handler(world.registry());
+let mut fan = fan_out!(h1, h2);
+fan.run(&mut world, 5u32);
+assert_eq!(*world.resource::<u64>(), 5);
+assert_eq!(*world.resource::<i64>(), 5);
+```
+
+Handlers inside combinators receive `&E`. Use `Cloned` or `Owned`
+adapters for handlers that expect owned events.
+
+For fan-out with merge (data flowing back together), use
+[DagStart](#dag-pipeline--fan-out-merge-and-data-flow-graphs).
 
 ### Change detection
 
@@ -520,10 +601,15 @@ heap fallback.
 | Type-erased handler storage | `Box<dyn Handler<E>>` / `Virtual<E>` | When you need heterogeneous collections (driver slabs, timer wheels). |
 | Per-instance private state | `Callback` (via `IntoCallback`) or `CallbackTemplate` | Context-owning handlers for connection state, timer metadata, etc. |
 | Composable resource registration | `Plugin` | Fire-and-forget, consumed by `WorldBuilder`. |
+| Fan-out with merge | `DagStart` → `Dag` | Monomorphized data-flow graph. Zero vtable, all stack locals. |
+| Static fan-out (known count) | `FanOut` / `fan_out!` | Dispatch `&E` to N handlers. Zero allocation, concrete types. |
+| Dynamic fan-out (runtime count) | `Broadcast` | `Vec<Box<dyn RefHandler>>`. One heap alloc per handler, zero clones. |
 
 **Rule of thumb:** If a handler is created once, use `IntoHandler`. If
 it's created repeatedly on every event (move-out-fire pattern), use a
-template.
+template. For data that must fan out and merge back, use `DagStart`.
+For fire-and-forget fan-out, use `FanOut` (static) or `Broadcast`
+(dynamic).
 
 ## Performance
 
