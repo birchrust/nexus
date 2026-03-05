@@ -5,7 +5,9 @@
 //!
 //! [`DagStart`] begins a typed DAG that encodes topology in the type system.
 //! After monomorphization, the entire DAG is a single flat function with
-//! all values as stack locals — no arena, no vtable dispatch, no unsafe.
+//! all values as stack locals — no arena, no vtable dispatch. The only
+//! `unsafe` is in the shared [`Param::fetch`](crate::Param) path
+//! (resource access by pre-resolved index).
 //!
 //! Nodes receive their input **by reference** — fan-out is free (multiple
 //! arms borrow the same stack local). Nodes produce owned output values
@@ -371,7 +373,8 @@ all_tuples!(impl_merge4_step);
 //
 // Encodes DAG topology in the type system at compile time. After
 // monomorphization, the entire DAG is a single flat function with all
-// values as stack locals. No arena, no bitmap, no unsafe.
+// values as stack locals. No arena, no bitmap. Only unsafe is
+// in the shared Param::fetch path (resource access by pre-resolved index).
 //
 // Fan-out: multiple nodes borrow the same stack local (no Clone).
 // Merge: merge step borrows all arm outputs.
@@ -381,8 +384,9 @@ all_tuples!(impl_merge4_step);
 ///
 /// The DAG encodes topology in the type system at compile time,
 /// producing a single monomorphized closure chain. All values live as
-/// stack locals in the `run()` body — no arena, no vtable dispatch,
-/// no unsafe.
+/// stack locals in the `run()` body — no arena, no vtable dispatch.
+/// The only `unsafe` is in the shared [`Param::fetch`](crate::Param)
+/// path (resource access by pre-resolved index).
 ///
 /// # Examples
 ///
@@ -2176,12 +2180,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let flag_id = world.registry().id::<bool>();
         let mut dag = DagStart::<u32>::new()
             .root(root, reg)
-            .on_none(move |w: &mut World| {
-                // SAFETY: flag_id is a valid ResourceId for bool.
-                unsafe { *w.get_mut::<bool>(flag_id) = true };
+            .on_none(|w: &mut World| {
+                *w.resource_mut::<bool>() = true;
             })
             .then(sink, reg)
             .build();
@@ -2450,12 +2452,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let flag_id = world.registry().id::<bool>();
         let mut dag = DagStart::<u32>::new()
             .root(root, reg)
-            .inspect(move |w: &mut World, _val: &u64| {
-                // SAFETY: flag_id is a valid ResourceId for bool.
-                unsafe { *w.get_mut::<bool>(flag_id) = true };
+            .inspect(|w: &mut World, _val: &u64| {
+                *w.resource_mut::<bool>() = true;
             })
             .then(sink, reg)
             .build();

@@ -912,7 +912,7 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn stage_pure_transform() {
+    fn step_pure_transform() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
         let mut p = PipelineStart::<u32>::new().then(|x: u32| x as u64 * 2, r);
@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_one_res() {
+    fn step_one_res() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(10);
         let mut world = wb.build();
@@ -935,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_one_res_mut() {
+    fn step_one_res_mut() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();
@@ -952,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_two_params() {
+    fn step_two_params() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(10);
         wb.register::<bool>(true);
@@ -968,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_chain_two() {
+    fn step_chain_two() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(2);
         let mut world = wb.build();
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "conflicting access")]
-    fn stage_duplicate_access_panics() {
+    fn step_duplicate_access_panics() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();
@@ -1252,7 +1252,7 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn local_in_stage() {
+    fn local_in_step() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();
