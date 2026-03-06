@@ -71,12 +71,12 @@ Helper types and step functions shared across all files live in `helpers.rs`.
 | Cloned | bare / Option / Result / .cloned() | **A** | Copy types: zero-cost. Non-copy: single `clone` call, no framework overhead |
 | Tap / tee / dedup | Side-effect combinators | **A** | Tap: dead-code eliminated to 1 instruction. Dedup: `cmp + cmov` |
 | Dispatch | fan_out, broadcast, mid-chain | **B+** | Handler body inlined. Build-time resolution not inlined (expected, cold-path) |
-| World access | Res / ResMut / Local / changed_after | **B+** | `shl ResourceId, 4` + 2 pointer chases. Change detection: `cmp` + branchless `shl` |
+| World access | Res / ResMut / Local / changed_after | **A** | Direct pointer deref — 1 load per resource. Change detection: `cmp` + branchless `shl` |
 
 Pure computation combinators achieve **A** — LLVM treats them as if they
-don't exist. World-accessing combinators achieve **B+** — the cost is the
-resource access itself (2 pointer chases from the pre-resolved ResourceId),
-not the framework.
+don't exist. World-accessing combinators achieve **A** — ResourceId is a
+direct pointer, so the cost is a single deref per resource, not the
+framework.
 
 ### DAG (categories 13-20)
 
@@ -175,10 +175,10 @@ The fn pointer is stable (same target for all stamps), so branch prediction
 hits after the first call.
 
 **High-arity handlers** (5+ resource params) pay for each resource fetch
-at dispatch time. Each `Res<T>` / `ResMut<T>` costs `shl + 2 pointer
-chases` (~3 cycles). For 8 params, that's ~24 cycles of resource fetching.
-This is the cost of typed-slab indirection and is unavoidable without
-unsafe direct pointers.
+at dispatch time. Each `Res<T>` / `ResMut<T>` costs one pointer deref
+(the `ResourceId` IS the pointer). For 8 params, that's 8 independent
+loads — pipelineable by out-of-order execution. Zero framework overhead;
+the loads are the inherent cost of indirected access.
 
 None of these are framework overhead — they're the actual cost of the
 operations being performed.
