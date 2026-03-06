@@ -65,7 +65,7 @@
 //!
 //! **Bool:** `.not()`, `.and()`, `.or()`, `.xor()`
 //!
-//! **Terminal:** `.dispatch()`, `.cloned()`, `.build()`
+//! **Terminal:** `.dispatch()`, `.cloned()`, `.build()`, `.build_batch(cap)`
 //!
 //! Pre-resolved (hot path): `.then()`, `.map()`, `.and_then()`, `.catch()`
 //!
@@ -690,6 +690,7 @@ pub struct DagArmFork<In, ForkOut, Chain, Arms> {
 ///
 /// Created by [`DagChain::build`]. The entire DAG is monomorphized
 /// at compile time — no boxing, no virtual dispatch, no arena.
+/// For batch processing, see [`BatchDag`].
 pub struct Dag<E, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(E)>,
@@ -2154,6 +2155,103 @@ impl_dag_fork!(
     chain_input: &In,
     param: input: &In
 );
+
+// =============================================================================
+// build_batch — when Out: PipelineOutput (() or Option<()>)
+// =============================================================================
+
+impl<E: 'static, Out: crate::PipelineOutput, Chain> DagChain<E, Out, Chain>
+where
+    Chain: FnMut(&mut World, E) -> Out + 'static,
+{
+    /// Finalize into a [`BatchDag`] with a pre-allocated input buffer.
+    ///
+    /// Same DAG chain as [`build`](DagChain::build), but the DAG owns an
+    /// input buffer that drivers fill between dispatch cycles. Each call
+    /// to [`BatchDag::run`] drains the buffer, running every item through
+    /// the chain independently.
+    ///
+    /// Available when the DAG ends with `()` or `Option<()>` (e.g.
+    /// after `.guard()` or `.filter()` followed by `.unwrap_or(())`).
+    ///
+    /// `capacity` is the initial allocation — the buffer can grow if needed,
+    /// but sizing it for the expected batch size avoids reallocation.
+    pub fn build_batch(self, capacity: usize) -> BatchDag<E, Chain> {
+        BatchDag {
+            input: Vec::with_capacity(capacity),
+            chain: self.chain,
+        }
+    }
+}
+
+// =============================================================================
+// BatchDag<E, F> — DAG with owned input buffer
+// =============================================================================
+
+/// Batch DAG that owns a pre-allocated input buffer.
+///
+/// Created by [`DagChain::build_batch`]. Each item flows through the
+/// full DAG chain independently — the same per-item `Option` and
+/// `Result` flow control as [`Dag`]. Errors are handled inline (via
+/// `.catch()`, `.unwrap_or()`, etc.) and the batch continues to the
+/// next item.
+///
+/// Unlike [`Dag`], `BatchDag` does not implement [`Handler`] — it is
+/// driven directly by the owner via [`run()`](BatchDag::run).
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut};
+/// use nexus_rt::dag::DagStart;
+///
+/// let mut wb = WorldBuilder::new();
+/// wb.register::<u64>(0);
+/// let mut world = wb.build();
+/// let reg = world.registry();
+///
+/// fn double(x: u32) -> u64 { x as u64 * 2 }
+/// fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+///
+/// let mut batch = DagStart::<u32>::new()
+///     .root(double, reg)
+///     .then(store, reg)
+///     .build_batch(8);
+///
+/// batch.input_mut().extend([1, 2, 3]);
+/// batch.run(&mut world);
+///
+/// assert_eq!(*world.resource::<u64>(), 12); // 2 + 4 + 6
+/// assert!(batch.input().is_empty());
+/// ```
+pub struct BatchDag<E, F> {
+    input: Vec<E>,
+    chain: F,
+}
+
+impl<E, Out: crate::PipelineOutput, F: FnMut(&mut World, E) -> Out> BatchDag<E, F> {
+    /// Mutable access to the input buffer. Drivers fill this between
+    /// dispatch cycles.
+    pub fn input_mut(&mut self) -> &mut Vec<E> {
+        &mut self.input
+    }
+
+    /// Read-only access to the input buffer.
+    pub fn input(&self) -> &[E] {
+        &self.input
+    }
+
+    /// Drain the input buffer, running each item through the DAG.
+    ///
+    /// Each item gets independent `Option`/`Result` flow control — an
+    /// error on one item does not affect subsequent items. After `run()`,
+    /// the input buffer is empty but retains its allocation.
+    pub fn run(&mut self, world: &mut World) {
+        for item in self.input.drain(..) {
+            let _ = (self.chain)(world, item);
+        }
+    }
+}
 
 // =============================================================================
 // Tests
@@ -3688,5 +3786,141 @@ mod tests {
         let mut boxed: Virtual<u32> = Box::new(dag);
         boxed.run(&mut world, 5u32);
         assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    // -- Batch DAG --
+
+    #[test]
+    fn batch_dag_basic() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn double(x: u32) -> u64 { x as u64 * 2 }
+        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+
+        let mut batch = DagStart::<u32>::new()
+            .root(double, reg)
+            .then(store, reg)
+            .build_batch(8);
+
+        batch.input_mut().extend([1, 2, 3]);
+        batch.run(&mut world);
+
+        assert_eq!(*world.resource::<u64>(), 12); // 2 + 4 + 6
+        assert!(batch.input().is_empty());
+    }
+
+    #[test]
+    fn batch_dag_option_terminal() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn double(x: u32) -> u64 { x as u64 * 2 }
+        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+
+        let mut batch = DagStart::<u32>::new()
+            .root(double, reg)
+            .guard(|_w, val| *val > 5)
+            .map(store, reg)
+            .unwrap_or(())
+            .build_batch(8);
+
+        batch.input_mut().extend([1, 2, 3, 4, 5]);
+        batch.run(&mut world);
+
+        // double: 2, 4, 6, 8, 10
+        // guard keeps > 5: 6, 8, 10
+        assert_eq!(*world.resource::<u64>(), 24); // 6 + 8 + 10
+    }
+
+    #[test]
+    fn batch_dag_buffer_reuse() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn double(x: u32) -> u64 { x as u64 * 2 }
+        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+
+        let mut batch = DagStart::<u32>::new()
+            .root(double, reg)
+            .then(store, reg)
+            .build_batch(8);
+
+        batch.input_mut().extend([1, 2]);
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 6); // 2 + 4
+        assert!(batch.input().is_empty());
+
+        batch.input_mut().extend([10, 20]);
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 66); // 6 + 20 + 40
+    }
+
+    #[test]
+    fn batch_dag_retains_allocation() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        fn noop(_x: u32) {}
+
+        let mut batch = DagStart::<u32>::new()
+            .root(noop, reg)
+            .build_batch(64);
+
+        batch.input_mut().extend([1, 2, 3]);
+        batch.run(&mut world);
+
+        assert!(batch.input().is_empty());
+        assert!(batch.input_mut().capacity() >= 64);
+    }
+
+    #[test]
+    fn batch_dag_empty_is_noop() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn double(x: u32) -> u64 { x as u64 * 2 }
+        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+
+        let mut batch = DagStart::<u32>::new()
+            .root(double, reg)
+            .then(store, reg)
+            .build_batch(8);
+
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 0);
+    }
+
+    #[test]
+    fn batch_dag_with_splat() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split(x: u32) -> (u64, u64) { (x as u64, x as u64 * 10) }
+        fn combine(a: &u64, b: &u64) -> u64 { *a + *b }
+        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+
+        let mut batch = DagStart::<u32>::new()
+            .root(split, reg)
+            .splat()
+            .then(combine, reg)
+            .then(store, reg)
+            .build_batch(4);
+
+        batch.input_mut().extend([1, 2]);
+        batch.run(&mut world);
+
+        // 1 → (1, 10) → 11, 2 → (2, 20) → 22
+        assert_eq!(*world.resource::<u64>(), 33); // 11 + 22
     }
 }
