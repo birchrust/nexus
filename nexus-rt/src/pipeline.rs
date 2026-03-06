@@ -7,8 +7,8 @@
 //! [`PipelineStart`] begins a typed composition chain where each step
 //! is a named function with [`Param`] dependencies resolved at build
 //! time. The result is a monomorphized closure chain where dispatch-time
-//! resource access is ~3 cycles per fetch (pre-resolved [`ResourceId`](crate::ResourceId)),
-//! not a HashMap lookup.
+//! resource access is a single pointer deref per fetch — zero framework overhead.
+//! [`ResourceId`](crate::ResourceId) is a direct pointer, not a HashMap lookup.
 //!
 //! Two dispatch tiers in nexus-rt:
 //! 1. **Pipeline** — static after build, pre-resolved, the workhorse

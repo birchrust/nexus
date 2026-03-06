@@ -21,7 +21,7 @@ use crate::world::{Registry, ResourceId, World};
 ///    [`ResourceId`]) from the registry. This panics if the required type
 ///    isn't registered — giving an early build-time error.
 /// 2. **Dispatch time** — [`fetch`](Self::fetch) uses the cached state to
-///    produce a reference in ~3 cycles.
+///    produce a reference via a single pointer deref — zero framework overhead.
 ///
 /// # Built-in impls
 ///

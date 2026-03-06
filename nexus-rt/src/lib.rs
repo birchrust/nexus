@@ -8,8 +8,8 @@
 //! polling. Instead, it provides:
 //!
 //! - **World** — [`World`] is a unified type-erased singleton store. Each
-//!   registered type gets a dense index ([`ResourceId`]) for ~3-cycle
-//!   dispatch-time access.
+//!   registered type gets a direct pointer ([`ResourceId`]) — dispatch-time
+//!   access is a single pointer deref with zero framework overhead.
 //!
 //! - **Resources** — [`Res`] and [`ResMut`] are what users see in handler
 //!   function signatures. They deref to the inner value transparently.
@@ -37,7 +37,7 @@
 //!
 //! - **Templates** — [`HandlerTemplate`] and [`CallbackTemplate`] resolve
 //!   parameters once, then stamp out handlers via [`generate()`](HandlerTemplate::generate)
-//!   by copying pre-resolved state (~1 cycle). Use when handlers are
+//!   by copying pre-resolved state (a single memcpy). Use when handlers are
 //!   created repeatedly on the hot path (IO re-registration, timer
 //!   rescheduling).
 //!

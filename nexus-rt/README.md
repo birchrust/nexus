@@ -17,11 +17,11 @@ management, and dispatch infrastructure — but no implicit executor. Your
 The core idea: **declare what your functions need, and the framework wires
 it up at build time.** Write plain Rust functions with `Res<T>` and
 `ResMut<T>` parameters. The framework resolves those dependencies once when
-you build the handler, then dispatches at ~2-3 cycles per call with no
-hashing, no lookups, no allocation.
+you build the handler, then dispatches with zero framework overhead — a
+single pointer deref per resource, no hashing, no lookups, no allocation.
 
 **What nexus-rt is:**
-- A typed singleton store (`World`) with dense-indexed access
+- A typed singleton store (`World`) with direct-pointer access
 - A dependency injection system for plain functions
 - Composable handler and pipeline abstractions
 - Single-threaded by design — for latency, not by accident
@@ -53,9 +53,9 @@ let mut world = builder.build();              // freeze — no more registration
 
 `WorldBuilder` is mutable — you register types into it. `build()` produces
 a frozen `World`. After that, no types can be added or removed. This
-constraint enables dense array indexing: each type gets a sequential index
-(0, 1, 2, ...) and dispatch-time access is an unchecked array lookup
-at ~3 cycles (`debug_assert` in debug builds only).
+constraint enables direct pointer access: each type gets a `ResourceId`
+that is a direct pointer to its storage, and dispatch-time access is a
+single pointer deref — zero framework overhead.
 
 Outside of handlers, you can read and write resources directly:
 
@@ -92,8 +92,8 @@ This function declares:
 
 When you convert this function into a handler, the framework resolves each
 parameter against the `World`'s registry. At dispatch time, it fetches
-the resources by index — no `HashMap` lookup, no type checking, just a
-pointer dereference.
+the resources by direct pointer — no `HashMap` lookup, no type checking,
+just a pointer deref.
 
 `ResMut<T>` also participates in **change detection**: the act of writing
 (via `DerefMut`) stamps a sequence number on the resource. Other handlers
@@ -291,7 +291,7 @@ processing rather than game-world state management.
 1. **Build** — Register resources into `WorldBuilder`. Install plugins
    (fire-and-forget resource registration) and drivers (returns a poller).
 2. **Freeze** — `builder.build()` produces an immutable `World`. All
-   `ResourceId` values are dense indices, valid for the lifetime of the World.
+   `ResourceId` values are direct pointers, valid for the lifetime of the World.
 3. **Poll loop** — Your code calls `driver.poll(&mut world)` in a loop.
    Each driver owns its event lifecycle internally: poll IO, decode events,
    dispatch through its pipeline, mutate world state.
@@ -314,7 +314,8 @@ processing rather than game-world state management.
 | **FanOut / Broadcast** | Static or dynamic fan-out by reference. | ~2 cycles p50 |
 
 All tiers resolve `Param` state at build time. Dispatch-time cost is
-an unchecked index into a `Vec` — no hashing, no searching, no bounds check.
+a direct pointer deref — no hashing, no searching, no bounds check,
+no Vec indirection.
 
 ## Driver Model
 
@@ -373,8 +374,9 @@ loop {
 
 ### World — typed singleton store
 
-Type-erased resource storage with dense `ResourceId` indexing. ~3 cycles
-per dispatch-time access. Frozen after build — no inserts, no removes.
+Type-erased resource storage with direct `ResourceId` pointers.
+Dispatch-time access is a single pointer deref — zero framework overhead.
+Frozen after build — no inserts, no removes.
 
 ### Res / ResMut — resource parameters
 
@@ -405,7 +407,8 @@ The `Param` trait is the mechanism behind `Res<T>`, `ResMut<T>`,
 1. **Build time** — `Param::init(registry)` resolves opaque state (e.g.
    a `ResourceId`) and panics if the required type isn't registered.
 2. **Dispatch time** — `Param::fetch(world, state)` uses the cached state
-   to produce a reference in ~3 cycles.
+   to produce a reference via a single pointer deref — zero framework
+   overhead.
 
 Built-in impls: `Res<T>`, `ResMut<T>`, `Option<Res<T>>`,
 `Option<ResMut<T>>`, `Local<T>`, `RegistryRef`, `()`, and tuples up to
@@ -700,8 +703,8 @@ re-registration, timer rescheduling, connection accept loops — each
 same `ResourceId` values every time.
 
 Templates resolve parameters once, then `generate()` stamps out
-handlers by copying pre-resolved state. ~1 cycle vs ~20-70 cycles
-for `into_handler`.
+handlers by copying pre-resolved state — a flat memcpy vs ~20-70 cycles
+of HashMap lookups for `into_handler`.
 
 A [`Blueprint`] declares the event and parameter types. The template
 resolves them against the registry once:
@@ -778,6 +781,21 @@ handler_blueprint!(OnTick, Event = u32, Params = (ResMut<'static, u64>,));
   which is `Copy`.
 - Zero-sized callables only — named functions and captureless closures.
   Capturing closures and function pointers are rejected at compile time.
+
+**Handler state sizes** (for capacity planning with inline storage):
+
+`ResourceId` is pointer-sized (8 bytes on 64-bit). Each resource param
+(`Res<T>`, `ResMut<T>`, `Option<Res<T>>`, `Option<ResMut<T>>`) stores
+one `ResourceId` (8 bytes). Handler base overhead is 16 bytes (`&str`
+name). Callbacks add the context size.
+
+| Handler type | 0 params | 1 param | 2 params | 4 params | 8 params |
+|-------------|----------|---------|----------|----------|----------|
+| HandlerFn (no ctx) | 16 B | 24 B | 32 B | 48 B | 80 B |
+| Callback (8 B ctx) | 24 B | 32 B | 40 B | 56 B | 88 B |
+
+Formula: `16 + (8 × params) + context_size`. All fit comfortably
+within 256-byte inline buffers (`FlatVirtual`, `InlineTimerWheel`).
 
 ### RegistryRef — runtime handler creation
 
@@ -1138,7 +1156,7 @@ hot path.
 | generate callback (2 params) | 1 | 2 | 2 |
 | generate callback (4 params) | 1 | 1 | 1 |
 
-`generate()` copies pre-resolved `ResourceId` values — flat 1 cycle
+`generate()` copies pre-resolved `ResourceId` values — a flat memcpy
 at every arity. Compare with `into_handler` above: 24-70x faster for
 handlers created on every event (IO re-registration, timer rescheduling).
 
@@ -1215,7 +1233,7 @@ coordination overhead matters more than parallelism.
 ### Frozen after build
 
 No resources can be added or removed after `WorldBuilder::build()`. All
-registration happens at build time. This enables dense indexing and
+registration happens at build time. This enables stable pointers and
 eliminates runtime bookkeeping.
 
 ## Examples

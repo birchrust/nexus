@@ -1,12 +1,12 @@
 //! Type-erased singleton resource storage.
 //!
-//! [`World`] is a unified store where each resource type gets a dense index
+//! [`World`] is a unified store where each resource type gets a direct pointer
 //! ([`ResourceId`]) for O(1) dispatch-time access. Registration happens through
 //! [`WorldBuilder`], which freezes into an immutable [`World`] container via
 //! [`build()`](WorldBuilder::build).
 //!
-//! The type [`Registry`] maps types to dense indices. It is shared between
-//! [`WorldBuilder`] and [`World`], and is passed to [`Param::init`] and
+//! The type [`Registry`] maps types to [`ResourceId`] pointers. It is shared
+//! between [`WorldBuilder`] and [`World`], and is passed to [`Param::init`] and
 //! [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) so that handlers can resolve their parameter
 //! state during driver setup — before or after `build()`.
 //!
@@ -27,8 +27,11 @@
 //! [`ResourceId`] values are valid for the lifetime of the [`World`] container.
 
 use std::any::{TypeId, type_name};
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
+#[cfg(debug_assertions)]
+use std::cell::UnsafeCell;
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 use rustc_hash::FxHashMap;
 
@@ -48,23 +51,23 @@ use rustc_hash::FxHashMap;
 /// closures) that bypass static analysis.
 ///
 /// Only active during the narrow `Param::fetch` window — safe API methods
-/// and driver code that call `get_ptr` directly are not tracked.
+/// are not tracked.
 ///
 /// Completely compiled out in release builds — zero bytes, zero branches.
 #[cfg(debug_assertions)]
 pub(crate) struct BorrowTracker {
-    /// One slot per resource. `true` = accessed in current phase.
+    /// Pointer addresses accessed in current phase.
     /// Uses `UnsafeCell` for interior mutability because `Param::fetch` /
     /// `World::track_borrow` operate on `&World`. Single-threaded,
     /// non-reentrant access only.
-    accessed: UnsafeCell<Vec<bool>>,
+    accessed: UnsafeCell<Vec<NonNull<u8>>>,
 }
 
 #[cfg(debug_assertions)]
 impl BorrowTracker {
-    fn new(count: usize) -> Self {
+    fn new() -> Self {
         Self {
-            accessed: UnsafeCell::new(vec![false; count]),
+            accessed: UnsafeCell::new(Vec::new()),
         }
     }
 
@@ -72,28 +75,21 @@ impl BorrowTracker {
     fn clear(&self) {
         // SAFETY: single-threaded, non-reentrant. No other reference to
         // the inner Vec exists during this call.
-        let slots = unsafe { &mut *self.accessed.get() };
-        slots.fill(false);
+        let ptrs = unsafe { &mut *self.accessed.get() };
+        ptrs.clear();
     }
 
     /// Record an access. Panics if already accessed in this phase.
     fn track(&self, id: ResourceId) {
         // SAFETY: single-threaded, non-reentrant. No other reference to
         // the inner Vec exists during this call.
-        let slots = unsafe { &mut *self.accessed.get() };
-        let idx = id.0 as usize;
+        let ptrs = unsafe { &mut *self.accessed.get() };
         assert!(
-            idx < slots.len(),
-            "invalid ResourceId {id}: index {idx} out of bounds \
-             for BorrowTracker (len = {})",
-            slots.len(),
-        );
-        assert!(
-            !slots[idx],
+            !ptrs.contains(&id.0),
             "conflicting access: resource {id} was accessed by more than one parameter \
              in the same dispatch phase",
         );
-        slots[idx] = true;
+        ptrs.push(id.0);
     }
 }
 
@@ -101,19 +97,35 @@ impl BorrowTracker {
 // Core types
 // =============================================================================
 
-/// Dense index identifying a resource type within a [`World`] container.
+/// Direct pointer identifying a resource within a [`World`] container.
 ///
-/// Assigned sequentially at registration (0, 1, 2, ...). Used as a direct
-/// index into internal storage at dispatch time — no hashing, no searching.
+/// Points to a heap-allocated `ResourceCell<T>` whose `changed_at` field
+/// is at offset 0 (`#[repr(C)]`). Dispatch-time access is a single deref —
+/// no index lookup, no Vec indirection.
 ///
 /// Obtained from [`WorldBuilder::register`], [`WorldBuilder::ensure`],
 /// [`Registry::id`], [`World::id`], or their `try_` / `_default` variants.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ResourceId(u16);
+pub struct ResourceId(NonNull<u8>);
+
+impl ResourceId {
+    fn as_ptr(self) -> *mut u8 {
+        self.0.as_ptr()
+    }
+}
+
+// SAFETY: `ResourceId` is a thin, copyable handle to a `ResourceCell<T>`
+// allocated and pinned for the lifetime of its `World`:
+// - every `ResourceCell<T>` is registered with `T: Send`, so the pointee is
+//   safe to send between threads,
+// - the underlying pointer is stable for the `World`'s entire lifetime, and
+// - a `ResourceId` cannot be dereferenced without going through `World`,
+//   which enforces the single-threaded dispatch / aliasing invariants.
+unsafe impl Send for ResourceId {}
 
 impl std::fmt::Display for ResourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        write!(f, "{:p}", self.0)
     }
 }
 
@@ -133,31 +145,43 @@ impl std::fmt::Display for Sequence {
     }
 }
 
-/// Type-erased drop function. Monomorphized at registration time so we
-/// can reconstruct and drop the original `Box<T>` from a `*mut u8`.
-pub(crate) type DropFn = unsafe fn(*mut u8);
+/// Inline value + change tick for a single resource.
+///
+/// `changed_at` at offset 0 is critical — it lets `stamp_changed` and
+/// `changed_at` work without knowing T. Cast the pointer to
+/// `*const Cell<Sequence>` and read/write directly.
+#[repr(C)]
+pub(crate) struct ResourceCell<T> {
+    pub(crate) changed_at: Cell<Sequence>,
+    pub(crate) value: T,
+}
 
-/// Reconstruct and drop a `Box<T>` from a raw pointer.
+// changed_at MUST be at offset 0 — changed_at(), changed_at_cell(), and
+// stamp_changed() cast ResourceId's pointer directly to *const Cell<Sequence>
+// without knowing T. repr(C) guarantees this, but let's be explicit.
+const _: () = assert!(std::mem::offset_of!(ResourceCell<()>, changed_at) == 0);
+
+/// Reconstruct and drop a `Box<ResourceCell<T>>` from a raw pointer.
 ///
 /// # Safety
 ///
-/// `ptr` must have been produced by `Box::into_raw(Box::new(value))`
-/// where `value: T`. Must only be called once per pointer.
-pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
-    // SAFETY: ptr was produced by Box::into_raw(Box::new(value))
+/// `ptr` must have been produced by `Box::into_raw(Box::new(ResourceCell { .. }))`
+/// where the value field is `T`. Must only be called once per pointer.
+unsafe fn drop_resource<T>(ptr: *mut u8) {
+    // SAFETY: ptr was produced by Box::into_raw(Box::new(ResourceCell { .. }))
     // where value: T. Called exactly once in Storage::drop.
     unsafe {
-        let _ = Box::from_raw(ptr as *mut T);
+        let _ = Box::from_raw(ptr as *mut ResourceCell<T>);
     }
 }
 
 // =============================================================================
-// Registry — type-to-index mapping
+// Registry — type-to-pointer mapping
 // =============================================================================
 
-/// Type-to-index mapping shared between [`WorldBuilder`] and [`World`].
+/// Type-to-pointer mapping shared between [`WorldBuilder`] and [`World`].
 ///
-/// Contains only the type registry — no storage, no pointers. Passed to
+/// Contains only the type registry — no storage backing. Passed to
 /// [`IntoHandler::into_handler`](crate::IntoHandler::into_handler) and
 /// [`Param::init`](crate::Param::init) so handlers can resolve
 /// [`ResourceId`]s during driver setup.
@@ -165,21 +189,12 @@ pub(crate) unsafe fn drop_resource<T>(ptr: *mut u8) {
 /// Obtained via [`WorldBuilder::registry()`] or [`World::registry()`].
 pub struct Registry {
     indices: FxHashMap<TypeId, ResourceId>,
-    /// Scratch bitset reused across [`check_access`](Self::check_access) calls.
-    /// Allocated once on the first call with >128 resources, then reused.
-    ///
-    /// Interior mutability via `UnsafeCell` — only accessed in `check_access`,
-    /// which is single-threaded and non-reentrant. `UnsafeCell` makes
-    /// `Registry` `!Sync` automatically, which is correct — `World` is
-    /// already `!Sync`.
-    scratch: UnsafeCell<Vec<u64>>,
 }
 
 impl Registry {
     pub(crate) fn new() -> Self {
         Self {
             indices: FxHashMap::default(),
-            scratch: UnsafeCell::new(Vec::new()),
         }
     }
 
@@ -218,58 +233,26 @@ impl Registry {
 
     /// Validate that a set of parameter accesses don't conflict.
     ///
-    /// Two accesses conflict when they target the same ResourceId.
-    /// Called at construction time by `into_handler`, `into_callback`,
-    /// and `into_step`.
-    ///
-    /// Fast path (≤128 resources): single `u128` on the stack, zero heap.
-    /// Slow path (>128 resources): reusable `Vec<u64>` owned by Registry —
-    /// allocated once on first use, then cleared and reused.
+    /// Two accesses conflict when they target the same ResourceId (same
+    /// pointer). O(n²) pairwise comparison — handler arity is 1-8, so
+    /// this is trivially fast at build time.
     ///
     /// # Panics
     ///
     /// Panics if any resource is accessed by more than one parameter.
     #[cold]
     pub fn check_access(&self, accesses: &[(Option<ResourceId>, &str)]) {
-        let n = self.len();
-        if n == 0 {
-            return;
-        }
-
-        if n <= 128 {
-            // Fast path: single u128 on the stack.
-            let mut seen = 0u128;
-            for &(id, name) in accesses {
-                let Some(id) = id else { continue };
-                let bit = 1u128 << id.0 as u32;
+        for i in 0..accesses.len() {
+            let Some(id_i) = accesses[i].0 else { continue };
+            for j in (i + 1)..accesses.len() {
+                let Some(id_j) = accesses[j].0 else { continue };
                 assert!(
-                    seen & bit == 0,
-                    "conflicting access: resource borrowed by `{}` is already \
-                     borrowed by another parameter in the same handler",
-                    name,
+                    id_i != id_j,
+                    "conflicting access: resource borrowed by `{}` conflicts with \
+                     resource borrowed by `{}` in the same handler",
+                    accesses[j].1,
+                    accesses[i].1,
                 );
-                seen |= bit;
-            }
-        } else {
-            // Slow path: reusable heap buffer.
-            // SAFETY: single-threaded access guaranteed by !Sync on Registry
-            // (UnsafeCell is !Sync). check_access is non-reentrant — it runs,
-            // uses scratch, and returns. No aliasing possible.
-            let scratch = unsafe { &mut *self.scratch.get() };
-            let words = n.div_ceil(64);
-            scratch.resize(words, 0);
-            scratch.fill(0);
-            for &(id, name) in accesses {
-                let Some(id) = id else { continue };
-                let word = id.0 as usize / 64;
-                let bit = 1u64 << (id.0 as u32 % 64);
-                assert!(
-                    scratch[word] & bit == 0,
-                    "conflicting access: resource borrowed by `{}` is already \
-                     borrowed by another parameter in the same handler",
-                    name,
-                );
-                scratch[word] |= bit;
             }
         }
     }
@@ -279,61 +262,52 @@ impl Registry {
 // Storage — shared backing between builder and frozen container
 // =============================================================================
 
-/// Interleaved pointer + change sequence for a single resource.
-/// 16 bytes — 4 slots per cache line.
-#[repr(C)]
-pub(crate) struct ResourceSlot {
-    pub(crate) ptr: *mut u8,
-    pub(crate) changed_at: Cell<Sequence>,
+/// Pointer + type-erased drop function for a single resource.
+struct DropEntry {
+    ptr: *mut u8,
+    drop_fn: unsafe fn(*mut u8),
 }
 
-/// Internal storage for type-erased resource pointers and their destructors.
+/// Internal storage for type-erased resource cleanup.
 ///
-/// Owns the heap allocations and is responsible for cleanup. Shared between
-/// [`WorldBuilder`] and [`World`] via move — avoids duplicating Drop logic.
+/// Only walked during [`World::drop`] — no dispatch-time role. The actual
+/// resource data lives in individually heap-allocated `ResourceCell<T>`
+/// values, pointed to by [`ResourceId`].
 pub(crate) struct Storage {
-    /// Dense array of interleaved pointer + change sequence pairs.
-    /// Each pointer was produced by `Box::into_raw`.
-    pub(crate) slots: Vec<ResourceSlot>,
-    /// Parallel array of drop functions. `drop_fns[i]` is the monomorphized
-    /// destructor for the concrete type behind `slots[i].ptr`.
-    pub(crate) drop_fns: Vec<DropFn>,
+    drop_entries: Vec<DropEntry>,
 }
 
 impl Storage {
     pub(crate) fn new() -> Self {
         Self {
-            slots: Vec::new(),
-            drop_fns: Vec::new(),
+            drop_entries: Vec::new(),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.slots.len()
+        self.drop_entries.len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        self.drop_entries.is_empty()
     }
 }
 
 // SAFETY: All values stored in Storage were registered via `register<T: Send + 'static>`,
 // so every concrete type behind the raw pointers is Send. Storage exclusively owns
 // these heap allocations — they are not aliased or shared. Transferring ownership
-// to another thread is safe. Cell<Sequence> is !Sync but we're transferring
-// ownership, not sharing.
+// to another thread is safe.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for Storage {}
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        for (slot, drop_fn) in self.slots.iter().zip(&self.drop_fns) {
-            // SAFETY: each (slot.ptr, drop_fn) pair was created together in
-            // WorldBuilder::register(). drop_fn is the monomorphized
-            // destructor for the concrete type behind ptr. Called exactly
-            // once here.
+        for entry in &self.drop_entries {
+            // SAFETY: each DropEntry was created in WorldBuilder::register().
+            // drop_fn is the monomorphized destructor for the concrete
+            // ResourceCell<T> behind ptr. Called exactly once here.
             unsafe {
-                drop_fn(slot.ptr);
+                (entry.drop_fn)(entry.ptr);
             }
         }
     }
@@ -346,9 +320,9 @@ impl Drop for Storage {
 /// Builder for registering resources before freezing into a [`World`] container.
 ///
 /// Each resource type can only be registered once. Registration assigns a
-/// dense [`ResourceId`] index (0, 1, 2, ...).
+/// direct [`ResourceId`] pointer.
 ///
-/// The [`registry()`](Self::registry) method exposes the type-to-index mapping
+/// The [`registry()`](Self::registry) method exposes the type-to-pointer mapping
 /// so that drivers can resolve handlers against the builder before `build()`.
 ///
 /// # Examples
@@ -381,9 +355,9 @@ impl WorldBuilder {
 
     /// Register a resource and return its [`ResourceId`].
     ///
-    /// The value is heap-allocated via `Box` and ownership is transferred
-    /// to the container. The pointer is stable for the lifetime of the
-    /// resulting [`World`].
+    /// The value is heap-allocated inside a `ResourceCell<T>` and ownership
+    /// is transferred to the container. The pointer is stable for the
+    /// lifetime of the resulting [`World`].
     ///
     /// # Panics
     ///
@@ -397,21 +371,19 @@ impl WorldBuilder {
             type_name::<T>(),
         );
 
-        assert!(
-            u16::try_from(self.storage.slots.len()).is_ok(),
-            "resource limit exceeded ({} registered, max {})",
-            self.storage.slots.len(),
-            usize::from(u16::MAX) + 1,
-        );
-
-        let ptr = Box::into_raw(Box::new(value)) as *mut u8;
-        let id = ResourceId(self.storage.slots.len() as u16);
-        self.registry.indices.insert(type_id, id);
-        self.storage.slots.push(ResourceSlot {
-            ptr,
+        let cell = Box::new(ResourceCell {
             changed_at: Cell::new(Sequence(0)),
+            value,
         });
-        self.storage.drop_fns.push(drop_resource::<T>);
+        let raw = Box::into_raw(cell) as *mut u8;
+        // SAFETY: Box::into_raw never returns null.
+        let ptr = unsafe { NonNull::new_unchecked(raw) };
+        let id = ResourceId(ptr);
+        self.registry.indices.insert(type_id, id);
+        self.storage.drop_entries.push(DropEntry {
+            ptr: raw,
+            drop_fn: drop_resource::<T>,
+        });
         id
     }
 
@@ -509,15 +481,13 @@ impl WorldBuilder {
     /// remain valid for the lifetime of the returned [`World`].
     pub fn build(mut self) -> World {
         self.ensure(crate::shutdown::Shutdown::new());
-        #[cfg(debug_assertions)]
-        let resource_count = self.storage.len();
         World {
             registry: self.registry,
             storage: self.storage,
             current_sequence: Sequence(0),
             _not_sync: PhantomData,
             #[cfg(debug_assertions)]
-            borrow_tracker: BorrowTracker::new(resource_count),
+            borrow_tracker: BorrowTracker::new(),
         }
     }
 }
@@ -537,8 +507,9 @@ impl Default for WorldBuilder {
 /// Analogous to Bevy's `World`, but restricted to singleton resources
 /// (no entities, no components, no archetypes).
 ///
-/// Created by [`WorldBuilder::build()`]. Resources are indexed by dense
-/// [`ResourceId`] for O(1) dispatch-time access (~3 cycles per fetch).
+/// Created by [`WorldBuilder::build()`]. Resources are accessed via
+/// [`ResourceId`] direct pointers for O(1) dispatch-time access — a single
+/// pointer deref per fetch, zero framework overhead.
 ///
 /// # Safe API
 ///
@@ -548,10 +519,10 @@ impl Default for WorldBuilder {
 /// # Unsafe API (framework internals)
 ///
 /// The low-level `get` / `get_mut` methods are `unsafe` — used by
-/// [`Param::fetch`](crate::Param) for ~3-cycle dispatch.
+/// [`Param::fetch`](crate::Param) for zero-overhead dispatch.
 /// The caller must ensure no mutable aliasing.
 pub struct World {
-    /// Type-to-index mapping. Same registry used during build.
+    /// Type-to-pointer mapping. Same registry used during build.
     registry: Registry,
     /// Type-erased pointer storage. Drop handled by `Storage`.
     storage: Storage,
@@ -650,9 +621,8 @@ impl World {
     pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
         let id = self.registry.id::<T>();
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        self.storage.slots[id.0 as usize]
-            .changed_at
-            .set(self.current_sequence);
+        // SAFETY: id resolved from our own registry.
+        unsafe { self.stamp_changed(id) };
         // SAFETY: id resolved from our own registry. &mut self ensures
         // exclusive access — no other references can exist.
         unsafe { self.get_mut(id) }
@@ -764,7 +734,7 @@ impl World {
     // Unsafe resource access (hot path — pre-resolved ResourceId)
     // =========================================================================
 
-    /// Fetch a shared reference to a resource by pre-validated index.
+    /// Fetch a shared reference to a resource by direct pointer.
     ///
     /// # Safety
     ///
@@ -775,12 +745,12 @@ impl World {
     #[inline(always)]
     pub unsafe fn get<T: 'static>(&self, id: ResourceId) -> &T {
         // SAFETY: caller guarantees id was returned by register() on the
-        // builder that produced this container, so id.0 < self.storage.slots.len().
-        // T matches the registered type. No mutable alias exists.
-        unsafe { &*(self.get_ptr(id) as *const T) }
+        // builder that produced this container. T matches the registered type.
+        // No mutable alias exists. ResourceId points to a valid ResourceCell<T>.
+        unsafe { &(*(id.as_ptr() as *const ResourceCell<T>)).value }
     }
 
-    /// Fetch a mutable reference to a resource by pre-validated index.
+    /// Fetch a mutable reference to a resource by direct pointer.
     ///
     /// Takes `&self` — the container structure is frozen, but individual
     /// resources have interior mutability via raw pointers. Sound because
@@ -797,9 +767,9 @@ impl World {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut<T: 'static>(&self, id: ResourceId) -> &mut T {
         // SAFETY: caller guarantees id was returned by register() on the
-        // builder that produced this container, so id.0 < self.storage.slots.len().
-        // T matches the registered type. No aliases exist.
-        unsafe { &mut *(self.get_ptr(id) as *mut T) }
+        // builder that produced this container. T matches the registered type.
+        // No aliases exist. ResourceId points to a valid ResourceCell<T>.
+        unsafe { &mut (*(id.as_ptr() as *mut ResourceCell<T>)).value }
     }
 
     /// Reset borrow tracking for a new dispatch phase.
@@ -822,61 +792,46 @@ impl World {
         self.borrow_tracker.track(id);
     }
 
-    /// Fetch a raw pointer to a resource by pre-validated index.
-    ///
-    /// Intended for macro-generated dispatch code that needs direct pointer
-    /// access.
-    ///
-    /// # Safety
-    ///
-    /// - `id` must have been returned by [`WorldBuilder::register`] for
-    ///   the same builder that produced this container.
-    #[inline(always)]
-    pub unsafe fn get_ptr(&self, id: ResourceId) -> *mut u8 {
-        debug_assert!(
-            (id.0 as usize) < self.storage.slots.len(),
-            "ResourceId({}) out of bounds (len {})",
-            id.0,
-            self.storage.slots.len(),
-        );
-        // SAFETY: caller guarantees id was returned by register() on the
-        // builder that produced this container, so id.0 < self.storage.slots.len().
-        unsafe { self.storage.slots.get_unchecked(id.0 as usize).ptr }
-    }
-
     // =========================================================================
     // Change-detection internals (framework use only)
     // =========================================================================
 
     /// Read the sequence at which a resource was last changed.
     ///
+    /// Uses the `#[repr(C)]` guarantee that `changed_at` is at offset 0
+    /// of `ResourceCell<T>`, so we can read it without knowing T.
+    ///
     /// # Safety
     ///
     /// `id` must have been returned by [`WorldBuilder::register`] for
     /// the same builder that produced this container.
     #[inline(always)]
+    #[allow(clippy::unused_self)] // Method interface — callers use world.changed_at(id).
     pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Sequence {
-        unsafe {
-            self.storage
-                .slots
-                .get_unchecked(id.0 as usize)
-                .changed_at
-                .get()
-        }
+        // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
+        // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
+        unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).get() }
     }
 
     /// Get a reference to the `Cell` tracking a resource's change sequence.
     ///
+    /// Uses the `#[repr(C)]` guarantee that `changed_at` is at offset 0.
+    ///
     /// # Safety
     ///
     /// `id` must have been returned by [`WorldBuilder::register`] for
     /// the same builder that produced this container.
     #[inline(always)]
+    #[allow(clippy::unused_self)] // Method interface — callers use world.changed_at_cell(id).
     pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Sequence> {
-        unsafe { &self.storage.slots.get_unchecked(id.0 as usize).changed_at }
+        // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
+        // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
+        unsafe { &*(id.as_ptr() as *const Cell<Sequence>) }
     }
 
     /// Stamp a resource as changed at the current sequence.
+    ///
+    /// Uses the `#[repr(C)]` guarantee that `changed_at` is at offset 0.
     ///
     /// # Safety
     ///
@@ -885,13 +840,9 @@ impl World {
     #[inline(always)]
     #[allow(dead_code)] // Available for driver implementations.
     pub(crate) unsafe fn stamp_changed(&self, id: ResourceId) {
-        unsafe {
-            self.storage
-                .slots
-                .get_unchecked(id.0 as usize)
-                .changed_at
-                .set(self.current_sequence);
-        }
+        // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
+        // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
+        unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).set(self.current_sequence) }
     }
 }
 
@@ -899,6 +850,7 @@ impl World {
 // heap-allocated data exclusively — the raw pointers are not aliased or shared.
 // Transferring ownership to another thread is safe; the new thread becomes the
 // sole accessor.
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for World {}
 
 // =============================================================================
@@ -933,14 +885,21 @@ mod tests {
     }
 
     #[test]
-    fn resource_ids_are_sequential() {
+    fn resource_ids_are_distinct() {
         let mut builder = WorldBuilder::new();
         let id0 = builder.register::<Price>(Price { value: 0.0 });
         let id1 = builder.register::<Venue>(Venue { name: "" });
         let id2 = builder.register::<Config>(Config { max_orders: 0 });
-        assert_eq!(id0, ResourceId(0));
-        assert_eq!(id1, ResourceId(1));
-        assert_eq!(id2, ResourceId(2));
+        assert_ne!(id0, id1);
+        assert_ne!(id1, id2);
+        assert_ne!(id0, id2);
+
+        let world = builder.build();
+        unsafe {
+            assert_eq!(world.get::<Price>(id0).value, 0.0);
+            assert_eq!(world.get::<Venue>(id1).name, "");
+            assert_eq!(world.get::<Config>(id2).max_orders, 0);
+        }
     }
 
     #[test]
@@ -1066,20 +1025,6 @@ mod tests {
     }
 
     #[test]
-    fn get_ptr_returns_valid_pointer() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<Price>(Price { value: 77.7 });
-        let world = builder.build();
-
-        let id = world.id::<Price>();
-        unsafe {
-            let ptr = world.get_ptr(id);
-            let price = &*(ptr as *const Price);
-            assert_eq!(price.value, 77.7);
-        }
-    }
-
-    #[test]
     fn send_to_another_thread() {
         let mut builder = WorldBuilder::new();
         builder.register::<Price>(Price { value: 55.5 });
@@ -1096,14 +1041,14 @@ mod tests {
     #[test]
     fn registry_accessible_from_builder() {
         let mut builder = WorldBuilder::new();
-        builder.register::<u64>(42);
+        let registered_id = builder.register::<u64>(42);
 
         let registry = builder.registry();
         assert!(registry.contains::<u64>());
         assert!(!registry.contains::<bool>());
 
         let id = registry.id::<u64>();
-        assert_eq!(id, ResourceId(0));
+        assert_eq!(id, registered_id);
     }
 
     #[test]
@@ -1341,61 +1286,28 @@ mod tests {
         }
     }
 
-    // -- check_access slow path (>128 resources) ------------------------------
+    // -- check_access conflict detection ----------------------------------------
 
     #[test]
-    fn check_access_slow_path_no_conflict() {
-        // Register 130 distinct types to force the slow path (>128).
-        macro_rules! register_many {
-            ($builder:expr, $($i:literal),* $(,)?) => {
-                $(
-                    $builder.register::<[u8; $i]>([0u8; $i]);
-                )*
-            };
-        }
-
+    fn check_access_no_conflict() {
         let mut builder = WorldBuilder::new();
-        register_many!(
-            builder, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-            23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
-            45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66,
-            67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
-            89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
-            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
-            125, 126, 127, 128, 129, 130
-        );
-        assert!(builder.len() > 128);
-
-        // Non-conflicting accesses at high indices — exercises slow path.
-        let accesses = [(Some(ResourceId(0)), "a"), (Some(ResourceId(129)), "b")];
-        builder.registry_mut().check_access(&accesses);
+        let id_a = builder.register::<u64>(0);
+        let id_b = builder.register::<u32>(0);
+        builder.registry().check_access(&[
+            (Some(id_a), "a"),
+            (Some(id_b), "b"),
+        ]);
     }
 
     #[test]
     #[should_panic(expected = "conflicting access")]
-    fn check_access_slow_path_detects_conflict() {
-        macro_rules! register_many {
-            ($builder:expr, $($i:literal),* $(,)?) => {
-                $(
-                    $builder.register::<[u8; $i]>([0u8; $i]);
-                )*
-            };
-        }
-
+    fn check_access_detects_conflict() {
         let mut builder = WorldBuilder::new();
-        register_many!(
-            builder, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-            23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
-            45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66,
-            67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
-            89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
-            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
-            125, 126, 127, 128, 129, 130
-        );
-
-        // Duplicate access at index 129 — must panic.
-        let accesses = [(Some(ResourceId(129)), "a"), (Some(ResourceId(129)), "b")];
-        builder.registry_mut().check_access(&accesses);
+        let id = builder.register::<u64>(0);
+        builder.registry().check_access(&[
+            (Some(id), "a"),
+            (Some(id), "b"),
+        ]);
     }
 
     #[test]

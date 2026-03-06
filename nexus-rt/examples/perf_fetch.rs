@@ -360,7 +360,7 @@ impl System for HashResolvedSystem {
     }
 }
 
-// 6b: system caches erased ptrs resolved from Vec by dense index
+// 6b: system caches erased ptrs resolved from Vec by dense index (pre-pointer-ResourceId)
 struct DenseResolvedSystem {
     prices: *mut u8,
     venues: *mut u8,

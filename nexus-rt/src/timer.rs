@@ -80,9 +80,10 @@ pub type TimerWheel = Wheel<Box<dyn Handler<Instant>>>;
 /// Type alias for a timer wheel using inline handler storage.
 ///
 /// B256 = 256-byte inline buffer. Panics if a handler doesn't fit.
-/// Realistic timer callbacks (0-2 resources + context) are 24-104 bytes,
-/// so B256 provides comfortable headroom without a cache-line penalty
-/// over B128 (SIMD memcpy).
+/// Realistic timer callbacks (0-2 resources + context) are 24-96 bytes
+/// (ResourceId is pointer-sized: 8 bytes per resource param, plus 16
+/// bytes base overhead, plus context size). B256 provides comfortable
+/// headroom without a cache-line penalty over B128 (SIMD memcpy).
 #[cfg(feature = "smartptr")]
 pub type InlineTimerWheel = Wheel<crate::FlatVirtual<Instant, nexus_smartptr::B256>>;
 
@@ -139,7 +140,7 @@ impl TimerConfig for BoxedTimers {
 /// Inline timer configuration — stores handlers in a fixed-size buffer.
 ///
 /// Panics if a handler exceeds the buffer size (256 bytes).
-/// Realistic timer callbacks (0-2 resources + context) are 24-104 bytes.
+/// Realistic timer callbacks (0-2 resources + context) are 24-96 bytes.
 #[cfg(feature = "smartptr")]
 pub struct InlineTimers;
 

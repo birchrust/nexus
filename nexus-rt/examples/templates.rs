@@ -3,8 +3,8 @@
 //! When handlers are created repeatedly on the hot path (IO re-registration,
 //! timer rescheduling), each `into_handler(registry)` call pays HashMap
 //! lookups to resolve ResourceId values. Templates resolve once, then
-//! `generate()` stamps handlers by copying pre-resolved state (~1 cycle
-//! vs ~20-70 cycles for `into_handler`).
+//! `generate()` stamps handlers by copying pre-resolved state (a flat
+//! memcpy vs ~20-70 cycles of HashMap lookups for `into_handler`).
 //!
 //! Sections:
 //! 1. Basic HandlerTemplate: resolve once, generate many
@@ -139,12 +139,12 @@ fn main() {
     //
     // In timer wheels and IO slabs, handlers are removed from storage,
     // fired, and optionally re-inserted. The template makes re-insertion
-    // cheap — generate() is ~1 cycle vs ~20-70 for into_handler().
+    // cheap — generate() is a flat memcpy vs ~20-70 cycles for into_handler().
     //
     // Pseudocode:
     //   let handler = slab.remove(key);     // move out
     //   handler.run(&mut world, event);     // fire
-    //   let new = template.generate();      // ~1 cycle
+    //   let new = template.generate();      // flat memcpy
     //   slab.insert(new);                   // re-insert
 
     println!("\n=== 4. Move-out-fire pattern ===\n");
