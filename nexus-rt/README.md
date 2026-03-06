@@ -547,7 +547,7 @@ For linear chains without fan-out, prefer
 | | `.and(fn, reg)` | `bool → bool` | Short-circuit AND |
 | | `.or(fn, reg)` | `bool → bool` | Short-circuit OR |
 | | `.xor(fn, reg)` | `bool → bool` | Logical XOR |
-| **Tuple** | `.splat()` | `(A, B, ...) →` | Destructure tuple into `&A, &B, ...` args |
+| **Tuple** | `.splat()` | `&(A, B, ...) → (&A, &B, ...)` | Destructure tuple so next `.then()` sees `&A, &B, ...` args |
 | **Terminal** | `.dispatch(handler)` | `&T → ()` | Hand off to a Handler |
 | | `.cloned()` | `&T → T` | Clone reference to owned |
 | | `.build()` | | Finalize into `Dag<E>` |

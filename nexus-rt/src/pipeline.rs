@@ -865,7 +865,7 @@ macro_rules! define_splat_builders {
         #[doc(hidden)]
         pub struct $SplatStart<$($T),+>(PhantomData<fn(($($T,)+))>);
 
-        impl<$($T: 'static),+> $SplatStart<$($T),+> {
+        impl<$($T),+> $SplatStart<$($T),+> {
             /// Add a step that receives the tuple elements as individual arguments.
             pub fn then<Out, Params, S>(
                 self,
@@ -878,7 +878,6 @@ macro_rules! define_splat_builders {
                     + use<$($T,)+ Out, Params, S>,
             >
             where
-                Out: 'static,
                 S: $IntoSplatStep<$($T,)+ Out, Params>,
             {
                 let mut resolved = f.into_splat_step(registry);
@@ -891,7 +890,7 @@ macro_rules! define_splat_builders {
             }
         }
 
-        impl<$($T: 'static),+> PipelineStart<($($T,)+)> {
+        impl<$($T),+> PipelineStart<($($T,)+)> {
             /// Destructure the tuple input into individual function arguments.
             pub fn splat(self) -> $SplatStart<$($T),+> {
                 $SplatStart(PhantomData)
@@ -905,7 +904,7 @@ macro_rules! define_splat_builders {
             _marker: PhantomData<fn(In) -> ($($T,)+)>,
         }
 
-        impl<In, $($T: 'static,)+ Chain> $SplatBuilder<In, $($T,)+ Chain>
+        impl<In, $($T,)+ Chain> $SplatBuilder<In, $($T,)+ Chain>
         where
             Chain: FnMut(&mut World, In) -> ($($T,)+),
         {
@@ -921,7 +920,6 @@ macro_rules! define_splat_builders {
                     + use<In, $($T,)+ Out, Params, Chain, S>,
             >
             where
-                Out: 'static,
                 S: $IntoSplatStep<$($T,)+ Out, Params>,
             {
                 let mut chain = self.chain;
@@ -936,7 +934,7 @@ macro_rules! define_splat_builders {
             }
         }
 
-        impl<In, $($T: 'static,)+ Chain> PipelineBuilder<In, ($($T,)+), Chain>
+        impl<In, $($T,)+ Chain> PipelineBuilder<In, ($($T,)+), Chain>
         where
             Chain: FnMut(&mut World, In) -> ($($T,)+),
         {
