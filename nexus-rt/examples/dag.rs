@@ -25,6 +25,7 @@
 //! 6. Dedup — suppress consecutive duplicates
 //! 7. Guard — filtering via predicate
 //! 8. Boxing into `Box<dyn Handler<E>>`
+//! 9. Splat — destructure tuple output into individual `&T` args
 //!
 //! Run with:
 //! ```bash
@@ -423,6 +424,44 @@ fn main() {
     let cache = world.resource::<PriceCache>();
     println!("  cache: latest={:.2}", cache.latest);
     assert!((cache.latest - 60_060.0).abs() < 0.01);
+
+    // --- 9. Splat — destructure tuple into individual &T arguments ---
+
+    println!("\n=== 9. Splat ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register(PriceCache::new());
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    fn split_tick(t: Tick) -> (f64, u64) {
+        (t.price, t.size)
+    }
+    fn weighted(price: &f64, size: &u64) -> f64 {
+        *price * *size as f64
+    }
+    fn store_weighted(mut cache: ResMut<PriceCache>, val: &f64) {
+        cache.latest = *val;
+    }
+
+    let mut dag = DagStart::<Tick>::new()
+        .root(split_tick, reg)
+        .splat()
+        .then(weighted, reg)
+        .then(store_weighted, reg)
+        .build();
+
+    dag.run(
+        &mut world,
+        Tick {
+            symbol: "ETH",
+            price: 3_500.0,
+            size: 2,
+        },
+    );
+    let weighted_val = world.resource::<PriceCache>().latest;
+    println!("  weighted: {weighted_val:.2}");
+    assert!((weighted_val - 7_000.0).abs() < 0.01);
 
     println!("\nDone.");
 }

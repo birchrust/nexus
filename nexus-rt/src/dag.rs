@@ -54,6 +54,9 @@
 //!
 //! **Flow control:** `.guard()`, `.tap()`, `.route()`, `.tee()`, `.dedup()`
 //!
+//! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
+//! call `.then()` with destructured `&T` args)
+//!
 //! **Option:** `.map()`, `.filter()`, `.inspect()`, `.and_then()`,
 //! `.on_none()`, `.ok_or()`, `.unwrap_or()`
 //!
@@ -69,6 +72,28 @@
 //! Closure-based (cold path): `.filter()`, `.inspect()`, `.tap()`,
 //! `.guard()`, `.route()`, `.tee()`, `.dedup()`, `.on_none()`,
 //! `.map_err()`, `.ok()`, `.unwrap_or()`, `.dispatch()`, `.cloned()`
+//!
+//! # Splat — tuple destructuring
+//!
+//! When a step returns a tuple, the next step normally receives the
+//! whole tuple as `&(A, B)`. `.splat()` destructures it into individual
+//! reference arguments (`&A, &B`), reusing the existing merge step
+//! infrastructure:
+//!
+//! ```ignore
+//! fn split(t: Tick) -> (f64, u64) { (t.price, t.size) }
+//! fn weighted(price: &f64, size: &u64) -> f64 { *price * *size as f64 }
+//!
+//! DagStart::<Tick>::new()
+//!     .root(split, reg)       // Tick → (f64, u64)
+//!     .splat()                // destructure
+//!     .then(weighted, reg)    // (&f64, &u64) → f64
+//!     .build();
+//! ```
+//!
+//! Supported for tuples of 2-5 elements. Beyond 5, define a named
+//! struct — if a combinator stage needs that many arguments, a struct
+//! makes the intent clearer and the code more maintainable.
 //!
 //! # Node signatures
 //!
@@ -392,9 +417,75 @@ macro_rules! all_tuples {
     };
 }
 
+// -- Merge arity 5 -----------------------------------------------------------
+
+impl<A, B, C, D, E, Out, F> MergeStepCall<(&A, &B, &C, &D, &E), Out> for MergeStep<F, ()>
+where
+    F: FnMut(&A, &B, &C, &D, &E) -> Out + 'static,
+{
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, i: (&A, &B, &C, &D, &E)) -> Out {
+        (self.f)(i.0, i.1, i.2, i.3, i.4)
+    }
+}
+
+impl<A, B, C, D, E, Out, F> IntoMergeStep<(&A, &B, &C, &D, &E), Out, ()> for F
+where
+    F: FnMut(&A, &B, &C, &D, &E) -> Out + 'static,
+{
+    type Step = MergeStep<F, ()>;
+    fn into_merge_step(self, registry: &Registry) -> Self::Step {
+        MergeStep {
+            f: self,
+            state: <() as crate::handler::Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_merge5_step {
+    ($($P:ident),+) => {
+        impl<A, B, C, D, E, Out, F: 'static, $($P: crate::handler::Param + 'static),+>
+            MergeStepCall<(&A, &B, &C, &D, &E), Out> for MergeStep<F, ($($P,)+)>
+        where for<'a> &'a mut F:
+            FnMut($($P,)+ &A, &B, &C, &D, &E) -> Out +
+            FnMut($($P::Item<'a>,)+ &A, &B, &C, &D, &E) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, i: (&A, &B, &C, &D, &E)) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ IA, IB, IC, ID, IE, Output>(
+                    mut f: impl FnMut($($P,)+ &IA, &IB, &IC, &ID, &IE) -> Output,
+                    $($P: $P,)+ a: &IA, b: &IB, c: &IC, d: &ID, e: &IE,
+                ) -> Output { f($($P,)+ a, b, c, d, e) }
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as crate::handler::Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ i.0, i.1, i.2, i.3, i.4)
+            }
+        }
+        impl<A, B, C, D, E, Out, F: 'static, $($P: crate::handler::Param + 'static),+>
+            IntoMergeStep<(&A, &B, &C, &D, &E), Out, ($($P,)+)> for F
+        where for<'a> &'a mut F:
+            FnMut($($P,)+ &A, &B, &C, &D, &E) -> Out +
+            FnMut($($P::Item<'a>,)+ &A, &B, &C, &D, &E) -> Out,
+        {
+            type Step = MergeStep<F, ($($P,)+)>;
+            fn into_merge_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as crate::handler::Param>::init(registry);
+                { #[allow(non_snake_case)] let ($($P,)+) = &state;
+                  registry.check_access(&[$((<$P as crate::handler::Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                MergeStep { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
 all_tuples!(impl_merge2_step);
 all_tuples!(impl_merge3_step);
 all_tuples!(impl_merge4_step);
+all_tuples!(impl_merge5_step);
 
 // =============================================================================
 // DAG — monomorphized, zero vtable dispatch
@@ -1433,6 +1524,201 @@ impl_dag_combinators!(
     upstream: In,
     chain_input: &In,
     param: input: &In
+);
+
+// =============================================================================
+// Splat — tuple destructuring into individual reference arguments (DAG)
+// =============================================================================
+//
+// DAG splat reuses IntoMergeStep/MergeStepCall since DAG steps take inputs
+// by reference — the function signature is the same as a merge step:
+// `fn(Params..., &A, &B) -> Out`.
+//
+// Builder types are `#[doc(hidden)]` — users only see `.splat().then()`.
+
+macro_rules! define_dag_splat_builders {
+    (
+        $N:literal,
+        chain: $SplatChain:ident,
+        arm: $SplatArm:ident,
+        arm_start: $SplatArmStart:ident,
+        ($($T:ident),+),
+        ($($idx:tt),+)
+    ) => {
+        /// DAG splat builder on the main chain.
+        #[doc(hidden)]
+        pub struct $SplatChain<E, $($T,)+ Chain> {
+            chain: Chain,
+            _marker: PhantomData<fn(E) -> ($($T,)+)>,
+        }
+
+        impl<E: 'static, $($T: 'static,)+ Chain> $SplatChain<E, $($T,)+ Chain>
+        where
+            Chain: FnMut(&mut World, E) -> ($($T,)+),
+        {
+            /// Add a step that receives the tuple elements as individual `&T` arguments.
+            pub fn then<NewOut, Params, S>(
+                self,
+                f: S,
+                registry: &Registry,
+            ) -> DagChain<
+                E,
+                NewOut,
+                impl FnMut(&mut World, E) -> NewOut
+                    + use<E, $($T,)+ NewOut, Params, Chain, S>,
+            >
+            where
+                NewOut: 'static,
+                S: IntoMergeStep<($(&'static $T,)+), NewOut, Params>,
+                S::Step: for<'x> MergeStepCall<($(&'x $T,)+), NewOut>,
+            {
+                let mut chain = self.chain;
+                let mut resolved = f.into_merge_step(registry);
+                DagChain {
+                    chain: move |world: &mut World, event: E| {
+                        let tuple = chain(world, event);
+                        resolved.call(world, ($(&tuple.$idx,)+))
+                    },
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        impl<E: 'static, $($T: 'static,)+ Chain> DagChain<E, ($($T,)+), Chain>
+        where
+            Chain: FnMut(&mut World, E) -> ($($T,)+),
+        {
+            /// Destructure the tuple output into individual `&T` arguments.
+            pub fn splat(self) -> $SplatChain<E, $($T,)+ Chain> {
+                $SplatChain {
+                    chain: self.chain,
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        /// DAG splat builder within an arm.
+        #[doc(hidden)]
+        pub struct $SplatArm<In, $($T,)+ Chain> {
+            chain: Chain,
+            _marker: PhantomData<fn(*const In) -> ($($T,)+)>,
+        }
+
+        impl<In: 'static, $($T: 'static,)+ Chain> $SplatArm<In, $($T,)+ Chain>
+        where
+            Chain: FnMut(&mut World, &In) -> ($($T,)+),
+        {
+            /// Add a step that receives the tuple elements as individual `&T` arguments.
+            pub fn then<NewOut, Params, S>(
+                self,
+                f: S,
+                registry: &Registry,
+            ) -> DagArm<
+                In,
+                NewOut,
+                impl FnMut(&mut World, &In) -> NewOut
+                    + use<In, $($T,)+ NewOut, Params, Chain, S>,
+            >
+            where
+                NewOut: 'static,
+                S: IntoMergeStep<($(&'static $T,)+), NewOut, Params>,
+                S::Step: for<'x> MergeStepCall<($(&'x $T,)+), NewOut>,
+            {
+                let mut chain = self.chain;
+                let mut resolved = f.into_merge_step(registry);
+                DagArm {
+                    chain: move |world: &mut World, input: &In| {
+                        let tuple = chain(world, input);
+                        resolved.call(world, ($(&tuple.$idx,)+))
+                    },
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        impl<In: 'static, $($T: 'static,)+ Chain> DagArm<In, ($($T,)+), Chain>
+        where
+            Chain: FnMut(&mut World, &In) -> ($($T,)+),
+        {
+            /// Destructure the tuple output into individual `&T` arguments.
+            pub fn splat(self) -> $SplatArm<In, $($T,)+ Chain> {
+                $SplatArm {
+                    chain: self.chain,
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        /// DAG splat builder at arm start position.
+        #[doc(hidden)]
+        pub struct $SplatArmStart<$($T),+>(PhantomData<fn(($($T,)+))>);
+
+        impl<$($T: 'static),+> $SplatArmStart<$($T),+> {
+            /// Add a step that receives the tuple elements as individual `&T` arguments.
+            pub fn then<Out, Params, S>(
+                self,
+                f: S,
+                registry: &Registry,
+            ) -> DagArm<
+                ($($T,)+),
+                Out,
+                impl FnMut(&mut World, &($($T,)+)) -> Out
+                    + use<$($T,)+ Out, Params, S>,
+            >
+            where
+                Out: 'static,
+                S: IntoMergeStep<($(&'static $T,)+), Out, Params>,
+                S::Step: for<'x> MergeStepCall<($(&'x $T,)+), Out>,
+            {
+                let mut resolved = f.into_merge_step(registry);
+                DagArm {
+                    chain: move |world: &mut World, input: &($($T,)+)| {
+                        resolved.call(world, ($(&input.$idx,)+))
+                    },
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        impl<$($T: 'static),+> DagArmStart<($($T,)+)> {
+            /// Destructure the tuple input into individual `&T` arguments.
+            pub fn splat(self) -> $SplatArmStart<$($T),+> {
+                $SplatArmStart(PhantomData)
+            }
+        }
+    };
+}
+
+define_dag_splat_builders!(2,
+    chain: DagSplatChain2,
+    arm: DagSplatArm2,
+    arm_start: DagSplatArmStart2,
+    (T0, T1),
+    (0, 1)
+);
+
+define_dag_splat_builders!(3,
+    chain: DagSplatChain3,
+    arm: DagSplatArm3,
+    arm_start: DagSplatArmStart3,
+    (T0, T1, T2),
+    (0, 1, 2)
+);
+
+define_dag_splat_builders!(4,
+    chain: DagSplatChain4,
+    arm: DagSplatArm4,
+    arm_start: DagSplatArmStart4,
+    (T0, T1, T2, T3),
+    (0, 1, 2, 3)
+);
+
+define_dag_splat_builders!(5,
+    chain: DagSplatChain5,
+    arm: DagSplatArm5,
+    arm_start: DagSplatArmStart5,
+    (T0, T1, T2, T3, T4),
+    (0, 1, 2, 3, 4)
 );
 
 // =============================================================================
@@ -3155,5 +3441,252 @@ mod tests {
 
         dag.run(&mut world, 10u32); // true ^ true = false
         assert!(!*world.resource::<bool>());
+    }
+
+    // =========================================================================
+    // Splat — tuple destructuring
+    // =========================================================================
+
+    #[test]
+    fn dag_splat2_on_chain() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split(x: u32) -> (u32, u32) {
+            (x, x * 2)
+        }
+        fn store(mut out: ResMut<u64>, a: &u32, b: &u32) {
+            *out = *a as u64 + *b as u64;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(split, reg)
+            .splat()
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 15); // 5 + 10
+    }
+
+    #[test]
+    fn dag_splat3_on_chain() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split3(x: u32) -> (u32, u32, u32) {
+            (x, x + 1, x + 2)
+        }
+        fn sum3(a: &u32, b: &u32, c: &u32) -> u64 {
+            *a as u64 + *b as u64 + *c as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(split3, reg)
+            .splat()
+            .then(sum3, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 10u32);
+        assert_eq!(*world.resource::<u64>(), 33); // 10+11+12
+    }
+
+    #[test]
+    fn dag_splat2_with_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(100);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split(x: u32) -> (u32, u32) {
+            (x, x * 3)
+        }
+        fn add_base(base: Res<u64>, a: &u32, b: &u32) -> u64 {
+            *base + *a as u64 + *b as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(split, reg)
+            .splat()
+            .then(add_base, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 120); // 100 + 5 + 15
+    }
+
+    #[test]
+    fn dag_splat_on_arm_start() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split(x: u32) -> (u32, u32) {
+            (x, x + 10)
+        }
+        fn sum2(a: &u32, b: &u32) -> u64 {
+            *a as u64 + *b as u64
+        }
+        fn identity(x: &(u32, u32)) -> u64 {
+            x.0 as u64 * x.1 as u64
+        }
+        fn merge_add(a: &u64, b: &u64) -> u64 {
+            *a + *b
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(split, reg)
+            .fork()
+            .arm(|a| a.splat().then(sum2, reg))
+            .arm(|b| b.then(identity, reg))
+            .merge(merge_add, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 5u32);
+        // arm_a: splat (5, 15) → sum2 = 20
+        // arm_b: identity (5, 15) → 75
+        // merge: 20 + 75 = 95
+        assert_eq!(*world.resource::<u64>(), 95);
+    }
+
+    #[test]
+    fn dag_splat_on_arm() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn root_id(x: u32) -> u32 {
+            x
+        }
+        fn make_pair(val: &u32) -> (u32, u32) {
+            (*val, *val + 100)
+        }
+        fn sum2(a: &u32, b: &u32) -> u64 {
+            *a as u64 + *b as u64
+        }
+        fn double(val: &u32) -> u64 {
+            *val as u64 * 2
+        }
+        fn merge_add(a: &u64, b: &u64) -> u64 {
+            *a + *b
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root_id, reg)
+            .fork()
+            .arm(|a| a.then(make_pair, reg).splat().then(sum2, reg))
+            .arm(|b| b.then(double, reg))
+            .merge(merge_add, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 7u32);
+        // arm_a: make_pair(7) = (7, 107), splat → sum2 = 114
+        // arm_b: double(7) = 14
+        // merge: 114 + 14 = 128
+        assert_eq!(*world.resource::<u64>(), 128);
+    }
+
+    #[test]
+    fn dag_splat4_on_chain() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split4(x: u32) -> (u32, u32, u32, u32) {
+            (x, x + 1, x + 2, x + 3)
+        }
+        fn sum4(a: &u32, b: &u32, c: &u32, d: &u32) -> u64 {
+            (*a + *b + *c + *d) as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(split4, reg)
+            .splat()
+            .then(sum4, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 10u32);
+        assert_eq!(*world.resource::<u64>(), 46); // 10+11+12+13
+    }
+
+    #[test]
+    fn dag_splat5_on_chain() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split5(x: u32) -> (u8, u8, u8, u8, u8) {
+            let x = x as u8;
+            (x, x + 1, x + 2, x + 3, x + 4)
+        }
+        fn sum5(a: &u8, b: &u8, c: &u8, d: &u8, e: &u8) -> u64 {
+            (*a as u64) + (*b as u64) + (*c as u64) + (*d as u64) + (*e as u64)
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut dag = DagStart::<u32>::new()
+            .root(split5, reg)
+            .splat()
+            .then(sum5, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 1u32);
+        assert_eq!(*world.resource::<u64>(), 15); // 1+2+3+4+5
+    }
+
+    #[test]
+    fn dag_splat_boxable() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn split(x: u32) -> (u32, u32) {
+            (x, x * 2)
+        }
+        fn store(mut out: ResMut<u64>, a: &u32, b: &u32) {
+            *out = *a as u64 + *b as u64;
+        }
+
+        let dag = DagStart::<u32>::new()
+            .root(split, reg)
+            .splat()
+            .then(store, reg)
+            .build();
+
+        let mut boxed: Virtual<u32> = Box::new(dag);
+        boxed.run(&mut world, 5u32);
+        assert_eq!(*world.resource::<u64>(), 15);
     }
 }

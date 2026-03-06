@@ -18,7 +18,7 @@
 //! ```
 
 use nexus_rt::template::{Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate};
-use nexus_rt::{handler_blueprint, Handler, ResMut, WorldBuilder};
+use nexus_rt::{Handler, ResMut, WorldBuilder, handler_blueprint};
 
 // =============================================================================
 // Blueprint definitions

@@ -229,6 +229,33 @@ fn main() {
     println!("  Total (values > 5 only): {total}");
     assert_eq!(total, 17); // 7 + 10
 
+    // --- Splat: destructure tuple output into individual arguments ---
+
+    println!("\n=== Splat ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register::<u64>(0);
+    let mut world = wb.build();
+    let r = world.registry_mut();
+
+    fn split(x: u32) -> (u32, u32) {
+        (x, x * 3)
+    }
+    fn combine(mut out: ResMut<u64>, a: u32, b: u32) {
+        *out = a as u64 + b as u64;
+    }
+
+    let mut pipeline = PipelineStart::<u32>::new()
+        .then(split, r)
+        .splat()
+        .then(combine, r)
+        .build();
+
+    pipeline.run(&mut world, 5);
+    let result = *world.resource::<u64>();
+    println!("  split(5) = (5, 15), combine = {result}");
+    assert_eq!(result, 20);
+
     // --- Pipeline vs DAG note ---
     //
     // Pipeline is for linear chains (A → B → C).
