@@ -134,10 +134,63 @@ impl std::fmt::Display for ResourceId {
 /// Each event processed by a driver is assigned a unique sequence number
 /// via [`World::next_sequence`]. Resources record the sequence at which
 /// they were last written. A resource is considered "changed" if its
-/// `changed_at` equals the world's `current_sequence`. Wrapping is
-/// harmless — only equality is checked.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+/// `changed_at` equals the world's `current_sequence`.
+///
+/// Wrapping is harmless — at one increment per event, the `u64` space
+/// takes ~584 years at 1 GHz to exhaust. Ordering comparisons use natural
+/// `u64` ordering (not wrapping-aware), which is correct for any realistic
+/// uptime.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_rt::Sequence;
+///
+/// let a = Sequence::ZERO;
+/// let b = a.next();
+///
+/// assert!(b > a);
+/// assert_eq!(b.get(), 1);
+/// assert_eq!(b.elapsed_since(a), 1);
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Sequence(pub(crate) u64);
+
+impl Sequence {
+    /// The zero sequence — the starting point before any events.
+    pub const ZERO: Self = Self(0);
+
+    /// Create a sequence from a raw `u64` value.
+    ///
+    /// Use for construction in tests, deserialization, or replay.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw `u64` value.
+    ///
+    /// Use for logging, metrics, or passing to external systems.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the next sequence number (wrapping).
+    ///
+    /// This is a pure computation — it does not advance any world state.
+    /// Use [`World::next_sequence`] to actually advance the world's
+    /// current sequence.
+    pub const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+
+    /// Returns the number of events between `earlier` and `self`.
+    ///
+    /// Wrapping-aware: if `self` has wrapped past `earlier`, the result
+    /// is the wrapping distance. Returns 0 if `self == earlier`.
+    pub const fn elapsed_since(self, earlier: Self) -> u64 {
+        self.0.wrapping_sub(earlier.0)
+    }
+}
 
 impl std::fmt::Display for Sequence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
