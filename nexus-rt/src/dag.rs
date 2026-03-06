@@ -806,7 +806,7 @@ macro_rules! impl_dag_combinators {
             /// steps — sibling arms and the merge step still execute.
             pub fn guard(
                 self,
-                mut f: impl FnMut(&mut World, &Out) -> bool + 'static,
+                mut f: impl FnMut(&mut World, &Out) -> bool,
             ) -> $Builder<
                 $U,
                 Option<Out>,
@@ -829,7 +829,7 @@ macro_rules! impl_dag_combinators {
             /// mid-chain.
             pub fn tap(
                 self,
-                mut f: impl FnMut(&mut World, &Out) + 'static,
+                mut f: impl FnMut(&mut World, &Out),
             ) -> $Builder<$U, Out, impl FnMut(&mut World, $pty) -> Out> {
                 let mut chain = self.chain;
                 $Builder {
@@ -870,10 +870,9 @@ macro_rules! impl_dag_combinators {
                 impl FnMut(&mut World, $pty) -> NewOut + use<$U, Out, NewOut, Chain, C0, C1, P>,
             >
             where
-                NewOut: 'static,
-                P: FnMut(&mut World, &Out) -> bool + 'static,
-                C0: FnMut(&mut World, &Out) -> NewOut + 'static,
-                C1: FnMut(&mut World, &Out) -> NewOut + 'static,
+                P: FnMut(&mut World, &Out) -> bool,
+                C0: FnMut(&mut World, &Out) -> NewOut,
+                C1: FnMut(&mut World, &Out) -> NewOut,
             {
                 let mut chain = self.chain;
                 let mut c0 = on_true.chain;
@@ -903,7 +902,7 @@ macro_rules! impl_dag_combinators {
                 side: DagArm<Out, (), C>,
             ) -> $Builder<$U, Out, impl FnMut(&mut World, $pty) -> Out>
             where
-                C: FnMut(&mut World, &Out) + 'static,
+                C: FnMut(&mut World, &Out),
             {
                 let mut chain = self.chain;
                 let mut side_chain = side.chain;
@@ -936,9 +935,9 @@ macro_rules! impl_dag_combinators {
             /// For simple cases where all arms share the same params, a named
             /// function with a `match` body passed to [`.then()`](Self::then)
             /// is sufficient.
-            pub fn switch<NewOut: 'static>(
+            pub fn switch<NewOut>(
                 self,
-                mut f: impl FnMut(&mut World, &Out) -> NewOut + 'static,
+                mut f: impl FnMut(&mut World, &Out) -> NewOut,
             ) -> $Builder<$U, NewOut, impl FnMut(&mut World, $pty) -> NewOut> {
                 let mut chain = self.chain;
                 $Builder {
@@ -955,7 +954,7 @@ macro_rules! impl_dag_combinators {
         // Dedup — suppress unchanged values
         // =============================================================
 
-        impl<$U: 'static, Out: PartialEq + Clone + 'static, Chain> $Builder<$U, Out, Chain>
+        impl<$U: 'static, Out: PartialEq + Clone, Chain> $Builder<$U, Out, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Out,
         {
@@ -1012,7 +1011,7 @@ macro_rules! impl_dag_combinators {
             /// If the chain produces `false`, the closure is not called.
             pub fn and(
                 self,
-                mut f: impl FnMut(&mut World) -> bool + 'static,
+                mut f: impl FnMut(&mut World) -> bool,
             ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool> {
                 let mut chain = self.chain;
                 $Builder {
@@ -1028,7 +1027,7 @@ macro_rules! impl_dag_combinators {
             /// If the chain produces `true`, the closure is not called.
             pub fn or(
                 self,
-                mut f: impl FnMut(&mut World) -> bool + 'static,
+                mut f: impl FnMut(&mut World) -> bool,
             ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool> {
                 let mut chain = self.chain;
                 $Builder {
@@ -1044,7 +1043,7 @@ macro_rules! impl_dag_combinators {
             /// Both sides are always evaluated.
             pub fn xor(
                 self,
-                mut f: impl FnMut(&mut World) -> bool + 'static,
+                mut f: impl FnMut(&mut World) -> bool,
             ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool> {
                 let mut chain = self.chain;
                 $Builder {
@@ -1195,7 +1194,7 @@ macro_rules! impl_dag_combinators {
             /// Side effect on None.
             pub fn on_none(
                 self,
-                mut f: impl FnMut(&mut World) + 'static,
+                mut f: impl FnMut(&mut World),
             ) -> $Builder<
                 $U,
                 Option<T>,
@@ -1217,7 +1216,7 @@ macro_rules! impl_dag_combinators {
             /// Keep value if predicate holds. std: `Option::filter`
             pub fn filter(
                 self,
-                mut f: impl FnMut(&mut World, &T) -> bool + 'static,
+                mut f: impl FnMut(&mut World, &T) -> bool,
             ) -> $Builder<
                 $U,
                 Option<T>,
@@ -1235,7 +1234,7 @@ macro_rules! impl_dag_combinators {
             /// Side effect on Some value. std: `Option::inspect`
             pub fn inspect(
                 self,
-                mut f: impl FnMut(&mut World, &T) + 'static,
+                mut f: impl FnMut(&mut World, &T),
             ) -> $Builder<
                 $U,
                 Option<T>,
@@ -1251,7 +1250,10 @@ macro_rules! impl_dag_combinators {
             }
 
             /// None becomes Err(err). std: `Option::ok_or`
-            pub fn ok_or<Err: Clone + 'static>(
+            ///
+            /// `Clone` required because the chain may run many times —
+            /// the error value is cloned on each `None` invocation.
+            pub fn ok_or<Err: Clone>(
                 self,
                 err: Err,
             ) -> $Builder<
@@ -1271,7 +1273,7 @@ macro_rules! impl_dag_combinators {
             /// None becomes Err(f()). std: `Option::ok_or_else`
             pub fn ok_or_else<Err>(
                 self,
-                mut f: impl FnMut(&mut World) -> Err + 'static,
+                mut f: impl FnMut(&mut World) -> Err,
             ) -> $Builder<
                 $U,
                 Result<T, Err>,
@@ -1287,6 +1289,10 @@ macro_rules! impl_dag_combinators {
             }
 
             /// Exit Option — None becomes the default value.
+            ///
+            /// `Clone` required because the chain may run many times —
+            /// the default is cloned on each `None` invocation (unlike
+            /// std's `unwrap_or` which consumes the value once).
             pub fn unwrap_or(
                 self,
                 default: T,
@@ -1307,7 +1313,7 @@ macro_rules! impl_dag_combinators {
             /// Exit Option — None becomes `f()`.
             pub fn unwrap_or_else(
                 self,
-                mut f: impl FnMut(&mut World) -> T + 'static,
+                mut f: impl FnMut(&mut World) -> T,
             ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T>
             {
                 let mut chain = self.chain;
@@ -1425,7 +1431,7 @@ macro_rules! impl_dag_combinators {
             /// Transform the error. std: `Result::map_err`
             pub fn map_err<Err2>(
                 self,
-                mut f: impl FnMut(&mut World, Err) -> Err2 + 'static,
+                mut f: impl FnMut(&mut World, Err) -> Err2,
             ) -> $Builder<
                 $U,
                 Result<T, Err2>,
@@ -1444,8 +1450,7 @@ macro_rules! impl_dag_combinators {
             /// Recover from Err. std: `Result::or_else`
             pub fn or_else<Err2>(
                 self,
-                mut f: impl FnMut(&mut World, Err) -> Result<T, Err2>
-                    + 'static,
+                mut f: impl FnMut(&mut World, Err) -> Result<T, Err2>,
             ) -> $Builder<
                 $U,
                 Result<T, Err2>,
@@ -1464,7 +1469,7 @@ macro_rules! impl_dag_combinators {
             /// Side effect on Ok. std: `Result::inspect`
             pub fn inspect(
                 self,
-                mut f: impl FnMut(&mut World, &T) + 'static,
+                mut f: impl FnMut(&mut World, &T),
             ) -> $Builder<
                 $U,
                 Result<T, Err>,
@@ -1483,7 +1488,7 @@ macro_rules! impl_dag_combinators {
             /// Side effect on Err. std: `Result::inspect_err`
             pub fn inspect_err(
                 self,
-                mut f: impl FnMut(&mut World, &Err) + 'static,
+                mut f: impl FnMut(&mut World, &Err),
             ) -> $Builder<
                 $U,
                 Result<T, Err>,
@@ -1517,6 +1522,10 @@ macro_rules! impl_dag_combinators {
             }
 
             /// Exit Result — Err becomes the default value.
+            ///
+            /// `Clone` required because the chain may run many times —
+            /// the default is cloned on each `Err` invocation (unlike
+            /// std's `unwrap_or` which consumes the value once).
             pub fn unwrap_or(
                 self,
                 default: T,
@@ -1537,7 +1546,7 @@ macro_rules! impl_dag_combinators {
             /// Exit Result — Err becomes `f(err)`.
             pub fn unwrap_or_else(
                 self,
-                mut f: impl FnMut(&mut World, Err) -> T + 'static,
+                mut f: impl FnMut(&mut World, Err) -> T,
             ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T>
             {
                 let mut chain = self.chain;

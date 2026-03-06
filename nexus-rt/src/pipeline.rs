@@ -659,9 +659,9 @@ impl<In> PipelineStart<In> {
     ///
     /// Same as [`PipelineBuilder::switch`] but usable as the first step.
     /// See that method for full documentation.
-    pub fn switch<Out: 'static>(
+    pub fn switch<Out>(
         self,
-        mut f: impl FnMut(&mut World, In) -> Out + 'static,
+        mut f: impl FnMut(&mut World, In) -> Out,
     ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out> {
         PipelineBuilder {
             chain: move |world: &mut World, input: In| f(world, input),
@@ -757,7 +757,7 @@ where
     /// `.and_then()`, `.filter()`, `.unwrap_or()`, etc.
     pub fn guard(
         self,
-        mut f: impl FnMut(&mut World, &Out) -> bool + 'static,
+        mut f: impl FnMut(&mut World, &Out) -> bool,
     ) -> PipelineBuilder<In, Option<Out>, impl FnMut(&mut World, In) -> Option<Out>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -776,7 +776,7 @@ where
     /// mid-chain.
     pub fn tap(
         self,
-        mut f: impl FnMut(&mut World, &Out) + 'static,
+        mut f: impl FnMut(&mut World, &Out),
     ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -816,10 +816,9 @@ where
         impl FnMut(&mut World, In) -> NewOut + use<In, Out, NewOut, Chain, C0, C1, P>,
     >
     where
-        NewOut: 'static,
-        P: FnMut(&mut World, &Out) -> bool + 'static,
-        C0: FnMut(&mut World, Out) -> NewOut + 'static,
-        C1: FnMut(&mut World, Out) -> NewOut + 'static,
+        P: FnMut(&mut World, &Out) -> bool,
+        C0: FnMut(&mut World, Out) -> NewOut,
+        C1: FnMut(&mut World, Out) -> NewOut,
     {
         let mut chain = self.chain;
         let mut c0 = on_true.chain;
@@ -849,7 +848,7 @@ where
         side: DagArm<Out, (), C>,
     ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out>
     where
-        C: FnMut(&mut World, &Out) + 'static,
+        C: FnMut(&mut World, &Out),
     {
         let mut chain = self.chain;
         let mut side_chain = side.chain;
@@ -883,9 +882,9 @@ where
     /// For simple cases where all arms share the same params, a named
     /// function with a `match` body passed to [`.then()`](Self::then)
     /// is sufficient.
-    pub fn switch<NewOut: 'static>(
+    pub fn switch<NewOut>(
         self,
-        mut f: impl FnMut(&mut World, Out) -> NewOut + 'static,
+        mut f: impl FnMut(&mut World, Out) -> NewOut,
     ) -> PipelineBuilder<In, NewOut, impl FnMut(&mut World, In) -> NewOut> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1048,7 +1047,7 @@ define_splat_builders!(5,
 // Dedup — suppress unchanged values
 // =============================================================================
 
-impl<In, Out: PartialEq + Clone + 'static, Chain> PipelineBuilder<In, Out, Chain>
+impl<In, Out: PartialEq + Clone, Chain> PipelineBuilder<In, Out, Chain>
 where
     Chain: FnMut(&mut World, In) -> Out,
 {
@@ -1101,7 +1100,7 @@ where
     /// If the chain produces `false`, the closure is not called.
     pub fn and(
         self,
-        mut f: impl FnMut(&mut World) -> bool + 'static,
+        mut f: impl FnMut(&mut World) -> bool,
     ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1115,7 +1114,7 @@ where
     /// If the chain produces `true`, the closure is not called.
     pub fn or(
         self,
-        mut f: impl FnMut(&mut World) -> bool + 'static,
+        mut f: impl FnMut(&mut World) -> bool,
     ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1129,7 +1128,7 @@ where
     /// Both sides are always evaluated.
     pub fn xor(
         self,
-        mut f: impl FnMut(&mut World) -> bool + 'static,
+        mut f: impl FnMut(&mut World) -> bool,
     ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1246,7 +1245,7 @@ where
     /// Side effect on None. Complement to [`inspect`](Self::inspect).
     pub fn on_none(
         self,
-        mut f: impl FnMut(&mut World) + 'static,
+        mut f: impl FnMut(&mut World),
     ) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1264,7 +1263,7 @@ where
     /// Keep value if predicate holds. std: `Option::filter`
     pub fn filter(
         self,
-        mut f: impl FnMut(&mut World, &T) -> bool + 'static,
+        mut f: impl FnMut(&mut World, &T) -> bool,
     ) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1278,7 +1277,7 @@ where
     /// Side effect on Some value. std: `Option::inspect`
     pub fn inspect(
         self,
-        mut f: impl FnMut(&mut World, &T) + 'static,
+        mut f: impl FnMut(&mut World, &T),
     ) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1290,7 +1289,10 @@ where
     }
 
     /// None becomes Err(err). std: `Option::ok_or`
-    pub fn ok_or<E: Clone + 'static>(
+    ///
+    /// `Clone` required because the pipeline may run many times —
+    /// the error value is cloned on each `None` invocation.
+    pub fn ok_or<E: Clone>(
         self,
         err: E,
     ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
@@ -1306,7 +1308,7 @@ where
     /// None becomes Err(f()). std: `Option::ok_or_else`
     pub fn ok_or_else<E>(
         self,
-        mut f: impl FnMut(&mut World) -> E + 'static,
+        mut f: impl FnMut(&mut World) -> E,
     ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1316,9 +1318,13 @@ where
     }
 
     /// Exit Option — None becomes the default value.
+    ///
+    /// `Clone` required because the pipeline may run many times —
+    /// the default is cloned on each `None` invocation (unlike
+    /// std's `unwrap_or` which consumes the value once).
     pub fn unwrap_or(self, default: T) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T>
     where
-        T: Clone + 'static,
+        T: Clone,
     {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1332,7 +1338,7 @@ where
     /// Exit Option — None becomes `f()`.
     pub fn unwrap_or_else(
         self,
-        mut f: impl FnMut(&mut World) -> T + 'static,
+        mut f: impl FnMut(&mut World) -> T,
     ) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1426,7 +1432,7 @@ where
     /// Transform the error. std: `Result::map_err`
     pub fn map_err<E2>(
         self,
-        mut f: impl FnMut(&mut World, E) -> E2 + 'static,
+        mut f: impl FnMut(&mut World, E) -> E2,
     ) -> PipelineBuilder<In, Result<T, E2>, impl FnMut(&mut World, In) -> Result<T, E2>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1440,7 +1446,7 @@ where
     /// Recover from Err. std: `Result::or_else`
     pub fn or_else<E2>(
         self,
-        mut f: impl FnMut(&mut World, E) -> Result<T, E2> + 'static,
+        mut f: impl FnMut(&mut World, E) -> Result<T, E2>,
     ) -> PipelineBuilder<In, Result<T, E2>, impl FnMut(&mut World, In) -> Result<T, E2>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1454,7 +1460,7 @@ where
     /// Side effect on Ok. std: `Result::inspect`
     pub fn inspect(
         self,
-        mut f: impl FnMut(&mut World, &T) + 'static,
+        mut f: impl FnMut(&mut World, &T),
     ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1468,7 +1474,7 @@ where
     /// Side effect on Err. std: `Result::inspect_err`
     pub fn inspect_err(
         self,
-        mut f: impl FnMut(&mut World, &E) + 'static,
+        mut f: impl FnMut(&mut World, &E),
     ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1489,9 +1495,13 @@ where
     }
 
     /// Exit Result — Err becomes the default value.
+    ///
+    /// `Clone` required because the pipeline may run many times —
+    /// the default is cloned on each `Err` invocation (unlike
+    /// std's `unwrap_or` which consumes the value once).
     pub fn unwrap_or(self, default: T) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T>
     where
-        T: Clone + 'static,
+        T: Clone,
     {
         let mut chain = self.chain;
         PipelineBuilder {
@@ -1505,7 +1515,7 @@ where
     /// Exit Result — Err becomes `f(err)`.
     pub fn unwrap_or_else(
         self,
-        mut f: impl FnMut(&mut World, E) -> T + 'static,
+        mut f: impl FnMut(&mut World, E) -> T,
     ) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T> {
         let mut chain = self.chain;
         PipelineBuilder {
