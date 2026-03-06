@@ -171,7 +171,7 @@ unsafe fn drop_resource<T>(ptr: *mut u8) {
 }
 
 // =============================================================================
-// Registry — type-to-index mapping
+// Registry — type-to-pointer mapping
 // =============================================================================
 
 /// Type-to-pointer mapping shared between [`WorldBuilder`] and [`World`].
