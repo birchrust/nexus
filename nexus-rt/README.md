@@ -209,6 +209,12 @@ world.run(|world| {
 });
 ```
 
+`world.run()` is a convenience — it's just `while !shutdown { f(self) }`.
+You can also write the loop yourself if you need access to the shutdown
+handle, custom exit conditions, or pre/post-iteration bookkeeping. Both
+patterns are equivalent; `world.run()` is shorter when a shutdown flag is
+all you need.
+
 `Shutdown` is automatically registered by `WorldBuilder::build()`. The
 event loop owns a `ShutdownHandle` (obtained via `world.shutdown_handle()`
 if needed outside `world.run()`). With the `signals` feature,
@@ -221,7 +227,7 @@ The full lifecycle:
 WorldBuilder::new()
     → register resources
     → install_plugin(plugin)
-    → install_driver(installer) → returns handle
+    → install_driver(installer) → returns poller
     → build()
     → World (frozen)
         → run_startup(init_fn)     // one-shot init
@@ -267,10 +273,10 @@ processing rather than game-world state management.
                    │  install_driver  │               │          │           │
                    └──────────────────┘               └──────────┼───────────┘
                           │                                      │
-                          │ returns Handle                       │
+                          │ returns Poller                       │
                           ▼                                      ▼
                    ┌──────────────────┐               ┌──────────────────────┐
-                   │  Driver Handle   │               │  poll(&mut World)    │
+                   │  Driver Poller   │               │  poll(&mut World)    │
                    │                  │               │                      │
                    │  Pre-resolved    │──────────────►│  1. next_sequence()  │
                    │  ResourceIds     │               │  2. get resources    │
@@ -283,15 +289,18 @@ processing rather than game-world state management.
 ### Flow
 
 1. **Build** — Register resources into `WorldBuilder`. Install plugins
-   (fire-and-forget resource registration) and drivers (returns a handle).
+   (fire-and-forget resource registration) and drivers (returns a poller).
 2. **Freeze** — `builder.build()` produces an immutable `World`. All
    `ResourceId` values are dense indices, valid for the lifetime of the World.
 3. **Poll loop** — Your code calls `driver.poll(&mut world)` in a loop.
    Each driver owns its event lifecycle internally: poll IO, decode events,
    dispatch through its pipeline, mutate world state.
 4. **Sequence** — Each event gets a monotonic sequence number via
-   `world.next_sequence()`. Change detection is causal: `changed_at` records
-   which event caused the mutation.
+   `world.next_sequence()`. **Drivers are responsible for calling this**
+   before dispatching each event — the built-in timer and mio pollers
+   do this automatically. `world.run()` does not advance the sequence;
+   it is purely a shutdown-checked loop. Change detection is causal:
+   `changed_at` records which event caused the mutation.
 
 ### Dispatch tiers
 
@@ -309,28 +318,28 @@ an unchecked index into a `Vec` — no hashing, no searching, no bounds check.
 
 ## Driver Model
 
-Drivers are event sources. The `Driver` trait handles installation;
-the returned handle is a concrete type with its own `poll()` signature.
+Drivers are event sources. The `Installer` trait handles installation;
+the returned poller is a concrete type with its own `poll()` signature.
 
 ```rust
-use nexus_rt::{Driver, WorldBuilder, World, ResourceId};
+use nexus_rt::{Installer, WorldBuilder, World, ResourceId};
 
 struct TimerInstaller { resolution_ms: u64 }
-struct TimerHandle { timers_id: ResourceId }
+struct TimerPoller { timers_id: ResourceId }
 
-impl Driver for TimerInstaller {
-    type Handle = TimerHandle;
+impl Installer for TimerInstaller {
+    type Poller = TimerPoller;
 
-    fn install(self, world: &mut WorldBuilder) -> TimerHandle {
+    fn install(self, world: &mut WorldBuilder) -> TimerPoller {
         world.register(Vec::<u64>::new());
         // ... register other resources ...
         let timers_id = world.registry().id::<Vec<u64>>();
-        TimerHandle { timers_id }
+        TimerPoller { timers_id }
     }
 }
 
-// Handle defines its own poll signature — NOT a trait method.
-impl TimerHandle {
+// Poller defines its own poll signature — NOT a trait method.
+impl TimerPoller {
     fn poll(&mut self, world: &mut World, now_ms: u64) {
         // get resources via pre-resolved IDs, fire expired timers
     }
@@ -355,27 +364,24 @@ loop {
 
 ## Features
 
+> **For Bevy users:** Many concepts map directly — `World` (singletons
+> only, no entities/archetypes), `Res<T>`/`ResMut<T>` (same semantics),
+> `SystemParam` → `Param`, `IntoSystem`/`System` → `IntoHandler`/`Handler`,
+> `Plugin` (same pattern), `Local<T>` (same). The divergence is the
+> execution model: sequential event dispatch instead of parallel
+> frame-based schedules.
+
 ### World — typed singleton store
 
 Type-erased resource storage with dense `ResourceId` indexing. ~3 cycles
 per dispatch-time access. Frozen after build — no inserts, no removes.
 
-*(Bevy analogy: `World`, but singletons only — no entities, no components,
-no archetypes.)*
-
 ### Res / ResMut — resource parameters
 
 Declare resource dependencies in function signatures. `Res<T>` for shared
 reads, `ResMut<T>` for exclusive writes. `ResMut` stamps `changed_at` on
-`DerefMut` — the act of writing is the change signal.
-
-*(Bevy analogy: `Res<T>` and `ResMut<T>`, same names and semantics.)*
-
-```rust
-fn process(config: Res<Config>, mut state: ResMut<State>, event: Event) {
-    // config is read-only, state is read-write
-}
-```
+`DerefMut` — the act of writing is the change signal. See
+[Dependency Injection](#rest-and-resmut--dependency-injection) above.
 
 ### Optional resources
 
@@ -401,33 +407,24 @@ The `Param` trait is the mechanism behind `Res<T>`, `ResMut<T>`,
 2. **Dispatch time** — `Param::fetch(world, state)` uses the cached state
    to produce a reference in ~3 cycles.
 
-*(Bevy analogy: `SystemParam`.)*
-
 Built-in impls: `Res<T>`, `ResMut<T>`, `Option<Res<T>>`,
 `Option<ResMut<T>>`, `Local<T>`, `RegistryRef`, `()`, and tuples up to
 8 params.
+
+**Access conflicts** are caught at build time. If two parameters in the
+same handler would borrow the same resource (e.g. `Res<T>` + `ResMut<T>`,
+or two `ResMut<T>` for the same `T`), `into_handler` / `.then()` panics
+with `"conflicting access"`. Pipeline and DAG steps enforce the same check
+per-step. This is a build-time guarantee — dispatch never hits a conflict.
 
 ### Handler / IntoHandler — fn-to-handler conversion
 
 `IntoHandler` converts a plain `fn` into a `Handler` trait object.
 Event `E` is always the last parameter; everything before it is resolved
-as `Param` from a `Registry`.
-
-*(Bevy analogy: `IntoSystem` / `System` trait.)*
-
-```rust
-fn tick(counter: Res<u64>, mut flag: ResMut<bool>, event: u32) {
-    if event > 0 {
-        *flag = true;
-    }
-}
-
-let mut handler = tick.into_handler(registry);
-handler.run(&mut world, 10u32);
-```
-
-Named functions only — closures do not work with `IntoHandler` due to
-Rust's HRTB inference limitations with GATs (same limitation as Bevy).
+as `Param` from a `Registry`. Named functions only — closures do not
+work with `IntoHandler` due to Rust's HRTB inference limitations with
+GATs. See [Handlers](#handlers--connecting-functions-to-the-world)
+above.
 
 ### Pipeline — pre-resolved processing chains
 
@@ -644,26 +641,6 @@ fn observer(val: Res<u64>, _event: ()) {
 fn writer(mut val: ResMut<u64>, _event: ()) {
     *val = 42; // stamps changed_at = current_sequence
 }
-
-```
-
-### Plugin — composable registration
-
-Fire-and-forget resource registration units. Consumed by `WorldBuilder`.
-
-*(Bevy analogy: `Plugin`.)*
-
-```rust
-struct MyPlugin { /* config */ }
-
-impl Plugin for MyPlugin {
-    fn build(self, world: &mut WorldBuilder) {
-        world.register(MyState::new());
-        world.register(MyConfig::default());
-    }
-}
-
-wb.install_plugin(MyPlugin { /* ... */ });
 ```
 
 ### Local — per-handler state
@@ -672,8 +649,6 @@ wb.install_plugin(MyPlugin { /* ... */ });
 Initialized with `Default::default()` at handler creation time. Each
 handler instance gets its own independent copy — two handlers created
 from the same function have separate `Local` values.
-
-*(Bevy analogy: `Local<T>`.)*
 
 ```rust
 fn count_events(mut count: Local<u64>, mut total: ResMut<u64>, _event: u32) {
@@ -869,9 +844,15 @@ heap fallback.
 
 ### System / IntoSystem — reconciliation logic
 
-`System` is the dispatch trait for per-pass reconciliation, distinct from
-`Handler<E>`. Systems take no event parameter and return `bool` to control
-downstream propagation in a DAG scheduler.
+Handlers react to individual events. But some computations need to run
+*after* a batch of events has been processed — recomputing a theoretical
+price after market data updates, checking risk limits after fills, etc.
+These are reconciliation passes: they read the current state of the world,
+decide if anything changed, and propagate downstream if so.
+
+`System` is the dispatch trait for this. Distinct from `Handler<E>`,
+systems take no event parameter and return `bool` to control downstream
+propagation in a DAG scheduler.
 
 | | Handler | System |
 |---|---------|--------|
@@ -950,7 +931,7 @@ let shutdown = world.shutdown_handle();
 
 while !shutdown.is_shutdown() {
     // poll drivers ...
-    # break;
+    break; // (for example only)
 }
 ```
 
