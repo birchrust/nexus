@@ -7,6 +7,224 @@ user code runs as handlers dispatched over shared state. It is **not** an
 async runtime — there is no task scheduler, no work stealing, no `Future`
 polling. Your `main()` is the executor.
 
+## Philosophy
+
+`nexus-rt` is a lightweight, single-threaded runtime for event-driven
+systems. It provides the state container, dependency injection, lifecycle
+management, and dispatch infrastructure — but no implicit executor. Your
+`main()` is the event loop. You decide what polls, in what order, and when.
+
+The core idea: **declare what your functions need, and the framework wires
+it up at build time.** Write plain Rust functions with `Res<T>` and
+`ResMut<T>` parameters. The framework resolves those dependencies once when
+you build the handler, then dispatches at ~2-3 cycles per call with no
+hashing, no lookups, no allocation.
+
+**What nexus-rt is:**
+- A typed singleton store (`World`) with dense-indexed access
+- A dependency injection system for plain functions
+- Composable handler and pipeline abstractions
+- Single-threaded by design — for latency, not by accident
+
+**What nexus-rt is not:**
+- Not an async runtime (no `Future`, no `async`/`await`)
+- Not a game engine ECS (no entities, no components, no archetypes)
+- Not opinionated about IO, networking, or wire protocols — bring your own
+
+If you need an analogy: it's the Bevy `SystemParam` + `World` model,
+stripped down to singletons and adapted for sequential event processing
+instead of parallel frame-based simulation.
+
+## What in the World?!
+
+### The World
+
+Everything in `nexus-rt` revolves around the `World` — a typed singleton
+store where each registered type gets exactly one value:
+
+```rust
+use nexus_rt::WorldBuilder;
+
+let mut builder = WorldBuilder::new();
+builder.register::<u64>(0);                   // one u64, initialized to 0
+builder.register::<String>("hello".into());   // one String
+let mut world = builder.build();              // freeze — no more registration
+```
+
+`WorldBuilder` is mutable — you register types into it. `build()` produces
+a frozen `World`. After that, no types can be added or removed. This
+constraint enables dense array indexing: each type gets a sequential index
+(0, 1, 2, ...) and dispatch-time access is an unchecked array lookup
+at ~3 cycles (`debug_assert` in debug builds only).
+
+Outside of handlers, you can read and write resources directly:
+
+```rust
+# let mut builder = nexus_rt::WorldBuilder::new();
+# builder.register::<u64>(0);
+# let mut world = builder.build();
+assert_eq!(*world.resource::<u64>(), 0);
+*world.resource_mut::<u64>() = 42;
+assert_eq!(*world.resource::<u64>(), 42);
+```
+
+### Res\<T\> and ResMut\<T\> — Dependency Injection
+
+The real power is that handler functions **declare** their dependencies in
+their signatures. You don't pass resources manually — the framework
+resolves them:
+
+```rust
+use nexus_rt::{Res, ResMut};
+
+fn process(config: Res<u64>, mut state: ResMut<String>, event: f64) {
+    if *config > 10 {
+        *state = format!("processed {event}");
+    }
+}
+```
+
+This function declares:
+- `Res<u64>` — "I need shared read access to the `u64` resource"
+- `ResMut<String>` — "I need exclusive write access to the `String` resource"
+- `event: f64` — "I receive an `f64` as my event" (always the last parameter)
+
+When you convert this function into a handler, the framework resolves each
+parameter against the `World`'s registry. At dispatch time, it fetches
+the resources by index — no `HashMap` lookup, no type checking, just a
+pointer dereference.
+
+`ResMut<T>` also participates in **change detection**: the act of writing
+(via `DerefMut`) stamps a sequence number on the resource. Other handlers
+can check `Res<T>::is_changed()` to see if the resource was modified during
+the current event. This is automatic — no manual marking.
+
+### Handlers — Connecting Functions to the World
+
+`IntoHandler` converts a plain function into a `Handler` — the object-safe
+dispatch trait. The conversion resolves parameters; after that, calling
+`.run()` is a direct dispatch through pre-resolved indices:
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
+
+fn tick(mut counter: ResMut<u64>, event: u32) {
+    *counter += event as u64;
+}
+
+let mut builder = WorldBuilder::new();
+builder.register::<u64>(0);
+let mut world = builder.build();
+
+let mut handler = tick.into_handler(world.registry());
+
+handler.run(&mut world, 10u32);
+handler.run(&mut world, 20u32);
+assert_eq!(*world.resource::<u64>(), 30);
+```
+
+The event parameter is always last. Everything before it is resolved as a
+`Param` from the registry. If a required resource isn't registered,
+`into_handler` panics at build time — not at dispatch time. Fail fast.
+
+> **Named functions only.** Closures do not work with `IntoHandler` for
+> arity-1+ (functions with `Param` arguments). This is a Rust type
+> inference limitation with HRTBs and GATs — the same limitation Bevy has.
+> Arity-0 pipeline steps (no `Param`) do accept closures.
+
+### Plugins — Composable Registration
+
+When you have a group of related resources, package them as a `Plugin`:
+
+```rust
+use nexus_rt::{Plugin, WorldBuilder};
+
+struct PriceCache { prices: Vec<f64> }
+struct RiskLimits { max_position: u64 }
+
+struct TradingPlugin {
+    risk_cap: u64,
+}
+
+impl Plugin for TradingPlugin {
+    fn build(self, world: &mut WorldBuilder) {
+        world.register(PriceCache { prices: Vec::new() });
+        world.register(RiskLimits { max_position: self.risk_cap });
+    }
+}
+
+let mut builder = WorldBuilder::new();
+builder.install_plugin(TradingPlugin { risk_cap: 1000 });
+// PriceCache and RiskLimits are now registered
+```
+
+Plugins are consumed by value — fire and forget. They're for organizing
+registration, not for runtime behavior. Compose your system from multiple
+plugins, each owning a domain's resources.
+
+### Lifecycle — Startup, Run, Shutdown
+
+After `build()`, you often need to initialize state that depends on
+multiple resources being present. `run_startup` runs a handler once with
+full dependency injection:
+
+```rust
+# use nexus_rt::{WorldBuilder, Res, ResMut};
+# struct PriceCache { prices: Vec<f64> }
+# struct RiskLimits { max_position: u64 }
+# let mut builder = WorldBuilder::new();
+# builder.register(PriceCache { prices: Vec::new() });
+# builder.register(RiskLimits { max_position: 100 });
+fn initialize(mut cache: ResMut<PriceCache>, config: Res<RiskLimits>, _event: ()) {
+    // Both resources are available — set up initial state
+    cache.prices.extend_from_slice(&[100.0, 200.0, 300.0]);
+}
+
+let mut world = builder.build();
+world.run_startup(initialize);
+# assert_eq!(world.resource::<PriceCache>().prices.len(), 3);
+```
+
+For the event loop itself, `world.run()` polls until a handler triggers
+shutdown:
+
+```rust,ignore
+use nexus_rt::shutdown::Shutdown;
+
+// Handler triggers shutdown when done
+fn check_done(counter: Res<u64>, shutdown: Res<Shutdown>, _event: ()) {
+    if *counter >= 100 {
+        shutdown.shutdown();
+    }
+}
+
+world.run(|world| {
+    // Your poll loop — called every iteration until shutdown
+    timer.poll(world, Instant::now());
+    io.poll(world, timeout);
+    scheduler.run(world);
+});
+```
+
+`Shutdown` is automatically registered by `WorldBuilder::build()`. The
+event loop owns a `ShutdownHandle` (obtained via `world.shutdown_handle()`
+if needed outside `world.run()`). With the `signals` feature,
+`shutdown.enable_signals()` registers SIGINT/SIGTERM handlers
+automatically.
+
+The full lifecycle:
+
+```text
+WorldBuilder::new()
+    → register resources
+    → install_plugin(plugin)
+    → install_driver(installer) → returns handle
+    → build()
+    → World (frozen)
+        → run_startup(init_fn)     // one-shot init
+        → run(|world| { ... })     // poll loop until shutdown
+```
+
 ## Design
 
 `nexus-rt` is heavily inspired by [Bevy ECS](https://bevyengine.org/).
@@ -84,27 +302,7 @@ processing rather than game-world state management.
 | **FanOut / Broadcast** | Static or dynamic fan-out by reference. | ~2 cycles p50 |
 
 All tiers resolve `Param` state at build time. Dispatch-time cost is
-a bounds-checked index into a `Vec` — no hashing, no searching.
-
-## Quick Start
-
-```rust
-use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
-
-let mut builder = WorldBuilder::new();
-builder.register::<u64>(0);
-let mut world = builder.build();
-
-fn tick(mut counter: ResMut<u64>, event: u32) {
-    *counter += event as u64;
-}
-
-let mut handler = tick.into_handler(world.registry_mut());
-
-handler.run(&mut world, 10u32);
-
-assert_eq!(*world.resource::<u64>(), 10);
-```
+an unchecked index into a `Vec` — no hashing, no searching, no bounds check.
 
 ## Driver Model
 
@@ -314,6 +512,46 @@ etc.) work on both the main chain and within arms. `Dag` implements
 
 For linear chains without fan-out, prefer
 [Pipeline](#pipeline--pre-resolved-processing-chains).
+
+#### DAG combinator quick reference
+
+| Category | Combinator | Signature | Effect |
+|----------|-----------|-----------|--------|
+| **Topology** | `.root(fn, reg)` | `E → T` | Entry point — takes event by value |
+| | `.then(fn, reg)` | `&T → U` | Chain step — input by reference |
+| | `.fork()` | | Begin fan-out — arms observe `&T` |
+| | `.arm(\|a\| a.then(...))` | | Build one arm of a fork |
+| | `.merge(fn, reg)` | `&A, &B → T` | Combine arm outputs |
+| | `.join()` | | Terminate fork without merge (all arms → `()`) |
+| **Flow control** | `.guard(pred)` | `&T → Option<T>` | Wrap in Option via predicate |
+| | `.tap(\|w, v\| ...)` | `&T → &T` | Observe without consuming |
+| | `.route(pred, arm_t, arm_f)` | `&T → U` | Binary conditional routing |
+| | `.tee(arm)` | `&T → &T` | Side-effect arm, chain continues |
+| | `.dedup()` | `T → Option<T>` | Suppress consecutive duplicates |
+| **Option\<T\>** | `.map(fn, reg)` | `&T → U` | Map inner value (Some only) |
+| | `.filter(pred)` | `&T → Option<T>` | Keep on true, None on false |
+| | `.inspect(\|w, v\| ...)` | `&T → &T` | Observe Some values |
+| | `.and_then(fn, reg)` | `&T → Option<U>` | Flat-map inner value |
+| | `.on_none(\|w\| ...)` | | Side effect on None |
+| | `.ok_or(fn, reg)` | `→ Result<T, E>` | Convert None to Err |
+| | `.unwrap_or(default)` | `→ T` | Unwrap with fallback |
+| **Result\<T, E\>** | `.map(fn, reg)` | `&T → U` | Map Ok value |
+| | `.and_then(fn, reg)` | `&T → Result<U, E>` | Flat-map Ok value |
+| | `.catch(fn, reg)` | `E → ()` | Handle Err, continue with Ok |
+| | `.map_err(\|w, e\| ...)` | `E → E2` | Transform error type |
+| | `.ok()` | `→ Option<T>` | Discard Err |
+| | `.unwrap_or(default)` | `→ T` | Unwrap with fallback |
+| **Bool** | `.not()` | `bool → bool` | Logical NOT |
+| | `.and(fn, reg)` | `bool → bool` | Short-circuit AND |
+| | `.or(fn, reg)` | `bool → bool` | Short-circuit OR |
+| | `.xor(fn, reg)` | `bool → bool` | Logical XOR |
+| **Terminal** | `.dispatch(handler)` | `&T → ()` | Hand off to a Handler |
+| | `.cloned()` | `&T → T` | Clone reference to owned |
+| | `.build()` | | Finalize into `Dag<E>` |
+
+`.then()`, `.map()`, `.and_then()`, `.catch()` are pre-resolved (hot path).
+Closure-based combinators (`.filter()`, `.inspect()`, `.tap()`, etc.) take
+`&mut World` and are intended for cold-path use.
 
 ### FanOut / Broadcast — handler-level fan-out
 
@@ -590,6 +828,170 @@ let handler: Virtual<Event> = Box::new(my_handler.into_handler(registry));
 (panics if handler doesn't fit). `FlexVirtual<E>` for inline with
 heap fallback.
 
+### System / IntoSystem — reconciliation logic
+
+`System` is the dispatch trait for per-pass reconciliation, distinct from
+`Handler<E>`. Systems take no event parameter and return `bool` to control
+downstream propagation in a DAG scheduler.
+
+| | Handler | System |
+|---|---------|--------|
+| Trigger | Per-event | Per-scheduler-pass |
+| Event param | Yes (`E`) | No |
+| Return | `()` | `bool` |
+| Purpose | React | Reconcile |
+
+```rust
+fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoValue>) -> bool {
+    if mid.is_changed() {
+        theo.0 = mid.0 * 1.001;
+        true  // outputs changed — run downstream
+    } else {
+        false // nothing changed — skip downstream
+    }
+}
+```
+
+Convert via `IntoSystem` (same HRTB pattern as `IntoHandler`):
+
+```rust
+use nexus_rt::{IntoSystem, System};
+let mut system = compute_theo.into_system(registry);
+let changed = system.run(&mut world);
+```
+
+### DAG Scheduler — topological system execution
+
+`SchedulerInstaller` builds a DAG of `System`s executed in topological order.
+Root systems (no upstreams) always run. Non-root systems run only if at
+least one upstream returned `true` (OR semantics).
+
+```rust
+use nexus_rt::scheduler::{SchedulerInstaller, SchedulerTick};
+
+let mut installer = SchedulerInstaller::new();
+let theo = installer.add(compute_theo, registry);
+let quotes = installer.add(compute_quotes, registry);
+let risk = installer.add(check_risk, registry);
+installer.after(quotes, theo);   // quotes runs after theo
+installer.after(risk, quotes);   // risk runs after quotes
+
+let mut scheduler = wb.install_driver(installer);
+let mut world = wb.build();
+
+// In event loop: run scheduler after event processing
+let systems_run = scheduler.run(&mut world);
+```
+
+`SchedulerTick` tracks the sequence at the last scheduler pass. Systems
+use `Res::changed_after(tick.last())` to detect resources modified since
+the previous pass — enabling skip-detection without manual bookkeeping.
+
+Propagation is tracked via a `u64` bitmask (one bit per system), limiting
+the scheduler to `MAX_SYSTEMS` (64) systems.
+
+### Startup & Lifecycle
+
+`Shutdown` is an interior-mutable flag automatically registered by
+`WorldBuilder::build()`. Handlers trigger shutdown via `Res<Shutdown>`;
+the event loop checks via `ShutdownHandle`:
+
+```rust
+use nexus_rt::{Res, WorldBuilder};
+use nexus_rt::shutdown::Shutdown;
+
+// Handler side
+fn on_fatal(shutdown: Res<Shutdown>, _event: ()) {
+    shutdown.shutdown();
+}
+
+// Event loop side
+let mut world = WorldBuilder::new().build();
+let shutdown = world.shutdown_handle();
+
+while !shutdown.is_shutdown() {
+    // poll drivers ...
+    # break;
+}
+```
+
+With the `signals` feature, `ShutdownHandle::enable_signals()` registers
+SIGINT/SIGTERM handlers (Linux only) that flip the shutdown flag
+automatically.
+
+### CatchAssertUnwindSafe — panic resilience
+
+Wraps a handler to catch panics during `run()`, ensuring the handler is
+never lost during move-out-fire dispatch (timer wheels, IO slabs). The
+caller asserts that the handler and resources can tolerate partial writes.
+
+```rust
+use nexus_rt::{CatchAssertUnwindSafe, IntoHandler, Handler, Virtual};
+
+let handler = tick.into_handler(registry);
+let guarded = CatchAssertUnwindSafe::new(handler);
+let mut boxed: Virtual<u32> = Box::new(guarded);
+// Panics inside run() are caught — handler survives for re-dispatch
+```
+
+### Testing — TestHarness and TestTimerDriver
+
+`TestHarness` provides isolated handler testing without wiring up drivers.
+It owns a `World` and auto-advances the sequence counter before each dispatch.
+
+```rust
+use nexus_rt::testing::TestHarness;
+use nexus_rt::{WorldBuilder, ResMut, IntoHandler};
+
+fn accumulate(mut counter: ResMut<u64>, event: u64) {
+    *counter += event;
+}
+
+let mut builder = WorldBuilder::new();
+builder.register::<u64>(0);
+let mut harness = TestHarness::new(builder);
+
+let mut handler = accumulate.into_handler(harness.registry());
+harness.dispatch(&mut handler, 10u64);
+harness.dispatch(&mut handler, 5u64);
+
+assert_eq!(*harness.world().resource::<u64>(), 15);
+```
+
+`TestTimerDriver` (feature: `timer`) wraps `TimerPoller` with virtual time
+control — `advance(duration)`, `set_now(instant)`, `poll(world)` — for
+deterministic timer testing without wall-clock waits.
+
+### ByRef / Cloned / Owned — event-type adapters
+
+Adapters bridge between owned and reference event types:
+
+- `ByRef<H>` — wraps `Handler<&E>` to implement `Handler<E>` (borrow before dispatch)
+- `Cloned<H>` — wraps `Handler<E>` to implement `Handler<&E>` (clone before dispatch)
+- `Owned<H, E>` — wraps `Handler<E::Owned>` to implement `Handler<&E>` via `ToOwned`
+
+Primary use: including owned-event handlers in reference-based contexts
+(`FanOut`, `Broadcast`), or vice versa.
+
+```rust
+use nexus_rt::{Cloned, Owned, fan_out, IntoHandler, Handler};
+
+// Handler expects owned u32
+fn process(mut n: ResMut<u64>, event: u32) { *n += event as u64; }
+
+// Adapt for &u32 context (FanOut dispatches by reference)
+let h = process.into_handler(registry);
+let adapted = Cloned(h);  // now implements Handler<&u32>
+
+// For &str → String:
+fn append(mut buf: ResMut<String>, event: String) { buf.push_str(&event); }
+let h = append.into_handler(registry);
+let adapted = Owned::<_, str>::new(h);  // implements Handler<&str>
+```
+
+`Adapt<F, H>` is a separate adapter for wire-format decoding: `F: FnMut(Wire) -> Option<T>`
+filters and transforms before dispatching to `Handler<T>`.
+
 ## When to Use What
 
 | Situation | Use | Why |
@@ -610,6 +1012,55 @@ it's created repeatedly on every event (move-out-fire pattern), use a
 template. For data that must fan out and merge back, use `DagStart`.
 For fire-and-forget fan-out, use `FanOut` (static) or `Broadcast`
 (dynamic).
+
+## Practical Guidance
+
+### Boxing recommendation
+
+Pipeline, DAG, and composed handler types are fully monomorphized — the
+concrete types are deeply nested generics, often unnameable, and can be
+very large. **Strongly recommend `Box<dyn Handler<E>>` (or `Virtual<E>`)
+for storage.**
+
+The cost is a single vtable dispatch at the handler boundary. All internal
+dispatch within the handler/pipeline/DAG remains zero-cost monomorphized.
+One vtable call amortized over many internal steps is the design:
+
+```rust
+// Concrete type is unnameable — box it
+let handler: Box<dyn Handler<Order>> = Box::new(
+    DagStart::<Order>::new()
+        .root(decode, reg)
+        .fork()
+        .arm(|a| a.then(process, reg))
+        .arm(|b| b.then(log, reg))
+        .merge(combine, reg)
+        .build()
+);
+```
+
+### Named functions vs closures
+
+Arity-0 closures work in Pipeline and DAG steps. Arity-1+ (with `Param`
+arguments) requires named functions. This is a feature, not a limitation:
+
+- Named functions are **testable** in isolation
+- Named functions are **inspectable** (handler `.name()` returns the function path)
+- Named functions are **reusable** across pipelines
+
+Keep step functions small and focused — one function per transformation.
+
+### Pipeline vs DAG
+
+| | Pipeline | DAG |
+|---|----------|-----|
+| Topology | Linear chain | Fan-out / merge |
+| Value flow | By value (move) | By reference within arms |
+| Clone needed | No | No (shared `&T`) |
+| Use when | Steps are sequential | Data needs to go to multiple places |
+
+Both compose into `Handler<E>` via `.build()`. Use Pipeline for the common
+case; reach for DAG when you need `.fork()`.
 
 ## Performance
 
@@ -677,8 +1128,42 @@ handlers created on every event (IO re-registration, timer rescheduling).
 taskset -c 0 cargo run --release -p nexus-rt --example perf_pipeline
 taskset -c 0 cargo run --release -p nexus-rt --example perf_construction
 taskset -c 0 cargo run --release -p nexus-rt --example perf_template
+taskset -c 0 cargo run --release -p nexus-rt --example perf_dag
+taskset -c 0 cargo run --release -p nexus-rt --example perf_scheduler
 taskset -c 0 cargo run --release -p nexus-rt --example mio_timer --features mio,timer
 ```
+
+### DAG dispatch (hot path)
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| DAG linear 3 stages | 1 | 2 | 3 |
+| DAG linear 5 stages | 1 | 2 | 3 |
+| DAG diamond fan=2 (5 stages) | 1 | 3 | 5 |
+| DAG fan-out 2 (join) | 2 | 6 | 9 |
+| DAG complex (fan+linear+merge) | 1 | 4 | 5 |
+| DAG complex+Res\<T\> (Param fetch) | 3 | 3 | 5 |
+| DAG linear 3 via Box\<dyn Handler\> | 1 | 4 | 4 |
+| DAG diamond-2 via Box\<dyn Handler\> | 2 | 2 | 5 |
+
+DAG dispatch matches Pipeline dispatch — topology adds no measurable
+overhead. Boxing adds ~1 cycle at the boundary.
+
+### Scheduler dispatch
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| Flat 1 system | 11 | 20 | 48 |
+| Flat 4 systems | 25 | 41 | 82 |
+| Flat 8 systems | 43 | 67 | 124 |
+| Chain 4 systems (all propagate) | 25 | 42 | 84 |
+| Chain 8 systems (all propagate) | 44 | 73 | 124 |
+| Diamond fan=4 (6 systems) | 35 | 53 | 93 |
+| Skipped chain 8 (1 runs, 7 skip) | 17 | 28 | 68 |
+| Skipped chain 32 (1 runs, 31 skip) | 46 | 76 | 118 |
+
+Scheduler overhead is ~8-12 cycles per system. Skipped systems
+(upstream returned `false`) cost ~2 cycles each (bitmask check).
 
 ## Limitations
 
@@ -718,13 +1203,29 @@ eliminates runtime bookkeeping.
 - [`mock_runtime`](examples/mock_runtime.rs) — Complete driver model:
   plugin registration, driver installation, explicit poll loop
 - [`pipeline`](examples/pipeline.rs) — Pipeline composition: bare value,
-  Option, Result with catch, build into Handler
+  Option, Result with catch, combinators, build into Handler
+- [`dag`](examples/dag.rs) — DAG pipeline: linear, diamond, fan-out,
+  route, tap, tee, dedup, guard, boxing
+- [`scheduler_dag`](examples/scheduler_dag.rs) — DAG scheduler:
+  reconciliation systems, boolean propagation, change detection
+- [`handlers`](examples/handlers.rs) — Handler composition: IntoHandler,
+  Callback, boxing, FanOut, Broadcast, adapters
+- [`change_detection`](examples/change_detection.rs) — Change detection:
+  is_changed, changed_after, ResMut stamping, SchedulerTick
+- [`templates`](examples/templates.rs) — Template generation:
+  HandlerTemplate, CallbackTemplate, handler_blueprint macro
+- [`testing_example`](examples/testing_example.rs) — TestHarness usage
+  for isolated handler unit testing
 - [`local_state`](examples/local_state.rs) — Per-handler state with
   `Local<T>`, independent across handler instances
 - [`optional_resources`](examples/optional_resources.rs) — Optional
   dependencies with `Option<Res<T>>` / `Option<ResMut<T>>`
 - [`perf_pipeline`](examples/perf_pipeline.rs) — Dispatch latency
   benchmarks with codegen inspection probes
+- [`perf_dag`](examples/perf_dag.rs) — DAG dispatch latency benchmarks
+  across topologies
+- [`perf_scheduler`](examples/perf_scheduler.rs) — Scheduler dispatch
+  latency benchmarks
 - [`perf_construction`](examples/perf_construction.rs) — Construction-time
   latency benchmarks at various arities
 - [`perf_template`](examples/perf_template.rs) — Template generation

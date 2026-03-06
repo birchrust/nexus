@@ -1,8 +1,30 @@
 //! DAG pipeline examples — typed, by-reference dataflow graphs.
 //!
-//! DAG nodes receive their input by shared reference (`&T`), enabling
-//! fork/merge topologies where multiple arms observe the same value
-//! without cloning. All dispatch is monomorphized at build time.
+//! DAGs extend linear Pipelines with fan-out and merge. Use DAG when
+//! data needs to flow to multiple processing arms and optionally merge
+//! back. For purely sequential chains, prefer `PipelineStart`.
+//!
+//! Key design points:
+//! - **Root** takes the event by value (`E → T`). All subsequent nodes
+//!   take input by shared reference (`&T`).
+//! - **Fork** shares `&T` to all arms — no `Clone` needed. Arms produce
+//!   independent output types.
+//! - **Merge** combines arm outputs into a new value. **Join** terminates
+//!   a fork without merging (all arms return `()`).
+//! - After `.build()`, the DAG implements `Handler<E>`. The concrete type
+//!   is deeply nested and unnameable — **box it** for storage:
+//!   `Box::new(dag)` or `Virtual<E>`. The vtable dispatch at the handler
+//!   boundary is the only cost; all internal dispatch remains monomorphized.
+//!
+//! Sections:
+//! 1. Linear chain — root → process → store
+//! 2. Diamond — fork into 2 arms, merge
+//! 3. Fan-out with join — independent sinks
+//! 4. Route — conditional branching
+//! 5. Tap and tee — inline observation
+//! 6. Dedup — suppress consecutive duplicates
+//! 7. Guard — filtering via predicate
+//! 8. Boxing into `Box<dyn Handler<E>>`
 //!
 //! Run with:
 //! ```bash

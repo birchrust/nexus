@@ -33,6 +33,24 @@
 //! `.on_none()`, `.inspect()`, `.inspect_err()`, `.filter()`, `.ok()`,
 //! `.unwrap_or()`, `.unwrap_or_else()`, `.map_err()`, `.or_else()`,
 //! `.cloned()`, `.dispatch()`, `.tap()`, `.guard()`, `.route()`
+//!
+//! # Combinator quick reference
+//!
+//! **Bare value `T`:** `.then()`, `.tap()`, `.guard()` (→ `Option<T>`),
+//! `.dispatch()`, `.route()`
+//!
+//! **`Option<T>`:** `.map()`, `.filter()`, `.inspect()`, `.and_then()`,
+//! `.on_none()`, `.ok_or()` (→ `Result`), `.unwrap_or()` (→ `T`),
+//! `.cloned()` (→ `Option<T>` from `Option<&T>`)
+//!
+//! **`Result<T, E>`:** `.map()`, `.and_then()`, `.catch()` (→ `Option<T>`),
+//! `.map_err()`, `.inspect_err()`, `.ok()` (→ `Option<T>`),
+//! `.unwrap_or()` (→ `T`), `.or_else()`
+//!
+//! **`bool`:** `.not()`, `.and()`, `.or()`, `.xor()`
+//!
+//! **Terminal:** `.build()` (→ `Pipeline<In>`), `.build_batch(cap)`
+//! (→ `BatchPipeline<In>`)
 
 use std::marker::PhantomData;
 
