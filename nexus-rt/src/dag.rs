@@ -52,7 +52,8 @@
 //! **Topology:** `.root()`, `.then()`, `.fork()`, `.arm()`, `.merge()`,
 //! `.join()`, `.build()`
 //!
-//! **Flow control:** `.guard()`, `.tap()`, `.route()`, `.tee()`, `.dedup()`
+//! **Flow control:** `.guard()`, `.tap()`, `.route()`, `.switch()`, `.tee()`,
+//! `.dedup()`
 //!
 //! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
 //! call `.then()` with destructured `&T` args)
@@ -70,7 +71,7 @@
 //! Pre-resolved (hot path): `.then()`, `.map()`, `.and_then()`, `.catch()`
 //!
 //! Closure-based (cold path): `.filter()`, `.inspect()`, `.tap()`,
-//! `.guard()`, `.route()`, `.tee()`, `.dedup()`, `.on_none()`,
+//! `.guard()`, `.route()`, `.switch()`, `.tee()`, `.dedup()`, `.on_none()`,
 //! `.map_err()`, `.ok()`, `.unwrap_or()`, `.dispatch()`, `.cloned()`
 //!
 //! # Splat — tuple destructuring
@@ -903,6 +904,39 @@ macro_rules! impl_dag_combinators {
                         let val = chain(world, $pname);
                         side_chain(world, &val);
                         val
+                    },
+                    _marker: PhantomData,
+                }
+            }
+
+            /// Closure-based step for N-ary conditional routing.
+            ///
+            /// The closure receives `&mut World` and `&Out`, returning a new
+            /// value of type `NewOut`. Use with [`resolve_arm`] to pre-resolve
+            /// per-arm steps with independent [`Param`](crate::Param) sets:
+            ///
+            /// ```ignore
+            /// let mut arm_new    = resolve_arm(handle_new, reg);
+            /// let mut arm_cancel = resolve_arm(handle_cancel, reg);
+            ///
+            /// dag.switch(move |world, msg: &Decoded| match msg.kind {
+            ///     MsgKind::NewOrder => arm_new(world, msg),
+            ///     MsgKind::Cancel   => arm_cancel(world, msg),
+            /// })
+            /// ```
+            ///
+            /// For simple cases where all arms share the same params, a named
+            /// function with a `match` body passed to [`.then()`](Self::then)
+            /// is sufficient.
+            pub fn switch<NewOut: 'static>(
+                self,
+                mut f: impl FnMut(&mut World, &Out) -> NewOut + 'static,
+            ) -> $Builder<$U, NewOut, impl FnMut(&mut World, $pty) -> NewOut> {
+                let mut chain = self.chain;
+                $Builder {
+                    chain: move |world: &mut World, $pname: $pty| {
+                        let val = chain(world, $pname);
+                        f(world, &val)
                     },
                     _marker: PhantomData,
                 }
@@ -2251,6 +2285,42 @@ impl<E, Out: crate::PipelineOutput, F: FnMut(&mut World, E) -> Out> BatchDag<E, 
             let _ = (self.chain)(world, item);
         }
     }
+}
+
+// =============================================================================
+// resolve_arm — pre-resolve a step for manual dispatch
+// =============================================================================
+
+/// Resolve a step for use in manual dispatch (e.g. inside a
+/// [`.switch()`](DagChain::switch) closure).
+///
+/// Returns a closure with pre-resolved [`Param`](crate::Param) state —
+/// the same build-time resolution that `.then()` performs, but as a
+/// standalone value the caller can invoke from any context.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut arm0 = resolve_arm(handle_new, reg);
+/// let mut arm1 = resolve_arm(handle_cancel, reg);
+///
+/// dag.switch(move |world, msg: &Decoded| match msg.kind {
+///     MsgKind::NewOrder => arm0(world, msg),
+///     MsgKind::Cancel   => arm1(world, msg),
+/// })
+/// ```
+pub fn resolve_arm<In, Out, Params, S>(
+    f: S,
+    registry: &Registry,
+) -> impl FnMut(&mut World, &In) -> Out + use<In, Out, Params, S>
+where
+    In: 'static,
+    Out: 'static,
+    S: IntoStep<&'static In, Out, Params>,
+    S::Step: for<'a> StepCall<&'a In, Out>,
+{
+    let mut resolved = f.into_step(registry);
+    move |world: &mut World, input: &In| resolved.call(world, input)
 }
 
 // =============================================================================
@@ -3797,8 +3867,12 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn double(x: u32) -> u64 { x as u64 * 2 }
-        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+        fn double(x: u32) -> u64 {
+            x as u64 * 2
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
 
         let mut batch = DagStart::<u32>::new()
             .root(double, reg)
@@ -3819,8 +3893,12 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn double(x: u32) -> u64 { x as u64 * 2 }
-        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+        fn double(x: u32) -> u64 {
+            x as u64 * 2
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
 
         let mut batch = DagStart::<u32>::new()
             .root(double, reg)
@@ -3844,8 +3922,12 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn double(x: u32) -> u64 { x as u64 * 2 }
-        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+        fn double(x: u32) -> u64 {
+            x as u64 * 2
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
 
         let mut batch = DagStart::<u32>::new()
             .root(double, reg)
@@ -3869,9 +3951,7 @@ mod tests {
 
         fn noop(_x: u32) {}
 
-        let mut batch = DagStart::<u32>::new()
-            .root(noop, reg)
-            .build_batch(64);
+        let mut batch = DagStart::<u32>::new().root(noop, reg).build_batch(64);
 
         batch.input_mut().extend([1, 2, 3]);
         batch.run(&mut world);
@@ -3887,8 +3967,12 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn double(x: u32) -> u64 { x as u64 * 2 }
-        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+        fn double(x: u32) -> u64 {
+            x as u64 * 2
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
 
         let mut batch = DagStart::<u32>::new()
             .root(double, reg)
@@ -3906,9 +3990,15 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn split(x: u32) -> (u64, u64) { (x as u64, x as u64 * 10) }
-        fn combine(a: &u64, b: &u64) -> u64 { *a + *b }
-        fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+        fn split(x: u32) -> (u64, u64) {
+            (x as u64, x as u64 * 10)
+        }
+        fn combine(a: &u64, b: &u64) -> u64 {
+            *a + *b
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
 
         let mut batch = DagStart::<u32>::new()
             .root(split, reg)
@@ -3922,5 +4012,235 @@ mod tests {
 
         // 1 → (1, 10) → 11, 2 → (2, 20) → 22
         assert_eq!(*world.resource::<u64>(), 33); // 11 + 22
+    }
+
+    // -- Switch combinator --
+
+    #[test]
+    fn dag_switch_basic() {
+        fn root(x: u32) -> u64 {
+            x as u64
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .switch(|_world, val| if *val > 5 { *val * 10 } else { *val + 1 })
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 10u32); // 10 > 5 → 100
+        assert_eq!(*world.resource::<u64>(), 100);
+
+        dag.run(&mut world, 3u32); // 3 <= 5 → 4
+        assert_eq!(*world.resource::<u64>(), 4);
+    }
+
+    #[test]
+    fn dag_switch_3_way() {
+        fn root(x: u32) -> u32 {
+            x
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .switch(|_world, val| match *val % 3 {
+                0 => *val as u64 + 100,
+                1 => *val as u64 + 200,
+                _ => *val as u64 + 300,
+            })
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 6u32); // 6 % 3 == 0 → 106
+        assert_eq!(*world.resource::<u64>(), 106);
+
+        dag.run(&mut world, 7u32); // 7 % 3 == 1 → 207
+        assert_eq!(*world.resource::<u64>(), 207);
+
+        dag.run(&mut world, 8u32); // 8 % 3 == 2 → 308
+        assert_eq!(*world.resource::<u64>(), 308);
+    }
+
+    #[test]
+    fn dag_switch_with_resolve_arm() {
+        fn root(x: u32) -> u32 {
+            x
+        }
+        fn double(val: &u32) -> u64 {
+            *val as u64 * 2
+        }
+        fn triple(val: &u32) -> u64 {
+            *val as u64 * 3
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut arm_even = resolve_arm(double, reg);
+        let mut arm_odd = resolve_arm(triple, reg);
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .switch(move |world, val| {
+                if *val % 2 == 0 {
+                    arm_even(world, val)
+                } else {
+                    arm_odd(world, val)
+                }
+            })
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 4u32); // even → double → 8
+        assert_eq!(*world.resource::<u64>(), 8);
+
+        dag.run(&mut world, 5u32); // odd → triple → 15
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn dag_resolve_arm_with_params() {
+        fn root(x: u32) -> u32 {
+            x
+        }
+        fn add_offset(offset: Res<i64>, val: &u32) -> u64 {
+            (*offset + *val as i64) as u64
+        }
+        fn plain_double(val: &u32) -> u64 {
+            *val as u64 * 2
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<i64>(100);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // Each arm resolves different params
+        let mut arm_offset = resolve_arm(add_offset, reg);
+        let mut arm_double = resolve_arm(plain_double, reg);
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .switch(move |world, val| {
+                if *val > 10 {
+                    arm_offset(world, val)
+                } else {
+                    arm_double(world, val)
+                }
+            })
+            .then(sink, reg)
+            .build();
+
+        dag.run(&mut world, 20u32); // > 10 → add_offset → 100 + 20 = 120
+        assert_eq!(*world.resource::<u64>(), 120);
+
+        dag.run(&mut world, 5u32); // <= 10 → double → 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    #[test]
+    fn dag_switch_in_fork_arm() {
+        fn root(x: u32) -> u32 {
+            x
+        }
+        fn pass(val: &u32) -> u32 {
+            *val
+        }
+        fn sink_u64(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+        fn sink_i64(mut out: ResMut<i64>, val: &u32) {
+            *out = *val as i64 * -1;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<i64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut dag = DagStart::<u32>::new()
+            .root(root, reg)
+            .fork()
+            .arm(|a| {
+                a.then(pass, reg)
+                    .switch(|_w, val| {
+                        if *val > 5 {
+                            *val as u64 * 10
+                        } else {
+                            *val as u64
+                        }
+                    })
+                    .then(sink_u64, reg)
+            })
+            .arm(|a| a.then(sink_i64, reg))
+            .join()
+            .build();
+
+        dag.run(&mut world, 10u32); // arm0: 10 > 5 → 100, arm1: -10
+        assert_eq!(*world.resource::<u64>(), 100);
+        assert_eq!(*world.resource::<i64>(), -10);
+
+        dag.run(&mut world, 3u32); // arm0: 3 <= 5 → 3, arm1: -3
+        assert_eq!(*world.resource::<u64>(), 3);
+        assert_eq!(*world.resource::<i64>(), -3);
+    }
+
+    #[test]
+    fn batch_dag_switch() {
+        fn root(x: u32) -> u32 {
+            x
+        }
+        fn sink(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut batch = DagStart::<u32>::new()
+            .root(root, reg)
+            .switch(|_w, val| {
+                if *val % 2 == 0 {
+                    *val as u64 * 10
+                } else {
+                    *val as u64
+                }
+            })
+            .then(sink, reg)
+            .build_batch(8);
+
+        batch.input_mut().extend([1, 2, 3, 4]);
+        batch.run(&mut world);
+
+        // 1 → 1, 2 → 20, 3 → 3, 4 → 40 = 64
+        assert_eq!(*world.resource::<u64>(), 64);
     }
 }
