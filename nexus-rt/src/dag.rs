@@ -47,6 +47,29 @@
 //!     // arms work with &T, not &Option<T>
 //! ```
 //!
+//! # Combinator quick reference
+//!
+//! **Topology:** `.root()`, `.then()`, `.fork()`, `.arm()`, `.merge()`,
+//! `.join()`, `.build()`
+//!
+//! **Flow control:** `.guard()`, `.tap()`, `.route()`, `.tee()`, `.dedup()`
+//!
+//! **Option:** `.map()`, `.filter()`, `.inspect()`, `.and_then()`,
+//! `.on_none()`, `.ok_or()`, `.unwrap_or()`
+//!
+//! **Result:** `.map()`, `.and_then()`, `.catch()`, `.map_err()`,
+//! `.ok()`, `.unwrap_or()`
+//!
+//! **Bool:** `.not()`, `.and()`, `.or()`, `.xor()`
+//!
+//! **Terminal:** `.dispatch()`, `.cloned()`, `.build()`
+//!
+//! Pre-resolved (hot path): `.then()`, `.map()`, `.and_then()`, `.catch()`
+//!
+//! Closure-based (cold path): `.filter()`, `.inspect()`, `.tap()`,
+//! `.guard()`, `.route()`, `.tee()`, `.dedup()`, `.on_none()`,
+//! `.map_err()`, `.ok()`, `.unwrap_or()`, `.dispatch()`, `.cloned()`
+//!
 //! # Node signatures
 //!
 //! The root node takes the event by value. All other nodes take their

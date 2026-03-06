@@ -207,5 +207,34 @@ fn main() {
     println!("  Total: {total}");
     assert_eq!(total, 60);
 
+    // --- Guard: wrap value in Option via predicate ---
+
+    println!("\n=== Guard + Tap ===\n");
+
+    let mut wb = WorldBuilder::new();
+    wb.register::<u64>(0);
+    let mut world = wb.build();
+    let r = world.registry_mut();
+
+    let mut guarded = PipelineStart::<u32>::new()
+        .then(|x: u32| x, r)
+        .guard(|_w, x| *x > 5) // → Option<u32>
+        .tap(|_w, x| println!("  [tap] passed guard: {x:?}"))
+        .map(accumulate, r) // runs for Some only
+        .unwrap_or(()); // discard None
+    for v in [3u32, 7, 2, 10, 1] {
+        guarded.run(&mut world, v);
+    }
+    let total = *world.resource::<u64>();
+    println!("  Total (values > 5 only): {total}");
+    assert_eq!(total, 17); // 7 + 10
+
+    // --- Pipeline vs DAG note ---
+    //
+    // Pipeline is for linear chains (A → B → C).
+    // DAG is for fan-out/merge (A → [B, C] → D).
+    // Both produce Handler<E> via .build(). Use Pipeline for the common case;
+    // reach for DAG when you need .fork().
+
     println!("\nDone.");
 }

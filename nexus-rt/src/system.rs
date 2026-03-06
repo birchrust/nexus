@@ -1,9 +1,20 @@
 //! Reconciliation systems with boolean propagation.
 //!
-//! [`System`] is the dispatch trait for per-frame reconciliation logic.
+//! [`System`] is the dispatch trait for per-pass reconciliation logic.
 //! Unlike [`Handler`](crate::Handler) (reactive, per-event, no return
 //! value), systems return `bool` to control DAG traversal in a
 //! [`SystemScheduler`](crate::scheduler::SystemScheduler).
+//!
+//! # When to use System vs Handler
+//!
+//! Use **Handler** when reacting to external events (market data, IO,
+//! timers). Use **System** when reconciling derived state after events
+//! have been processed. The typical pattern:
+//!
+//! 1. Event handler writes to resources (`ResMut<MidPrice>`)
+//! 2. Scheduler runs systems in topological order
+//! 3. Systems read upstream resources, compute derived state, return
+//!    `bool` to propagate or skip downstream
 //!
 //! Systems are converted from plain functions via [`IntoSystem`], using
 //! the same HRTB double-bound pattern as [`IntoHandler`](crate::IntoHandler).

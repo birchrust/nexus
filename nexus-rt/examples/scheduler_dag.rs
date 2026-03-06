@@ -1,8 +1,22 @@
 //! Scheduler DAG — reconciliation systems with boolean propagation.
 //!
-//! Demonstrates a realistic scheduler setup: market data changes propagate
-//! through a DAG of reconciliation systems. Systems use `changed_after`
-//! to detect whether upstream resources were modified since the last pass.
+//! The DAG scheduler executes `System`s (not `Handler`s) in topological
+//! order. Key differences from handlers:
+//!
+//! - **System** returns `bool` — `true` means "my outputs changed, run
+//!   downstream", `false` means "nothing changed, skip downstream".
+//! - **No event parameter** — systems read shared state, not per-event data.
+//! - **Boolean propagation** — root systems always run; non-root systems
+//!   run only if at least one upstream returned `true` (OR semantics).
+//!
+//! `SchedulerTick` tracks the sequence at the last scheduler pass. Systems
+//! use `Res::changed_after(tick.last())` to detect resources modified since
+//! the previous pass. This enables efficient skip-detection: if the handler
+//! that processes market data didn't write to `MidPrice` this event, the
+//! scheduler can detect that nothing changed and skip downstream.
+//!
+//! Typical pattern: event handlers write resources, then the scheduler
+//! runs reconciliation after each event (or batch of events).
 //!
 //! Run with:
 //! ```bash

@@ -1,7 +1,12 @@
 //! DAG scheduler with boolean propagation.
 //!
-//! The scheduler runs [`System`](crate::system::System)s in topological
-//! order. Root systems (no upstream dependencies) always run. Non-root
+//! The scheduler is installed as a **driver** via [`SchedulerInstaller`].
+//! After event handlers process incoming data and write to resources,
+//! the scheduler runs reconciliation [`System`](crate::system::System)s
+//! in topological order. This two-phase pattern (event → reconcile)
+//! separates reactive logic from derived-state computation.
+//!
+//! Root systems (no upstream dependencies) always run. Non-root
 //! systems run only if at least one upstream system returned `true`.
 //!
 //! # Propagation model
