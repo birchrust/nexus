@@ -172,10 +172,7 @@ fn main() {
     let mut fan = fan_out!(Cloned(owned_handler), ref_handler);
 
     fan.run(&mut world, 10u32);
-    println!(
-        "  fan_out with Cloned adapter: {}",
-        world.resource::<u64>()
-    );
+    println!("  fan_out with Cloned adapter: {}", world.resource::<u64>());
     assert_eq!(*world.resource::<u64>(), 20); // 10+10
 
     // --- 7. Heterogeneous handler Vec ---
@@ -194,10 +191,7 @@ fn main() {
     for h in &mut handlers {
         h.run(&mut world, 3u32);
     }
-    println!(
-        "  after add then mul with 3: {}",
-        world.resource::<u64>()
-    );
+    println!("  after add then mul with 3: {}", world.resource::<u64>());
     assert_eq!(*world.resource::<u64>(), 24); // (5+3)*3
 
     println!("\nDone.");

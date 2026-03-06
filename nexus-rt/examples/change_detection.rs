@@ -62,11 +62,7 @@ fn check_after_checkpoint(
 }
 
 /// System: recompute quotes only if price changed since last scheduler pass.
-fn recompute_quotes(
-    price: Res<Price>,
-    tick: Res<SchedulerTick>,
-    mut quote: ResMut<Quote>,
-) -> bool {
+fn recompute_quotes(price: Res<Price>, tick: Res<SchedulerTick>, mut quote: ResMut<Quote>) -> bool {
     if price.changed_after(tick.last()) {
         let spread = price.0 * 0.001;
         quote.bid = price.0 - spread;

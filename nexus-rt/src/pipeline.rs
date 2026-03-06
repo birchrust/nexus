@@ -37,7 +37,10 @@
 //! # Combinator quick reference
 //!
 //! **Bare value `T`:** `.then()`, `.tap()`, `.guard()` (→ `Option<T>`),
-//! `.dispatch()`, `.route()`
+//! `.dispatch()`, `.route()`, `.tee()`, `.dedup()` (→ `Option<T>`)
+//!
+//! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
+//! call `.then()` with destructured args)
 //!
 //! **`Option<T>`:** `.map()`, `.filter()`, `.inspect()`, `.and_then()`,
 //! `.on_none()`, `.ok_or()` (→ `Result`), `.unwrap_or()` (→ `T`),
@@ -51,6 +54,31 @@
 //!
 //! **Terminal:** `.build()` (→ `Pipeline<In>`), `.build_batch(cap)`
 //! (→ `BatchPipeline<In>`)
+//!
+//! # Splat — tuple destructuring
+//!
+//! Pipeline steps follow a single-value-in, single-value-out convention.
+//! When a step returns a tuple like `(OrderId, f64)`, the next step
+//! must accept the whole tuple as one argument. `.splat()` destructures
+//! the tuple so the next step receives individual arguments instead:
+//!
+//! ```ignore
+//! // Without splat — next step takes the whole tuple:
+//! fn process(pair: (OrderId, f64)) -> bool { .. }
+//!
+//! // With splat — next step takes individual args:
+//! fn process(id: OrderId, price: f64) -> bool { .. }
+//!
+//! PipelineStart::<Order>::new()
+//!     .then(extract, reg)   // Order → (OrderId, f64)
+//!     .splat()              // destructure
+//!     .then(process, reg)   // (OrderId, f64) → bool
+//!     .build();
+//! ```
+//!
+//! Supported for tuples of 2-5 elements. Beyond 5, define a named
+//! struct — if a combinator stage needs that many arguments, a struct
+//! makes the intent clearer and the code more maintainable.
 
 use std::marker::PhantomData;
 
@@ -215,6 +243,349 @@ macro_rules! all_tuples {
 }
 
 all_tuples!(impl_into_step);
+
+// =============================================================================
+// SplatCall / IntoSplatStep — splat step dispatch (tuple destructuring)
+// =============================================================================
+//
+// Splat traits mirror StepCall/IntoStep but accept multiple owned values
+// instead of a single input. This lets `.splat()` destructure a tuple
+// output into individual function arguments for the next step.
+//
+// One trait pair per arity (2-5). Past 5, use a named struct.
+
+// -- Splat 2 ------------------------------------------------------------------
+
+/// Internal: callable trait for resolved 2-splat steps.
+#[doc(hidden)]
+pub trait SplatCall2<A, B, Out> {
+    fn call_splat(&mut self, world: &mut World, a: A, b: B) -> Out;
+}
+
+/// Converts a named function into a resolved 2-splat step.
+#[doc(hidden)]
+pub trait IntoSplatStep2<A, B, Out, Params> {
+    type Step: SplatCall2<A, B, Out>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step;
+}
+
+impl<A, B, Out, F: FnMut(A, B) -> Out + 'static> SplatCall2<A, B, Out> for Step<F, ()> {
+    #[inline(always)]
+    fn call_splat(&mut self, _world: &mut World, a: A, b: B) -> Out {
+        (self.f)(a, b)
+    }
+}
+
+impl<A, B, Out, F: FnMut(A, B) -> Out + 'static> IntoSplatStep2<A, B, Out, ()> for F {
+    type Step = Step<F, ()>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_splat2_step {
+    ($($P:ident),+) => {
+        impl<A, B, Out, F: 'static, $($P: Param + 'static),+>
+            SplatCall2<A, B, Out> for Step<F, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ A, B) -> Out +
+                FnMut($($P::Item<'a>,)+ A, B) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call_splat(&mut self, world: &mut World, a: A, b: B) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ IA, IB, Output>(
+                    mut f: impl FnMut($($P,)+ IA, IB) -> Output,
+                    $($P: $P,)+
+                    a: IA, b: IB,
+                ) -> Output {
+                    f($($P,)+ a, b)
+                }
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ a, b)
+            }
+        }
+
+        impl<A, B, Out, F: 'static, $($P: Param + 'static),+>
+            IntoSplatStep2<A, B, Out, ($($P,)+)> for F
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ A, B) -> Out +
+                FnMut($($P::Item<'a>,)+ A, B) -> Out,
+        {
+            type Step = Step<F, ($($P,)+)>;
+
+            fn into_splat_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+// -- Splat 3 ------------------------------------------------------------------
+
+/// Internal: callable trait for resolved 3-splat steps.
+#[doc(hidden)]
+pub trait SplatCall3<A, B, C, Out> {
+    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C) -> Out;
+}
+
+/// Converts a named function into a resolved 3-splat step.
+#[doc(hidden)]
+pub trait IntoSplatStep3<A, B, C, Out, Params> {
+    type Step: SplatCall3<A, B, C, Out>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step;
+}
+
+impl<A, B, C, Out, F: FnMut(A, B, C) -> Out + 'static> SplatCall3<A, B, C, Out> for Step<F, ()> {
+    #[inline(always)]
+    fn call_splat(&mut self, _world: &mut World, a: A, b: B, c: C) -> Out {
+        (self.f)(a, b, c)
+    }
+}
+
+impl<A, B, C, Out, F: FnMut(A, B, C) -> Out + 'static> IntoSplatStep3<A, B, C, Out, ()> for F {
+    type Step = Step<F, ()>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_splat3_step {
+    ($($P:ident),+) => {
+        impl<A, B, C, Out, F: 'static, $($P: Param + 'static),+>
+            SplatCall3<A, B, C, Out> for Step<F, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ A, B, C) -> Out +
+                FnMut($($P::Item<'a>,)+ A, B, C) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ IA, IB, IC, Output>(
+                    mut f: impl FnMut($($P,)+ IA, IB, IC) -> Output,
+                    $($P: $P,)+
+                    a: IA, b: IB, c: IC,
+                ) -> Output {
+                    f($($P,)+ a, b, c)
+                }
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ a, b, c)
+            }
+        }
+
+        impl<A, B, C, Out, F: 'static, $($P: Param + 'static),+>
+            IntoSplatStep3<A, B, C, Out, ($($P,)+)> for F
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ A, B, C) -> Out +
+                FnMut($($P::Item<'a>,)+ A, B, C) -> Out,
+        {
+            type Step = Step<F, ($($P,)+)>;
+
+            fn into_splat_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+// -- Splat 4 ------------------------------------------------------------------
+
+/// Internal: callable trait for resolved 4-splat steps.
+#[doc(hidden)]
+pub trait SplatCall4<A, B, C, D, Out> {
+    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D) -> Out;
+}
+
+/// Converts a named function into a resolved 4-splat step.
+#[doc(hidden)]
+pub trait IntoSplatStep4<A, B, C, D, Out, Params> {
+    type Step: SplatCall4<A, B, C, D, Out>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step;
+}
+
+impl<A, B, C, D, Out, F: FnMut(A, B, C, D) -> Out + 'static> SplatCall4<A, B, C, D, Out>
+    for Step<F, ()>
+{
+    #[inline(always)]
+    fn call_splat(&mut self, _world: &mut World, a: A, b: B, c: C, d: D) -> Out {
+        (self.f)(a, b, c, d)
+    }
+}
+
+impl<A, B, C, D, Out, F: FnMut(A, B, C, D) -> Out + 'static> IntoSplatStep4<A, B, C, D, Out, ()>
+    for F
+{
+    type Step = Step<F, ()>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_splat4_step {
+    ($($P:ident),+) => {
+        impl<A, B, C, D, Out, F: 'static, $($P: Param + 'static),+>
+            SplatCall4<A, B, C, D, Out> for Step<F, ($($P,)+)>
+        where for<'a> &'a mut F:
+            FnMut($($P,)+ A, B, C, D) -> Out +
+            FnMut($($P::Item<'a>,)+ A, B, C, D) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ IA, IB, IC, ID, Output>(
+                    mut f: impl FnMut($($P,)+ IA, IB, IC, ID) -> Output,
+                    $($P: $P,)+ a: IA, b: IB, c: IC, d: ID,
+                ) -> Output { f($($P,)+ a, b, c, d) }
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ a, b, c, d)
+            }
+        }
+        impl<A, B, C, D, Out, F: 'static, $($P: Param + 'static),+>
+            IntoSplatStep4<A, B, C, D, Out, ($($P,)+)> for F
+        where for<'a> &'a mut F:
+            FnMut($($P,)+ A, B, C, D) -> Out +
+            FnMut($($P::Item<'a>,)+ A, B, C, D) -> Out,
+        {
+            type Step = Step<F, ($($P,)+)>;
+            fn into_splat_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                { #[allow(non_snake_case)] let ($($P,)+) = &state;
+                  registry.check_access(&[$((<$P as Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+// -- Splat 5 ------------------------------------------------------------------
+
+/// Internal: callable trait for resolved 5-splat steps.
+#[doc(hidden)]
+pub trait SplatCall5<A, B, C, D, E, Out> {
+    #[allow(clippy::many_single_char_names)]
+    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out;
+}
+
+/// Converts a named function into a resolved 5-splat step.
+#[doc(hidden)]
+pub trait IntoSplatStep5<A, B, C, D, E, Out, Params> {
+    type Step: SplatCall5<A, B, C, D, E, Out>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step;
+}
+
+impl<A, B, C, D, E, Out, F: FnMut(A, B, C, D, E) -> Out + 'static> SplatCall5<A, B, C, D, E, Out>
+    for Step<F, ()>
+{
+    #[inline(always)]
+    #[allow(clippy::many_single_char_names)]
+    fn call_splat(&mut self, _world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out {
+        (self.f)(a, b, c, d, e)
+    }
+}
+
+impl<A, B, C, D, E, Out, F: FnMut(A, B, C, D, E) -> Out + 'static>
+    IntoSplatStep5<A, B, C, D, E, Out, ()> for F
+{
+    type Step = Step<F, ()>;
+    fn into_splat_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+macro_rules! impl_splat5_step {
+    ($($P:ident),+) => {
+        impl<A, B, C, D, E, Out, F: 'static, $($P: Param + 'static),+>
+            SplatCall5<A, B, C, D, E, Out> for Step<F, ($($P,)+)>
+        where for<'a> &'a mut F:
+            FnMut($($P,)+ A, B, C, D, E) -> Out +
+            FnMut($($P::Item<'a>,)+ A, B, C, D, E) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case, clippy::many_single_char_names)]
+            fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ IA, IB, IC, ID, IE, Output>(
+                    mut f: impl FnMut($($P,)+ IA, IB, IC, ID, IE) -> Output,
+                    $($P: $P,)+ a: IA, b: IB, c: IC, d: ID, e: IE,
+                ) -> Output { f($($P,)+ a, b, c, d, e) }
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ a, b, c, d, e)
+            }
+        }
+        impl<A, B, C, D, E, Out, F: 'static, $($P: Param + 'static),+>
+            IntoSplatStep5<A, B, C, D, E, Out, ($($P,)+)> for F
+        where for<'a> &'a mut F:
+            FnMut($($P,)+ A, B, C, D, E) -> Out +
+            FnMut($($P::Item<'a>,)+ A, B, C, D, E) -> Out,
+        {
+            type Step = Step<F, ($($P,)+)>;
+            fn into_splat_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                { #[allow(non_snake_case)] let ($($P,)+) = &state;
+                  registry.check_access(&[$((<$P as Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_splat2_step);
+all_tuples!(impl_splat3_step);
+all_tuples!(impl_splat4_step);
+all_tuples!(impl_splat5_step);
 
 // =============================================================================
 // PipelineStart — entry point
@@ -467,6 +838,154 @@ where
         }
     }
 }
+
+// =============================================================================
+// Splat — tuple destructuring into individual function arguments
+// =============================================================================
+//
+// `.splat()` transitions from a tuple output to a builder whose `.then()`
+// accepts a function taking the tuple elements as individual arguments.
+// After `.splat().then(f, reg)`, the user is back on PipelineBuilder.
+//
+// Builder types are `#[doc(hidden)]` — users only see `.splat().then()`.
+
+// -- Splat builder types ------------------------------------------------------
+
+macro_rules! define_splat_builders {
+    (
+        $N:literal,
+        start: $SplatStart:ident,
+        mid: $SplatBuilder:ident,
+        into_trait: $IntoSplatStep:ident,
+        call_trait: $SplatCall:ident,
+        ($($T:ident),+),
+        ($($idx:tt),+)
+    ) => {
+        /// Splat builder at pipeline start position.
+        #[doc(hidden)]
+        pub struct $SplatStart<$($T),+>(PhantomData<fn(($($T,)+))>);
+
+        impl<$($T: 'static),+> $SplatStart<$($T),+> {
+            /// Add a step that receives the tuple elements as individual arguments.
+            pub fn then<Out, Params, S>(
+                self,
+                f: S,
+                registry: &Registry,
+            ) -> PipelineBuilder<
+                ($($T,)+),
+                Out,
+                impl FnMut(&mut World, ($($T,)+)) -> Out
+                    + use<$($T,)+ Out, Params, S>,
+            >
+            where
+                Out: 'static,
+                S: $IntoSplatStep<$($T,)+ Out, Params>,
+            {
+                let mut resolved = f.into_splat_step(registry);
+                PipelineBuilder {
+                    chain: move |world: &mut World, input: ($($T,)+)| {
+                        resolved.call_splat(world, $(input.$idx),+)
+                    },
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        impl<$($T: 'static),+> PipelineStart<($($T,)+)> {
+            /// Destructure the tuple input into individual function arguments.
+            pub fn splat(self) -> $SplatStart<$($T),+> {
+                $SplatStart(PhantomData)
+            }
+        }
+
+        /// Splat builder at mid-chain position.
+        #[doc(hidden)]
+        pub struct $SplatBuilder<In, $($T,)+ Chain> {
+            chain: Chain,
+            _marker: PhantomData<fn(In) -> ($($T,)+)>,
+        }
+
+        impl<In, $($T: 'static,)+ Chain> $SplatBuilder<In, $($T,)+ Chain>
+        where
+            Chain: FnMut(&mut World, In) -> ($($T,)+),
+        {
+            /// Add a step that receives the tuple elements as individual arguments.
+            pub fn then<Out, Params, S>(
+                self,
+                f: S,
+                registry: &Registry,
+            ) -> PipelineBuilder<
+                In,
+                Out,
+                impl FnMut(&mut World, In) -> Out
+                    + use<In, $($T,)+ Out, Params, Chain, S>,
+            >
+            where
+                Out: 'static,
+                S: $IntoSplatStep<$($T,)+ Out, Params>,
+            {
+                let mut chain = self.chain;
+                let mut resolved = f.into_splat_step(registry);
+                PipelineBuilder {
+                    chain: move |world: &mut World, input: In| {
+                        let tuple = chain(world, input);
+                        resolved.call_splat(world, $(tuple.$idx),+)
+                    },
+                    _marker: PhantomData,
+                }
+            }
+        }
+
+        impl<In, $($T: 'static,)+ Chain> PipelineBuilder<In, ($($T,)+), Chain>
+        where
+            Chain: FnMut(&mut World, In) -> ($($T,)+),
+        {
+            /// Destructure the tuple output into individual function arguments.
+            pub fn splat(self) -> $SplatBuilder<In, $($T,)+ Chain> {
+                $SplatBuilder {
+                    chain: self.chain,
+                    _marker: PhantomData,
+                }
+            }
+        }
+    };
+}
+
+define_splat_builders!(2,
+    start: SplatStart2,
+    mid: SplatBuilder2,
+    into_trait: IntoSplatStep2,
+    call_trait: SplatCall2,
+    (A, B),
+    (0, 1)
+);
+
+define_splat_builders!(3,
+    start: SplatStart3,
+    mid: SplatBuilder3,
+    into_trait: IntoSplatStep3,
+    call_trait: SplatCall3,
+    (A, B, C),
+    (0, 1, 2)
+);
+
+define_splat_builders!(4,
+    start: SplatStart4,
+    mid: SplatBuilder4,
+    into_trait: IntoSplatStep4,
+    call_trait: SplatCall4,
+    (A, B, C, D),
+    (0, 1, 2, 3)
+);
+
+define_splat_builders!(5,
+    start: SplatStart5,
+    mid: SplatBuilder5,
+    into_trait: IntoSplatStep5,
+    call_trait: SplatCall5,
+    (A, B, C, D, E),
+    (0, 1, 2, 3, 4)
+);
 
 // =============================================================================
 // Dedup — suppress unchanged values
@@ -2282,5 +2801,155 @@ mod tests {
 
         p.run(&mut world, 10u32); // true ^ true = false
         assert!(!*world.resource::<bool>());
+    }
+
+    // =========================================================================
+    // Splat — tuple destructuring
+    // =========================================================================
+
+    #[test]
+    fn splat2_closure_on_start() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<(u32, u64)>::new()
+            .splat()
+            .then(|a: u32, b: u64| a as u64 + b, r);
+        assert_eq!(p.run(&mut world, (3, 7)), 10);
+    }
+
+    #[test]
+    fn splat2_named_fn_with_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(100);
+        let mut world = wb.build();
+
+        fn process(base: Res<u64>, a: u32, b: u32) -> u64 {
+            *base + a as u64 + b as u64
+        }
+
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<(u32, u32)>::new().splat().then(process, r);
+        assert_eq!(p.run(&mut world, (3, 7)), 110);
+    }
+
+    #[test]
+    fn splat2_mid_chain() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| (x, x * 2), r)
+            .splat()
+            .then(|a: u32, b: u32| a as u64 + b as u64, r);
+        assert_eq!(p.run(&mut world, 5), 15); // 5 + 10
+    }
+
+    #[test]
+    fn splat3_closure_on_start() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<(u32, u32, u32)>::new()
+            .splat()
+            .then(|a: u32, b: u32, c: u32| a + b + c, r);
+        assert_eq!(p.run(&mut world, (1, 2, 3)), 6);
+    }
+
+    #[test]
+    fn splat3_named_fn_with_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(10);
+        let mut world = wb.build();
+
+        fn process(factor: Res<u64>, a: u32, b: u32, c: u32) -> u64 {
+            *factor * (a + b + c) as u64
+        }
+
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<(u32, u32, u32)>::new()
+            .splat()
+            .then(process, r);
+        assert_eq!(p.run(&mut world, (1, 2, 3)), 60);
+    }
+
+    #[test]
+    fn splat4_mid_chain() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<u32>::new()
+            .then(|x: u32| (x, x + 1, x + 2, x + 3), r)
+            .splat()
+            .then(|a: u32, b: u32, c: u32, d: u32| (a + b + c + d) as u64, r);
+        assert_eq!(p.run(&mut world, 10), 46); // 10+11+12+13
+    }
+
+    #[test]
+    fn splat5_closure_on_start() {
+        let mut world = WorldBuilder::new().build();
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<(u8, u8, u8, u8, u8)>::new().splat().then(
+            |a: u8, b: u8, c: u8, d: u8, e: u8| {
+                (a as u64) + (b as u64) + (c as u64) + (d as u64) + (e as u64)
+            },
+            r,
+        );
+        assert_eq!(p.run(&mut world, (1, 2, 3, 4, 5)), 15);
+    }
+
+    #[test]
+    fn splat_build_into_handler() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn store(mut out: ResMut<u64>, a: u32, b: u32) {
+            *out = a as u64 + b as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut pipeline = PipelineStart::<(u32, u32)>::new()
+            .splat()
+            .then(store, r)
+            .build();
+
+        pipeline.run(&mut world, (3, 7));
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    #[test]
+    fn splat_build_batch() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn accumulate(mut sum: ResMut<u64>, a: u32, b: u32) {
+            *sum += a as u64 + b as u64;
+        }
+
+        let r = world.registry_mut();
+        let mut batch = PipelineStart::<(u32, u32)>::new()
+            .splat()
+            .then(accumulate, r)
+            .build_batch(8);
+
+        batch
+            .input_mut()
+            .extend_from_slice(&[(1, 2), (3, 4), (5, 6)]);
+        batch.run(&mut world);
+        assert_eq!(*world.resource::<u64>(), 21); // 3+7+11
+    }
+
+    #[test]
+    #[should_panic]
+    fn splat_access_conflict_detected() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn bad(a: ResMut<u64>, _b: ResMut<u64>, _x: u32, _y: u32) {
+            let _ = a;
+        }
+
+        let r = world.registry_mut();
+        // Should panic on duplicate ResMut<u64>
+        let _ = PipelineStart::<(u32, u32)>::new().splat().then(bad, r);
     }
 }

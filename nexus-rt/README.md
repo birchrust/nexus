@@ -60,9 +60,10 @@ at ~3 cycles (`debug_assert` in debug builds only).
 Outside of handlers, you can read and write resources directly:
 
 ```rust
-# let mut builder = nexus_rt::WorldBuilder::new();
-# builder.register::<u64>(0);
-# let mut world = builder.build();
+let mut builder = nexus_rt::WorldBuilder::new();
+builder.register::<u64>(0);
+let mut world = builder.build();
+
 assert_eq!(*world.resource::<u64>(), 0);
 *world.resource_mut::<u64>() = 42;
 assert_eq!(*world.resource::<u64>(), 42);
@@ -169,12 +170,15 @@ multiple resources being present. `run_startup` runs a handler once with
 full dependency injection:
 
 ```rust
-# use nexus_rt::{WorldBuilder, Res, ResMut};
-# struct PriceCache { prices: Vec<f64> }
-# struct RiskLimits { max_position: u64 }
-# let mut builder = WorldBuilder::new();
-# builder.register(PriceCache { prices: Vec::new() });
-# builder.register(RiskLimits { max_position: 100 });
+use nexus_rt::{WorldBuilder, Res, ResMut};
+
+struct PriceCache { prices: Vec<f64> }
+struct RiskLimits { max_position: u64 }
+
+let mut builder = WorldBuilder::new();
+builder.register(PriceCache { prices: Vec::new() });
+builder.register(RiskLimits { max_position: 100 });
+
 fn initialize(mut cache: ResMut<PriceCache>, config: Res<RiskLimits>, _event: ()) {
     // Both resources are available — set up initial state
     cache.prices.extend_from_slice(&[100.0, 200.0, 300.0]);
@@ -182,7 +186,6 @@ fn initialize(mut cache: ResMut<PriceCache>, config: Res<RiskLimits>, _event: ()
 
 let mut world = builder.build();
 world.run_startup(initialize);
-# assert_eq!(world.resource::<PriceCache>().prices.len(), 3);
 ```
 
 For the event loop itself, `world.run()` polls until a handler triggers
@@ -260,7 +263,7 @@ processing rather than game-world state management.
                    │  │ TypeId→Idx │  │               │  │ ptr+changed_at │  │
                    │  └────────────┘  │               │  └───────┬────────┘  │
                    │                  │               │          │           │
-                   │  install_plugin  │               │    get(id) ~3 cyc   │
+                   │  install_plugin  │               │    get(id) ~3 cyc    │
                    │  install_driver  │               │          │           │
                    └──────────────────┘               └──────────┼───────────┘
                           │                                      │
@@ -444,8 +447,10 @@ pipeline.run(&mut world, order);
 
 Option and Result combinators (`.map()`, `.and_then()`, `.catch()`,
 `.filter()`, `.unwrap_or()`, etc.) enable typed flow control without
-runtime overhead. `Pipeline` implements `Handler<In>`, so it can be
-boxed or stored alongside other handlers.
+runtime overhead. `.splat()` destructures a tuple output (2-5 elements)
+into individual function arguments for the next step — see
+[Splat](#splat--tuple-destructuring) below. `Pipeline` implements
+`Handler<In>`, so it can be boxed or stored alongside other handlers.
 
 ### Batch pipeline — per-item processing over a buffer
 
@@ -545,6 +550,7 @@ For linear chains without fan-out, prefer
 | | `.and(fn, reg)` | `bool → bool` | Short-circuit AND |
 | | `.or(fn, reg)` | `bool → bool` | Short-circuit OR |
 | | `.xor(fn, reg)` | `bool → bool` | Logical XOR |
+| **Tuple** | `.splat()` | `(A, B, ...) →` | Destructure tuple into `&A, &B, ...` args |
 | **Terminal** | `.dispatch(handler)` | `&T → ()` | Hand off to a Handler |
 | | `.cloned()` | `&T → T` | Clone reference to owned |
 | | `.build()` | | Finalize into `Dag<E>` |
@@ -552,6 +558,38 @@ For linear chains without fan-out, prefer
 `.then()`, `.map()`, `.and_then()`, `.catch()` are pre-resolved (hot path).
 Closure-based combinators (`.filter()`, `.inspect()`, `.tap()`, etc.) take
 `&mut World` and are intended for cold-path use.
+
+#### Splat — tuple destructuring
+
+Pipeline and DAG steps follow a single-value-in, single-value-out convention.
+When a step naturally produces multiple outputs (e.g. splitting an order into
+an ID and a price), `.splat()` destructures the tuple so the next step
+receives individual arguments instead of the whole tuple:
+
+```rust
+// Pipeline (by value): fn(Params..., A, B) -> Out
+fn split(order: Order) -> (OrderId, f64) { (order.id, order.price) }
+fn process(id: OrderId, price: f64) -> bool { price > 0.0 }
+
+PipelineStart::<Order>::new()
+    .then(split, reg)
+    .splat()            // (OrderId, f64) → individual args
+    .then(process, reg) // receives OrderId, f64 separately
+    .build();
+
+// DAG (by reference): fn(Params..., &A, &B) -> Out
+fn process_ref(id: &OrderId, price: &f64) -> bool { *price > 0.0 }
+
+DagStart::<Order>::new()
+    .root(split, reg)
+    .splat()                // (OrderId, f64) → &OrderId, &f64
+    .then(process_ref, reg)
+    .build();
+```
+
+Supported for tuples of 2-5 elements. Beyond 5 arguments, use a named struct
+— if a combinator stage needs that many inputs, the data likely deserves its
+own type.
 
 ### FanOut / Broadcast — handler-level fan-out
 
@@ -741,9 +779,10 @@ fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
     *counter += ctx.order_id;
 }
 
-# let mut builder = WorldBuilder::new();
-# builder.register::<u64>(0);
-# let mut world = builder.build();
+let mut builder = WorldBuilder::new();
+builder.register::<u64>(0);
+let mut world = builder.build();
+
 let cb_template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
 let mut cb = cb_template.generate(TimerCtx { order_id: 42 });
 cb.run(&mut world, ());
