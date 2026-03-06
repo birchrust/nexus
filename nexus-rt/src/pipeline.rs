@@ -32,12 +32,13 @@
 //! **Closure-based (cold path, `&mut World`):**
 //! `.on_none()`, `.inspect()`, `.inspect_err()`, `.filter()`, `.ok()`,
 //! `.unwrap_or()`, `.unwrap_or_else()`, `.map_err()`, `.or_else()`,
-//! `.cloned()`, `.dispatch()`, `.tap()`, `.guard()`, `.route()`
+//! `.cloned()`, `.dispatch()`, `.tap()`, `.guard()`, `.route()`,
+//! `.switch()`
 //!
 //! # Combinator quick reference
 //!
 //! **Bare value `T`:** `.then()`, `.tap()`, `.guard()` (→ `Option<T>`),
-//! `.dispatch()`, `.route()`, `.tee()`, `.dedup()` (→ `Option<T>`)
+//! `.dispatch()`, `.route()`, `.switch()`, `.tee()`, `.dedup()` (→ `Option<T>`)
 //!
 //! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
 //! call `.then()` with destructured args)
@@ -643,6 +644,20 @@ impl<In> PipelineStart<In> {
             _marker: PhantomData,
         }
     }
+
+    /// Closure-based first step for N-ary conditional routing.
+    ///
+    /// Same as [`PipelineBuilder::switch`] but usable as the first step.
+    /// See that method for full documentation.
+    pub fn switch<Out: 'static>(
+        self,
+        mut f: impl FnMut(&mut World, In) -> Out + 'static,
+    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out> {
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| f(world, input),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<In> Default for PipelineStart<In> {
@@ -833,6 +848,40 @@ where
                 let val = chain(world, input);
                 side_chain(world, &val);
                 val
+            },
+            _marker: PhantomData,
+        }
+    }
+
+    /// Closure-based step for N-ary conditional routing.
+    ///
+    /// The closure receives `&mut World` and the current value `Out`
+    /// **by value** (pipeline ownership semantics), returning a new
+    /// value of type `NewOut`. Use with [`resolve_step`] to pre-resolve
+    /// per-arm steps with independent [`Param`] sets:
+    ///
+    /// ```ignore
+    /// let mut arm_new    = resolve_step(handle_new, reg);
+    /// let mut arm_cancel = resolve_step(handle_cancel, reg);
+    ///
+    /// pipeline.switch(move |world, order: Order| match order.kind {
+    ///     OrderKind::New    => arm_new(world, order),
+    ///     OrderKind::Cancel => arm_cancel(world, order),
+    /// })
+    /// ```
+    ///
+    /// For simple cases where all arms share the same params, a named
+    /// function with a `match` body passed to [`.then()`](Self::then)
+    /// is sufficient.
+    pub fn switch<NewOut: 'static>(
+        self,
+        mut f: impl FnMut(&mut World, Out) -> NewOut + 'static,
+    ) -> PipelineBuilder<In, NewOut, impl FnMut(&mut World, In) -> NewOut> {
+        let mut chain = self.chain;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                f(world, val)
             },
             _marker: PhantomData,
         }
@@ -1621,6 +1670,44 @@ impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In,
             let _ = (self.chain)(world, item);
         }
     }
+}
+
+// =============================================================================
+// resolve_step — pre-resolve a step for manual dispatch (owned input)
+// =============================================================================
+
+/// Resolve a step for use in manual dispatch (e.g. inside a
+/// [`.switch()`](PipelineBuilder::switch) closure).
+///
+/// Returns a closure with pre-resolved [`Param`] state — the same
+/// build-time resolution that `.then()` performs, but as a standalone
+/// value the caller can invoke from any context.
+///
+/// This is the pipeline (owned-input) counterpart of
+/// [`dag::resolve_arm`](crate::dag::resolve_arm) (reference-input).
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut arm0 = resolve_step(handle_new, reg);
+/// let mut arm1 = resolve_step(handle_cancel, reg);
+///
+/// pipeline.switch(move |world, order: Order| match order.kind {
+///     OrderKind::New    => arm0(world, order),
+///     OrderKind::Cancel => arm1(world, order),
+/// })
+/// ```
+pub fn resolve_step<In, Out, Params, S>(
+    f: S,
+    registry: &Registry,
+) -> impl FnMut(&mut World, In) -> Out + use<In, Out, Params, S>
+where
+    In: 'static,
+    Out: 'static,
+    S: IntoStep<In, Out, Params>,
+{
+    let mut resolved = f.into_step(registry);
+    move |world: &mut World, input: In| resolved.call(world, input)
 }
 
 // =============================================================================
@@ -2949,5 +3036,132 @@ mod tests {
         let r = world.registry_mut();
         // Should panic on duplicate ResMut<u64>
         let _ = PipelineStart::<(u32, u32)>::new().splat().then(bad, r);
+    }
+
+    // -- Switch combinator --
+
+    #[test]
+    fn pipeline_switch_basic() {
+        fn double(x: u32) -> u64 {
+            x as u64 * 2
+        }
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut pipeline = PipelineStart::<u32>::new()
+            .then(double, reg)
+            .switch(|_world, val| if val > 10 { val * 100 } else { val + 1 })
+            .then(sink, reg)
+            .build();
+
+        pipeline.run(&mut world, 10u32); // 20 > 10 → 2000
+        assert_eq!(*world.resource::<u64>(), 2000);
+
+        pipeline.run(&mut world, 3u32); // 6 <= 10 → 7
+        assert_eq!(*world.resource::<u64>(), 7);
+    }
+
+    #[test]
+    fn pipeline_switch_3_way() {
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut pipeline = PipelineStart::<u32>::new()
+            .switch(|_world, val| match val % 3 {
+                0 => val as u64 + 100,
+                1 => val as u64 + 200,
+                _ => val as u64 + 300,
+            })
+            .then(sink, reg)
+            .build();
+
+        pipeline.run(&mut world, 6u32); // 6 % 3 == 0 → 106
+        assert_eq!(*world.resource::<u64>(), 106);
+
+        pipeline.run(&mut world, 7u32); // 7 % 3 == 1 → 207
+        assert_eq!(*world.resource::<u64>(), 207);
+
+        pipeline.run(&mut world, 8u32); // 8 % 3 == 2 → 308
+        assert_eq!(*world.resource::<u64>(), 308);
+    }
+
+    #[test]
+    fn pipeline_switch_with_resolve_step() {
+        fn add_offset(offset: Res<i64>, val: u32) -> u64 {
+            (*offset + val as i64) as u64
+        }
+        fn plain_double(val: u32) -> u64 {
+            val as u64 * 2
+        }
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<i64>(100);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut arm_offset = resolve_step(add_offset, reg);
+        let mut arm_double = resolve_step(plain_double, reg);
+
+        let mut pipeline = PipelineStart::<u32>::new()
+            .switch(move |world, val| {
+                if val > 10 {
+                    arm_offset(world, val)
+                } else {
+                    arm_double(world, val)
+                }
+            })
+            .then(sink, reg)
+            .build();
+
+        pipeline.run(&mut world, 20u32); // > 10 → offset → 100 + 20 = 120
+        assert_eq!(*world.resource::<u64>(), 120);
+
+        pipeline.run(&mut world, 5u32); // <= 10 → double → 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    #[test]
+    fn batch_pipeline_switch() {
+        fn sink(mut out: ResMut<u64>, val: u64) {
+            *out += val;
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut batch = PipelineStart::<u32>::new()
+            .switch(|_world, val| {
+                if val % 2 == 0 {
+                    val as u64 * 10
+                } else {
+                    val as u64
+                }
+            })
+            .then(sink, reg)
+            .build_batch(8);
+
+        batch.input_mut().extend([1, 2, 3, 4]);
+        batch.run(&mut world);
+
+        // 1 → 1, 2 → 20, 3 → 3, 4 → 40 = 64
+        assert_eq!(*world.resource::<u64>(), 64);
     }
 }

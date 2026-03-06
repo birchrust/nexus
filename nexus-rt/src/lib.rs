@@ -119,11 +119,11 @@ pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
-pub use dag::{BatchDag, Dag, DagStart};
+pub use dag::{BatchDag, Dag, DagStart, resolve_arm};
 pub use driver::Installer;
 pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
-    BatchPipeline, IntoStep, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart,
+    BatchPipeline, IntoStep, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart, resolve_step,
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};
