@@ -78,10 +78,9 @@ fn main() {
 
     // --- 3. Testing change detection ---
     //
-    // TestHarness advances sequence before each dispatch.
     // is_changed() returns true only within the SAME sequence as the write.
-    // To see is_changed()=true, the write and read must share a sequence.
-    // Use world_mut() to write without advancing, then dispatch the checker.
+    // Advance the sequence manually, write, then run the checker in that
+    // same sequence so it sees is_changed()=true.
 
     println!("\n=== 3. Change detection ===\n");
 
@@ -92,14 +91,13 @@ fn main() {
 
     let mut checker = check_changed.into_handler(harness.registry());
 
-    // Write via world_mut() at current sequence, then dispatch checker
-    // at the SAME sequence (dispatch advances, so write first)
+    // Advance sequence, write at that sequence, then run checker directly
+    // in the same sequence — it sees is_changed()=true
     harness.world_mut().next_sequence();
     *harness.world_mut().resource_mut::<u64>() = 42;
-    // checker runs in same sequence — sees is_changed()=true
     checker.run(harness.world_mut(), ());
 
-    // Next dispatch: sequence advances, no write — unchanged
+    // dispatch advances sequence before running — no write at new sequence — unchanged
     harness.dispatch(&mut checker, ());
 
     let log = harness.world().resource::<Vec<String>>();

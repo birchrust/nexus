@@ -219,7 +219,7 @@ fn main() {
     let mut guarded = PipelineStart::<u32>::new()
         .then(|x: u32| x, r)
         .guard(|_w, x| *x > 5) // → Option<u32>
-        .tap(|_w, x| println!("  [tap] passed guard: {x:?}"))
+        .tap(|_w, x| println!("  [tap] guard output: {x:?}"))
         .map(accumulate, r) // runs for Some only
         .unwrap_or(()); // discard None
     for v in [3u32, 7, 2, 10, 1] {
