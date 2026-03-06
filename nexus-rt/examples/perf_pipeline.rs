@@ -27,6 +27,14 @@
 //! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_adapt
 //! ```
 //!
+//! Run asm inspection (guard short-circuit):
+//! ```bash
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_guard_4map
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_guard_4map_res
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_guard_dag
+//! cargo asm -p nexus-rt --example perf_pipeline perf_pipeline::probe_guard_batch
+//! ```
+//!
 //! Run benchmark:
 //! ```bash
 //! taskset -c 0 cargo run --release -p nexus-rt --example perf_pipeline
@@ -35,7 +43,7 @@
 use std::hint::black_box;
 
 use nexus_rt::{
-    Adapt, Broadcast, ByRef, Cloned, Handler, IntoHandler, PipelineStart, Res, ResMut,
+    Adapt, Broadcast, ByRef, Cloned, DagStart, Handler, IntoHandler, PipelineStart, Res, ResMut,
     WorldBuilder, fan_out,
 };
 
@@ -295,6 +303,93 @@ pub fn probe_adapt(
 }
 
 // =============================================================================
+// Guard short-circuit codegen probes
+// =============================================================================
+
+/// Guard + 4 downstream maps (pure compute) — verify LLVM collapses None
+/// propagation into a single branch after the guard predicate.
+#[inline(never)]
+pub fn probe_guard_4map(
+    p: &mut nexus_rt::PipelineBuilder<
+        u64,
+        Option<u64>,
+        impl FnMut(&mut nexus_rt::World, u64) -> Option<u64>,
+    >,
+    world: &mut nexus_rt::World,
+    input: u64,
+) -> Option<u64> {
+    p.run(world, input)
+}
+
+/// Guard + 4 downstream maps with Res<T> — same test with World access
+/// and pre-resolved param fetch in each step.
+#[inline(never)]
+pub fn probe_guard_4map_res(
+    p: &mut nexus_rt::PipelineBuilder<
+        u64,
+        Option<u64>,
+        impl FnMut(&mut nexus_rt::World, u64) -> Option<u64>,
+    >,
+    world: &mut nexus_rt::World,
+    input: u64,
+) -> Option<u64> {
+    p.run(world, input)
+}
+
+/// DAG: root → guard → 4 maps → unwrap_or → sink → build.
+/// Verify same short-circuit in DAG chain (steps take &T, not T).
+#[inline(never)]
+pub fn probe_guard_dag(
+    dag: &mut impl Handler<u64>,
+    world: &mut nexus_rt::World,
+    input: u64,
+) {
+    dag.run(world, input);
+}
+
+/// Batch pipeline: guard → 4 maps → unwrap_or → sink, over Vec<u64>.
+/// Verify loop body still gets the short-circuit optimization.
+#[inline(never)]
+pub fn probe_guard_batch(
+    batch: &mut nexus_rt::BatchPipeline<
+        u64,
+        impl FnMut(&mut nexus_rt::World, u64),
+    >,
+    world: &mut nexus_rt::World,
+) {
+    batch.run(world);
+}
+
+// =============================================================================
+// Step functions for guard short-circuit pipelines
+// =============================================================================
+
+fn add_res_u64(val: Res<u64>, x: u64) -> u64 {
+    x.wrapping_add(*val)
+}
+
+fn mul_res_u32(val: Res<u32>, x: u64) -> u64 {
+    x.wrapping_mul(*val as u64)
+}
+
+// DAG map steps take &T
+fn dag_mul3(x: &u64) -> u64 {
+    x.wrapping_mul(3)
+}
+
+fn dag_add7(x: &u64) -> u64 {
+    x.wrapping_add(7)
+}
+
+fn dag_shr1(x: &u64) -> u64 {
+    x >> 1
+}
+
+fn dag_xor_dead(x: &u64) -> u64 {
+    x ^ 0xDEAD
+}
+
+// =============================================================================
 // Step functions for combinator/adapter setup
 // =============================================================================
 
@@ -402,6 +497,54 @@ fn main() {
         .map(|x: u64| x.wrapping_mul(2), r)
         .unwrap_or(0);
 
+    // --- Guard short-circuit pipelines ---
+
+    // Pure compute: identity → guard → 4 maps (no World access)
+    let mut guard_4map = PipelineStart::<u64>::new()
+        .then(|x: u64| x, r)
+        .guard(|_w, x| *x > 0)
+        .map(|x: u64| x.wrapping_mul(3), r)
+        .map(|x: u64| x.wrapping_add(7), r)
+        .map(|x: u64| x >> 1, r)
+        .map(|x: u64| x ^ 0xDEAD, r);
+
+    // With Res<T>: identity → guard → 4 maps reading resources
+    let mut guard_4map_res = PipelineStart::<u64>::new()
+        .then(|x: u64| x, r)
+        .guard(|_w, x| *x > 0)
+        .map(add_res_u64, r)
+        .map(mul_res_u32, r)
+        .map(add_res_u64, r)
+        .map(mul_res_u32, r);
+
+    // DAG: root → guard → 4 maps → unwrap_or → sink
+    fn dag_sink(mut acc: ResMut<u64>, val: &u64) {
+        *acc = acc.wrapping_add(*val);
+    }
+
+    let mut guard_dag = DagStart::<u64>::new()
+        .root(|x: u64| x, r)
+        .guard(|_w, x| *x > 0)
+        .map(dag_mul3, r)
+        .map(dag_add7, r)
+        .map(dag_shr1, r)
+        .map(dag_xor_dead, r)
+        .unwrap_or(0)
+        .then(dag_sink, r)
+        .build();
+
+    // Batch pipeline: guard → 4 maps → unwrap_or → sink
+    let mut guard_batch = PipelineStart::<u64>::new()
+        .then(|x: u64| x, r)
+        .guard(|_w, x| *x > 0)
+        .map(|x: u64| x.wrapping_mul(3), r)
+        .map(|x: u64| x.wrapping_add(7), r)
+        .map(|x: u64| x >> 1, r)
+        .map(|x: u64| x ^ 0xDEAD, r)
+        .unwrap_or(0)
+        .then(sink, r)
+        .build_batch(1024);
+
     // --- Combinator pipeline setup (uses r) ---
 
     // Pipeline .cloned(): &u64 → u64
@@ -484,6 +627,86 @@ fn main() {
         input = input.wrapping_add(1);
         catch_pipeline.run(&mut world, black_box(input))
     });
+
+    println!();
+    print_header("Guard Short-Circuit Latency (cycles)");
+
+    bench_batched("guard→4×map (Some path)", || {
+        input = input.wrapping_add(1);
+        probe_guard_4map(&mut guard_4map, &mut world, black_box(input)).unwrap_or(0)
+    });
+
+    bench_batched("guard→4×map (None path)", || {
+        probe_guard_4map(&mut guard_4map, &mut world, black_box(0)).unwrap_or(0)
+    });
+
+    bench_batched("guard→4×map+Res (Some path)", || {
+        input = input.wrapping_add(1);
+        probe_guard_4map_res(&mut guard_4map_res, &mut world, black_box(input)).unwrap_or(0)
+    });
+
+    bench_batched("guard→4×map+Res (None path)", || {
+        probe_guard_4map_res(&mut guard_4map_res, &mut world, black_box(0)).unwrap_or(0)
+    });
+
+    bench_batched("DAG guard→4×map (Some path)", || {
+        input = input.wrapping_add(1);
+        probe_guard_dag(&mut guard_dag, &mut world, black_box(input));
+        0
+    });
+
+    bench_batched("DAG guard→4×map (None path)", || {
+        probe_guard_dag(&mut guard_dag, &mut world, black_box(0));
+        0
+    });
+
+    // Batch: 100 items, all Some path
+    {
+        let items_some: Vec<u64> = (1..=100).collect();
+        let items_none: Vec<u64> = vec![0; 100];
+
+        for _ in 0..WARMUP {
+            guard_batch.input_mut().extend_from_slice(&items_some);
+            probe_guard_batch(&mut guard_batch, &mut world);
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            guard_batch.input_mut().extend_from_slice(&items_some);
+            let start = rdtsc_start();
+            probe_guard_batch(&mut guard_batch, &mut world);
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        samples.sort_unstable();
+        println!(
+            "{:<44} {:>8} {:>8} {:>8}",
+            "batch guard→4×map (100, Some)",
+            percentile(&samples, 50.0),
+            percentile(&samples, 99.0),
+            percentile(&samples, 99.9),
+        );
+
+        for _ in 0..WARMUP {
+            guard_batch.input_mut().extend_from_slice(&items_none);
+            probe_guard_batch(&mut guard_batch, &mut world);
+        }
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            guard_batch.input_mut().extend_from_slice(&items_none);
+            let start = rdtsc_start();
+            probe_guard_batch(&mut guard_batch, &mut world);
+            let end = rdtsc_end();
+            samples.push(end.wrapping_sub(start));
+        }
+        samples.sort_unstable();
+        println!(
+            "{:<44} {:>8} {:>8} {:>8}",
+            "batch guard→4×map (100, None)",
+            percentile(&samples, 50.0),
+            percentile(&samples, 99.0),
+            percentile(&samples, 99.9),
+        );
+    }
 
     // --- Handler dispatch benchmarks ---
 
