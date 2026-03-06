@@ -214,6 +214,8 @@ macro_rules! impl_into_callback {
                 // SAFETY: state was produced by init() on the same registry
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };

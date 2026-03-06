@@ -196,6 +196,8 @@ macro_rules! impl_into_step {
                 // SAFETY: state was produced by init() on the same registry
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -308,6 +310,8 @@ macro_rules! impl_splat2_step {
                 ) -> Output {
                     f($($P,)+ a, b)
                 }
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -395,6 +399,8 @@ macro_rules! impl_splat3_step {
                 ) -> Output {
                     f($($P,)+ a, b, c)
                 }
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -482,6 +488,8 @@ macro_rules! impl_splat4_step {
                     mut f: impl FnMut($($P,)+ IA, IB, IC, ID) -> Output,
                     $($P: $P,)+ a: IA, b: IB, c: IC, d: ID,
                 ) -> Output { f($($P,)+ a, b, c, d) }
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -560,6 +568,8 @@ macro_rules! impl_splat5_step {
                     mut f: impl FnMut($($P,)+ IA, IB, IC, ID, IE) -> Output,
                     $($P: $P,)+ a: IA, b: IB, c: IC, d: ID, e: IE,
                 ) -> Output { f($($P,)+ a, b, c, d, e) }
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
