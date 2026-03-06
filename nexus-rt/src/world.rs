@@ -33,6 +33,64 @@ use std::marker::PhantomData;
 use rustc_hash::FxHashMap;
 
 // =============================================================================
+// Debug-mode aliasing detection
+// =============================================================================
+
+/// Tracks resource accesses within a single Param::fetch phase to detect
+/// aliasing violations at runtime in debug builds.
+///
+/// Dispatch macros call [`World::clear_borrows`] then
+/// [`World::track_borrow`] for each resource fetched. If the same resource
+/// is fetched twice within a phase, we panic with a diagnostic. This catches
+/// framework bugs where two params in the same handler resolve to the same
+/// resource — something [`Registry::check_access`] catches at construction
+/// time, but this catches dynamically for dispatch paths (like `.switch()`
+/// closures) that bypass static analysis.
+///
+/// Only active during the narrow `Param::fetch` window — safe API methods
+/// and driver code that call `get_ptr` directly are not tracked.
+///
+/// Completely compiled out in release builds — zero bytes, zero branches.
+#[cfg(debug_assertions)]
+pub(crate) struct BorrowTracker {
+    /// One slot per resource. `true` = accessed in current phase.
+    /// `UnsafeCell` because `get_ptr` takes `&self` — needs interior
+    /// mutability. Single-threaded, non-reentrant access only.
+    accessed: std::cell::UnsafeCell<Vec<bool>>,
+}
+
+#[cfg(debug_assertions)]
+impl BorrowTracker {
+    fn new(count: usize) -> Self {
+        Self {
+            accessed: std::cell::UnsafeCell::new(vec![false; count]),
+        }
+    }
+
+    /// Reset all tracking state. Called before each `Param::fetch` phase.
+    fn clear(&self) {
+        // SAFETY: single-threaded, non-reentrant. No other reference to
+        // the inner Vec exists during this call.
+        let slots = unsafe { &mut *self.accessed.get() };
+        slots.fill(false);
+    }
+
+    /// Record an access. Panics if already accessed in this phase.
+    fn track(&self, id: ResourceId) {
+        // SAFETY: single-threaded, non-reentrant. No other reference to
+        // the inner Vec exists during this call.
+        let slots = unsafe { &mut *self.accessed.get() };
+        let idx = id.0 as usize;
+        assert!(
+            !slots[idx],
+            "aliasing violation: resource {id} accessed twice in the same dispatch phase \
+             (possible Res/ResMut conflict on the same type)",
+        );
+        slots[idx] = true;
+    }
+}
+
+// =============================================================================
 // Core types
 // =============================================================================
 
@@ -444,11 +502,15 @@ impl WorldBuilder {
     /// remain valid for the lifetime of the returned [`World`].
     pub fn build(mut self) -> World {
         self.ensure(crate::shutdown::Shutdown::new());
+        #[cfg(debug_assertions)]
+        let resource_count = self.storage.len();
         World {
             registry: self.registry,
             storage: self.storage,
             current_sequence: Sequence(0),
             _not_sync: PhantomData,
+            #[cfg(debug_assertions)]
+            borrow_tracker: BorrowTracker::new(resource_count),
         }
     }
 }
@@ -493,6 +555,10 @@ pub struct World {
     /// `Cell<Sequence>` values accessed through `&self`. `!Sync` enforced by
     /// `PhantomData<Cell<()>>`.
     _not_sync: PhantomData<Cell<()>>,
+    /// Debug-only aliasing tracker. Detects duplicate resource access within
+    /// a single dispatch phase. Compiled out entirely in release builds.
+    #[cfg(debug_assertions)]
+    borrow_tracker: BorrowTracker,
 }
 
 impl World {
@@ -727,6 +793,26 @@ impl World {
         // builder that produced this container, so id.0 < self.storage.slots.len().
         // T matches the registered type. No aliases exist.
         unsafe { &mut *(self.get_ptr(id) as *mut T) }
+    }
+
+    /// Reset borrow tracking for a new dispatch phase.
+    ///
+    /// Called before each [`Param::fetch`](crate::Param::fetch) in dispatch
+    /// macros. Only exists in debug builds.
+    #[cfg(debug_assertions)]
+    pub(crate) fn clear_borrows(&self) {
+        self.borrow_tracker.clear();
+    }
+
+    /// Record a resource access in the debug borrow tracker.
+    ///
+    /// Called by [`Param::fetch`](crate::Param::fetch) impls for each
+    /// resource parameter. Panics if the resource was already accessed
+    /// in the current phase (since the last [`clear_borrows`](Self::clear_borrows)).
+    /// Only exists in debug builds.
+    #[cfg(debug_assertions)]
+    pub(crate) fn track_borrow(&self, id: ResourceId) {
+        self.borrow_tracker.track(id);
     }
 
     /// Fetch a raw pointer to a resource by pre-validated index.
@@ -1331,5 +1417,43 @@ mod tests {
         unsafe {
             assert_ne!(world.changed_at(id), world.current_sequence());
         }
+    }
+
+    // -- BorrowTracker tests (debug builds only) ------------------------------
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "aliasing violation")]
+    fn borrow_tracker_catches_double_access() {
+        let mut builder = WorldBuilder::new();
+        let id = builder.register::<u64>(42);
+        let world = builder.build();
+        world.clear_borrows();
+        world.track_borrow(id);
+        world.track_borrow(id); // same resource, same phase
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn borrow_tracker_allows_after_clear() {
+        let mut builder = WorldBuilder::new();
+        let id = builder.register::<u64>(42);
+        let world = builder.build();
+        world.clear_borrows();
+        world.track_borrow(id);
+        world.clear_borrows();
+        world.track_borrow(id); // new phase, no conflict
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn borrow_tracker_different_resources_ok() {
+        let mut builder = WorldBuilder::new();
+        let id_a = builder.register::<u64>(1);
+        let id_b = builder.register::<u32>(2);
+        let world = builder.build();
+        world.clear_borrows();
+        world.track_borrow(id_a);
+        world.track_borrow(id_b); // different resources, no conflict
     }
 }

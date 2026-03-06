@@ -200,6 +200,8 @@ macro_rules! impl_template_dispatch {
 
                     // SAFETY: state produced by init() on same registry.
                     // Single-threaded sequential dispatch — no mutable aliasing.
+                    #[cfg(debug_assertions)]
+                    world.clear_borrows();
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };
@@ -248,6 +250,8 @@ macro_rules! impl_template_dispatch {
                         f(ctx, $($P,)+ event);
                     }
 
+                    #[cfg(debug_assertions)]
+                    world.clear_borrows();
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };

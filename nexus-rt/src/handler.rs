@@ -86,6 +86,8 @@ impl<T: 'static> Param for Res<'_, T> {
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> Res<'w, T> {
         let id = *state;
+        #[cfg(debug_assertions)]
+        world.track_borrow(id);
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no mutable alias exists for T.
         unsafe {
@@ -115,6 +117,8 @@ impl<T: 'static> Param for ResMut<'_, T> {
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut ResourceId) -> ResMut<'w, T> {
         let id = *state;
+        #[cfg(debug_assertions)]
+        world.track_borrow(id);
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no aliases exist for T.
         unsafe {
@@ -145,12 +149,16 @@ impl<T: 'static> Param for Option<Res<'_, T>> {
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Option<ResourceId>) -> Option<Res<'w, T>> {
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no mutable alias exists for T.
-        state.map(|id| unsafe {
-            Res::new(
-                world.get::<T>(id),
-                world.changed_at(id),
-                world.current_sequence(),
-            )
+        state.map(|id| {
+            #[cfg(debug_assertions)]
+            world.track_borrow(id);
+            unsafe {
+                Res::new(
+                    world.get::<T>(id),
+                    world.changed_at(id),
+                    world.current_sequence(),
+                )
+            }
         })
     }
 
@@ -176,12 +184,16 @@ impl<T: 'static> Param for Option<ResMut<'_, T>> {
     ) -> Option<ResMut<'w, T>> {
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no aliases exist for T.
-        state.map(|id| unsafe {
-            ResMut::new(
-                world.get_mut::<T>(id),
-                world.changed_at_cell(id),
-                world.current_sequence(),
-            )
+        state.map(|id| {
+            #[cfg(debug_assertions)]
+            world.track_borrow(id);
+            unsafe {
+                ResMut::new(
+                    world.get_mut::<T>(id),
+                    world.changed_at_cell(id),
+                    world.current_sequence(),
+                )
+            }
         })
     }
 
@@ -533,6 +545,8 @@ macro_rules! impl_into_handler {
                 // SAFETY: state was produced by init() on the same registry
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -583,6 +597,9 @@ mod tests {
             let mut res = <ResMut<u64> as Param>::fetch(&world, &mut state);
             *res = 99;
         }
+        // New dispatch phase — previous borrows dropped above.
+        #[cfg(debug_assertions)]
+        world.clear_borrows();
         unsafe {
             let mut read_state = <Res<u64> as Param>::init(world.registry_mut());
             let res = <Res<u64> as Param>::fetch(&world, &mut read_state);
@@ -606,6 +623,9 @@ mod tests {
             assert!(*flag);
             *flag = false;
         }
+        // New dispatch phase — previous borrows dropped above.
+        #[cfg(debug_assertions)]
+        world.clear_borrows();
         unsafe {
             let mut read_state = <Res<bool> as Param>::init(world.registry_mut());
             let res = <Res<bool> as Param>::fetch(&world, &mut read_state);
@@ -796,6 +816,8 @@ mod tests {
             let opt = <Option<ResMut<u64>> as Param>::fetch(&world, &mut state);
             *opt.unwrap() = 99;
         }
+        #[cfg(debug_assertions)]
+        world.clear_borrows();
         unsafe {
             let mut read_state = <Res<u64> as Param>::init(world.registry_mut());
             let res = <Res<u64> as Param>::fetch(&world, &mut read_state);
