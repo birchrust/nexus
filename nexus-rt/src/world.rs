@@ -114,8 +114,13 @@ impl ResourceId {
     }
 }
 
-// SAFETY: ResourceId points to heap memory pinned for World's lifetime.
-// World is !Sync and dispatch is single-threaded.
+// SAFETY: `ResourceId` is a thin, copyable handle to a `ResourceCell<T>`
+// allocated and pinned for the lifetime of its `World`:
+// - every `ResourceCell<T>` is registered with `T: Send`, so the pointee is
+//   safe to send between threads,
+// - the underlying pointer is stable for the `World`'s entire lifetime, and
+// - a `ResourceId` cannot be dereferenced without going through `World`,
+//   which enforces the single-threaded dispatch / aliasing invariants.
 unsafe impl Send for ResourceId {}
 
 impl std::fmt::Display for ResourceId {
@@ -243,9 +248,10 @@ impl Registry {
                 let Some(id_j) = accesses[j].0 else { continue };
                 assert!(
                     id_i != id_j,
-                    "conflicting access: resource borrowed by `{}` is already \
-                     borrowed by another parameter in the same handler",
+                    "conflicting access: resource borrowed by `{}` conflicts with \
+                     resource borrowed by `{}` in the same handler",
                     accesses[j].1,
+                    accesses[i].1,
                 );
             }
         }
@@ -316,7 +322,7 @@ impl Drop for Storage {
 /// Each resource type can only be registered once. Registration assigns a
 /// direct [`ResourceId`] pointer.
 ///
-/// The [`registry()`](Self::registry) method exposes the type-to-index mapping
+/// The [`registry()`](Self::registry) method exposes the type-to-pointer mapping
 /// so that drivers can resolve handlers against the builder before `build()`.
 ///
 /// # Examples
@@ -516,7 +522,7 @@ impl Default for WorldBuilder {
 /// [`Param::fetch`](crate::Param) for zero-overhead dispatch.
 /// The caller must ensure no mutable aliasing.
 pub struct World {
-    /// Type-to-index mapping. Same registry used during build.
+    /// Type-to-pointer mapping. Same registry used during build.
     registry: Registry,
     /// Type-erased pointer storage. Drop handled by `Storage`.
     storage: Storage,
