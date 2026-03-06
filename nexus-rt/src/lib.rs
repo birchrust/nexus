@@ -115,6 +115,9 @@ pub mod testing;
 pub mod timer;
 mod world;
 
+#[cfg(feature = "codegen-audit")]
+pub mod codegen_audit;
+
 pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
