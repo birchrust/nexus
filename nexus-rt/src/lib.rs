@@ -28,7 +28,8 @@
 //! - **DAG Pipeline** — [`DagStart`] builds a monomorphized data-flow graph
 //!   with fan-out and merge. Topology is encoded in the type system — no
 //!   vtable dispatch, no arena allocation. [`Dag`] implements [`Handler`]
-//!   for direct or boxed dispatch.
+//!   for direct or boxed dispatch. [`BatchDag`] owns a pre-allocated input
+//!   buffer and runs each item through the same DAG independently.
 //!
 //! - **Installer** — [`Installer`] is the install-time trait for event sources.
 //!   `install()` registers resources into [`WorldBuilder`] and returns a
@@ -118,7 +119,7 @@ pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
-pub use dag::{Dag, DagStart};
+pub use dag::{BatchDag, Dag, DagStart};
 pub use driver::Installer;
 pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
 pub use pipeline::{
