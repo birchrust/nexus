@@ -54,16 +54,17 @@ use rustc_hash::FxHashMap;
 #[cfg(debug_assertions)]
 pub(crate) struct BorrowTracker {
     /// One slot per resource. `true` = accessed in current phase.
-    /// `UnsafeCell` because `get_ptr` takes `&self` — needs interior
-    /// mutability. Single-threaded, non-reentrant access only.
-    accessed: std::cell::UnsafeCell<Vec<bool>>,
+    /// Uses `UnsafeCell` for interior mutability because `Param::fetch` /
+    /// `World::track_borrow` operate on `&World`. Single-threaded,
+    /// non-reentrant access only.
+    accessed: UnsafeCell<Vec<bool>>,
 }
 
 #[cfg(debug_assertions)]
 impl BorrowTracker {
     fn new(count: usize) -> Self {
         Self {
-            accessed: std::cell::UnsafeCell::new(vec![false; count]),
+            accessed: UnsafeCell::new(vec![false; count]),
         }
     }
 
@@ -82,9 +83,15 @@ impl BorrowTracker {
         let slots = unsafe { &mut *self.accessed.get() };
         let idx = id.0 as usize;
         assert!(
+            idx < slots.len(),
+            "invalid ResourceId {id}: index {idx} out of bounds \
+             for BorrowTracker (len = {})",
+            slots.len(),
+        );
+        assert!(
             !slots[idx],
-            "aliasing violation: resource {id} accessed twice in the same dispatch phase \
-             (possible Res/ResMut conflict on the same type)",
+            "conflicting access: resource {id} was accessed by more than one parameter \
+             in the same dispatch phase",
         );
         slots[idx] = true;
     }
@@ -1423,7 +1430,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "aliasing violation")]
+    #[should_panic(expected = "conflicting access")]
     fn borrow_tracker_catches_double_access() {
         let mut builder = WorldBuilder::new();
         let id = builder.register::<u64>(42);
