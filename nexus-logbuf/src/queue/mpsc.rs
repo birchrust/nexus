@@ -30,10 +30,11 @@
 //!
 //! Same as SPSC - see [`crate::spsc`] for details.
 
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering, fence};
 
 use crossbeam_utils::CachePadded;
 
@@ -55,9 +56,10 @@ pub fn new(capacity: usize) -> (Producer, Consumer) {
     let capacity = capacity.next_power_of_two();
     let mask = capacity - 1;
 
-    // Allocate buffer, zero-initialized
-    let buffer = vec![0u8; capacity].into_boxed_slice();
-    let buffer_ptr = Box::into_raw(buffer) as *mut u8;
+    // Allocate buffer, zero-initialized, 8-byte aligned for atomic len stamps
+    let layout = Layout::from_size_align(capacity, 8).unwrap();
+    let buffer_ptr = unsafe { alloc_zeroed(layout) };
+    assert!(!buffer_ptr.is_null(), "allocation failed");
 
     let shared = Arc::new(Shared {
         head: CachePadded::new(AtomicUsize::new(0)),
@@ -97,9 +99,9 @@ unsafe impl Sync for Shared {}
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        unsafe {
-            let _ = Box::from_raw(ptr::slice_from_raw_parts_mut(self.buffer, self.capacity));
-        }
+        // Safety: buffer was allocated with alloc_zeroed using this layout.
+        let layout = Layout::from_size_align(self.capacity, 8).unwrap();
+        unsafe { dealloc(self.buffer, layout) };
     }
 }
 
@@ -197,14 +199,12 @@ impl Producer {
                 {
                     // We claimed the space. Write padding skip marker.
                     let buffer = self.shared.buffer;
-                    let padding_ptr = unsafe { buffer.add(offset) };
                     let skip_len = space_to_end as u32 | SKIP_BIT;
 
                     // Release fence before writing skip marker
                     fence(Ordering::Release);
-                    unsafe {
-                        ptr::write(padding_ptr as *mut u32, skip_len);
-                    }
+                    let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicU32>();
+                    unsafe { &*len_ptr }.store(skip_len, Ordering::Relaxed);
 
                     return Ok(WriteClaim {
                         shared: &self.shared,
@@ -291,13 +291,11 @@ impl WriteClaim<'_> {
     #[inline]
     fn do_commit(&mut self) {
         let buffer = self.shared.buffer;
-        let len_ptr = unsafe { buffer.add(self.offset) } as *mut u32;
+        let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicU32>();
 
         // Release fence: ensures payload writes are visible before len store
         fence(Ordering::Release);
-        unsafe {
-            ptr::write(len_ptr, self.len as u32);
-        }
+        unsafe { &*len_ptr }.store(self.len as u32, Ordering::Relaxed);
     }
 
     /// Returns the length of the payload region.
@@ -338,13 +336,11 @@ impl Drop for WriteClaim<'_> {
         if !self.committed {
             // Write skip marker so consumer can advance past this region
             let buffer = self.shared.buffer;
-            let len_ptr = unsafe { buffer.add(self.offset) } as *mut u32;
+            let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicU32>();
             let skip_len = self.record_size as u32 | SKIP_BIT;
 
             fence(Ordering::Release);
-            unsafe {
-                ptr::write(len_ptr, skip_len);
-            }
+            unsafe { &*len_ptr }.store(skip_len, Ordering::Relaxed);
         }
     }
 }
@@ -381,10 +377,10 @@ impl Consumer {
 
         loop {
             let offset = self.head & self.shared.mask;
-            let len_ptr = unsafe { buffer.add(offset) } as *const u32;
+            let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicU32>();
 
-            // Load len with Relaxed, then Acquire fence
-            let len_raw = unsafe { ptr::read(len_ptr) };
+            // Relaxed atomic load, then Acquire fence for payload visibility
+            let len_raw = unsafe { &*len_ptr }.load(Ordering::Relaxed);
             fence(Ordering::Acquire);
 
             if len_raw == 0 {
@@ -395,13 +391,19 @@ impl Consumer {
             if len_raw & SKIP_BIT != 0 {
                 // Skip marker: zero the region and advance
                 let skip_size = (len_raw & LEN_MASK) as usize;
-                unsafe {
-                    ptr::write_bytes(buffer.add(offset), 0, skip_size);
+                // Zero payload first, then stamp last (mirrors write path)
+                if skip_size > HEADER_SIZE {
+                    unsafe {
+                        ptr::write_bytes(buffer.add(offset + HEADER_SIZE), 0, skip_size - HEADER_SIZE);
+                    }
                 }
+                // Ensure payload zeroing completes before clearing stamp
+                fence(Ordering::Release);
+                unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
                 self.head = self.head.wrapping_add(skip_size);
 
-                // Release fence before updating shared head
+                // Ensure stamp clear completes before head advance
                 fence(Ordering::Release);
                 self.shared.head.store(self.head, Ordering::Relaxed);
 
@@ -487,15 +489,21 @@ impl Drop for ReadClaim<'_> {
     fn drop(&mut self) {
         let buffer = self.consumer.shared.buffer;
 
-        // Zero the entire record region
-        unsafe {
-            ptr::write_bytes(buffer.add(self.offset), 0, self.record_size);
+        // Zero payload first, then stamp last (mirrors write path)
+        if self.record_size > HEADER_SIZE {
+            unsafe {
+                ptr::write_bytes(buffer.add(self.offset + HEADER_SIZE), 0, self.record_size - HEADER_SIZE);
+            }
         }
+        // Ensure payload zeroing completes before clearing stamp
+        fence(Ordering::Release);
+        let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicU32>();
+        unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
         // Advance head
         self.consumer.head = self.consumer.head.wrapping_add(self.record_size);
 
-        // Release fence before updating shared head
+        // Ensure stamp clear completes before head advance
         fence(Ordering::Release);
         self.consumer
             .shared
