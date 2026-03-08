@@ -29,16 +29,15 @@
 //! **IntoStep-based (pre-resolved, hot path):**
 //! `.then()`, `.map()`, `.and_then()`, `.catch()`
 //!
-//! **Closure-based (cold path, `&mut World`):**
-//! `.on_none()`, `.inspect()`, `.inspect_err()`, `.filter()`, `.ok()`,
-//! `.unwrap_or()`, `.unwrap_or_else()`, `.map_err()`, `.or_else()`,
-//! `.cloned()`, `.dispatch()`, `.tap()`, `.guard()`, `.route()`,
-//! `.switch()`
+//! **Trait-based (same API for named functions, arity-0 closures, and [`Opaque`] closures):**
+//! `.guard()`, `.filter()`, `.tap()`, `.inspect()`, `.inspect_err()`,
+//! `.on_none()`, `.ok_or_else()`, `.unwrap_or_else()`, `.map_err()`,
+//! `.or_else()`, `.and()`, `.or()`, `.xor()`, `.route()`
 //!
 //! # Combinator quick reference
 //!
 //! **Bare value `T`:** `.then()`, `.tap()`, `.guard()` (→ `Option<T>`),
-//! `.dispatch()`, `.route()`, `.switch()`, `.tee()`, `.dedup()` (→ `Option<T>`)
+//! `.dispatch()`, `.route()`, `.tee()`, `.dedup()` (→ `Option<T>`)
 //!
 //! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
 //! call `.then()` with destructured args)
@@ -85,7 +84,7 @@ use std::marker::PhantomData;
 
 use crate::Handler;
 use crate::dag::DagArm;
-use crate::handler::Param;
+use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
 // =============================================================================
@@ -246,30 +245,6 @@ macro_rules! all_tuples {
 }
 
 all_tuples!(impl_into_step);
-
-// =============================================================================
-// Opaque — marker for closures with unresolved dependencies
-// =============================================================================
-
-/// Marker for closures whose dependencies are opaque to the framework.
-///
-/// Not a [`Param`] — occupies the `Params` position in step/handler traits
-/// to indicate the function handles its own resource access (e.g. via
-/// `world.resource::<T>()`). No build-time resolution occurs.
-///
-/// Three shapes accepted by each combinator through the same trait:
-///
-/// ```ignore
-/// // Named function with Param resolution (preferred, hot path):
-/// pipeline.guard(check_risk, reg)    // fn(Res<Config>, &Order) -> bool
-///
-/// // Simple closure, no World (arity-0):
-/// pipeline.guard(|o: &Order| o.price > 100.0, reg)
-///
-/// // Opaque closure (escape hatch, HashMap lookups):
-/// pipeline.guard(|w: &mut World, o: &Order| { ... }, reg)
-/// ```
-pub struct Opaque;
 
 // =============================================================================
 // OpaqueStep — wrapper for opaque closures as steps

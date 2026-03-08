@@ -563,6 +563,55 @@ macro_rules! impl_into_handler {
 all_tuples!(impl_into_handler);
 
 // =============================================================================
+// Opaque — marker for closures with unresolved dependencies
+// =============================================================================
+
+/// Marker occupying the `Params` position in step and handler traits to
+/// indicate that a closure manages its own resource access via
+/// `world.resource::<T>()` rather than through [`Param`] resolution.
+///
+/// `Opaque` is **not** a [`Param`]. It exists solely so the compiler can
+/// distinguish three disjoint impl tiers without coherence conflicts:
+///
+/// | `Params` type | Function shape | Resolution |
+/// |---|---|---|
+/// | `()` | `FnMut(E)` | No resources needed |
+/// | `(P0,)` … `(P0..P7,)` | `fn(Res<A>, ResMut<B>, E)` | Build-time [`Param::init`], dispatch-time [`Param::fetch`] |
+/// | `Opaque` | `FnMut(&mut World, E)` | None — caller owns all access |
+///
+/// Because `&mut World` does not implement `Param`, the `Opaque` impls
+/// are always disjoint from the arity-based impls — the compiler infers
+/// `Params` unambiguously from the closure/function signature.
+///
+/// # When to use
+///
+/// Prefer named functions with [`Param`] parameters — they resolve to a
+/// direct pointer dereference per resource (single deref, no HashMap
+/// lookup). Use `Opaque` closures as an escape hatch when:
+///
+/// - You need **conditional** resource access (different resources
+///   depending on runtime state).
+/// - You need access to a resource whose type isn't known at build time.
+/// - You're prototyping and want to defer the named-function refactor.
+///
+/// # Example
+///
+/// ```ignore
+/// // Named function — preferred, hot path:
+/// pipeline.guard(check_risk, &reg)    // fn(Res<Config>, &Order) -> bool
+///
+/// // Arity-0 closure — no World access:
+/// pipeline.guard(|o: &Order| o.price > 100.0, &reg)
+///
+/// // Opaque closure — escape hatch, HashMap lookups:
+/// pipeline.guard(|w: &mut World, o: &Order| {
+///     let cfg = w.resource::<Config>();
+///     o.price > cfg.threshold
+/// }, &reg)
+/// ```
+pub struct Opaque;
+
+// =============================================================================
 // OpaqueHandler — Handler<E> for FnMut(&mut World, E) closures
 // =============================================================================
 
@@ -590,7 +639,7 @@ impl<E, F: FnMut(&mut World, E) + Send + 'static> Handler<E> for OpaqueHandler<F
     }
 }
 
-impl<E, F: FnMut(&mut World, E) + Send + 'static> IntoHandler<E, crate::pipeline::Opaque> for F {
+impl<E, F: FnMut(&mut World, E) + Send + 'static> IntoHandler<E, Opaque> for F {
     type Handler = OpaqueHandler<F>;
 
     fn into_handler(self, _registry: &Registry) -> Self::Handler {
@@ -982,5 +1031,42 @@ mod tests {
             assert_eq!(world.changed_at(u64_id), world.current_sequence());
             assert_ne!(world.changed_at(bool_id), world.current_sequence());
         }
+    }
+
+    // -- OpaqueHandler tests --------------------------------------------------
+
+    #[test]
+    fn opaque_handler_dispatch() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let opaque_fn = |w: &mut World, event: u64| {
+            let current = *w.resource::<u64>();
+            *w.resource_mut::<u64>() = current + event;
+        };
+
+        let mut h = opaque_fn.into_handler(world.registry_mut());
+        h.run(&mut world, 10u64);
+        h.run(&mut world, 5u64);
+
+        assert_eq!(*world.resource::<u64>(), 15);
+    }
+
+    #[test]
+    fn opaque_handler_boxed() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let opaque_fn = |w: &mut World, event: u64| {
+            *w.resource_mut::<u64>() += event;
+        };
+
+        let mut h: Box<dyn Handler<u64>> =
+            Box::new(opaque_fn.into_handler(world.registry_mut()));
+        h.run(&mut world, 7u64);
+
+        assert_eq!(*world.resource::<u64>(), 7);
     }
 }
