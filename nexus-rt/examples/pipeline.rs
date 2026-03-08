@@ -4,9 +4,10 @@
 //! resolved at build time. Arity-0 steps (no Params) also accept
 //! closures.
 //!
-//! IntoStep-based methods (`.then()`, `.map()`, `.and_then()`, `.catch()`)
-//! resolve params from the registry. Closure-based methods (`.filter()`,
-//! `.inspect()`, `.on_none()`, etc.) take `&mut World` for cold-path use.
+//! All combinator methods resolve params from the registry. Named functions
+//! get direct pointer access (single deref). Arity-0 closures work for
+//! simple transforms. Raw `&mut World` closures are available as an escape
+//! hatch via the `Opaque` marker.
 //!
 //! Two dispatch modes:
 //! - `run()` — direct call, no boxing, works with borrowed inputs
@@ -108,10 +109,10 @@ fn main() {
             },
             r,
         )
-        .filter(|_w, tick| tick.symbol == "BTC")
-        .inspect(|_w, tick| {
+        .filter(|tick: &MarketTick| tick.symbol == "BTC", r)
+        .inspect(|tick: &MarketTick| {
             println!("  [inspect] {} @ {:.2}", tick.symbol, tick.price);
-        })
+        }, r)
         .map(store_price, r);
 
     let ticks = [
@@ -218,8 +219,8 @@ fn main() {
 
     let mut guarded = PipelineStart::<u32>::new()
         .then(|x: u32| x, r)
-        .guard(|_w, x| *x > 5) // → Option<u32>
-        .tap(|_w, x| println!("  [tap] guard output: {x:?}"))
+        .guard(|x: &u32| *x > 5, r) // → Option<u32>
+        .tap(|x: &Option<u32>| println!("  [tap] guard output: {x:?}"), r)
         .map(accumulate, r) // runs for Some only
         .unwrap_or(()); // discard None
     for v in [3u32, 7, 2, 10, 1] {

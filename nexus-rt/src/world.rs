@@ -47,7 +47,7 @@ use rustc_hash::FxHashMap;
 /// is fetched twice within a phase, we panic with a diagnostic. This catches
 /// framework bugs where two params in the same handler resolve to the same
 /// resource — something [`Registry::check_access`] catches at construction
-/// time, but this catches dynamically for dispatch paths (like `.switch()`
+/// time, but this catches dynamically for dispatch paths (like [`Opaque`](crate::Opaque)
 /// closures) that bypass static analysis.
 ///
 /// Only active during the narrow `Param::fetch` window — safe API methods

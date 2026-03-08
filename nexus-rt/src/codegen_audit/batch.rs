@@ -56,7 +56,7 @@ pub fn batch_pipe_guard(world: &mut World) {
     let reg = world.registry();
     let mut bp = PipelineStart::<u64>::new()
         .then(add_one, &reg)
-        .guard(|_w, x| *x > 10)
+        .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
         .then(consume_val, &reg)
         .build_batch(64);
@@ -70,7 +70,7 @@ pub fn batch_pipe_option_chain(world: &mut World) {
     let mut bp = PipelineStart::<u64>::new()
         .then(maybe_positive, &reg)
         .map(double, &reg)
-        .filter(|_w, x| *x < 1000)
+        .filter(|x: &u64| *x < 1000, &reg)
         .unwrap_or(0)
         .then(consume_val, &reg)
         .build_batch(64);
@@ -127,7 +127,7 @@ pub fn batch_pipe_route(world: &mut World) {
 
     let mut bp = PipelineStart::<u64>::new()
         .then(add_one, &reg)
-        .route(|_w, x| *x > 32, on_true, on_false)
+        .route(|x: &u64| *x > 32, &reg, on_true, on_false)
         .then(consume_val, &reg)
         .build_batch(64);
     bp.input_mut().extend(0..64);
@@ -163,8 +163,8 @@ pub fn batch_pipe_guard_skip_10(world: &mut World) {
     // guard returns None should skip all 10 maps. Does the compiler
     // generate a tight branch per item?
     let mut bp = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
-        .guard(|_w, x| *x > 32)
+        .then(|x: u64| x, &reg)
+        .guard(|x: &u64| *x > 32, &reg)
         .map(add_one, &reg)
         .map(double, &reg)
         .map(add_three, &reg)
@@ -264,7 +264,7 @@ pub fn batch_dag_guard(world: &mut World) {
     let reg = world.registry();
     let mut bd = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .guard(|_w, x| *x > 10)
+        .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
         .then(ref_consume, &reg)
         .build_batch(64);
@@ -336,8 +336,8 @@ pub fn batch_pipe_guard_filter(world: &mut World) {
     let reg = world.registry();
     let mut bp = PipelineStart::<u64>::new()
         .then(add_one, &reg)
-        .guard(|_w, x| *x > 10)
-        .filter(|_w, x| *x < 1000)
+        .guard(|x: &u64| *x > 10, &reg)
+        .filter(|x: &u64| *x < 1000, &reg)
         .unwrap_or(0)
         .then(consume_val, &reg)
         .build_batch(64);
@@ -354,8 +354,8 @@ pub fn batch_pipe_transition(world: &mut World) {
     fn log_error(_err: u32) {}
 
     let mut bp = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
-        .guard(|_w, x| *x > 0)
+        .then(|x: u64| x, &reg)
+        .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
         .catch(log_error, &reg)
         .unwrap_or(0)
@@ -371,11 +371,11 @@ pub fn batch_pipe_transition(world: &mut World) {
 pub fn batch_pipe_switch(world: &mut World) {
     let reg = world.registry();
     let mut bp = PipelineStart::<u64>::new()
-        .switch(|_w, x| match x % 3 {
+        .then(|x: u64| match x % 3 {
             0 => x.wrapping_mul(2),
             1 => x.wrapping_add(10),
             _ => x.wrapping_sub(5),
-        })
+        }, &reg)
         .then(consume_val, &reg)
         .build_batch(64);
     bp.input_mut().extend(0..64);
@@ -449,7 +449,7 @@ pub fn batch_pipe_single_item(world: &mut World) {
 pub fn batch_pipe_drain_codegen(world: &mut World) {
     let reg = world.registry();
     let mut bp = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
+        .then(|x: u64| x, &reg)
         .then(consume_val, &reg)
         .build_batch(64);
     bp.input_mut().extend(0..64);
@@ -510,7 +510,7 @@ pub fn batch_dag_option_chain(world: &mut World) {
     let mut bd = DagStart::<u64>::new()
         .root(maybe_positive, &reg)
         .map(ref_double, &reg)
-        .filter(|_w, x| *x < 1000)
+        .filter(|x: &u64| *x < 1000, &reg)
         .unwrap_or(0)
         .then(ref_consume, &reg)
         .build_batch(64);
@@ -544,7 +544,7 @@ pub fn batch_dag_route(world: &mut World) {
 
     let mut bd = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .route(|_w, x| *x > 32, on_true, on_false)
+        .route(|x: &u64| *x > 32, &reg, on_true, on_false)
         .then(ref_consume, &reg)
         .build_batch(64);
     bd.input_mut().extend(0..64);

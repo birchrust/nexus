@@ -431,7 +431,7 @@ fn main() {
             r,
         )
         .map(|x: u64| x.wrapping_mul(3), r)
-        .filter(|_w, x| *x < 1_000_000);
+        .filter(|x: &u64| *x < 1_000_000, r);
 
     // --- World-accessing pipeline (pre-resolved via Res<T>) ---
 
@@ -502,7 +502,7 @@ fn main() {
     // Pure compute: identity → guard → 4 maps (no World access)
     let mut guard_4map = PipelineStart::<u64>::new()
         .then(|x: u64| x, r)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, r)
         .map(|x: u64| x.wrapping_mul(3), r)
         .map(|x: u64| x.wrapping_add(7), r)
         .map(|x: u64| x >> 1, r)
@@ -511,7 +511,7 @@ fn main() {
     // With Res<T>: identity → guard → 4 maps reading resources
     let mut guard_4map_res = PipelineStart::<u64>::new()
         .then(|x: u64| x, r)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, r)
         .map(add_res_u64, r)
         .map(mul_res_u32, r)
         .map(add_res_u64, r)
@@ -524,7 +524,7 @@ fn main() {
 
     let mut guard_dag = DagStart::<u64>::new()
         .root(|x: u64| x, r)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, r)
         .map(dag_mul3, r)
         .map(dag_add7, r)
         .map(dag_shr1, r)
@@ -536,7 +536,7 @@ fn main() {
     // Batch pipeline: guard → 4 maps → unwrap_or → sink
     let mut guard_batch = PipelineStart::<u64>::new()
         .then(|x: u64| x, r)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, r)
         .map(|x: u64| x.wrapping_mul(3), r)
         .map(|x: u64| x.wrapping_add(7), r)
         .map(|x: u64| x >> 1, r)

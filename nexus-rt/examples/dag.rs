@@ -253,7 +253,7 @@ fn main() {
 
     let mut routed = DagStart::<Tick>::new()
         .root(extract_price, reg)
-        .route(|_w, price| *price > 10_000.0, high_value, low_value)
+        .route(|price: &f64| *price > 10_000.0, reg, high_value, low_value)
         .build();
 
     for tick in [
@@ -292,7 +292,7 @@ fn main() {
 
     let mut tapped = DagStart::<Tick>::new()
         .root(extract_price, reg)
-        .tap(|_w, price| println!("  [tap] saw price={price:.2}"))
+        .tap(|price: &f64| println!("  [tap] saw price={price:.2}"), reg)
         .then(store_price, reg)
         .build();
 
@@ -353,7 +353,7 @@ fn main() {
     let mut deduped = DagStart::<u32>::new()
         .root(|x: u32| x, reg)
         .dedup()
-        .inspect(|_w, val| println!("  [dedup] passed: {val:?}"))
+        .inspect(|val: &u32| println!("  [dedup] passed: {val:?}"), reg)
         .map(count_update, reg)
         .unwrap_or(())
         .build();
@@ -377,7 +377,7 @@ fn main() {
 
     let mut guarded = DagStart::<u32>::new()
         .root(|x: u32| x, reg)
-        .guard(|_w, x| *x % 2 == 0)
+        .guard(|x: &u32| *x % 2 == 0, reg)
         .map(count_and_print, reg)
         .unwrap_or(())
         .build();

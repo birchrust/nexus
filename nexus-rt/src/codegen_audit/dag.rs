@@ -292,7 +292,7 @@ pub fn dag_guard_skip_10(world: &mut World, input: u64) {
     // None, all 10 maps should be skipped — single branch?
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .guard(|_w, x| *x > 100)
+        .guard(|x: &u64| *x > 100, &reg)
         .map(ref_double, &reg)
         .map(ref_add_three, &reg)
         .map(ref_square, &reg)
@@ -341,7 +341,7 @@ pub fn dag_guard(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .guard(|_w, x| *x > 10)
+        .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
         .then(ref_consume, &reg)
         .build();
@@ -353,8 +353,8 @@ pub fn dag_filter(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .guard(|_w, x| *x > 0)
-        .filter(|_w, x| *x < 1000)
+        .guard(|x: &u64| *x > 0, &reg)
+        .filter(|x: &u64| *x < 1000, &reg)
         .unwrap_or(0)
         .then(ref_consume, &reg)
         .build();
@@ -403,10 +403,10 @@ pub fn dag_opt_chain(world: &mut World, input: u64) {
     let mut d = DagStart::<u64>::new()
         .root(maybe_positive, &reg)
         .map(ref_double, &reg)
-        .filter(|_w, x| *x < 1000)
-        .inspect(|_w, _x| {})
-        .on_none(|_w| {})
-        .unwrap_or_else(|_w| 0)
+        .filter(|x: &u64| *x < 1000, &reg)
+        .inspect(|_x: &u64| {}, &reg)
+        .on_none(|| {}, &reg)
+        .unwrap_or_else(|| 0, &reg)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -443,9 +443,9 @@ pub fn dag_res_chain(world: &mut World, input: u64) {
         .root(try_parse, &reg)
         .map(ref_double, &reg)
         .and_then(ref_try_parse, &reg)
-        .inspect(|_w, _v| {})
-        .inspect_err(|_w, _e| {})
-        .map_err(|_w, e| e as u64)
+        .inspect(|_v: &u64| {}, &reg)
+        .inspect_err(|_e: &u32| {}, &reg)
+        .map_err(|e: u32| e as u64, &reg)
         .unwrap_or(0)
         .then(ref_consume, &reg)
         .build();
@@ -472,7 +472,7 @@ pub fn dag_res_or_else(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(try_parse, &reg)
-        .or_else(|_w, e| Ok::<u64, u32>(e as u64))
+        .or_else(|e: u32| Ok::<u64, u32>(e as u64), &reg)
         .unwrap_or(0)
         .then(ref_consume, &reg)
         .build();
@@ -484,11 +484,11 @@ pub fn dag_bool_chain(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(is_even, &reg)
-        .and(|_w| true)
-        .or(|_w| false)
+        .and(|| true, &reg)
+        .or(|| false, &reg)
         .not()
-        .xor(|_w| true)
-        .switch(|_w, &b| if b { 1u64 } else { 0u64 })
+        .xor(|| true, &reg)
+        .then(|b: &bool| -> u64 { if *b { 1 } else { 0 } }, &reg)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -507,7 +507,7 @@ pub fn dag_route_basic(world: &mut World, input: u64) {
 
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .route(|_w, x| *x > 100, on_true, on_false)
+        .route(|x: &u64| *x > 100, &reg, on_true, on_false)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -533,7 +533,7 @@ pub fn dag_route_heavy_arms(world: &mut World, input: u64) {
 
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .route(|_w, x| *x > 100, arm_t, arm_f)
+        .route(|x: &u64| *x > 100, &reg, arm_t, arm_f)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -544,7 +544,7 @@ pub fn dag_switch_basic(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .switch(|_w, x| if *x > 100 { x.wrapping_mul(2) } else { x.wrapping_add(1) })
+        .then(|x: &u64| if *x > 100 { x.wrapping_mul(2) } else { x.wrapping_add(1) }, &reg)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -555,11 +555,11 @@ pub fn dag_switch_3way(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .switch(|_w, x| match x % 3 {
+        .then(|x: &u64| match x % 3 {
             0 => x.wrapping_mul(2),
             1 => x.wrapping_add(10),
             _ => x.wrapping_sub(5),
-        })
+        }, &reg)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -573,13 +573,13 @@ pub fn dag_switch_resolve_arm(world: &mut World, input: u64) {
 
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .switch(move |world, x| {
+        .then(move |world: &mut World, x: &u64| {
             if *x > 100 {
                 arm_big(world, x)
             } else {
                 arm_small(world, x)
             }
-        })
+        }, &reg)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -640,7 +640,7 @@ pub fn dag_tap(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .tap(|_w, _x| {})
+        .tap(|_x: &u64| {}, &reg)
         .then(ref_double, &reg)
         .then(ref_consume, &reg)
         .build();
@@ -790,7 +790,7 @@ pub fn dag_fork_with_guard(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .guard(|_w, x| *x > 10)
+        .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
         .fork()
         .arm(|a| a.then(ref_double, &reg))
@@ -810,7 +810,7 @@ pub fn dag_fork_with_route(world: &mut World, input: u64) {
 
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .route(|_w, x| *x > 100, on_true, on_false)
+        .route(|x: &u64| *x > 100, &reg, on_true, on_false)
         .fork()
         .arm(|a| a.then(ref_square, &reg))
         .arm(|a| a.then(ref_shr_one, &reg))
@@ -836,9 +836,9 @@ pub fn dag_full_kitchen_sink(world: &mut World, input: u64) {
 
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .tap(|_w, _x| {})
+        .tap(|_x: &u64| {}, &reg)
         .then(ref_add_res_a, &reg)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, &reg)
         .map(ref_double, &reg)
         .unwrap_or(0)
         .tee(tee_side)
@@ -846,7 +846,7 @@ pub fn dag_full_kitchen_sink(world: &mut World, input: u64) {
         .map(ref_add_one, &reg)
         .catch(log_error, &reg)
         .unwrap_or(0)
-        .route(|_w, x| *x > 100, route_true, route_false)
+        .route(|x: &u64| *x > 100, &reg, route_true, route_false)
         .fork()
         .arm(|a| a.then(ref_square, &reg))
         .arm(|a| a.then(ref_shr_one, &reg))
@@ -958,15 +958,15 @@ pub fn dag_fork_arm_combinators(world: &mut World, input: u64) {
         .fork()
         .arm(|a| {
             a.then(ref_add_one, &reg)
-                .guard(|_w, x| *x > 10)
+                .guard(|x: &u64| *x > 10, &reg)
                 .map(ref_double, &reg)
                 .unwrap_or(0)
         })
         .arm(|a| {
             a.then(ref_triple, &reg)
-                .guard(|_w, x| *x > 5)
-                .filter(|_w, x| *x < 500)
-                .unwrap_or_else(|_w| 0)
+                .guard(|x: &u64| *x > 5, &reg)
+                .filter(|x: &u64| *x < 500, &reg)
+                .unwrap_or_else(|| 0, &reg)
         })
         .arm(|a| a.then(ref_add_seven, &reg))
         .merge(merge_3, &reg)
@@ -985,8 +985,8 @@ pub fn dag_filter_in_arm(world: &mut World, input: u64) {
         .fork()
         .arm(|a| {
             a.then(ref_add_one, &reg)
-                .guard(|_w, x| *x > 10)
-                .filter(|_w, x| *x < 1000)
+                .guard(|x: &u64| *x > 10, &reg)
+                .filter(|x: &u64| *x < 1000, &reg)
                 .unwrap_or(0)
         })
         .arm(|a| a.then(ref_double, &reg))
@@ -1006,7 +1006,7 @@ pub fn dag_transition_guard_ok_or(world: &mut World, input: u64) {
 
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
         .catch(log_error, &reg)
         .unwrap_or(0)
@@ -1029,7 +1029,7 @@ pub fn dag_route_in_arm(world: &mut World, input: u64) {
         .fork()
         .arm(|a| {
             a.then(ref_add_one, &reg)
-                .route(|_w, x| *x > 50, on_true, on_false)
+                .route(|x: &u64| *x > 50, &reg, on_true, on_false)
         })
         .arm(|a| a.then(ref_add_seven, &reg))
         .merge(merge_add, &reg)
@@ -1051,7 +1051,7 @@ pub fn dag_route_nested(world: &mut World, input: u64) {
     // 3-way branch via nested switch (same as pipe_route_nested_2 strategy)
     let mut d = DagStart::<u64>::new()
         .root(add_one, &reg)
-        .switch(move |world, x| {
+        .then(move |world: &mut World, x: &u64| {
             if *x > 100 {
                 big(world, x)
             } else if *x > 50 {
@@ -1059,7 +1059,7 @@ pub fn dag_route_nested(world: &mut World, input: u64) {
             } else {
                 small(world, x)
             }
-        })
+        }, &reg)
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);

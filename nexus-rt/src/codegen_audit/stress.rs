@@ -140,27 +140,27 @@ pub fn stress_pipe_all_combinators(world: &mut World, input: u64) -> u64 {
 
     let mut p = PipelineStart::<u64>::new()
         .then(add_one, &reg)                    // then
-        .tap(|_w, _x| {})                       // tap
+        .tap(|_x: &u64| {}, &reg)               // tap
         .tee(tee_side)                           // tee
-        .guard(|_w, x| *x > 0)                  // guard
-        .filter(|_w, x| *x < 10000)             // filter
-        .inspect(|_w, _x| {})                    // inspect (Option)
-        .on_none(|_w| {})                        // on_none
+        .guard(|x: &u64| *x > 0, &reg)          // guard
+        .filter(|x: &u64| *x < 10000, &reg)     // filter
+        .inspect(|_x: &u64| {}, &reg)            // inspect (Option)
+        .on_none(|| {}, &reg)                    // on_none
         .ok_or(0u32)                             // ok_or
         .map(double, &reg)                       // map (Result)
-        .inspect(|_w, _x| {})                    // inspect (Result)
-        .inspect_err(|_w, _e| {})                // inspect_err
-        .map_err(|_w, e| e)                      // map_err
+        .inspect(|_x: &u64| {}, &reg)            // inspect (Result)
+        .inspect_err(|_e: &u32| {}, &reg)        // inspect_err
+        .map_err(|e: u32| e, &reg)               // map_err
         .catch(log_error, &reg)                  // catch
         .unwrap_or(0)                            // unwrap_or (Option)
         .then(add_three, &reg)                   // then again
         .then(is_even, &reg)                     // bool
-        .and(|_w| true)                          // and
-        .or(|_w| false)                          // or
+        .and(|| true, &reg)                      // and
+        .or(|| false, &reg)                      // or
         .not()                                   // not
-        .xor(|_w| true)                          // xor
-        .switch(|_w, b| if b { 100u64 } else { 0u64 }) // switch
-        .route(|_w, x| *x > 50, on_true, on_false);    // route
+        .xor(|| true, &reg)                      // xor
+        .then(|b: bool| if b { 100u64 } else { 0u64 }, &reg) // then (was switch)
+        .route(|x: &u64| *x > 50, &reg, on_true, on_false);  // route
     p.run(world, input)
 }
 
@@ -176,14 +176,14 @@ pub fn stress_pipe_transition_chain(world: &mut World, input: u64) -> u64 {
 
     // T → Option → Result → Option → T → Option → Result → Option → T
     let mut p = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
+        .then(|x: u64| x, &reg)
         // Cycle 1: T → Option → Result → Option → T
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
         .catch(log_error, &reg)
         .unwrap_or(0)
         // Cycle 2: T → Option → Result → Option → T
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
         .catch(log_error, &reg)
         .unwrap_or(0)
@@ -210,19 +210,19 @@ pub fn stress_pipe_route_4_deep(world: &mut World, input: u64) -> u64 {
     let l8 = PipelineStart::<u64>::new().then(shr_one, &reg);
 
     // Level 3 (4 routes)
-    let r3a = PipelineStart::<u64>::new().switch(|_w, x| x).route(|_w, x| *x > 10, l1, l2);
-    let r3b = PipelineStart::<u64>::new().switch(|_w, x| x).route(|_w, x| *x > 20, l3, l4);
-    let r3c = PipelineStart::<u64>::new().switch(|_w, x| x).route(|_w, x| *x > 30, l5, l6);
-    let r3d = PipelineStart::<u64>::new().switch(|_w, x| x).route(|_w, x| *x > 40, l7, l8);
+    let r3a = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 10, &reg, l1, l2);
+    let r3b = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 20, &reg, l3, l4);
+    let r3c = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 30, &reg, l5, l6);
+    let r3d = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 40, &reg, l7, l8);
 
     // Level 2 (2 routes)
-    let r2a = PipelineStart::<u64>::new().switch(|_w, x| x).route(|_w, x| *x > 50, r3a, r3b);
-    let r2b = PipelineStart::<u64>::new().switch(|_w, x| x).route(|_w, x| *x > 60, r3c, r3d);
+    let r2a = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 50, &reg, r3a, r3b);
+    let r2b = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 60, &reg, r3c, r3d);
 
     // Level 1 (top)
     let mut p = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
-        .route(|_w, x| *x > 100, r2a, r2b);
+        .then(|x: u64| x, &reg)
+        .route(|x: &u64| *x > 100, &reg, r2a, r2b);
     p.run(world, input)
 }
 
@@ -242,7 +242,7 @@ pub fn stress_dag_fork_route_mix(world: &mut World, input: u64) {
         .fork()
         .arm(|a| {
             a.then(ref_add_one, &reg)
-                .route(|_w, x| *x > 50, on_true, on_false)
+                .route(|x: &u64| *x > 50, &reg, on_true, on_false)
         })
         .arm(|a| a.then(ref_add_seven, &reg))
         .arm(|a| a.then(ref_square, &reg))
@@ -355,17 +355,17 @@ pub fn stress_pipe_large_type(world: &mut World, input: u64) -> [u8; 4096] {
 pub fn stress_pipe_many_closures(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     let mut p = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
-        .guard(|_w, x| *x > 0)
-        .filter(|_w, x| *x < 10000)
-        .filter(|_w, x| *x > 5)
-        .inspect(|_w, _x| {})
-        .on_none(|_w| {})
+        .then(|x: u64| x, &reg)
+        .guard(|x: &u64| *x > 0, &reg)
+        .filter(|x: &u64| *x < 10000, &reg)
+        .filter(|x: &u64| *x > 5, &reg)
+        .inspect(|_x: &u64| {}, &reg)
+        .on_none(|| {}, &reg)
         .map(double, &reg)
-        .filter(|_w, x| *x < 50000)
-        .filter(|_w, x| *x > 1)
-        .inspect(|_w, _x| {})
-        .unwrap_or_else(|_w| 0)
+        .filter(|x: &u64| *x < 50000, &reg)
+        .filter(|x: &u64| *x > 1, &reg)
+        .inspect(|_x: &u64| {}, &reg)
+        .unwrap_or_else(|| 0, &reg)
         .then(add_one, &reg);
     p.run(world, input)
 }
@@ -480,8 +480,8 @@ pub fn stress_pipe_tee_in_route(world: &mut World, input: u64) -> u64 {
         .then(add_one, &reg);
 
     let mut p = PipelineStart::<u64>::new()
-        .switch(|_w, x| x)
-        .route(|_w, x| *x > 100, arm_t, arm_f);
+        .then(|x: u64| x, &reg)
+        .route(|x: &u64| *x > 100, &reg, arm_t, arm_f);
     p.run(world, input)
 }
 
@@ -505,16 +505,16 @@ pub fn stress_mixed_everything(world: &mut World, input: u64) {
 
     let mut p = PipelineStart::<u64>::new()
         .then(add_one, &reg)
-        .tap(|_w, _x| {})
+        .tap(|_x: &u64| {}, &reg)
         .tee(tee_side)
-        .guard(|_w, x| *x > 0)
+        .guard(|x: &u64| *x > 0, &reg)
         .map(double, &reg)
-        .filter(|_w, x| *x < 100_000)
+        .filter(|x: &u64| *x < 100_000, &reg)
         .ok_or(0u32)
         .map(add_three, &reg)
         .catch(log_error, &reg)
         .unwrap_or(0)
-        .route(|_w, x| *x > 50, on_true, on_false)
+        .route(|x: &u64| *x > 50, &reg, on_true, on_false)
         .then(split_u64, &reg)
         .splat()
         .then(splat_add, &reg)
