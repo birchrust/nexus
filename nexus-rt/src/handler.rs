@@ -563,6 +563,45 @@ macro_rules! impl_into_handler {
 all_tuples!(impl_into_handler);
 
 // =============================================================================
+// OpaqueHandler — Handler<E> for FnMut(&mut World, E) closures
+// =============================================================================
+
+/// Wrapper for closures that receive `&mut World` directly as a [`Handler`].
+///
+/// Created by [`IntoHandler::into_handler`] when the function signature is
+/// `FnMut(&mut World, E)`. The closure handles its own resource access —
+/// no [`Param`] resolution occurs.
+///
+/// Prefer named functions with [`Param`] resolution for hot-path handlers.
+/// `OpaqueHandler` is an escape hatch for cases where dynamic or conditional
+/// resource access is needed.
+pub struct OpaqueHandler<F> {
+    f: F,
+    name: &'static str,
+}
+
+impl<E, F: FnMut(&mut World, E) + Send + 'static> Handler<E> for OpaqueHandler<F> {
+    fn run(&mut self, world: &mut World, event: E) {
+        (self.f)(world, event);
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl<E, F: FnMut(&mut World, E) + Send + 'static> IntoHandler<E, crate::pipeline::Opaque> for F {
+    type Handler = OpaqueHandler<F>;
+
+    fn into_handler(self, _registry: &Registry) -> Self::Handler {
+        OpaqueHandler {
+            f: self,
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

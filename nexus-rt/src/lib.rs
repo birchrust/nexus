@@ -124,9 +124,10 @@ pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
 pub use dag::{BatchDag, Dag, DagStart, resolve_arm};
 pub use driver::Installer;
-pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, Param, RegistryRef};
+pub use handler::{CtxFree, Handler, HandlerFn, IntoHandler, Local, OpaqueHandler, Param, RegistryRef};
 pub use pipeline::{
-    BatchPipeline, IntoStep, Pipeline, PipelineBuilder, PipelineOutput, PipelineStart, resolve_step,
+    BatchPipeline, IntoProducer, IntoRefStep, IntoStep, Opaque, Pipeline, PipelineBuilder,
+    PipelineOutput, PipelineStart, resolve_producer, resolve_ref_step, resolve_step,
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};

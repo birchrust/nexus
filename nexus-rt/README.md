@@ -528,24 +528,30 @@ For linear chains without fan-out, prefer
 | | `.arm(\|a\| a.then(...))` | | Build one arm of a fork |
 | | `.merge(fn, reg)` | `&A, &B → T` | Combine arm outputs |
 | | `.join()` | | Terminate fork without merge (all arms → `()`) |
-| **Flow control** | `.guard(pred)` | `&T → Option<T>` | Wrap in Option via predicate |
-| | `.tap(\|w, v\| ...)` | `&T → &T` | Observe without consuming |
-| | `.route(pred, arm_t, arm_f)` | `&T → U` | Binary conditional routing |
+| **Flow control** | `.guard(fn, reg)` | `&T → Option<T>` | Wrap in Option via predicate |
+| | `.tap(fn, reg)` | `&T → &T` | Observe without consuming |
+| | `.route(pred, reg, arm_t, arm_f)` | `&T → U` | Binary conditional routing |
 | | `.tee(arm)` | `&T → &T` | Side-effect arm, chain continues |
 | | `.dedup()` | `T → Option<T>` | Suppress consecutive duplicates |
 | **Option\<T\>** | `.map(fn, reg)` | `&T → U` | Map inner value (Some only) |
-| | `.filter(pred)` | `&T → Option<T>` | Keep on true, None on false |
-| | `.inspect(\|w, v\| ...)` | `&T → &T` | Observe Some values |
+| | `.filter(fn, reg)` | `&T → Option<T>` | Keep on true, None on false |
+| | `.inspect(fn, reg)` | `&T → &T` | Observe Some values |
 | | `.and_then(fn, reg)` | `&T → Option<U>` | Flat-map inner value |
-| | `.on_none(\|w\| ...)` | | Side effect on None |
+| | `.on_none(fn, reg)` | | Side effect on None |
 | | `.ok_or(fn, reg)` | `→ Result<T, E>` | Convert None to Err |
+| | `.ok_or_else(fn, reg)` | `→ Result<T, E>` | Convert None to Err (produced) |
 | | `.unwrap_or(default)` | `→ T` | Unwrap with fallback |
+| | `.unwrap_or_else(fn, reg)` | `→ T` | Unwrap with produced fallback |
 | **Result\<T, E\>** | `.map(fn, reg)` | `&T → U` | Map Ok value |
 | | `.and_then(fn, reg)` | `&T → Result<U, E>` | Flat-map Ok value |
 | | `.catch(fn, reg)` | `E → ()` | Handle Err, continue with Ok |
-| | `.map_err(\|w, e\| ...)` | `E → E2` | Transform error type |
+| | `.map_err(fn, reg)` | `E → E2` | Transform error type |
+| | `.or_else(fn, reg)` | `E → Result<T, E2>` | Recover from error |
+| | `.inspect(fn, reg)` | `&T → &T` | Observe Ok values |
+| | `.inspect_err(fn, reg)` | `&E → &E` | Observe Err values |
 | | `.ok()` | `→ Option<T>` | Discard Err |
 | | `.unwrap_or(default)` | `→ T` | Unwrap with fallback |
+| | `.unwrap_or_else(fn, reg)` | `→ T` | Unwrap Err with produced fallback |
 | **Bool** | `.not()` | `bool → bool` | Logical NOT |
 | | `.and(fn, reg)` | `bool → bool` | Short-circuit AND |
 | | `.or(fn, reg)` | `bool → bool` | Short-circuit OR |
@@ -555,9 +561,10 @@ For linear chains without fan-out, prefer
 | | `.cloned()` | `&T → T` | Clone reference to owned |
 | | `.build()` | | Finalize into `Dag<E>` |
 
-`.then()`, `.map()`, `.and_then()`, `.catch()` are pre-resolved (hot path).
-Closure-based combinators (`.filter()`, `.inspect()`, `.tap()`, etc.) take
-`&mut World` and are intended for cold-path use.
+All combinators accepting functions resolve `Param` dependencies at build
+time via `IntoStep`, `IntoRefStep`, or `IntoProducer` — named functions
+get direct-pointer access. Arity-0 closures work everywhere. Raw
+`&mut World` closures are available as an escape hatch via `Opaque`.
 
 #### Splat — tuple destructuring
 
@@ -1085,6 +1092,11 @@ arguments) requires named functions. This is a feature, not a limitation:
 - Named functions are **testable** in isolation
 - Named functions are **inspectable** (handler `.name()` returns the function path)
 - Named functions are **reusable** across pipelines
+
+For cases where you need `&mut World` access in a closure (e.g. dynamic
+resource lookup), pass a `|world: &mut World, input| { ... }` closure —
+it resolves via the `Opaque` marker with no `Param` overhead. The same
+pattern works for `OpaqueHandler` (closures as `Handler<E>`).
 
 Keep step functions small and focused — one function per transformation.
 
