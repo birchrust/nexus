@@ -621,9 +621,9 @@ impl<In: 'static> DagArmStart<In> {
     /// [`DagArm::route`]:
     ///
     /// ```ignore
-    /// let fast = DagArmStart::new().then(fast_path, reg);
-    /// let slow = DagArmStart::new().then(slow_path, reg);
-    /// dag.route(predicate, fast, slow)
+    /// let fast = DagArmStart::new().then(fast_path, &reg);
+    /// let slow = DagArmStart::new().then(slow_path, &reg);
+    /// dag.route(predicate, &reg, fast, slow)
     /// ```
     pub fn new() -> Self {
         Self(PhantomData)

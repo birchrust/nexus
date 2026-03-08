@@ -2035,8 +2035,8 @@ impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In,
 // resolve_step — pre-resolve a step for manual dispatch (owned input)
 // =============================================================================
 
-/// Resolve a step for use in manual dispatch (e.g. inside a
-/// [`.switch()`](PipelineBuilder::switch) closure).
+/// Resolve a step for use in manual dispatch (e.g. inside an
+/// [`Opaque`] closure passed to `.then()`).
 ///
 /// Returns a closure with pre-resolved [`Param`] state — the same
 /// build-time resolution that `.then()` performs, but as a standalone
@@ -2048,13 +2048,13 @@ impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In,
 /// # Examples
 ///
 /// ```ignore
-/// let mut arm0 = resolve_step(handle_new, reg);
-/// let mut arm1 = resolve_step(handle_cancel, reg);
+/// let mut arm0 = resolve_step(handle_new, &reg);
+/// let mut arm1 = resolve_step(handle_cancel, &reg);
 ///
-/// pipeline.switch(move |world, order: Order| match order.kind {
+/// pipeline.then(move |world: &mut World, order: Order| match order.kind {
 ///     OrderKind::New    => arm0(world, order),
 ///     OrderKind::Cancel => arm1(world, order),
-/// })
+/// }, &reg)
 /// ```
 pub fn resolve_step<In, Out, Params, S>(
     f: S,

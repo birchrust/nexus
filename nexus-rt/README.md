@@ -435,11 +435,12 @@ Typed composition chains where each step is a named function with
 `Param` dependencies resolved at build time.
 
 ```rust
+let reg = world.registry();
 let mut pipeline = PipelineStart::<Order>::new()
-    .then(validate, registry)       // Order → Result<Order, Error>
-    .and_then(enrich, registry)      // Order → Result<Order, Error>
-    .catch(log_error, registry)      // Error → () (side effect)
-    .map(submit, registry)           // Order → Receipt
+    .then(validate, &reg)            // Order → Result<Order, Error>
+    .and_then(enrich, &reg)          // Order → Result<Order, Error>
+    .catch(log_error, &reg)          // Error → () (side effect)
+    .map(submit, &reg)              // Order → Receipt
     .build();                        // → Pipeline<Order, _> (concrete)
 
 pipeline.run(&mut world, order);
@@ -459,11 +460,12 @@ pre-allocated input buffer. Each item flows through the same chain
 independently — errors are handled per-item, not per-batch.
 
 ```rust
+let reg = world.registry();
 let mut batch = PipelineStart::<Order>::new()
-    .then(validate, registry)       // Order → Result<Order, Error>
-    .catch(log_error, registry)      // handle error, continue batch
-    .map(enrich, registry)           // runs for valid items only
-    .then(submit, registry)
+    .then(validate, &reg)            // Order → Result<Order, Error>
+    .catch(log_error, &reg)          // handle error, continue batch
+    .map(enrich, &reg)              // runs for valid items only
+    .then(submit, &reg)
     .build_batch(1024);
 
 // Driver fills input buffer
