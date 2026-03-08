@@ -1,6 +1,6 @@
 [package]
 name = "nexus-logbuf"
-version = "1.0.1"
+version = "1.0.2"
 description = "Lock-free SPSC and MPSC byte ring buffers for logging and archival"
 readme = "README.md"
 edition.workspace = true
