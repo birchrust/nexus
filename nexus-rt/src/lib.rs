@@ -128,8 +128,9 @@ pub use handler::{
     CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
 };
 pub use pipeline::{
-    BatchPipeline, IntoProducer, IntoRefStep, IntoStep, Pipeline, PipelineBuilder, PipelineOutput,
-    PipelineStart, resolve_producer, resolve_ref_step, resolve_step,
+    BatchPipeline, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
+    PipelineBuilder, PipelineOutput, PipelineStart, resolve_producer, resolve_ref_scan_step,
+    resolve_ref_step, resolve_scan_step, resolve_step,
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut};

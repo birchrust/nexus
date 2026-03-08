@@ -52,7 +52,8 @@
 //! **Topology:** `.root()`, `.then()`, `.fork()`, `.arm()`, `.merge()`,
 //! `.join()`, `.build()`
 //!
-//! **Flow control:** `.guard()`, `.tap()`, `.route()`, `.tee()`, `.dedup()`
+//! **Flow control:** `.guard()`, `.tap()`, `.route()`, `.tee()`, `.scan()`,
+//! `.dedup()`
 //!
 //! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
 //! call `.then()` with destructured `&T` args)
@@ -134,7 +135,10 @@
 use std::marker::PhantomData;
 
 use crate::Handler;
-use crate::pipeline::{IntoProducer, IntoRefStep, IntoStep, ProducerCall, RefStepCall, StepCall};
+use crate::pipeline::{
+    IntoProducer, IntoRefScanStep, IntoRefStep, IntoStep, ProducerCall, RefScanStepCall,
+    RefStepCall, StepCall,
+};
 use crate::world::{Registry, World};
 
 // =============================================================================
@@ -914,6 +918,37 @@ macro_rules! impl_dag_combinators {
                         let val = chain(world, $pname);
                         side_chain(world, &val);
                         val
+                    },
+                    _marker: PhantomData,
+                }
+            }
+
+            /// Scan with persistent accumulator. The step receives
+            /// `&mut Acc` and `&Out` by reference, returning the new
+            /// output. State persists across invocations.
+            pub fn scan<Acc, NewOut, Params, S>(
+                self,
+                initial: Acc,
+                f: S,
+                registry: &Registry,
+            ) -> $Builder<
+                $U,
+                NewOut,
+                impl FnMut(&mut World, $pty) -> NewOut
+                    + use<$U, Out, Acc, NewOut, Params, S, Chain>,
+            >
+            where
+                Acc: 'static,
+                NewOut: 'static,
+                S: IntoRefScanStep<Acc, Out, NewOut, Params>,
+            {
+                let mut chain = self.chain;
+                let mut step = f.into_ref_scan_step(registry);
+                let mut acc = initial;
+                $Builder {
+                    chain: move |world: &mut World, $pname: $pty| {
+                        let val = chain(world, $pname);
+                        step.call(world, &mut acc, &val)
                     },
                     _marker: PhantomData,
                 }
@@ -4265,4 +4300,100 @@ mod tests {
         // 1 → 1, 2 → 20, 3 → 3, 4 → 40 = 64
         assert_eq!(*world.resource::<u64>(), 64);
     }
+
+    // =========================================================================
+    // Scan combinator (DAG)
+    // =========================================================================
+
+    #[test]
+    fn dag_scan_arity0_closure() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+
+        let mut dag = DagStart::<u64>::new()
+            .root(|x: u64| x, reg)
+            .scan(0u64, |acc: &mut u64, val: &u64| {
+                *acc += val;
+                *acc
+            }, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, 10);
+        assert_eq!(*world.resource::<u64>(), 10);
+        dag.run(&mut world, 20);
+        assert_eq!(*world.resource::<u64>(), 30);
+        dag.run(&mut world, 5);
+        assert_eq!(*world.resource::<u64>(), 35);
+    }
+
+    #[test]
+    fn dag_scan_named_fn_with_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(100);
+        wb.register::<String>(String::new());
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn threshold(limit: Res<u64>, acc: &mut u64, val: &u64) -> Option<u64> {
+            *acc += val;
+            if *acc > *limit { Some(*acc) } else { None }
+        }
+        fn store_opt(mut out: ResMut<String>, val: &Option<u64>) {
+            *out = match val {
+                Some(v) => format!("hit:{v}"),
+                None => "below".into(),
+            };
+        }
+
+        let mut dag = DagStart::<u64>::new()
+            .root(|x: u64| x, reg)
+            .scan(0u64, threshold, reg)
+            .then(store_opt, reg)
+            .build();
+
+        dag.run(&mut world, 50);
+        assert_eq!(world.resource::<String>().as_str(), "below");
+        dag.run(&mut world, 60);
+        assert_eq!(world.resource::<String>().as_str(), "hit:110");
+    }
+
+    #[test]
+    fn dag_arm_scan() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+
+        let scan_arm = DagArmStart::<u64>::new()
+            .then(|v: &u64| *v, reg)
+            .scan(0u64, |acc: &mut u64, val: &u64| {
+                *acc += val;
+                *acc
+            }, reg)
+            .then(store, reg);
+
+        let pass_arm = DagArmStart::<u64>::new()
+            .then(|_: &u64| {}, reg);
+
+        let mut dag = DagStart::<u64>::new()
+            .root(|x: u64| x, reg)
+            .fork()
+            .arm(|_| scan_arm)
+            .arm(|_| pass_arm)
+            .merge(|_: &(), _: &()| {}, reg)
+            .build();
+
+        dag.run(&mut world, 10);
+        assert_eq!(*world.resource::<u64>(), 10);
+        dag.run(&mut world, 20);
+        assert_eq!(*world.resource::<u64>(), 30);
+    }
+
 }

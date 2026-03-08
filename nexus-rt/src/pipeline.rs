@@ -37,7 +37,7 @@
 //! # Combinator quick reference
 //!
 //! **Bare value `T`:** `.then()`, `.tap()`, `.guard()` (→ `Option<T>`),
-//! `.dispatch()`, `.route()`, `.tee()`, `.dedup()` (→ `Option<T>`)
+//! `.dispatch()`, `.route()`, `.tee()`, `.scan()`, `.dedup()` (→ `Option<T>`)
 //!
 //! **Tuple `(A, B, ...)` (2-5 elements):** `.splat()` (→ splat builder,
 //! call `.then()` with destructured args)
@@ -596,6 +596,337 @@ pub fn resolve_producer<Out, Params, S: IntoProducer<Out, Params>>(
 }
 
 // =============================================================================
+// ScanStepCall / IntoScanStep — step with persistent accumulator
+// =============================================================================
+
+/// Internal: callable trait for resolved scan steps.
+///
+/// Like [`StepCall`] but with an additional `&mut Acc` accumulator
+/// argument that persists across invocations.
+#[doc(hidden)]
+pub trait ScanStepCall<Acc, In, Out> {
+    /// Call this scan step with a world reference, accumulator, and input value.
+    fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out;
+}
+
+/// Converts a function into a pre-resolved scan step with persistent state.
+///
+/// Same three-tier resolution as [`IntoStep`]:
+///
+/// | Params | Function shape | Example |
+/// |--------|---------------|---------|
+/// | `()` | `FnMut(&mut Acc, In) -> Out` | `\|acc, trade\| { *acc += trade.amount; Some(*acc) }` |
+/// | `(P0,)...(P0..P7,)` | `fn(Params..., &mut Acc, In) -> Out` | `fn vwap(c: Res<Config>, acc: &mut State, t: Trade) -> Option<f64>` |
+/// | [`Opaque`] | `FnMut(&mut World, &mut Acc, In) -> Out` | `\|w: &mut World, acc: &mut u64, t: Trade\| { ... }` |
+pub trait IntoScanStep<Acc, In, Out, Params> {
+    /// The concrete resolved scan step type.
+    type Step: ScanStepCall<Acc, In, Out>;
+
+    /// Resolve Param state from the registry and produce a scan step.
+    fn into_scan_step(self, registry: &Registry) -> Self::Step;
+}
+
+// -- Arity 0: FnMut(&mut Acc, In) -> Out — closures work --------------------
+
+impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
+    ScanStepCall<Acc, In, Out> for Step<F, ()>
+{
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, acc: &mut Acc, input: In) -> Out {
+        (self.f)(acc, input)
+    }
+}
+
+impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
+    IntoScanStep<Acc, In, Out, ()> for F
+{
+    type Step = Step<F, ()>;
+
+    fn into_scan_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// -- Arities 1-8: named functions with Param resolution ----------------------
+
+macro_rules! impl_into_scan_step {
+    ($($P:ident),+) => {
+        impl<Acc, In, Out, F: 'static, $($P: Param + 'static),+>
+            ScanStepCall<Acc, In, Out> for Step<F, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc, In) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc, In) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ Accumulator, Input, Output>(
+                    mut f: impl FnMut($($P,)+ &mut Accumulator, Input) -> Output,
+                    $($P: $P,)+
+                    acc: &mut Accumulator,
+                    input: Input,
+                ) -> Output {
+                    f($($P,)+ acc, input)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ acc, input)
+            }
+        }
+
+        impl<Acc, In, Out, F: 'static, $($P: Param + 'static),+>
+            IntoScanStep<Acc, In, Out, ($($P,)+)> for F
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc, In) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc, In) -> Out,
+        {
+            type Step = Step<F, ($($P,)+)>;
+
+            fn into_scan_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_scan_step);
+
+// -- Opaque: FnMut(&mut World, &mut Acc, In) -> Out --------------------------
+
+/// Internal: wrapper for opaque closures used as scan steps.
+#[doc(hidden)]
+pub struct OpaqueScanStep<F> {
+    f: F,
+    #[allow(dead_code)]
+    name: &'static str,
+}
+
+impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, In) -> Out + 'static>
+    ScanStepCall<Acc, In, Out> for OpaqueScanStep<F>
+{
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out {
+        (self.f)(world, acc, input)
+    }
+}
+
+impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, In) -> Out + 'static>
+    IntoScanStep<Acc, In, Out, Opaque> for F
+{
+    type Step = OpaqueScanStep<F>;
+
+    fn into_scan_step(self, _registry: &Registry) -> Self::Step {
+        OpaqueScanStep {
+            f: self,
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// =============================================================================
+// resolve_scan_step — pre-resolve a scan step for manual dispatch
+// =============================================================================
+
+/// Resolve a scan step for manual dispatch.
+///
+/// Returns a closure with pre-resolved [`Param`] state. Scan variant
+/// of [`resolve_step`] with an additional `&mut Acc` accumulator.
+pub fn resolve_scan_step<Acc, In, Out, Params, S: IntoScanStep<Acc, In, Out, Params>>(
+    f: S,
+    registry: &Registry,
+) -> impl FnMut(&mut World, &mut Acc, In) -> Out + use<Acc, In, Out, Params, S> {
+    let mut resolved = f.into_scan_step(registry);
+    move |world: &mut World, acc: &mut Acc, input: In| resolved.call(world, acc, input)
+}
+
+// =============================================================================
+// RefScanStepCall / IntoRefScanStep — scan step taking &In
+// =============================================================================
+
+/// Internal: callable trait for resolved scan steps taking input by reference.
+///
+/// DAG variant of [`ScanStepCall`] — each step borrows its input.
+#[doc(hidden)]
+pub trait RefScanStepCall<Acc, In, Out> {
+    /// Call this scan step with a world reference, accumulator, and borrowed input.
+    fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out;
+}
+
+/// Converts a function into a pre-resolved ref-scan step with persistent state.
+///
+/// Same three-tier resolution as [`IntoRefStep`]:
+///
+/// | Params | Function shape | Example |
+/// |--------|---------------|---------|
+/// | `()` | `FnMut(&mut Acc, &In) -> Out` | `\|acc, trade: &Trade\| { ... }` |
+/// | `(P0,)...(P0..P7,)` | `fn(Params..., &mut Acc, &In) -> Out` | `fn vwap(c: Res<Config>, acc: &mut State, t: &Trade) -> Option<f64>` |
+/// | [`Opaque`] | `FnMut(&mut World, &mut Acc, &In) -> Out` | `\|w: &mut World, acc: &mut u64, t: &Trade\| { ... }` |
+pub trait IntoRefScanStep<Acc, In, Out, Params> {
+    /// The concrete resolved ref-scan step type.
+    type Step: RefScanStepCall<Acc, In, Out>;
+
+    /// Resolve Param state from the registry and produce a ref-scan step.
+    fn into_ref_scan_step(self, registry: &Registry) -> Self::Step;
+}
+
+// -- Arity 0: FnMut(&mut Acc, &In) -> Out — closures work -------------------
+
+impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
+    RefScanStepCall<Acc, In, Out> for Step<F, ()>
+{
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, acc: &mut Acc, input: &In) -> Out {
+        (self.f)(acc, input)
+    }
+}
+
+impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
+    IntoRefScanStep<Acc, In, Out, ()> for F
+{
+    type Step = Step<F, ()>;
+
+    fn into_ref_scan_step(self, registry: &Registry) -> Self::Step {
+        Step {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// -- Arities 1-8: named functions with Param resolution ----------------------
+
+macro_rules! impl_into_ref_scan_step {
+    ($($P:ident),+) => {
+        impl<Acc, In, Out, F: 'static, $($P: Param + 'static),+>
+            RefScanStepCall<Acc, In, Out> for Step<F, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc, &In) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc, &In) -> Out,
+        {
+            #[inline(always)]
+            #[allow(non_snake_case)]
+            fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P,)+ Accumulator, Input: ?Sized, Output>(
+                    mut f: impl FnMut($($P,)+ &mut Accumulator, &Input) -> Output,
+                    $($P: $P,)+
+                    acc: &mut Accumulator,
+                    input: &Input,
+                ) -> Output {
+                    f($($P,)+ acc, input)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+ acc, input)
+            }
+        }
+
+        impl<Acc, In, Out, F: 'static, $($P: Param + 'static),+>
+            IntoRefScanStep<Acc, In, Out, ($($P,)+)> for F
+        where
+            for<'a> &'a mut F:
+                FnMut($($P,)+ &mut Acc, &In) -> Out +
+                FnMut($($P::Item<'a>,)+ &mut Acc, &In) -> Out,
+        {
+            type Step = Step<F, ($($P,)+)>;
+
+            fn into_ref_scan_step(self, registry: &Registry) -> Self::Step {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                Step { f: self, state, name: std::any::type_name::<F>() }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_ref_scan_step);
+
+// -- Opaque: FnMut(&mut World, &mut Acc, &In) -> Out ------------------------
+
+/// Internal: wrapper for opaque closures used as ref-scan steps.
+#[doc(hidden)]
+pub struct OpaqueRefScanStep<F> {
+    f: F,
+    #[allow(dead_code)]
+    name: &'static str,
+}
+
+impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, &In) -> Out + 'static>
+    RefScanStepCall<Acc, In, Out> for OpaqueRefScanStep<F>
+{
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out {
+        (self.f)(world, acc, input)
+    }
+}
+
+impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, &In) -> Out + 'static>
+    IntoRefScanStep<Acc, In, Out, Opaque> for F
+{
+    type Step = OpaqueRefScanStep<F>;
+
+    fn into_ref_scan_step(self, _registry: &Registry) -> Self::Step {
+        OpaqueRefScanStep {
+            f: self,
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// =============================================================================
+// resolve_ref_scan_step — pre-resolve a ref-scan step for manual dispatch
+// =============================================================================
+
+/// Resolve a ref-scan step for manual dispatch.
+///
+/// Returns a closure with pre-resolved [`Param`] state. Reference-input
+/// counterpart of [`resolve_scan_step`].
+pub fn resolve_ref_scan_step<Acc, In, Out, Params, S: IntoRefScanStep<Acc, In, Out, Params>>(
+    f: S,
+    registry: &Registry,
+) -> impl FnMut(&mut World, &mut Acc, &In) -> Out + use<Acc, In, Out, Params, S> {
+    let mut resolved = f.into_ref_scan_step(registry);
+    move |world: &mut World, acc: &mut Acc, input: &In| resolved.call(world, acc, input)
+}
+
+// =============================================================================
 // SplatCall / IntoSplatStep — splat step dispatch (tuple destructuring)
 // =============================================================================
 //
@@ -1003,6 +1334,28 @@ impl<In> PipelineStart<In> {
         }
     }
 
+    /// Add the first step as a scan with persistent accumulator.
+    /// The step receives `&mut Acc` and the input, returning the output.
+    /// State persists across invocations.
+    pub fn scan<Acc, Out, Params, S>(
+        self,
+        initial: Acc,
+        f: S,
+        registry: &Registry,
+    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out + use<In, Acc, Out, Params, S>>
+    where
+        Acc: 'static,
+        S: IntoScanStep<Acc, In, Out, Params>,
+    {
+        let mut step = f.into_scan_step(registry);
+        let mut acc = initial;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                step.call(world, &mut acc, input)
+            },
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<In> Default for PipelineStart<In> {
@@ -1200,6 +1553,49 @@ where
             _marker: PhantomData,
         }
     }
+
+    /// Scan with persistent accumulator. The step receives `&mut Acc`
+    /// and the current value, returning the new output. State persists
+    /// across invocations.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Running sum — suppress values below threshold
+    /// PipelineStart::<u64>::new()
+    ///     .then(identity, reg)
+    ///     .scan(0u64, |acc: &mut u64, val: u64| {
+    ///         *acc += val;
+    ///         if *acc > 100 { Some(*acc) } else { None }
+    ///     }, reg)
+    ///     .build();
+    /// ```
+    pub fn scan<Acc, NewOut, Params, S>(
+        self,
+        initial: Acc,
+        f: S,
+        registry: &Registry,
+    ) -> PipelineBuilder<
+        In,
+        NewOut,
+        impl FnMut(&mut World, In) -> NewOut + use<In, Out, Acc, NewOut, Params, S, Chain>,
+    >
+    where
+        Acc: 'static,
+        S: IntoScanStep<Acc, Out, NewOut, Params>,
+    {
+        let mut chain = self.chain;
+        let mut step = f.into_scan_step(registry);
+        let mut acc = initial;
+        PipelineBuilder {
+            chain: move |world: &mut World, input: In| {
+                let val = chain(world, input);
+                step.call(world, &mut acc, val)
+            },
+            _marker: PhantomData,
+        }
+    }
+
 }
 
 // =============================================================================
@@ -3765,4 +4161,133 @@ mod tests {
         p.run(&mut world, 5u32);
         assert_eq!(world.resource::<String>().as_str(), "ok:5");
     }
+
+    // =========================================================================
+    // Scan combinator
+    // =========================================================================
+
+    #[test]
+    fn scan_arity0_closure_running_sum() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u64>::new()
+            .then(|x: u64| x, reg)
+            .scan(0u64, |acc: &mut u64, val: u64| {
+                *acc += val;
+                Some(*acc)
+            }, reg);
+
+        assert_eq!(p.run(&mut world, 10), Some(10));
+        assert_eq!(p.run(&mut world, 20), Some(30));
+        assert_eq!(p.run(&mut world, 5), Some(35));
+    }
+
+    #[test]
+    fn scan_named_fn_with_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(100);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn threshold_scan(
+            limit: Res<u64>,
+            acc: &mut u64,
+            val: u64,
+        ) -> Option<u64> {
+            *acc += val;
+            if *acc > *limit { Some(*acc) } else { None }
+        }
+
+        let mut p = PipelineStart::<u64>::new()
+            .then(|x: u64| x, reg)
+            .scan(0u64, threshold_scan, reg);
+
+        assert_eq!(p.run(&mut world, 50), None);
+        assert_eq!(p.run(&mut world, 30), None);
+        assert_eq!(p.run(&mut world, 25), Some(105));
+    }
+
+    #[test]
+    fn scan_opaque_closure() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(10);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u64>::new()
+            .then(|x: u64| x, reg)
+            .scan(0u64, |world: &mut World, acc: &mut u64, val: u64| {
+                let factor = *world.resource::<u64>();
+                *acc += val * factor;
+                Some(*acc)
+            }, reg);
+
+        assert_eq!(p.run(&mut world, 1), Some(10));
+        assert_eq!(p.run(&mut world, 2), Some(30));
+    }
+
+    #[test]
+    fn scan_suppression_returns_none() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u64>::new()
+            .then(|x: u64| x, reg)
+            .scan(0u64, |acc: &mut u64, val: u64| -> Option<u64> {
+                *acc += val;
+                if *acc > 50 { Some(*acc) } else { None }
+            }, reg);
+
+        assert_eq!(p.run(&mut world, 20), None);
+        assert_eq!(p.run(&mut world, 20), None);
+        assert_eq!(p.run(&mut world, 20), Some(60));
+    }
+
+    #[test]
+    fn scan_on_pipeline_start() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut p = PipelineStart::<u64>::new()
+            .scan(0u64, |acc: &mut u64, val: u64| {
+                *acc += val;
+                *acc
+            }, reg);
+
+        assert_eq!(p.run(&mut world, 5), 5);
+        assert_eq!(p.run(&mut world, 3), 8);
+        assert_eq!(p.run(&mut world, 2), 10);
+    }
+
+    #[test]
+    fn scan_persistence_across_batch() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn store(mut out: ResMut<u64>, val: u64) { *out = val; }
+
+        let mut p = PipelineStart::<u64>::new()
+            .then(|x: u64| x, reg)
+            .scan(0u64, |acc: &mut u64, val: u64| {
+                *acc += val;
+                *acc
+            }, reg)
+            .then(store, reg)
+            .build_batch(4);
+
+        p.input_mut().extend([1, 2, 3]);
+        p.run(&mut world);
+
+        // Accumulator persists: 1, 3, 6
+        assert_eq!(*world.resource::<u64>(), 6);
+
+        p.input_mut().push(4);
+        p.run(&mut world);
+        // acc = 6 + 4 = 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
 }
