@@ -30,7 +30,7 @@
 //!
 //! Same as SPSC - see [`crate::spsc`] for details.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::Arc;
@@ -59,7 +59,9 @@ pub fn new(capacity: usize) -> (Producer, Consumer) {
     // Allocate buffer, zero-initialized, 8-byte aligned for atomic len stamps
     let layout = Layout::from_size_align(capacity, 8).unwrap();
     let buffer_ptr = unsafe { alloc_zeroed(layout) };
-    assert!(!buffer_ptr.is_null(), "allocation failed");
+    if buffer_ptr.is_null() {
+        handle_alloc_error(layout);
+    }
 
     let shared = Arc::new(Shared {
         head: CachePadded::new(AtomicUsize::new(0)),
