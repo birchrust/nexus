@@ -534,6 +534,7 @@ For linear chains without fan-out, prefer
 | | `.tap(fn, reg)` | `&T → &T` | Observe without consuming |
 | | `.route(pred, reg, arm_t, arm_f)` | `&T → U` | Binary conditional routing |
 | | `.tee(arm)` | `&T → &T` | Side-effect arm, chain continues |
+| | `.scan(init, fn, reg)` | `&mut Acc, T → U` | Stateful transform with accumulator |
 | | `.dedup()` | `T → Option<T>` | Suppress consecutive duplicates |
 | **Option\<T\>** | `.map(fn, reg)` | `&T → U` | Map inner value (Some only) |
 | | `.filter(fn, reg)` | `&T → Option<T>` | Keep on true, None on false |
