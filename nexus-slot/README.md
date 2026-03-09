@@ -1,14 +1,21 @@
 # nexus-slot
 
-A high-performance SPSC conflation slot for "latest value wins" scenarios.
+High-performance conflation slots for "latest value wins" scenarios.
 
 ## Overview
 
-`nexus-slot` provides a single-value slot optimized for the common pattern where only the most recent value matters: market data snapshots, sensor readings, configuration updates, position state, etc.
+`nexus-slot` provides single-value slots optimized for the common pattern where only the most recent value matters: market data snapshots, sensor readings, configuration updates, position state, etc.
 
 - **Writer** overwrites with newest data (never blocks)
 - **Reader** gets each new value exactly once
 - **Old values** are silently discarded (conflated)
+
+Two variants based on reader topology:
+
+| Variant | Readers | Overhead |
+|---------|---------|----------|
+| [`spsc`] | Single reader | Lowest — disconnect via refcount |
+| [`spmc`] | Multiple readers (`Clone`) | +1 `AtomicBool` for writer-dropped flag |
 
 ## Performance
 
@@ -28,8 +35,10 @@ The **2.2x speedup** over `seqlock` comes from specializing for single-producer:
 
 ## Usage
 
+### SPSC — Single Reader
+
 ```rust
-use nexus_slot::{slot, Pod};
+use nexus_slot::spsc;
 
 #[derive(Copy, Clone, Default)]
 struct Quote {
@@ -38,7 +47,7 @@ struct Quote {
     sequence: u64,
 }
 
-let (mut writer, mut reader) = slot::<Quote>();
+let (mut writer, mut reader) = spsc::slot::<Quote>();
 
 // Writer side (e.g., market data thread)
 writer.write(Quote { bid: 100.0, ask: 100.05, sequence: 1 });
@@ -52,13 +61,32 @@ assert_eq!(quote.unwrap().sequence, 2);
 assert!(reader.read().is_none());
 ```
 
+### SPMC — Multiple Readers
+
+```rust
+use nexus_slot::spmc;
+
+let (mut writer, mut reader1) = spmc::shared_slot::<u64>();
+let mut reader2 = reader1.clone();
+
+writer.write(42);
+
+// Each reader consumes independently
+assert_eq!(reader1.read(), Some(42));
+assert_eq!(reader2.read(), Some(42));
+
+// Both consumed
+assert!(reader1.read().is_none());
+assert!(reader2.read().is_none());
+```
+
 ## Semantics
 
 ### Conflation
 
 Multiple writes before a read result in only the latest value being observed:
 
-```rust
+```text
 writer.write(value_1);
 writer.write(value_2);
 writer.write(value_3);
@@ -70,21 +98,18 @@ assert!(reader.read().is_none());
 
 ### Exactly-Once Delivery
 
-Each written value can be read at most once:
+Each written value can be read at most once per reader:
 
-```rust
+```text
 writer.write(value);
 
 assert!(reader.read().is_some());  // Consumes it
 assert!(reader.read().is_none());  // Already consumed
-
-writer.write(another_value);
-assert!(reader.read().is_some());  // New value available
 ```
 
 ### Check Without Consuming
 
-```rust
+```text
 if reader.has_update() {
     // New data available, but not consumed yet
     let value = reader.read();  // Now consumed
@@ -98,6 +123,8 @@ Types must implement `Pod` (Plain Old Data) — no heap allocations or drop glue
 Any `Copy` type automatically implements `Pod`:
 
 ```rust
+use nexus_slot::spsc::slot;
+
 // These work automatically
 let (w, r) = slot::<u64>();
 let (w, r) = slot::<[f64; 4]>();
@@ -119,7 +146,7 @@ struct OrderBook {
 // SAFETY: OrderBook is just bytes, no heap allocations
 unsafe impl Pod for OrderBook {}
 
-let (mut writer, mut reader) = slot::<OrderBook>();
+let (mut writer, mut reader) = nexus_slot::spsc::slot::<OrderBook>();
 ```
 
 **Pod requirements:**
@@ -129,52 +156,47 @@ let (mut writer, mut reader) = slot::<OrderBook>();
 
 ## API
 
-### Writer
+### SPSC
 
-| Method | Description |
-|--------|-------------|
-| `write(value)` | Overwrite with new value (never blocks) |
-| `is_disconnected()` | Returns true if reader was dropped |
+| Type | Method | Description |
+|------|--------|-------------|
+| `Writer` | `write(value)` | Overwrite with new value (never blocks) |
+| `Writer` | `is_disconnected()` | Returns true if reader was dropped |
+| `Reader` | `read() -> Option<T>` | Get latest value if new, consuming it |
+| `Reader` | `has_update() -> bool` | Check for new data without consuming |
+| `Reader` | `is_disconnected()` | Returns true if writer was dropped |
 
-### Reader
+### SPMC
 
-| Method | Description |
-|--------|-------------|
-| `read() -> Option<T>` | Get latest value if new, consuming it |
-| `has_update() -> bool` | Check for new data without consuming |
-| `is_disconnected()` | Returns true if writer was dropped |
-
-## Use Cases
-
-**Good fit:**
-- Market data distribution (quotes, trades, order book snapshots)
-- Sensor data (temperature, position, velocity)
-- Configuration/state broadcasting
-- Any "latest value wins" SPSC scenario
-
-**Not ideal for:**
-- Multiple writers → use `seqlock` or mutex
-- Multiple readers → use `arc-swap` or `RwLock`
-- Queue semantics (all values must be delivered) → use `nexus-queue`
-- Async/await → use `tokio::sync::watch`
+| Type | Method | Description |
+|------|--------|-------------|
+| `Writer` | `write(value)` | Overwrite with new value (never blocks) |
+| `Writer` | `is_disconnected()` | Returns true if **all** readers were dropped |
+| `SharedReader` | `read() -> Option<T>` | Get latest value if new, consuming it |
+| `SharedReader` | `has_update() -> bool` | Check for new data without consuming |
+| `SharedReader` | `is_disconnected()` | Returns true if writer was dropped |
+| `SharedReader` | `clone()` | Create independent reader at same position |
 
 ## Implementation
 
 Uses a sequence lock (seqlock) internally:
 
 1. Writer increments sequence to odd (write in progress)
-2. Writer copies data
+2. Writer copies data via word-at-a-time atomic stores (`Relaxed`)
 3. Writer increments sequence to even (write complete)
-4. Reader loads sequence, copies data, checks sequence unchanged
+4. Reader loads sequence, copies data via word-at-a-time atomic loads, checks sequence unchanged
 5. If sequence changed during read, retry
 
-The SPSC constraint allows caching the sequence on the writer side, eliminating an atomic load per write.
+The single-producer constraint allows caching the sequence on the writer side, eliminating an atomic load per write. Standalone `Release`/`Acquire` fences provide ordering.
 
 ## Thread Safety
 
-- `Writer<T>` is `Send` (can move to another thread)
-- `Reader<T>` is `Send` (can move to another thread)
-- Neither is `Sync` — each handle is for one thread only
+| Type | `Send` | `Sync` | Notes |
+|------|--------|--------|-------|
+| `spsc::Writer<T>` | Yes | No | One thread only |
+| `spsc::Reader<T>` | Yes | No | One thread only |
+| `spmc::Writer<T>` | Yes | No | One thread only |
+| `spmc::SharedReader<T>` | Yes | No | Clone for each thread |
 
 ## License
 

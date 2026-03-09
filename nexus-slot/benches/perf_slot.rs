@@ -6,7 +6,7 @@
 
 use std::thread;
 
-use nexus_slot::{self, Pod};
+use nexus_slot::Pod;
 
 const COUNT: u64 = 10_000_000;
 
@@ -38,7 +38,7 @@ impl Quote {
 }
 
 fn main() {
-    let (mut writer, mut reader) = nexus_slot::slot::<Quote>();
+    let (mut writer, mut reader) = nexus_slot::spsc::slot::<Quote>();
 
     let writer_handle = thread::spawn(move || {
         for i in 0..COUNT {

@@ -8,7 +8,7 @@
 
 use std::thread;
 
-use nexus_slot::{self, Pod};
+use nexus_slot::Pod;
 
 const WARMUP: u64 = 10_000;
 const SAMPLES: u64 = 100_000;
@@ -24,8 +24,8 @@ struct Message {
 unsafe impl Pod for Message {}
 
 fn main() {
-    let (mut writer_a, mut reader_a) = nexus_slot::slot::<Message>();
-    let (mut writer_b, mut reader_b) = nexus_slot::slot::<Message>();
+    let (mut writer_a, mut reader_a) = nexus_slot::spsc::slot::<Message>();
+    let (mut writer_b, mut reader_b) = nexus_slot::spsc::slot::<Message>();
 
     let total = WARMUP + SAMPLES;
 
