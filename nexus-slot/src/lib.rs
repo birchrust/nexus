@@ -1,52 +1,18 @@
-//! A high-performance SPSC conflation slot.
+//! High-performance conflation slots for latest-value-wins scenarios.
 //!
-//! This crate provides a single-value slot optimized for the "latest value wins"
-//! pattern common in trading systems: market data snapshots, order book updates,
-//! position state, etc.
+//! Two variants based on reader topology:
 //!
-//! - **Writer** overwrites with newest data (never blocks)
-//! - **Reader** gets each new value exactly once
-//! - Old values are silently discarded (conflated)
+//! - [`spsc`] — Single producer, single consumer. Lowest overhead.
+//! - [`spmc`] — Single producer, multiple consumers. [`SharedReader`](spmc::SharedReader) is `Clone`.
 //!
-//! # Use Case
-//!
-//! This is specifically designed for **single-producer, single-consumer** (SPSC)
-//! scenarios where you only care about the most recent value. If you need:
-//!
-//! - Multiple writers → use [`seqlock`](https://crates.io/crates/seqlock) or a mutex
-//! - Multiple readers → use [`arc-swap`](https://crates.io/crates/arc-swap) or RwLock
-//! - Queue semantics (all messages delivered) → use [`nexus-queue`] or [`crossbeam`](https://crates.io/crates/crossbeam)
-//! - Async/await → use [`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/index.html)
-//!
-//! # Performance
-//!
-//! Benchmarked on Intel Core Ultra 7 155H @ 2.7GHz, pinned to physical cores
-//! with turbo disabled:
-//!
-//! | Implementation | p50 Latency | Notes |
-//! |----------------|-------------|-------|
-//! | **nexus_slot** | 159 cycles (59 ns) | SPSC only |
-//! | `seqlock` crate | 355 cycles (132 ns) | Supports multiple writers |
-//! | `ArrayQueue(1)` | 540 cycles (201 ns) | General-purpose bounded queue |
-//!
-//! The performance advantage comes from specializing for the SPSC case:
-//!
-//! - **No writer contention**: Single writer means no mutex, no CAS loops
-//! - **Cached sequence numbers**: Writer tracks sequence locally, avoiding atomic loads
-//! - **No queue machinery**: No head/tail coordination, just a sequence counter
-//!
-//! Other implementations are more general-purpose and pay for flexibility we
-//! don't need in the SPSC conflation case.
+//! Both use a seqlock internally: the writer increments a sequence counter,
+//! copies data via word-at-a-time atomics, and increments again. Readers
+//! speculatively copy and retry if the sequence changed.
 //!
 //! # The `Pod` Trait
 //!
-//! Types used with this slot must implement [`Pod`] (Plain Old Data). This is
-//! an `unsafe` marker trait guaranteeing the type has no heap allocations or
-//! resources requiring cleanup.
-//!
-//! Any `Copy` type automatically implements `Pod`. For non-`Copy` types that
-//! are still just bytes (e.g., large structs where you want to avoid implicit
-//! copies), you can implement it manually:
+//! Types must implement [`Pod`] (Plain Old Data) — no heap allocations,
+//! no drop glue, byte-copyable. Any `Copy` type implements `Pod` automatically.
 //!
 //! ```rust
 //! use nexus_slot::Pod;
@@ -58,63 +24,40 @@
 //!     sequence: u64,
 //! }
 //!
-//! // SAFETY: OrderBook is just bytes - no heap allocations
+//! // SAFETY: OrderBook is just bytes — no heap allocations
 //! unsafe impl Pod for OrderBook {}
 //! ```
 //!
-//! # Example
+//! # Examples
 //!
 //! ```rust
-//! use nexus_slot::{self, Pod};
-//!
 //! #[derive(Copy, Clone, Default)]
-//! struct Quote {
-//!     bid: f64,
-//!     ask: f64,
-//!     sequence: u64,
-//! }
+//! struct Quote { bid: f64, ask: f64, seq: u64 }
 //!
-//! let (mut writer, mut reader) = nexus_slot::slot::<Quote>();
-//!
-//! // No data yet
-//! assert!(reader.read().is_none());
-//!
-//! // Writer publishes a quote
-//! writer.write(Quote { bid: 100.0, ask: 100.05, sequence: 1 });
-//!
-//! // Reader consumes it
-//! let quote = reader.read().unwrap();
-//! assert_eq!(quote.sequence, 1);
-//!
-//! // Already consumed - returns None until next write
-//! assert!(reader.read().is_none());
-//!
-//! // Multiple writes before read = conflation
-//! writer.write(Quote { bid: 100.1, ask: 100.15, sequence: 2 });
-//! writer.write(Quote { bid: 100.2, ask: 100.25, sequence: 3 });
-//!
-//! // Reader only sees the latest
-//! let quote = reader.read().unwrap();
-//! assert_eq!(quote.sequence, 3);
+//! // SPSC — single reader
+//! let (mut writer, mut reader) = nexus_slot::spsc::slot::<Quote>();
+//! writer.write(Quote { bid: 100.0, ask: 100.05, seq: 1 });
+//! assert_eq!(reader.read().unwrap().seq, 1);
 //! ```
 //!
-//! # Implementation
+//! ```rust
+//! #[derive(Copy, Clone, Default)]
+//! struct Quote { bid: f64, ask: f64, seq: u64 }
 //!
-//! Uses a sequence lock (seqlock) internally:
+//! // SPMC — multiple readers
+//! let (mut writer, mut reader1) = nexus_slot::spmc::shared_slot::<Quote>();
+//! let mut reader2 = reader1.clone();
 //!
-//! - Writer increments sequence to odd (writing), copies data, increments to even (done)
-//! - Reader loads sequence, copies data, checks sequence unchanged
-//! - If sequence changed during read, retry
-//!
-//! The SPSC constraint allows us to cache the sequence number on the writer side,
-//! eliminating an atomic load on every write. The reader caches the last-read
-//! sequence to detect "already consumed" without copying data.
+//! writer.write(Quote { bid: 100.0, ask: 100.05, seq: 1 });
+//! assert!(reader1.read().is_some());
+//! assert!(reader2.read().is_some()); // independent consumption
+//! ```
 
-use std::cell::UnsafeCell;
-use std::fmt;
-use std::mem::MaybeUninit;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering, fence};
+pub mod spmc;
+pub mod spsc;
+
+use std::mem::{MaybeUninit, align_of, size_of};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 /// Marker trait for types safe to use in a conflated slot.
 ///
@@ -136,7 +79,7 @@ use std::sync::atomic::{AtomicUsize, Ordering, fence};
 ///
 /// #[repr(C)]
 /// struct OrderBook {
-///     bids: [f64; 20],  // 10 levels × (price, size)
+///     bids: [f64; 20],
 ///     asks: [f64; 20],
 ///     bid_count: u8,
 ///     ask_count: u8,
@@ -158,447 +101,89 @@ pub unsafe trait Pod: Sized {
 // Any Copy type is Pod
 unsafe impl<T: Copy> Pod for T {}
 
-/// Shared state between writer and reader.
-#[repr(C)]
-struct Inner<T> {
-    /// Sequence number. Odd = write in progress, even = stable, 0 = never written.
-    seq: AtomicUsize,
-    data: UnsafeCell<MaybeUninit<T>>,
-}
-
-unsafe impl<T: Send> Send for Inner<T> {}
-unsafe impl<T: Send> Sync for Inner<T> {}
-
-/// The writing half of a conflated slot.
-pub struct Writer<T> {
-    local_seq: usize,
-    inner: Arc<Inner<T>>,
-}
-
-unsafe impl<T: Send> Send for Writer<T> {}
-
-/// The reading half of a conflated slot.
-pub struct Reader<T> {
-    cached_seq: usize,
-    inner: Arc<Inner<T>>,
-}
-
-unsafe impl<T: Send> Send for Reader<T> {}
-
-/// Creates a new conflated slot.
+/// Atomically stores `size_of::<T>()` bytes into shared memory.
 ///
-/// Returns a `(Writer, Reader)` pair.
-pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
-    let _ = T::_ASSERT_NO_DROP;
+/// Word-at-a-time `AtomicUsize` stores when alignment permits,
+/// `AtomicU8` fallback for tail bytes or poorly-aligned types.
+/// All stores use `Relaxed` ordering — caller provides fences.
+///
+/// # Safety
+///
+/// - `dst` must be valid for `size_of::<T>()` bytes
+/// - `dst` must be aligned to `align_of::<T>()`
+/// - `dst` must be derived from `UnsafeCell` (shared-mutable provenance)
+#[inline]
+pub(crate) unsafe fn atomic_store<T: Pod>(dst: *mut T, src: &T) {
+    unsafe {
+        let dst = dst.cast::<u8>();
+        let src = (src as *const T).cast::<u8>();
+        let size = size_of::<T>();
 
-    let inner = Arc::new(Inner {
-        seq: AtomicUsize::new(0),
-        data: UnsafeCell::new(MaybeUninit::uninit()),
-    });
+        if align_of::<T>() >= align_of::<usize>() {
+            let words = size / size_of::<usize>();
+            let tail = size % size_of::<usize>();
 
-    (
-        Writer {
-            local_seq: 0,
-            inner: Arc::clone(&inner),
-        },
-        Reader {
-            cached_seq: 0,
-            inner,
-        },
-    )
-}
+            for i in 0..words {
+                let atom = &*(dst.add(i * size_of::<usize>()) as *const AtomicUsize);
+                let val = src.add(i * size_of::<usize>()).cast::<usize>().read();
+                atom.store(val, Ordering::Relaxed);
+            }
 
-impl<T: Pod> Writer<T> {
-    /// Writes a value, overwriting any previous.
-    ///
-    /// Never blocks. If the reader is mid-read, they detect and retry.
-    #[inline]
-    pub fn write(&mut self, value: T) {
-        let inner = &*self.inner;
-        let seq = self.local_seq;
-
-        // Odd = write in progress
-        inner.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
-        fence(Ordering::Release);
-
-        unsafe { (*inner.data.get()).write(value) };
-
-        fence(Ordering::Release);
-        self.local_seq = seq.wrapping_add(2);
-        inner.seq.store(self.local_seq, Ordering::Relaxed);
-    }
-
-    /// Returns `true` if the reader has been dropped.
-    #[inline]
-    pub fn is_disconnected(&self) -> bool {
-        Arc::strong_count(&self.inner) == 1
+            let base = words * size_of::<usize>();
+            for i in 0..tail {
+                let atom = &*(dst.add(base + i) as *const AtomicU8);
+                atom.store(*src.add(base + i), Ordering::Relaxed);
+            }
+        } else {
+            for i in 0..size {
+                let atom = &*(dst.add(i) as *const AtomicU8);
+                atom.store(*src.add(i), Ordering::Relaxed);
+            }
+        }
     }
 }
 
-impl<T: Pod> fmt::Debug for Writer<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Writer")
-            .field("seq", &self.local_seq)
-            .finish_non_exhaustive()
-    }
-}
+/// Atomically loads `size_of::<T>()` bytes from shared memory.
+///
+/// Word-at-a-time `AtomicUsize` loads when alignment permits,
+/// `AtomicU8` fallback for tail bytes or poorly-aligned types.
+/// All loads use `Relaxed` ordering — caller provides fences.
+///
+/// # Safety
+///
+/// - `src` must be valid for `size_of::<T>()` bytes
+/// - `src` must be aligned to `align_of::<T>()`
+/// - `src` must be derived from `UnsafeCell` (shared-mutable provenance)
+#[inline]
+pub(crate) unsafe fn atomic_load<T: Pod>(src: *const T) -> T {
+    unsafe {
+        let mut buf = MaybeUninit::<T>::uninit();
+        let dst = buf.as_mut_ptr().cast::<u8>();
+        let src = src.cast::<u8>();
+        let size = size_of::<T>();
 
-impl<T: Pod> Reader<T> {
-    /// Reads the latest value if new data is available.
-    ///
-    /// Returns `Some(value)` if:
-    /// - A value has been written, AND
-    /// - It hasn't been read yet (or a new write occurred since last read)
-    ///
-    /// Returns `None` if:
-    /// - No value has ever been written, OR
-    /// - The current value was already consumed by a previous `read()`
-    ///
-    /// # Performance
-    ///
-    /// - No new data: ~3-5 cycles (single load + compare)
-    /// - New data: ~15-25 cycles (two loads + memcpy)
-    #[inline]
-    pub fn read(&mut self) -> Option<T> {
-        let inner = &*self.inner;
+        if align_of::<T>() >= align_of::<usize>() {
+            let words = size / size_of::<usize>();
+            let tail = size % size_of::<usize>();
 
-        loop {
-            let seq1 = inner.seq.load(Ordering::Relaxed);
-
-            // Never written or already consumed
-            if seq1 == 0 || seq1 == self.cached_seq {
-                return None;
+            for i in 0..words {
+                let atom = &*(src.add(i * size_of::<usize>()) as *const AtomicUsize);
+                let val = atom.load(Ordering::Relaxed);
+                dst.add(i * size_of::<usize>()).cast::<usize>().write(val);
             }
 
-            // Write in progress
-            if seq1 & 1 != 0 {
-                core::hint::spin_loop();
-                continue;
+            let base = words * size_of::<usize>();
+            for i in 0..tail {
+                let atom = &*(src.add(base + i) as *const AtomicU8);
+                *dst.add(base + i) = atom.load(Ordering::Relaxed);
             }
-
-            fence(Ordering::Acquire);
-
-            let value = unsafe { (*inner.data.get()).assume_init_read() };
-
-            fence(Ordering::Acquire);
-            let seq2 = inner.seq.load(Ordering::Relaxed);
-
-            if seq1 == seq2 {
-                self.cached_seq = seq1;
-                return Some(value);
-            }
-
-            // Torn read, retry
-            core::hint::spin_loop();
-        }
-    }
-
-    /// Checks if new data is available without consuming it.
-    ///
-    /// Returns `true` if `read()` would return `Some`.
-    ///
-    /// # Performance
-    ///
-    /// ~3-5 cycles (single load + compare).
-    #[inline]
-    pub fn has_update(&self) -> bool {
-        let seq = self.inner.seq.load(Ordering::Relaxed);
-        seq != 0 && seq != self.cached_seq && seq & 1 == 0
-    }
-
-    /// Returns `true` if the writer has been dropped.
-    #[inline]
-    pub fn is_disconnected(&self) -> bool {
-        Arc::strong_count(&self.inner) == 1
-    }
-}
-
-impl<T: Pod> fmt::Debug for Reader<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Reader")
-            .field("cached_seq", &self.cached_seq)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Clone, Default, PartialEq, Debug)]
-    #[repr(C)]
-    struct TestData {
-        a: u64,
-        b: u64,
-    }
-
-    unsafe impl Pod for TestData {}
-
-    // ========================================================================
-    // Queue-like Semantics
-    // ========================================================================
-
-    #[test]
-    fn read_before_write_returns_none() {
-        let (_, mut reader) = slot::<TestData>();
-        assert!(reader.read().is_none());
-    }
-
-    #[test]
-    fn read_consumes_value() {
-        let (mut writer, mut reader) = slot::<TestData>();
-
-        writer.write(TestData { a: 1, b: 2 });
-
-        // First read succeeds
-        assert_eq!(reader.read(), Some(TestData { a: 1, b: 2 }));
-
-        // Second read returns None - already consumed
-        assert!(reader.read().is_none());
-        assert!(reader.read().is_none());
-    }
-
-    #[test]
-    fn new_write_makes_data_available_again() {
-        let (mut writer, mut reader) = slot::<TestData>();
-
-        writer.write(TestData { a: 1, b: 0 });
-        assert!(reader.read().is_some());
-        assert!(reader.read().is_none()); // Consumed
-
-        writer.write(TestData { a: 2, b: 0 });
-        assert!(reader.read().is_some()); // Available again
-        assert!(reader.read().is_none()); // Consumed again
-    }
-
-    #[test]
-    fn multiple_writes_before_read_conflates() {
-        let (mut writer, mut reader) = slot::<TestData>();
-
-        writer.write(TestData { a: 1, b: 0 });
-        writer.write(TestData { a: 2, b: 0 });
-        writer.write(TestData { a: 3, b: 0 });
-
-        // Only get the latest
-        assert_eq!(reader.read(), Some(TestData { a: 3, b: 0 }));
-        assert!(reader.read().is_none());
-    }
-
-    #[test]
-    fn has_update_does_not_consume() {
-        let (mut writer, mut reader) = slot::<TestData>();
-
-        assert!(!reader.has_update());
-
-        writer.write(TestData { a: 1, b: 0 });
-
-        assert!(reader.has_update());
-        assert!(reader.has_update()); // Still true
-        assert!(reader.has_update());
-
-        reader.read(); // Now consume
-
-        assert!(!reader.has_update());
-    }
-
-    // ========================================================================
-    // Disconnection
-    // ========================================================================
-
-    #[test]
-    fn writer_detects_disconnect() {
-        let (writer, reader) = slot::<TestData>();
-        assert!(!writer.is_disconnected());
-        drop(reader);
-        assert!(writer.is_disconnected());
-    }
-
-    #[test]
-    fn reader_detects_disconnect() {
-        let (writer, reader) = slot::<TestData>();
-        assert!(!reader.is_disconnected());
-        drop(writer);
-        assert!(reader.is_disconnected());
-    }
-
-    #[test]
-    fn can_read_after_writer_disconnect() {
-        let (mut writer, mut reader) = slot::<TestData>();
-
-        writer.write(TestData { a: 42, b: 0 });
-        drop(writer);
-
-        assert!(reader.is_disconnected());
-        assert_eq!(reader.read(), Some(TestData { a: 42, b: 0 }));
-    }
-
-    // ========================================================================
-    // Cross-Thread
-    // ========================================================================
-
-    #[test]
-    fn cross_thread_write_read() {
-        use std::thread;
-
-        let (mut writer, mut reader) = slot::<TestData>();
-
-        let handle = thread::spawn(move || {
-            while reader.read().is_none() {
-                core::hint::spin_loop();
-            }
-        });
-
-        writer.write(TestData { a: 1, b: 2 });
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn cross_thread_conflation() {
-        use std::thread;
-
-        let (mut writer, mut reader) = slot::<u64>();
-
-        let handle = thread::spawn(move || {
-            let mut last = 0;
-            let mut count = 0;
-
-            loop {
-                if reader.is_disconnected() && !reader.has_update() {
-                    break;
-                }
-                if let Some(v) = reader.read() {
-                    assert!(v >= last, "must be monotonic");
-                    last = v;
-                    count += 1;
-                }
-            }
-            (last, count)
-        });
-
-        for i in 0..100_000u64 {
-            writer.write(i);
-        }
-        drop(writer);
-
-        let (last, count) = handle.join().unwrap();
-        assert_eq!(last, 99_999);
-        assert!(count <= 100_000); // Conflated
-        assert!(count >= 1);
-    }
-
-    #[test]
-    fn data_integrity() {
-        use std::thread;
-
-        #[derive(Clone)]
-        #[repr(C)]
-        struct Checkable {
-            value: u64,
-            check: u64,
-        }
-        unsafe impl Pod for Checkable {}
-
-        let (mut writer, mut reader) = slot::<Checkable>();
-
-        let handle = thread::spawn(move || {
-            loop {
-                if reader.is_disconnected() && !reader.has_update() {
-                    break;
-                }
-                if let Some(data) = reader.read() {
-                    assert_eq!(data.check, !data.value, "torn read!");
-                }
-            }
-        });
-
-        for i in 0..100_000u64 {
-            writer.write(Checkable {
-                value: i,
-                check: !i,
-            });
-        }
-        drop(writer);
-
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn large_struct_integrity() {
-        use std::thread;
-
-        #[derive(Clone)]
-        #[repr(C)]
-        struct Large {
-            seq: u64,
-            data: [u64; 31],
-        }
-        unsafe impl Pod for Large {}
-
-        let (mut writer, mut reader) = slot::<Large>();
-
-        let handle = thread::spawn(move || {
-            loop {
-                if reader.is_disconnected() && !reader.has_update() {
-                    break;
-                }
-                if let Some(d) = reader.read() {
-                    for &val in &d.data {
-                        assert_eq!(val, d.seq, "torn read");
-                    }
-                }
-            }
-        });
-
-        for i in 0..10_000u64 {
-            writer.write(Large {
-                seq: i,
-                data: [i; 31],
-            });
-        }
-        drop(writer);
-
-        handle.join().unwrap();
-    }
-
-    // ========================================================================
-    // Stress
-    // ========================================================================
-
-    #[test]
-    fn stress_writes_then_single_read() {
-        let (mut writer, mut reader) = slot::<u64>();
-
-        for i in 0..1_000_000 {
-            writer.write(i);
-        }
-
-        assert_eq!(reader.read(), Some(999_999));
-        assert!(reader.read().is_none());
-    }
-
-    #[test]
-    fn ping_pong() {
-        use std::thread;
-
-        let (mut w1, mut r1) = slot::<u64>();
-        let (mut w2, mut r2) = slot::<u64>();
-
-        let handle = thread::spawn(move || {
-            for i in 0..10_000u64 {
-                while r1.read().is_none() {
-                    core::hint::spin_loop();
-                }
-                w2.write(i);
-            }
-        });
-
-        for i in 0..10_000u64 {
-            w1.write(i);
-            while r2.read().is_none() {
-                core::hint::spin_loop();
+        } else {
+            for i in 0..size {
+                let atom = &*(src.add(i) as *const AtomicU8);
+                *dst.add(i) = atom.load(Ordering::Relaxed);
             }
         }
 
-        handle.join().unwrap();
+        buf.assume_init()
     }
 }

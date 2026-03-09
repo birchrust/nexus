@@ -17,7 +17,6 @@ use hdrhistogram::Histogram;
 use seqlock::SeqLock;
 use std::sync::Arc;
 
-use nexus_slot;
 
 const WARMUP: usize = 100_000;
 const SAMPLES: usize = 1_000_000;
@@ -73,8 +72,8 @@ fn estimate_cpu_freq_ghz() -> f64 {
 // ============================================================================
 
 fn bench_nexus_slot_latency() -> Histogram<u64> {
-    let (mut writer_a, mut reader_a) = nexus_slot::slot::<Quote>();
-    let (mut writer_b, mut reader_b) = nexus_slot::slot::<Quote>();
+    let (mut writer_a, mut reader_a) = nexus_slot::spsc::slot::<Quote>();
+    let (mut writer_b, mut reader_b) = nexus_slot::spsc::slot::<Quote>();
 
     let total = WARMUP + SAMPLES;
 
@@ -124,7 +123,100 @@ fn bench_nexus_slot_latency() -> Histogram<u64> {
 }
 
 fn bench_nexus_slot_throughput() -> (Duration, u64) {
-    let (mut writer, mut reader) = nexus_slot::slot::<Quote>();
+    let (mut writer, mut reader) = nexus_slot::spsc::slot::<Quote>();
+
+    let start = Instant::now();
+
+    let writer_handle = thread::spawn(move || {
+        for i in 0..THROUGHPUT_WRITES {
+            writer.write(Quote {
+                sequence: i,
+                ..Default::default()
+            });
+        }
+    });
+
+    let reader_handle = thread::spawn(move || {
+        let mut reads = 0u64;
+
+        loop {
+            if let Some(q) = reader.read() {
+                reads += 1;
+                if q.sequence >= THROUGHPUT_WRITES - 1 {
+                    break;
+                }
+            } else if reader.is_disconnected() {
+                break;
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+        reads
+    });
+
+    writer_handle.join().unwrap();
+    let reads = reader_handle.join().unwrap();
+
+    (start.elapsed(), reads)
+}
+
+// ============================================================================
+// nexus_slot SPMC benchmark
+// ============================================================================
+
+fn bench_nexus_spmc_latency() -> Histogram<u64> {
+    let (mut writer_a, mut reader_a) = nexus_slot::spmc::shared_slot::<Quote>();
+    let (mut writer_b, mut reader_b) = nexus_slot::spsc::slot::<Quote>();
+
+    let total = WARMUP + SAMPLES;
+
+    let worker = thread::spawn(move || {
+        for _ in 0..total {
+            let msg = loop {
+                if let Some(m) = reader_a.read() {
+                    break m;
+                }
+                std::hint::spin_loop();
+            };
+            writer_b.write(msg);
+        }
+    });
+
+    // Warmup
+    for i in 0..WARMUP {
+        writer_a.write(Quote {
+            sequence: i as u64,
+            ..Default::default()
+        });
+        while reader_b.read().is_none() {
+            std::hint::spin_loop();
+        }
+    }
+
+    let mut hist = Histogram::<u64>::new_with_max(1_000_000, 3).unwrap();
+
+    for i in 0..SAMPLES {
+        let start = rdtscp();
+
+        writer_a.write(Quote {
+            sequence: (WARMUP + i) as u64,
+            ..Default::default()
+        });
+
+        while reader_b.read().is_none() {
+            std::hint::spin_loop();
+        }
+
+        let elapsed = rdtscp().wrapping_sub(start) / 2;
+        let _ = hist.record(elapsed.min(1_000_000));
+    }
+
+    worker.join().unwrap();
+    hist
+}
+
+fn bench_nexus_spmc_throughput() -> (Duration, u64) {
+    let (mut writer, mut reader) = nexus_slot::spmc::shared_slot::<Quote>();
 
     let start = Instant::now();
 
@@ -352,8 +444,11 @@ fn main() {
     println!("=== Ping-Pong Latency (RTT/2) ===");
     println!();
 
-    let nexus_hist = bench_nexus_slot_latency();
-    print_histogram("nexus_slot", &nexus_hist, cpu_ghz);
+    let spsc_hist = bench_nexus_slot_latency();
+    print_histogram("nexus_slot (spsc)", &spsc_hist, cpu_ghz);
+
+    let spmc_hist = bench_nexus_spmc_latency();
+    print_histogram("nexus_slot (spmc)", &spmc_hist, cpu_ghz);
 
     let seqlock_hist = bench_seqlock_latency();
     print_histogram("seqlock crate", &seqlock_hist, cpu_ghz);
@@ -362,20 +457,27 @@ fn main() {
     print_histogram("ArrayQueue(1)", &arrayqueue_hist, cpu_ghz);
 
     // Comparison summary
+    let spsc_p50 = spsc_hist.value_at_quantile(0.50) as f64;
+
     println!("=== Latency Summary (p50 cycles) ===");
     println!(
-        "  nexus_slot:   {:>5} cycles",
-        nexus_hist.value_at_quantile(0.50)
+        "  nexus spsc:   {:>5} cycles",
+        spsc_hist.value_at_quantile(0.50)
+    );
+    println!(
+        "  nexus spmc:   {:>5} cycles ({:.2}x)",
+        spmc_hist.value_at_quantile(0.50),
+        spmc_hist.value_at_quantile(0.50) as f64 / spsc_p50
     );
     println!(
         "  seqlock:      {:>5} cycles ({:.1}x)",
         seqlock_hist.value_at_quantile(0.50),
-        seqlock_hist.value_at_quantile(0.50) as f64 / nexus_hist.value_at_quantile(0.50) as f64
+        seqlock_hist.value_at_quantile(0.50) as f64 / spsc_p50
     );
     println!(
         "  ArrayQueue:   {:>5} cycles ({:.1}x)",
         arrayqueue_hist.value_at_quantile(0.50),
-        arrayqueue_hist.value_at_quantile(0.50) as f64 / nexus_hist.value_at_quantile(0.50) as f64
+        arrayqueue_hist.value_at_quantile(0.50) as f64 / spsc_p50
     );
     println!();
 
@@ -387,7 +489,20 @@ fn main() {
     let (elapsed, reads) = bench_nexus_slot_throughput();
     let writes_per_sec = THROUGHPUT_WRITES as f64 / elapsed.as_secs_f64();
 
-    println!("nexus_slot:");
+    println!("nexus_slot (spsc):");
+    println!("  Time:       {:>10.2?}", elapsed);
+    println!("  Writes/sec: {:>10.2} M/sec", writes_per_sec / 1_000_000.0);
+    println!(
+        "  Reads:      {:>10} ({:.1}x conflation)",
+        reads,
+        THROUGHPUT_WRITES as f64 / reads as f64
+    );
+    println!();
+
+    let (elapsed, reads) = bench_nexus_spmc_throughput();
+    let writes_per_sec = THROUGHPUT_WRITES as f64 / elapsed.as_secs_f64();
+
+    println!("nexus_slot (spmc):");
     println!("  Time:       {:>10.2?}", elapsed);
     println!("  Writes/sec: {:>10.2} M/sec", writes_per_sec / 1_000_000.0);
     println!(
