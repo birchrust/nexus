@@ -1,20 +1,53 @@
 //! Slab storage traits for instance-based (non-ZST) slabs.
 //!
-//! These mirror the `Alloc`/`BoundedAlloc`/`UnboundedAlloc` hierarchy from
-//! nexus-slab but work with instance-based slabs rather than ZST/TLS-backed
-//! allocators. We own the traits here (orphan rules satisfied).
+//! Single trait hierarchy: [`SlabStore`] provides allocation and deallocation.
+//! [`BoundedStore`] extends it with fallible allocation for callers who want
+//! graceful error handling.
+//!
+//! # Allocation and OOM
+//!
+//! [`SlabStore::alloc`] always returns a valid slot. For unbounded slabs this
+//! is guaranteed by growth. For bounded slabs, exceeding capacity **panics**.
+//!
+//! This is a deliberate design choice: bounded capacity is a deployment
+//! constraint, not a runtime negotiation. If you hit the limit, your capacity
+//! planning is wrong and the system should fail loudly — the same way a
+//! process panics on OOM. Silently dropping timers or events is worse than
+//! crashing.
+//!
+//! Use [`BoundedStore::try_alloc`] if you need graceful error handling at
+//! specific call sites.
 
 use nexus_slab::Full;
 use nexus_slab::shared::{Slot, SlotCell};
 use nexus_slab::{bounded, unbounded};
 
+// Re-export concrete slab types so downstream crates (nexus-rt) can name
+// them in type defaults without adding nexus-slab as a direct dependency.
+pub use bounded::Slab as BoundedSlab;
+pub use unbounded::Slab as UnboundedSlab;
+
 // =============================================================================
 // Traits
 // =============================================================================
 
-/// Base trait for slab storage — deallocation and value extraction.
+/// Base trait for slab storage — allocation, deallocation, and value extraction.
+///
+/// # Allocation
+///
+/// [`alloc`](Self::alloc) always returns a valid slot:
+///
+/// - **Unbounded slabs** grow as needed — allocation never fails.
+/// - **Bounded slabs** panic if capacity is exceeded. This is intentional:
+///   running out of pre-allocated capacity is a capacity planning error,
+///   equivalent to OOM. The system should crash loudly rather than silently
+///   drop work.
+///
+/// For fallible allocation on bounded slabs, use [`BoundedStore::try_alloc`].
 ///
 /// # Safety
+///
+/// Implementors must uphold:
 ///
 /// - `free` must drop the value and return the slot to the freelist.
 /// - `take` must move the value out and return the slot to the freelist.
@@ -22,6 +55,14 @@ use nexus_slab::{bounded, unbounded};
 pub unsafe trait SlabStore {
     /// The type stored in each slot.
     type Item;
+
+    /// Allocates a slot with the given value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store is at capacity (bounded slabs only). This is a
+    /// capacity planning error — size your slabs for peak load.
+    fn alloc(&self, value: Self::Item) -> Slot<Self::Item>;
 
     /// Drops the value and returns the slot to the freelist.
     ///
@@ -50,18 +91,16 @@ pub unsafe trait SlabStore {
     unsafe fn free_ptr(&self, ptr: *mut SlotCell<Self::Item>);
 }
 
-/// Bounded (fixed-capacity) storage — allocation can fail.
+/// Bounded (fixed-capacity) storage — provides fallible allocation.
+///
+/// Use [`try_alloc`](Self::try_alloc) when you need graceful error handling.
+/// For the common case where capacity exhaustion is a fatal error, use
+/// [`SlabStore::alloc`] directly (it panics on bounded-full).
 pub trait BoundedStore: SlabStore {
     /// Attempts to allocate a slot with the given value.
     ///
     /// Returns `Err(Full(value))` if storage is at capacity.
     fn try_alloc(&self, value: Self::Item) -> Result<Slot<Self::Item>, Full<Self::Item>>;
-}
-
-/// Unbounded (growable) storage — allocation always succeeds.
-pub trait UnboundedStore: SlabStore {
-    /// Allocates a slot with the given value. Always succeeds (grows if needed).
-    fn alloc(&self, value: Self::Item) -> Slot<Self::Item>;
 }
 
 // =============================================================================
@@ -73,6 +112,18 @@ pub trait UnboundedStore: SlabStore {
 // bounded::Slab::free_ptr returns slot to freelist without dropping.
 unsafe impl<T> SlabStore for bounded::Slab<T> {
     type Item = T;
+
+    #[inline]
+    fn alloc(&self, value: T) -> Slot<T> {
+        self.try_alloc(value).unwrap_or_else(|full| {
+            // Drop the value inside Full, then panic.
+            drop(full);
+            panic!(
+                "bounded slab: capacity exceeded (type: {})",
+                std::any::type_name::<T>(),
+            );
+        })
+    }
 
     #[inline]
     unsafe fn free(&self, slot: Slot<T>) {
@@ -111,6 +162,11 @@ unsafe impl<T> SlabStore for unbounded::Slab<T> {
     type Item = T;
 
     #[inline]
+    fn alloc(&self, value: T) -> Slot<T> {
+        unbounded::Slab::alloc(self, value)
+    }
+
+    #[inline]
     unsafe fn free(&self, slot: Slot<T>) {
         // SAFETY: caller guarantees slot was allocated from this slab
         unsafe { unbounded::Slab::free(self, slot) }
@@ -129,13 +185,6 @@ unsafe impl<T> SlabStore for unbounded::Slab<T> {
     }
 }
 
-impl<T> UnboundedStore for unbounded::Slab<T> {
-    #[inline]
-    fn alloc(&self, value: T) -> Slot<T> {
-        unbounded::Slab::alloc(self, value)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,7 +192,7 @@ mod tests {
     #[test]
     fn bounded_store_roundtrip() {
         let slab = bounded::Slab::<u64>::with_capacity(16);
-        let slot = BoundedStore::try_alloc(&slab, 42).unwrap();
+        let slot = SlabStore::alloc(&slab, 42);
         assert_eq!(*slot, 42);
         // SAFETY: slot was allocated from this slab
         let val = unsafe { SlabStore::take(&slab, slot) };
@@ -153,17 +202,25 @@ mod tests {
     #[test]
     fn unbounded_store_roundtrip() {
         let slab = unbounded::Slab::<u64>::with_chunk_capacity(16);
-        let slot = UnboundedStore::alloc(&slab, 99);
+        let slot = SlabStore::alloc(&slab, 99);
         assert_eq!(*slot, 99);
         // SAFETY: slot was allocated from this slab
         unsafe { SlabStore::free(&slab, slot) };
     }
 
     #[test]
-    fn bounded_store_full() {
+    fn bounded_try_alloc_graceful() {
         let slab = bounded::Slab::<u64>::with_capacity(1);
         let _s1 = BoundedStore::try_alloc(&slab, 1).unwrap();
         let err = BoundedStore::try_alloc(&slab, 2).unwrap_err();
         assert_eq!(err.into_inner(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity exceeded")]
+    fn bounded_alloc_panics_on_full() {
+        let slab = bounded::Slab::<u64>::with_capacity(1);
+        let _s1 = SlabStore::alloc(&slab, 1);
+        let _s2 = SlabStore::alloc(&slab, 2); // panics
     }
 }

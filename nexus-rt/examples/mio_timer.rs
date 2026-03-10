@@ -240,7 +240,8 @@ fn main() {
     wb.register(Listener(listener));
 
     let mut mio_poller: MioPoller = wb.install_driver(MioInstaller::new());
-    let mut timer_poller: TimerPoller = wb.install_driver(TimerInstaller::new());
+    let wheel = nexus_timer::Wheel::unbounded(64, std::time::Instant::now());
+    let mut timer_poller: TimerPoller = wb.install_driver(TimerInstaller::new(wheel));
     let mut world = wb.build();
 
     // == Startup ==============================================================

@@ -14,7 +14,7 @@ use nexus_slab::{Full, bounded, unbounded};
 use crate::entry::{EntryPtr, WheelEntry, entry_ref};
 use crate::handle::TimerHandle;
 use crate::level::Level;
-use crate::store::{BoundedStore, SlabStore, UnboundedStore};
+use crate::store::{BoundedStore, SlabStore};
 
 // =============================================================================
 // WheelBuilder (typestate)
@@ -269,6 +269,11 @@ pub struct TimerWheel<
 // T: Send is required because timer values cross the thread boundary with
 // the wheel.
 //
+// S is NOT required to be Send. Slab types are !Send (raw pointers, Cell)
+// but the wheel exclusively owns its slab — no shared access, no aliasing.
+// Moving the wheel moves the slab; heap allocations stay at their addresses
+// so internal pointers remain valid.
+//
 // Outstanding TimerHandle<T> values are !Send and cannot follow the wheel
 // across threads. They become inert — consuming them requires &mut
 // TimerWheel which the original thread no longer has. The debug_assert in
@@ -312,16 +317,19 @@ fn build_levels<T: 'static>(config: &WheelBuilder) -> Vec<Level<T>> {
 }
 
 // =============================================================================
-// Schedule — unbounded (always succeeds)
+// Schedule
 // =============================================================================
 
-impl<T: 'static, S: UnboundedStore<Item = WheelEntry<T>> + SlabStore<Item = WheelEntry<T>>>
-    TimerWheel<T, S>
-{
+impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     /// Schedules a timer and returns a handle for cancellation.
     ///
     /// The handle must be consumed via [`cancel`](Self::cancel) or
     /// [`free`](Self::free). Dropping it is a programming error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the backing slab is at capacity (bounded slabs only).
+    /// This is a capacity planning error — size your wheel for peak load.
     pub fn schedule(&mut self, deadline: Instant, value: T) -> TimerHandle<T> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 2);
@@ -336,6 +344,11 @@ impl<T: 'static, S: UnboundedStore<Item = WheelEntry<T>> + SlabStore<Item = Whee
     ///
     /// The timer will fire during poll and the value will be collected.
     /// Cannot be cancelled.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the backing slab is at capacity (bounded slabs only).
+    /// This is a capacity planning error — size your wheel for peak load.
     pub fn schedule_forget(&mut self, deadline: Instant, value: T) {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 1);
@@ -347,15 +360,17 @@ impl<T: 'static, S: UnboundedStore<Item = WheelEntry<T>> + SlabStore<Item = Whee
 }
 
 // =============================================================================
-// Schedule — bounded (can fail)
+// Schedule — fallible (bounded slabs only)
 // =============================================================================
 
-impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>> + SlabStore<Item = WheelEntry<T>>>
+impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>>
     TimerWheel<T, S>
 {
     /// Attempts to schedule a timer, returning a handle on success.
     ///
-    /// Returns `Err(Full(value))` if the slab is at capacity.
+    /// Returns `Err(Full(value))` if the slab is at capacity. Use this
+    /// when you need graceful error handling. For the common case where
+    /// capacity exhaustion is fatal, use [`schedule`](Self::schedule).
     pub fn try_schedule(&mut self, deadline: Instant, value: T) -> Result<TimerHandle<T>, Full<T>> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 2);
@@ -379,7 +394,9 @@ impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>> + SlabStore<Item = WheelE
 
     /// Attempts to schedule a fire-and-forget timer.
     ///
-    /// Returns `Err(Full(value))` if the slab is at capacity.
+    /// Returns `Err(Full(value))` if the slab is at capacity. Use this
+    /// when you need graceful error handling. For the common case where
+    /// capacity exhaustion is fatal, use [`schedule_forget`](Self::schedule_forget).
     pub fn try_schedule_forget(&mut self, deadline: Instant, value: T) -> Result<(), Full<T>> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 1);
