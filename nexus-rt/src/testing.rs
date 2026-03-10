@@ -118,7 +118,7 @@ mod timer_driver {
     ///
     /// let mut builder = WorldBuilder::new();
     /// builder.register::<bool>(false);
-    /// let poller = builder.install_driver(TimerInstaller::new(256));
+    /// let poller = builder.install_driver(TimerInstaller::new());
     /// let mut timer = TestTimerDriver::new(poller);
     /// let mut world = builder.build();
     ///
@@ -136,7 +136,7 @@ mod timer_driver {
     /// assert_eq!(fired, 1);
     /// assert!(*world.resource::<bool>());
     /// ```
-    pub struct TestTimerDriver<S = Box<dyn Handler<Instant>>> {
+    pub struct TestTimerDriver<S: 'static = Box<dyn Handler<Instant>>> {
         poller: TimerPoller<S>,
         now: Instant,
     }
@@ -276,7 +276,7 @@ mod tests {
         #[test]
         fn advance_moves_time() {
             let mut builder = WorldBuilder::new();
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(64));
+            let poller: TimerPoller = builder.install_driver(TimerInstaller::new());
             let mut timer = TestTimerDriver::new(poller);
 
             let start = timer.now();
@@ -288,7 +288,7 @@ mod tests {
         fn poll_fires_expired() {
             let mut builder = WorldBuilder::new();
             builder.register::<bool>(false);
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(64));
+            let poller: TimerPoller = builder.install_driver(TimerInstaller::new());
             let mut timer = TestTimerDriver::new(poller);
             let mut world = builder.build();
 
@@ -308,7 +308,7 @@ mod tests {
         fn poll_skips_future() {
             let mut builder = WorldBuilder::new();
             builder.register::<bool>(false);
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(64));
+            let poller: TimerPoller = builder.install_driver(TimerInstaller::new());
             let mut timer = TestTimerDriver::new(poller);
             let mut world = builder.build();
 
@@ -326,7 +326,7 @@ mod tests {
         #[test]
         fn set_now_overrides() {
             let mut builder = WorldBuilder::new();
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(64));
+            let poller: TimerPoller = builder.install_driver(TimerInstaller::new());
             let mut timer = TestTimerDriver::new(poller);
 
             let target = timer.now() + Duration::from_secs(999);

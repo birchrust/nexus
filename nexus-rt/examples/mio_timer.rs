@@ -240,7 +240,7 @@ fn main() {
     wb.register(Listener(listener));
 
     let mut mio_poller: MioPoller = wb.install_driver(MioInstaller::new());
-    let mut timer_poller: TimerPoller = wb.install_driver(TimerInstaller::new(64));
+    let mut timer_poller: TimerPoller = wb.install_driver(TimerInstaller::new());
     let mut world = wb.build();
 
     // == Startup ==============================================================
