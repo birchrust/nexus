@@ -203,6 +203,11 @@ impl Sequence {
         self.0 == i64::MIN
     }
 
+    /// Returns `true` if this is the [`UNINITIALIZED`](Self::UNINITIALIZED) sentinel.
+    pub const fn is_uninitialized(self) -> bool {
+        self.0 == -1
+    }
+
     /// Returns the next sequence number (wrapping).
     ///
     /// This is a pure computation — it does not advance any world state.
