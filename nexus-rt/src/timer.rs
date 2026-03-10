@@ -417,8 +417,9 @@ impl<H, C: TimerConfig, Store: SlabStore<Item = WheelEntry<C::Storage>>> Periodi
     /// // Boxed + unbounded (defaults)
     /// let p = Periodic::new(handler, Duration::from_millis(100));
     ///
-    /// // Inline + unbounded
-    /// let p: Periodic<_, InlineTimers, _> =
+    /// // Inline + unbounded (Store must be specified when C changes)
+    /// use nexus_timer::store::UnboundedSlab;
+    /// let p: Periodic<_, InlineTimers, UnboundedSlab<_>> =
     ///     Periodic::new(handler, Duration::from_millis(100));
     /// ```
     pub fn new(handler: H, interval: Duration) -> Self {
@@ -1112,7 +1113,6 @@ mod tests {
     #[cfg(feature = "smartptr")]
     mod storage_tests {
         use super::*;
-        use nexus_timer::store::UnboundedSlab;
 
         #[test]
         fn unbounded_inline_storage() {
@@ -1235,7 +1235,7 @@ mod tests {
             let now = Instant::now();
             let interval = Duration::from_millis(10);
             let handler = tick.into_handler(world.registry());
-            let periodic: Periodic<_, InlineTimers, UnboundedSlab<_>> =
+            let periodic: Periodic<_, InlineTimers, nexus_timer::store::UnboundedSlab<_>> =
                 Periodic::new(handler, interval);
             world
                 .resource_mut::<InlineTimerWheel>()
@@ -1272,7 +1272,7 @@ mod tests {
             let now = Instant::now();
             let interval = Duration::from_millis(10);
             let handler = tick.into_handler(world.registry());
-            let periodic: Periodic<_, FlexTimers, UnboundedSlab<_>> =
+            let periodic: Periodic<_, FlexTimers, nexus_timer::store::UnboundedSlab<_>> =
                 Periodic::new(handler, interval);
             world
                 .resource_mut::<FlexTimerWheel>()
