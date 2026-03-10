@@ -1,6 +1,6 @@
 [package]
 name = "nexus-rt"
-version = "0.9.1"
+version = "0.9.2"
 description = "Single-threaded, event-driven runtime primitives with pre-resolved dispatch"
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,7 @@ signals = ["dep:signal-hook"]
 [dependencies]
 rustc-hash = "2"
 nexus-smartptr = { version = "0.1", path = "../nexus-smartptr", optional = true }
-nexus-timer = { version = "1.1", path = "../nexus-timer", optional = true }
+nexus-timer = { version = "1.2", path = "../nexus-timer", optional = true }
 mio = { version = "1", features = ["os-poll", "net"], optional = true }
 slab = { version = "0.4", optional = true }
 signal-hook = { version = "0.3", optional = true }

@@ -23,7 +23,7 @@
 //! ticks = (deadline - epoch).as_nanos() / tick_ns
 //! ```
 //!
-//! - **Default tick resolution**: 1ms (configurable via [`TimerInstaller::tick_duration`]).
+//! - **Default tick resolution**: 1ms (configurable via [`WheelBuilder::tick_duration`]).
 //! - **Instants before the epoch** saturate to tick 0 (fire immediately).
 //! - **Instants beyond the wheel's range** are clamped to the highest
 //!   level's last slot (they fire eventually, not exactly on time).
@@ -38,7 +38,7 @@
 //!
 //! ```ignore
 //! use std::time::{Duration, Instant};
-//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
+//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, WheelBuilder};
 //! use nexus_rt::timer::{TimerInstaller, TimerPoller, TimerWheel};
 //!
 //! fn on_timeout(mut state: ResMut<bool>, _poll_time: Instant) {
@@ -47,7 +47,10 @@
 //!
 //! let mut builder = WorldBuilder::new();
 //! builder.register::<bool>(false);
-//! let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+//! let wheel = WheelBuilder::default().unbounded(64).build(Instant::now());
+//! let mut timer: TimerPoller = builder.install_driver(
+//!     TimerInstaller::new(wheel),
+//! );
 //! let mut world = builder.build();
 //!
 //! // Schedule a one-shot timer
@@ -65,10 +68,13 @@ use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::time::{Duration, Instant};
 
-use nexus_timer::{BoundedWheel, Wheel};
+use nexus_timer::store::SlabStore;
 
 // Re-export types that users need from nexus-timer
-pub use nexus_timer::{Full, TimerHandle, WheelBuilder};
+pub use nexus_timer::{
+    BoundedWheel, BoundedWheelBuilder, Full, TimerHandle, UnboundedWheelBuilder, Wheel,
+    WheelBuilder, WheelEntry,
+};
 
 use crate::Handler;
 use crate::driver::Installer;
@@ -189,143 +195,91 @@ impl TimerConfig for FlexTimers {
     }
 }
 
-/// Timer driver installer — generic over handler storage and wheel type.
+/// Timer driver installer — takes a pre-built [`TimerWheel`](nexus_timer::TimerWheel).
 ///
-/// `S` is the handler storage type (e.g. `Box<dyn Handler<Instant>>` or
-/// `FlatVirtual<Instant, B256>`). Defaults to `Box<dyn Handler<Instant>>`.
-///
-/// `W` is the wheel type — [`Wheel<S>`] (unbounded, default) or
-/// [`BoundedWheel<S>`] (fixed capacity). Use [`new()`](Self::new) for
-/// unbounded and [`bounded()`](TimerInstaller::bounded) for bounded.
-///
-/// Consumed by [`WorldBuilder::install_driver`]. Registers a wheel
-/// resource and returns a [`TimerPoller`] for poll-time use.
-///
-/// # Defaults
-///
-/// | Parameter | Default | Description |
-/// |-----------|---------|-------------|
-/// | `chunk_capacity` | 64 | Slab chunk size (unbounded only) |
-/// | `tick_duration` | 1ms | Timer resolution |
-/// | `slots_per_level` | 64 | Slots per wheel level (must be power of 2) |
-/// | `clk_shift` | 3 | Inter-level multiplier (2^3 = 8x) |
-/// | `num_levels` | 7 | Wheel depth (~4.7 hour range at 1ms ticks) |
+/// Build the wheel via [`WheelBuilder`], then hand it to the installer.
+/// The installer registers it into the [`World`] and returns a
+/// [`TimerPoller`] for poll-time use.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// use nexus_rt::{TimerInstaller, TimerPoller, BoundedTimerPoller};
+/// use std::time::{Duration, Instant};
+/// use nexus_rt::{TimerInstaller, TimerPoller, BoundedTimerPoller, WheelBuilder};
 ///
 /// // Unbounded — slab grows as needed, scheduling never fails
-/// let timer: TimerPoller = wb.install_driver(TimerInstaller::new());
+/// let wheel = WheelBuilder::default().unbounded(64).build(Instant::now());
+/// let timer: TimerPoller = wb.install_driver(TimerInstaller::new(wheel));
 ///
 /// // Bounded — fixed capacity, try_schedule returns Err(Full) when full
-/// let timer: BoundedTimerPoller = wb.install_driver(
-///     TimerInstaller::bounded(1024)
-/// );
+/// let wheel = WheelBuilder::default().bounded(1024).build(Instant::now());
+/// let timer: BoundedTimerPoller = wb.install_driver(TimerInstaller::new(wheel));
 ///
 /// // Custom tick resolution for microsecond-precision timers
-/// let timer: TimerPoller = wb.install_driver(
-///     TimerInstaller::new()
-///         .tick_duration(Duration::from_micros(100))
-///         .chunk_capacity(256)
-/// );
+/// let wheel = WheelBuilder::default()
+///     .tick_duration(Duration::from_micros(100))
+///     .unbounded(256)
+///     .build(Instant::now());
+/// let timer: TimerPoller = wb.install_driver(TimerInstaller::new(wheel));
 /// ```
-pub struct TimerInstaller<S = Box<dyn Handler<Instant>>, W = Wheel<S>> {
-    capacity: usize,
-    wheel_config: nexus_timer::WheelBuilder,
-    _marker: PhantomData<fn() -> (S, W)>,
+pub struct TimerInstaller<
+    S: 'static = Box<dyn Handler<Instant>>,
+    Store: SlabStore<Item = WheelEntry<S>> = nexus_timer::store::UnboundedSlab<WheelEntry<S>>,
+> {
+    wheel: nexus_timer::TimerWheel<S, Store>,
 }
 
-impl<S> Default for TimerInstaller<S> {
-    fn default() -> Self {
-        Self::new()
+impl<S: 'static, Store: SlabStore<Item = WheelEntry<S>>> TimerInstaller<S, Store> {
+    /// Creates a timer installer from a pre-built wheel.
+    ///
+    /// Build the wheel via [`WheelBuilder`], then pass it here.
+    pub fn new(wheel: nexus_timer::TimerWheel<S, Store>) -> Self {
+        TimerInstaller { wheel }
     }
 }
 
-impl<S> TimerInstaller<S> {
-    /// Creates a new unbounded timer driver installer with default configuration.
-    ///
-    /// The slab grows dynamically — scheduling never fails.
-    /// See [struct docs](Self) for defaults.
-    pub fn new() -> Self {
-        TimerInstaller {
-            capacity: 64,
-            wheel_config: nexus_timer::WheelBuilder::default(),
-            _marker: PhantomData,
-        }
-    }
+impl<S, Store> Installer for TimerInstaller<S, Store>
+where
+    S: Send + 'static,
+    Store: SlabStore<Item = WheelEntry<S>> + 'static,
+{
+    type Poller = TimerPoller<S, Store>;
 
-    /// Sets the slab chunk capacity (entries per allocation).
-    ///
-    /// The slab grows by adding chunks as needed. This controls how many
-    /// timer entries each chunk holds. Default: 64.
-    pub fn chunk_capacity(mut self, capacity: usize) -> Self {
-        self.capacity = capacity;
-        self
-    }
-}
-
-impl<S> TimerInstaller<S, BoundedWheel<S>> {
-    /// Creates a bounded timer driver installer with the given capacity.
-    ///
-    /// The wheel has a fixed maximum number of concurrent timers.
-    /// `try_schedule` returns `Err(Full)` when the wheel is full.
-    pub fn bounded(capacity: usize) -> Self {
-        TimerInstaller {
-            capacity,
-            wheel_config: nexus_timer::WheelBuilder::default(),
+    fn install(self, world: &mut WorldBuilder) -> TimerPoller<S, Store> {
+        let wheel_id = world.register(self.wheel);
+        TimerPoller {
+            wheel_id,
+            buf: Vec::new(),
             _marker: PhantomData,
         }
     }
 }
 
-impl<S, W> TimerInstaller<S, W> {
-    /// Sets the tick duration (timer resolution). Default: 1ms.
-    ///
-    /// Smaller ticks give finer resolution but increase the per-poll
-    /// time range that must be scanned.
-    pub fn tick_duration(mut self, duration: Duration) -> Self {
-        self.wheel_config = self.wheel_config.tick_duration(duration);
-        self
-    }
+/// Type alias for a bounded timer installer.
+pub type BoundedTimerInstaller<S = Box<dyn Handler<Instant>>> =
+    TimerInstaller<S, nexus_timer::store::BoundedSlab<WheelEntry<S>>>;
 
-    /// Sets the number of slots per wheel level. Must be a power of 2. Default: 64.
-    pub fn slots_per_level(mut self, n: usize) -> Self {
-        self.wheel_config = self.wheel_config.slots_per_level(n);
-        self
-    }
-
-    /// Sets the bit shift between levels (multiplier = 2^shift). Default: 3 (8x).
-    pub fn clk_shift(mut self, shift: u32) -> Self {
-        self.wheel_config = self.wheel_config.clk_shift(shift);
-        self
-    }
-
-    /// Sets the number of wheel levels. Default: 7.
-    ///
-    /// More levels extend the maximum schedulable deadline. With default
-    /// settings (1ms tick, 64 slots, 8x multiplier), 7 levels covers ~4.7 hours.
-    pub fn num_levels(mut self, n: usize) -> Self {
-        self.wheel_config = self.wheel_config.num_levels(n);
-        self
-    }
-}
-
-/// Timer driver poller — generic over handler storage.
+/// Timer driver poller — generic over handler storage and slab store.
 ///
 /// Returned by [`TimerInstaller::install`]. Holds a pre-resolved
 /// [`ResourceId`] for the wheel and a reusable drain buffer.
-pub struct TimerPoller<S = Box<dyn Handler<Instant>>, W = Wheel<S>> {
+///
+/// `Store` is the slab backend — determines which [`TimerWheel<S, Store>`]
+/// resource to look up in the [`World`]. Defaults to the unbounded slab.
+pub struct TimerPoller<
+    S = Box<dyn Handler<Instant>>,
+    Store = nexus_timer::store::UnboundedSlab<WheelEntry<S>>,
+> {
     wheel_id: ResourceId,
     buf: Vec<S>,
-    _marker: PhantomData<fn() -> W>,
+    _marker: PhantomData<fn() -> Store>,
 }
 
-/// Type alias for a bounded timer poller using boxed handlers.
-pub type BoundedTimerPoller<S = Box<dyn Handler<Instant>>> = TimerPoller<S, BoundedWheel<S>>;
+/// Type alias for a bounded timer poller.
+pub type BoundedTimerPoller<S = Box<dyn Handler<Instant>>> =
+    TimerPoller<S, nexus_timer::store::BoundedSlab<WheelEntry<S>>>;
 
-impl<S, W> std::fmt::Debug for TimerPoller<S, W> {
+impl<S, Store> std::fmt::Debug for TimerPoller<S, Store> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TimerPoller")
             .field("wheel_id", &self.wheel_id)
@@ -334,104 +288,82 @@ impl<S, W> std::fmt::Debug for TimerPoller<S, W> {
     }
 }
 
-impl<S: Send + 'static> Installer for TimerInstaller<S> {
-    type Poller = TimerPoller<S>;
+impl<S, Store> TimerPoller<S, Store>
+where
+    S: DerefMut + Send + 'static,
+    S::Target: Handler<Instant>,
+    Store: SlabStore<Item = WheelEntry<S>> + 'static,
+{
+    /// Poll expired timers — drain from wheel, fire each handler, done.
+    ///
+    /// Each handler receives `now` as its event. Handlers that need to
+    /// reschedule themselves do so directly via the wheel resource.
+    ///
+    /// Returns the number of timers fired.
+    pub fn poll(&mut self, world: &mut World, now: Instant) -> usize {
+        // SAFETY: wheel_id was produced by install() on the same builder.
+        // Type matches TimerWheel<S, Store>. No aliases — we have &mut World.
+        let wheel = unsafe { world.get_mut::<nexus_timer::TimerWheel<S, Store>>(self.wheel_id) };
+        wheel.poll(now, &mut self.buf);
+        let fired = self.buf.len();
 
-    fn install(self, world: &mut WorldBuilder) -> TimerPoller<S> {
-        let now = Instant::now();
-        let wheel = self.wheel_config.unbounded(self.capacity).build(now);
-        let wheel_id = world.register::<Wheel<S>>(wheel);
-        TimerPoller {
-            wheel_id,
-            buf: Vec::new(),
-            _marker: PhantomData,
+        for mut handler in self.buf.drain(..) {
+            world.next_sequence();
+            handler.deref_mut().run(world, now);
         }
+
+        fired
+    }
+
+    /// Earliest deadline in the wheel.
+    pub fn next_deadline(&self, world: &World) -> Option<Instant> {
+        // SAFETY: wheel_id from install(). Type matches. &World = shared access.
+        let wheel = unsafe { world.get::<nexus_timer::TimerWheel<S, Store>>(self.wheel_id) };
+        wheel.next_deadline()
+    }
+
+    /// Number of active timers.
+    pub fn len(&self, world: &World) -> usize {
+        // SAFETY: wheel_id from install(). Type matches. &World = shared access.
+        let wheel = unsafe { world.get::<nexus_timer::TimerWheel<S, Store>>(self.wheel_id) };
+        wheel.len()
+    }
+
+    /// Whether the wheel is empty.
+    pub fn is_empty(&self, world: &World) -> bool {
+        // SAFETY: wheel_id from install(). Type matches. &World = shared access.
+        let wheel = unsafe { world.get::<nexus_timer::TimerWheel<S, Store>>(self.wheel_id) };
+        wheel.is_empty()
     }
 }
 
-impl<S: Send + 'static> Installer for TimerInstaller<S, BoundedWheel<S>> {
-    type Poller = BoundedTimerPoller<S>;
-
-    fn install(self, world: &mut WorldBuilder) -> BoundedTimerPoller<S> {
-        let now = Instant::now();
-        let wheel = self.wheel_config.bounded(self.capacity).build(now);
-        let wheel_id = world.register::<BoundedWheel<S>>(wheel);
-        TimerPoller {
-            wheel_id,
-            buf: Vec::new(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-macro_rules! impl_timer_poller {
-    ($W:ident) => {
-        impl<S: DerefMut + Send + 'static> TimerPoller<S, $W<S>>
-        where
-            S::Target: Handler<Instant>,
-        {
-            /// Poll expired timers — drain from wheel, fire each handler, done.
-            ///
-            /// Each handler receives `now` as its event. Handlers that need to
-            /// reschedule themselves do so directly via the wheel resource.
-            ///
-            /// Returns the number of timers fired.
-            pub fn poll(&mut self, world: &mut World, now: Instant) -> usize {
-                // SAFETY: wheel_id was produced by install() on the same builder.
-                // Type matches ($W<S>). No aliases — we have &mut World.
-                let wheel = unsafe { world.get_mut::<$W<S>>(self.wheel_id) };
-                wheel.poll(now, &mut self.buf);
-                let fired = self.buf.len();
-
-                for mut handler in self.buf.drain(..) {
-                    world.next_sequence();
-                    handler.deref_mut().run(world, now);
-                }
-
-                fired
-            }
-
-            /// Earliest deadline in the wheel.
-            pub fn next_deadline(&self, world: &World) -> Option<Instant> {
-                // SAFETY: wheel_id from install(). Type matches. &World = shared access.
-                let wheel = unsafe { world.get::<$W<S>>(self.wheel_id) };
-                wheel.next_deadline()
-            }
-
-            /// Number of active timers.
-            pub fn len(&self, world: &World) -> usize {
-                // SAFETY: wheel_id from install(). Type matches. &World = shared access.
-                let wheel = unsafe { world.get::<$W<S>>(self.wheel_id) };
-                wheel.len()
-            }
-
-            /// Whether the wheel is empty.
-            pub fn is_empty(&self, world: &World) -> bool {
-                // SAFETY: wheel_id from install(). Type matches. &World = shared access.
-                let wheel = unsafe { world.get::<$W<S>>(self.wheel_id) };
-                wheel.is_empty()
-            }
-        }
-    };
-}
-
-impl_timer_poller!(Wheel);
-impl_timer_poller!(BoundedWheel);
+// =============================================================================
+// Periodic
+// =============================================================================
 
 /// Periodic timer wrapper — automatically reschedules after each firing.
 ///
-/// Wraps any handler storage and re-inserts itself into the wheel after
-/// each `run()` call. The inner handler fires, then `Periodic` wraps it
-/// back up and schedules `now + interval`.
+/// Generic over the concrete handler type `H` — no nesting, no type erasure
+/// overhead. When stored in a wheel, the `Periodic<H, C, Store>` is wrapped
+/// in `C::Storage` (e.g. `Box<dyn Handler<Instant>>`) once at the outermost
+/// level. The inner handler `H` is stored directly, not wrapped.
 ///
-/// Uses `Option` internally to move the inner handler out of `&mut self`
-/// during dispatch. For `Box<dyn Handler>`, this is zero-cost due to
-/// niche optimization (`Option<Box<T>>` is pointer-sized).
+/// This means `Periodic<H>` is `size_of::<H>() + size_of::<Duration>()` plus
+/// a small marker — compact enough to fit in inline storage (`FlatVirtual`)
+/// alongside typical handlers.
+///
+/// # Scheduling
+///
+/// [`schedule_forget`](nexus_timer::TimerWheel::schedule_forget) is used for
+/// rescheduling. On bounded wheels, this panics if the slab is at capacity.
+/// This is a capacity planning error — size your wheel for peak concurrent
+/// timers including periodic overhead. See the [`store`](nexus_timer::store)
+/// module documentation for the OOM-as-panic rationale.
 ///
 /// # Cancellation
 ///
-/// If the periodic timer is cancelled (via [`Wheel::cancel`]) or dropped
-/// during shutdown, the inner handler is dropped normally — no leak.
+/// If the periodic timer is cancelled (via [`cancel`](nexus_timer::TimerWheel::cancel))
+/// or dropped during shutdown, the inner handler is dropped normally — no leak.
 ///
 /// # Example
 ///
@@ -445,17 +377,24 @@ impl_timer_poller!(BoundedWheel);
 /// }
 ///
 /// let handler = heartbeat.into_handler(world.registry());
-/// let periodic = Periodic::boxed(handler, Duration::from_millis(100));
+/// let periodic = Periodic::new(handler, Duration::from_millis(100));
 /// world.resource_mut::<TimerWheel>()
 ///     .schedule_forget(Instant::now(), Box::new(periodic));
 /// ```
-pub struct Periodic<C: TimerConfig = BoxedTimers> {
-    inner: Option<C::Storage>,
+pub struct Periodic<
+    H,
+    C: TimerConfig = BoxedTimers,
+    Store: SlabStore<Item = WheelEntry<C::Storage>> = nexus_timer::store::UnboundedSlab<WheelEntry<Box<dyn Handler<Instant>>>>,
+> {
+    inner: Option<H>,
     interval: Duration,
-    _config: PhantomData<C>,
+    #[allow(clippy::type_complexity)]
+    _marker: PhantomData<(fn() -> C, fn() -> Store)>,
 }
 
-impl<C: TimerConfig> std::fmt::Debug for Periodic<C> {
+impl<H, C: TimerConfig, Store: SlabStore<Item = WheelEntry<C::Storage>>> std::fmt::Debug
+    for Periodic<H, C, Store>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Periodic")
             .field("has_inner", &self.inner.is_some())
@@ -464,35 +403,29 @@ impl<C: TimerConfig> std::fmt::Debug for Periodic<C> {
     }
 }
 
-impl Periodic<BoxedTimers> {
-    /// Create a periodic wrapper using boxed handler storage.
+impl<H, C: TimerConfig, Store: SlabStore<Item = WheelEntry<C::Storage>>> Periodic<H, C, Store> {
+    /// Create a periodic wrapper around a handler.
     ///
-    /// Convenience constructor — equivalent to `Periodic::<BoxedTimers>::new(...)`.
-    pub fn boxed(handler: impl Handler<Instant> + 'static, interval: Duration) -> Self {
+    /// `C` and `Store` determine how the handler is stored in the wheel
+    /// and which wheel resource to look up on reschedule. Defaults are
+    /// `BoxedTimers` + `UnboundedSlab` — override via type annotation or
+    /// turbofish for inline/bounded configurations.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Boxed + unbounded (defaults)
+    /// let p = Periodic::new(handler, Duration::from_millis(100));
+    ///
+    /// // Inline + unbounded
+    /// let p: Periodic<_, InlineTimers, _> =
+    ///     Periodic::new(handler, Duration::from_millis(100));
+    /// ```
+    pub fn new(handler: H, interval: Duration) -> Self {
         Periodic {
-            inner: Some(Box::new(handler)),
+            inner: Some(handler),
             interval,
-            _config: PhantomData,
-        }
-    }
-}
-
-impl<C: TimerConfig> Periodic<C> {
-    /// Create a periodic wrapper with the given config's storage strategy.
-    pub fn new(storage: C::Storage, interval: Duration) -> Self {
-        Periodic {
-            inner: Some(storage),
-            interval,
-            _config: PhantomData,
-        }
-    }
-
-    /// Create a periodic wrapper, wrapping the handler via [`TimerConfig::wrap`].
-    pub fn wrap(handler: impl Handler<Instant> + 'static, interval: Duration) -> Self {
-        Periodic {
-            inner: Some(C::wrap(handler)),
-            interval,
-            _config: PhantomData,
+            _marker: PhantomData,
         }
     }
 
@@ -501,35 +434,47 @@ impl<C: TimerConfig> Periodic<C> {
         self.interval
     }
 
-    /// Unwrap the inner handler storage, if present.
+    /// Unwrap the inner handler, if present.
     ///
-    /// Returns `None` only if the periodic has already fired and not yet
-    /// been re-wrapped (transient state during `Handler::run`).
-    pub fn into_inner(self) -> Option<C::Storage> {
+    /// Returns `None` only during the transient state inside
+    /// `Handler::run` (after fire, before reschedule).
+    pub fn into_inner(self) -> Option<H> {
         self.inner
     }
 }
 
-impl<C: TimerConfig> Handler<Instant> for Periodic<C> {
+impl<H, C, Store> Handler<Instant> for Periodic<H, C, Store>
+where
+    H: Handler<Instant> + 'static,
+    C: TimerConfig,
+    Store: SlabStore<Item = WheelEntry<C::Storage>> + 'static,
+{
     fn run(&mut self, world: &mut World, now: Instant) {
         let mut inner = self
             .inner
             .take()
             .expect("periodic handler already consumed");
 
-        // Fire the inner handler
-        inner.deref_mut().run(world, now);
+        // Fire the inner handler.
+        inner.run(world, now);
 
-        // Re-wrap and reschedule
-        let next = Periodic::<C> {
+        // Reconstruct and reschedule. The new Periodic<H, C, Store> is
+        // wrapped in C::Storage and placed back into the wheel. No nesting —
+        // H is the concrete handler, not C::Storage.
+        let next: Periodic<H, C, Store> = Periodic {
             inner: Some(inner),
             interval: self.interval,
-            _config: PhantomData,
+            _marker: PhantomData,
         };
         let deadline = now + self.interval;
-        world
-            .resource_mut::<Wheel<C::Storage>>()
-            .schedule_forget(deadline, C::wrap(next));
+        let wheel = world.resource_mut::<nexus_timer::TimerWheel<C::Storage, Store>>();
+        wheel.schedule_forget(deadline, C::wrap(next));
+    }
+
+    fn name(&self) -> &'static str {
+        self.inner
+            .as_ref()
+            .map_or("<periodic:consumed>", |inner| inner.name())
     }
 }
 
@@ -542,7 +487,7 @@ mod tests {
     #[test]
     fn install_registers_wheel() {
         let mut builder = WorldBuilder::new();
-        let _handle: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let _handle: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let world = builder.build();
         assert!(world.contains::<TimerWheel>());
     }
@@ -550,7 +495,7 @@ mod tests {
     #[test]
     fn poll_empty_returns_zero() {
         let mut builder = WorldBuilder::new();
-        let mut handle: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut handle: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
         assert_eq!(handle.poll(&mut world, Instant::now()), 0);
     }
@@ -559,7 +504,7 @@ mod tests {
     fn one_shot_fires() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_timeout(mut flag: ResMut<bool>, _now: Instant) {
@@ -582,7 +527,7 @@ mod tests {
     fn expired_timer_fires_accumulated() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn inc(mut counter: ResMut<u64>, _now: Instant) {
@@ -608,7 +553,7 @@ mod tests {
     fn future_timer_does_not_fire() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_timeout(mut flag: ResMut<bool>, _now: Instant) {
@@ -630,7 +575,7 @@ mod tests {
     #[test]
     fn next_deadline_reports_earliest() {
         let mut builder = WorldBuilder::new();
-        let timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         let now = Instant::now();
@@ -657,7 +602,7 @@ mod tests {
     #[test]
     fn len_tracks_active_timers() {
         let mut builder = WorldBuilder::new();
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         assert_eq!(timer.len(&world), 0);
@@ -682,7 +627,7 @@ mod tests {
     fn self_rescheduling_callback() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn periodic(
@@ -727,7 +672,7 @@ mod tests {
     fn cancellable_timer() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
@@ -755,7 +700,7 @@ mod tests {
     fn poll_advances_sequence() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn inc(mut counter: ResMut<u64>, _now: Instant) {
@@ -782,7 +727,7 @@ mod tests {
     fn reschedule_timer() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_fire(mut counter: ResMut<u64>, _now: Instant) {
@@ -818,7 +763,7 @@ mod tests {
     fn periodic_fires_repeatedly() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn tick(mut counter: ResMut<u64>, _now: Instant) {
@@ -828,7 +773,7 @@ mod tests {
         let now = Instant::now();
         let interval = Duration::from_millis(10);
         let handler = tick.into_handler(world.registry());
-        let periodic = Periodic::boxed(handler, interval);
+        let periodic: Periodic<_> = Periodic::new(handler, interval);
         world
             .resource_mut::<TimerWheel>()
             .schedule_forget(now, Box::new(periodic));
@@ -853,7 +798,7 @@ mod tests {
     fn periodic_cancel_drops_inner() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
@@ -862,7 +807,7 @@ mod tests {
 
         let now = Instant::now();
         let handler = on_fire.into_handler(world.registry());
-        let periodic = Periodic::boxed(handler, Duration::from_millis(50));
+        let periodic: Periodic<_> = Periodic::new(handler, Duration::from_millis(50));
         let handle = world
             .resource_mut::<TimerWheel>()
             .schedule(now + Duration::from_millis(50), Box::new(periodic));
@@ -880,13 +825,13 @@ mod tests {
     #[test]
     fn periodic_into_inner_recovers_handler() {
         let mut builder = WorldBuilder::new();
-        let _timer: TimerPoller = builder.install_driver(TimerInstaller::new());
+        let _timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let world = builder.build();
 
         fn noop(_now: Instant) {}
 
         let handler = noop.into_handler(world.registry());
-        let periodic = Periodic::boxed(handler, Duration::from_millis(10));
+        let periodic: Periodic<_> = Periodic::new(handler, Duration::from_millis(10));
         assert!(periodic.into_inner().is_some());
     }
 
@@ -895,7 +840,9 @@ mod tests {
     #[test]
     fn bounded_install_registers_wheel() {
         let mut builder = WorldBuilder::new();
-        let _handle: BoundedTimerPoller = builder.install_driver(TimerInstaller::bounded(64));
+        let wheel = BoundedTimerWheel::bounded(64, Instant::now());
+        let _handle: BoundedTimerPoller =
+            builder.install_driver(TimerInstaller::new(wheel));
         let world = builder.build();
         assert!(world.contains::<BoundedTimerWheel>());
     }
@@ -904,7 +851,9 @@ mod tests {
     fn bounded_one_shot_fires() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: BoundedTimerPoller = builder.install_driver(TimerInstaller::bounded(64));
+        let wheel = BoundedTimerWheel::bounded(64, Instant::now());
+        let mut timer: BoundedTimerPoller =
+            builder.install_driver(TimerInstaller::new(wheel));
         let mut world = builder.build();
 
         fn on_timeout(mut flag: ResMut<bool>, _now: Instant) {
@@ -927,7 +876,9 @@ mod tests {
     #[test]
     fn bounded_cancel_and_query() {
         let mut builder = WorldBuilder::new();
-        let mut timer: BoundedTimerPoller = builder.install_driver(TimerInstaller::bounded(64));
+        let wheel = BoundedTimerWheel::bounded(64, Instant::now());
+        let mut timer: BoundedTimerPoller =
+            builder.install_driver(TimerInstaller::new(wheel));
         let mut world = builder.build();
 
         fn noop(_now: Instant) {}
@@ -954,7 +905,9 @@ mod tests {
     #[test]
     fn bounded_full_returns_error() {
         let mut builder = WorldBuilder::new();
-        let _timer: BoundedTimerPoller = builder.install_driver(TimerInstaller::bounded(1));
+        let wheel = BoundedTimerWheel::bounded(1, Instant::now());
+        let _timer: BoundedTimerPoller =
+            builder.install_driver(TimerInstaller::new(wheel));
         let mut world = builder.build();
 
         fn noop(_now: Instant) {}
@@ -971,5 +924,370 @@ mod tests {
             .resource_mut::<BoundedTimerWheel>()
             .try_schedule_forget(now + Duration::from_secs(60), Box::new(h2));
         assert!(result.is_err());
+    }
+
+    // -- Builder configuration coverage ---------------------------------------
+
+    /// Helper: install, schedule, poll, assert fired. Proves the full
+    /// path works end-to-end for a given installer configuration.
+    fn assert_unbounded_fires(installer: TimerInstaller) {
+        let mut builder = WorldBuilder::new();
+        builder.register::<bool>(false);
+        let mut timer: TimerPoller = builder.install_driver(installer);
+        let mut world = builder.build();
+
+        fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+            *flag = true;
+        }
+
+        let now = Instant::now();
+        let h = on_fire.into_handler(world.registry());
+        world
+            .resource_mut::<TimerWheel>()
+            .schedule_forget(now, Box::new(h));
+
+        let fired = timer.poll(&mut world, now);
+        assert_eq!(fired, 1);
+        assert!(*world.resource::<bool>());
+    }
+
+    fn assert_bounded_fires(installer: BoundedTimerInstaller) {
+        let mut builder = WorldBuilder::new();
+        builder.register::<bool>(false);
+        let mut timer: BoundedTimerPoller = builder.install_driver(installer);
+        let mut world = builder.build();
+
+        fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+            *flag = true;
+        }
+
+        let now = Instant::now();
+        let h = on_fire.into_handler(world.registry());
+        world
+            .resource_mut::<BoundedTimerWheel>()
+            .try_schedule_forget(now, Box::new(h))
+            .expect("should not be full");
+
+        let fired = timer.poll(&mut world, now);
+        assert_eq!(fired, 1);
+        assert!(*world.resource::<bool>());
+    }
+
+    // -- Unbounded constructors -----------------------------------------------
+
+    #[test]
+    fn cfg_unbounded_default() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(Wheel::unbounded(64, now)));
+    }
+
+    #[test]
+    fn cfg_unbounded_chunk_capacity() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(Wheel::unbounded(256, now)));
+    }
+
+    #[test]
+    fn cfg_unbounded_tick_duration() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .tick_duration(Duration::from_micros(100))
+                .unbounded(64)
+                .build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_unbounded_slots_per_level() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .slots_per_level(32)
+                .unbounded(64)
+                .build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_unbounded_clk_shift() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(
+            WheelBuilder::default().clk_shift(2).unbounded(64).build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_unbounded_num_levels() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .num_levels(4)
+                .unbounded(64)
+                .build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_unbounded_full_chain() {
+        let now = Instant::now();
+        assert_unbounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .tick_duration(Duration::from_micros(500))
+                .slots_per_level(32)
+                .clk_shift(2)
+                .num_levels(5)
+                .unbounded(128)
+                .build(now),
+        ));
+    }
+
+    // -- Bounded constructors -------------------------------------------------
+
+    #[test]
+    fn cfg_bounded_default() {
+        let now = Instant::now();
+        assert_bounded_fires(TimerInstaller::new(
+            WheelBuilder::default().bounded(64).build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_bounded_tick_duration() {
+        let now = Instant::now();
+        assert_bounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .tick_duration(Duration::from_micros(100))
+                .bounded(64)
+                .build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_bounded_slots_per_level() {
+        let now = Instant::now();
+        assert_bounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .slots_per_level(32)
+                .bounded(64)
+                .build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_bounded_clk_shift() {
+        let now = Instant::now();
+        assert_bounded_fires(TimerInstaller::new(
+            WheelBuilder::default().clk_shift(2).bounded(64).build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_bounded_num_levels() {
+        let now = Instant::now();
+        assert_bounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .num_levels(4)
+                .bounded(64)
+                .build(now),
+        ));
+    }
+
+    #[test]
+    fn cfg_bounded_full_chain() {
+        let now = Instant::now();
+        assert_bounded_fires(TimerInstaller::new(
+            WheelBuilder::default()
+                .tick_duration(Duration::from_micros(500))
+                .slots_per_level(32)
+                .clk_shift(2)
+                .num_levels(5)
+                .bounded(128)
+                .build(now),
+        ));
+    }
+
+    // -- Different handler storage types --------------------------------------
+
+    #[cfg(feature = "smartptr")]
+    mod storage_tests {
+        use super::*;
+        use nexus_timer::store::UnboundedSlab;
+
+        #[test]
+        fn unbounded_inline_storage() {
+            let mut builder = WorldBuilder::new();
+            builder.register::<bool>(false);
+            let wheel = InlineTimerWheel::unbounded(64, Instant::now());
+            let mut timer = builder.install_driver(TimerInstaller::new(wheel));
+            let mut world = builder.build();
+
+            fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+                *flag = true;
+            }
+
+            let now = Instant::now();
+            let h = on_fire.into_handler(world.registry());
+            let ptr: *const dyn Handler<Instant> = &h;
+            // SAFETY: ptr metadata from h's concrete type
+            let storage = unsafe { nexus_smartptr::Flat::new_raw(h, ptr) };
+            world
+                .resource_mut::<InlineTimerWheel>()
+                .schedule_forget(now, storage);
+
+            let fired = timer.poll(&mut world, now);
+            assert_eq!(fired, 1);
+            assert!(*world.resource::<bool>());
+        }
+
+        #[test]
+        fn unbounded_flex_storage() {
+            let mut builder = WorldBuilder::new();
+            builder.register::<bool>(false);
+            let wheel = FlexTimerWheel::unbounded(64, Instant::now());
+            let mut timer = builder.install_driver(TimerInstaller::new(wheel));
+            let mut world = builder.build();
+
+            fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+                *flag = true;
+            }
+
+            let now = Instant::now();
+            let h = on_fire.into_handler(world.registry());
+            let ptr: *const dyn Handler<Instant> = &h;
+            // SAFETY: ptr metadata from h's concrete type
+            let storage = unsafe { nexus_smartptr::Flex::new_raw(h, ptr) };
+            world
+                .resource_mut::<FlexTimerWheel>()
+                .schedule_forget(now, storage);
+
+            let fired = timer.poll(&mut world, now);
+            assert_eq!(fired, 1);
+            assert!(*world.resource::<bool>());
+        }
+
+        #[test]
+        fn bounded_inline_storage() {
+            let mut builder = WorldBuilder::new();
+            builder.register::<bool>(false);
+            let wheel = BoundedInlineTimerWheel::bounded(64, Instant::now());
+            let mut timer = builder.install_driver(TimerInstaller::new(wheel));
+            let mut world = builder.build();
+
+            fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+                *flag = true;
+            }
+
+            let now = Instant::now();
+            let h = on_fire.into_handler(world.registry());
+            let ptr: *const dyn Handler<Instant> = &h;
+            // SAFETY: ptr metadata from h's concrete type
+            let storage = unsafe { nexus_smartptr::Flat::new_raw(h, ptr) };
+            world
+                .resource_mut::<BoundedInlineTimerWheel>()
+                .try_schedule_forget(now, storage)
+                .expect("should not be full");
+
+            let fired = timer.poll(&mut world, now);
+            assert_eq!(fired, 1);
+            assert!(*world.resource::<bool>());
+        }
+
+        #[test]
+        fn bounded_flex_storage() {
+            let mut builder = WorldBuilder::new();
+            builder.register::<bool>(false);
+            let wheel = BoundedFlexTimerWheel::bounded(64, Instant::now());
+            let mut timer = builder.install_driver(TimerInstaller::new(wheel));
+            let mut world = builder.build();
+
+            fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
+                *flag = true;
+            }
+
+            let now = Instant::now();
+            let h = on_fire.into_handler(world.registry());
+            let ptr: *const dyn Handler<Instant> = &h;
+            // SAFETY: ptr metadata from h's concrete type
+            let storage = unsafe { nexus_smartptr::Flex::new_raw(h, ptr) };
+            world
+                .resource_mut::<BoundedFlexTimerWheel>()
+                .try_schedule_forget(now, storage)
+                .expect("should not be full");
+
+            let fired = timer.poll(&mut world, now);
+            assert_eq!(fired, 1);
+            assert!(*world.resource::<bool>());
+        }
+
+        #[test]
+        fn periodic_inline_fires_repeatedly() {
+            let mut builder = WorldBuilder::new();
+            builder.register::<u64>(0);
+            let wheel = InlineTimerWheel::unbounded(64, Instant::now());
+            let mut timer = builder.install_driver(TimerInstaller::new(wheel));
+            let mut world = builder.build();
+
+            fn tick(mut counter: ResMut<u64>, _now: Instant) {
+                *counter += 1;
+            }
+
+            let now = Instant::now();
+            let interval = Duration::from_millis(10);
+            let handler = tick.into_handler(world.registry());
+            let periodic: Periodic<_, InlineTimers, UnboundedSlab<_>> =
+                Periodic::new(handler, interval);
+            world
+                .resource_mut::<InlineTimerWheel>()
+                .schedule_forget(now, InlineTimers::wrap(periodic));
+
+            // First firing
+            timer.poll(&mut world, now);
+            assert_eq!(*world.resource::<u64>(), 1);
+
+            // Second firing (rescheduled to now + 10ms)
+            timer.poll(&mut world, now + interval);
+            assert_eq!(*world.resource::<u64>(), 2);
+
+            // Third firing (rescheduled to now + 20ms)
+            timer.poll(&mut world, now + interval * 2);
+            assert_eq!(*world.resource::<u64>(), 3);
+
+            // Still active — periodic never stops on its own
+            assert!(!timer.is_empty(&world));
+        }
+
+        #[test]
+        fn periodic_flex_fires_repeatedly() {
+            let mut builder = WorldBuilder::new();
+            builder.register::<u64>(0);
+            let wheel = FlexTimerWheel::unbounded(64, Instant::now());
+            let mut timer = builder.install_driver(TimerInstaller::new(wheel));
+            let mut world = builder.build();
+
+            fn tick(mut counter: ResMut<u64>, _now: Instant) {
+                *counter += 1;
+            }
+
+            let now = Instant::now();
+            let interval = Duration::from_millis(10);
+            let handler = tick.into_handler(world.registry());
+            let periodic: Periodic<_, FlexTimers, UnboundedSlab<_>> =
+                Periodic::new(handler, interval);
+            world
+                .resource_mut::<FlexTimerWheel>()
+                .schedule_forget(now, FlexTimers::wrap(periodic));
+
+            timer.poll(&mut world, now);
+            assert_eq!(*world.resource::<u64>(), 1);
+
+            timer.poll(&mut world, now + interval);
+            assert_eq!(*world.resource::<u64>(), 2);
+
+            timer.poll(&mut world, now + interval * 2);
+            assert_eq!(*world.resource::<u64>(), 3);
+
+            assert!(!timer.is_empty(&world));
+        }
     }
 }

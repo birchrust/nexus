@@ -40,7 +40,7 @@
 mod entry;
 mod handle;
 mod level;
-mod store;
+pub mod store;
 mod wheel;
 
 pub use entry::WheelEntry;
