@@ -817,6 +817,15 @@ impl World {
         self.current_sequence
     }
 
+    /// Set the current sequence number directly.
+    ///
+    /// Use for recovery / replay — restores the sequence to a known
+    /// checkpoint so that subsequent `next_sequence` calls continue
+    /// from the right point.
+    pub fn set_sequence(&mut self, seq: Sequence) {
+        self.current_sequence = seq;
+    }
+
     // =========================================================================
     // Unsafe resource access (hot path — pre-resolved ResourceId)
     // =========================================================================
