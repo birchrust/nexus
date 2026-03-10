@@ -118,7 +118,7 @@ mod timer_driver {
     ///
     /// let mut builder = WorldBuilder::new();
     /// builder.register::<bool>(false);
-    /// let poller = builder.install_driver(TimerInstaller::new(256));
+    /// let poller = builder.install_driver(TimerInstaller::new());
     /// let mut timer = TestTimerDriver::new(poller);
     /// let mut world = builder.build();
     ///

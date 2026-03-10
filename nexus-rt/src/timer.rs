@@ -373,7 +373,7 @@ macro_rules! impl_timer_poller {
             /// Poll expired timers — drain from wheel, fire each handler, done.
             ///
             /// Each handler receives `now` as its event. Handlers that need to
-            /// reschedule themselves do so directly via `ResMut<Wheel<S>>`.
+            /// reschedule themselves do so directly via the wheel resource.
             ///
             /// Returns the number of timers fired.
             pub fn poll(&mut self, world: &mut World, now: Instant) -> usize {
