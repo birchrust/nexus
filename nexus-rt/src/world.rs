@@ -136,10 +136,21 @@ impl std::fmt::Display for ResourceId {
 /// they were last written. A resource is considered "changed" if its
 /// `changed_at` equals the world's `current_sequence`.
 ///
-/// Wrapping is harmless — at one increment per event, the `u64` space
-/// takes ~584 years at 1 GHz to exhaust. Ordering comparisons use natural
-/// `u64` ordering (not wrapping-aware), which is correct for any realistic
-/// uptime.
+/// Uses `i64` for wire-format compatibility (FIX/SBE, Protobuf, Avro
+/// all have native signed 64-bit; unsigned is awkward or absent) and to
+/// support sentinel values ([`NULL`](Self::NULL),
+/// [`UNINITIALIZED`](Self::UNINITIALIZED)) without `Option` overhead.
+///
+/// Wrapping is harmless — at one increment per event, the positive `i64`
+/// space takes ~292 years at 1 GHz to exhaust.
+///
+/// # Sentinels
+///
+/// | Constant | Value | Meaning |
+/// |----------|-------|---------|
+/// | [`NULL`](Self::NULL) | `i64::MIN` | No sequence exists (SBE null convention) |
+/// | [`UNINITIALIZED`](Self::UNINITIALIZED) | `-1` | Not yet assigned |
+/// | [`ZERO`](Self::ZERO) | `0` | Starting point before any events |
 ///
 /// # Examples
 ///
@@ -152,26 +163,49 @@ impl std::fmt::Display for ResourceId {
 /// assert!(b > a);
 /// assert_eq!(b.get(), 1);
 /// assert_eq!(b.elapsed_since(a), 1);
+///
+/// assert!(Sequence::NULL.is_null());
+/// assert!(!Sequence::ZERO.is_null());
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct Sequence(pub(crate) u64);
+pub struct Sequence(pub(crate) i64);
 
 impl Sequence {
+    /// SBE-compatible null — `i64::MIN`. Indicates no sequence exists.
+    ///
+    /// Maps directly to the SBE int64 null sentinel on the wire.
+    pub const NULL: Self = Self(i64::MIN);
+
+    /// Uninitialized sentinel — `-1`. Indicates a sequence has not yet
+    /// been assigned.
+    pub const UNINITIALIZED: Self = Self(-1);
+
     /// The zero sequence — the starting point before any events.
     pub const ZERO: Self = Self(0);
 
-    /// Create a sequence from a raw `u64` value.
+    /// Create a sequence from a raw `i64` value.
     ///
     /// Use for construction in tests, deserialization, or replay.
-    pub const fn new(value: u64) -> Self {
+    pub const fn new(value: i64) -> Self {
         Self(value)
     }
 
-    /// Returns the raw `u64` value.
+    /// Returns the raw `i64` value.
     ///
-    /// Use for logging, metrics, or passing to external systems.
-    pub const fn get(self) -> u64 {
+    /// Use for logging, metrics, serialization, or passing to external
+    /// systems.
+    pub const fn get(self) -> i64 {
         self.0
+    }
+
+    /// Returns `true` if this is the [`NULL`](Self::NULL) sentinel.
+    pub const fn is_null(self) -> bool {
+        self.0 == i64::MIN
+    }
+
+    /// Returns `true` if this is the [`UNINITIALIZED`](Self::UNINITIALIZED) sentinel.
+    pub const fn is_uninitialized(self) -> bool {
+        self.0 == -1
     }
 
     /// Returns the next sequence number (wrapping).
@@ -187,7 +221,7 @@ impl Sequence {
     ///
     /// Wrapping-aware: if `self` has wrapped past `earlier`, the result
     /// is the wrapping distance. Returns 0 if `self == earlier`.
-    pub const fn elapsed_since(self, earlier: Self) -> u64 {
+    pub const fn elapsed_since(self, earlier: Self) -> i64 {
         self.0.wrapping_sub(earlier.0)
     }
 }
@@ -783,6 +817,15 @@ impl World {
         self.current_sequence
     }
 
+    /// Set the current sequence number directly.
+    ///
+    /// Use for recovery / replay — restores the sequence to a known
+    /// checkpoint so that subsequent `next_sequence` calls continue
+    /// from the right point.
+    pub fn set_sequence(&mut self, seq: Sequence) {
+        self.current_sequence = seq;
+    }
+
     // =========================================================================
     // Unsafe resource access (hot path — pre-resolved ResourceId)
     // =========================================================================
@@ -1370,22 +1413,23 @@ mod tests {
         let mut world = builder.build();
 
         // Advance to MAX.
-        world.current_sequence = Sequence(u64::MAX);
-        assert_eq!(world.current_sequence(), Sequence(u64::MAX));
+        world.current_sequence = Sequence(i64::MAX);
+        assert_eq!(world.current_sequence(), Sequence(i64::MAX));
 
         // Stamp resource at MAX.
         *world.resource_mut::<u64>() = 99;
         let id = world.id::<u64>();
         unsafe {
-            assert_eq!(world.changed_at(id), Sequence(u64::MAX));
+            assert_eq!(world.changed_at(id), Sequence(i64::MAX));
         }
 
-        // Wrap to 0.
+        // Wrap to MIN (which is the NULL sentinel, but wrapping is
+        // purely mechanical — it doesn't assign semantic meaning).
         let seq = world.next_sequence();
-        assert_eq!(seq, Sequence(0));
-        assert_eq!(world.current_sequence(), Sequence(0));
+        assert_eq!(seq, Sequence(i64::MIN));
+        assert_eq!(world.current_sequence(), Sequence(i64::MIN));
 
-        // Resource changed at MAX, current is 0 → not changed.
+        // Resource changed at MAX, current is MIN → not changed.
         unsafe {
             assert_ne!(world.changed_at(id), world.current_sequence());
         }
