@@ -173,7 +173,13 @@ pub use self::mio::{BoxedMio, MioConfig, MioDriver, MioInstaller, MioPoller, Mio
 pub use self::mio::{FlexMio, InlineMio};
 
 #[cfg(feature = "timer")]
-pub use timer::{BoxedTimers, Periodic, TimerConfig, TimerInstaller, TimerPoller, TimerWheel};
+pub use timer::{
+    BoundedTimerPoller, BoundedTimerWheel, BoxedTimers, Full, Periodic, TimerConfig, TimerHandle,
+    TimerInstaller, TimerPoller, TimerWheel, WheelBuilder,
+};
 
 #[cfg(all(feature = "timer", feature = "smartptr"))]
-pub use timer::{FlexTimerWheel, FlexTimers, InlineTimerWheel, InlineTimers};
+pub use timer::{
+    BoundedFlexTimerWheel, BoundedInlineTimerWheel, FlexTimerWheel, FlexTimers, InlineTimerWheel,
+    InlineTimers,
+};
