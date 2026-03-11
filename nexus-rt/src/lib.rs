@@ -133,7 +133,7 @@ pub use pipeline::{
     resolve_ref_step, resolve_scan_step, resolve_step,
 };
 pub use plugin::Plugin;
-pub use resource::{Res, ResMut};
+pub use resource::{Res, ResMut, Seq, SeqMut};
 pub use scheduler::{MAX_SYSTEMS, SchedulerInstaller, SchedulerTick, SystemId, SystemScheduler};
 pub use shutdown::{Shutdown, ShutdownHandle};
 pub use system::{IntoSystem, System, SystemFn};

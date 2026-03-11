@@ -3,7 +3,7 @@
 use std::ops::{Deref, DerefMut};
 
 use crate::callback::Callback;
-use crate::resource::{Res, ResMut};
+use crate::resource::{Res, ResMut, Seq, SeqMut};
 use crate::world::{Registry, ResourceId, World};
 
 // =============================================================================
@@ -199,6 +199,34 @@ impl<T: 'static> Param for Option<ResMut<'_, T>> {
 
     fn resource_id(state: &Option<ResourceId>) -> Option<ResourceId> {
         *state
+    }
+}
+
+// -- Seq (read-only sequence) ------------------------------------------------
+
+impl Param for Seq {
+    type State = ();
+    type Item<'w> = Seq;
+
+    fn init(_registry: &Registry) {}
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> Seq {
+        Seq(world.current_sequence())
+    }
+}
+
+// -- SeqMut (mutable sequence) -----------------------------------------------
+
+impl Param for SeqMut<'_> {
+    type State = ();
+    type Item<'w> = SeqMut<'w>;
+
+    fn init(_registry: &Registry) {}
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> SeqMut<'w> {
+        SeqMut(world.sequence_cell())
     }
 }
 
@@ -657,6 +685,7 @@ impl<E, F: FnMut(&mut World, E) + Send + 'static> IntoHandler<E, Opaque> for F {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::Sequence;
     use crate::WorldBuilder;
 
     // -- Param tests ----------------------------------------------------
@@ -1068,5 +1097,195 @@ mod tests {
         h.run(&mut world, 7u64);
 
         assert_eq!(*world.resource::<u64>(), 7);
+    }
+
+    // -- Seq / SeqMut tests ------------------------------------------------
+
+    #[test]
+    fn seq_reads_current() {
+        fn check(seq: Seq, mut out: ResMut<i64>, _event: ()) {
+            *out = seq.get().0;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        world.next_sequence(); // seq=1
+
+        let mut handler = check.into_handler(world.registry_mut());
+        handler.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 1);
+    }
+
+    #[test]
+    fn seq_mut_advances() {
+        fn stamp(mut seq: SeqMut, mut counter: ResMut<u64>, _event: ()) {
+            let a = seq.advance();
+            let b = seq.advance();
+            *counter = a.0 as u64 * 100 + b.0 as u64;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+        // seq starts at 0, handler advances twice → 1, 2
+        let mut handler = stamp.into_handler(world.registry_mut());
+        handler.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 1 * 100 + 2);
+        // World sequence is now 2
+        assert_eq!(world.current_sequence(), Sequence(2));
+    }
+
+    #[test]
+    fn seq_mut_persistent_across_dispatches() {
+        fn advance(mut seq: SeqMut, _event: ()) {
+            seq.advance();
+        }
+
+        let builder = WorldBuilder::new();
+        let mut world = builder.build();
+        let mut handler = advance.into_handler(world.registry_mut());
+        handler.run(&mut world, ());
+        handler.run(&mut world, ());
+        handler.run(&mut world, ());
+        assert_eq!(world.current_sequence(), Sequence(3));
+    }
+
+    // -- Seq position / arity coverage ------------------------------------
+
+    #[test]
+    fn seq_only_param() {
+        fn handle(seq: Seq, _event: ()) {
+            assert!(seq.get().0 >= 0);
+        }
+
+        let builder = WorldBuilder::new();
+        let mut world = builder.build();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+    }
+
+    #[test]
+    fn seq_first_with_res() {
+        fn handle(seq: Seq, config: Res<u64>, mut out: ResMut<i64>, _event: ()) {
+            *out = seq.get().0 + *config as i64;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(100);
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        world.next_sequence();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 101);
+    }
+
+    #[test]
+    fn seq_middle_position() {
+        fn handle(config: Res<u64>, seq: Seq, mut out: ResMut<i64>, _event: ()) {
+            *out = *config as i64 + seq.get().0;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(50);
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        world.next_sequence(); // seq=1
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 51);
+    }
+
+    #[test]
+    fn seq_last_position() {
+        fn handle(mut out: ResMut<i64>, seq: Seq, _event: ()) {
+            *out = seq.get().0;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        world.next_sequence();
+        world.next_sequence(); // seq=2
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 2);
+    }
+
+    #[test]
+    fn seq_mut_only_param() {
+        fn handle(mut seq: SeqMut, _event: ()) {
+            seq.advance();
+        }
+
+        let builder = WorldBuilder::new();
+        let mut world = builder.build();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(world.current_sequence(), Sequence(1));
+    }
+
+    #[test]
+    fn seq_mut_first_with_res() {
+        fn handle(mut seq: SeqMut, mut out: ResMut<i64>, _event: ()) {
+            let s = seq.advance();
+            *out = s.0;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 1);
+    }
+
+    #[test]
+    fn seq_mut_middle_position() {
+        fn handle(config: Res<u64>, mut seq: SeqMut, mut out: ResMut<i64>, _event: ()) {
+            let s = seq.advance();
+            *out = s.0 + *config as i64;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(10);
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 11);
+    }
+
+    #[test]
+    fn seq_mut_last_position() {
+        fn handle(mut out: ResMut<i64>, mut seq: SeqMut, _event: ()) {
+            let s = seq.advance();
+            *out = s.0;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<i64>(0);
+        let mut world = builder.build();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<i64>(), 1);
+    }
+
+    #[test]
+    fn seq_mut_multiple_advances_in_one_dispatch() {
+        fn handle(mut seq: SeqMut, mut out: ResMut<Vec<i64>>, _event: ()) {
+            out.push(seq.advance().0);
+            out.push(seq.advance().0);
+            out.push(seq.advance().0);
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<Vec<i64>>(Vec::new());
+        let mut world = builder.build();
+        let mut h = handle.into_handler(world.registry_mut());
+        h.run(&mut world, ());
+        assert_eq!(*world.resource::<Vec<i64>>(), vec![1, 2, 3]);
+        assert_eq!(world.current_sequence(), Sequence(3));
     }
 }
