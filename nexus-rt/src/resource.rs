@@ -176,6 +176,89 @@ impl<T: 'static> DerefMut for ResMut<'_, T> {
     }
 }
 
+// =============================================================================
+// Seq / SeqMut — sequence number access
+// =============================================================================
+
+/// Read-only access to the world's current sequence number.
+///
+/// Appears in handler function signatures alongside other params.
+/// Derefs to [`Sequence`].
+///
+/// # Example
+///
+/// ```ignore
+/// use nexus_rt::{Seq, Handler, IntoHandler};
+///
+/// fn log_event(seq: Seq, event: u64) {
+///     println!("seq={:?}, event={}", seq.get(), event);
+/// }
+/// ```
+pub struct Seq(pub(crate) Sequence);
+
+impl Seq {
+    /// Returns the sequence value.
+    pub fn get(&self) -> Sequence {
+        self.0
+    }
+}
+
+impl Deref for Seq {
+    type Target = Sequence;
+
+    #[inline(always)]
+    fn deref(&self) -> &Sequence {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Seq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Mutable access to the world's sequence number.
+///
+/// Allows handlers to advance the sequence for stamping outbound messages.
+/// Each call to [`advance`](Self::advance) returns a new monotonically increasing
+/// sequence number.
+///
+/// # Example
+///
+/// ```ignore
+/// use nexus_rt::{SeqMut, Handler, IntoHandler};
+///
+/// fn on_trade(mut seq: SeqMut, event: Trade) {
+///     let seq_a = seq.advance();
+///     publish(Message { seq: seq_a, .. });
+///
+///     let seq_b = seq.advance();
+///     publish(Message { seq: seq_b, .. });
+/// }
+/// ```
+pub struct SeqMut<'w>(pub(crate) &'w Cell<Sequence>);
+
+impl SeqMut<'_> {
+    /// Returns the current sequence value.
+    pub fn get(&self) -> Sequence {
+        self.0.get()
+    }
+
+    /// Advance to the next sequence number and return it.
+    pub fn advance(&mut self) -> Sequence {
+        let next = Sequence(self.0.get().0.wrapping_add(1));
+        self.0.set(next);
+        next
+    }
+}
+
+impl std::fmt::Debug for SeqMut<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.get().fmt(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

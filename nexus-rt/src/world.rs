@@ -28,6 +28,8 @@
 
 use std::any::{TypeId, type_name};
 use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 #[cfg(debug_assertions)]
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
@@ -562,16 +564,15 @@ impl WorldBuilder {
 
     /// Freeze the builder into an immutable [`World`] container.
     ///
-    /// Automatically registers a [`Shutdown`](crate::shutdown::Shutdown)
-    /// resource if one wasn't already registered. After this call, no
-    /// more resources can be registered. All [`ResourceId`] values
-    /// remain valid for the lifetime of the returned [`World`].
-    pub fn build(mut self) -> World {
-        self.ensure(crate::shutdown::Shutdown::new());
+    /// After this call, no more resources can be registered. All
+    /// [`ResourceId`] values remain valid for the lifetime of the
+    /// returned [`World`].
+    pub fn build(self) -> World {
         World {
             registry: self.registry,
             storage: self.storage,
-            current_sequence: Sequence(0),
+            current_sequence: Cell::new(Sequence(0)),
+            shutdown: Arc::new(AtomicBool::new(false)),
             _not_sync: PhantomData,
             #[cfg(debug_assertions)]
             borrow_tracker: BorrowTracker::new(),
@@ -613,9 +614,12 @@ pub struct World {
     registry: Registry,
     /// Type-erased pointer storage. Drop handled by `Storage`.
     storage: Storage,
-    /// Current sequence number. Advanced by the driver before
-    /// each event dispatch.
-    current_sequence: Sequence,
+    /// Current sequence number. `Cell` so handlers can advance it
+    /// through `&World` via [`SeqMut`](crate::SeqMut).
+    current_sequence: Cell<Sequence>,
+    /// Cooperative shutdown flag. Shared with [`ShutdownHandle`](crate::ShutdownHandle)
+    /// via `Arc`. Handlers access it through the [`Shutdown`](crate::Shutdown) Param.
+    shutdown: Arc<AtomicBool>,
     /// World must not be shared across threads — it holds interior-mutable
     /// `Cell<Sequence>` values accessed through `&self`. `!Sync` enforced by
     /// `PhantomData<Cell<()>>`.
@@ -756,13 +760,19 @@ impl World {
     // =========================================================================
 
     /// Returns a [`ShutdownHandle`](crate::shutdown::ShutdownHandle)
-    /// sharing the same flag as the [`Shutdown`](crate::shutdown::Shutdown)
-    /// resource.
+    /// sharing the same flag as the world's shutdown state.
     ///
     /// The handle is owned by the event loop and checked each iteration.
-    /// Handlers trigger shutdown via `Res<Shutdown>::shutdown()`.
+    /// Handlers trigger shutdown via the [`Shutdown`](crate::Shutdown) Param.
     pub fn shutdown_handle(&self) -> crate::shutdown::ShutdownHandle {
-        self.resource::<crate::shutdown::Shutdown>().handle()
+        crate::shutdown::ShutdownHandle::new(Arc::clone(&self.shutdown))
+    }
+
+    /// Returns a reference to the shutdown flag.
+    ///
+    /// Used by the [`Shutdown`](crate::Shutdown) Param for direct access.
+    pub(crate) fn shutdown_flag(&self) -> &Arc<AtomicBool> {
+        &self.shutdown
     }
 
     /// Run the event loop until shutdown is triggered.
@@ -770,12 +780,9 @@ impl World {
     /// The closure receives `&mut World` and defines one iteration of
     /// the poll loop — which drivers to poll, in what order, with what
     /// timeout. The loop exits when a handler calls
-    /// [`Shutdown::shutdown`](crate::shutdown::Shutdown::shutdown) or
+    /// [`Shutdown::trigger`](crate::Shutdown::trigger) or
     /// an external signal flips the flag (see
     /// [`ShutdownHandle::enable_signals`](crate::shutdown::ShutdownHandle::enable_signals)).
-    ///
-    /// The shutdown flag is resolved once before entering the loop —
-    /// no resource lookup per iteration.
     ///
     /// # Examples
     ///
@@ -792,8 +799,7 @@ impl World {
     /// });
     /// ```
     pub fn run(&mut self, mut f: impl FnMut(&mut World)) {
-        let flag = self.resource::<crate::shutdown::Shutdown>().flag();
-        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+        while !self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             f(self);
         }
     }
@@ -804,7 +810,7 @@ impl World {
 
     /// Returns the current event sequence number.
     pub fn current_sequence(&self) -> Sequence {
-        self.current_sequence
+        self.current_sequence.get()
     }
 
     /// Advance to the next event sequence number and return it.
@@ -813,8 +819,16 @@ impl World {
     /// sequence number identifies the event being processed. Resources
     /// mutated during dispatch will record this sequence in `changed_at`.
     pub fn next_sequence(&mut self) -> Sequence {
-        self.current_sequence = Sequence(self.current_sequence.0.wrapping_add(1));
-        self.current_sequence
+        let next = Sequence(self.current_sequence.get().0.wrapping_add(1));
+        self.current_sequence.set(next);
+        next
+    }
+
+    /// Returns a reference to the sequence `Cell`.
+    ///
+    /// Used by [`SeqMut`](crate::SeqMut) Param for direct access.
+    pub(crate) fn sequence_cell(&self) -> &Cell<Sequence> {
+        &self.current_sequence
     }
 
     /// Set the current sequence number directly.
@@ -823,7 +837,7 @@ impl World {
     /// checkpoint so that subsequent `next_sequence` calls continue
     /// from the right point.
     pub fn set_sequence(&mut self, seq: Sequence) {
-        self.current_sequence = seq;
+        self.current_sequence.set(seq);
     }
 
     // =========================================================================
@@ -938,7 +952,7 @@ impl World {
     pub(crate) unsafe fn stamp_changed(&self, id: ResourceId) {
         // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
         // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
-        unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).set(self.current_sequence) }
+        unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).set(self.current_sequence.get()) }
     }
 }
 
@@ -976,8 +990,7 @@ mod tests {
         builder.register::<Price>(Price { value: 100.0 });
         builder.register::<Venue>(Venue { name: "test" });
         let world = builder.build();
-        // +1 for auto-registered Shutdown.
-        assert_eq!(world.len(), 3);
+        assert_eq!(world.len(), 2);
     }
 
     #[test]
@@ -1057,9 +1070,7 @@ mod tests {
     #[test]
     fn empty_builder_builds_empty_world() {
         let world = WorldBuilder::new().build();
-        // Shutdown is auto-registered by build().
-        assert_eq!(world.len(), 1);
-        assert!(world.contains::<crate::shutdown::Shutdown>());
+        assert_eq!(world.len(), 0);
     }
 
     #[test]
@@ -1413,7 +1424,7 @@ mod tests {
         let mut world = builder.build();
 
         // Advance to MAX.
-        world.current_sequence = Sequence(i64::MAX);
+        world.current_sequence.set(Sequence(i64::MAX));
         assert_eq!(world.current_sequence(), Sequence(i64::MAX));
 
         // Stamp resource at MAX.
