@@ -191,7 +191,7 @@ impl<T: 'static> DerefMut for ResMut<'_, T> {
 /// use nexus_rt::{Seq, Handler, IntoHandler};
 ///
 /// fn log_event(seq: Seq, event: u64) {
-///     println!("seq={}, event={}", seq.get(), event);
+///     println!("seq={:?}, event={}", seq.get(), event);
 /// }
 /// ```
 pub struct Seq(pub(crate) Sequence);
@@ -221,7 +221,7 @@ impl std::fmt::Debug for Seq {
 /// Mutable access to the world's sequence number.
 ///
 /// Allows handlers to advance the sequence for stamping outbound messages.
-/// Each call to [`next`](Self::next) returns a new monotonically increasing
+/// Each call to [`advance`](Self::advance) returns a new monotonically increasing
 /// sequence number.
 ///
 /// # Example
