@@ -1,16 +1,21 @@
-//! Cooperative shutdown flag for event loops.
+//! Cooperative shutdown for event loops.
 //!
-//! [`Shutdown`] is a resource automatically registered by
-//! [`WorldBuilder::build`](crate::WorldBuilder::build). Handlers trigger
-//! shutdown via [`Res<Shutdown>`](crate::Res):
+//! [`Shutdown`] is a handler parameter that accesses the world's shutdown
+//! flag directly — no resource registration needed. Handlers trigger
+//! shutdown via [`Shutdown::trigger`]:
 //!
 //! ```
-//! use nexus_rt::{Res, WorldBuilder};
+//! use nexus_rt::{WorldBuilder, IntoHandler, Handler};
 //! use nexus_rt::shutdown::Shutdown;
 //!
-//! fn on_fatal(shutdown: Res<Shutdown>, _event: ()) {
-//!     shutdown.shutdown();
+//! fn on_fatal(shutdown: Shutdown, _event: ()) {
+//!     shutdown.trigger();
 //! }
+//!
+//! let mut world = WorldBuilder::new().build();
+//! let mut handler = on_fatal.into_handler(world.registry());
+//! handler.run(&mut world, ());
+//! assert!(world.shutdown_handle().is_shutdown());
 //! ```
 //!
 //! The event loop owns a [`ShutdownHandle`] obtained from
@@ -39,58 +44,47 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Cooperative shutdown flag — registered as a [`World`](crate::World) resource.
+/// Handler parameter for cooperative shutdown.
 ///
-/// Interior-mutable via [`AtomicBool`], so it works through shared
-/// [`Res<Shutdown>`](crate::Res) access. Uses [`Relaxed`](Ordering::Relaxed)
-/// ordering — the flag is checked once per poll iteration, not on a
-/// hot path requiring memory fencing.
-pub struct Shutdown {
-    flag: Arc<AtomicBool>,
-}
+/// Accesses the world's shutdown flag directly — not a resource.
+/// Uses [`Relaxed`](Ordering::Relaxed) ordering — the flag is checked
+/// once per poll iteration, not on a hot path requiring memory fencing.
+pub struct Shutdown(pub(crate) Arc<AtomicBool>);
 
 impl Shutdown {
-    pub(crate) fn new() -> Self {
-        Self {
-            flag: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Clone the raw flag for use in tight loops without going
-    /// through World resource resolution.
-    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.flag)
-    }
-
     /// Returns `true` if shutdown has been triggered.
     pub fn is_shutdown(&self) -> bool {
-        self.flag.load(Ordering::Relaxed)
+        self.0.load(Ordering::Relaxed)
     }
 
-    /// Trigger shutdown. Typically called from a handler via
-    /// `Res<Shutdown>`.
-    pub fn shutdown(&self) {
-        self.flag.store(true, Ordering::Relaxed);
+    /// Trigger shutdown. The event loop will exit after the current
+    /// dispatch completes.
+    pub fn trigger(&self) {
+        self.0.store(true, Ordering::Relaxed);
     }
+}
 
-    /// Create a [`ShutdownHandle`] sharing the same flag.
-    pub(crate) fn handle(&self) -> ShutdownHandle {
-        ShutdownHandle {
-            flag: Arc::clone(&self.flag),
-        }
+impl std::fmt::Debug for Shutdown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Shutdown")
+            .field(&self.is_shutdown())
+            .finish()
     }
 }
 
 /// External handle for the event loop to check shutdown status.
 ///
-/// Shares the same [`AtomicBool`] as the [`Shutdown`] resource inside
-/// [`World`](crate::World). Obtained via
-/// [`World::shutdown_handle`](crate::World::shutdown_handle).
+/// Shares the same [`AtomicBool`] as the world's shutdown flag.
+/// Obtained via [`World::shutdown_handle`](crate::World::shutdown_handle).
 pub struct ShutdownHandle {
     flag: Arc<AtomicBool>,
 }
 
 impl ShutdownHandle {
+    pub(crate) fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+
     /// Returns `true` if shutdown has been triggered.
     pub fn is_shutdown(&self) -> bool {
         self.flag.load(Ordering::Relaxed)
@@ -128,44 +122,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_not_shutdown() {
-        let s = Shutdown::new();
-        assert!(!s.is_shutdown());
+    fn handle_not_shutdown_by_default() {
+        let world = crate::WorldBuilder::new().build();
+        let handle = world.shutdown_handle();
+        assert!(!handle.is_shutdown());
     }
 
     #[test]
-    fn shutdown_flips_flag() {
-        let s = Shutdown::new();
-        s.shutdown();
-        assert!(s.is_shutdown());
-    }
+    fn shutdown_param_triggers() {
+        let world = crate::WorldBuilder::new().build();
+        let handle = world.shutdown_handle();
+        let shutdown = Shutdown(Arc::clone(world.shutdown_flag()));
 
-    #[test]
-    fn handle_sees_shutdown() {
-        let s = Shutdown::new();
-        let h = s.handle();
-
-        assert!(!h.is_shutdown());
-        s.shutdown();
-        assert!(h.is_shutdown());
+        assert!(!handle.is_shutdown());
+        shutdown.trigger();
+        assert!(handle.is_shutdown());
     }
 
     #[test]
     fn handle_can_trigger_shutdown() {
-        let s = Shutdown::new();
-        let h = s.handle();
-
-        h.shutdown();
-        assert!(s.is_shutdown());
+        let world = crate::WorldBuilder::new().build();
+        let handle = world.shutdown_handle();
+        assert!(!handle.is_shutdown());
+        handle.shutdown();
+        assert!(handle.is_shutdown());
     }
 
     #[test]
-    fn handle_from_world() {
-        let world = crate::WorldBuilder::new().build();
+    fn shutdown_in_handler() {
+        use crate::{Handler, IntoHandler};
+
+        fn trigger_shutdown(shutdown: Shutdown, _event: ()) {
+            shutdown.trigger();
+        }
+
+        let mut world = crate::WorldBuilder::new().build();
         let handle = world.shutdown_handle();
 
+        let mut handler = trigger_shutdown.into_handler(world.registry());
         assert!(!handle.is_shutdown());
-        world.resource::<Shutdown>().shutdown();
+        handler.run(&mut world, ());
         assert!(handle.is_shutdown());
     }
 }

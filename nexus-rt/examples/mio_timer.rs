@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use nexus_rt::{
     HandlerTemplate, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef,
-    Res, ResMut, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
+    ResMut, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
     handler_blueprint,
 };
 
@@ -192,7 +192,7 @@ fn heartbeat(
     mut conns: ResMut<Connections>,
     mut stats: ResMut<Stats>,
     mut wheel: ResMut<TimerWheel>,
-    shutdown: Res<Shutdown>,
+    shutdown: Shutdown,
     reg: RegistryRef,
     now: Instant,
 ) {
@@ -204,7 +204,7 @@ fn heartbeat(
         let h = heartbeat.into_handler(&reg);
         wheel.schedule_forget(now + HEARTBEAT_INTERVAL, Box::new(h));
     } else {
-        shutdown.shutdown();
+        shutdown.trigger();
     }
 }
 

@@ -4,6 +4,7 @@ use std::ops::{Deref, DerefMut};
 
 use crate::callback::Callback;
 use crate::resource::{Res, ResMut, Seq, SeqMut};
+use crate::shutdown::Shutdown;
 use crate::world::{Registry, ResourceId, World};
 
 // =============================================================================
@@ -227,6 +228,20 @@ impl Param for SeqMut<'_> {
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> SeqMut<'w> {
         SeqMut(world.sequence_cell())
+    }
+}
+
+// -- Shutdown ----------------------------------------------------------------
+
+impl Param for Shutdown {
+    type State = ();
+    type Item<'w> = Shutdown;
+
+    fn init(_registry: &Registry) {}
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> Shutdown {
+        Shutdown(std::sync::Arc::clone(world.shutdown_flag()))
     }
 }
 

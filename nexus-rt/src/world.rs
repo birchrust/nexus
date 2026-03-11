@@ -28,6 +28,8 @@
 
 use std::any::{TypeId, type_name};
 use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 #[cfg(debug_assertions)]
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
@@ -562,16 +564,15 @@ impl WorldBuilder {
 
     /// Freeze the builder into an immutable [`World`] container.
     ///
-    /// Automatically registers a [`Shutdown`](crate::shutdown::Shutdown)
-    /// resource if one wasn't already registered. After this call, no
-    /// more resources can be registered. All [`ResourceId`] values
-    /// remain valid for the lifetime of the returned [`World`].
-    pub fn build(mut self) -> World {
-        self.ensure(crate::shutdown::Shutdown::new());
+    /// After this call, no more resources can be registered. All
+    /// [`ResourceId`] values remain valid for the lifetime of the
+    /// returned [`World`].
+    pub fn build(self) -> World {
         World {
             registry: self.registry,
             storage: self.storage,
             current_sequence: Cell::new(Sequence(0)),
+            shutdown: Arc::new(AtomicBool::new(false)),
             _not_sync: PhantomData,
             #[cfg(debug_assertions)]
             borrow_tracker: BorrowTracker::new(),
@@ -616,6 +617,9 @@ pub struct World {
     /// Current sequence number. `Cell` so handlers can advance it
     /// through `&World` via [`SeqMut`](crate::SeqMut).
     current_sequence: Cell<Sequence>,
+    /// Cooperative shutdown flag. Shared with [`ShutdownHandle`](crate::ShutdownHandle)
+    /// via `Arc`. Handlers access it through the [`Shutdown`](crate::Shutdown) Param.
+    shutdown: Arc<AtomicBool>,
     /// World must not be shared across threads — it holds interior-mutable
     /// `Cell<Sequence>` values accessed through `&self`. `!Sync` enforced by
     /// `PhantomData<Cell<()>>`.
@@ -756,13 +760,19 @@ impl World {
     // =========================================================================
 
     /// Returns a [`ShutdownHandle`](crate::shutdown::ShutdownHandle)
-    /// sharing the same flag as the [`Shutdown`](crate::shutdown::Shutdown)
-    /// resource.
+    /// sharing the same flag as the world's shutdown state.
     ///
     /// The handle is owned by the event loop and checked each iteration.
-    /// Handlers trigger shutdown via `Res<Shutdown>::shutdown()`.
+    /// Handlers trigger shutdown via the [`Shutdown`](crate::Shutdown) Param.
     pub fn shutdown_handle(&self) -> crate::shutdown::ShutdownHandle {
-        self.resource::<crate::shutdown::Shutdown>().handle()
+        crate::shutdown::ShutdownHandle::new(Arc::clone(&self.shutdown))
+    }
+
+    /// Returns a reference to the shutdown flag.
+    ///
+    /// Used by the [`Shutdown`](crate::Shutdown) Param for direct access.
+    pub(crate) fn shutdown_flag(&self) -> &Arc<AtomicBool> {
+        &self.shutdown
     }
 
     /// Run the event loop until shutdown is triggered.
@@ -770,12 +780,9 @@ impl World {
     /// The closure receives `&mut World` and defines one iteration of
     /// the poll loop — which drivers to poll, in what order, with what
     /// timeout. The loop exits when a handler calls
-    /// [`Shutdown::shutdown`](crate::shutdown::Shutdown::shutdown) or
+    /// [`Shutdown::trigger`](crate::Shutdown::trigger) or
     /// an external signal flips the flag (see
     /// [`ShutdownHandle::enable_signals`](crate::shutdown::ShutdownHandle::enable_signals)).
-    ///
-    /// The shutdown flag is resolved once before entering the loop —
-    /// no resource lookup per iteration.
     ///
     /// # Examples
     ///
@@ -792,8 +799,7 @@ impl World {
     /// });
     /// ```
     pub fn run(&mut self, mut f: impl FnMut(&mut World)) {
-        let flag = self.resource::<crate::shutdown::Shutdown>().flag();
-        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+        while !self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             f(self);
         }
     }
@@ -984,8 +990,7 @@ mod tests {
         builder.register::<Price>(Price { value: 100.0 });
         builder.register::<Venue>(Venue { name: "test" });
         let world = builder.build();
-        // +1 for auto-registered Shutdown.
-        assert_eq!(world.len(), 3);
+        assert_eq!(world.len(), 2);
     }
 
     #[test]
@@ -1065,9 +1070,7 @@ mod tests {
     #[test]
     fn empty_builder_builds_empty_world() {
         let world = WorldBuilder::new().build();
-        // Shutdown is auto-registered by build().
-        assert_eq!(world.len(), 1);
-        assert!(world.contains::<crate::shutdown::Shutdown>());
+        assert_eq!(world.len(), 0);
     }
 
     #[test]
