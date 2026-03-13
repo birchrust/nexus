@@ -52,7 +52,7 @@
 //!
 //! **`bool`:** `.not()`, `.and()`, `.or()`, `.xor()`
 //!
-//! **Terminal:** `.build()` (→ `Pipeline<In>`), `.build_batch(cap)`
+//! **Terminal:** `.build()` (→ `Pipeline`), `.build_batch(cap)`
 //! (→ `BatchPipeline<In>`)
 //!
 //! # Splat — tuple destructuring
@@ -2282,12 +2282,12 @@ impl PipelineOutput for () {}
 impl PipelineOutput for Option<()> {}
 
 // =============================================================================
-// build — when Out = ()
+// build — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<In: 'static, Chain> PipelineBuilder<In, (), Chain>
+impl<In, Chain> PipelineBuilder<In, (), Chain>
 where
-    Chain: FnMut(&mut World, In) + 'static,
+    Chain: FnMut(&mut World, In),
 {
     /// Finalize the pipeline into a [`Pipeline`].
     ///
@@ -2295,12 +2295,31 @@ where
     /// no virtual dispatch. Call `.run()` directly for zero-cost execution,
     /// or wrap in `Box<dyn Handler<In>>` when type erasure is needed.
     ///
-    /// Only available when the pipeline ends with `()`. If your chain
-    /// produces a value, add a final `.then()` that consumes the output.
-    pub fn build(self) -> Pipeline<In, Chain> {
+    /// Only available when the pipeline ends with `()` or `Option<()>`.
+    /// If your chain produces a value, add a final `.then()` that consumes
+    /// the output.
+    pub fn build(self) -> Pipeline<Chain> {
         Pipeline {
             chain: self.chain,
-            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In, Chain> PipelineBuilder<In, Option<()>, Chain>
+where
+    Chain: FnMut(&mut World, In) -> Option<()>,
+{
+    /// Finalize the pipeline into a [`Pipeline`], discarding the `Option<()>`.
+    ///
+    /// Pipelines ending with `Option<()>` (e.g. after `.map()` on an
+    /// `Option<T>` with a step that returns `()`) produce the same
+    /// [`Pipeline`] as those ending with `()`.
+    pub fn build(self) -> Pipeline<impl FnMut(&mut World, In) + use<In, Chain>> {
+        let mut chain = self.chain;
+        Pipeline {
+            chain: move |world: &mut World, input: In| {
+                let _ = chain(world, input);
+            },
         }
     }
 }
@@ -2309,9 +2328,9 @@ where
 // build_batch — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<In: 'static, Out: PipelineOutput, Chain> PipelineBuilder<In, Out, Chain>
+impl<In, Out: PipelineOutput, Chain> PipelineBuilder<In, Out, Chain>
 where
-    Chain: FnMut(&mut World, In) -> Out + 'static,
+    Chain: FnMut(&mut World, In) -> Out,
 {
     /// Finalize into a [`BatchPipeline`] with a pre-allocated input buffer.
     ///
@@ -2335,29 +2354,25 @@ where
 }
 
 // =============================================================================
-// Pipeline<In, F> — built pipeline
+// Pipeline<F> — built pipeline
 // =============================================================================
 
-/// Built step pipeline implementing [`Handler<In>`](crate::Handler).
+/// Built step pipeline implementing [`Handler<E>`](crate::Handler).
 ///
 /// Created by [`PipelineBuilder::build`]. The entire pipeline chain is
 /// monomorphized at compile time — no boxing, no virtual dispatch.
 /// Call `.run()` directly for zero-cost execution, or wrap in
-/// `Box<dyn Handler<In>>` when you need type erasure (single box).
+/// `Box<dyn Handler<E>>` when you need type erasure (single box).
 ///
-/// Implements [`Handler<In>`](crate::Handler), so it can be stored in
-/// driver handler collections alongside [`Callback`](crate::Callback)
-/// and [`HandlerFn`](crate::HandlerFn). For batch processing, see
-/// [`BatchPipeline`].
-pub struct Pipeline<In, F> {
+/// Implements [`Handler<E>`](crate::Handler) for any event type `E`
+/// that the chain accepts — including borrowed types like `&'a [u8]`.
+/// Supports `for<'a> Handler<&'a T>` for zero-copy event dispatch.
+pub struct Pipeline<F> {
     chain: F,
-    _marker: PhantomData<fn(In)>,
 }
 
-impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
-    for Pipeline<In, F>
-{
-    fn run(&mut self, world: &mut World, event: In) {
+impl<E, F: FnMut(&mut World, E) + Send> crate::Handler<E> for Pipeline<F> {
+    fn run(&mut self, world: &mut World, event: E) {
         (self.chain)(world, event);
     }
 }
@@ -4290,4 +4305,118 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 10);
     }
 
+    // =========================================================================
+    // Build — Option<()> terminal
+    // =========================================================================
+
+    #[test]
+    fn build_option_unit_terminal() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let r = world.registry_mut();
+
+        fn check(x: u32) -> Option<u32> {
+            if x > 5 { Some(x) } else { None }
+        }
+        fn store(mut out: ResMut<u64>, val: u32) {
+            *out += val as u64;
+        }
+
+        // .map(store) on Option<u32> produces Option<()> — build() must work
+        let mut p = PipelineStart::<u32>::new()
+            .then(check, r)
+            .map(store, r)
+            .build();
+
+        p.run(&mut world, 3); // None, skipped
+        assert_eq!(*world.resource::<u64>(), 0);
+        p.run(&mut world, 7); // Some, stores
+        assert_eq!(*world.resource::<u64>(), 7);
+        p.run(&mut world, 10);
+        assert_eq!(*world.resource::<u64>(), 17);
+    }
+
+    #[test]
+    fn build_option_unit_boxes_into_handler() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let r = world.registry_mut();
+
+        fn double(x: u32) -> Option<u64> {
+            if x > 0 { Some(x as u64 * 2) } else { None }
+        }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out += val;
+        }
+
+        let mut h: Box<dyn Handler<u32>> = Box::new(
+            PipelineStart::<u32>::new()
+                .then(double, r)
+                .map(store, r)
+                .build(),
+        );
+        h.run(&mut world, 0); // None
+        assert_eq!(*world.resource::<u64>(), 0);
+        h.run(&mut world, 5); // 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    // =========================================================================
+    // Build — borrowed event type
+    // =========================================================================
+
+    #[test]
+    fn build_borrowed_event_direct() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn decode(msg: &[u8]) -> u64 {
+            msg.len() as u64
+        }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        // msg declared before p so it outlives the pipeline (drop order).
+        // Matches real-world usage: pipeline lives long, events come and go.
+        let msg = vec![1u8, 2, 3];
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&[u8]>::new()
+            .then(decode, r)
+            .then(store, r)
+            .build();
+
+        p.run(&mut world, &msg);
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    #[test]
+    fn build_borrowed_event_option_unit() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn decode(msg: &[u8]) -> Option<u64> {
+            if msg.is_empty() { None } else { Some(msg.len() as u64) }
+        }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        let empty = vec![];
+        let data = vec![1u8, 2, 3];
+        let r = world.registry_mut();
+        let mut p = PipelineStart::<&[u8]>::new()
+            .then(decode, r)
+            .map(store, r)
+            .build();
+
+        p.run(&mut world, &empty); // None
+        assert_eq!(*world.resource::<u64>(), 0);
+        p.run(&mut world, &data); // Some(3)
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
 }

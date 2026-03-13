@@ -543,7 +543,7 @@ all_tuples!(impl_merge5_step);
 /// ```
 pub struct DagStart<E>(PhantomData<fn(E)>);
 
-impl<E: 'static> DagStart<E> {
+impl<E> DagStart<E> {
     /// Create a new typed DAG entry point.
     pub fn new() -> Self {
         Self(PhantomData)
@@ -567,7 +567,7 @@ impl<E: 'static> DagStart<E> {
     }
 }
 
-impl<E: 'static> Default for DagStart<E> {
+impl<E> Default for DagStart<E> {
     fn default() -> Self {
         Self::new()
     }
@@ -582,7 +582,7 @@ pub struct DagChain<E, Out, Chain> {
     _marker: PhantomData<fn(E) -> Out>,
 }
 
-impl<E: 'static, Out: 'static, Chain> DagChain<E, Out, Chain>
+impl<E, Out: 'static, Chain> DagChain<E, Out, Chain>
 where
     Chain: FnMut(&mut World, E) -> Out,
 {
@@ -596,18 +596,36 @@ where
     }
 }
 
-impl<E: 'static, Chain> DagChain<E, (), Chain>
+impl<E, Chain> DagChain<E, (), Chain>
 where
-    Chain: FnMut(&mut World, E) + Send + 'static,
+    Chain: FnMut(&mut World, E) + Send,
 {
     /// Finalize into a [`Dag`](crate::Dag) that implements [`Handler<E>`].
     ///
-    /// Only available when the chain ends with `()`. If your DAG
-    /// produces a value, add a final `.then()` that consumes the output.
-    pub fn build(self) -> Dag<E, Chain> {
+    /// Only available when the chain ends with `()` or `Option<()>`.
+    /// If your DAG produces a value, add a final `.then()` that consumes
+    /// the output.
+    pub fn build(self) -> Dag<Chain> {
         Dag {
             chain: self.chain,
-            _marker: PhantomData,
+        }
+    }
+}
+
+impl<E, Chain> DagChain<E, Option<()>, Chain>
+where
+    Chain: FnMut(&mut World, E) -> Option<()> + Send,
+{
+    /// Finalize into a [`Dag`](crate::Dag), discarding the `Option<()>`.
+    ///
+    /// DAGs ending with `Option<()>` produce the same [`Dag`] as those
+    /// ending with `()`.
+    pub fn build(self) -> Dag<impl FnMut(&mut World, E) + Send + use<E, Chain>> {
+        let mut chain = self.chain;
+        Dag {
+            chain: move |world: &mut World, event: E| {
+                let _ = chain(world, event);
+            },
         }
     }
 }
@@ -701,15 +719,15 @@ pub struct DagArmFork<In, ForkOut, Chain, Arms> {
 ///
 /// Created by [`DagChain::build`]. The entire DAG is monomorphized
 /// at compile time — no boxing, no virtual dispatch, no arena.
+/// Supports `for<'a> Handler<&'a T>` for zero-copy event dispatch.
 /// For batch processing, see [`BatchDag`].
-pub struct Dag<E, Chain> {
+pub struct Dag<Chain> {
     chain: Chain,
-    _marker: PhantomData<fn(E)>,
 }
 
-impl<E: 'static, Chain> Handler<E> for Dag<E, Chain>
+impl<E, Chain> Handler<E> for Dag<Chain>
 where
-    Chain: FnMut(&mut World, E) + Send + 'static,
+    Chain: FnMut(&mut World, E) + Send,
 {
     fn run(&mut self, world: &mut World, event: E) {
         (self.chain)(world, event);
@@ -747,7 +765,7 @@ macro_rules! impl_dag_combinators {
         // Core — any Out
         // =============================================================
 
-        impl<$U: 'static, Out: 'static, Chain> $Builder<$U, Out, Chain>
+        impl<$U, Out: 'static, Chain> $Builder<$U, Out, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Out,
         {
@@ -960,7 +978,7 @@ macro_rules! impl_dag_combinators {
         // Dedup — suppress unchanged values
         // =============================================================
 
-        impl<$U: 'static, Out: PartialEq + Clone, Chain> $Builder<$U, Out, Chain>
+        impl<$U, Out: PartialEq + Clone, Chain> $Builder<$U, Out, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Out,
         {
@@ -994,7 +1012,7 @@ macro_rules! impl_dag_combinators {
         // Bool combinators
         // =============================================================
 
-        impl<$U: 'static, Chain> $Builder<$U, bool, Chain>
+        impl<$U, Chain> $Builder<$U, bool, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> bool,
         {
@@ -1071,7 +1089,7 @@ macro_rules! impl_dag_combinators {
         // Clone helpers — &T → T transitions
         // =============================================================
 
-        impl<'a, $U: 'static, T: Clone, Chain> $Builder<$U, &'a T, Chain>
+        impl<'a, $U, T: Clone, Chain> $Builder<$U, &'a T, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> &'a T,
         {
@@ -1092,7 +1110,7 @@ macro_rules! impl_dag_combinators {
             }
         }
 
-        impl<'a, $U: 'static, T: Clone, Chain> $Builder<$U, Option<&'a T>, Chain>
+        impl<'a, $U, T: Clone, Chain> $Builder<$U, Option<&'a T>, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Option<&'a T>,
         {
@@ -1111,7 +1129,7 @@ macro_rules! impl_dag_combinators {
             }
         }
 
-        impl<'a, $U: 'static, T: Clone, Err, Chain>
+        impl<'a, $U, T: Clone, Err, Chain>
             $Builder<$U, Result<&'a T, Err>, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Result<&'a T, Err>,
@@ -1139,7 +1157,7 @@ macro_rules! impl_dag_combinators {
         // Option helpers — $Builder<$U, Option<T>, Chain>
         // =============================================================
 
-        impl<$U: 'static, T: 'static, Chain> $Builder<$U, Option<T>, Chain>
+        impl<$U, T: 'static, Chain> $Builder<$U, Option<T>, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Option<T>,
         {
@@ -1356,7 +1374,7 @@ macro_rules! impl_dag_combinators {
         // Result helpers — $Builder<$U, Result<T, Err>, Chain>
         // =============================================================
 
-        impl<$U: 'static, T: 'static, Err: 'static, Chain>
+        impl<$U, T: 'static, Err: 'static, Chain>
             $Builder<$U, Result<T, Err>, Chain>
         where
             Chain: FnMut(&mut World, $chain_input) -> Result<T, Err>,
@@ -1644,7 +1662,7 @@ macro_rules! define_dag_splat_builders {
             _marker: PhantomData<fn(E) -> ($($T,)+)>,
         }
 
-        impl<E: 'static, $($T: 'static,)+ Chain> $SplatChain<E, $($T,)+ Chain>
+        impl<E, $($T: 'static,)+ Chain> $SplatChain<E, $($T,)+ Chain>
         where
             Chain: FnMut(&mut World, E) -> ($($T,)+),
         {
@@ -1676,7 +1694,7 @@ macro_rules! define_dag_splat_builders {
             }
         }
 
-        impl<E: 'static, $($T: 'static,)+ Chain> DagChain<E, ($($T,)+), Chain>
+        impl<E, $($T: 'static,)+ Chain> DagChain<E, ($($T,)+), Chain>
         where
             Chain: FnMut(&mut World, E) -> ($($T,)+),
         {
@@ -1934,7 +1952,7 @@ macro_rules! impl_dag_fork {
         // Merge arity 2
         // =============================================================
 
-        impl<$U: 'static, ForkOut: 'static, Chain, A0: 'static, C0, A1: 'static, C1>
+        impl<$U, ForkOut: 'static, Chain, A0: 'static, C0, A1: 'static, C1>
             $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, A0, C0>, DagArm<ForkOut, A1, C1>)>
         where
             Chain: FnMut(&mut World, $chain_input) -> ForkOut,
@@ -1974,7 +1992,7 @@ macro_rules! impl_dag_fork {
             }
         }
 
-        impl<$U: 'static, ForkOut: 'static, Chain, C0, C1>
+        impl<$U, ForkOut: 'static, Chain, C0, C1>
             $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, (), C0>, DagArm<ForkOut, (), C1>)>
         where
             Chain: FnMut(&mut World, $chain_input) -> ForkOut,
@@ -2006,7 +2024,7 @@ macro_rules! impl_dag_fork {
         // =============================================================
 
         impl<
-            $U: 'static,
+            $U,
             ForkOut: 'static,
             Chain,
             A0: 'static,
@@ -2067,7 +2085,7 @@ macro_rules! impl_dag_fork {
             }
         }
 
-        impl<$U: 'static, ForkOut: 'static, Chain, C0, C1, C2>
+        impl<$U, ForkOut: 'static, Chain, C0, C1, C2>
             $Fork<
                 $U,
                 ForkOut,
@@ -2112,7 +2130,7 @@ macro_rules! impl_dag_fork {
 
         #[allow(clippy::many_single_char_names)]
         impl<
-            $U: 'static,
+            $U,
             ForkOut: 'static,
             Chain,
             A0: 'static,
@@ -2183,7 +2201,7 @@ macro_rules! impl_dag_fork {
             }
         }
 
-        impl<$U: 'static, ForkOut: 'static, Chain, C0, C1, C2, C3>
+        impl<$U, ForkOut: 'static, Chain, C0, C1, C2, C3>
             $Fork<
                 $U,
                 ForkOut,
@@ -2251,9 +2269,9 @@ impl_dag_fork!(
 // build_batch — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<E: 'static, Out: crate::PipelineOutput, Chain> DagChain<E, Out, Chain>
+impl<E, Out: crate::PipelineOutput, Chain> DagChain<E, Out, Chain>
 where
-    Chain: FnMut(&mut World, E) -> Out + 'static,
+    Chain: FnMut(&mut World, E) -> Out,
 {
     /// Finalize into a [`BatchDag`] with a pre-allocated input buffer.
     ///
@@ -4396,4 +4414,64 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 30);
     }
 
+    // =========================================================================
+    // Build — Option<()> terminal
+    // =========================================================================
+
+    #[test]
+    fn build_option_unit_terminal() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // root takes by value (IntoStep), then .guard() produces Option
+        fn check(x: u32) -> u64 {
+            x as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
+
+        // guard → Option<u64>, map(store) → Option<()>, build() should work
+        let mut dag = DagStart::<u32>::new()
+            .root(check, reg)
+            .guard(|val: &u64| *val > 5, reg)
+            .map(store, reg)
+            .build();
+
+        dag.run(&mut world, 3); // guard filters → None
+        assert_eq!(*world.resource::<u64>(), 0);
+        dag.run(&mut world, 7); // passes guard → stores 7
+        assert_eq!(*world.resource::<u64>(), 7);
+    }
+
+    // =========================================================================
+    // Build — borrowed event type
+    // =========================================================================
+
+    #[test]
+    fn build_borrowed_event_direct() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn decode(msg: &[u8]) -> u64 {
+            msg.len() as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        // msg declared before dag so it outlives the DAG (drop order).
+        let msg = vec![1u8, 2, 3];
+        let reg = world.registry();
+        let mut dag = DagStart::<&[u8]>::new()
+            .root(decode, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, &msg);
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
 }

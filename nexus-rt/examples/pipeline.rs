@@ -11,7 +11,7 @@
 //!
 //! Two dispatch modes:
 //! - `run()` — direct call, no boxing, works with borrowed inputs
-//! - `build()` — box into `Pipeline<In>`, implements `Handler<In>`
+//! - `build()` — into `Pipeline`, implements `Handler<In>`
 //!
 //! Run with:
 //! ```bash
