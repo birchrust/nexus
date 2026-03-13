@@ -6,7 +6,7 @@
 //!
 //! [`PipelineStart`] begins a typed composition chain where each step
 //! is a named function with [`Param`] dependencies resolved at build
-//! time. The result is a monomorphized closure chain where dispatch-time
+//! time. The result is a monomorphized chain of named node types where dispatch-time
 //! resource access is a single pointer deref per fetch — zero framework overhead.
 //! [`ResourceId`](crate::ResourceId) is a direct pointer, not a HashMap lookup.
 //!
@@ -94,7 +94,7 @@ use crate::world::{Registry, World};
 /// Internal: pre-resolved step with cached Param state.
 ///
 /// Users don't construct this directly — it's produced by [`IntoStep`] and
-/// captured inside pipeline chain closures.
+/// stored inside named chain node types.
 #[doc(hidden)]
 pub struct Step<F, Params: Param> {
     f: F,

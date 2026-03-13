@@ -140,17 +140,18 @@ budget holds for deep monomorphized chains with no signs of collapse.
 ## Why it works
 
 The architectural decision enabling this codegen is **type-level chain
-composition**. Each pipeline or DAG builder produces a unique monomorphized
-type encoding the entire chain:
+composition** using **named chain node types**. Each pipeline or DAG builder
+produces a unique monomorphized type encoding the entire chain — the same
+pattern as iterator adapters (`Map<Filter<Iter, P>, F>`):
 
-```
-Pipeline<u64, u64, impl FnMut(&mut World, u64) -> u64>
+```text
+Pipeline<ThenNode<ThenNode<IdentityNode, Step<add_one>>, Step<double>>>
 ```
 
 LLVM sees the entire computation as a single function body. There are no
 trait objects, no indirect calls, no function pointers in the dispatch
-chain. Every step's closure is inlined at the same optimization level as if
-you'd written:
+chain. Every node's `ChainCall::call()` is inlined at the same optimization
+level as if you'd written:
 
 ```rust
 let x = add_one(input);

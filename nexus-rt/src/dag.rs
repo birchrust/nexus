@@ -520,7 +520,7 @@ all_tuples!(impl_merge5_step);
 /// Entry point for building a DAG pipeline.
 ///
 /// The DAG encodes topology in the type system at compile time,
-/// producing a single monomorphized closure chain. All values live as
+/// producing a single monomorphized chain of named node types. All values live as
 /// stack locals in the `run()` body — no arena, no vtable dispatch.
 /// The only `unsafe` is in the shared [`Param::fetch`](crate::Param)
 /// path (resource access by pre-resolved index).
