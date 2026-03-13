@@ -148,7 +148,7 @@ pub fn probe_dag_diamond(p: &mut impl Handler<u32>, world: &mut nexus_rt::World,
 /// Equivalent linear Pipeline (monomorphized, zero vtable).
 #[inline(never)]
 pub fn probe_pipeline_linear_3(
-    p: &mut nexus_rt::PipelineBuilder<u32, (), impl FnMut(&mut nexus_rt::World, u32)>,
+    p: &mut nexus_rt::PipelineBuilder<u32, (), impl nexus_rt::ChainCall<u32, Out = ()>>,
     world: &mut nexus_rt::World,
     input: u32,
 ) {
@@ -162,7 +162,7 @@ pub fn probe_pipeline_linear_3(
 /// DAG linear 3: root → add_one → sink.
 fn build_linear_3(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::Dag<impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
     DagStart::<u32>::new()
         .root(root_mul2, reg)
         .then(add_one, reg)
@@ -173,7 +173,7 @@ fn build_linear_3(
 /// DAG linear 5: root → add_one × 3 → sink.
 fn build_linear_5(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::Dag<impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
     DagStart::<u32>::new()
         .root(root_mul2, reg)
         .then(add_one, reg)
@@ -186,7 +186,7 @@ fn build_linear_5(
 /// DAG diamond-2: root → [a, b] → merge → sink.
 fn build_diamond_2(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::Dag<impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
     DagStart::<u32>::new()
         .root(root_mul2, reg)
         .fork()
@@ -200,7 +200,7 @@ fn build_diamond_2(
 /// DAG fan-out 2: root → [sink, sink].
 fn build_fan_out_2(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::Dag<impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
     DagStart::<u32>::new()
         .root(root_mul2, reg)
         .fork()
@@ -213,7 +213,7 @@ fn build_fan_out_2(
 /// DAG complex: root → [a: add_one → add_one, b: mul3] → merge → sink.
 fn build_complex(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::Dag<impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
     DagStart::<u32>::new()
         .root(root_mul2, reg)
         .fork()
@@ -227,7 +227,7 @@ fn build_complex(
 /// DAG complex+Res: root → scale → [a, b] → merge → sink.
 fn build_complex_res(
     reg: &nexus_rt::Registry,
-) -> nexus_rt::Dag<impl FnMut(&mut nexus_rt::World, u32) + Send + use<>> {
+) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
     DagStart::<u32>::new()
         .root(root_mul2, reg)
         .then(scale_by_res, reg)

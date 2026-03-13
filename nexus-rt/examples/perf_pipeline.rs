@@ -117,7 +117,7 @@ fn print_header(title: &str) {
 /// 3-stage bare pipeline: multiply, add, shift.
 #[inline(never)]
 pub fn bare_3stage_run(
-    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
+    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl nexus_rt::ChainCall<u64, Out = u64>>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -130,7 +130,7 @@ pub fn option_3stage_run(
     p: &mut nexus_rt::PipelineBuilder<
         u64,
         Option<u64>,
-        impl FnMut(&mut nexus_rt::World, u64) -> Option<u64>,
+        impl nexus_rt::ChainCall<u64, Out = Option<u64>>,
     >,
     world: &mut nexus_rt::World,
     input: u64,
@@ -141,7 +141,7 @@ pub fn option_3stage_run(
 /// Pipeline that reads World via pre-resolved Res<T> steps.
 #[inline(never)]
 pub fn world_access_run(
-    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl FnMut(&mut nexus_rt::World, u64) -> u64>,
+    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl nexus_rt::ChainCall<u64, Out = u64>>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -240,7 +240,7 @@ pub fn probe_cloned_pipeline<'a>(
     p: &mut nexus_rt::PipelineBuilder<
         &'a u64,
         u64,
-        impl FnMut(&mut nexus_rt::World, &'a u64) -> u64,
+        impl nexus_rt::ChainCall<&'a u64, Out = u64>,
     >,
     world: &mut nexus_rt::World,
     input: &'a u64,
@@ -313,7 +313,7 @@ pub fn probe_guard_4map(
     p: &mut nexus_rt::PipelineBuilder<
         u64,
         Option<u64>,
-        impl FnMut(&mut nexus_rt::World, u64) -> Option<u64>,
+        impl nexus_rt::ChainCall<u64, Out = Option<u64>>,
     >,
     world: &mut nexus_rt::World,
     input: u64,
@@ -328,7 +328,7 @@ pub fn probe_guard_4map_res(
     p: &mut nexus_rt::PipelineBuilder<
         u64,
         Option<u64>,
-        impl FnMut(&mut nexus_rt::World, u64) -> Option<u64>,
+        impl nexus_rt::ChainCall<u64, Out = Option<u64>>,
     >,
     world: &mut nexus_rt::World,
     input: u64,
@@ -353,7 +353,7 @@ pub fn probe_guard_dag(
 pub fn probe_guard_batch(
     batch: &mut nexus_rt::BatchPipeline<
         u64,
-        impl FnMut(&mut nexus_rt::World, u64),
+        impl nexus_rt::ChainCall<u64, Out = ()>,
     >,
     world: &mut nexus_rt::World,
 ) {
