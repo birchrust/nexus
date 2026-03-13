@@ -23,8 +23,8 @@
 use nexus_rt::dag::{DagArmStart, DagStart};
 use nexus_rt::shutdown::Shutdown;
 use nexus_rt::{
-    Handler, IntoHandler, PipelineStart, Res, ResMut, Seq, SeqMut, Virtual, World, WorldBuilder,
-    resolve_arm, resolve_producer, resolve_ref_step, resolve_step,
+    Handler, IntoHandler, Local, PipelineStart, Res, ResMut, Seq, SeqMut, Virtual, World,
+    WorldBuilder, resolve_arm, resolve_producer, resolve_ref_step, resolve_step,
 };
 
 // =========================================================================
@@ -2587,4 +2587,430 @@ fn pipeline_multiple_batch_runs() {
     batch.input_mut().extend_from_slice(&[4, 5]);
     batch.run(&mut world);
     assert_eq!(*world.resource::<u64>(), 15);
+}
+
+// =========================================================================
+// 21. HRTB boxing — borrowed event dispatch
+// =========================================================================
+//
+// These tests prove that Pipeline and Dag can be boxed as
+// `Box<dyn for<'a> Handler<&'a T>>` for zero-copy event dispatch with
+// borrowed data. Primarily compile-time tests — if they compile, the HRTB
+// bounds are satisfied. Runtime assertions verify dispatch correctness.
+//
+// NOT tested (documented reasons):
+// - BatchPipeline/BatchDag with borrowed events: Batch stores items in
+//   Vec<In>, requires In: 'static. Can't store &'a T in a Vec.
+// - Templates with borrowed events: Blueprint::Event is an associated
+//   type, can't express HRTB at the type level.
+
+// -- HRTB helper types and step functions --
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct Message<'a> {
+    topic: u8,
+    payload: &'a [u8],
+}
+
+fn slice_len(data: &[u8]) -> usize { data.len() }
+fn store_len(mut out: ResMut<u64>, len: usize) { *out = len as u64; }
+
+fn msg_payload_len(msg: Message<'_>) -> usize { msg.payload.len() }
+
+fn hrtb_dag_double_len(len: &usize) -> usize { *len * 2 }
+fn hrtb_dag_store_len(mut out: ResMut<u64>, len: &usize) { *out = *len as u64; }
+fn hrtb_dag_add_lens(a: &usize, b: &usize) -> usize { *a + *b }
+
+#[test]
+fn hrtb_pipeline_basic() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![1u8, 2, 3, 4, 5];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 5);
+}
+
+#[test]
+fn hrtb_pipeline_with_guard() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .guard(|len: &usize| *len > 2, r)
+        .map(store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![1u8, 2, 3];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 3);
+
+    // Short slice — guard filters, store_len not called, value unchanged
+    let short = vec![1u8];
+    boxed.run(&mut world, &short);
+    assert_eq!(*world.resource::<u64>(), 3);
+}
+
+#[test]
+fn hrtb_pipeline_with_option_chain() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    fn mark_none(mut flag: ResMut<bool>) { *flag = true; }
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .guard(|len: &usize| *len > 0, r)
+        .map(store_len, r)
+        .on_none(mark_none, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![10u8, 20, 30];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 3);
+    assert!(!*world.resource::<bool>()); // on_none did NOT fire
+
+    // Empty — guard rejects, on_none fires, store not called
+    let empty: Vec<u8> = vec![];
+    boxed.run(&mut world, &empty);
+    assert_eq!(*world.resource::<u64>(), 3); // unchanged
+    assert!(*world.resource::<bool>()); // on_none DID fire
+}
+
+#[test]
+fn hrtb_pipeline_with_closure() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    // Arity-0 closures in .then() and .guard() positions (not just guard)
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(|data: &[u8]| data.len() * 2, r)
+        .guard(|doubled: &usize| *doubled > 0, r)
+        .map(|val: usize| { let _ = val; }, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![7u8, 8];
+    boxed.run(&mut world, &data);
+    // Compiles + runs — arity-0 closures compose through HRTB
+}
+
+#[test]
+fn hrtb_dag_basic() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let dag = DagStart::<&[u8]>::new()
+        .root(slice_len, r)
+        .then(hrtb_dag_store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(dag);
+
+    let data = vec![1u8, 2, 3];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 3);
+}
+
+#[test]
+fn hrtb_dag_fork_merge() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let dag = DagStart::<&[u8]>::new()
+        .root(slice_len, r)
+        .fork()
+        .arm(|a| a.then(hrtb_dag_double_len, r))
+        .arm(|a| a.then(|len: &usize| *len + 10, r))
+        .merge(hrtb_dag_add_lens, r)
+        .then(hrtb_dag_store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(dag);
+
+    let data = vec![1u8, 2, 3, 4, 5]; // len=5
+    boxed.run(&mut world, &data);
+    // arm0: 5*2=10, arm1: 5+10=15, merge: 10+15=25
+    assert_eq!(*world.resource::<u64>(), 25);
+}
+
+#[test]
+fn hrtb_dag_fork_join() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    fn store_len_u32(mut out: ResMut<u32>, len: &usize) { *out = *len as u32; }
+    fn store_len_i64(mut out: ResMut<i64>, len: &usize) { *out = *len as i64; }
+
+    let dag = DagStart::<&[u8]>::new()
+        .root(slice_len, r)
+        .fork()
+        .arm(|a| a.then(store_len_u32, r))
+        .arm(|a| a.then(store_len_i64, r))
+        .join()
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(dag);
+
+    let data = vec![1u8, 2, 3, 4];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(*world.resource::<i64>(), 4);
+}
+
+#[test]
+fn hrtb_borrowed_struct_event() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let pipeline = PipelineStart::<Message<'_>>::new()
+        .then(msg_payload_len, r)
+        .then(store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<Message<'a>>> = Box::new(pipeline);
+
+    let payload = vec![10u8, 20, 30, 40];
+    let msg = Message { topic: 1, payload: &payload };
+    boxed.run(&mut world, msg);
+    assert_eq!(*world.resource::<u64>(), 4);
+}
+
+#[test]
+fn hrtb_dispatch_map() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    fn store_len_u32(mut out: ResMut<u32>, len: usize) { *out = len as u32; }
+
+    let p1 = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(store_len, r)
+        .build();
+
+    let p2 = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(store_len_u32, r)
+        .build();
+
+    type HrtbSliceHandler = Box<dyn for<'a> Handler<&'a [u8]>>;
+    let mut map: std::collections::HashMap<u8, HrtbSliceHandler> =
+        std::collections::HashMap::new();
+    map.insert(0, Box::new(p1));
+    map.insert(1, Box::new(p2));
+
+    let data = vec![1u8, 2, 3];
+    map.get_mut(&0).unwrap().run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 3);
+
+    let data2 = vec![10u8, 20];
+    map.get_mut(&1).unwrap().run(&mut world, &data2);
+    assert_eq!(*world.resource::<u32>(), 2);
+}
+
+#[test]
+fn hrtb_direct_run_no_boxing() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let mut pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(store_len, r)
+        .build();
+
+    let data = vec![1u8, 2, 3, 4, 5, 6];
+    pipeline.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 6);
+}
+
+#[test]
+fn hrtb_dag_direct_run_no_boxing() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let mut dag = DagStart::<&[u8]>::new()
+        .root(slice_len, r)
+        .then(hrtb_dag_double_len, r)
+        .then(hrtb_dag_store_len, r)
+        .build();
+
+    let data = vec![1u8, 2, 3];
+    dag.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 6); // 3 * 2
+}
+
+#[test]
+fn hrtb_pipeline_and_dag_in_same_map() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(store_len, r)
+        .build();
+
+    let dag = DagStart::<&[u8]>::new()
+        .root(slice_len, r)
+        .then(hrtb_dag_double_len, r)
+        .then(hrtb_dag_store_len, r)
+        .build();
+
+    type HrtbSliceHandler = Box<dyn for<'a> Handler<&'a [u8]>>;
+    let mut map: std::collections::HashMap<u8, HrtbSliceHandler> =
+        std::collections::HashMap::new();
+    map.insert(0, Box::new(pipeline));
+    map.insert(1, Box::new(dag));
+
+    let data = vec![1u8, 2, 3, 4];
+    map.get_mut(&0).unwrap().run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 4);
+
+    let data2 = vec![10u8, 20, 30];
+    map.get_mut(&1).unwrap().run(&mut world, &data2);
+    assert_eq!(*world.resource::<u64>(), 6); // 3 * 2
+}
+
+#[test]
+fn hrtb_disjoint_lifetimes() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    // First dispatch — borrow from a scope that ends
+    {
+        let data = vec![1u8, 2, 3];
+        boxed.run(&mut world, &data);
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+    // data is dropped — if the handler held a reference, this would be UB
+
+    // Second dispatch — completely different borrow
+    {
+        let other = [10u8, 20, 30, 40, 50];
+        boxed.run(&mut world, &other);
+        assert_eq!(*world.resource::<u64>(), 5);
+    }
+}
+
+#[test]
+fn hrtb_pipeline_opaque_closure() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .then(|w: &mut World, len: usize| {
+            *w.resource_mut::<u64>() = len as u64;
+        }, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![1u8, 2, 3, 4];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 4);
+}
+
+#[test]
+fn hrtb_pipeline_tee() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    fn store_len_u32(mut out: ResMut<u32>, len: &usize) { *out = *len as u32; }
+
+    // Side arm observes &usize (nested HRTB: C: for<'a> ChainCall<&'a usize>)
+    let side = DagArmStart::<usize>::new()
+        .then(store_len_u32, r);
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(slice_len, r)
+        .tee(side)
+        .then(store_len, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![1u8, 2, 3, 4, 5];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 5); // main path stored len
+    assert_eq!(*world.resource::<u32>(), 5); // side arm also observed len
+}
+
+#[test]
+fn hrtb_send_bound() {
+    fn assert_send<T: Send>() {}
+    assert_send::<Box<dyn for<'a> Handler<&'a [u8]>>>();
+    assert_send::<Box<dyn for<'a> Handler<Message<'a>>>>();
+}
+
+#[test]
+fn hrtb_pipeline_local() {
+    let mut world = build_world();
+    let r = world.registry_mut();
+
+    // Local<u64> persists across dispatches — counts invocations
+    fn count_and_store(mut count: Local<u64>, mut out: ResMut<u64>, data: &[u8]) {
+        *count += 1;
+        *out = data.len() as u64 * 100 + *count;
+    }
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(count_and_store, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![1u8, 2, 3];
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 301); // len=3, count=1
+
+    let data2 = vec![10u8, 20];
+    boxed.run(&mut world, &data2);
+    assert_eq!(*world.resource::<u64>(), 202); // len=2, count=2
+
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 303); // len=3, count=3
+}
+
+#[test]
+fn hrtb_pipeline_multi_param() {
+    let mut wb = WorldBuilder::new();
+    wb.register::<f64>(2.5);
+    wb.register::<u64>(0);
+    let mut world = wb.build();
+    let r = world.registry_mut();
+
+    fn scaled_store(factor: Res<f64>, mut out: ResMut<u64>, data: &[u8]) {
+        *out = (data.len() as f64 * *factor) as u64;
+    }
+
+    let pipeline = PipelineStart::<&[u8]>::new()
+        .then(scaled_store, r)
+        .build();
+
+    let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
+
+    let data = vec![1u8, 2, 3, 4]; // len=4, factor=2.5 → 10
+    boxed.run(&mut world, &data);
+    assert_eq!(*world.resource::<u64>(), 10);
 }
