@@ -818,4 +818,30 @@ mod tests {
         let expected = COUNT * (COUNT - 1) / 2;
         assert_eq!(sum, expected);
     }
+
+    /// Payload pointers must be word-aligned so users can write aligned structs.
+    #[test]
+    fn payload_is_word_aligned() {
+        let (mut prod, mut cons) = new(1024);
+
+        // Test several payload sizes to cover padding edge cases
+        for len in [1, 3, 7, 8, 13, 64, 255] {
+            let mut claim = prod.try_claim(len).unwrap();
+            let ptr = claim.as_mut_ptr();
+            assert_eq!(
+                ptr as usize % std::mem::align_of::<usize>(),
+                0,
+                "WriteClaim payload not word-aligned for len={len}"
+            );
+            claim.commit();
+
+            let record = cons.try_claim().unwrap();
+            let ptr = record.as_ptr();
+            assert_eq!(
+                ptr as usize % std::mem::align_of::<usize>(),
+                0,
+                "ReadClaim payload not word-aligned for len={len}"
+            );
+        }
+    }
 }
