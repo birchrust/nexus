@@ -495,7 +495,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
         // SAFETY: handle guarantees ptr is valid
         let entry = unsafe { entry_ref(ptr) };
-        debug_assert_eq!(entry.refs(), 2, "cannot reschedule a fired timer");
+        assert_eq!(entry.refs(), 2, "cannot reschedule a fired timer");
 
         // Remove from current position
         self.remove_entry(ptr);
@@ -1449,7 +1449,6 @@ mod tests {
         wheel.cancel(h);
     }
 
-    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "cannot reschedule a fired timer")]
     fn reschedule_panics_on_zombie() {

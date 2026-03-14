@@ -1013,7 +1013,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> Drop for WeakSlot<T, A> {
         debug_assert!(weak > 0, "WeakSlot dropped with zero weak count");
 
         // Always decrement weak count
-        rc_inner.set_weak(weak - 1);
+        rc_inner.set_weak(weak.checked_sub(1).expect("WeakSlot: weak count underflow"));
 
         // Dealloc only if this was the last weak AND value already dropped (strong==0)
         if weak == 1 && rc_inner.strong() == 0 {
