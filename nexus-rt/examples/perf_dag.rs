@@ -13,8 +13,8 @@
 
 use std::hint::black_box;
 
-use nexus_rt::dag::DagStart;
-use nexus_rt::{Handler, PipelineStart, Res, ResMut, WorldBuilder};
+use nexus_rt::dag::DagBuilder;
+use nexus_rt::{Handler, PipelineBuilder, Res, ResMut, WorldBuilder};
 
 // =============================================================================
 // Bench infrastructure (inline — no shared utils crate yet)
@@ -148,7 +148,7 @@ pub fn probe_dag_diamond(p: &mut impl Handler<u32>, world: &mut nexus_rt::World,
 /// Equivalent linear Pipeline (monomorphized, zero vtable).
 #[inline(never)]
 pub fn probe_pipeline_linear_3(
-    p: &mut nexus_rt::PipelineBuilder<u32, (), impl nexus_rt::ChainCall<u32, Out = ()>>,
+    p: &mut nexus_rt::PipelineChain<u32, (), impl nexus_rt::ChainCall<u32, Out = ()>>,
     world: &mut nexus_rt::World,
     input: u32,
 ) {
@@ -163,7 +163,7 @@ pub fn probe_pipeline_linear_3(
 fn build_linear_3(
     reg: &nexus_rt::Registry,
 ) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
-    DagStart::<u32>::new()
+    DagBuilder::<u32>::new()
         .root(root_mul2, reg)
         .then(add_one, reg)
         .then(sink_store, reg)
@@ -174,7 +174,7 @@ fn build_linear_3(
 fn build_linear_5(
     reg: &nexus_rt::Registry,
 ) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
-    DagStart::<u32>::new()
+    DagBuilder::<u32>::new()
         .root(root_mul2, reg)
         .then(add_one, reg)
         .then(add_one, reg)
@@ -187,7 +187,7 @@ fn build_linear_5(
 fn build_diamond_2(
     reg: &nexus_rt::Registry,
 ) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
-    DagStart::<u32>::new()
+    DagBuilder::<u32>::new()
         .root(root_mul2, reg)
         .fork()
         .arm(|a| a.then(add_one, reg))
@@ -201,7 +201,7 @@ fn build_diamond_2(
 fn build_fan_out_2(
     reg: &nexus_rt::Registry,
 ) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
-    DagStart::<u32>::new()
+    DagBuilder::<u32>::new()
         .root(root_mul2, reg)
         .fork()
         .arm(|a| a.then(sink_store, reg))
@@ -214,7 +214,7 @@ fn build_fan_out_2(
 fn build_complex(
     reg: &nexus_rt::Registry,
 ) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
-    DagStart::<u32>::new()
+    DagBuilder::<u32>::new()
         .root(root_mul2, reg)
         .fork()
         .arm(|a| a.then(add_one, reg).then(add_one, reg))
@@ -228,7 +228,7 @@ fn build_complex(
 fn build_complex_res(
     reg: &nexus_rt::Registry,
 ) -> nexus_rt::Dag<impl nexus_rt::ChainCall<u32, Out = ()> + Send + use<>> {
-    DagStart::<u32>::new()
+    DagBuilder::<u32>::new()
         .root(root_mul2, reg)
         .then(scale_by_res, reg)
         .fork()
@@ -266,19 +266,19 @@ fn main() {
     let mut dag_dyn_lin3: Box<dyn Handler<u32>> = Box::new(build_linear_3(reg));
     let mut dag_dyn_dia2: Box<dyn Handler<u32>> = Box::new(build_diamond_2(reg));
 
-    let mut pipe3 = PipelineStart::<u32>::new()
+    let mut pipe3 = PipelineBuilder::<u32>::new()
         .then(pipe_mul2, reg)
         .then(pipe_add1, reg)
         .then(pipe_sink, reg);
 
-    let mut pipe5 = PipelineStart::<u32>::new()
+    let mut pipe5 = PipelineBuilder::<u32>::new()
         .then(pipe_mul2, reg)
         .then(pipe_add1, reg)
         .then(pipe_add1, reg)
         .then(pipe_add1, reg)
         .then(pipe_sink, reg);
 
-    let mut pipe3_boxed = PipelineStart::<u32>::new()
+    let mut pipe3_boxed = PipelineBuilder::<u32>::new()
         .then(pipe_mul2, reg)
         .then(pipe_add1, reg)
         .then(pipe_sink, reg)
@@ -287,7 +287,7 @@ fn main() {
     // Probe DAGs (for cargo-asm, built separately)
     let mut probe_lin3 = build_linear_3(reg);
     let mut probe_dia2 = build_diamond_2(reg);
-    let mut probe_pipe = PipelineStart::<u32>::new()
+    let mut probe_pipe = PipelineBuilder::<u32>::new()
         .then(pipe_mul2, reg)
         .then(pipe_add1, reg)
         .then(pipe_sink, reg);

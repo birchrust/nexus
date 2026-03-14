@@ -9,8 +9,8 @@
 #![allow(clippy::type_complexity)]
 #![allow(unused_variables)]
 
-use crate::dag::{DagArmStart, DagStart};
-use crate::pipeline::PipelineStart;
+use crate::dag::{DagArmSeed, DagBuilder};
+use crate::pipeline::PipelineBuilder;
 use crate::{IntoHandler, World};
 use super::helpers::*;
 
@@ -21,7 +21,7 @@ use super::helpers::*;
 #[inline(never)]
 pub fn batch_pipe_linear_3(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -34,7 +34,7 @@ pub fn batch_pipe_linear_3(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_linear_10(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -54,7 +54,7 @@ pub fn batch_pipe_linear_10(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_guard(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
@@ -67,7 +67,7 @@ pub fn batch_pipe_guard(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_option_chain(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .map(double, &reg)
         .filter(|x: &u64| *x < 1000, &reg)
@@ -81,7 +81,7 @@ pub fn batch_pipe_option_chain(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_result_chain(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map(double, &reg)
         .unwrap_or(0)
@@ -94,7 +94,7 @@ pub fn batch_pipe_result_chain(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_mixed_arity(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(add_res_a, &reg)
         .then(write_res_a, &reg)
@@ -108,7 +108,7 @@ pub fn batch_pipe_mixed_arity(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_splat(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(split_u64, &reg)
         .splat()
         .then(splat_add, &reg)
@@ -122,10 +122,10 @@ pub fn batch_pipe_splat(world: &mut World) {
 pub fn batch_pipe_route(world: &mut World) {
     let reg = world.registry();
 
-    let on_true = PipelineStart::<u64>::new().then(double, &reg);
-    let on_false = PipelineStart::<u64>::new().then(add_one, &reg);
+    let on_true = PipelineBuilder::<u64>::new().then(double, &reg);
+    let on_false = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .route(|x: &u64| *x > 32, &reg, on_true, on_false)
         .then(consume_val, &reg)
@@ -137,7 +137,7 @@ pub fn batch_pipe_route(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_large(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -162,7 +162,7 @@ pub fn batch_pipe_guard_skip_10(world: &mut World) {
     // Guard at step 1 → 10 maps. In the batch inner loop, items where
     // guard returns None should skip all 10 maps. Does the compiler
     // generate a tight branch per item?
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 32, &reg)
         .map(add_one, &reg)
@@ -188,7 +188,7 @@ pub fn batch_pipe_res_skip_10(world: &mut World) {
     let reg = world.registry();
     // try_parse returns Err for input >= 10_000. In the batch loop,
     // Err items should skip all 10 maps.
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map(add_one, &reg)
         .map(double, &reg)
@@ -214,7 +214,7 @@ pub fn batch_pipe_res_skip_10(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_linear_3(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .then(ref_double, &reg)
         .then(ref_add_three, &reg)
@@ -227,7 +227,7 @@ pub fn batch_dag_linear_3(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_linear_10(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .then(ref_double, &reg)
         .then(ref_add_three, &reg)
@@ -247,7 +247,7 @@ pub fn batch_dag_linear_10(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_fork_merge(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| a.then(ref_double, &reg))
@@ -262,7 +262,7 @@ pub fn batch_dag_fork_merge(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_guard(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
@@ -275,7 +275,7 @@ pub fn batch_dag_guard(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_mixed_arity(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .then(ref_add_res_a, &reg)
         .then(ref_write_res_a, &reg)
@@ -289,7 +289,7 @@ pub fn batch_dag_mixed_arity(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_diamond(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| a.then(ref_double, &reg))
@@ -308,7 +308,7 @@ pub fn batch_dag_diamond(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_large(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .then(ref_double, &reg)
         .then(ref_add_three, &reg)
@@ -334,7 +334,7 @@ pub fn batch_dag_large(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_guard_filter(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .filter(|x: &u64| *x < 1000, &reg)
@@ -353,7 +353,7 @@ pub fn batch_pipe_transition(world: &mut World) {
 
     fn log_error(_err: u32) {}
 
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
@@ -370,7 +370,7 @@ pub fn batch_pipe_transition(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_switch(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(|x: u64| match x % 3 {
             0 => x.wrapping_mul(2),
             1 => x.wrapping_add(10),
@@ -388,7 +388,7 @@ pub fn batch_pipe_switch(world: &mut World) {
 pub fn batch_pipe_dispatch(world: &mut World) {
     let reg = world.registry();
     let handler = consume_val.into_handler(&reg);
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(handler)
         .build_batch(64);
@@ -401,7 +401,7 @@ pub fn batch_pipe_dispatch(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_buffer_reuse(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(consume_val, &reg)
@@ -419,7 +419,7 @@ pub fn batch_pipe_buffer_reuse(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_empty(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -434,7 +434,7 @@ pub fn batch_pipe_empty(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_single_item(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(consume_val, &reg)
@@ -448,7 +448,7 @@ pub fn batch_pipe_single_item(world: &mut World) {
 #[inline(never)]
 pub fn batch_pipe_drain_codegen(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .then(consume_val, &reg)
         .build_batch(64);
@@ -465,7 +465,7 @@ pub fn batch_pipe_drain_codegen(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_fork4(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| a.then(ref_double, &reg))
@@ -484,7 +484,7 @@ pub fn batch_dag_fork4(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_nested_fork(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| {
@@ -507,7 +507,7 @@ pub fn batch_dag_nested_fork(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_option_chain(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(maybe_positive, &reg)
         .map(ref_double, &reg)
         .filter(|x: &u64| *x < 1000, &reg)
@@ -523,7 +523,7 @@ pub fn batch_dag_option_chain(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_result_chain(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(try_parse, &reg)
         .map(ref_double, &reg)
         .unwrap_or(0)
@@ -539,10 +539,10 @@ pub fn batch_dag_result_chain(world: &mut World) {
 pub fn batch_dag_route(world: &mut World) {
     let reg = world.registry();
 
-    let on_true = DagArmStart::<u64>::new().then(ref_double, &reg);
-    let on_false = DagArmStart::<u64>::new().then(ref_add_one, &reg);
+    let on_true = DagArmSeed::<u64>::new().then(ref_double, &reg);
+    let on_false = DagArmSeed::<u64>::new().then(ref_add_one, &reg);
 
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .route(|x: &u64| *x > 32, &reg, on_true, on_false)
         .then(ref_consume, &reg)
@@ -556,7 +556,7 @@ pub fn batch_dag_route(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_splat(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(split_u64, &reg)
         .splat()
         .then(ref_splat_add, &reg)
@@ -571,7 +571,7 @@ pub fn batch_dag_splat(world: &mut World) {
 #[inline(never)]
 pub fn batch_dag_heavy(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| {
@@ -615,7 +615,7 @@ pub fn batch_dag_heavy(world: &mut World) {
 pub fn batch_dag_dispatch(world: &mut World) {
     let reg = world.registry();
     let handler = consume_val.into_handler(&reg);
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .then(ref_double, &reg)
         .dispatch(handler)

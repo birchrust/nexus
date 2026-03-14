@@ -5,8 +5,8 @@
 #![allow(clippy::type_complexity)]
 #![allow(unused_variables)]
 
-use crate::dag::DagArmStart;
-use crate::pipeline::{PipelineStart, resolve_step};
+use crate::dag::DagArmSeed;
+use crate::pipeline::{PipelineBuilder, resolve_step};
 use crate::{Broadcast, IntoHandler, Local, Res, ResMut, Sequence, World, fan_out};
 use super::helpers::*;
 
@@ -17,14 +17,14 @@ use super::helpers::*;
 #[inline(never)]
 pub fn pipe_linear_1(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new().then(add_one, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(add_one, &reg);
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_linear_2(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg);
     p.run(world, input)
@@ -33,7 +33,7 @@ pub fn pipe_linear_2(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_linear_3(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg);
@@ -43,7 +43,7 @@ pub fn pipe_linear_3(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_linear_5(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -55,7 +55,7 @@ pub fn pipe_linear_5(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_linear_10(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -72,7 +72,7 @@ pub fn pipe_linear_10(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_linear_20(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -99,7 +99,7 @@ pub fn pipe_linear_20(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_linear_0_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg);
@@ -109,7 +109,7 @@ pub fn pipe_linear_0_params(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_linear_mixed_arity(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(add_res_a, &reg)
         .then(write_res_a, &reg)
@@ -125,7 +125,7 @@ pub fn pipe_linear_mixed_arity(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_guard_basic(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .inspect(|_x: &u64| {}, &reg);
@@ -135,7 +135,7 @@ pub fn pipe_guard_basic(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_guard_then(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .map(double, &reg)
@@ -146,7 +146,7 @@ pub fn pipe_guard_then(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_filter_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .filter(|x: &u64| *x < 1000, &reg)
@@ -157,7 +157,7 @@ pub fn pipe_filter_basic(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_dedup(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dedup()
         .inspect(|_x: &u64| {}, &reg);
@@ -167,7 +167,7 @@ pub fn pipe_dedup(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_dedup_chain(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dedup()
         .map(double, &reg)
@@ -178,7 +178,7 @@ pub fn pipe_dedup_chain(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_guard_large_type(world: &mut World, input: [u8; 256]) -> Option<[u8; 256]> {
     let reg = world.registry();
-    let mut p = PipelineStart::<[u8; 256]>::new()
+    let mut p = PipelineBuilder::<[u8; 256]>::new()
         .then(|x: [u8; 256]| x, &reg)
         .guard(|x: &[u8; 256]| x[0] > 0, &reg);
     p.run(world, input)
@@ -191,7 +191,7 @@ pub fn pipe_guard_large_type(world: &mut World, input: [u8; 256]) -> Option<[u8;
 #[inline(never)]
 pub fn pipe_opt_map(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .map(double, &reg);
     p.run(world, input)
@@ -200,7 +200,7 @@ pub fn pipe_opt_map(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_opt_and_then(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .and_then(checked_double, &reg);
     p.run(world, input)
@@ -209,7 +209,7 @@ pub fn pipe_opt_and_then(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_opt_filter(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .filter(|x: &u64| *x < 1000, &reg);
     p.run(world, input)
@@ -218,7 +218,7 @@ pub fn pipe_opt_filter(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_opt_inspect(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .inspect(|_x: &u64| {}, &reg);
     p.run(world, input)
@@ -227,7 +227,7 @@ pub fn pipe_opt_inspect(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_opt_on_none(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .on_none(|| {}, &reg);
     p.run(world, input)
@@ -236,7 +236,7 @@ pub fn pipe_opt_on_none(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_opt_ok_or(world: &mut World, input: u64) -> Result<u64, u32> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .ok_or(42u32);
     p.run(world, input)
@@ -245,7 +245,7 @@ pub fn pipe_opt_ok_or(world: &mut World, input: u64) -> Result<u64, u32> {
 #[inline(never)]
 pub fn pipe_opt_ok_or_else(world: &mut World, input: u64) -> Result<u64, u32> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .ok_or_else(|| 42u32, &reg);
     p.run(world, input)
@@ -254,7 +254,7 @@ pub fn pipe_opt_ok_or_else(world: &mut World, input: u64) -> Result<u64, u32> {
 #[inline(never)]
 pub fn pipe_opt_unwrap_or(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .unwrap_or(0);
     p.run(world, input)
@@ -263,7 +263,7 @@ pub fn pipe_opt_unwrap_or(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_opt_unwrap_or_else(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .unwrap_or_else(|| 0, &reg);
     p.run(world, input)
@@ -276,7 +276,7 @@ pub fn pipe_opt_unwrap_or_else(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_opt_map_filter(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .map(double, &reg)
@@ -288,7 +288,7 @@ pub fn pipe_opt_map_filter(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_opt_map_and_then(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .map(double, &reg)
@@ -300,7 +300,7 @@ pub fn pipe_opt_map_and_then(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_opt_filter_inspect_unwrap(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .filter(|x: &u64| *x < 1000, &reg)
@@ -312,7 +312,7 @@ pub fn pipe_opt_filter_inspect_unwrap(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_opt_triple_filter(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .filter(|x: &u64| *x < 10000, &reg)
@@ -325,7 +325,7 @@ pub fn pipe_opt_triple_filter(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_opt_map_5x(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .map(add_one, &reg)
@@ -345,7 +345,7 @@ pub fn pipe_opt_guard_skip_10(world: &mut World, input: u64) -> u64 {
     // The guard at step 1 can return None. The 10 maps after it should
     // all be dead code on that path — does the compiler branch once and
     // skip everything?
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 100, &reg)
         .map(add_one, &reg)
@@ -367,7 +367,7 @@ pub fn pipe_opt_filter_skip_chain(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     // Guard → filter at step 2 → 8 more maps. If filter returns None,
     // all 8 maps should be skipped.
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .filter(|x: &u64| *x < 50, &reg)
@@ -390,7 +390,7 @@ pub fn pipe_opt_filter_skip_chain(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_res_map(world: &mut World, input: u64) -> Result<u64, u32> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map(double, &reg);
     p.run(world, input)
@@ -399,7 +399,7 @@ pub fn pipe_res_map(world: &mut World, input: u64) -> Result<u64, u32> {
 #[inline(never)]
 pub fn pipe_res_and_then(world: &mut World, input: u64) -> Result<u64, u32> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .and_then(try_parse, &reg);
     p.run(world, input)
@@ -411,7 +411,7 @@ pub fn pipe_res_catch(world: &mut World, input: u64) -> Option<u64> {
 
     fn log_error(_err: u32) {}
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .catch(log_error, &reg);
     p.run(world, input)
@@ -420,7 +420,7 @@ pub fn pipe_res_catch(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_res_map_err(world: &mut World, input: u64) -> Result<u64, u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map_err(|e: u32| e as u64, &reg);
     p.run(world, input)
@@ -429,7 +429,7 @@ pub fn pipe_res_map_err(world: &mut World, input: u64) -> Result<u64, u64> {
 #[inline(never)]
 pub fn pipe_res_or_else(world: &mut World, input: u64) -> Result<u64, u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .or_else(|e: u32| Err(e as u64), &reg);
     p.run(world, input)
@@ -438,7 +438,7 @@ pub fn pipe_res_or_else(world: &mut World, input: u64) -> Result<u64, u64> {
 #[inline(never)]
 pub fn pipe_res_inspect(world: &mut World, input: u64) -> Result<u64, u32> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .inspect(|_x: &u64| {}, &reg);
     p.run(world, input)
@@ -447,7 +447,7 @@ pub fn pipe_res_inspect(world: &mut World, input: u64) -> Result<u64, u32> {
 #[inline(never)]
 pub fn pipe_res_inspect_err(world: &mut World, input: u64) -> Result<u64, u32> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .inspect_err(|_e: &u32| {}, &reg);
     p.run(world, input)
@@ -456,7 +456,7 @@ pub fn pipe_res_inspect_err(world: &mut World, input: u64) -> Result<u64, u32> {
 #[inline(never)]
 pub fn pipe_res_ok(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .ok();
     p.run(world, input)
@@ -465,7 +465,7 @@ pub fn pipe_res_ok(world: &mut World, input: u64) -> Option<u64> {
 #[inline(never)]
 pub fn pipe_res_unwrap_or(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .unwrap_or(0);
     p.run(world, input)
@@ -474,7 +474,7 @@ pub fn pipe_res_unwrap_or(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_res_unwrap_or_else(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .unwrap_or_else(|e: u32| e as u64, &reg);
     p.run(world, input)
@@ -487,7 +487,7 @@ pub fn pipe_res_unwrap_or_else(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_res_map_and_then(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map(double, &reg)
         .and_then(try_parse, &reg)
@@ -498,7 +498,7 @@ pub fn pipe_res_map_and_then(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_res_map_err_or_else(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map_err(|e: u32| e as u64, &reg)
         .or_else(|e: u64| Ok::<u64, u64>(e), &reg)
@@ -509,7 +509,7 @@ pub fn pipe_res_map_err_or_else(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_res_inspect_both(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .inspect(|_v: &u64| {}, &reg)
         .inspect_err(|_e: &u32| {}, &reg)
@@ -523,7 +523,7 @@ pub fn pipe_res_catch_then_option(world: &mut World, input: u64) -> u64 {
 
     fn log_error(_err: u32) {}
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .catch(log_error, &reg)
         .map(double, &reg)
@@ -534,7 +534,7 @@ pub fn pipe_res_catch_then_option(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_res_map_5x(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map(add_one, &reg)
         .map(double, &reg)
@@ -552,7 +552,7 @@ pub fn pipe_res_err_skip_10(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     // try_parse returns Err for input >= 10_000. The 10 maps after it
     // should all be skipped on the Err path — single branch or per-step?
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .map(add_one, &reg)
         .map(double, &reg)
@@ -576,7 +576,7 @@ pub fn pipe_res_catch_skip_chain(world: &mut World, input: u64) -> u64 {
 
     fn log_error(_err: u32) {}
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .catch(log_error, &reg)
         .map(add_one, &reg)
@@ -598,7 +598,7 @@ pub fn pipe_res_catch_skip_chain(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_trans_guard_unwrap(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 10, &reg)
         .unwrap_or(0)
@@ -609,7 +609,7 @@ pub fn pipe_trans_guard_unwrap(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_trans_guard_ok_or_unwrap(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
@@ -620,7 +620,7 @@ pub fn pipe_trans_guard_ok_or_unwrap(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_trans_result_ok_unwrap(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .ok()
         .unwrap_or(0);
@@ -633,7 +633,7 @@ pub fn pipe_trans_result_catch_unwrap(world: &mut World, input: u64) -> u64 {
 
     fn log_error(_err: u32) {}
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_parse, &reg)
         .catch(log_error, &reg)
         .unwrap_or(0);
@@ -646,7 +646,7 @@ pub fn pipe_trans_guard_ok_or_catch_unwrap(world: &mut World, input: u64) -> u64
 
     fn log_error(_err: u32) {}
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
@@ -661,7 +661,7 @@ pub fn pipe_trans_full_lifecycle(world: &mut World, input: u64) -> u64 {
 
     fn log_error(_err: u32) {}
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
@@ -680,10 +680,10 @@ pub fn pipe_trans_full_lifecycle(world: &mut World, input: u64) -> u64 {
 pub fn pipe_route_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let on_true = PipelineStart::<u64>::new().then(double, &reg);
-    let on_false = PipelineStart::<u64>::new().then(add_one, &reg);
+    let on_true = PipelineBuilder::<u64>::new().then(double, &reg);
+    let on_false = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .route(|x: &u64| *x > 100, &reg, on_true, on_false)
         .then(add_three, &reg);
@@ -694,15 +694,15 @@ pub fn pipe_route_basic(world: &mut World, input: u64) -> u64 {
 pub fn pipe_route_nested_2(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let arm_a = PipelineStart::<u64>::new().then(double, &reg);
-    let arm_b = PipelineStart::<u64>::new().then(triple, &reg);
-    let arm_c = PipelineStart::<u64>::new().then(add_one, &reg);
+    let arm_a = PipelineBuilder::<u64>::new().then(double, &reg);
+    let arm_b = PipelineBuilder::<u64>::new().then(triple, &reg);
+    let arm_c = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
-    let inner_false = PipelineStart::<u64>::new()
+    let inner_false = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 50, &reg, arm_b, arm_c);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 100, &reg, arm_a, inner_false);
     p.run(world, input)
@@ -712,21 +712,21 @@ pub fn pipe_route_nested_2(world: &mut World, input: u64) -> u64 {
 pub fn pipe_route_heavy_arms(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let arm_t = PipelineStart::<u64>::new()
+    let arm_t = PipelineBuilder::<u64>::new()
         .then(double, &reg)
         .then(add_three, &reg)
         .then(square, &reg)
         .then(sub_ten, &reg)
         .then(shr_one, &reg);
 
-    let arm_f = PipelineStart::<u64>::new()
+    let arm_f = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(triple, &reg)
         .then(xor_mask, &reg)
         .then(add_seven, &reg)
         .then(add_forty_two, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .route(|x: &u64| *x > 100, &reg, arm_t, arm_f);
     p.run(world, input)
@@ -735,7 +735,7 @@ pub fn pipe_route_heavy_arms(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_switch_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(|x: u64| if x > 100 { x.wrapping_mul(2) } else { x.wrapping_add(1) }, &reg);
     p.run(world, input)
@@ -744,7 +744,7 @@ pub fn pipe_switch_basic(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_switch_3way(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| match x % 3 {
             0 => x.wrapping_mul(2),
             1 => x.wrapping_add(10),
@@ -759,7 +759,7 @@ pub fn pipe_switch_resolve_step(world: &mut World, input: u64) -> u64 {
     let mut arm_big = resolve_step(double, &reg);
     let mut arm_small = resolve_step(add_one, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(move |world: &mut World, x: u64| {
             if x > 100 {
                 arm_big(world, x)
@@ -773,7 +773,7 @@ pub fn pipe_switch_resolve_step(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_start_switch(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x.wrapping_mul(2).wrapping_add(1), &reg);
     p.run(world, input)
 }
@@ -785,7 +785,7 @@ pub fn pipe_start_switch(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_splat2_start(world: &mut World, input: (u32, u32)) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<(u32, u32)>::new()
+    let mut p = PipelineBuilder::<(u32, u32)>::new()
         .splat()
         .then(splat_add, &reg);
     p.run(world, input)
@@ -794,7 +794,7 @@ pub fn pipe_splat2_start(world: &mut World, input: (u32, u32)) -> u64 {
 #[inline(never)]
 pub fn pipe_splat2_mid(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_u64, &reg)
         .splat()
         .then(splat_add, &reg);
@@ -804,7 +804,7 @@ pub fn pipe_splat2_mid(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_splat3(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_3, &reg)
         .splat()
         .then(splat_3, &reg);
@@ -814,7 +814,7 @@ pub fn pipe_splat3(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_splat4(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_4, &reg)
         .splat()
         .then(splat_4, &reg);
@@ -824,7 +824,7 @@ pub fn pipe_splat4(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_splat5(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_5, &reg)
         .splat()
         .then(splat_5, &reg);
@@ -839,7 +839,7 @@ pub fn pipe_splat_with_params(world: &mut World, input: u64) -> u64 {
         x as u64 + y as u64 + a.0
     }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_u64, &reg)
         .splat()
         .then(splat_with_res, &reg);
@@ -849,7 +849,7 @@ pub fn pipe_splat_with_params(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_splat_then_guard(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_u64, &reg)
         .splat()
         .then(splat_add, &reg)
@@ -865,7 +865,7 @@ pub fn pipe_splat_then_guard(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_bool_not(world: &mut World, input: u64) -> bool {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(is_even, &reg)
         .not();
     p.run(world, input)
@@ -874,7 +874,7 @@ pub fn pipe_bool_not(world: &mut World, input: u64) -> bool {
 #[inline(never)]
 pub fn pipe_bool_and(world: &mut World, input: u64) -> bool {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(is_even, &reg)
         .and(|| true, &reg);
     p.run(world, input)
@@ -883,7 +883,7 @@ pub fn pipe_bool_and(world: &mut World, input: u64) -> bool {
 #[inline(never)]
 pub fn pipe_bool_or(world: &mut World, input: u64) -> bool {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(is_even, &reg)
         .or(|| false, &reg);
     p.run(world, input)
@@ -892,7 +892,7 @@ pub fn pipe_bool_or(world: &mut World, input: u64) -> bool {
 #[inline(never)]
 pub fn pipe_bool_xor(world: &mut World, input: u64) -> bool {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(is_even, &reg)
         .xor(|| true, &reg);
     p.run(world, input)
@@ -901,7 +901,7 @@ pub fn pipe_bool_xor(world: &mut World, input: u64) -> bool {
 #[inline(never)]
 pub fn pipe_bool_chain(world: &mut World, input: u64) -> bool {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(is_even, &reg)
         .and(|| true, &reg)
         .or(|| false, &reg)
@@ -913,7 +913,7 @@ pub fn pipe_bool_chain(world: &mut World, input: u64) -> bool {
 #[inline(never)]
 pub fn pipe_bool_guard_integration(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(is_even, &reg)
         .and(|| true, &reg)
         .guard(|b: &bool| *b, &reg)
@@ -935,7 +935,7 @@ pub fn pipe_cloned_copy_type(world: &mut World, input: u64) -> u64 {
         Box::leak(Box::new(x))
     }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(take_ref, &reg)
         .cloned()
         .then(double, &reg);
@@ -949,7 +949,7 @@ pub fn pipe_cloned_copy_type(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_tap_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .tap(|_x: &u64| {}, &reg)
         .then(double, &reg);
@@ -959,7 +959,7 @@ pub fn pipe_tap_basic(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_tap_multiple(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .tap(|_x: &u64| {}, &reg)
         .then(add_one, &reg)
@@ -972,10 +972,10 @@ pub fn pipe_tap_multiple(world: &mut World, input: u64) -> u64 {
 pub fn pipe_tee_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let side = DagArmStart::<u64>::new()
+    let side = DagArmSeed::<u64>::new()
         .then(ref_consume, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .tee(side)
         .then(double, &reg);
@@ -986,14 +986,14 @@ pub fn pipe_tee_basic(world: &mut World, input: u64) -> u64 {
 pub fn pipe_tee_heavy(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let side = DagArmStart::<u64>::new()
+    let side = DagArmSeed::<u64>::new()
         .then(ref_add_one, &reg)
         .then(ref_double, &reg)
         .then(ref_add_three, &reg)
         .then(ref_square, &reg)
         .then(ref_consume, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .tee(side)
         .then(double, &reg);
@@ -1003,7 +1003,7 @@ pub fn pipe_tee_heavy(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_tap_with_world(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .tap(|w: &mut World, x: &u64| {
             // Force a World access in the tap closure.
@@ -1021,7 +1021,7 @@ pub fn pipe_tap_with_world(world: &mut World, input: u64) -> u64 {
 pub fn pipe_dispatch_handler(world: &mut World, input: u64) {
     let reg = world.registry();
     let handler = consume_val.into_handler(&reg);
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(handler);
     p.run(world, input);
@@ -1034,7 +1034,7 @@ pub fn pipe_dispatch_handler(world: &mut World, input: u64) {
 #[inline(never)]
 pub fn pipe_world_res(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_res_a, &reg);
     p.run(world, input)
 }
@@ -1042,7 +1042,7 @@ pub fn pipe_world_res(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_res_mut(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(write_res_a, &reg);
     p.run(world, input)
 }
@@ -1050,7 +1050,7 @@ pub fn pipe_world_res_mut(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_res_res_mut(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_res_a, &reg)
         .then(write_res_a, &reg);
     p.run(world, input)
@@ -1059,7 +1059,7 @@ pub fn pipe_world_res_res_mut(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_3_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(three_params, &reg);
     p.run(world, input)
 }
@@ -1067,7 +1067,7 @@ pub fn pipe_world_3_params(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_mixed_chain(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(add_res_a, &reg)
         .then(write_res_a, &reg)
@@ -1084,7 +1084,7 @@ pub fn pipe_world_change_detection(world: &mut World, input: u64) -> u64 {
         if a.is_changed() { x.wrapping_mul(2) } else { x }
     }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(write_res_a, &reg)
         .then(check_changed, &reg);
     p.run(world, input)
@@ -1099,7 +1099,7 @@ pub fn pipe_world_res_mut_stamp(world: &mut World, input: u64) -> u64 {
         x
     }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(stamp_and_pass, &reg);
     p.run(world, input)
 }
@@ -1110,7 +1110,7 @@ pub fn pipe_world_res_mut_stamp(world: &mut World, input: u64) -> u64 {
 pub fn pipe_opt_ok_or_chain(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     // guard → ok_or → Result combinators → unwrap
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .ok_or(0u32)
@@ -1126,7 +1126,7 @@ pub fn pipe_opt_ok_or_chain(world: &mut World, input: u64) -> u64 {
 pub fn pipe_trans_nested_option(world: &mut World, input: u64) -> Option<Option<u64>> {
     let reg = world.registry();
     // maybe_positive → Option<u64>, then map(checked_double) → Option<Option<u64>>
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .map(checked_double, &reg);
     p.run(world, input)
@@ -1136,7 +1136,7 @@ pub fn pipe_trans_nested_option(world: &mut World, input: u64) -> Option<Option<
 pub fn pipe_trans_result_in_option(world: &mut World, input: u64) -> Option<Result<u64, u32>> {
     let reg = world.registry();
     // maybe_positive → Option<u64>, then map(try_parse) → Option<Result<u64, u32>>
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_positive, &reg)
         .map(try_parse, &reg);
     p.run(world, input)
@@ -1148,23 +1148,23 @@ pub fn pipe_trans_result_in_option(world: &mut World, input: u64) -> Option<Resu
 pub fn pipe_route_nested_3(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let arm_a = PipelineStart::<u64>::new().then(double, &reg);
-    let arm_b = PipelineStart::<u64>::new().then(triple, &reg);
-    let arm_c = PipelineStart::<u64>::new().then(add_one, &reg);
-    let arm_d = PipelineStart::<u64>::new().then(add_seven, &reg);
+    let arm_a = PipelineBuilder::<u64>::new().then(double, &reg);
+    let arm_b = PipelineBuilder::<u64>::new().then(triple, &reg);
+    let arm_c = PipelineBuilder::<u64>::new().then(add_one, &reg);
+    let arm_d = PipelineBuilder::<u64>::new().then(add_seven, &reg);
 
     // Inner-most route: 3rd level
-    let inner2 = PipelineStart::<u64>::new()
+    let inner2 = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 25, &reg, arm_c, arm_d);
 
     // 2nd level
-    let inner1 = PipelineStart::<u64>::new()
+    let inner1 = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 50, &reg, arm_b, inner2);
 
     // Top level — 4-way via nesting
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 100, &reg, arm_a, inner1);
     p.run(world, input)
@@ -1187,7 +1187,7 @@ pub fn pipe_splat_large_types(world: &mut World, input: u64) -> u64 {
     }
 
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(make_pair, &reg)
         .splat()
         .then(combine_pair, &reg);
@@ -1205,7 +1205,7 @@ pub fn pipe_cloned_bare(world: &mut World, input: u64) -> u64 {
     }
 
     // &u64 → u64 via cloned() — should be a single load
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(take_ref, &reg)
         .cloned()
         .then(double, &reg);
@@ -1221,7 +1221,7 @@ pub fn pipe_cloned_option(world: &mut World, input: u64) -> u64 {
     }
 
     // Option<&u64> → Option<u64> via cloned()
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(maybe_ref, &reg)
         .cloned()
         .unwrap_or(0);
@@ -1237,7 +1237,7 @@ pub fn pipe_cloned_result(world: &mut World, input: u64) -> u64 {
     }
 
     // Result<&u64, u32> → Result<u64, u32> via cloned()
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(try_ref, &reg)
         .cloned()
         .unwrap_or(0);
@@ -1255,7 +1255,7 @@ pub fn pipe_cloned_large_type(world: &mut World, input: u64) -> [u8; 256] {
     }
 
     // &[u8; 256] → [u8; 256] via cloned() — should be memcpy
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(make_ref, &reg)
         .cloned();
     p.run(world, input)
@@ -1273,7 +1273,7 @@ pub fn pipe_dispatch_fanout2(world: &mut World, input: u64) {
     let h1 = sink_a.into_handler(&reg);
     let h2 = sink_b.into_handler(&reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(fan_out!(h1, h2));
     p.run(world, input);
@@ -1293,7 +1293,7 @@ pub fn pipe_dispatch_fanout4(world: &mut World, input: u64) {
     let h3 = sink_c.into_handler(&reg);
     let h4 = sink_d.into_handler(&reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(fan_out!(h1, h2, h3, h4));
     p.run(world, input);
@@ -1312,7 +1312,7 @@ pub fn pipe_dispatch_fanout8(world: &mut World, input: u64) {
     fn s7(mut a: ResMut<ResH>, x: &u64) { a.0 = a.0.wrapping_add(*x as u16); }
     fn s8(mut a: ResMut<ResE>, x: &u64) { a.0 += *x as f64; }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(fan_out!(
             s1.into_handler(&reg),
@@ -1340,7 +1340,7 @@ pub fn pipe_dispatch_broadcast(world: &mut World, input: u64) {
     bc.add(sink_b.into_handler(&reg));
     bc.add(sink_c.into_handler(&reg));
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(bc);
     p.run(world, input);
@@ -1351,7 +1351,7 @@ pub fn pipe_dispatch_mid_then_continue(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     let handler = consume_val.into_handler(&reg);
     // dispatch returns () — then we continue the chain from ()
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dispatch(handler)
         .then(|_unit: ()| 42u64, &reg);
@@ -1369,7 +1369,7 @@ pub fn pipe_world_local(world: &mut World, input: u64) -> u64 {
         x.wrapping_add(*count)
     }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(count_calls, &reg);
     p.run(world, input)
 }
@@ -1377,7 +1377,7 @@ pub fn pipe_world_local(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_5_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(five_params, &reg);
     p.run(world, input)
 }
@@ -1385,7 +1385,7 @@ pub fn pipe_world_5_params(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_8_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(eight_params, &reg);
     p.run(world, input)
 }
@@ -1399,7 +1399,7 @@ pub fn pipe_world_changed_after(world: &mut World, input: u64) -> u64 {
         if a.changed_after(Sequence(0)) { x.wrapping_mul(2) } else { x }
     }
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(write_res_a, &reg)
         .then(check_since, &reg);
     p.run(world, input)

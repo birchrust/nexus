@@ -3,7 +3,7 @@
 
 //! DAG pipeline — monomorphized data-flow graphs with fan-out and merge.
 //!
-//! [`DagStart`] begins a typed DAG that encodes topology in the type system.
+//! [`DagBuilder`] begins a typed DAG that encodes topology in the type system.
 //! After monomorphization, the entire DAG is a single flat function with
 //! all values as stack locals — no arena, no vtable dispatch. The only
 //! `unsafe` is in the shared [`Param::fetch`](crate::Param) path
@@ -16,7 +16,7 @@
 //! # When to use
 //!
 //! Use DAG pipelines when data needs to fan out to multiple arms and
-//! merge back. For linear chains, prefer [`PipelineStart`](crate::PipelineStart).
+//! merge back. For linear chains, prefer [`PipelineBuilder`](crate::PipelineBuilder).
 //! For dynamic fan-out by reference, use [`FanOut`](crate::FanOut) or
 //! [`Broadcast`](crate::Broadcast).
 //!
@@ -39,7 +39,7 @@
 //! To skip an entire fork, resolve Option/Result **before** `.fork()`:
 //!
 //! ```ignore
-//! DagStart::<RawMsg>::new()
+//! DagBuilder::<RawMsg>::new()
 //!     .root(decode, reg)
 //!     .guard(|msg: &RawMsg| !msg.is_empty(), reg)  // None skips everything below
 //!     .unwrap_or(default)                           // → T, enter fork with concrete type
@@ -84,7 +84,7 @@
 //! fn split(t: Tick) -> (f64, u64) { (t.price, t.size) }
 //! fn weighted(price: &f64, size: &u64) -> f64 { *price * *size as f64 }
 //!
-//! DagStart::<Tick>::new()
+//! DagBuilder::<Tick>::new()
 //!     .root(split, reg)       // Tick → (f64, u64)
 //!     .splat()                // destructure
 //!     .then(weighted, reg)    // (&f64, &u64) → f64
@@ -113,7 +113,7 @@
 //!
 //! ```
 //! use nexus_rt::{WorldBuilder, ResMut, Handler};
-//! use nexus_rt::dag::DagStart;
+//! use nexus_rt::dag::DagBuilder;
 //!
 //! let mut wb = WorldBuilder::new();
 //! wb.register::<u64>(0);
@@ -123,7 +123,7 @@
 //! fn double(x: u32) -> u64 { x as u64 * 2 }
 //! fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 //!
-//! let mut dag = DagStart::<u32>::new()
+//! let mut dag = DagBuilder::<u32>::new()
 //!     .root(double, reg)
 //!     .then(store, reg)
 //!     .build();
@@ -529,7 +529,7 @@ all_tuples!(impl_merge5_step);
 ///
 /// ```
 /// use nexus_rt::{WorldBuilder, ResMut, Handler};
-/// use nexus_rt::dag::DagStart;
+/// use nexus_rt::dag::DagBuilder;
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(0);
@@ -539,7 +539,7 @@ all_tuples!(impl_merge5_step);
 /// fn double(x: u32) -> u64 { x as u64 * 2 }
 /// fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 ///
-/// let mut dag = DagStart::<u32>::new()
+/// let mut dag = DagBuilder::<u32>::new()
 ///     .root(double, reg)
 ///     .then(store, reg)
 ///     .build();
@@ -547,9 +547,9 @@ all_tuples!(impl_merge5_step);
 /// dag.run(&mut world, 5u32);
 /// assert_eq!(*world.resource::<u64>(), 10);
 /// ```
-pub struct DagStart<E>(PhantomData<fn(E)>);
+pub struct DagBuilder<E>(PhantomData<fn(E)>);
 
-impl<E> DagStart<E> {
+impl<E> DagBuilder<E> {
     /// Create a new typed DAG entry point.
     pub fn new() -> Self {
         Self(PhantomData)
@@ -575,7 +575,7 @@ impl<E> DagStart<E> {
     }
 }
 
-impl<E> Default for DagStart<E> {
+impl<E> Default for DagBuilder<E> {
     fn default() -> Self {
         Self::new()
     }
@@ -636,17 +636,17 @@ where
 /// [`.route()`](DagChain::route).
 ///
 /// Call `.then()` to add the first step in this arm.
-pub struct DagArmStart<In>(PhantomData<fn(*const In)>);
+pub struct DagArmSeed<In>(PhantomData<fn(*const In)>);
 
-impl<In: 'static> DagArmStart<In> {
+impl<In: 'static> DagArmSeed<In> {
     /// Create a new arm builder seed.
     ///
     /// Used to build arms passed to [`DagChain::route`] or
     /// [`DagArm::route`]:
     ///
     /// ```ignore
-    /// let fast = DagArmStart::new().then(fast_path, &reg);
-    /// let slow = DagArmStart::new().then(slow_path, &reg);
+    /// let fast = DagArmSeed::new().then(fast_path, &reg);
+    /// let slow = DagArmSeed::new().then(slow_path, &reg);
     /// dag.route(predicate, &reg, fast, slow)
     /// ```
     pub fn new() -> Self {
@@ -654,13 +654,13 @@ impl<In: 'static> DagArmStart<In> {
     }
 }
 
-impl<In: 'static> Default for DagArmStart<In> {
+impl<In: 'static> Default for DagArmSeed<In> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<In: 'static> DagArmStart<In> {
+impl<In: 'static> DagArmSeed<In> {
     /// Add the first step in this arm. Takes `&In` by reference.
     pub fn then<Out, Params, S>(
         self,
@@ -1694,7 +1694,7 @@ macro_rules! define_dag_splat_builders {
             }
         }
 
-        impl<$($T: 'static),+> DagArmStart<($($T,)+)> {
+        impl<$($T: 'static),+> DagArmSeed<($($T,)+)> {
             /// Destructure the tuple input into individual `&T` arguments.
             pub fn splat(self) -> $SplatArmStart<$($T),+> {
                 $SplatArmStart(PhantomData)
@@ -1766,9 +1766,9 @@ macro_rules! impl_dag_fork {
             /// Add the first arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, AOut, ACh>,)> {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 $Fork {
                     chain: self.chain,
                     arms: (arm,),
@@ -1781,10 +1781,10 @@ macro_rules! impl_dag_fork {
             /// Add a second arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, A0, C0>, DagArm<ForkOut, AOut, ACh>)>
             {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 let (a0,) = self.arms;
                 $Fork {
                     chain: self.chain,
@@ -1800,7 +1800,7 @@ macro_rules! impl_dag_fork {
             /// Add a third arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<
                 $U,
                 ForkOut,
@@ -1811,7 +1811,7 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, AOut, ACh>,
                 ),
             > {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 let (a0, a1) = self.arms;
                 $Fork {
                     chain: self.chain,
@@ -1836,7 +1836,7 @@ macro_rules! impl_dag_fork {
             /// Add a fourth arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<
                 $U,
                 ForkOut,
@@ -1848,7 +1848,7 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, AOut, ACh>,
                 ),
             > {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 let (a0, a1, a2) = self.arms;
                 $Fork {
                     chain: self.chain,
@@ -2136,7 +2136,7 @@ impl<E, Out: crate::PipelineOutput, Chain: ChainCall<E, Out = Out>> DagChain<E, 
 ///
 /// ```
 /// use nexus_rt::{WorldBuilder, ResMut};
-/// use nexus_rt::dag::DagStart;
+/// use nexus_rt::dag::DagBuilder;
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(0);
@@ -2146,7 +2146,7 @@ impl<E, Out: crate::PipelineOutput, Chain: ChainCall<E, Out = Out>> DagChain<E, 
 /// fn double(x: u32) -> u64 { x as u64 * 2 }
 /// fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
 ///
-/// let mut batch = DagStart::<u32>::new()
+/// let mut batch = DagBuilder::<u32>::new()
 ///     .root(double, reg)
 ///     .then(store, reg)
 ///     .build_batch(8);
@@ -2247,7 +2247,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .then(store, reg)
             .build();
@@ -2273,7 +2273,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .then(add_one, reg)
             .then(store, reg)
@@ -2300,7 +2300,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .then(add_one, reg)
             .then(add_one, reg)
@@ -2337,7 +2337,7 @@ mod tests {
             *out = *val as u64;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .fork()
             .arm(|a| a.then(add_one, reg))
@@ -2371,7 +2371,7 @@ mod tests {
             *out = *val as i64 * 3;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| a.then(sink_u64, reg))
@@ -2422,7 +2422,7 @@ mod tests {
         //     inner_merge(30,45)=75
         //   arm_b: mul3(5)=15
         // outer_merge(75,15)=90
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| {
@@ -2473,7 +2473,7 @@ mod tests {
         //   a: add_one(10)=11 → add_then_mul2(11)=24
         //   b: mul3(10)=30
         // merge(24, 30) = 54
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .fork()
             .arm(|a| a.then(add_one, reg).then(add_then_mul2, reg))
@@ -2503,7 +2503,7 @@ mod tests {
         }
 
         let mut boxed: Virtual<u32> = Box::new(
-            DagStart::<u32>::new()
+            DagBuilder::<u32>::new()
                 .root(root_id, reg)
                 .then(store, reg)
                 .build(),
@@ -2529,7 +2529,7 @@ mod tests {
             *out = val.to_string();
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(|x: u32| x, reg)
             .then(scale, reg)
             .then(store, reg)
@@ -2548,7 +2548,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(
                 |mut out: ResMut<u64>, x: u32| {
                     *out = x as u64;
@@ -2577,7 +2577,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .then(store, reg)
             .build();
@@ -2615,7 +2615,7 @@ mod tests {
             *out = format!("{},{},{}", a, b, c);
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| a.then(mul1, reg))
@@ -2643,7 +2643,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .dispatch(sink.into_handler(reg))
             .build();
@@ -2668,7 +2668,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map(double, reg)
             .then(sink, reg)
@@ -2694,7 +2694,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map(double, reg)
             .then(sink, reg)
@@ -2720,7 +2720,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .and_then(check, reg)
             .then(sink, reg)
@@ -2742,7 +2742,7 @@ mod tests {
         wb.register::<u64>(0);
         let mut world = wb.build();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, world.registry())
             .filter(|v: &u64| *v > 3, world.registry())
             .then(sink, world.registry())
@@ -2764,7 +2764,7 @@ mod tests {
         wb.register::<u64>(0);
         let mut world = wb.build();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, world.registry())
             .filter(|v: &u64| *v > 10, world.registry())
             .then(sink, world.registry())
@@ -2785,7 +2785,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .on_none(|w: &mut World| {
                 *w.resource_mut::<bool>() = true;
@@ -2810,7 +2810,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .unwrap_or(42u64)
             .then(sink, reg)
@@ -2836,7 +2836,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .ok_or("missing")
             .then(sink, reg)
@@ -2862,7 +2862,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map(double, reg)
             .then(sink, reg)
@@ -2892,7 +2892,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .and_then(check, reg)
             .then(sink, reg)
@@ -2919,7 +2919,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .catch(handle_err, reg)
             .then(sink, reg)
@@ -2943,7 +2943,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .ok()
             .then(sink, reg)
@@ -2966,7 +2966,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .unwrap_or_else(|_err: &str| 42u64, reg)
             .then(sink, reg)
@@ -2992,7 +2992,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map_err(|e: u32| format!("err:{e}"), reg)
             .then(sink, reg)
@@ -3027,7 +3027,7 @@ mod tests {
 
         // Arm 0: root → arm_step (Option) → unwrap_or(0)
         // Arm 1: root → double
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| a.then(arm_step, reg).unwrap_or(0u64))
@@ -3057,7 +3057,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .inspect(|w: &mut World, _val: &u64| {
                 *w.resource_mut::<bool>() = true;
@@ -3085,7 +3085,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .guard(|v: &u64| *v > 3, reg)
             .then(sink, reg)
@@ -3108,7 +3108,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .guard(|v: &u64| *v > 10, reg)
             .then(sink, reg)
@@ -3138,7 +3138,7 @@ mod tests {
         let reg = world.registry();
 
         // arm_a: guard drops (5 < 10), arm_b: runs normally
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| a.then(double, reg).guard(|v: &u64| *v > 100, reg))
@@ -3168,7 +3168,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .tap(|w: &mut World, val: &u64| {
                 // Side-effect: record that we observed the value.
@@ -3202,7 +3202,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| {
@@ -3242,10 +3242,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = DagArmStart::new().then(double, reg);
-        let arm_f = DagArmStart::new().then(triple, reg);
+        let arm_t = DagArmSeed::new().then(double, reg);
+        let arm_f = DagArmSeed::new().then(triple, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .route(|v: &u64| *v > 3, reg, arm_t, arm_f)
             .then(sink, reg)
@@ -3274,10 +3274,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = DagArmStart::new().then(double, reg);
-        let arm_f = DagArmStart::new().then(triple, reg);
+        let arm_t = DagArmSeed::new().then(double, reg);
+        let arm_f = DagArmSeed::new().then(triple, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .route(|v: &u64| *v > 10, reg, arm_t, arm_f)
             .then(sink, reg)
@@ -3313,14 +3313,14 @@ mod tests {
         let reg = world.registry();
 
         // N-ary via nesting: <5 → +100, 5..10 → +200, >=10 → +300
-        let inner_t = DagArmStart::new().then(add_200, reg);
-        let inner_f = DagArmStart::new().then(add_300, reg);
-        let outer_t = DagArmStart::new().then(add_100, reg);
-        let outer_f = DagArmStart::new()
+        let inner_t = DagArmSeed::new().then(add_200, reg);
+        let inner_f = DagArmSeed::new().then(add_300, reg);
+        let outer_t = DagArmSeed::new().then(add_100, reg);
+        let outer_f = DagArmSeed::new()
             .then(pass, reg)
             .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .route(|v: &u64| *v < 5, reg, outer_t, outer_f)
             .then(sink, reg)
@@ -3355,9 +3355,9 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let side = DagArmStart::new().then(log_step, reg);
+        let side = DagArmSeed::new().then(log_step, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .tee(side)
             .then(sink, reg)
@@ -3389,7 +3389,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .dedup()
             .then(sink, reg)
@@ -3420,7 +3420,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .not()
             .then(sink, reg)
@@ -3446,7 +3446,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .and(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg)
@@ -3473,7 +3473,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .or(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg)
@@ -3500,7 +3500,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .xor(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg)
@@ -3528,7 +3528,7 @@ mod tests {
             *out = *a as u64 + *b as u64;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(store, reg)
@@ -3555,7 +3555,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split3, reg)
             .splat()
             .then(sum3, reg)
@@ -3583,7 +3583,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(add_base, reg)
@@ -3617,7 +3617,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .fork()
             .arm(|a| a.splat().then(sum2, reg))
@@ -3659,7 +3659,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| a.then(make_pair, reg).splat().then(sum2, reg))
@@ -3692,7 +3692,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split4, reg)
             .splat()
             .then(sum4, reg)
@@ -3721,7 +3721,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split5, reg)
             .splat()
             .then(sum5, reg)
@@ -3746,7 +3746,7 @@ mod tests {
             *out = *a as u64 + *b as u64;
         }
 
-        let dag = DagStart::<u32>::new()
+        let dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(store, reg)
@@ -3773,7 +3773,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .then(store, reg)
             .build_batch(8);
@@ -3799,7 +3799,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .guard(|val: &u64| *val > 5, reg)
             .map(store, reg)
@@ -3828,7 +3828,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .then(store, reg)
             .build_batch(8);
@@ -3850,7 +3850,7 @@ mod tests {
 
         fn noop(_x: u32) {}
 
-        let mut batch = DagStart::<u32>::new().root(noop, reg).build_batch(64);
+        let mut batch = DagBuilder::<u32>::new().root(noop, reg).build_batch(64);
 
         batch.input_mut().extend([1, 2, 3]);
         batch.run(&mut world);
@@ -3873,7 +3873,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .then(store, reg)
             .build_batch(8);
@@ -3899,7 +3899,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(combine, reg)
@@ -3929,7 +3929,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(|val: &u64| if *val > 5 { *val * 10 } else { *val + 1 }, reg)
             .then(sink, reg)
@@ -3956,7 +3956,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(|val: &u32| match *val % 3 {
                 0 => *val as u64 + 100,
@@ -3999,7 +3999,7 @@ mod tests {
         let mut arm_even = resolve_arm(double, reg);
         let mut arm_odd = resolve_arm(triple, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(move |world: &mut World, val: &u32| {
                 if *val % 2 == 0 {
@@ -4043,7 +4043,7 @@ mod tests {
         let mut arm_offset = resolve_arm(add_offset, reg);
         let mut arm_double = resolve_arm(plain_double, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(move |world: &mut World, val: &u32| {
                 if *val > 10 {
@@ -4083,7 +4083,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| {
@@ -4124,7 +4124,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(|val: &u32| {
                 if *val % 2 == 0 {
@@ -4156,7 +4156,7 @@ mod tests {
 
         fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 
-        let mut dag = DagStart::<u64>::new()
+        let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: &u64| {
                 *acc += val;
@@ -4192,7 +4192,7 @@ mod tests {
             };
         }
 
-        let mut dag = DagStart::<u64>::new()
+        let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
             .scan(0u64, threshold, reg)
             .then(store_opt, reg)
@@ -4213,7 +4213,7 @@ mod tests {
 
         fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 
-        let scan_arm = DagArmStart::<u64>::new()
+        let scan_arm = DagArmSeed::<u64>::new()
             .then(|v: &u64| *v, reg)
             .scan(0u64, |acc: &mut u64, val: &u64| {
                 *acc += val;
@@ -4221,10 +4221,10 @@ mod tests {
             }, reg)
             .then(store, reg);
 
-        let pass_arm = DagArmStart::<u64>::new()
+        let pass_arm = DagArmSeed::<u64>::new()
             .then(|_: &u64| {}, reg);
 
-        let mut dag = DagStart::<u64>::new()
+        let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
             .fork()
             .arm(|_| scan_arm)
@@ -4258,7 +4258,7 @@ mod tests {
         }
 
         // guard → Option<u64>, map(store) → Option<()>, build() should work
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(check, reg)
             .guard(|val: &u64| *val > 5, reg)
             .map(store, reg)
@@ -4290,7 +4290,7 @@ mod tests {
         // msg declared before dag so it outlives the DAG (drop order).
         let msg = vec![1u8, 2, 3];
         let reg = world.registry();
-        let mut dag = DagStart::<&[u8]>::new()
+        let mut dag = DagBuilder::<&[u8]>::new()
             .root(decode, reg)
             .then(store, reg)
             .build();

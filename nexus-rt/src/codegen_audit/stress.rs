@@ -9,8 +9,8 @@
 // Stress tests intentionally pass large types by value to audit stack codegen.
 #![allow(clippy::large_types_passed_by_value)]
 
-use crate::dag::{DagArmStart, DagStart};
-use crate::pipeline::PipelineStart;
+use crate::dag::{DagArmSeed, DagBuilder};
+use crate::pipeline::PipelineBuilder;
 use crate::{Handler, IntoHandler, World};
 use super::helpers::*;
 
@@ -21,7 +21,7 @@ use super::helpers::*;
 #[inline(never)]
 pub fn stress_pipe_30_steps(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -64,7 +64,7 @@ pub fn stress_pipe_30_steps(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn stress_pipe_50_steps(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -132,13 +132,13 @@ pub fn stress_pipe_all_combinators(world: &mut World, input: u64) -> u64 {
 
     fn log_error(_err: u32) {}
 
-    let tee_side = DagArmStart::<u64>::new()
+    let tee_side = DagArmSeed::<u64>::new()
         .then(ref_consume, &reg);
 
-    let on_true = PipelineStart::<u64>::new().then(double, &reg);
-    let on_false = PipelineStart::<u64>::new().then(add_one, &reg);
+    let on_true = PipelineBuilder::<u64>::new().then(double, &reg);
+    let on_false = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)                    // then
         .tap(|_x: &u64| {}, &reg)               // tap
         .tee(tee_side)                           // tee
@@ -175,7 +175,7 @@ pub fn stress_pipe_transition_chain(world: &mut World, input: u64) -> u64 {
     fn log_error(_err: u32) {}
 
     // T → Option → Result → Option → T → Option → Result → Option → T
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         // Cycle 1: T → Option → Result → Option → T
         .guard(|x: &u64| *x > 0, &reg)
@@ -200,27 +200,27 @@ pub fn stress_pipe_route_4_deep(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
     // 16 leaf arms
-    let l1 = PipelineStart::<u64>::new().then(add_one, &reg);
-    let l2 = PipelineStart::<u64>::new().then(double, &reg);
-    let l3 = PipelineStart::<u64>::new().then(add_three, &reg);
-    let l4 = PipelineStart::<u64>::new().then(triple, &reg);
-    let l5 = PipelineStart::<u64>::new().then(add_seven, &reg);
-    let l6 = PipelineStart::<u64>::new().then(square, &reg);
-    let l7 = PipelineStart::<u64>::new().then(sub_ten, &reg);
-    let l8 = PipelineStart::<u64>::new().then(shr_one, &reg);
+    let l1 = PipelineBuilder::<u64>::new().then(add_one, &reg);
+    let l2 = PipelineBuilder::<u64>::new().then(double, &reg);
+    let l3 = PipelineBuilder::<u64>::new().then(add_three, &reg);
+    let l4 = PipelineBuilder::<u64>::new().then(triple, &reg);
+    let l5 = PipelineBuilder::<u64>::new().then(add_seven, &reg);
+    let l6 = PipelineBuilder::<u64>::new().then(square, &reg);
+    let l7 = PipelineBuilder::<u64>::new().then(sub_ten, &reg);
+    let l8 = PipelineBuilder::<u64>::new().then(shr_one, &reg);
 
     // Level 3 (4 routes)
-    let r3a = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 10, &reg, l1, l2);
-    let r3b = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 20, &reg, l3, l4);
-    let r3c = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 30, &reg, l5, l6);
-    let r3d = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 40, &reg, l7, l8);
+    let r3a = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 10, &reg, l1, l2);
+    let r3b = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 20, &reg, l3, l4);
+    let r3c = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 30, &reg, l5, l6);
+    let r3d = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 40, &reg, l7, l8);
 
     // Level 2 (2 routes)
-    let r2a = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 50, &reg, r3a, r3b);
-    let r2b = PipelineStart::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 60, &reg, r3c, r3d);
+    let r2a = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 50, &reg, r3a, r3b);
+    let r2b = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 60, &reg, r3c, r3d);
 
     // Level 1 (top)
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 100, &reg, r2a, r2b);
     p.run(world, input)
@@ -234,10 +234,10 @@ pub fn stress_pipe_route_4_deep(world: &mut World, input: u64) -> u64 {
 pub fn stress_dag_fork_route_mix(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    let on_true = DagArmStart::<u64>::new().then(ref_double, &reg);
-    let on_false = DagArmStart::<u64>::new().then(ref_triple, &reg);
+    let on_true = DagArmSeed::<u64>::new().then(ref_double, &reg);
+    let on_false = DagArmSeed::<u64>::new().then(ref_triple, &reg);
 
-    let mut d = DagStart::<u64>::new()
+    let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| {
@@ -259,7 +259,7 @@ pub fn stress_dag_fork_route_mix(world: &mut World, input: u64) {
 #[inline(never)]
 pub fn stress_batch_pipe_30_steps(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .then(double, &reg)
         .then(add_three, &reg)
@@ -303,7 +303,7 @@ pub fn stress_batch_pipe_30_steps(world: &mut World) {
 #[inline(never)]
 pub fn stress_batch_dag_nested(world: &mut World) {
     let reg = world.registry();
-    let mut bd = DagStart::<u64>::new()
+    let mut bd = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| {
@@ -340,7 +340,7 @@ pub fn stress_pipe_large_type(world: &mut World, input: u64) -> [u8; 4096] {
     }
 
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(make_large, &reg)
         .then(touch_large, &reg)
         .then(touch_large, &reg);
@@ -354,7 +354,7 @@ pub fn stress_pipe_large_type(world: &mut World, input: u64) -> [u8; 4096] {
 #[inline(never)]
 pub fn stress_pipe_many_closures(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .guard(|x: &u64| *x > 0, &reg)
         .filter(|x: &u64| *x < 10000, &reg)
@@ -377,7 +377,7 @@ pub fn stress_pipe_many_closures(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn stress_dag_wide_fork(world: &mut World, input: u64) {
     let reg = world.registry();
-    let mut d = DagStart::<u64>::new()
+    let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
         .fork()
         .arm(|a| {
@@ -430,7 +430,7 @@ pub fn stress_dag_wide_fork(world: &mut World, input: u64) {
 pub fn stress_pipe_splat_chain(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     // split → splat → add → split → splat → add (two cycles)
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(split_u64, &reg)
         .splat()
         .then(splat_add, &reg)
@@ -447,7 +447,7 @@ pub fn stress_pipe_splat_chain(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn stress_pipe_dedup_in_batch(world: &mut World) {
     let reg = world.registry();
-    let mut bp = PipelineStart::<u64>::new()
+    let mut bp = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .dedup()
         .map(double, &reg)
@@ -466,20 +466,20 @@ pub fn stress_pipe_dedup_in_batch(world: &mut World) {
 pub fn stress_pipe_tee_in_route(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let tee_side = DagArmStart::<u64>::new()
+    let tee_side = DagArmSeed::<u64>::new()
         .then(ref_add_one, &reg)
         .then(ref_double, &reg)
         .then(ref_consume, &reg);
 
-    let arm_t = PipelineStart::<u64>::new()
+    let arm_t = PipelineBuilder::<u64>::new()
         .then(double, &reg)
         .tee(tee_side)
         .then(add_three, &reg);
 
-    let arm_f = PipelineStart::<u64>::new()
+    let arm_f = PipelineBuilder::<u64>::new()
         .then(add_one, &reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, &reg)
         .route(|x: &u64| *x > 100, &reg, arm_t, arm_f);
     p.run(world, input)
@@ -495,15 +495,15 @@ pub fn stress_mixed_everything(world: &mut World, input: u64) {
 
     fn log_error(_err: u32) {}
 
-    let tee_side = DagArmStart::<u64>::new()
+    let tee_side = DagArmSeed::<u64>::new()
         .then(ref_consume, &reg);
 
-    let on_true = PipelineStart::<u64>::new().then(double, &reg);
-    let on_false = PipelineStart::<u64>::new().then(add_one, &reg);
+    let on_true = PipelineBuilder::<u64>::new().then(double, &reg);
+    let on_false = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
     let handler = consume_val.into_handler(&reg);
 
-    let mut p = PipelineStart::<u64>::new()
+    let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
         .tap(|_x: &u64| {}, &reg)
         .tee(tee_side)

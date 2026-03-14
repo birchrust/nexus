@@ -43,7 +43,7 @@
 use std::hint::black_box;
 
 use nexus_rt::{
-    Adapt, Broadcast, ByRef, Cloned, DagStart, Handler, IntoHandler, PipelineStart, Res, ResMut,
+    Adapt, Broadcast, ByRef, Cloned, DagBuilder, Handler, IntoHandler, PipelineBuilder, Res, ResMut,
     WorldBuilder, fan_out,
 };
 
@@ -117,7 +117,7 @@ fn print_header(title: &str) {
 /// 3-stage bare pipeline: multiply, add, shift.
 #[inline(never)]
 pub fn bare_3stage_run(
-    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl nexus_rt::ChainCall<u64, Out = u64>>,
+    p: &mut nexus_rt::PipelineChain<u64, u64, impl nexus_rt::ChainCall<u64, Out = u64>>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -127,7 +127,7 @@ pub fn bare_3stage_run(
 /// 3-stage Option pipeline: Some, map, filter.
 #[inline(never)]
 pub fn option_3stage_run(
-    p: &mut nexus_rt::PipelineBuilder<
+    p: &mut nexus_rt::PipelineChain<
         u64,
         Option<u64>,
         impl nexus_rt::ChainCall<u64, Out = Option<u64>>,
@@ -141,7 +141,7 @@ pub fn option_3stage_run(
 /// Pipeline that reads World via pre-resolved Res<T> steps.
 #[inline(never)]
 pub fn world_access_run(
-    p: &mut nexus_rt::PipelineBuilder<u64, u64, impl nexus_rt::ChainCall<u64, Out = u64>>,
+    p: &mut nexus_rt::PipelineChain<u64, u64, impl nexus_rt::ChainCall<u64, Out = u64>>,
     world: &mut nexus_rt::World,
     input: u64,
 ) -> u64 {
@@ -237,7 +237,7 @@ pub fn probe_dyn_handler(sys: &mut dyn Handler<u64>, world: &mut nexus_rt::World
 /// Should compile to: chain call → move (Copy type elides clone).
 #[inline(never)]
 pub fn probe_cloned_pipeline<'a>(
-    p: &mut nexus_rt::PipelineBuilder<
+    p: &mut nexus_rt::PipelineChain<
         &'a u64,
         u64,
         impl nexus_rt::ChainCall<&'a u64, Out = u64>,
@@ -310,7 +310,7 @@ pub fn probe_adapt(
 /// propagation into a single branch after the guard predicate.
 #[inline(never)]
 pub fn probe_guard_4map(
-    p: &mut nexus_rt::PipelineBuilder<
+    p: &mut nexus_rt::PipelineChain<
         u64,
         Option<u64>,
         impl nexus_rt::ChainCall<u64, Out = Option<u64>>,
@@ -325,7 +325,7 @@ pub fn probe_guard_4map(
 /// and pre-resolved param fetch in each step.
 #[inline(never)]
 pub fn probe_guard_4map_res(
-    p: &mut nexus_rt::PipelineBuilder<
+    p: &mut nexus_rt::PipelineChain<
         u64,
         Option<u64>,
         impl nexus_rt::ChainCall<u64, Out = Option<u64>>,
@@ -418,14 +418,14 @@ fn main() {
 
     // --- Bare 3-stage pipeline (no Option, no World access) ---
 
-    let mut bare = PipelineStart::<u64>::new()
+    let mut bare = PipelineBuilder::<u64>::new()
         .then(|x: u64| x.wrapping_mul(3), r)
         .then(|x: u64| x.wrapping_add(7), r)
         .then(|x: u64| x >> 1, r);
 
     // --- Option 3-stage pipeline ---
 
-    let mut option = PipelineStart::<u64>::new()
+    let mut option = PipelineBuilder::<u64>::new()
         .then(
             |x: u64| -> Option<u64> { if x > 0 { Some(x) } else { None } },
             r,
@@ -435,20 +435,20 @@ fn main() {
 
     // --- World-accessing pipeline (pre-resolved via Res<T>) ---
 
-    let mut world_resolved = PipelineStart::<u64>::new()
+    let mut world_resolved = PipelineBuilder::<u64>::new()
         .then(add_resource, r)
         .then(mul_resource, r);
 
     // --- World-accessing 3-stage pipeline ---
 
-    let mut stage_3 = PipelineStart::<u64>::new()
+    let mut stage_3 = PipelineBuilder::<u64>::new()
         .then(add_resource, r)
         .then(mul_resource, r)
         .then(sub_resource, r);
 
     // --- Built (boxed) pipeline ---
 
-    let mut boxed = PipelineStart::<u64>::new()
+    let mut boxed = PipelineBuilder::<u64>::new()
         .then(|x: u64| x.wrapping_mul(3), r)
         .then(|x: u64| x.wrapping_add(7), r)
         .then(|_x: u64| {}, r)
@@ -461,26 +461,26 @@ fn main() {
     }
 
     // Bare: 3 compute stages + sink (same chain for both batch and linear)
-    let mut batch_bare = PipelineStart::<u64>::new()
+    let mut batch_bare = PipelineBuilder::<u64>::new()
         .then(|x: u64| x.wrapping_mul(3), r)
         .then(|x: u64| x.wrapping_add(7), r)
         .then(sink, r)
         .build_batch(1024);
 
-    let mut linear_bare = PipelineStart::<u64>::new()
+    let mut linear_bare = PipelineBuilder::<u64>::new()
         .then(|x: u64| x.wrapping_mul(3), r)
         .then(|x: u64| x.wrapping_add(7), r)
         .then(sink, r);
 
     // Res<T>: 3 world-access stages + sink (same chain for both)
-    let mut batch_res = PipelineStart::<u64>::new()
+    let mut batch_res = PipelineBuilder::<u64>::new()
         .then(add_resource, r)
         .then(mul_resource, r)
         .then(sub_resource, r)
         .then(sink, r)
         .build_batch(1024);
 
-    let mut linear_res = PipelineStart::<u64>::new()
+    let mut linear_res = PipelineBuilder::<u64>::new()
         .then(add_resource, r)
         .then(mul_resource, r)
         .then(sub_resource, r)
@@ -488,7 +488,7 @@ fn main() {
 
     // --- Result→catch→map→unwrap_or ---
 
-    let mut catch_pipeline = PipelineStart::<u64>::new()
+    let mut catch_pipeline = PipelineBuilder::<u64>::new()
         .then(
             |x: u64| -> Result<u64, &'static str> { if x > 0 { Ok(x) } else { Err("zero") } },
             r,
@@ -500,7 +500,7 @@ fn main() {
     // --- Guard short-circuit pipelines ---
 
     // Pure compute: identity → guard → 4 maps (no World access)
-    let mut guard_4map = PipelineStart::<u64>::new()
+    let mut guard_4map = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, r)
         .guard(|x: &u64| *x > 0, r)
         .map(|x: u64| x.wrapping_mul(3), r)
@@ -509,7 +509,7 @@ fn main() {
         .map(|x: u64| x ^ 0xDEAD, r);
 
     // With Res<T>: identity → guard → 4 maps reading resources
-    let mut guard_4map_res = PipelineStart::<u64>::new()
+    let mut guard_4map_res = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, r)
         .guard(|x: &u64| *x > 0, r)
         .map(add_res_u64, r)
@@ -522,7 +522,7 @@ fn main() {
         *acc = acc.wrapping_add(*val);
     }
 
-    let mut guard_dag = DagStart::<u64>::new()
+    let mut guard_dag = DagBuilder::<u64>::new()
         .root(|x: u64| x, r)
         .guard(|x: &u64| *x > 0, r)
         .map(dag_mul3, r)
@@ -534,7 +534,7 @@ fn main() {
         .build();
 
     // Batch pipeline: guard → 4 maps → unwrap_or → sink
-    let mut guard_batch = PipelineStart::<u64>::new()
+    let mut guard_batch = PipelineBuilder::<u64>::new()
         .then(|x: u64| x, r)
         .guard(|x: &u64| *x > 0, r)
         .map(|x: u64| x.wrapping_mul(3), r)
@@ -549,11 +549,11 @@ fn main() {
 
     // Pipeline .cloned(): &u64 → u64
     let input_val = 42u64;
-    let mut cloned_pipe = PipelineStart::<&u64>::new().then(ref_identity, r).cloned();
+    let mut cloned_pipe = PipelineBuilder::<&u64>::new().then(ref_identity, r).cloned();
 
     // Pipeline .dispatch(): pipeline → handler
-    let dispatch_inner = PipelineStart::<u64>::new().then(sink, r).build();
-    let mut dispatch_pipe = PipelineStart::<u64>::new()
+    let dispatch_inner = PipelineBuilder::<u64>::new().then(sink, r).build();
+    let mut dispatch_pipe = PipelineBuilder::<u64>::new()
         .then(|x: u64| x.wrapping_mul(3), r)
         .dispatch(dispatch_inner)
         .build();

@@ -1,10 +1,10 @@
 // Builder return types are necessarily complex — each combinator returns
-// PipelineBuilder<In, Out, NodeType<Chain, ...>>. Same pattern as iterator adapters.
+// PipelineChain<In, Out, NodeType<Chain, ...>>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
 
 //! Pre-resolved pipeline dispatch using [`Param`] steps.
 //!
-//! [`PipelineStart`] begins a typed composition chain where each step
+//! [`PipelineBuilder`] begins a typed composition chain where each step
 //! is a named function with [`Param`] dependencies resolved at build
 //! time. The result is a monomorphized chain of named node types where dispatch-time
 //! resource access is a single pointer deref per fetch — zero framework overhead.
@@ -69,7 +69,7 @@
 //! // With splat — next step takes individual args:
 //! fn process(id: OrderId, price: f64) -> bool { .. }
 //!
-//! PipelineStart::<Order>::new()
+//! PipelineBuilder::<Order>::new()
 //!     .then(extract, reg)   // Order → (OrderId, f64)
 //!     .splat()              // destructure
 //!     .then(process, reg)   // (OrderId, f64) → bool
@@ -2228,7 +2228,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 }
 
 // =============================================================================
-// PipelineStart — entry point
+// PipelineBuilder — entry point
 // =============================================================================
 
 /// Entry point for building a pre-resolved step pipeline.
@@ -2240,7 +2240,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart, Handler};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder, Handler};
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(10);
@@ -2255,7 +2255,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 /// }
 ///
 /// let r = world.registry_mut();
-/// let mut pipeline = PipelineStart::<u32>::new()
+/// let mut pipeline = PipelineBuilder::<u32>::new()
 ///     .then(double, r)
 ///     .then(store, r)
 ///     .build();
@@ -2263,9 +2263,9 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 /// pipeline.run(&mut world, 5);
 /// assert_eq!(world.resource::<String>().as_str(), "50");
 /// ```
-pub struct PipelineStart<In>(PhantomData<fn(In)>);
+pub struct PipelineBuilder<In>(PhantomData<fn(In)>);
 
-impl<In> PipelineStart<In> {
+impl<In> PipelineBuilder<In> {
     /// Create a new step pipeline entry point.
     pub fn new() -> Self {
         Self(PhantomData)
@@ -2276,8 +2276,8 @@ impl<In> PipelineStart<In> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Out, ThenNode<IdentityNode, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Out, ThenNode<IdentityNode, S::Step>> {
+        PipelineChain {
             chain: ThenNode {
                 prev: IdentityNode,
                 step: f.into_step(registry),
@@ -2294,12 +2294,12 @@ impl<In> PipelineStart<In> {
         initial: Acc,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Out, ScanNode<IdentityNode, S::Step, Acc>>
+    ) -> PipelineChain<In, Out, ScanNode<IdentityNode, S::Step, Acc>>
     where
         Acc: 'static,
         S: IntoScanStep<Acc, In, Out, Params>,
     {
-        PipelineBuilder {
+        PipelineChain {
             chain: ScanNode {
                 prev: IdentityNode,
                 step: f.into_scan_step(registry),
@@ -2310,14 +2310,14 @@ impl<In> PipelineStart<In> {
     }
 }
 
-impl<In> Default for PipelineStart<In> {
+impl<In> Default for PipelineBuilder<In> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 // =============================================================================
-// PipelineBuilder — typestate builder
+// PipelineChain — typestate builder
 // =============================================================================
 
 /// Builder that composes pre-resolved pipeline steps via named chain nodes.
@@ -2326,14 +2326,14 @@ impl<In> Default for PipelineStart<In> {
 /// `Chain` is the concrete chain type (nested named nodes, like iterator adapters).
 ///
 /// Each combinator consumes `self`, wraps the previous chain in a new named
-/// node, and returns a new `PipelineBuilder`. The compiler monomorphizes the
+/// node, and returns a new `PipelineChain`. The compiler monomorphizes the
 /// entire chain — zero virtual dispatch through steps. Named types (not
 /// closures) preserve HRTB: `Pipeline<Chain>` can satisfy `for<'a> Handler<&'a T>`.
 ///
 /// IntoStep-based methods (`.then()`, `.map()`, `.and_then()`, `.catch()`)
 /// take `&Registry` to resolve Param state at build time. Closure-based
 /// methods don't need the registry.
-pub struct PipelineBuilder<In, Out, Chain> {
+pub struct PipelineChain<In, Out, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(In) -> Out>,
 }
@@ -2342,14 +2342,14 @@ pub struct PipelineBuilder<In, Out, Chain> {
 // Core — any Out
 // =============================================================================
 
-impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
+impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// Add a step. Params resolved from the registry.
     pub fn then<NewOut, Params, S: IntoStep<Out, NewOut, Params>>(
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, NewOut, ThenNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, NewOut, ThenNode<Chain, S::Step>> {
+        PipelineChain {
             chain: ThenNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -2371,8 +2371,8 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
     pub fn dispatch<H: Handler<Out>>(
         self,
         handler: H,
-    ) -> PipelineBuilder<In, (), DispatchNode<Chain, H>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, (), DispatchNode<Chain, H>> {
+        PipelineChain {
             chain: DispatchNode {
                 prev: self.chain,
                 handler,
@@ -2390,8 +2390,8 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<Out>, GuardNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<Out>, GuardNode<Chain, S::Step>> {
+        PipelineChain {
             chain: GuardNode {
                 prev: self.chain,
                 step: f.into_ref_step(registry),
@@ -2408,8 +2408,8 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Out, TapNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Out, TapNode<Chain, S::Step>> {
+        PipelineChain {
             chain: TapNode {
                 prev: self.chain,
                 step: f.into_ref_step(registry),
@@ -2422,14 +2422,14 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
     /// current value, then moves it into exactly one of two arms.
     ///
     /// Both arms must produce the same output type. Build each arm as
-    /// a sub-pipeline from [`PipelineStart`]. For N-ary routing, nest
+    /// a sub-pipeline from [`PipelineBuilder`]. For N-ary routing, nest
     /// `route` calls in the false arm.
     ///
     /// ```ignore
-    /// let large = PipelineStart::new().then(large_check, reg).then(submit, reg);
-    /// let small = PipelineStart::new().then(submit, reg);
+    /// let large = PipelineBuilder::new().then(large_check, reg).then(submit, reg);
+    /// let small = PipelineBuilder::new().then(submit, reg);
     ///
-    /// PipelineStart::<Order>::new()
+    /// PipelineBuilder::<Order>::new()
     ///     .then(validate, reg)
     ///     .route(|order: &Order| order.size > 1000, reg, large, small)
     ///     .build();
@@ -2438,14 +2438,14 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
         self,
         pred: Pred,
         registry: &Registry,
-        on_true: PipelineBuilder<Out, NewOut, C0>,
-        on_false: PipelineBuilder<Out, NewOut, C1>,
-    ) -> PipelineBuilder<In, NewOut, RouteNode<Chain, Pred::Step, C0, C1>>
+        on_true: PipelineChain<Out, NewOut, C0>,
+        on_false: PipelineChain<Out, NewOut, C1>,
+    ) -> PipelineChain<In, NewOut, RouteNode<Chain, Pred::Step, C0, C1>>
     where
         C0: ChainCall<Out, Out = NewOut>,
         C1: ChainCall<Out, Out = NewOut>,
     {
-        PipelineBuilder {
+        PipelineChain {
             chain: RouteNode {
                 prev: self.chain,
                 pred: pred.into_ref_step(registry),
@@ -2462,15 +2462,15 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
     ///
     /// Multi-step version of [`tap`](Self::tap) — the arm has the
     /// full DAG combinator API with Param resolution. Build with
-    /// [`DagArmStart::new()`](crate::dag::DagArmStart::new).
+    /// [`DagArmSeed::new()`](crate::dag::DagArmSeed::new).
     pub fn tee<C>(
         self,
         side: DagArm<Out, (), C>,
-    ) -> PipelineBuilder<In, Out, TeeNode<Chain, C>>
+    ) -> PipelineChain<In, Out, TeeNode<Chain, C>>
     where
         C: for<'a> ChainCall<&'a Out, Out = ()>,
     {
-        PipelineBuilder {
+        PipelineChain {
             chain: TeeNode {
                 prev: self.chain,
                 side: side.chain,
@@ -2487,7 +2487,7 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
     ///
     /// ```ignore
     /// // Running sum — suppress values below threshold
-    /// PipelineStart::<u64>::new()
+    /// PipelineBuilder::<u64>::new()
     ///     .then(identity, reg)
     ///     .scan(0u64, |acc: &mut u64, val: u64| {
     ///         *acc += val;
@@ -2500,12 +2500,12 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
         initial: Acc,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, NewOut, ScanNode<Chain, S::Step, Acc>>
+    ) -> PipelineChain<In, NewOut, ScanNode<Chain, S::Step, Acc>>
     where
         Acc: 'static,
         S: IntoScanStep<Acc, Out, NewOut, Params>,
     {
-        PipelineBuilder {
+        PipelineChain {
             chain: ScanNode {
                 prev: self.chain,
                 step: f.into_scan_step(registry),
@@ -2522,7 +2522,7 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineBuilder<In, Out, Chain> {
 //
 // `.splat()` transitions from a tuple output to a builder whose `.then()`
 // accepts a function taking the tuple elements as individual arguments.
-// After `.splat().then(f, reg)`, the user is back on PipelineBuilder.
+// After `.splat().then(f, reg)`, the user is back on PipelineChain.
 //
 // Builder types are `#[doc(hidden)]` — users only see `.splat().then()`.
 
@@ -2568,11 +2568,11 @@ macro_rules! define_splat_builders {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> PipelineBuilder<($($T,)+), Out, $SplatThenNode<IdentityNode, S::Step>>
+            ) -> PipelineChain<($($T,)+), Out, $SplatThenNode<IdentityNode, S::Step>>
             where
                 S: $IntoSplatStep<$($T,)+ Out, Params>,
             {
-                PipelineBuilder {
+                PipelineChain {
                     chain: $SplatThenNode {
                         prev: IdentityNode,
                         step: f.into_splat_step(registry),
@@ -2582,7 +2582,7 @@ macro_rules! define_splat_builders {
             }
         }
 
-        impl<$($T),+> PipelineStart<($($T,)+)> {
+        impl<$($T),+> PipelineBuilder<($($T,)+)> {
             /// Destructure the tuple input into individual function arguments.
             pub fn splat(self) -> $SplatStart<$($T),+> {
                 $SplatStart(PhantomData)
@@ -2602,11 +2602,11 @@ macro_rules! define_splat_builders {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> PipelineBuilder<In, Out, $SplatThenNode<Chain, S::Step>>
+            ) -> PipelineChain<In, Out, $SplatThenNode<Chain, S::Step>>
             where
                 S: $IntoSplatStep<$($T,)+ Out, Params>,
             {
-                PipelineBuilder {
+                PipelineChain {
                     chain: $SplatThenNode {
                         prev: self.chain,
                         step: f.into_splat_step(registry),
@@ -2616,7 +2616,7 @@ macro_rules! define_splat_builders {
             }
         }
 
-        impl<In, $($T,)+ Chain: ChainCall<In, Out = ($($T,)+)>> PipelineBuilder<In, ($($T,)+), Chain> {
+        impl<In, $($T,)+ Chain: ChainCall<In, Out = ($($T,)+)>> PipelineChain<In, ($($T,)+), Chain> {
             /// Destructure the tuple output into individual function arguments.
             pub fn splat(self) -> $SplatBuilder<In, $($T,)+ Chain> {
                 $SplatBuilder {
@@ -2673,7 +2673,7 @@ define_splat_builders!(5,
 // =============================================================================
 
 impl<In, Out: PartialEq + Clone, Chain: ChainCall<In, Out = Out>>
-    PipelineBuilder<In, Out, Chain>
+    PipelineChain<In, Out, Chain>
 {
     /// Suppress consecutive unchanged values. Returns `Some(val)`
     /// when the value differs from the previous invocation, `None`
@@ -2681,8 +2681,8 @@ impl<In, Out: PartialEq + Clone, Chain: ChainCall<In, Out = Out>>
     ///
     /// Requires `PartialEq + Clone` — the previous value is stored
     /// internally for comparison.
-    pub fn dedup(self) -> PipelineBuilder<In, Option<Out>, DedupNode<Chain, Out>> {
-        PipelineBuilder {
+    pub fn dedup(self) -> PipelineChain<In, Option<Out>, DedupNode<Chain, Out>> {
+        PipelineChain {
             chain: DedupNode {
                 prev: self.chain,
                 last: None,
@@ -2696,11 +2696,11 @@ impl<In, Out: PartialEq + Clone, Chain: ChainCall<In, Out = Out>>
 // Bool combinators
 // =============================================================================
 
-impl<In, Chain: ChainCall<In, Out = bool>> PipelineBuilder<In, bool, Chain> {
+impl<In, Chain: ChainCall<In, Out = bool>> PipelineChain<In, bool, Chain> {
     /// Invert a boolean value.
     #[allow(clippy::should_implement_trait)]
-    pub fn not(self) -> PipelineBuilder<In, bool, NotNode<Chain>> {
-        PipelineBuilder {
+    pub fn not(self) -> PipelineChain<In, bool, NotNode<Chain>> {
+        PipelineChain {
             chain: NotNode { prev: self.chain },
             _marker: PhantomData,
         }
@@ -2713,8 +2713,8 @@ impl<In, Chain: ChainCall<In, Out = bool>> PipelineBuilder<In, bool, Chain> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, bool, AndBoolNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, bool, AndBoolNode<Chain, S::Step>> {
+        PipelineChain {
             chain: AndBoolNode {
                 prev: self.chain,
                 producer: f.into_producer(registry),
@@ -2730,8 +2730,8 @@ impl<In, Chain: ChainCall<In, Out = bool>> PipelineBuilder<In, bool, Chain> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, bool, OrBoolNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, bool, OrBoolNode<Chain, S::Step>> {
+        PipelineChain {
             chain: OrBoolNode {
                 prev: self.chain,
                 producer: f.into_producer(registry),
@@ -2747,8 +2747,8 @@ impl<In, Chain: ChainCall<In, Out = bool>> PipelineBuilder<In, bool, Chain> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, bool, XorBoolNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, bool, XorBoolNode<Chain, S::Step>> {
+        PipelineChain {
             chain: XorBoolNode {
                 prev: self.chain,
                 producer: f.into_producer(registry),
@@ -2762,14 +2762,14 @@ impl<In, Chain: ChainCall<In, Out = bool>> PipelineBuilder<In, bool, Chain> {
 // Clone helpers — &T → T transitions
 // =============================================================================
 
-impl<'a, In, T: Clone, Chain: ChainCall<In, Out = &'a T>> PipelineBuilder<In, &'a T, Chain> {
+impl<'a, In, T: Clone, Chain: ChainCall<In, Out = &'a T>> PipelineChain<In, &'a T, Chain> {
     /// Clone a borrowed output to produce an owned value.
     ///
     /// Transitions the pipeline from `&T` to `T`. Uses UFCS
     /// (`T::clone(val)`) — `val.clone()` on a `&&T` resolves to
     /// `<&T as Clone>::clone` and returns `&T`, not `T`.
-    pub fn cloned(self) -> PipelineBuilder<In, T, ClonedNode<Chain>> {
-        PipelineBuilder {
+    pub fn cloned(self) -> PipelineChain<In, T, ClonedNode<Chain>> {
+        PipelineChain {
             chain: ClonedNode { prev: self.chain },
             _marker: PhantomData,
         }
@@ -2777,11 +2777,11 @@ impl<'a, In, T: Clone, Chain: ChainCall<In, Out = &'a T>> PipelineBuilder<In, &'
 }
 
 impl<'a, In, T: Clone, Chain: ChainCall<In, Out = Option<&'a T>>>
-    PipelineBuilder<In, Option<&'a T>, Chain>
+    PipelineChain<In, Option<&'a T>, Chain>
 {
     /// Clone inner borrowed value. `Option<&T>` → `Option<T>`.
-    pub fn cloned(self) -> PipelineBuilder<In, Option<T>, ClonedOptionNode<Chain>> {
-        PipelineBuilder {
+    pub fn cloned(self) -> PipelineChain<In, Option<T>, ClonedOptionNode<Chain>> {
+        PipelineChain {
             chain: ClonedOptionNode { prev: self.chain },
             _marker: PhantomData,
         }
@@ -2789,11 +2789,11 @@ impl<'a, In, T: Clone, Chain: ChainCall<In, Out = Option<&'a T>>>
 }
 
 impl<'a, In, T: Clone, E, Chain: ChainCall<In, Out = Result<&'a T, E>>>
-    PipelineBuilder<In, Result<&'a T, E>, Chain>
+    PipelineChain<In, Result<&'a T, E>, Chain>
 {
     /// Clone inner borrowed Ok value. `Result<&T, E>` → `Result<T, E>`.
-    pub fn cloned(self) -> PipelineBuilder<In, Result<T, E>, ClonedResultNode<Chain>> {
-        PipelineBuilder {
+    pub fn cloned(self) -> PipelineChain<In, Result<T, E>, ClonedResultNode<Chain>> {
+        PipelineChain {
             chain: ClonedResultNode { prev: self.chain },
             _marker: PhantomData,
         }
@@ -2801,10 +2801,10 @@ impl<'a, In, T: Clone, E, Chain: ChainCall<In, Out = Result<&'a T, E>>>
 }
 
 // =============================================================================
-// Option helpers — PipelineBuilder<In, Option<T>, Chain>
+// Option helpers — PipelineChain<In, Option<T>, Chain>
 // =============================================================================
 
-impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>, Chain> {
+impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineChain<In, Option<T>, Chain> {
     // -- IntoStep-based (hot path) -------------------------------------------
 
     /// Transform the inner value. Step not called on None.
@@ -2812,8 +2812,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<U>, MapOptionNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<U>, MapOptionNode<Chain, S::Step>> {
+        PipelineChain {
             chain: MapOptionNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -2827,8 +2827,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<U>, AndThenNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<U>, AndThenNode<Chain, S::Step>> {
+        PipelineChain {
             chain: AndThenNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -2844,8 +2844,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, OnNoneNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<T>, OnNoneNode<Chain, S::Step>> {
+        PipelineChain {
             chain: OnNoneNode {
                 prev: self.chain,
                 producer: f.into_producer(registry),
@@ -2859,8 +2859,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, FilterNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<T>, FilterNode<Chain, S::Step>> {
+        PipelineChain {
             chain: FilterNode {
                 prev: self.chain,
                 step: f.into_ref_step(registry),
@@ -2874,8 +2874,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, InspectOptionNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<T>, InspectOptionNode<Chain, S::Step>> {
+        PipelineChain {
             chain: InspectOptionNode {
                 prev: self.chain,
                 step: f.into_ref_step(registry),
@@ -2888,8 +2888,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
     ///
     /// `Clone` required because the pipeline may run many times —
     /// the error value is cloned on each `None` invocation.
-    pub fn ok_or<E: Clone>(self, err: E) -> PipelineBuilder<In, Result<T, E>, OkOrNode<Chain, E>> {
-        PipelineBuilder {
+    pub fn ok_or<E: Clone>(self, err: E) -> PipelineChain<In, Result<T, E>, OkOrNode<Chain, E>> {
+        PipelineChain {
             chain: OkOrNode {
                 prev: self.chain,
                 err,
@@ -2903,8 +2903,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E>, OkOrElseNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<T, E>, OkOrElseNode<Chain, S::Step>> {
+        PipelineChain {
             chain: OkOrElseNode {
                 prev: self.chain,
                 producer: f.into_producer(registry),
@@ -2918,11 +2918,11 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
     /// `Clone` required because the pipeline may run many times —
     /// the default is cloned on each `None` invocation (unlike
     /// std's `unwrap_or` which consumes the value once).
-    pub fn unwrap_or(self, default: T) -> PipelineBuilder<In, T, UnwrapOrOptionNode<Chain, T>>
+    pub fn unwrap_or(self, default: T) -> PipelineChain<In, T, UnwrapOrOptionNode<Chain, T>>
     where
         T: Clone,
     {
-        PipelineBuilder {
+        PipelineChain {
             chain: UnwrapOrOptionNode {
                 prev: self.chain,
                 default,
@@ -2936,8 +2936,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, T, UnwrapOrElseOptionNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, T, UnwrapOrElseOptionNode<Chain, S::Step>> {
+        PipelineChain {
             chain: UnwrapOrElseOptionNode {
                 prev: self.chain,
                 producer: f.into_producer(registry),
@@ -2948,11 +2948,11 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineBuilder<In, Option<T>
 }
 
 // =============================================================================
-// Result helpers — PipelineBuilder<In, Result<T, E>, Chain>
+// Result helpers — PipelineChain<In, Result<T, E>, Chain>
 // =============================================================================
 
 impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
-    PipelineBuilder<In, Result<T, E>, Chain>
+    PipelineChain<In, Result<T, E>, Chain>
 {
     // -- IntoStep-based (hot path) -------------------------------------------
 
@@ -2961,8 +2961,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<U, E>, MapResultNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<U, E>, MapResultNode<Chain, S::Step>> {
+        PipelineChain {
             chain: MapResultNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -2976,8 +2976,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<U, E>, AndThenResultNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<U, E>, AndThenResultNode<Chain, S::Step>> {
+        PipelineChain {
             chain: AndThenResultNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -2994,8 +2994,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, CatchNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Option<T>, CatchNode<Chain, S::Step>> {
+        PipelineChain {
             chain: CatchNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -3011,8 +3011,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E2>, MapErrNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<T, E2>, MapErrNode<Chain, S::Step>> {
+        PipelineChain {
             chain: MapErrNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -3026,8 +3026,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E2>, OrElseNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<T, E2>, OrElseNode<Chain, S::Step>> {
+        PipelineChain {
             chain: OrElseNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -3041,8 +3041,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E>, InspectResultNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<T, E>, InspectResultNode<Chain, S::Step>> {
+        PipelineChain {
             chain: InspectResultNode {
                 prev: self.chain,
                 step: f.into_ref_step(registry),
@@ -3056,8 +3056,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E>, InspectErrNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, Result<T, E>, InspectErrNode<Chain, S::Step>> {
+        PipelineChain {
             chain: InspectErrNode {
                 prev: self.chain,
                 step: f.into_ref_step(registry),
@@ -3067,8 +3067,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
     }
 
     /// Discard error, enter Option land. std: `Result::ok`
-    pub fn ok(self) -> PipelineBuilder<In, Option<T>, OkResultNode<Chain>> {
-        PipelineBuilder {
+    pub fn ok(self) -> PipelineChain<In, Option<T>, OkResultNode<Chain>> {
+        PipelineChain {
             chain: OkResultNode { prev: self.chain },
             _marker: PhantomData,
         }
@@ -3079,11 +3079,11 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
     /// `Clone` required because the pipeline may run many times —
     /// the default is cloned on each `Err` invocation (unlike
     /// std's `unwrap_or` which consumes the value once).
-    pub fn unwrap_or(self, default: T) -> PipelineBuilder<In, T, UnwrapOrResultNode<Chain, T>>
+    pub fn unwrap_or(self, default: T) -> PipelineChain<In, T, UnwrapOrResultNode<Chain, T>>
     where
         T: Clone,
     {
-        PipelineBuilder {
+        PipelineChain {
             chain: UnwrapOrResultNode {
                 prev: self.chain,
                 default,
@@ -3097,8 +3097,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, T, UnwrapOrElseResultNode<Chain, S::Step>> {
-        PipelineBuilder {
+    ) -> PipelineChain<In, T, UnwrapOrElseResultNode<Chain, S::Step>> {
+        PipelineChain {
             chain: UnwrapOrElseResultNode {
                 prev: self.chain,
                 step: f.into_step(registry),
@@ -3112,7 +3112,7 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
 // PipelineOutput — marker trait for build()
 // =============================================================================
 
-/// Marker trait restricting [`PipelineBuilder::build`] to pipelines
+/// Marker trait restricting [`PipelineChain::build`] to pipelines
 /// that produce `()`.
 ///
 /// If your pipeline produces a value, add a final `.then()` that
@@ -3130,7 +3130,7 @@ impl PipelineOutput for Option<()> {}
 // build — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<In, Chain: ChainCall<In, Out = ()>> PipelineBuilder<In, (), Chain> {
+impl<In, Chain: ChainCall<In, Out = ()>> PipelineChain<In, (), Chain> {
     /// Finalize the pipeline into a [`Pipeline`].
     ///
     /// The returned pipeline is a concrete, monomorphized type — no boxing,
@@ -3147,7 +3147,7 @@ impl<In, Chain: ChainCall<In, Out = ()>> PipelineBuilder<In, (), Chain> {
     }
 }
 
-impl<In, Chain: ChainCall<In, Out = Option<()>>> PipelineBuilder<In, Option<()>, Chain> {
+impl<In, Chain: ChainCall<In, Out = Option<()>>> PipelineChain<In, Option<()>, Chain> {
     /// Finalize the pipeline into a [`Pipeline`], discarding the `Option<()>`.
     ///
     /// Pipelines ending with `Option<()>` (e.g. after `.map()` on an
@@ -3165,11 +3165,11 @@ impl<In, Chain: ChainCall<In, Out = Option<()>>> PipelineBuilder<In, Option<()>,
 // =============================================================================
 
 impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>>
-    PipelineBuilder<In, Out, Chain>
+    PipelineChain<In, Out, Chain>
 {
     /// Finalize into a [`BatchPipeline`] with a pre-allocated input buffer.
     ///
-    /// Same pipeline chain as [`build`](PipelineBuilder::build), but the
+    /// Same pipeline chain as [`build`](PipelineChain::build), but the
     /// pipeline owns an input buffer that drivers fill between dispatch
     /// cycles. Each call to [`BatchPipeline::run`] drains the buffer,
     /// running every item through the chain independently.
@@ -3194,7 +3194,7 @@ impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>>
 
 /// Built step pipeline implementing [`Handler<E>`](crate::Handler).
 ///
-/// Created by [`PipelineBuilder::build`]. The entire pipeline chain is
+/// Created by [`PipelineChain::build`]. The entire pipeline chain is
 /// monomorphized at compile time — no boxing, no virtual dispatch.
 /// Call `.run()` directly for zero-cost execution, or wrap in
 /// `Box<dyn Handler<E>>` when you need type erasure (single box).
@@ -3218,7 +3218,7 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 
 /// Batch pipeline that owns a pre-allocated input buffer.
 ///
-/// Created by [`PipelineBuilder::build_batch`]. Each item flows through
+/// Created by [`PipelineChain::build_batch`]. Each item flows through
 /// the full pipeline chain independently — the same per-item `Option`
 /// and `Result` flow control as [`Pipeline`]. Errors are handled inline
 /// (via `.catch()`, `.unwrap_or()`, etc.) and the batch continues to
@@ -3227,7 +3227,7 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder};
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(0);
@@ -3238,7 +3238,7 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 /// }
 ///
 /// let r = world.registry_mut();
-/// let mut batch = PipelineStart::<u32>::new()
+/// let mut batch = PipelineBuilder::<u32>::new()
 ///     .then(accumulate, r)
 ///     .build_batch(64);
 ///
@@ -3332,7 +3332,7 @@ mod tests {
     fn step_pure_transform() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(|x: u32| x as u64 * 2, r);
+        let mut p = PipelineBuilder::<u32>::new().then(|x: u32| x as u64 * 2, r);
         assert_eq!(p.run(&mut world, 5), 10u64);
     }
 
@@ -3347,7 +3347,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(multiply, r);
+        let mut p = PipelineBuilder::<u32>::new().then(multiply, r);
         assert_eq!(p.run(&mut world, 5), 50);
     }
 
@@ -3362,7 +3362,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(accumulate, r);
+        let mut p = PipelineBuilder::<u32>::new().then(accumulate, r);
         p.run(&mut world, 10);
         p.run(&mut world, 5);
         assert_eq!(*world.resource::<u64>(), 15);
@@ -3380,7 +3380,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(conditional, r);
+        let mut p = PipelineBuilder::<u32>::new().then(conditional, r);
         assert_eq!(p.run(&mut world, 5), 50);
     }
 
@@ -3395,7 +3395,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(double, r)
             .then(|val: u64| val + 1, r);
         assert_eq!(p.run(&mut world, 5), 11); // 2*5 + 1
@@ -3416,7 +3416,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .map(add_factor, r);
         assert_eq!(p.run(&mut world, 5), Some(15));
@@ -3434,7 +3434,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .map(mark, r);
         assert_eq!(p.run(&mut world, 5), None);
@@ -3453,7 +3453,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .and_then(check, r);
         assert_eq!(p.run(&mut world, 20), Some(20));
@@ -3471,7 +3471,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .and_then(check, r);
         assert_eq!(p.run(&mut world, 5), None);
@@ -3484,7 +3484,7 @@ mod tests {
         let mut world = wb.build();
 
         let r = world.registry();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .on_none(|w: &mut World| {
                 *w.resource_mut::<bool>() = true;
@@ -3497,7 +3497,7 @@ mod tests {
     fn option_filter_keeps() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .filter(|x: &u32| *x > 3, r);
         assert_eq!(p.run(&mut world, 5), Some(5));
@@ -3507,7 +3507,7 @@ mod tests {
     fn option_filter_drops() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .filter(|x: &u32| *x > 10, r);
         assert_eq!(p.run(&mut world, 5), None);
@@ -3528,7 +3528,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, String> { Ok(x) }, r)
             .map(add_factor, r);
         assert_eq!(p.run(&mut world, 5), Ok(15));
@@ -3546,7 +3546,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, String> { Err("fail".into()) }, r)
             .map(mark, r);
         assert!(p.run(&mut world, 5).is_err());
@@ -3564,7 +3564,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, String> { Err("caught".into()) }, r)
             .catch(log_error, r);
         assert_eq!(p.run(&mut world, 0), None);
@@ -3582,7 +3582,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, String> { Ok(x) }, r)
             .catch(log_error, r);
         assert_eq!(p.run(&mut world, 5), Some(5));
@@ -3604,7 +3604,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut pipeline = PipelineStart::<u32>::new().then(accumulate, r).build();
+        let mut pipeline = PipelineBuilder::<u32>::new().then(accumulate, r).build();
 
         pipeline.run(&mut world, 10);
         pipeline.run(&mut world, 5);
@@ -3622,7 +3622,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(multiply, r);
+        let mut p = PipelineBuilder::<u32>::new().then(multiply, r);
         let result: u64 = p.run(&mut world, 7);
         assert_eq!(result, 21);
     }
@@ -3641,7 +3641,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let _p = PipelineStart::<u32>::new().then(needs_u64, r);
+        let _p = PipelineBuilder::<u32>::new().then(needs_u64, r);
     }
 
     // =========================================================================
@@ -3661,7 +3661,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let _p = PipelineStart::<u32>::new().then(bad, r);
+        let _p = PipelineBuilder::<u32>::new().then(bad, r);
     }
 
     // =========================================================================
@@ -3680,7 +3680,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(count, r);
+        let mut p = PipelineBuilder::<u32>::new().then(count, r);
         p.run(&mut world, 0);
         p.run(&mut world, 0);
         p.run(&mut world, 0);
@@ -3695,7 +3695,7 @@ mod tests {
     fn option_unwrap_or_some() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .unwrap_or(99);
         assert_eq!(p.run(&mut world, 5), 5);
@@ -3705,7 +3705,7 @@ mod tests {
     fn option_unwrap_or_none() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .unwrap_or(99);
         assert_eq!(p.run(&mut world, 5), 99);
@@ -3715,7 +3715,7 @@ mod tests {
     fn option_unwrap_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .unwrap_or_else(|| 42, r);
         assert_eq!(p.run(&mut world, 0), 42);
@@ -3725,7 +3725,7 @@ mod tests {
     fn option_ok_or() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .ok_or("missing");
         assert_eq!(p.run(&mut world, 0), Err("missing"));
@@ -3735,7 +3735,7 @@ mod tests {
     fn option_ok_or_some() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .ok_or("missing");
         assert_eq!(p.run(&mut world, 7), Ok(7));
@@ -3745,7 +3745,7 @@ mod tests {
     fn option_ok_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .ok_or_else(|| "computed", r);
         assert_eq!(p.run(&mut world, 0), Err("computed"));
@@ -3757,7 +3757,7 @@ mod tests {
         wb.register::<u64>(0);
         let mut world = wb.build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .inspect(|_val: &u32| {}, r);
         // inspect should pass through the value unchanged.
@@ -3772,7 +3772,7 @@ mod tests {
     fn result_map_err() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, i32> { Err(-1) }, r)
             .map_err(|e: i32| e.to_string(), r);
         assert_eq!(p.run(&mut world, 0), Err("-1".to_string()));
@@ -3782,7 +3782,7 @@ mod tests {
     fn result_map_err_ok_passthrough() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, i32> { Ok(x) }, r)
             .map_err(|e: i32| e.to_string(), r);
         assert_eq!(p.run(&mut world, 5), Ok(5));
@@ -3792,7 +3792,7 @@ mod tests {
     fn result_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("fail") }, r)
             .or_else(|_e: &str| Ok::<u32, &str>(42), r);
         assert_eq!(p.run(&mut world, 0), Ok(42));
@@ -3802,7 +3802,7 @@ mod tests {
     fn result_inspect_passes_through() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, &str> { Ok(x) }, r)
             .inspect(|_val: &u32| {}, r);
         // inspect should pass through Ok unchanged.
@@ -3813,7 +3813,7 @@ mod tests {
     fn result_inspect_err_passes_through() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("bad") }, r)
             .inspect_err(|_e: &&str| {}, r);
         // inspect_err should pass through Err unchanged.
@@ -3824,7 +3824,7 @@ mod tests {
     fn result_ok_converts() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, &str> { Ok(x) }, r)
             .ok();
         assert_eq!(p.run(&mut world, 5), Some(5));
@@ -3834,7 +3834,7 @@ mod tests {
     fn result_ok_drops_err() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("gone") }, r)
             .ok();
         assert_eq!(p.run(&mut world, 0), None);
@@ -3844,7 +3844,7 @@ mod tests {
     fn result_unwrap_or() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("x") }, r)
             .unwrap_or(99);
         assert_eq!(p.run(&mut world, 0), 99);
@@ -3854,7 +3854,7 @@ mod tests {
     fn result_unwrap_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, i32> { Err(-5) }, r)
             .unwrap_or_else(|e: i32| e.unsigned_abs(), r);
         assert_eq!(p.run(&mut world, 0), 5);
@@ -3875,7 +3875,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(accumulate, r)
             .build_batch(16);
 
@@ -3890,7 +3890,7 @@ mod tests {
     fn batch_retains_allocation() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(|_x: u32| {}, r)
             .build_batch(64);
 
@@ -3912,7 +3912,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(accumulate, r)
             .build_batch(16);
 
@@ -3940,7 +3940,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(validate, r)
             .catch(count_errors, r)
             .map(accumulate, r)
@@ -3965,7 +3965,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(
                 |x: u32| -> Option<u32> { if x > 2 { Some(x) } else { None } },
                 r,
@@ -3990,7 +3990,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(accumulate, r)
             .build_batch(16);
 
@@ -4015,7 +4015,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(multiply_and_collect, r)
             .build_batch(16);
 
@@ -4053,7 +4053,7 @@ mod tests {
         // val before p — val must outlive the pipeline's In = &u32
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_identity, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_identity, r).cloned();
         assert_eq!(p.run(&mut world, &val), 42u32);
     }
 
@@ -4062,7 +4062,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_some, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_some, r).cloned();
         assert_eq!(p.run(&mut world, &val), Some(42u32));
     }
 
@@ -4071,7 +4071,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_none, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_none, r).cloned();
         assert_eq!(p.run(&mut world, &val), None);
     }
 
@@ -4080,7 +4080,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_ok, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_ok, r).cloned();
         assert_eq!(p.run(&mut world, &val), Ok(42u32));
     }
 
@@ -4089,7 +4089,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_err, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_err, r).cloned();
         assert_eq!(p.run(&mut world, &val), Err("fail".into()));
     }
 
@@ -4108,9 +4108,9 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let handler = PipelineStart::<u32>::new().then(store, r).build();
+        let handler = PipelineBuilder::<u32>::new().then(store, r).build();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x * 2, r)
             .dispatch(handler)
             .build();
@@ -4138,7 +4138,7 @@ mod tests {
         let fan = fan_out!(h1, h2);
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x * 2, r)
             .dispatch(fan)
             .build();
@@ -4163,7 +4163,7 @@ mod tests {
         broadcast.add(write_u64.into_handler(world.registry()));
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x + 1, r)
             .dispatch(broadcast)
             .build();
@@ -4183,10 +4183,10 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let inner = PipelineStart::<u32>::new().then(store, r).build();
+        let inner = PipelineBuilder::<u32>::new().then(store, r).build();
 
         let mut pipeline: Box<dyn Handler<u32>> = Box::new(
-            PipelineStart::<u32>::new()
+            PipelineBuilder::<u32>::new()
                 .then(|x: u32| x + 1, r)
                 .dispatch(inner)
                 .build(),
@@ -4208,7 +4208,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .guard(|v: &u64| *v > 3, reg)
             .then(sink, reg);
@@ -4227,7 +4227,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .guard(|v: &u64| *v > 10, reg)
             .then(sink, reg);
@@ -4249,7 +4249,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 * 2, reg)
             .tap(|w: &mut World, val: &u64| {
                 *w.resource_mut::<bool>() = *val == 10;
@@ -4273,10 +4273,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = PipelineStart::new().then(|x: u64| x * 2, reg);
-        let arm_f = PipelineStart::new().then(|x: u64| x * 3, reg);
+        let arm_t = PipelineBuilder::new().then(|x: u64| x * 2, reg);
+        let arm_f = PipelineBuilder::new().then(|x: u64| x * 3, reg);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .route(|v: &u64| *v > 3, reg, arm_t, arm_f)
             .then(sink, reg);
@@ -4295,10 +4295,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = PipelineStart::new().then(|x: u64| x * 2, reg);
-        let arm_f = PipelineStart::new().then(|x: u64| x * 3, reg);
+        let arm_t = PipelineBuilder::new().then(|x: u64| x * 2, reg);
+        let arm_f = PipelineBuilder::new().then(|x: u64| x * 3, reg);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .route(|v: &u64| *v > 10, reg, arm_t, arm_f)
             .then(sink, reg);
@@ -4318,15 +4318,15 @@ mod tests {
         let reg = world.registry();
 
         // N-ary via nesting: <5 → +100, 5..10 → +200, >=10 → +300
-        let inner_t = PipelineStart::new().then(|x: u64| x + 200, reg);
-        let inner_f = PipelineStart::new().then(|x: u64| x + 300, reg);
-        let outer_t = PipelineStart::new().then(|x: u64| x + 100, reg);
+        let inner_t = PipelineBuilder::new().then(|x: u64| x + 200, reg);
+        let inner_f = PipelineBuilder::new().then(|x: u64| x + 300, reg);
+        let outer_t = PipelineBuilder::new().then(|x: u64| x + 100, reg);
         let outer_f =
-            PipelineStart::new()
+            PipelineBuilder::new()
                 .then(|x: u64| x, reg)
                 .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .route(|v: &u64| *v < 5, reg, outer_t, outer_f)
             .then(sink, reg);
@@ -4345,7 +4345,7 @@ mod tests {
 
     #[test]
     fn pipeline_tee_side_effect_chain() {
-        use crate::dag::DagArmStart;
+        use crate::dag::DagArmSeed;
 
         fn log_step(mut counter: ResMut<u32>, _val: &u64) {
             *counter += 1;
@@ -4359,9 +4359,9 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let side = DagArmStart::new().then(log_step, reg);
+        let side = DagArmSeed::new().then(log_step, reg);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 * 2, reg)
             .tee(side)
             .then(sink, reg);
@@ -4389,7 +4389,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 / 2, reg)
             .dedup()
             .then(sink, reg);
@@ -4416,7 +4416,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .not()
             .then(sink, reg);
@@ -4438,7 +4438,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .and(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg);
@@ -4461,7 +4461,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .or(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg);
@@ -4484,7 +4484,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .xor(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg);
@@ -4501,7 +4501,7 @@ mod tests {
     fn splat2_closure_on_start() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u64)>::new()
+        let mut p = PipelineBuilder::<(u32, u64)>::new()
             .splat()
             .then(|a: u32, b: u64| a as u64 + b, r);
         assert_eq!(p.run(&mut world, (3, 7)), 10);
@@ -4518,7 +4518,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u32)>::new().splat().then(process, r);
+        let mut p = PipelineBuilder::<(u32, u32)>::new().splat().then(process, r);
         assert_eq!(p.run(&mut world, (3, 7)), 110);
     }
 
@@ -4526,7 +4526,7 @@ mod tests {
     fn splat2_mid_chain() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| (x, x * 2), r)
             .splat()
             .then(|a: u32, b: u32| a as u64 + b as u64, r);
@@ -4537,7 +4537,7 @@ mod tests {
     fn splat3_closure_on_start() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u32, u32)>::new()
+        let mut p = PipelineBuilder::<(u32, u32, u32)>::new()
             .splat()
             .then(|a: u32, b: u32, c: u32| a + b + c, r);
         assert_eq!(p.run(&mut world, (1, 2, 3)), 6);
@@ -4554,7 +4554,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u32, u32)>::new()
+        let mut p = PipelineBuilder::<(u32, u32, u32)>::new()
             .splat()
             .then(process, r);
         assert_eq!(p.run(&mut world, (1, 2, 3)), 60);
@@ -4564,7 +4564,7 @@ mod tests {
     fn splat4_mid_chain() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| (x, x + 1, x + 2, x + 3), r)
             .splat()
             .then(|a: u32, b: u32, c: u32, d: u32| (a + b + c + d) as u64, r);
@@ -4575,7 +4575,7 @@ mod tests {
     fn splat5_closure_on_start() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u8, u8, u8, u8, u8)>::new().splat().then(
+        let mut p = PipelineBuilder::<(u8, u8, u8, u8, u8)>::new().splat().then(
             |a: u8, b: u8, c: u8, d: u8, e: u8| {
                 (a as u64) + (b as u64) + (c as u64) + (d as u64) + (e as u64)
             },
@@ -4595,7 +4595,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut pipeline = PipelineStart::<(u32, u32)>::new()
+        let mut pipeline = PipelineBuilder::<(u32, u32)>::new()
             .splat()
             .then(store, r)
             .build();
@@ -4615,7 +4615,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<(u32, u32)>::new()
+        let mut batch = PipelineBuilder::<(u32, u32)>::new()
             .splat()
             .then(accumulate, r)
             .build_batch(8);
@@ -4640,7 +4640,7 @@ mod tests {
 
         let r = world.registry_mut();
         // Should panic on duplicate ResMut<u64>
-        let _ = PipelineStart::<(u32, u32)>::new().splat().then(bad, r);
+        let _ = PipelineBuilder::<(u32, u32)>::new().splat().then(bad, r);
     }
 
     // -- Then (previously switch) --
@@ -4659,7 +4659,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut pipeline = PipelineStart::<u32>::new()
+        let mut pipeline = PipelineBuilder::<u32>::new()
             .then(double, reg)
             .then(|val: u64| if val > 10 { val * 100 } else { val + 1 }, reg)
             .then(sink, reg)
@@ -4683,7 +4683,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut pipeline = PipelineStart::<u32>::new()
+        let mut pipeline = PipelineBuilder::<u32>::new()
             .then(
                 |val: u32| match val % 3 {
                     0 => val as u64 + 100,
@@ -4726,7 +4726,7 @@ mod tests {
         let mut arm_offset = resolve_step(add_offset, reg);
         let mut arm_double = resolve_step(plain_double, reg);
 
-        let mut pipeline = PipelineStart::<u32>::new()
+        let mut pipeline = PipelineBuilder::<u32>::new()
             .then(
                 move |world: &mut World, val: u32| {
                     if val > 10 {
@@ -4758,7 +4758,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(
                 |val: u32| {
                     if val % 2 == 0 {
@@ -4795,7 +4795,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .guard(above_threshold, reg)
             .then(sink, reg);
@@ -4821,7 +4821,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u64> { Some(x as u64) }, reg)
             .filter(is_allowed, reg)
             .map(count, reg)
@@ -4843,7 +4843,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u64> { Some(x as u64) }, reg)
             .inspect(log_value, reg)
             .unwrap_or(0);
@@ -4868,7 +4868,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .tap(observe, reg)
             .then(sink, reg);
@@ -4890,7 +4890,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| true, reg)
             .and(check_enabled, reg);
 
@@ -4910,7 +4910,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| false, reg)
             .or(check_enabled, reg);
 
@@ -4930,7 +4930,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { if x > 5 { Some(x) } else { None } }, reg)
             .on_none(log_miss, reg)
             .unwrap_or(0);
@@ -4951,7 +4951,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { if x > 0 { Some(x) } else { None } }, reg)
             .ok_or_else(make_error, reg);
 
@@ -4972,7 +4972,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u64> { if x > 0 { Some(x as u64) } else { None } }, reg)
             .unwrap_or_else(fallback, reg);
 
@@ -4998,7 +4998,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, String> {
                 if x > 0 { Ok(x) } else { Err("zero".into()) }
             }, reg)
@@ -5021,7 +5021,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: u64| {
                 *acc += val;
@@ -5049,7 +5049,7 @@ mod tests {
             if *acc > *limit { Some(*acc) } else { None }
         }
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, threshold_scan, reg);
 
@@ -5065,7 +5065,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |world: &mut World, acc: &mut u64, val: u64| {
                 let factor = *world.resource::<u64>();
@@ -5082,7 +5082,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: u64| -> Option<u64> {
                 *acc += val;
@@ -5099,7 +5099,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .scan(0u64, |acc: &mut u64, val: u64| {
                 *acc += val;
                 *acc
@@ -5119,7 +5119,7 @@ mod tests {
 
         fn store(mut out: ResMut<u64>, val: u64) { *out = val; }
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: u64| {
                 *acc += val;
@@ -5159,7 +5159,7 @@ mod tests {
         }
 
         // .map(store) on Option<u32> produces Option<()> — build() must work
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(check, r)
             .map(store, r)
             .build();
@@ -5187,7 +5187,7 @@ mod tests {
         }
 
         let mut h: Box<dyn Handler<u32>> = Box::new(
-            PipelineStart::<u32>::new()
+            PipelineBuilder::<u32>::new()
                 .then(double, r)
                 .map(store, r)
                 .build(),
@@ -5219,7 +5219,7 @@ mod tests {
         // Matches real-world usage: pipeline lives long, events come and go.
         let msg = vec![1u8, 2, 3];
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&[u8]>::new()
+        let mut p = PipelineBuilder::<&[u8]>::new()
             .then(decode, r)
             .then(store, r)
             .build();
@@ -5244,7 +5244,7 @@ mod tests {
         let empty = vec![];
         let data = vec![1u8, 2, 3];
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&[u8]>::new()
+        let mut p = PipelineBuilder::<&[u8]>::new()
             .then(decode, r)
             .map(store, r)
             .build();

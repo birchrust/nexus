@@ -12,7 +12,7 @@
 
 use std::hint::black_box;
 
-use nexus_rt::{IntoCallback, IntoHandler, Local, PipelineStart, Res, ResMut, WorldBuilder};
+use nexus_rt::{IntoCallback, IntoHandler, Local, PipelineBuilder, Res, ResMut, WorldBuilder};
 
 // =============================================================================
 // Bench infrastructure (same as perf_pipeline.rs)
@@ -190,12 +190,12 @@ fn main() {
     print_header("into_step Construction (cycles)");
 
     bench_batched(".then() 2-param (Res + ResMut)", || {
-        let _ = black_box(PipelineStart::<u32>::new().then(stage_2p, r));
+        let _ = black_box(PipelineBuilder::<u32>::new().then(stage_2p, r));
         0
     });
 
     bench_batched(".then() 4-param", || {
-        let _ = black_box(PipelineStart::<u32>::new().then(stage_4p, r));
+        let _ = black_box(PipelineBuilder::<u32>::new().then(stage_4p, r));
         0
     });
 

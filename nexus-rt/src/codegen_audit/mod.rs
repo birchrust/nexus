@@ -1,5 +1,5 @@
 // Builder return types are necessarily complex — each combinator returns
-// PipelineBuilder<In, Out, impl FnMut(...)>. Same pattern as iterator adapters.
+// PipelineChain<In, Out, impl FnMut(...)>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
 // Audit functions intentionally have similar structure.
 #![allow(clippy::too_many_lines)]

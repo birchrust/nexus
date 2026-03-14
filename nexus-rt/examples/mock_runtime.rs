@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 
 use nexus_rt::{
-    Handler, Installer, IntoHandler, Local, PipelineStart, Plugin, Res, ResMut, World, WorldBuilder,
+    Handler, Installer, IntoHandler, Local, PipelineBuilder, Plugin, Res, ResMut, World, WorldBuilder,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ impl Installer for MarketDataInstaller {
 
     fn install(self, world: &mut WorldBuilder) -> MarketDataHandle {
         let r = world.registry_mut();
-        let pipeline = PipelineStart::<MarketTick>::new()
+        let pipeline = PipelineBuilder::<MarketTick>::new()
             .then(check_signals, r)
             .then(update_price, r)
             .then(count_trades, r)
