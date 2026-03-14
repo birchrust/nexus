@@ -33,7 +33,7 @@ Hyperthreads share L1/L2 cache and give artificially low latency numbers.
 - **Histogram**: hdrhistogram for percentile distribution
 - **Warmup**: 10,000 iterations before measurement
 - **Samples**: 100,000 latency samples
-- **Throughput**: 10M messages, measures total time
+- **Throughput**: 1M messages for SPSC/MPSC, 10M for SPMC fan-out
 
 ## Baseline Results
 

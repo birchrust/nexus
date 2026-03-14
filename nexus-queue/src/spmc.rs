@@ -165,7 +165,7 @@ struct Slot<T> {
 struct Shared<T> {
     /// Head index - consumers CAS on this to claim slots.
     head: CachePadded<AtomicUsize>,
-    /// Tail index - producer publishes progress here.
+    /// Tail index - written by producer on drop for Shared::drop cleanup.
     tail: CachePadded<AtomicUsize>,
     /// Whether the producer is still alive (for consumer disconnection detection).
     producer_alive: AtomicBool,

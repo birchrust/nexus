@@ -248,20 +248,28 @@ fn throughput_crossbeam(num_consumers: usize) -> f64 {
     received as f64 / elapsed.as_secs_f64()
 }
 
+fn cy_to_ns(cycles: u64, freq_ghz: f64) -> String {
+    if freq_ghz > 0.0 {
+        format!("{:5.1} ns", cycles as f64 / freq_ghz)
+    } else {
+        "   n/a".to_string()
+    }
+}
+
 fn print_hist(name: &str, hist: &Histogram<u64>, freq_ghz: f64) {
     let p50 = hist.value_at_quantile(0.5);
     let p99 = hist.value_at_quantile(0.99);
     let p999 = hist.value_at_quantile(0.999);
 
     println!(
-        "  {}: p50: {:4} cy ({:5.1} ns)   p99: {:4} cy ({:5.1} ns)   p999: {:5} cy ({:6.1} ns)",
+        "  {}: p50: {:4} cy ({})   p99: {:4} cy ({})   p999: {:5} cy ({})",
         name,
         p50,
-        p50 as f64 / freq_ghz,
+        cy_to_ns(p50, freq_ghz),
         p99,
-        p99 as f64 / freq_ghz,
+        cy_to_ns(p99, freq_ghz),
         p999,
-        p999 as f64 / freq_ghz,
+        cy_to_ns(p999, freq_ghz),
     );
 }
 
@@ -269,14 +277,23 @@ fn main() {
     println!("SPMC Queue Benchmark");
     println!("====================\n");
 
-    // Estimate CPU frequency
+    // Estimate CPU frequency from TSC (x86_64 only)
     let start_time = Instant::now();
     let start_tsc = rdtscp();
     thread::sleep(std::time::Duration::from_millis(100));
     let end_tsc = rdtscp();
     let elapsed = start_time.elapsed();
-    let freq_ghz = (end_tsc - start_tsc) as f64 / elapsed.as_nanos() as f64;
-    println!("CPU freq: {:.2} GHz\n", freq_ghz);
+    let tsc_delta = end_tsc.saturating_sub(start_tsc);
+    let freq_ghz = if tsc_delta > 0 {
+        tsc_delta as f64 / elapsed.as_nanos() as f64
+    } else {
+        0.0
+    };
+    if freq_ghz > 0.0 {
+        println!("CPU freq: {:.2} GHz\n", freq_ghz);
+    } else {
+        println!("CPU freq: unavailable (non-x86_64)\n");
+    }
 
     // --- Ping-pong latency ---
     println!("Ping-Pong Latency (single consumer, RTT/2):");
