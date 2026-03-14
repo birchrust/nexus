@@ -34,14 +34,16 @@ use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use crossbeam_utils::CachePadded;
 
 use crate::{LEN_MASK, SKIP_BIT, TryClaimError, align8};
 
-/// Header size in bytes.
-const HEADER_SIZE: usize = 4;
+/// Header size in bytes — one system word (`usize`).
+///
+/// On 64-bit this is 8 bytes, ensuring the payload starts at 8-byte alignment.
+const HEADER_SIZE: usize = std::mem::size_of::<usize>();
 
 /// Creates a bounded MPSC byte ring buffer.
 ///
@@ -138,11 +140,11 @@ impl Producer {
     ///
     /// # Safety Contract
     ///
-    /// `len` must not exceed `0x7FFF_FFFF` (2GB - 1). This is checked with
+    /// `len` must not exceed `LEN_MASK`. This is checked with
     /// `debug_assert!` only.
     #[inline]
     pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, TryClaimError> {
-        debug_assert!(len <= LEN_MASK as usize, "payload too large");
+        debug_assert!(len <= LEN_MASK, "payload too large");
         if len == 0 {
             return Err(TryClaimError::ZeroLength);
         }
@@ -201,11 +203,11 @@ impl Producer {
                 {
                     // We claimed the space. Write padding skip marker.
                     let buffer = self.shared.buffer;
-                    let skip_len = space_to_end as u32 | SKIP_BIT;
+                    let skip_len = space_to_end | SKIP_BIT;
 
                     // Release fence before writing skip marker
                     fence(Ordering::Release);
-                    let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicU32>();
+                    let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicUsize>();
                     unsafe { &*len_ptr }.store(skip_len, Ordering::Relaxed);
 
                     return Ok(WriteClaim {
@@ -293,11 +295,11 @@ impl WriteClaim<'_> {
     #[inline]
     fn do_commit(&mut self) {
         let buffer = self.shared.buffer;
-        let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicU32>();
+        let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicUsize>();
 
         // Release fence: ensures payload writes are visible before len store
         fence(Ordering::Release);
-        unsafe { &*len_ptr }.store(self.len as u32, Ordering::Relaxed);
+        unsafe { &*len_ptr }.store(self.len, Ordering::Relaxed);
     }
 
     /// Returns the length of the payload region.
@@ -338,8 +340,8 @@ impl Drop for WriteClaim<'_> {
         if !self.committed {
             // Write skip marker so consumer can advance past this region
             let buffer = self.shared.buffer;
-            let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicU32>();
-            let skip_len = self.record_size as u32 | SKIP_BIT;
+            let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicUsize>();
+            let skip_len = self.record_size | SKIP_BIT;
 
             fence(Ordering::Release);
             unsafe { &*len_ptr }.store(skip_len, Ordering::Relaxed);
@@ -379,7 +381,7 @@ impl Consumer {
 
         loop {
             let offset = self.head & self.shared.mask;
-            let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicU32>();
+            let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicUsize>();
 
             // Relaxed atomic load, then Acquire fence for payload visibility
             let len_raw = unsafe { &*len_ptr }.load(Ordering::Relaxed);
@@ -392,7 +394,7 @@ impl Consumer {
 
             if len_raw & SKIP_BIT != 0 {
                 // Skip marker: zero the region and advance
-                let skip_size = (len_raw & LEN_MASK) as usize;
+                let skip_size = len_raw & LEN_MASK;
                 // Zero payload first, then stamp last (mirrors write path)
                 if skip_size > HEADER_SIZE {
                     unsafe {
@@ -414,7 +416,7 @@ impl Consumer {
             }
 
             // Valid record
-            let len = len_raw as usize;
+            let len = len_raw;
             let record_size = align8(HEADER_SIZE + len);
 
             return Some(ReadClaim {
@@ -499,7 +501,7 @@ impl Drop for ReadClaim<'_> {
         }
         // Ensure payload zeroing completes before clearing stamp
         fence(Ordering::Release);
-        let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicU32>();
+        let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicUsize>();
         unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
         // Advance head

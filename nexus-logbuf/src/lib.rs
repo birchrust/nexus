@@ -81,12 +81,13 @@ pub(crate) const fn align8(n: usize) -> usize {
 
 /// Record header constants.
 ///
-/// The len field uses the high bit as a skip marker:
+/// The len field is a `usize` (system word) and uses the high bit as a skip
+/// marker:
 /// - `len == 0`: Not committed, consumer waits
 /// - `len > 0, high bit clear`: Committed record, payload is `len` bytes
 /// - `len high bit set`: Skip marker, advance by `len & LEN_MASK` bytes
-pub(crate) const SKIP_BIT: u32 = 0x8000_0000;
-pub(crate) const LEN_MASK: u32 = 0x7FFF_FFFF;
+pub(crate) const SKIP_BIT: usize = 1 << (usize::BITS - 1);
+pub(crate) const LEN_MASK: usize = !SKIP_BIT;
 
 #[cfg(test)]
 mod tests {
