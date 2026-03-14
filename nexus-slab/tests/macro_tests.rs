@@ -88,7 +88,7 @@ fn test_into_slot_and_from_slot() {
 
     let slot = order_alloc::BoxSlot::try_new(Order::new(123, 456.78)).unwrap();
 
-    // into_slot() returns the raw Slot<T> for manual management
+    // into_slot() returns the raw RawSlot<T> for manual management
     let raw_slot = slot.into_slot();
     let ptr = raw_slot.as_ptr();
 
@@ -203,7 +203,7 @@ fn test_drop_not_called_after_into_slot() {
         .expect("init should succeed");
 
     let slot = drop_leak_test::alloc::BoxSlot::try_new(drop_leak_test::Tracker(1)).unwrap();
-    let raw_slot = slot.into_slot(); // into_slot() returns raw Slot<T>, discarding RAII
+    let raw_slot = slot.into_slot(); // into_slot() returns raw RawSlot<T>, discarding RAII
 
     assert_eq!(drop_leak_test::count(), 0);
 
@@ -303,7 +303,7 @@ fn test_unbounded_basic_alloc_dealloc() {
 
     assert!(unbounded_order_alloc::Allocator::is_initialized());
 
-    // Unbounded Slot::new always succeeds (no Option)
+    // Unbounded BoxSlot::new always succeeds (no Option)
     let slot = unbounded_order_alloc::BoxSlot::new(Order::new(1, 100.0));
 
     // Deref works
@@ -349,7 +349,7 @@ fn test_unbounded_into_slot_and_from_slot() {
 
     let slot = unbounded_order_alloc::BoxSlot::new(Order::new(123, 456.78));
 
-    // into_slot() returns the raw Slot<T> for manual management
+    // into_slot() returns the raw RawSlot<T> for manual management
     let raw_slot = slot.into_slot();
     let ptr = raw_slot.as_ptr();
 

@@ -19,7 +19,7 @@
 //! specific call sites.
 
 use nexus_slab::Full;
-use nexus_slab::shared::{Slot, SlotCell};
+use nexus_slab::shared::{RawSlot, SlotCell};
 use nexus_slab::{bounded, unbounded};
 
 // Re-export concrete slab types so downstream crates (nexus-rt) can name
@@ -62,7 +62,7 @@ pub unsafe trait SlabStore {
     ///
     /// Panics if the store is at capacity (bounded slabs only). This is a
     /// capacity planning error — size your slabs for peak load.
-    fn alloc(&self, value: Self::Item) -> Slot<Self::Item>;
+    fn alloc(&self, value: Self::Item) -> RawSlot<Self::Item>;
 
     /// Drops the value and returns the slot to the freelist.
     ///
@@ -70,7 +70,7 @@ pub unsafe trait SlabStore {
     ///
     /// - `slot` must have been allocated from this store.
     /// - No references to the slot's value may exist.
-    unsafe fn free(&self, slot: Slot<Self::Item>);
+    unsafe fn free(&self, slot: RawSlot<Self::Item>);
 
     /// Moves the value out and returns the slot to the freelist.
     ///
@@ -78,7 +78,7 @@ pub unsafe trait SlabStore {
     ///
     /// - `slot` must have been allocated from this store.
     /// - No references to the slot's value may exist.
-    unsafe fn take(&self, slot: Slot<Self::Item>) -> Self::Item;
+    unsafe fn take(&self, slot: RawSlot<Self::Item>) -> Self::Item;
 
     /// Returns a slot to the freelist by raw pointer.
     ///
@@ -100,7 +100,7 @@ pub trait BoundedStore: SlabStore {
     /// Attempts to allocate a slot with the given value.
     ///
     /// Returns `Err(Full(value))` if storage is at capacity.
-    fn try_alloc(&self, value: Self::Item) -> Result<Slot<Self::Item>, Full<Self::Item>>;
+    fn try_alloc(&self, value: Self::Item) -> Result<RawSlot<Self::Item>, Full<Self::Item>>;
 }
 
 // =============================================================================
@@ -114,7 +114,7 @@ unsafe impl<T> SlabStore for bounded::Slab<T> {
     type Item = T;
 
     #[inline]
-    fn alloc(&self, value: T) -> Slot<T> {
+    fn alloc(&self, value: T) -> RawSlot<T> {
         self.try_alloc(value).unwrap_or_else(|full| {
             // Drop the value inside Full, then panic.
             drop(full);
@@ -126,13 +126,13 @@ unsafe impl<T> SlabStore for bounded::Slab<T> {
     }
 
     #[inline]
-    unsafe fn free(&self, slot: Slot<T>) {
+    unsafe fn free(&self, slot: RawSlot<T>) {
         // SAFETY: caller guarantees slot was allocated from this slab
         unsafe { bounded::Slab::free(self, slot) }
     }
 
     #[inline]
-    unsafe fn take(&self, slot: Slot<T>) -> T {
+    unsafe fn take(&self, slot: RawSlot<T>) -> T {
         // SAFETY: caller guarantees slot was allocated from this slab
         unsafe { bounded::Slab::take(self, slot) }
     }
@@ -146,7 +146,7 @@ unsafe impl<T> SlabStore for bounded::Slab<T> {
 
 impl<T> BoundedStore for bounded::Slab<T> {
     #[inline]
-    fn try_alloc(&self, value: T) -> Result<Slot<T>, Full<T>> {
+    fn try_alloc(&self, value: T) -> Result<RawSlot<T>, Full<T>> {
         bounded::Slab::try_alloc(self, value)
     }
 }
@@ -162,18 +162,18 @@ unsafe impl<T> SlabStore for unbounded::Slab<T> {
     type Item = T;
 
     #[inline]
-    fn alloc(&self, value: T) -> Slot<T> {
+    fn alloc(&self, value: T) -> RawSlot<T> {
         unbounded::Slab::alloc(self, value)
     }
 
     #[inline]
-    unsafe fn free(&self, slot: Slot<T>) {
+    unsafe fn free(&self, slot: RawSlot<T>) {
         // SAFETY: caller guarantees slot was allocated from this slab
         unsafe { unbounded::Slab::free(self, slot) }
     }
 
     #[inline]
-    unsafe fn take(&self, slot: Slot<T>) -> T {
+    unsafe fn take(&self, slot: RawSlot<T>) -> T {
         // SAFETY: caller guarantees slot was allocated from this slab
         unsafe { unbounded::Slab::take(self, slot) }
     }
@@ -211,9 +211,11 @@ mod tests {
     #[test]
     fn bounded_try_alloc_graceful() {
         let slab = bounded::Slab::<u64>::with_capacity(1);
-        let _s1 = BoundedStore::try_alloc(&slab, 1).unwrap();
+        let s1 = BoundedStore::try_alloc(&slab, 1).unwrap();
         let err = BoundedStore::try_alloc(&slab, 2).unwrap_err();
         assert_eq!(err.into_inner(), 2);
+        // SAFETY: s1 was allocated from this slab
+        unsafe { SlabStore::free(&slab, s1) };
     }
 
     #[test]

@@ -263,8 +263,8 @@ macro_rules! bounded_allocator {
             }
 
             #[inline]
-            unsafe fn free(slot: $crate::Slot<$ty>) {
-                let slot_ptr = slot.as_ptr();
+            unsafe fn free(slot: $crate::RawSlot<$ty>) {
+                let slot_ptr = slot.into_ptr();
                 // Drop the value in place
                 // SAFETY: Caller guarantees slot is valid and occupied
                 std::ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
@@ -276,8 +276,8 @@ macro_rules! bounded_allocator {
             }
 
             #[inline]
-            unsafe fn take(slot: $crate::Slot<$ty>) -> $ty {
-                let slot_ptr = slot.as_ptr();
+            unsafe fn take(slot: $crate::RawSlot<$ty>) -> $ty {
+                let slot_ptr = slot.into_ptr();
                 // Move the value out
                 // SAFETY: Caller guarantees slot is valid and occupied
                 let value = std::ptr::read((*slot_ptr).value.as_ptr());
@@ -292,7 +292,9 @@ macro_rules! bounded_allocator {
 
         impl $crate::BoundedAlloc for Allocator {
             #[inline]
-            fn try_alloc(value: Self::Item) -> Result<$crate::Slot<$ty>, $crate::alloc::Full<$ty>> {
+            fn try_alloc(
+                value: Self::Item,
+            ) -> Result<$crate::RawSlot<$ty>, $crate::alloc::Full<$ty>> {
                 // Claim slot from freelist — value stays on caller's stack, not captured
                 let slot_ptr = SLAB.with(|slab| {
                     debug_assert!(slab.is_initialized(), "allocator not initialized");
@@ -308,7 +310,7 @@ macro_rules! bounded_allocator {
                                 std::mem::ManuallyDrop::new(std::mem::MaybeUninit::new(value));
                         }
                         // SAFETY: slot_ptr is valid and occupied
-                        Ok(unsafe { $crate::Slot::from_ptr(slot_ptr) })
+                        Ok(unsafe { $crate::RawSlot::from_ptr(slot_ptr) })
                     }
                     None => Err($crate::alloc::Full(value)),
                 }
@@ -502,8 +504,8 @@ macro_rules! unbounded_allocator {
             }
 
             #[inline]
-            unsafe fn free(slot: $crate::Slot<$ty>) {
-                let slot_ptr = slot.as_ptr();
+            unsafe fn free(slot: $crate::RawSlot<$ty>) {
+                let slot_ptr = slot.into_ptr();
                 // Drop the value in place
                 // SAFETY: Caller guarantees slot is valid and occupied
                 std::ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
@@ -515,8 +517,8 @@ macro_rules! unbounded_allocator {
             }
 
             #[inline]
-            unsafe fn take(slot: $crate::Slot<$ty>) -> $ty {
-                let slot_ptr = slot.as_ptr();
+            unsafe fn take(slot: $crate::RawSlot<$ty>) -> $ty {
+                let slot_ptr = slot.into_ptr();
                 // Move the value out
                 // SAFETY: Caller guarantees slot is valid and occupied
                 let value = std::ptr::read((*slot_ptr).value.as_ptr());
@@ -531,7 +533,7 @@ macro_rules! unbounded_allocator {
 
         impl $crate::UnboundedAlloc for Allocator {
             #[inline]
-            fn alloc(value: Self::Item) -> $crate::Slot<$ty> {
+            fn alloc(value: Self::Item) -> $crate::RawSlot<$ty> {
                 // Claim slot from freelist — value stays on caller's stack, not captured
                 // claim_ptr() returns (slot_ptr, chunk_idx), grows if needed
                 let (slot_ptr, _chunk_idx) = SLAB.with(|slab| {
@@ -546,7 +548,7 @@ macro_rules! unbounded_allocator {
                         std::mem::ManuallyDrop::new(std::mem::MaybeUninit::new(value));
                 }
                 // SAFETY: slot_ptr is valid and occupied
-                unsafe { $crate::Slot::from_ptr(slot_ptr) }
+                unsafe { $crate::RawSlot::from_ptr(slot_ptr) }
             }
 
             #[inline]
@@ -564,5 +566,305 @@ macro_rules! unbounded_allocator {
         ///
         /// Type alias for [`alloc::BoxSlot<T, Allocator>`](crate::alloc::BoxSlot).
         pub type BoxSlot = $crate::alloc::BoxSlot<$ty, Allocator>;
+    };
+}
+
+/// Generates a bounded (fixed-capacity) byte slab allocator.
+///
+/// Creates an allocator with fixed-size `N`-byte slots that can store any
+/// type `T` where `size_of::<T>() <= N` and `align_of::<T>() <= 8`.
+///
+/// # Example
+///
+/// ```ignore
+/// mod msg_alloc {
+///     nexus_slab::bounded_byte_allocator!(64);
+/// }
+///
+/// msg_alloc::Allocator::builder().capacity(10_000).build()?;
+///
+/// let order = msg_alloc::BoxSlot::<Order>::try_new(Order { id: 1 })?;
+/// let cancel = msg_alloc::BoxSlot::<Cancel>::try_new(Cancel { id: 2 })?;
+/// ```
+#[macro_export]
+macro_rules! bounded_byte_allocator {
+    ($n:expr) => {
+        use $crate::SlotCell;
+        use $crate::bounded::Slab as BoundedSlab;
+        use $crate::byte::AlignedBytes;
+        use $crate::macros::AlreadyInitialized;
+
+        const _: () = assert!(
+            $n >= 8,
+            "byte slab slot size must be at least 8 (pointer size)"
+        );
+
+        thread_local! {
+            static SLAB: BoundedSlab<AlignedBytes<$n>> = const { BoundedSlab::new() };
+        }
+
+        /// Unit struct providing static methods for allocator lifecycle.
+        #[derive(Clone, Copy)]
+        pub struct Allocator;
+
+        /// Builder for configuring this allocator.
+        pub struct Builder {
+            capacity: Option<usize>,
+        }
+
+        impl Builder {
+            /// Sets the capacity (required).
+            #[inline]
+            pub fn capacity(mut self, capacity: usize) -> Self {
+                self.capacity = Some(capacity);
+                self
+            }
+
+            /// Builds and initializes the allocator.
+            ///
+            /// # Errors
+            ///
+            /// Returns `AlreadyInitialized` if the allocator was already initialized.
+            ///
+            /// # Panics
+            ///
+            /// Panics if capacity was not set.
+            pub fn build(self) -> Result<(), AlreadyInitialized> {
+                let capacity = self.capacity.expect("capacity must be set before build()");
+                SLAB.with(|slab| {
+                    if slab.is_initialized() {
+                        return Err(AlreadyInitialized);
+                    }
+                    slab.init(capacity);
+                    Ok(())
+                })
+            }
+        }
+
+        impl Allocator {
+            /// Returns a builder for configuring the allocator.
+            #[inline]
+            pub fn builder() -> Builder {
+                Builder { capacity: None }
+            }
+        }
+
+        // SAFETY: All operations use TLS freelist with proper union semantics.
+        // Single-threaded by nature of TLS.
+        unsafe impl $crate::Alloc for Allocator {
+            type Item = AlignedBytes<$n>;
+
+            #[inline]
+            fn is_initialized() -> bool {
+                SLAB.with(|slab| slab.is_initialized())
+            }
+
+            #[inline]
+            fn capacity() -> usize {
+                SLAB.with(|slab| slab.capacity())
+            }
+
+            #[inline]
+            unsafe fn free(slot: $crate::RawSlot<AlignedBytes<$n>>) {
+                let slot_ptr = slot.into_ptr();
+                // AlignedBytes is Copy — no drop_in_place needed.
+                // BoxSlot::drop already dropped the T value.
+                SLAB.with(|slab| {
+                    // SAFETY: Slot valid, value already handled by BoxSlot
+                    slab.free_ptr(slot_ptr);
+                });
+            }
+
+            #[inline]
+            unsafe fn take(slot: $crate::RawSlot<AlignedBytes<$n>>) -> AlignedBytes<$n> {
+                let slot_ptr = slot.into_ptr();
+                // SAFETY: Caller guarantees slot is valid and occupied
+                let value = std::ptr::read((*slot_ptr).value.as_ptr());
+                SLAB.with(|slab| {
+                    // SAFETY: Value moved out, slot valid
+                    slab.free_ptr(slot_ptr);
+                });
+                value
+            }
+        }
+
+        // SAFETY: claim_raw returns a valid, vacant slot from the TLS slab.
+        // Single-threaded by nature of TLS.
+        unsafe impl $crate::byte::BoundedByteAlloc for Allocator {
+            #[inline]
+            fn claim_raw() -> Option<*mut SlotCell<AlignedBytes<$n>>> {
+                SLAB.with(|slab| {
+                    debug_assert!(slab.is_initialized(), "allocator not initialized");
+                    slab.claim_ptr()
+                })
+            }
+        }
+
+        /// RAII handle to a byte-slab-allocated value.
+        ///
+        /// Type alias for [`byte::BoxSlot<T, Allocator>`](crate::byte::BoxSlot).
+        pub type BoxSlot<T: ?Sized> = $crate::byte::BoxSlot<T, Allocator>;
+    };
+}
+
+/// Generates an unbounded (growable) byte slab allocator.
+///
+/// Creates an allocator with fixed-size `N`-byte slots that can store any
+/// type `T` where `size_of::<T>() <= N` and `align_of::<T>() <= 8`.
+///
+/// Unlike [`bounded_byte_allocator!`], `BoxSlot::new()` always succeeds
+/// by growing the allocator as needed.
+///
+/// # Example
+///
+/// ```ignore
+/// mod msg_alloc {
+///     nexus_slab::unbounded_byte_allocator!(64);
+/// }
+///
+/// msg_alloc::Allocator::builder().build()?;
+///
+/// // Always succeeds — grows as needed
+/// let order = msg_alloc::BoxSlot::<Order>::new(Order { id: 1 });
+/// ```
+#[macro_export]
+macro_rules! unbounded_byte_allocator {
+    ($n:expr) => {
+        use $crate::SlotCell;
+        use $crate::byte::AlignedBytes;
+        use $crate::macros::AlreadyInitialized;
+        use $crate::unbounded::Slab as UnboundedSlab;
+
+        const _: () = assert!(
+            $n >= 8,
+            "byte slab slot size must be at least 8 (pointer size)"
+        );
+
+        /// Default chunk size (4096 slots per chunk).
+        const DEFAULT_CHUNK_SIZE: usize = 4096;
+
+        thread_local! {
+            static SLAB: UnboundedSlab<AlignedBytes<$n>> = const { UnboundedSlab::new() };
+        }
+
+        /// Unit struct providing static methods for allocator lifecycle.
+        #[derive(Clone, Copy)]
+        pub struct Allocator;
+
+        /// Builder for configuring this allocator.
+        pub struct Builder {
+            chunk_size: usize,
+            initial_chunks: usize,
+        }
+
+        impl Builder {
+            /// Sets the chunk size (optional, defaults to 4096).
+            #[inline]
+            pub fn chunk_size(mut self, size: usize) -> Self {
+                self.chunk_size = size;
+                self
+            }
+
+            /// Sets the number of chunks to preallocate at initialization.
+            #[inline]
+            pub fn initial_chunks(mut self, count: usize) -> Self {
+                self.initial_chunks = count;
+                self
+            }
+
+            /// Builds and initializes the allocator.
+            ///
+            /// # Errors
+            ///
+            /// Returns `AlreadyInitialized` if the allocator was already initialized.
+            pub fn build(self) -> Result<(), AlreadyInitialized> {
+                SLAB.with(|slab| {
+                    if slab.is_initialized() {
+                        return Err(AlreadyInitialized);
+                    }
+                    slab.init(self.chunk_size);
+                    slab.reserve_chunks(self.initial_chunks);
+                    Ok(())
+                })
+            }
+        }
+
+        impl Allocator {
+            /// Returns a builder for configuring the allocator.
+            #[inline]
+            pub fn builder() -> Builder {
+                Builder {
+                    chunk_size: DEFAULT_CHUNK_SIZE,
+                    initial_chunks: 0,
+                }
+            }
+        }
+
+        // SAFETY: All operations use TLS freelist with proper union semantics.
+        // Single-threaded by nature of TLS.
+        unsafe impl $crate::Alloc for Allocator {
+            type Item = AlignedBytes<$n>;
+
+            #[inline]
+            fn is_initialized() -> bool {
+                SLAB.with(|slab| slab.is_initialized())
+            }
+
+            #[inline]
+            fn capacity() -> usize {
+                SLAB.with(|slab| slab.capacity())
+            }
+
+            #[inline]
+            unsafe fn free(slot: $crate::RawSlot<AlignedBytes<$n>>) {
+                let slot_ptr = slot.into_ptr();
+                // AlignedBytes is Copy — no drop_in_place needed.
+                // BoxSlot::drop already dropped the T value.
+                SLAB.with(|slab| {
+                    // SAFETY: Slot valid, value already handled by BoxSlot
+                    slab.free_ptr(slot_ptr);
+                });
+            }
+
+            #[inline]
+            unsafe fn take(slot: $crate::RawSlot<AlignedBytes<$n>>) -> AlignedBytes<$n> {
+                let slot_ptr = slot.into_ptr();
+                // SAFETY: Caller guarantees slot is valid and occupied
+                let value = std::ptr::read((*slot_ptr).value.as_ptr());
+                SLAB.with(|slab| {
+                    // SAFETY: Value moved out, slot valid
+                    slab.free_ptr(slot_ptr);
+                });
+                value
+            }
+        }
+
+        // SAFETY: claim_raw always returns a valid, vacant slot.
+        // Grows the allocator if needed. Single-threaded by nature of TLS.
+        unsafe impl $crate::byte::UnboundedByteAlloc for Allocator {
+            #[inline]
+            fn claim_raw() -> *mut SlotCell<AlignedBytes<$n>> {
+                SLAB.with(|slab| {
+                    debug_assert!(slab.is_initialized(), "allocator not initialized");
+                    let (ptr, _chunk_idx) = slab.claim_ptr();
+                    ptr
+                })
+            }
+
+            #[inline]
+            fn reserve_chunks(count: usize) {
+                SLAB.with(|slab| slab.reserve_chunks(count));
+            }
+
+            #[inline]
+            fn chunk_count() -> usize {
+                SLAB.with(|slab| slab.chunk_count())
+            }
+        }
+
+        /// RAII handle to a byte-slab-allocated value.
+        ///
+        /// Type alias for [`byte::BoxSlot<T, Allocator>`](crate::byte::BoxSlot).
+        pub type BoxSlot<T: ?Sized> = $crate::byte::BoxSlot<T, Allocator>;
     };
 }

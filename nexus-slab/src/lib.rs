@@ -96,6 +96,7 @@
 pub mod alloc;
 #[doc(hidden)]
 pub mod bounded;
+pub mod byte;
 #[doc(hidden)]
 pub mod macros;
 #[doc(hidden)]
@@ -106,8 +107,11 @@ pub mod unbounded;
 // Re-export trait + markers + error + LocalStatic + BoxSlot
 pub use alloc::{Alloc, BoundedAlloc, BoxSlot, Full, LocalStatic, UnboundedAlloc};
 
-// Re-export raw Slot from shared
-pub use shared::Slot;
+// Re-export byte slab types
+pub use byte::{AlignedBytes, BoundedByteAlloc, UnboundedByteAlloc};
+
+// Re-export raw slot handle from shared
+pub use shared::RawSlot;
 
 // Re-export SlotCell for direct slot access (used by nexus-collections and macros)
 pub use shared::SlotCell;

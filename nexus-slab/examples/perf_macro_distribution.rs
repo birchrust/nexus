@@ -11,7 +11,7 @@
 //!   taskset -c 0 ./target/release/examples/perf_macro_distribution
 
 use hdrhistogram::Histogram;
-use nexus_slab::Slot;
+use nexus_slab::RawSlot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use seq_macro::seq;
 use std::hint::black_box;
@@ -80,7 +80,7 @@ fn bench_get() {
 
     // Direct slab (raw API)
     let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
+    let entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Macro slab (RAII BoxSlot)
     let macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
@@ -182,7 +182,7 @@ fn bench_get_mut() {
 
     // Direct slab (raw API)
     let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
+    let mut entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Macro slab (RAII BoxSlot)
     let mut macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
@@ -259,7 +259,7 @@ fn bench_insert() {
 
     // Direct slab insert (raw API)
     let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let mut temp: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+    let mut temp: Vec<RawSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
@@ -326,7 +326,7 @@ fn bench_remove() {
     // Direct free_take (raw API)
     let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
     for _ in 0..OPS / BATCH_SIZE as usize {
-        let mut temp: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp: Vec<RawSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
             temp.push(slab.alloc(42u64));
         }
@@ -388,7 +388,7 @@ fn bench_replace() {
 
     // Direct slab (raw API)
     let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
+    let mut entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Macro slab (RAII BoxSlot)
     let mut macro_slots: Vec<_> = (0..NUM_SLOTS as u64)
@@ -472,8 +472,8 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "Raw Slot<T>   size: {} bytes  (pointer wrapper, explicit free)",
-        std::mem::size_of::<Slot<u64>>()
+        "RawSlot<T> size: {} bytes  (pointer wrapper, explicit free)",
+        std::mem::size_of::<RawSlot<u64>>()
     );
     println!(
         "BoxSlot<T,A>  size: {} bytes  (RAII handle, TLS for slab ref)",
@@ -489,7 +489,7 @@ fn main() {
 
     println!("====================================================");
     println!("Legend:");
-    println!("  Raw             Slot<T> via raw slab API (8B, explicit free)");
+    println!("  Raw             RawSlot<T> via raw slab API (8B, explicit free)");
     println!("  BoxSlot [TLS]   BoxSlot<T,A> via bounded_allocator! (8B, TLS on marked ops)");
     println!("  slab crate      slab 0.4 crate (baseline)");
     println!();

@@ -9,7 +9,7 @@
 
 use std::hint::black_box;
 
-use nexus_slab::Slot;
+use nexus_slab::RawSlot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 
@@ -156,7 +156,7 @@ fn bench_bounded() {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
+                let s: RawSlot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
                 unsafe { direct_slab.free(s) };
@@ -186,7 +186,7 @@ fn bench_bounded() {
     println!("\n  DEREF (cycles per deref, slots pre-allocated):");
     {
         // Pre-allocate a batch of direct slots
-        let slots: Vec<Slot<Pod64>> = (0..100)
+        let slots: Vec<RawSlot<Pod64>> = (0..100)
             .map(|_| direct_slab.try_alloc(val).unwrap())
             .collect();
 
@@ -239,7 +239,7 @@ fn bench_bounded() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             // Pre-allocate 100 slots (not timed)
-            let slots: Vec<Slot<Pod64>> = (0..100)
+            let slots: Vec<RawSlot<Pod64>> = (0..100)
                 .map(|_| direct_slab.try_alloc(val).unwrap())
                 .collect();
 
@@ -298,7 +298,7 @@ fn bench_unbounded() {
         for _ in 0..SAMPLES {
             let start = rdtsc_start();
             unroll_100!({
-                let s: Slot<Pod64> = direct_slab.alloc(val);
+                let s: RawSlot<Pod64> = direct_slab.alloc(val);
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
                 unsafe { direct_slab.free(s) };
@@ -328,7 +328,7 @@ fn bench_unbounded() {
     {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
-            let slots: Vec<Slot<Pod64>> = (0..100).map(|_| direct_slab.alloc(val)).collect();
+            let slots: Vec<RawSlot<Pod64>> = (0..100).map(|_| direct_slab.alloc(val)).collect();
 
             let mut iter = slots.into_iter();
             let start = rdtsc_start();
@@ -386,7 +386,7 @@ fn bench_side_by_side() {
             // Direct first
             let start = rdtsc_start();
             unroll_100!({
-                let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
+                let s: RawSlot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
                 unsafe { direct_slab.free(s) };
@@ -415,7 +415,7 @@ fn bench_side_by_side() {
 
             let start = rdtsc_start();
             unroll_100!({
-                let s: Slot<Pod64> = direct_slab.try_alloc(val).unwrap();
+                let s: RawSlot<Pod64> = direct_slab.try_alloc(val).unwrap();
                 black_box(s.data[0]);
                 // SAFETY: slot was allocated from this slab
                 unsafe { direct_slab.free(s) };

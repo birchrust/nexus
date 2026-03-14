@@ -4,7 +4,7 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_vs_box`
 
-use nexus_slab::Slot;
+use nexus_slab::RawSlot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
@@ -210,7 +210,7 @@ fn bench_deallocation() {
 
         for i in 0..SAMPLES {
             // Pre-allocate slots
-            let slots: Vec<Slot<TestValue>> = (0..100)
+            let slots: Vec<RawSlot<TestValue>> = (0..100)
                 .map(|j| alloc.alloc(TestValue::new((i * 100 + j) as u64)))
                 .collect();
 
@@ -224,7 +224,7 @@ fn bench_deallocation() {
             let end = rdtsc_end();
             samples.push((end - start) / 100);
         }
-        print_stats("slab.free(Slot)", &mut samples);
+        print_stats("slab.free(RawSlot)", &mut samples);
     }
 }
 
@@ -266,7 +266,7 @@ fn bench_access() {
     {
         let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(POOL_SIZE);
 
-        let slots: Vec<Slot<TestValue>> = (0..POOL_SIZE)
+        let slots: Vec<RawSlot<TestValue>> = (0..POOL_SIZE)
             .map(|i| alloc.alloc(TestValue::new(i as u64)))
             .collect();
 
@@ -290,7 +290,7 @@ fn bench_access() {
             black_box(sum);
             samples.push((end - start) / 100);
         }
-        print_stats("Slot deref (random)", &mut samples);
+        print_stats("RawSlot deref (random)", &mut samples);
 
         // Cleanup
         for slot in slots {
@@ -333,7 +333,7 @@ fn bench_churn() {
         let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(POOL_SIZE);
 
         // Pre-warm
-        let warmup: Vec<Slot<TestValue>> = (0..POOL_SIZE / 2)
+        let warmup: Vec<RawSlot<TestValue>> = (0..POOL_SIZE / 2)
             .map(|i| alloc.alloc(TestValue::new(i as u64)))
             .collect();
         for slot in warmup {
@@ -355,7 +355,7 @@ fn bench_churn() {
             let end = rdtsc_end();
             samples.push((end - start) / 100);
         }
-        print_stats("Slot insert+free", &mut samples);
+        print_stats("RawSlot insert+free", &mut samples);
     }
 }
 
@@ -416,7 +416,7 @@ fn bench_realistic_workload() {
     {
         let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(WORKING_SET * 2);
 
-        let mut slots: Vec<Option<Slot<TestValue>>> = (0..WORKING_SET)
+        let mut slots: Vec<Option<RawSlot<TestValue>>> = (0..WORKING_SET)
             .map(|i| Some(alloc.alloc(TestValue::new(i as u64))))
             .collect();
 
