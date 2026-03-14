@@ -94,3 +94,45 @@ fn wide_repr() {
     assert_eq!(Wide::Large.into_repr(), 1000u16);
     assert_eq!(Wide::Max.into_repr(), 65535u16);
 }
+
+// u128 repr
+#[derive(IntEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u128)]
+pub enum WideU128 {
+    Zero = 0,
+    One = 1,
+    Big = 1_000_000_000_000,
+}
+
+#[test]
+fn u128_repr() {
+    assert_eq!(WideU128::Zero.into_repr(), 0u128);
+    assert_eq!(WideU128::One.into_repr(), 1u128);
+    assert_eq!(WideU128::Big.into_repr(), 1_000_000_000_000u128);
+
+    assert_eq!(WideU128::try_from_repr(0), Some(WideU128::Zero));
+    assert_eq!(WideU128::try_from_repr(1), Some(WideU128::One));
+    assert_eq!(WideU128::try_from_repr(1_000_000_000_000), Some(WideU128::Big));
+    assert_eq!(WideU128::try_from_repr(2), None);
+}
+
+// i128 repr
+#[derive(IntEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i128)]
+pub enum SignedI128 {
+    Neg = -1,
+    Zero = 0,
+    Pos = 1,
+}
+
+#[test]
+fn i128_repr() {
+    assert_eq!(SignedI128::Neg.into_repr(), -1i128);
+    assert_eq!(SignedI128::Zero.into_repr(), 0i128);
+    assert_eq!(SignedI128::Pos.into_repr(), 1i128);
+
+    assert_eq!(SignedI128::try_from_repr(-1), Some(SignedI128::Neg));
+    assert_eq!(SignedI128::try_from_repr(0), Some(SignedI128::Zero));
+    assert_eq!(SignedI128::try_from_repr(1), Some(SignedI128::Pos));
+    assert_eq!(SignedI128::try_from_repr(2), None);
+}

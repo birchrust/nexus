@@ -76,13 +76,14 @@ fn parse_repr(input: &DeriveInput) -> Result<Ident> {
         if attr.path().is_ident("repr") {
             let repr: Ident = attr.parse_args()?;
             match repr.to_string().as_str() {
-                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => {
+                "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64"
+                | "i128" => {
                     return Ok(repr);
                 }
                 _ => {
                     return Err(Error::new_spanned(
                         repr,
-                        "IntEnum requires repr(u8), repr(u16), repr(u32), repr(u64), repr(i8), repr(i16), repr(i32), or repr(i64)",
+                        "IntEnum requires a primitive integer repr (u8..u128, i8..i128)",
                     ));
                 }
             }
@@ -476,7 +477,7 @@ fn generate_struct_newtype_impl(
                             <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
                                 .ok_or(nexus_bits::UnknownDiscriminant {
                                     field: stringify!(#field_name),
-                                    value: self.0,
+                                    value: field_repr as #repr,
                                 })
                         }
                     }
@@ -636,6 +637,10 @@ fn generate_struct_builder_impl(
                 } else {
                     // IntEnum field - validate repr value fits in field
                     Some(quote! {
+                        const _: () = assert!(
+                            std::mem::size_of::<<#ty as nexus_bits::IntEnum>::Repr>() <= std::mem::size_of::<#repr>(),
+                            "IntEnum repr type is wider than storage repr — values may be truncated"
+                        );
                         if let Some(v) = self.#field_name {
                             let repr_val = nexus_bits::IntEnum::into_repr(v) as #repr;
                             if repr_val > #max_val {
@@ -1043,7 +1048,7 @@ fn generate_enum_parent_impl(
                                 if <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _).is_none() {
                                     return Err(nexus_bits::UnknownDiscriminant {
                                         field: stringify!(#field_name),
-                                        value: self.0,
+                                        value: field_repr as #repr,
                                     });
                                 }
                             });
@@ -1060,7 +1065,7 @@ fn generate_enum_parent_impl(
                     if disc != #disc_val {
                         return Err(nexus_bits::UnknownDiscriminant {
                             field: "__discriminant",
-                            value: self.0,
+                            value: disc as #repr,
                         });
                     }
                     #(#validations)*
@@ -1111,7 +1116,7 @@ fn generate_enum_parent_impl(
                     #(#kind_arms)*
                     _ => Err(nexus_bits::UnknownDiscriminant {
                         field: "__discriminant",
-                        value: self.0,
+                        value: disc as #repr,
                     }),
                 }
             }

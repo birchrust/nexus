@@ -75,6 +75,22 @@ fn basic_enum_unknown_discriminant() {
 }
 
 #[test]
+fn discriminant_error_reports_disc_value_not_packed_int() {
+    // discriminant at bits 0-3, set disc=15 (invalid) with other bits set
+    let raw: u64 = 15 | (0xDEAD << 4);
+    let parent = BasicEnum::from_raw(raw);
+
+    // kind() error should report 15 (extracted disc), not full packed int
+    let err = parent.kind().unwrap_err();
+    assert_eq!(err.field, "__discriminant");
+    assert_eq!(err.value, 15);
+
+    // as_empty() error (disc != 0) should also report 15
+    let err = parent.as_empty().unwrap_err();
+    assert_eq!(err.value, 15);
+}
+
+#[test]
 fn basic_enum_kind() {
     let empty = BasicEnum::empty().build().unwrap().as_parent();
     let with_u8 = BasicEnum::with_u8().value(1).build().unwrap().as_parent();

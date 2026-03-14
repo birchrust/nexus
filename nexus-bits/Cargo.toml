@@ -1,6 +1,6 @@
 [package]
 name = "nexus-bits"
-version = "0.3.0"
+version = "0.4.0"
 description = "Bit field packing for integer IDs"
 keywords = ["bitfield", "packed", "no-std", "low-latency"]
 categories = ["no-std", "data-structures"]
@@ -18,7 +18,5 @@ default = ["derive"]
 derive = ["dep:nexus-bits-derive"]
 
 [dependencies]
-nexus-bits-derive = { version = "0.3", optional = true }
-# Below used when developing proc macro
-# nexus-bits-derive = { version = "0.3", path = "../nexus-bits-derive", optional = true }
+nexus-bits-derive = { version = "0.4", path = "../nexus-bits-derive", optional = true }
 
