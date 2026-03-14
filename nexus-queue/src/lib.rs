@@ -5,6 +5,7 @@
 //!
 //! - [`spsc`]: Single-producer single-consumer queue with cached indices
 //! - [`mpsc`]: Multi-producer single-consumer queue with Vyukov-style turn counters
+//! - [`spmc`]: Single-producer multi-consumer queue for fan-out workloads
 //!
 //! # Quick Start
 //!
@@ -31,6 +32,21 @@
 //! assert!(rx.pop().is_some());
 //! ```
 //!
+//! ```
+//! // SPMC - one producer, multiple consumers
+//! use nexus_queue::spmc;
+//!
+//! let (mut tx, mut rx) = spmc::bounded::<u64>(1024);
+//! let mut rx2 = rx.clone();  // Clone for second consumer
+//!
+//! tx.push(1).unwrap();
+//! tx.push(2).unwrap();
+//!
+//! // Each value consumed by exactly one consumer
+//! assert!(rx.pop().is_some());
+//! assert!(rx2.pop().is_some());
+//! ```
+//!
 //! # Design
 //!
 //! ## SPSC
@@ -46,7 +62,13 @@
 //! via CAS on the tail index, then wait for their slot's turn counter before
 //! writing. This provides backpressure (try_push fails when full) without blocking.
 //!
-//! Both designs perform well on multi-socket NUMA systems where cache line
+//! ## SPMC
+//!
+//! Mirror of MPSC with roles swapped. The single producer writes directly (no CAS),
+//! while consumers compete via CAS on the head index. Eliminates producer-side
+//! contention for fan-out workloads like 1 IO thread → N parser threads.
+//!
+//! All designs perform well on multi-socket NUMA systems where cache line
 //! ownership is important for latency.
 
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -55,6 +77,7 @@
 use core::fmt;
 
 pub mod mpsc;
+pub mod spmc;
 pub mod spsc;
 
 /// Error returned when pushing to a full queue.

@@ -1,6 +1,6 @@
 [package]
 name = "nexus-queue"
-version = "1.0.0"
+version = "1.1.0"
 description = "High-performance lock-free SPSC and MPSC queues for low-latency systems"
 readme = "README.md"
 edition.workspace = true
@@ -35,3 +35,6 @@ name = "bench_mpsc"
 
 [[example]]
 name = "bench_mpsc_pingpong"
+
+[[example]]
+name = "bench_spmc"
