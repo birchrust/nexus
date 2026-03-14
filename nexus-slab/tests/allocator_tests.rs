@@ -7,7 +7,7 @@
 //! - Edge cases and boundary conditions
 //! - Complex types (String, Vec, ZST, large)
 
-use nexus_slab::Slot;
+use nexus_slab::RawSlot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 use std::cell::Cell;
@@ -182,17 +182,17 @@ fn slot_debug_format() {
 
     let slot = slab.alloc(42);
     let debug = format!("{:?}", slot);
-    assert!(debug.contains("Slot"));
+    assert!(debug.contains("RawSlot"));
     // SAFETY: slot was allocated from this slab
     unsafe { slab.free(slot) };
 }
 
 #[test]
 fn slot_size_is_8_bytes() {
-    // Raw Slot<T> is 8 bytes (one pointer)
-    assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
-    assert_eq!(std::mem::size_of::<Slot<String>>(), 8);
-    assert_eq!(std::mem::size_of::<Slot<[u8; 1024]>>(), 8);
+    // Raw RawSlot<T> is 8 bytes (one pointer)
+    assert_eq!(std::mem::size_of::<RawSlot<u64>>(), 8);
+    assert_eq!(std::mem::size_of::<RawSlot<String>>(), 8);
+    assert_eq!(std::mem::size_of::<RawSlot<[u8; 1024]>>(), 8);
 }
 
 // =============================================================================
@@ -330,8 +330,9 @@ fn drop_not_called_on_leak() {
 
     let slab = BoundedSlab::<DropTracker>::with_capacity(4);
 
-    let _slot = slab.alloc(DropTracker(1));
-    // Intentionally leak (don't dealloc)
+    let slot = slab.alloc(DropTracker(1));
+    // Intentionally leak — disarm debug Drop via into_ptr()
+    let _ = slot.into_ptr();
 
     assert_eq!(get_drop_count(), 0); // Leaked, not dropped
 }

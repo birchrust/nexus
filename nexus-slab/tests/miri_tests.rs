@@ -184,8 +184,9 @@ fn miri_no_drop_after_leak() {
 
     let slab = BoundedSlab::<DropTracker>::with_capacity(4);
 
-    let _slot = slab.alloc(DropTracker(1));
-    // Intentionally leak - don't dealloc the slot
+    let slot = slab.alloc(DropTracker(1));
+    // Intentionally leak — disarm debug Drop via into_ptr()
+    let _ = slot.into_ptr();
 
     assert_eq!(get_drop_count(), 0);
 }

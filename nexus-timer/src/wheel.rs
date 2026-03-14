@@ -334,7 +334,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 2);
         let slot = self.slab.alloc(entry);
-        let ptr = slot.as_ptr();
+        let ptr = slot.into_ptr();
         self.insert_entry(ptr, deadline_ticks);
         self.len += 1;
         TimerHandle::new(ptr)
@@ -353,7 +353,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 1);
         let slot = self.slab.alloc(entry);
-        let ptr = slot.as_ptr();
+        let ptr = slot.into_ptr();
         self.insert_entry(ptr, deadline_ticks);
         self.len += 1;
     }
@@ -363,9 +363,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 // Schedule — fallible (bounded slabs only)
 // =============================================================================
 
-impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>>
-    TimerWheel<T, S>
-{
+impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     /// Attempts to schedule a timer, returning a handle on success.
     ///
     /// Returns `Err(Full(value))` if the slab is at capacity. Use this
@@ -376,7 +374,7 @@ impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>>
         let entry = WheelEntry::new(deadline_ticks, value, 2);
         match self.slab.try_alloc(entry) {
             Ok(slot) => {
-                let ptr = slot.as_ptr();
+                let ptr = slot.into_ptr();
                 self.insert_entry(ptr, deadline_ticks);
                 self.len += 1;
                 Ok(TimerHandle::new(ptr))
@@ -402,7 +400,7 @@ impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>>
         let entry = WheelEntry::new(deadline_ticks, value, 1);
         match self.slab.try_alloc(entry) {
             Ok(slot) => {
-                let ptr = slot.as_ptr();
+                let ptr = slot.into_ptr();
                 self.insert_entry(ptr, deadline_ticks);
                 self.len += 1;
                 Ok(())
@@ -788,7 +786,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> Drop for TimerWheel<T, S> {
                     let next_entry = entry.next();
 
                     // SAFETY: entry_ptr was allocated from our slab
-                    unsafe { self.slab.free(nexus_slab::Slot::from_ptr(entry_ptr)) };
+                    unsafe { self.slab.free(nexus_slab::RawSlot::from_ptr(entry_ptr)) };
 
                     entry_ptr = next_entry;
                 }

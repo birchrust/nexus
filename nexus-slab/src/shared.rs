@@ -44,7 +44,7 @@ impl<T> SlotCell<T> {
 
 /// Strong/weak refcount header + value for reference-counted slab allocation.
 ///
-/// `ManuallyDrop<T>` ensures `Slot`'s `drop_in_place` on this type is a no-op
+/// `ManuallyDrop<T>` ensures `RawSlot`'s `drop_in_place` on this type is a no-op
 /// for `T` — `RcSlot` manages `T`'s lifetime manually (drops when strong hits 0).
 ///
 /// # Layout
@@ -119,12 +119,12 @@ impl<T> RcInner<T> {
 }
 
 // =============================================================================
-// Slot<T> — Raw Pointer Wrapper
+// RawSlot<T> — Raw Pointer Wrapper
 // =============================================================================
 
 /// Raw slot handle — pointer wrapper, NOT RAII.
 ///
-/// `Slot<T>` is a thin wrapper around a pointer to a [`SlotCell<T>`]. It is
+/// `RawSlot<T>` is a thin wrapper around a pointer to a [`SlotCell<T>`]. It is
 /// analogous to `malloc` returning a pointer: the caller owns the memory and
 /// must explicitly free it via [`Slab::free()`](crate::bounded::Slab::free).
 ///
@@ -134,22 +134,24 @@ impl<T> RcInner<T> {
 ///
 /// # Thread Safety
 ///
-/// `Slot` is `!Send` and `!Sync`. It must only be used from the thread that
+/// `RawSlot` is `!Send` and `!Sync`. It must only be used from the thread that
 /// created it.
 ///
-/// # No Drop
+/// # Debug-Mode Leak Detection
 ///
-/// Unlike [`BoxSlot`](crate::alloc::BoxSlot), `Slot` does NOT deallocate on
-/// drop. Forgetting to call `free()` will leak the slot.
+/// In debug builds, dropping a `RawSlot` without calling `free()` or
+/// `take()` panics. Use [`into_ptr()`](Self::into_ptr) to extract the
+/// pointer and disarm the detector. In release builds there is no `Drop`
+/// impl — forgetting to call `free()` silently leaks the slot.
 ///
 /// # Borrow Traits
 ///
-/// `Slot<T>` implements `Borrow<T>` and `BorrowMut<T>`, enabling use as
+/// `RawSlot<T>` implements `Borrow<T>` and `BorrowMut<T>`, enabling use as
 /// HashMap keys that borrow `T` for lookups.
 #[repr(transparent)]
-pub struct Slot<T>(*mut SlotCell<T>);
+pub struct RawSlot<T>(*mut SlotCell<T>);
 
-impl<T> Slot<T> {
+impl<T> RawSlot<T> {
     /// Creates a slot from a raw pointer.
     ///
     /// # Safety
@@ -157,7 +159,7 @@ impl<T> Slot<T> {
     /// `ptr` must be a valid pointer to an occupied `SlotCell<T>` within a slab.
     #[inline]
     pub unsafe fn from_ptr(ptr: *mut SlotCell<T>) -> Self {
-        Slot(ptr)
+        RawSlot(ptr)
     }
 
     /// Returns the raw pointer to the slot cell.
@@ -165,20 +167,32 @@ impl<T> Slot<T> {
     pub fn as_ptr(&self) -> *mut SlotCell<T> {
         self.0
     }
+
+    /// Consumes the slot, returning the raw pointer.
+    ///
+    /// Unlike [`as_ptr()`](Self::as_ptr), this is a consuming operation that
+    /// disarms the debug-mode leak detector. In release mode, compiles
+    /// identically to `as_ptr()`.
+    #[inline]
+    pub fn into_ptr(self) -> *mut SlotCell<T> {
+        let ptr = self.0;
+        std::mem::forget(self);
+        ptr
+    }
 }
 
-impl<T> Deref for Slot<T> {
+impl<T> Deref for RawSlot<T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        // SAFETY: Slot was created from a valid, occupied SlotCell.
+        // SAFETY: RawSlot was created from a valid, occupied SlotCell.
         // Union field `value` is active because the slot is occupied.
         unsafe { (*self.0).value.assume_init_ref() }
     }
 }
 
-impl<T> DerefMut for Slot<T> {
+impl<T> DerefMut for RawSlot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: We have &mut self, guaranteeing exclusive access.
@@ -187,39 +201,58 @@ impl<T> DerefMut for Slot<T> {
     }
 }
 
-impl<T> AsRef<T> for Slot<T> {
+impl<T> AsRef<T> for RawSlot<T> {
     #[inline]
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T> AsMut<T> for Slot<T> {
+impl<T> AsMut<T> for RawSlot<T> {
     #[inline]
     fn as_mut(&mut self) -> &mut T {
         self
     }
 }
 
-impl<T> Borrow<T> for Slot<T> {
+impl<T> Borrow<T> for RawSlot<T> {
     #[inline]
     fn borrow(&self) -> &T {
         self
     }
 }
 
-impl<T> BorrowMut<T> for Slot<T> {
+impl<T> BorrowMut<T> for RawSlot<T> {
     #[inline]
     fn borrow_mut(&mut self) -> &mut T {
         self
     }
 }
 
-// Slot is intentionally NOT Clone/Copy.
+// RawSlot is intentionally NOT Clone/Copy.
 // Move-only semantics prevent double-free at compile time.
 
-impl<T: fmt::Debug> fmt::Debug for Slot<T> {
+impl<T: fmt::Debug> fmt::Debug for RawSlot<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Slot").field("value", &**self).finish()
+        f.debug_struct("RawSlot").field("value", &**self).finish()
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<T> Drop for RawSlot<T> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            // During unwinding: log but don't abort. Leak is lesser evil than abort.
+            eprintln!(
+                "RawSlot<{}> leaked during panic unwind (was not freed)",
+                std::any::type_name::<T>()
+            );
+        } else {
+            panic!(
+                "RawSlot<{}> dropped without being freed — \
+                 call slab.free() or slab.take()",
+                std::any::type_name::<T>()
+            );
+        }
     }
 }

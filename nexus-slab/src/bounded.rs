@@ -20,7 +20,7 @@ use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::ptr;
 
 use crate::alloc::Full;
-use crate::shared::{Slot, SlotCell};
+use crate::shared::{RawSlot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -41,12 +41,12 @@ pub struct Claim<'a, T> {
 }
 
 impl<T> Claim<'_, T> {
-    /// Writes the value to the claimed slot and returns the [`Slot`] handle.
+    /// Writes the value to the claimed slot and returns the [`RawSlot`] handle.
     ///
     /// This consumes the claim. The value is written directly to the slot's
     /// memory, which may enable placement new optimization.
     #[inline]
-    pub fn write(self, value: T) -> Slot<T> {
+    pub fn write(self, value: T) -> RawSlot<T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
@@ -55,7 +55,7 @@ impl<T> Claim<'_, T> {
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
-        unsafe { Slot::from_ptr(slot_ptr) }
+        unsafe { RawSlot::from_ptr(slot_ptr) }
     }
 }
 
@@ -198,6 +198,18 @@ impl<T> Slab<T> {
         slots.as_ptr().cast_mut()
     }
 
+    /// Returns `true` if `ptr` falls within this slab's slot array.
+    ///
+    /// O(1) range check. Used in `debug_assert!` to validate provenance.
+    #[doc(hidden)]
+    #[inline]
+    pub fn contains_ptr(&self, ptr: *const ()) -> bool {
+        let base = self.slots_ptr() as usize;
+        let end = base + self.capacity.get() * std::mem::size_of::<SlotCell<T>>();
+        let addr = ptr as usize;
+        addr >= base && addr < end
+    }
+
     // =========================================================================
     // Allocation API
     // =========================================================================
@@ -266,7 +278,7 @@ impl<T> Slab<T> {
     ///
     /// Panics if the slab is full.
     #[inline]
-    pub fn alloc(&self, value: T) -> Slot<T> {
+    pub fn alloc(&self, value: T) -> RawSlot<T> {
         self.try_alloc(value)
             .unwrap_or_else(|_| panic!("slab full"))
     }
@@ -275,7 +287,7 @@ impl<T> Slab<T> {
     ///
     /// Returns `Err(Full(value))` if the slab is at capacity.
     #[inline]
-    pub fn try_alloc(&self, value: T) -> Result<Slot<T>, Full<T>> {
+    pub fn try_alloc(&self, value: T) -> Result<RawSlot<T>, Full<T>> {
         let slot_ptr = self.free_head.get();
 
         if slot_ptr.is_null() {
@@ -296,7 +308,7 @@ impl<T> Slab<T> {
         self.free_head.set(next_free);
 
         // SAFETY: slot_ptr is valid and occupied
-        Ok(unsafe { Slot::from_ptr(slot_ptr) })
+        Ok(unsafe { RawSlot::from_ptr(slot_ptr) })
     }
 
     /// Frees a slot, dropping the value and returning storage to the freelist.
@@ -307,8 +319,12 @@ impl<T> Slab<T> {
     /// - No references to the slot's value may exist
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub unsafe fn free(&self, slot: Slot<T>) {
-        let slot_ptr = slot.as_ptr();
+    pub unsafe fn free(&self, slot: RawSlot<T>) {
+        let slot_ptr = slot.into_ptr();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
             ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
@@ -324,8 +340,12 @@ impl<T> Slab<T> {
     /// - No references to the slot's value may exist
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub unsafe fn take(&self, slot: Slot<T>) -> T {
-        let slot_ptr = slot.as_ptr();
+    pub unsafe fn take(&self, slot: RawSlot<T>) -> T {
+        let slot_ptr = slot.into_ptr();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
             let value = ptr::read((*slot_ptr).value.as_ptr());
@@ -345,6 +365,10 @@ impl<T> Slab<T> {
     #[doc(hidden)]
     #[inline]
     pub unsafe fn free_ptr(&self, slot_ptr: *mut SlotCell<T>) {
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         let free_head = self.free_head.get();
         // SAFETY: Caller guarantees slot_ptr is valid
         unsafe {
@@ -428,7 +452,7 @@ mod tests {
 
     #[test]
     fn slot_size() {
-        assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
+        assert_eq!(std::mem::size_of::<RawSlot<u64>>(), 8);
     }
 
     #[test]
@@ -456,6 +480,20 @@ mod tests {
 
         // SAFETY: slot was allocated from slab
         unsafe { slab.free(slot) };
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn rawslot_debug_drop_panics() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let slab = Slab::<u64>::with_capacity(10);
+            let _slot = slab.alloc(42u64);
+            // slot drops here without being freed
+        }));
+        assert!(
+            result.is_err(),
+            "RawSlot should panic on drop in debug mode"
+        );
     }
 
     #[test]

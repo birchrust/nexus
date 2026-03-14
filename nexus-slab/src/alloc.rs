@@ -15,7 +15,7 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::ptr;
 
-use crate::shared::{RcInner, Slot, SlotCell};
+use crate::shared::{RawSlot, RcInner, SlotCell};
 
 // =============================================================================
 // Full<T>
@@ -59,7 +59,10 @@ impl<T> fmt::Display for Full<T> {
 /// # Safety
 ///
 /// Implementors must guarantee:
-/// - `free` correctly drops the value and returns the slot to the freelist
+/// - `free` correctly drops the stored item and returns the slot to the freelist.
+///   For byte allocators (`AlignedBytes<N>` is `Copy`), `free` only does a
+///   freelist return — the actual `T` value must be dropped by the caller
+///   (e.g., `ByteBoxSlot::drop` calls `drop_in_place::<T>()` before `A::free`).
 /// - `take` correctly moves the value out and returns the slot to the freelist
 /// - All operations are single-threaded (TLS-backed)
 pub unsafe trait Alloc: Sized + 'static {
@@ -75,7 +78,11 @@ pub unsafe trait Alloc: Sized + 'static {
     /// this is the sum across all allocated chunks.
     fn capacity() -> usize;
 
-    /// Drops the value and returns the slot to the freelist.
+    /// Drops the stored item and returns the slot to the freelist.
+    ///
+    /// For typed allocators, this drops `T` via `drop_in_place` then frees.
+    /// For byte allocators (`AlignedBytes<N>` is `Copy`), this only does a
+    /// freelist return — the caller must drop `T` before calling `free`.
     ///
     /// This is for manual memory management after calling `BoxSlot::into_slot()`.
     ///
@@ -83,10 +90,11 @@ pub unsafe trait Alloc: Sized + 'static {
     ///
     /// - `slot` must have been allocated from this allocator
     /// - No references to the slot's value may exist
+    /// - For byte allocators: the value must already have been dropped or moved out
     ///
-    /// Note: Double-free is prevented at compile time (`Slot` is move-only).
-    #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    unsafe fn free(slot: Slot<Self::Item>);
+    /// Note: Double-free is prevented at compile time (`RawSlot` is move-only).
+    #[allow(clippy::needless_pass_by_value)] // consumes slot to prevent reuse
+    unsafe fn free(slot: RawSlot<Self::Item>);
 
     /// Takes the value from a slot, returning it and deallocating the slot.
     ///
@@ -97,9 +105,9 @@ pub unsafe trait Alloc: Sized + 'static {
     /// - `slot` must have been allocated from this allocator
     /// - No references to the slot's value may exist
     ///
-    /// Note: Double-free is prevented at compile time (`Slot` is move-only).
-    #[allow(clippy::needless_pass_by_value)] // Intentional: consumes slot to prevent reuse
-    unsafe fn take(slot: Slot<Self::Item>) -> Self::Item;
+    /// Note: Double-free is prevented at compile time (`RawSlot` is move-only).
+    #[allow(clippy::needless_pass_by_value)] // consumes slot to prevent reuse
+    unsafe fn take(slot: RawSlot<Self::Item>) -> Self::Item;
 }
 
 /// Trait for bounded (fixed-capacity) allocators.
@@ -111,7 +119,7 @@ pub trait BoundedAlloc: Alloc {
     ///
     /// Returns `Err(Full(value))` if the allocator is full, giving the
     /// value back to the caller.
-    fn try_alloc(value: Self::Item) -> Result<Slot<Self::Item>, Full<Self::Item>>;
+    fn try_alloc(value: Self::Item) -> Result<RawSlot<Self::Item>, Full<Self::Item>>;
 }
 
 /// Trait for unbounded (growable) allocators.
@@ -121,7 +129,7 @@ pub trait UnboundedAlloc: Alloc {
     /// Allocates a slot and writes the value.
     ///
     /// Always succeeds - grows the allocator if needed.
-    fn alloc(value: Self::Item) -> Slot<Self::Item>;
+    fn alloc(value: Self::Item) -> RawSlot<Self::Item>;
 
     /// Ensures at least `count` chunks are allocated.
     ///
@@ -154,7 +162,7 @@ pub trait UnboundedAlloc: Alloc {
 /// marker). It must only be used from the thread that created it.
 #[must_use = "dropping BoxSlot returns it to the allocator"]
 pub struct BoxSlot<T, A: Alloc<Item = T>> {
-    slot: Slot<T>,
+    ptr: *mut SlotCell<T>,
     // PhantomData carries the allocator type AND makes BoxSlot !Send + !Sync
     // (*mut is !Send + !Sync, and PhantomData<A> ties the type)
     _marker: PhantomData<(A, *const ())>,
@@ -170,7 +178,7 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// immutable access via `Deref`.
     #[inline]
     pub fn leak(self) -> LocalStatic<T> {
-        let slot_ptr = self.slot.as_ptr();
+        let slot_ptr = self.ptr;
         std::mem::forget(self);
         // SAFETY: Destructor won't run (forgot self).
         // The pointer is valid for 'static because slab storage is leaked.
@@ -186,12 +194,11 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// - Call `Allocator::take()` to extract value and deallocate
     /// - Wrap in another `BoxSlot` via `from_slot()`
     #[inline]
-    pub fn into_slot(self) -> Slot<T> {
-        // SAFETY: Reading slot is safe since we own the BoxSlot.
-        // Forgot self prevents destructor from running.
-        let slot = unsafe { ptr::read(&raw const self.slot) };
+    pub fn into_slot(self) -> RawSlot<T> {
+        let ptr = self.ptr;
         std::mem::forget(self);
-        slot
+        // SAFETY: ptr came from a valid allocation
+        unsafe { RawSlot::from_ptr(ptr) }
     }
 
     /// Extracts the value from the slot, deallocating the slot.
@@ -199,11 +206,11 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// This is analogous to `Box::into_inner`.
     #[inline]
     pub fn into_inner(self) -> T {
-        // Extract slot before forget
-        // SAFETY: We're about to forget self, so reading slot is safe
-        let slot = unsafe { ptr::read(&raw const self.slot) };
+        let ptr = self.ptr;
         std::mem::forget(self);
 
+        // SAFETY: ptr came from a valid allocation, construct RawSlot for take
+        let slot = unsafe { RawSlot::from_ptr(ptr) };
         // SAFETY: We owned the slot, no other references exist
         unsafe { A::take(slot) }
     }
@@ -213,7 +220,7 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     pub fn replace(&mut self, value: T) -> T {
         // SAFETY: We own the slot exclusively (&mut self), union field `value` is active
         unsafe {
-            let val_ptr = (*(*self.slot.as_ptr()).value).as_mut_ptr();
+            let val_ptr = (*(*self.ptr).value).as_mut_ptr();
             let old = ptr::read(val_ptr);
             ptr::write(val_ptr, value);
             old
@@ -264,9 +271,9 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// - `slot` must have been allocated from an allocator of type `A`
     /// - `slot` must not be wrapped in another `BoxSlot` or otherwise managed
     #[inline]
-    pub unsafe fn from_slot(slot: Slot<T>) -> Self {
+    pub unsafe fn from_slot(slot: RawSlot<T>) -> Self {
         BoxSlot {
-            slot,
+            ptr: slot.into_ptr(),
             _marker: PhantomData,
         }
     }
@@ -277,7 +284,7 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// from the same slab slot) is alive.
     #[inline]
     pub fn as_ptr(&self) -> *mut SlotCell<T> {
-        self.slot.as_ptr()
+        self.ptr
     }
 
     /// Consumes the `BoxSlot` and returns a raw pointer to the slot cell.
@@ -285,10 +292,10 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// The slot is NOT deallocated. The caller takes ownership and must
     /// eventually:
     /// - Call [`from_raw`](Self::from_raw) to reconstruct the `BoxSlot`
-    /// - Or call [`Alloc::free`] / [`Alloc::take`] on the underlying [`Slot`]
+    /// - Or call [`Alloc::free`] / [`Alloc::take`] on the underlying [`RawSlot`]
     #[inline]
     pub fn into_raw(self) -> *mut SlotCell<T> {
-        let ptr = self.slot.as_ptr();
+        let ptr = self.ptr;
         std::mem::forget(self);
         ptr
     }
@@ -303,7 +310,7 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     #[inline]
     pub unsafe fn from_raw(ptr: *mut SlotCell<T>) -> Self {
         BoxSlot {
-            slot: unsafe { Slot::from_ptr(ptr) },
+            ptr,
             _marker: PhantomData,
         }
     }
@@ -319,7 +326,7 @@ impl<T, A: UnboundedAlloc<Item = T>> BoxSlot<T, A> {
     #[inline]
     pub fn new(value: T) -> Self {
         BoxSlot {
-            slot: A::alloc(value),
+            ptr: A::alloc(value).into_ptr(),
             _marker: PhantomData,
         }
     }
@@ -336,7 +343,7 @@ impl<T, A: BoundedAlloc<Item = T>> BoxSlot<T, A> {
     #[inline]
     pub fn try_new(value: T) -> Result<Self, Full<T>> {
         Ok(BoxSlot {
-            slot: A::try_alloc(value)?,
+            ptr: A::try_alloc(value)?.into_ptr(),
             _marker: PhantomData,
         })
     }
@@ -351,14 +358,18 @@ impl<T, A: Alloc<Item = T>> Deref for BoxSlot<T, A> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.slot
+        // SAFETY: BoxSlot was created from a valid, occupied SlotCell.
+        // Union field `value` is active because the slot is occupied.
+        unsafe { (*self.ptr).value.assume_init_ref() }
     }
 }
 
 impl<T, A: Alloc<Item = T>> DerefMut for BoxSlot<T, A> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.slot
+        // SAFETY: We have &mut self, guaranteeing exclusive access.
+        // Union field `value` is active because the slot is occupied.
+        unsafe { (*(*self.ptr).value).assume_init_mut() }
     }
 }
 
@@ -393,9 +404,8 @@ impl<T, A: Alloc<Item = T>> BorrowMut<T> for BoxSlot<T, A> {
 impl<T, A: Alloc<Item = T>> Drop for BoxSlot<T, A> {
     #[inline]
     fn drop(&mut self) {
-        // Read slot via raw ptr because we're in drop and can't move out of &mut self
-        // SAFETY: We own the slot, this is the destructor
-        let slot = unsafe { ptr::read(&raw const self.slot) };
+        // SAFETY: We own the slot, construct RawSlot for A::free
+        let slot = unsafe { RawSlot::from_ptr(self.ptr) };
         // SAFETY: We own the slot, no other references exist
         unsafe { A::free(slot) };
     }
@@ -419,12 +429,12 @@ impl<T: fmt::Debug, A: Alloc<Item = T>> fmt::Debug for BoxSlot<T, A> {
 ///
 /// Once leaked, the slot is permanently occupied — there is no way to reclaim it.
 #[repr(transparent)]
-pub struct LocalStatic<T> {
+pub struct LocalStatic<T: ?Sized> {
     ptr: *const T,
     _marker: PhantomData<*const ()>, // !Send + !Sync
 }
 
-impl<T> LocalStatic<T> {
+impl<T: ?Sized> LocalStatic<T> {
     /// Creates a new `LocalStatic` from a raw pointer.
     ///
     /// # Safety
@@ -456,7 +466,7 @@ impl<T> LocalStatic<T> {
     }
 }
 
-impl<T> Deref for LocalStatic<T> {
+impl<T: ?Sized> Deref for LocalStatic<T> {
     type Target = T;
 
     #[inline]
@@ -467,23 +477,23 @@ impl<T> Deref for LocalStatic<T> {
     }
 }
 
-impl<T> AsRef<T> for LocalStatic<T> {
+impl<T: ?Sized> AsRef<T> for LocalStatic<T> {
     #[inline]
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T> Clone for LocalStatic<T> {
+impl<T: ?Sized> Clone for LocalStatic<T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for LocalStatic<T> {}
+impl<T: ?Sized> Copy for LocalStatic<T> {}
 
-impl<T: fmt::Debug> fmt::Debug for LocalStatic<T> {
+impl<T: fmt::Debug + ?Sized> fmt::Debug for LocalStatic<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("LocalStatic").field(&self.as_ref()).finish()
     }
@@ -624,7 +634,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     /// The strong count is decremented but the value is NOT dropped.
     /// Caller takes ownership and must eventually free via the allocator.
     #[inline]
-    pub fn into_slot(self) -> Option<Slot<RcInner<T>>> {
+    pub fn into_slot(self) -> Option<RawSlot<RcInner<T>>> {
         let rc_inner: &RcInner<T> = &self.inner;
 
         // Must be only reference - strong == 1 and no external weaks (just implicit)
@@ -643,7 +653,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
         std::mem::forget(self);
 
         // SAFETY: We verified we're the only reference, slot_ptr is valid
-        Some(unsafe { Slot::from_ptr(slot_ptr) })
+        Some(unsafe { RawSlot::from_ptr(slot_ptr) })
     }
 
     /// Converts to a raw slot without checking refcounts.
@@ -660,7 +670,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     /// - If weak references exist, they will fail to upgrade (this is safe)
     ///   but may attempt deallocation based on stale counts
     #[inline]
-    pub unsafe fn into_slot_unchecked(self) -> Slot<RcInner<T>> {
+    pub unsafe fn into_slot_unchecked(self) -> RawSlot<RcInner<T>> {
         // DON'T touch refcounts - caller takes full ownership
         // Any other refs will see stale counts, but that's caller's problem
 
@@ -670,7 +680,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
         // Don't run Drop
         std::mem::forget(self);
 
-        unsafe { Slot::from_ptr(slot_ptr) }
+        unsafe { RawSlot::from_ptr(slot_ptr) }
     }
 
     // =========================================================================

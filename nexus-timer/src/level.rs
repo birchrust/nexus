@@ -238,7 +238,7 @@ mod tests {
     ) -> EntryPtr<T> {
         let entry = WheelEntry::new(deadline, value, 1);
         let slot = slab.alloc(entry);
-        slot.as_ptr()
+        slot.into_ptr()
     }
 
     #[test]

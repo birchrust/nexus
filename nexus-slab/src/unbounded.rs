@@ -21,7 +21,7 @@ use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::ptr;
 
 use crate::bounded::Slab as BoundedSlab;
-use crate::shared::{Slot, SlotCell};
+use crate::shared::{RawSlot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -43,12 +43,12 @@ pub struct Claim<'a, T> {
 }
 
 impl<T> Claim<'_, T> {
-    /// Writes the value to the claimed slot and returns the [`Slot`] handle.
+    /// Writes the value to the claimed slot and returns the [`RawSlot`] handle.
     ///
     /// This consumes the claim. The value is written directly to the slot's
     /// memory, which may enable placement new optimization.
     #[inline]
-    pub fn write(self, value: T) -> Slot<T> {
+    pub fn write(self, value: T) -> RawSlot<T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
@@ -57,7 +57,7 @@ impl<T> Claim<'_, T> {
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
-        unsafe { Slot::from_ptr(slot_ptr) }
+        unsafe { RawSlot::from_ptr(slot_ptr) }
     }
 }
 
@@ -229,6 +229,25 @@ impl<T> Slab<T> {
         self.chunks().len()
     }
 
+    /// Returns `true` if `ptr` falls within any chunk's slot array.
+    ///
+    /// O(chunks) scan. Typically 1–5 chunks. Used in `debug_assert!`
+    /// to validate provenance.
+    #[doc(hidden)]
+    pub fn contains_ptr(&self, ptr: *const ()) -> bool {
+        let chunks = self.chunks();
+        let cap = self.chunk_capacity.get();
+        for chunk in chunks {
+            let chunk_slab = &*chunk.inner;
+            if chunk_slab.contains_ptr(ptr) {
+                return true;
+            }
+        }
+        // Suppress unused variable warning when chunks is empty
+        let _ = cap;
+        false
+    }
+
     /// Ensures at least `count` chunks are allocated.
     ///
     /// No-op if the slab already has `count` or more chunks. Only allocates
@@ -334,7 +353,7 @@ impl<T> Slab<T> {
     ///
     /// Always succeeds — grows the slab if needed.
     #[inline]
-    pub fn alloc(&self, value: T) -> Slot<T> {
+    pub fn alloc(&self, value: T) -> RawSlot<T> {
         // Ensure we have space (grow if needed)
         if self.head_with_space.get() == CHUNK_NONE {
             self.grow();
@@ -367,7 +386,7 @@ impl<T> Slab<T> {
         }
 
         // SAFETY: slot_ptr is valid and occupied
-        unsafe { Slot::from_ptr(slot_ptr) }
+        unsafe { RawSlot::from_ptr(slot_ptr) }
     }
 
     /// Frees a slot, dropping the value and returning storage to the freelist.
@@ -382,8 +401,12 @@ impl<T> Slab<T> {
     /// - No references to the slot's value may exist
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub unsafe fn free(&self, slot: Slot<T>) {
-        let slot_ptr = slot.as_ptr();
+    pub unsafe fn free(&self, slot: RawSlot<T>) {
+        let slot_ptr = slot.into_ptr();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
             ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
@@ -403,8 +426,12 @@ impl<T> Slab<T> {
     /// - No references to the slot's value may exist
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub unsafe fn take(&self, slot: Slot<T>) -> T {
-        let slot_ptr = slot.as_ptr();
+    pub unsafe fn take(&self, slot: RawSlot<T>) -> T {
+        let slot_ptr = slot.into_ptr();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
             let value = ptr::read((*slot_ptr).value.as_ptr());
@@ -553,7 +580,7 @@ mod tests {
 
     #[test]
     fn slot_size() {
-        assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
+        assert_eq!(std::mem::size_of::<RawSlot<u64>>(), 8);
     }
 
     #[test]
