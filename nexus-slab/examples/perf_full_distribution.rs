@@ -388,7 +388,7 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "Raw RawRawSlot<T> size: {} bytes (pointer wrapper, no RAII)",
+        "RawSlot<T> size: {} bytes (pointer wrapper, no RAII)",
         std::mem::size_of::<RawSlot<u64>>()
     );
     println!();
@@ -401,6 +401,6 @@ fn main() {
 
     println!("=========================================");
     println!("Legend:");
-    println!("  slot.*()              Raw RawRawSlot<T> API (8-byte ptr, explicit free)");
+    println!("  slot.*()              RawSlot<T> API (8-byte ptr, explicit free)");
     println!("  slab.*()              slab crate (baseline comparison)");
 }

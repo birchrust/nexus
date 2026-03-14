@@ -236,15 +236,12 @@ impl<T> Slab<T> {
     #[doc(hidden)]
     pub fn contains_ptr(&self, ptr: *const ()) -> bool {
         let chunks = self.chunks();
-        let cap = self.chunk_capacity.get();
         for chunk in chunks {
             let chunk_slab = &*chunk.inner;
             if chunk_slab.contains_ptr(ptr) {
                 return true;
             }
         }
-        // Suppress unused variable warning when chunks is empty
-        let _ = cap;
         false
     }
 

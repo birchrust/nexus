@@ -472,7 +472,7 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "Raw RawRawRawSlot<T> size: {} bytes  (pointer wrapper, explicit free)",
+        "RawSlot<T> size: {} bytes  (pointer wrapper, explicit free)",
         std::mem::size_of::<RawSlot<u64>>()
     );
     println!(

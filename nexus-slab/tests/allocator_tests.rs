@@ -189,7 +189,7 @@ fn slot_debug_format() {
 
 #[test]
 fn slot_size_is_8_bytes() {
-    // Raw RawSlot<T> is 8 bytes (one pointer)
+    // RawSlot<T> is 8 bytes (one pointer)
     assert_eq!(std::mem::size_of::<RawSlot<u64>>(), 8);
     assert_eq!(std::mem::size_of::<RawSlot<String>>(), 8);
     assert_eq!(std::mem::size_of::<RawSlot<[u8; 1024]>>(), 8);
