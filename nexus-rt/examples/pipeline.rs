@@ -11,14 +11,14 @@
 //!
 //! Two dispatch modes:
 //! - `run()` — direct call, no boxing, works with borrowed inputs
-//! - `build()` — box into `Pipeline<In>`, implements `Handler<In>`
+//! - `build()` — into `Pipeline`, implements `Handler<In>`
 //!
 //! Run with:
 //! ```bash
 //! cargo run -p nexus-rt --example pipeline
 //! ```
 
-use nexus_rt::{Handler, PipelineStart, ResMut, WorldBuilder};
+use nexus_rt::{Handler, PipelineBuilder, ResMut, WorldBuilder};
 
 struct PriceCache {
     latest: f64,
@@ -86,7 +86,7 @@ fn main() {
     let mut world = WorldBuilder::new().build();
     let r = world.registry_mut();
 
-    let mut bare_pipeline = PipelineStart::<u32>::new()
+    let mut bare_pipeline = PipelineBuilder::<u32>::new()
         .then(|x: u32| x * 2, r)
         .then(|x: u32| x + 1, r);
 
@@ -102,7 +102,7 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    let mut option_pipeline = PipelineStart::<MarketTick>::new()
+    let mut option_pipeline = PipelineBuilder::<MarketTick>::new()
         .then(
             |tick: MarketTick| -> Option<MarketTick> {
                 if tick.price > 0.0 { Some(tick) } else { None }
@@ -156,7 +156,7 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    let mut result_pipeline = PipelineStart::<MarketTick>::new()
+    let mut result_pipeline = PipelineBuilder::<MarketTick>::new()
         .then(validate, r)
         .and_then(check_known, r)
         .catch(count_error, r)
@@ -198,7 +198,7 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    let mut pipeline = PipelineStart::<u32>::new().then(accumulate, r).build();
+    let mut pipeline = PipelineBuilder::<u32>::new().then(accumulate, r).build();
 
     pipeline.run(&mut world, 10);
     pipeline.run(&mut world, 20);
@@ -217,7 +217,7 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    let mut guarded = PipelineStart::<u32>::new()
+    let mut guarded = PipelineBuilder::<u32>::new()
         .then(|x: u32| x, r)
         .guard(|x: &u32| *x > 5, r) // → Option<u32>
         .tap(|x: &Option<u32>| println!("  [tap] guard output: {x:?}"), r)
@@ -246,7 +246,7 @@ fn main() {
         *out = a as u64 + b as u64;
     }
 
-    let mut pipeline = PipelineStart::<u32>::new()
+    let mut pipeline = PipelineBuilder::<u32>::new()
         .then(split, r)
         .splat()
         .then(combine, r)

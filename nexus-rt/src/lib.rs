@@ -18,14 +18,14 @@
 //!   and produces references at dispatch time. [`IntoHandler`] converts
 //!   plain functions into [`Handler`] trait objects for type-erased dispatch.
 //!
-//! - **Pipeline** — [`PipelineStart`] begins a typed per-event composition
+//! - **Pipeline** — [`PipelineBuilder`] begins a typed per-event composition
 //!   chain. Steps transform data using `Option` and `Result` for flow
 //!   control. [`Pipeline`] implements [`Handler`] for direct or boxed dispatch.
 //!   [`BatchPipeline`] owns a pre-allocated input buffer and runs each item
 //!   through the same chain independently — errors on one item don't affect
 //!   subsequent items.
 //!
-//! - **DAG Pipeline** — [`DagStart`] builds a monomorphized data-flow graph
+//! - **DAG Pipeline** — [`DagBuilder`] builds a monomorphized data-flow graph
 //!   with fan-out and merge. Topology is encoded in the type system — no
 //!   vtable dispatch, no arena allocation. [`Dag`] implements [`Handler`]
 //!   for direct or boxed dispatch. [`BatchDag`] owns a pre-allocated input
@@ -122,14 +122,14 @@ pub use adapt::{Adapt, ByRef, Cloned, Owned};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
-pub use dag::{BatchDag, Dag, DagStart, resolve_arm};
+pub use dag::{BatchDag, Dag, DagBuilder, resolve_arm};
 pub use driver::Installer;
 pub use handler::{
     CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
 };
 pub use pipeline::{
-    BatchPipeline, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
-    PipelineBuilder, PipelineOutput, PipelineStart, resolve_producer, resolve_ref_scan_step,
+    BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
+    PipelineChain, PipelineOutput, PipelineBuilder, resolve_producer, resolve_ref_scan_step,
     resolve_ref_step, resolve_scan_step, resolve_step,
 };
 pub use plugin::Plugin;

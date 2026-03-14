@@ -723,12 +723,14 @@ impl World {
     // One-shot dispatch
     // =========================================================================
 
-    /// Run a handler once with full Param resolution.
+    /// Run a system once with full Param resolution.
     ///
     /// Intended for one-shot initialization after [`build()`](WorldBuilder::build).
-    /// The handler receives `()` as the event — the event parameter is
-    /// discarded. Named functions only (same closure limitation as
-    /// [`IntoHandler`](crate::IntoHandler)).
+    /// Accepts both void-returning (`fn(params...)`) and bool-returning
+    /// (`fn(params...) -> bool`) functions via [`IntoSystem`](crate::IntoSystem).
+    /// The return value is always ignored — startup has no DAG to
+    /// propagate through. Named functions only (same closure limitation
+    /// as [`IntoHandler`](crate::IntoHandler)).
     ///
     /// Can be called multiple times for phased initialization.
     ///
@@ -738,7 +740,6 @@ impl World {
     /// fn startup(
     ///     mut driver: ResMut<MioDriver>,
     ///     mut listener: ResMut<Listener>,
-    ///     _event: (),
     /// ) {
     ///     // wire drivers to IO sources...
     /// }
@@ -746,13 +747,13 @@ impl World {
     /// let mut world = wb.build();
     /// world.run_startup(startup);
     /// ```
-    pub fn run_startup<F, Params>(&mut self, f: F)
+    pub fn run_startup<F, Params, M>(&mut self, f: F)
     where
-        F: crate::IntoHandler<(), Params>,
+        F: crate::IntoSystem<Params, M>,
     {
-        use crate::Handler;
-        let mut handler = f.into_handler(&self.registry);
-        handler.run(self, ());
+        use crate::System;
+        let mut sys = f.into_system(&self.registry);
+        sys.run(self);
     }
 
     // =========================================================================
@@ -1313,7 +1314,7 @@ mod tests {
         builder.register::<bool>(false);
         let mut world = builder.build();
 
-        fn init(mut counter: ResMut<u64>, mut flag: ResMut<bool>, _event: ()) {
+        fn init(mut counter: ResMut<u64>, mut flag: ResMut<bool>) {
             *counter = 42;
             *flag = true;
         }
@@ -1332,11 +1333,11 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        fn phase1(mut counter: ResMut<u64>, _event: ()) {
+        fn phase1(mut counter: ResMut<u64>) {
             *counter += 10;
         }
 
-        fn phase2(mut counter: ResMut<u64>, _event: ()) {
+        fn phase2(mut counter: ResMut<u64>) {
             *counter += 5;
         }
 

@@ -117,7 +117,6 @@ fn startup(
     mut listener: ResMut<Listener>,
     mut wheel: ResMut<TimerWheel>,
     reg: RegistryRef,
-    _event: (),
 ) {
     // Register on_accept for the listener.
     let h = on_accept.into_handler(&reg);

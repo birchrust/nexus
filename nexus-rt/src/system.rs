@@ -18,7 +18,14 @@
 //!
 //! Systems are converted from plain functions via [`IntoSystem`], using
 //! the same HRTB double-bound pattern as [`IntoHandler`](crate::IntoHandler).
-//! The function signature is `fn(params...) -> bool` — no event parameter.
+//!
+//! # Supported signatures
+//!
+//! - `fn(params...) -> bool` — returns propagation decision for
+//!   scheduler DAGs
+//! - `fn(params...)` — void return, always propagates (`true`). Useful
+//!   for [`World::run_startup`] and systems that unconditionally
+//!   propagate.
 
 use crate::handler::Param;
 use crate::world::{Registry, World};
@@ -60,10 +67,14 @@ pub trait System: Send {
 /// Stores the function, pre-resolved parameter state, and a diagnostic
 /// name. Users rarely name this type directly — use `Box<dyn System>`
 /// for type-erased storage, or let inference handle the concrete type.
-pub struct SystemFn<F, Params: Param> {
+///
+/// The `Marker` parameter distinguishes bool-returning systems from
+/// void-returning ones, avoiding overlapping `System` impls.
+pub struct SystemFn<F, Params: Param, Marker = bool> {
     f: F,
     state: Params::State,
     name: &'static str,
+    _marker: std::marker::PhantomData<Marker>,
 }
 
 // =============================================================================
@@ -72,17 +83,26 @@ pub struct SystemFn<F, Params: Param> {
 
 /// Converts a plain function into a [`System`].
 ///
-/// The function signature is `fn(params...) -> bool` — no event parameter.
+/// Accepts two signatures:
+/// - `fn(params...) -> bool` — returns propagation decision
+/// - `fn(params...)` — void return, always propagates (`true`)
+///
+/// The `Marker` type parameter (defaulting to `bool`) distinguishes
+/// between the two. Existing code using `IntoSystem<Params>` continues
+/// to require `-> bool` with no changes.
+///
 /// Parameters are resolved from a [`Registry`] at conversion time.
 ///
 /// # Closures vs named functions
 ///
-/// Zero-parameter systems (`fn() -> bool`) accept closures. For
-/// parameterized systems (one or more [`Param`] arguments), Rust's
-/// HRTB + GAT inference fails on closures — use named functions.
-/// Same limitation as [`IntoHandler`](crate::IntoHandler).
+/// Zero-parameter systems accept closures. For parameterized systems
+/// (one or more [`Param`] arguments), Rust's HRTB + GAT inference
+/// fails on closures — use named functions. Same limitation as
+/// [`IntoHandler`](crate::IntoHandler).
 ///
 /// # Examples
+///
+/// Bool-returning (scheduler propagation):
 ///
 /// ```
 /// use nexus_rt::{WorldBuilder, Res, ResMut, IntoSystem, System};
@@ -106,11 +126,29 @@ pub struct SystemFn<F, Params: Param> {
 /// assert!(*world.resource::<bool>());
 /// ```
 ///
+/// Void-returning (startup, unconditional propagation):
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System};
+///
+/// fn initialize(mut val: ResMut<u64>) {
+///     *val = 42;
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// let mut world = builder.build();
+///
+/// let mut sys = initialize.into_system(world.registry());
+/// assert!(sys.run(&mut world)); // void → always true
+/// assert_eq!(*world.resource::<u64>(), 42);
+/// ```
+///
 /// # Panics
 ///
 /// Panics if any [`Param`](crate::Param) resource is not registered in
 /// the [`Registry`].
-pub trait IntoSystem<Params> {
+pub trait IntoSystem<Params, Marker = bool> {
     /// The concrete system type produced.
     type System: System + 'static;
 
@@ -130,6 +168,7 @@ impl<F: FnMut() -> bool + Send + 'static> IntoSystem<()> for F {
             f: self,
             state: <() as Param>::init(registry),
             name: std::any::type_name::<F>(),
+            _marker: std::marker::PhantomData,
         }
     }
 }
@@ -137,6 +176,34 @@ impl<F: FnMut() -> bool + Send + 'static> IntoSystem<()> for F {
 impl<F: FnMut() -> bool + Send + 'static> System for SystemFn<F, ()> {
     fn run(&mut self, _world: &mut World) -> bool {
         (self.f)()
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+// =============================================================================
+// Arity 0: fn() — void return (always propagates)
+// =============================================================================
+
+impl<F: FnMut() + Send + 'static> IntoSystem<(), ()> for F {
+    type System = SystemFn<F, (), ()>;
+
+    fn into_system(self, registry: &Registry) -> Self::System {
+        SystemFn {
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<F: FnMut() + Send + 'static> System for SystemFn<F, (), ()> {
+    fn run(&mut self, _world: &mut World) -> bool {
+        (self.f)();
+        true
     }
 
     fn name(&self) -> &'static str {
@@ -173,6 +240,7 @@ macro_rules! impl_into_system {
                     f: self,
                     state,
                     name: std::any::type_name::<F>(),
+                    _marker: std::marker::PhantomData,
                 }
             }
         }
@@ -225,6 +293,77 @@ macro_rules! all_tuples {
 }
 
 all_tuples!(impl_into_system);
+
+// =============================================================================
+// Macro-generated void impls (arities 1-8) — always returns true
+// =============================================================================
+
+macro_rules! impl_into_system_void {
+    ($($P:ident),+) => {
+        impl<F: Send + 'static, $($P: Param + 'static),+> IntoSystem<($($P,)+), ()> for F
+        where
+            for<'a> &'a mut F: FnMut($($P,)+)
+                              + FnMut($($P::Item<'a>,)+),
+        {
+            type System = SystemFn<F, ($($P,)+), ()>;
+
+            fn into_system(self, registry: &Registry) -> Self::System {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                SystemFn {
+                    f: self,
+                    state,
+                    name: std::any::type_name::<F>(),
+                    _marker: std::marker::PhantomData,
+                }
+            }
+        }
+
+        impl<F: Send + 'static, $($P: Param + 'static),+> System
+            for SystemFn<F, ($($P,)+), ()>
+        where
+            for<'a> &'a mut F: FnMut($($P,)+)
+                              + FnMut($($P::Item<'a>,)+),
+        {
+            #[allow(non_snake_case)]
+            fn run(&mut self, world: &mut World) -> bool {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<$($P),+>(
+                    mut f: impl FnMut($($P),+),
+                    $($P: $P,)+
+                ) {
+                    f($($P),+)
+                }
+
+                // SAFETY: state was produced by init() on the same registry
+                // that built this world. Single-threaded sequential dispatch
+                // ensures no mutable aliasing across params.
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P),+);
+                true
+            }
+
+            fn name(&self) -> &'static str {
+                self.name
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_system_void);
 
 // =============================================================================
 // Tests
@@ -354,5 +493,119 @@ mod tests {
         let world = WorldBuilder::new().build();
         let sys = always_true.into_system(world.registry());
         assert!(sys.name().contains("always_true"));
+    }
+
+    // -- Void-returning systems -----------------------------------------------
+
+    fn noop() {}
+
+    #[test]
+    fn arity_0_void_system() {
+        let mut world = WorldBuilder::new().build();
+        let mut sys = noop.into_system(world.registry());
+        assert!(sys.run(&mut world));
+    }
+
+    fn write_val(mut v: ResMut<u64>) {
+        *v = 99;
+    }
+
+    #[test]
+    fn arity_n_void_system() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut sys = write_val.into_system(world.registry());
+        assert!(sys.run(&mut world));
+        assert_eq!(*world.resource::<u64>(), 99);
+    }
+
+    #[test]
+    fn box_dyn_void_system() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut boxed: Box<dyn System> = Box::new(write_val.into_system(world.registry()));
+        assert!(boxed.run(&mut world));
+        assert_eq!(*world.resource::<u64>(), 99);
+    }
+
+    fn void_read_only(val: Res<u64>, flag: Res<bool>) {
+        let _ = (*val, *flag);
+    }
+
+    #[test]
+    fn void_two_params_read_only() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+        builder.register::<bool>(true);
+        let mut world = builder.build();
+
+        let mut sys = void_read_only.into_system(world.registry());
+        assert!(sys.run(&mut world));
+    }
+
+    fn void_two_params_write(mut a: ResMut<u64>, mut b: ResMut<bool>) {
+        *a = 77;
+        *b = true;
+    }
+
+    #[test]
+    fn void_two_params_mixed() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<bool>(false);
+        let mut world = builder.build();
+
+        let mut sys = void_two_params_write.into_system(world.registry());
+        assert!(sys.run(&mut world));
+        assert_eq!(*world.resource::<u64>(), 77);
+        assert!(*world.resource::<bool>());
+    }
+
+    fn void_with_local(mut count: Local<u64>, mut out: ResMut<u64>) {
+        *count += 1;
+        *out = *count;
+    }
+
+    #[test]
+    fn void_local_persists() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let mut sys = void_with_local.into_system(world.registry());
+        assert!(sys.run(&mut world));
+        assert_eq!(*world.resource::<u64>(), 1);
+        assert!(sys.run(&mut world));
+        assert_eq!(*world.resource::<u64>(), 2);
+        assert!(sys.run(&mut world));
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    #[test]
+    fn void_system_has_name() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let world = builder.build();
+
+        let sys = write_val.into_system(world.registry());
+        assert!(sys.name().contains("write_val"));
+    }
+
+    #[test]
+    #[should_panic(expected = "conflicting access")]
+    fn void_system_access_conflict_panics() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let world = builder.build();
+
+        fn bad_void(a: Res<u64>, b: ResMut<u64>) {
+            let _ = (*a, &*b);
+        }
+
+        let _sys = bad_void.into_system(world.registry());
     }
 }

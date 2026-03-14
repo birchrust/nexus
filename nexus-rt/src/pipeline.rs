@@ -1,12 +1,12 @@
 // Builder return types are necessarily complex — each combinator returns
-// PipelineBuilder<In, Out, impl FnMut(...)>. Same pattern as iterator adapters.
+// PipelineChain<In, Out, NodeType<Chain, ...>>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
 
 //! Pre-resolved pipeline dispatch using [`Param`] steps.
 //!
-//! [`PipelineStart`] begins a typed composition chain where each step
+//! [`PipelineBuilder`] begins a typed composition chain where each step
 //! is a named function with [`Param`] dependencies resolved at build
-//! time. The result is a monomorphized closure chain where dispatch-time
+//! time. The result is a monomorphized chain of named node types where dispatch-time
 //! resource access is a single pointer deref per fetch — zero framework overhead.
 //! [`ResourceId`](crate::ResourceId) is a direct pointer, not a HashMap lookup.
 //!
@@ -52,7 +52,7 @@
 //!
 //! **`bool`:** `.not()`, `.and()`, `.or()`, `.xor()`
 //!
-//! **Terminal:** `.build()` (→ `Pipeline<In>`), `.build_batch(cap)`
+//! **Terminal:** `.build()` (→ `Pipeline`), `.build_batch(cap)`
 //! (→ `BatchPipeline<In>`)
 //!
 //! # Splat — tuple destructuring
@@ -69,7 +69,7 @@
 //! // With splat — next step takes individual args:
 //! fn process(id: OrderId, price: f64) -> bool { .. }
 //!
-//! PipelineStart::<Order>::new()
+//! PipelineBuilder::<Order>::new()
 //!     .then(extract, reg)   // Order → (OrderId, f64)
 //!     .splat()              // destructure
 //!     .then(process, reg)   // (OrderId, f64) → bool
@@ -94,7 +94,7 @@ use crate::world::{Registry, World};
 /// Internal: pre-resolved step with cached Param state.
 ///
 /// Users don't construct this directly — it's produced by [`IntoStep`] and
-/// captured inside pipeline chain closures.
+/// stored inside named chain node types.
 #[doc(hidden)]
 pub struct Step<F, Params: Param> {
     f: F,
@@ -111,9 +111,11 @@ pub struct Step<F, Params: Param> {
 ///
 /// Used as a bound on [`IntoStep::Step`]. Users don't implement this.
 #[doc(hidden)]
-pub trait StepCall<In, Out> {
+pub trait StepCall<In> {
+    /// The output type of this step.
+    type Out;
     /// Call this step with a world reference and input value.
-    fn call(&mut self, world: &mut World, input: In) -> Out;
+    fn call(&mut self, world: &mut World, input: In) -> Self::Out;
 }
 
 // =============================================================================
@@ -138,7 +140,7 @@ pub trait StepCall<In, Out> {
 /// ```
 pub trait IntoStep<In, Out, Params> {
     /// The concrete resolved step type.
-    type Step: StepCall<In, Out>;
+    type Step: StepCall<In, Out = Out>;
 
     /// Resolve Param state from the registry and produce a step.
     fn into_step(self, registry: &Registry) -> Self::Step;
@@ -148,7 +150,8 @@ pub trait IntoStep<In, Out, Params> {
 // Arity 0 — fn(In) -> Out — closures work (no HRTB+GAT issues)
 // =============================================================================
 
-impl<In, Out, F: FnMut(In) -> Out + 'static> StepCall<In, Out> for Step<F, ()> {
+impl<In, Out, F: FnMut(In) -> Out + 'static> StepCall<In> for Step<F, ()> {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, _world: &mut World, input: In) -> Out {
         (self.f)(input)
@@ -174,12 +177,13 @@ impl<In, Out, F: FnMut(In) -> Out + 'static> IntoStep<In, Out, ()> for F {
 macro_rules! impl_into_step {
     ($($P:ident),+) => {
         impl<In, Out, F: 'static, $($P: Param + 'static),+>
-            StepCall<In, Out> for Step<F, ($($P,)+)>
+            StepCall<In> for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+ In) -> Out +
                 FnMut($($P::Item<'a>,)+ In) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, input: In) -> Out {
@@ -261,7 +265,8 @@ pub struct OpaqueStep<F> {
     name: &'static str,
 }
 
-impl<In, Out, F: FnMut(&mut World, In) -> Out + 'static> StepCall<In, Out> for OpaqueStep<F> {
+impl<In, Out, F: FnMut(&mut World, In) -> Out + 'static> StepCall<In> for OpaqueStep<F> {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Out {
         (self.f)(world, input)
@@ -288,9 +293,11 @@ impl<In, Out, F: FnMut(&mut World, In) -> Out + 'static> IntoStep<In, Out, Opaqu
 /// Used by combinators like `tap`, `guard`, `filter`, `inspect` that
 /// observe the value without consuming it.
 #[doc(hidden)]
-pub trait RefStepCall<In, Out> {
+pub trait RefStepCall<In> {
+    /// The output type of this step.
+    type Out;
     /// Call this step with a world reference and borrowed input.
-    fn call(&mut self, world: &mut World, input: &In) -> Out;
+    fn call(&mut self, world: &mut World, input: &In) -> Self::Out;
 }
 
 /// Converts a function into a pre-resolved step taking input by reference.
@@ -304,7 +311,7 @@ pub trait RefStepCall<In, Out> {
 /// | [`Opaque`] | `FnMut(&mut World, &In) -> Out` | `\|w: &mut World, o: &Order\| { ... }` |
 pub trait IntoRefStep<In, Out, Params> {
     /// The concrete resolved step type.
-    type Step: RefStepCall<In, Out>;
+    type Step: RefStepCall<In, Out = Out>;
 
     /// Resolve Param state from the registry and produce a step.
     fn into_ref_step(self, registry: &Registry) -> Self::Step;
@@ -312,7 +319,8 @@ pub trait IntoRefStep<In, Out, Params> {
 
 // -- Arity 0: FnMut(&In) -> Out — closures work ----------------------------
 
-impl<In, Out, F: FnMut(&In) -> Out + 'static> RefStepCall<In, Out> for Step<F, ()> {
+impl<In, Out, F: FnMut(&In) -> Out + 'static> RefStepCall<In> for Step<F, ()> {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, _world: &mut World, input: &In) -> Out {
         (self.f)(input)
@@ -336,12 +344,13 @@ impl<In, Out, F: FnMut(&In) -> Out + 'static> IntoRefStep<In, Out, ()> for F {
 macro_rules! impl_into_ref_step {
     ($($P:ident),+) => {
         impl<In, Out, F: 'static, $($P: Param + 'static),+>
-            RefStepCall<In, Out> for Step<F, ($($P,)+)>
+            RefStepCall<In> for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+ &In) -> Out +
                 FnMut($($P::Item<'a>,)+ &In) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, input: &In) -> Out {
@@ -402,9 +411,10 @@ pub struct OpaqueRefStep<F> {
     name: &'static str,
 }
 
-impl<In, Out, F: FnMut(&mut World, &In) -> Out + 'static> RefStepCall<In, Out>
+impl<In, Out, F: FnMut(&mut World, &In) -> Out + 'static> RefStepCall<In>
     for OpaqueRefStep<F>
 {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, world: &mut World, input: &In) -> Out {
         (self.f)(world, input)
@@ -448,9 +458,11 @@ pub fn resolve_ref_step<In, Out, Params, S: IntoRefStep<In, Out, Params>>(
 /// Used by combinators like `and`, `or`, `xor`, `on_none`, `ok_or_else`,
 /// `unwrap_or_else` (Option).
 #[doc(hidden)]
-pub trait ProducerCall<Out> {
+pub trait ProducerCall {
+    /// The output type of this producer.
+    type Out;
     /// Call this producer with a world reference.
-    fn call(&mut self, world: &mut World) -> Out;
+    fn call(&mut self, world: &mut World) -> Self::Out;
 }
 
 /// Converts a function into a pre-resolved producer step.
@@ -464,7 +476,7 @@ pub trait ProducerCall<Out> {
 /// | [`Opaque`] | `FnMut(&mut World) -> Out` | `\|w: &mut World\| { ... }` |
 pub trait IntoProducer<Out, Params> {
     /// The concrete resolved producer type.
-    type Step: ProducerCall<Out>;
+    type Step: ProducerCall<Out = Out>;
 
     /// Resolve Param state from the registry and produce a step.
     fn into_producer(self, registry: &Registry) -> Self::Step;
@@ -472,7 +484,8 @@ pub trait IntoProducer<Out, Params> {
 
 // -- Arity 0: FnMut() -> Out — closures work --------------------------------
 
-impl<Out, F: FnMut() -> Out + 'static> ProducerCall<Out> for Step<F, ()> {
+impl<Out, F: FnMut() -> Out + 'static> ProducerCall for Step<F, ()> {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, _world: &mut World) -> Out {
         (self.f)()
@@ -496,12 +509,13 @@ impl<Out, F: FnMut() -> Out + 'static> IntoProducer<Out, ()> for F {
 macro_rules! impl_into_producer {
     ($($P:ident),+) => {
         impl<Out, F: 'static, $($P: Param + 'static),+>
-            ProducerCall<Out> for Step<F, ($($P,)+)>
+            ProducerCall for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+) -> Out +
                 FnMut($($P::Item<'a>,)+) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World) -> Out {
@@ -561,7 +575,8 @@ pub struct OpaqueProducer<F> {
     name: &'static str,
 }
 
-impl<Out, F: FnMut(&mut World) -> Out + 'static> ProducerCall<Out> for OpaqueProducer<F> {
+impl<Out, F: FnMut(&mut World) -> Out + 'static> ProducerCall for OpaqueProducer<F> {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, world: &mut World) -> Out {
         (self.f)(world)
@@ -604,9 +619,11 @@ pub fn resolve_producer<Out, Params, S: IntoProducer<Out, Params>>(
 /// Like [`StepCall`] but with an additional `&mut Acc` accumulator
 /// argument that persists across invocations.
 #[doc(hidden)]
-pub trait ScanStepCall<Acc, In, Out> {
+pub trait ScanStepCall<Acc, In> {
+    /// The output type of this scan step.
+    type Out;
     /// Call this scan step with a world reference, accumulator, and input value.
-    fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out;
+    fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Self::Out;
 }
 
 /// Converts a function into a pre-resolved scan step with persistent state.
@@ -620,7 +637,7 @@ pub trait ScanStepCall<Acc, In, Out> {
 /// | [`Opaque`] | `FnMut(&mut World, &mut Acc, In) -> Out` | `\|w: &mut World, acc: &mut u64, t: Trade\| { ... }` |
 pub trait IntoScanStep<Acc, In, Out, Params> {
     /// The concrete resolved scan step type.
-    type Step: ScanStepCall<Acc, In, Out>;
+    type Step: ScanStepCall<Acc, In, Out = Out>;
 
     /// Resolve Param state from the registry and produce a scan step.
     fn into_scan_step(self, registry: &Registry) -> Self::Step;
@@ -629,8 +646,9 @@ pub trait IntoScanStep<Acc, In, Out, Params> {
 // -- Arity 0: FnMut(&mut Acc, In) -> Out — closures work --------------------
 
 impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
-    ScanStepCall<Acc, In, Out> for Step<F, ()>
+    ScanStepCall<Acc, In> for Step<F, ()>
 {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, _world: &mut World, acc: &mut Acc, input: In) -> Out {
         (self.f)(acc, input)
@@ -656,12 +674,13 @@ impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
 macro_rules! impl_into_scan_step {
     ($($P:ident),+) => {
         impl<Acc, In, Out, F: 'static, $($P: Param + 'static),+>
-            ScanStepCall<Acc, In, Out> for Step<F, ($($P,)+)>
+            ScanStepCall<Acc, In> for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+ &mut Acc, In) -> Out +
                 FnMut($($P::Item<'a>,)+ &mut Acc, In) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out {
@@ -724,8 +743,9 @@ pub struct OpaqueScanStep<F> {
 }
 
 impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, In) -> Out + 'static>
-    ScanStepCall<Acc, In, Out> for OpaqueScanStep<F>
+    ScanStepCall<Acc, In> for OpaqueScanStep<F>
 {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out {
         (self.f)(world, acc, input)
@@ -769,9 +789,11 @@ pub fn resolve_scan_step<Acc, In, Out, Params, S: IntoScanStep<Acc, In, Out, Par
 ///
 /// DAG variant of [`ScanStepCall`] — each step borrows its input.
 #[doc(hidden)]
-pub trait RefScanStepCall<Acc, In, Out> {
+pub trait RefScanStepCall<Acc, In> {
+    /// The output type of this ref-scan step.
+    type Out;
     /// Call this scan step with a world reference, accumulator, and borrowed input.
-    fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out;
+    fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Self::Out;
 }
 
 /// Converts a function into a pre-resolved ref-scan step with persistent state.
@@ -785,7 +807,7 @@ pub trait RefScanStepCall<Acc, In, Out> {
 /// | [`Opaque`] | `FnMut(&mut World, &mut Acc, &In) -> Out` | `\|w: &mut World, acc: &mut u64, t: &Trade\| { ... }` |
 pub trait IntoRefScanStep<Acc, In, Out, Params> {
     /// The concrete resolved ref-scan step type.
-    type Step: RefScanStepCall<Acc, In, Out>;
+    type Step: RefScanStepCall<Acc, In, Out = Out>;
 
     /// Resolve Param state from the registry and produce a ref-scan step.
     fn into_ref_scan_step(self, registry: &Registry) -> Self::Step;
@@ -794,8 +816,9 @@ pub trait IntoRefScanStep<Acc, In, Out, Params> {
 // -- Arity 0: FnMut(&mut Acc, &In) -> Out — closures work -------------------
 
 impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
-    RefScanStepCall<Acc, In, Out> for Step<F, ()>
+    RefScanStepCall<Acc, In> for Step<F, ()>
 {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, _world: &mut World, acc: &mut Acc, input: &In) -> Out {
         (self.f)(acc, input)
@@ -821,12 +844,13 @@ impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
 macro_rules! impl_into_ref_scan_step {
     ($($P:ident),+) => {
         impl<Acc, In, Out, F: 'static, $($P: Param + 'static),+>
-            RefScanStepCall<Acc, In, Out> for Step<F, ($($P,)+)>
+            RefScanStepCall<Acc, In> for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+ &mut Acc, &In) -> Out +
                 FnMut($($P::Item<'a>,)+ &mut Acc, &In) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out {
@@ -889,8 +913,9 @@ pub struct OpaqueRefScanStep<F> {
 }
 
 impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, &In) -> Out + 'static>
-    RefScanStepCall<Acc, In, Out> for OpaqueRefScanStep<F>
+    RefScanStepCall<Acc, In> for OpaqueRefScanStep<F>
 {
+    type Out = Out;
     #[inline(always)]
     fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out {
         (self.f)(world, acc, input)
@@ -940,18 +965,21 @@ pub fn resolve_ref_scan_step<Acc, In, Out, Params, S: IntoRefScanStep<Acc, In, O
 
 /// Internal: callable trait for resolved 2-splat steps.
 #[doc(hidden)]
-pub trait SplatCall2<A, B, Out> {
-    fn call_splat(&mut self, world: &mut World, a: A, b: B) -> Out;
+pub trait SplatCall2<A, B> {
+    /// Output type of this splat step.
+    type Out;
+    fn call_splat(&mut self, world: &mut World, a: A, b: B) -> Self::Out;
 }
 
 /// Converts a named function into a resolved 2-splat step.
 #[doc(hidden)]
 pub trait IntoSplatStep2<A, B, Out, Params> {
-    type Step: SplatCall2<A, B, Out>;
+    type Step: SplatCall2<A, B, Out = Out>;
     fn into_splat_step(self, registry: &Registry) -> Self::Step;
 }
 
-impl<A, B, Out, F: FnMut(A, B) -> Out + 'static> SplatCall2<A, B, Out> for Step<F, ()> {
+impl<A, B, Out, F: FnMut(A, B) -> Out + 'static> SplatCall2<A, B> for Step<F, ()> {
+    type Out = Out;
     #[inline(always)]
     fn call_splat(&mut self, _world: &mut World, a: A, b: B) -> Out {
         (self.f)(a, b)
@@ -972,12 +1000,13 @@ impl<A, B, Out, F: FnMut(A, B) -> Out + 'static> IntoSplatStep2<A, B, Out, ()> f
 macro_rules! impl_splat2_step {
     ($($P:ident),+) => {
         impl<A, B, Out, F: 'static, $($P: Param + 'static),+>
-            SplatCall2<A, B, Out> for Step<F, ($($P,)+)>
+            SplatCall2<A, B> for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+ A, B) -> Out +
                 FnMut($($P::Item<'a>,)+ A, B) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B) -> Out {
@@ -1029,18 +1058,21 @@ macro_rules! impl_splat2_step {
 
 /// Internal: callable trait for resolved 3-splat steps.
 #[doc(hidden)]
-pub trait SplatCall3<A, B, C, Out> {
-    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C) -> Out;
+pub trait SplatCall3<A, B, C> {
+    /// Output type of this splat step.
+    type Out;
+    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C) -> Self::Out;
 }
 
 /// Converts a named function into a resolved 3-splat step.
 #[doc(hidden)]
 pub trait IntoSplatStep3<A, B, C, Out, Params> {
-    type Step: SplatCall3<A, B, C, Out>;
+    type Step: SplatCall3<A, B, C, Out = Out>;
     fn into_splat_step(self, registry: &Registry) -> Self::Step;
 }
 
-impl<A, B, C, Out, F: FnMut(A, B, C) -> Out + 'static> SplatCall3<A, B, C, Out> for Step<F, ()> {
+impl<A, B, C, Out, F: FnMut(A, B, C) -> Out + 'static> SplatCall3<A, B, C> for Step<F, ()> {
+    type Out = Out;
     #[inline(always)]
     fn call_splat(&mut self, _world: &mut World, a: A, b: B, c: C) -> Out {
         (self.f)(a, b, c)
@@ -1061,12 +1093,13 @@ impl<A, B, C, Out, F: FnMut(A, B, C) -> Out + 'static> IntoSplatStep3<A, B, C, O
 macro_rules! impl_splat3_step {
     ($($P:ident),+) => {
         impl<A, B, C, Out, F: 'static, $($P: Param + 'static),+>
-            SplatCall3<A, B, C, Out> for Step<F, ($($P,)+)>
+            SplatCall3<A, B, C> for Step<F, ($($P,)+)>
         where
             for<'a> &'a mut F:
                 FnMut($($P,)+ A, B, C) -> Out +
                 FnMut($($P::Item<'a>,)+ A, B, C) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C) -> Out {
@@ -1118,20 +1151,23 @@ macro_rules! impl_splat3_step {
 
 /// Internal: callable trait for resolved 4-splat steps.
 #[doc(hidden)]
-pub trait SplatCall4<A, B, C, D, Out> {
-    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D) -> Out;
+pub trait SplatCall4<A, B, C, D> {
+    /// Output type of this splat step.
+    type Out;
+    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D) -> Self::Out;
 }
 
 /// Converts a named function into a resolved 4-splat step.
 #[doc(hidden)]
 pub trait IntoSplatStep4<A, B, C, D, Out, Params> {
-    type Step: SplatCall4<A, B, C, D, Out>;
+    type Step: SplatCall4<A, B, C, D, Out = Out>;
     fn into_splat_step(self, registry: &Registry) -> Self::Step;
 }
 
-impl<A, B, C, D, Out, F: FnMut(A, B, C, D) -> Out + 'static> SplatCall4<A, B, C, D, Out>
+impl<A, B, C, D, Out, F: FnMut(A, B, C, D) -> Out + 'static> SplatCall4<A, B, C, D>
     for Step<F, ()>
 {
+    type Out = Out;
     #[inline(always)]
     fn call_splat(&mut self, _world: &mut World, a: A, b: B, c: C, d: D) -> Out {
         (self.f)(a, b, c, d)
@@ -1154,11 +1190,12 @@ impl<A, B, C, D, Out, F: FnMut(A, B, C, D) -> Out + 'static> IntoSplatStep4<A, B
 macro_rules! impl_splat4_step {
     ($($P:ident),+) => {
         impl<A, B, C, D, Out, F: 'static, $($P: Param + 'static),+>
-            SplatCall4<A, B, C, D, Out> for Step<F, ($($P,)+)>
+            SplatCall4<A, B, C, D> for Step<F, ($($P,)+)>
         where for<'a> &'a mut F:
             FnMut($($P,)+ A, B, C, D) -> Out +
             FnMut($($P::Item<'a>,)+ A, B, C, D) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D) -> Out {
@@ -1196,21 +1233,24 @@ macro_rules! impl_splat4_step {
 
 /// Internal: callable trait for resolved 5-splat steps.
 #[doc(hidden)]
-pub trait SplatCall5<A, B, C, D, E, Out> {
+pub trait SplatCall5<A, B, C, D, E> {
+    /// Output type of this splat step.
+    type Out;
     #[allow(clippy::many_single_char_names)]
-    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out;
+    fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Self::Out;
 }
 
 /// Converts a named function into a resolved 5-splat step.
 #[doc(hidden)]
 pub trait IntoSplatStep5<A, B, C, D, E, Out, Params> {
-    type Step: SplatCall5<A, B, C, D, E, Out>;
+    type Step: SplatCall5<A, B, C, D, E, Out = Out>;
     fn into_splat_step(self, registry: &Registry) -> Self::Step;
 }
 
-impl<A, B, C, D, E, Out, F: FnMut(A, B, C, D, E) -> Out + 'static> SplatCall5<A, B, C, D, E, Out>
+impl<A, B, C, D, E, Out, F: FnMut(A, B, C, D, E) -> Out + 'static> SplatCall5<A, B, C, D, E>
     for Step<F, ()>
 {
+    type Out = Out;
     #[inline(always)]
     #[allow(clippy::many_single_char_names)]
     fn call_splat(&mut self, _world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out {
@@ -1234,11 +1274,12 @@ impl<A, B, C, D, E, Out, F: FnMut(A, B, C, D, E) -> Out + 'static>
 macro_rules! impl_splat5_step {
     ($($P:ident),+) => {
         impl<A, B, C, D, E, Out, F: 'static, $($P: Param + 'static),+>
-            SplatCall5<A, B, C, D, E, Out> for Step<F, ($($P,)+)>
+            SplatCall5<A, B, C, D, E> for Step<F, ($($P,)+)>
         where for<'a> &'a mut F:
             FnMut($($P,)+ A, B, C, D, E) -> Out +
             FnMut($($P::Item<'a>,)+ A, B, C, D, E) -> Out,
         {
+            type Out = Out;
             #[inline(always)]
             #[allow(non_snake_case, clippy::many_single_char_names)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out {
@@ -1278,7 +1319,916 @@ all_tuples!(impl_splat4_step);
 all_tuples!(impl_splat5_step);
 
 // =============================================================================
-// PipelineStart — entry point
+// ChainCall — named chain dispatch trait
+// =============================================================================
+
+/// Trait for pipeline chain nodes. Each node transforms input through
+/// the chain, producing an output. `In` appears only on the trait impl,
+/// not on the implementing struct — this preserves HRTB compatibility
+/// so `Pipeline<Chain>` can satisfy `for<'a> Handler<&'a T>`.
+#[doc(hidden)]
+pub trait ChainCall<In> {
+    /// The output type of this chain node.
+    type Out;
+    /// Execute the chain on the given input.
+    fn call(&mut self, world: &mut World, input: In) -> Self::Out;
+}
+
+// =============================================================================
+// Chain nodes — named types for HRTB-compatible pipeline composition
+// =============================================================================
+//
+// Each combinator gets a named struct following the iterator adapter pattern
+// (like `Map<I, F>`, `Filter<I, P>`). `In` appears only on the `ChainCall<In>`
+// trait impl, never on the struct — this is what enables HRTB boxing.
+
+/// Identity passthrough node. Used as the initial chain element.
+#[doc(hidden)]
+pub struct IdentityNode;
+
+impl<In> ChainCall<In> for IdentityNode {
+    type Out = In;
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, input: In) -> In {
+        input
+    }
+}
+
+// -- Core (any Out) ----------------------------------------------------------
+
+/// Chain node for `.then()` — transforms output via a resolved step.
+#[doc(hidden)]
+pub struct ThenNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, Prev, S> ChainCall<In> for ThenNode<Prev, S>
+where
+    Prev: ChainCall<In>,
+    S: StepCall<Prev::Out>,
+{
+    type Out = S::Out;
+    fn call(&mut self, world: &mut World, input: In) -> S::Out {
+        let mid = self.prev.call(world, input);
+        self.step.call(world, mid)
+    }
+}
+
+/// Chain node for `.tap()` — side effect via `&Out`, value passes through.
+#[doc(hidden)]
+pub struct TapNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, Prev, S> ChainCall<In> for TapNode<Prev, S>
+where
+    Prev: ChainCall<In>,
+    S: RefStepCall<Prev::Out, Out = ()>,
+{
+    type Out = Prev::Out;
+    fn call(&mut self, world: &mut World, input: In) -> Prev::Out {
+        let val = self.prev.call(world, input);
+        self.step.call(world, &val);
+        val
+    }
+}
+
+/// Chain node for `.guard()` — wraps output in `Option` based on predicate.
+#[doc(hidden)]
+pub struct GuardNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, Prev, S> ChainCall<In> for GuardNode<Prev, S>
+where
+    Prev: ChainCall<In>,
+    S: RefStepCall<Prev::Out, Out = bool>,
+{
+    type Out = Option<Prev::Out>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<Prev::Out> {
+        let val = self.prev.call(world, input);
+        if self.step.call(world, &val) { Some(val) } else { None }
+    }
+}
+
+/// Chain node for `.dedup()` — suppresses consecutive unchanged values.
+#[doc(hidden)]
+pub struct DedupNode<Prev, T> {
+    pub(crate) prev: Prev,
+    pub(crate) last: Option<T>,
+}
+
+impl<In, T: PartialEq + Clone, Prev: ChainCall<In, Out = T>> ChainCall<In>
+    for DedupNode<Prev, T>
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        let val = self.prev.call(world, input);
+        if self.last.as_ref() == Some(&val) {
+            None
+        } else {
+            self.last = Some(val.clone());
+            Some(val)
+        }
+    }
+}
+
+/// Chain node for `.scan()` — transforms with persistent accumulator.
+#[doc(hidden)]
+pub struct ScanNode<Prev, S, Acc> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) acc: Acc,
+}
+
+impl<In, Prev, S, Acc> ChainCall<In> for ScanNode<Prev, S, Acc>
+where
+    Prev: ChainCall<In>,
+    S: ScanStepCall<Acc, Prev::Out>,
+{
+    type Out = S::Out;
+    fn call(&mut self, world: &mut World, input: In) -> S::Out {
+        let val = self.prev.call(world, input);
+        self.step.call(world, &mut self.acc, val)
+    }
+}
+
+/// Chain node for `.dispatch()` — feeds output to a [`Handler`].
+#[doc(hidden)]
+pub struct DispatchNode<Prev, H> {
+    pub(crate) prev: Prev,
+    pub(crate) handler: H,
+}
+
+impl<In, Prev, H> ChainCall<In> for DispatchNode<Prev, H>
+where
+    Prev: ChainCall<In>,
+    H: Handler<Prev::Out>,
+{
+    type Out = ();
+    fn call(&mut self, world: &mut World, input: In) {
+        let out = self.prev.call(world, input);
+        self.handler.run(world, out);
+    }
+}
+
+/// Chain node for `.tee()` — runs side-effect chain on `&Out`, passes value through.
+///
+/// `C` is currently `FnMut(&mut World, &Out)` (DagArm closure). Updated to
+/// `ArmChainCall` in Phase 3.
+#[doc(hidden)]
+pub struct TeeNode<Prev, C> {
+    pub(crate) prev: Prev,
+    pub(crate) side: C,
+}
+
+impl<In, Prev, C> ChainCall<In> for TeeNode<Prev, C>
+where
+    Prev: ChainCall<In>,
+    Prev::Out: 'static,
+    C: for<'a> ChainCall<&'a Prev::Out, Out = ()>,
+{
+    type Out = Prev::Out;
+    fn call(&mut self, world: &mut World, input: In) -> Prev::Out {
+        let val = self.prev.call(world, input);
+        self.side.call(world, &val);
+        val
+    }
+}
+
+/// Chain node for `.route()` — binary conditional dispatch.
+#[doc(hidden)]
+pub struct RouteNode<Prev, P, C0, C1> {
+    pub(crate) prev: Prev,
+    pub(crate) pred: P,
+    pub(crate) on_true: C0,
+    pub(crate) on_false: C1,
+}
+
+impl<In, Prev, P, C0, C1> ChainCall<In> for RouteNode<Prev, P, C0, C1>
+where
+    Prev: ChainCall<In>,
+    P: RefStepCall<Prev::Out, Out = bool>,
+    C0: ChainCall<Prev::Out>,
+    C1: ChainCall<Prev::Out, Out = C0::Out>,
+{
+    type Out = C0::Out;
+    fn call(&mut self, world: &mut World, input: In) -> C0::Out {
+        let val = self.prev.call(world, input);
+        if self.pred.call(world, &val) {
+            self.on_true.call(world, val)
+        } else {
+            self.on_false.call(world, val)
+        }
+    }
+}
+
+// -- Option<T> nodes ---------------------------------------------------------
+
+/// Chain node for `.map()` on `Option<T>`.
+#[doc(hidden)]
+pub struct MapOptionNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, Prev, S> ChainCall<In> for MapOptionNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    S: StepCall<T>,
+{
+    type Out = Option<S::Out>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<S::Out> {
+        self.prev
+            .call(world, input)
+            .map(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.filter()` on `Option<T>`.
+#[doc(hidden)]
+pub struct FilterNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, Prev, S> ChainCall<In> for FilterNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    S: RefStepCall<T, Out = bool>,
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        self.prev
+            .call(world, input)
+            .filter(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.inspect()` on `Option<T>`.
+#[doc(hidden)]
+pub struct InspectOptionNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, Prev, S> ChainCall<In> for InspectOptionNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    S: RefStepCall<T, Out = ()>,
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        self.prev
+            .call(world, input)
+            .inspect(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.and_then()` on `Option<T>`.
+#[doc(hidden)]
+pub struct AndThenNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, U, Prev, S> ChainCall<In> for AndThenNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    S: StepCall<T, Out = Option<U>>,
+{
+    type Out = Option<U>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<U> {
+        self.prev
+            .call(world, input)
+            .and_then(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.on_none()` — side effect when `None`.
+#[doc(hidden)]
+pub struct OnNoneNode<Prev, P> {
+    pub(crate) prev: Prev,
+    pub(crate) producer: P,
+}
+
+impl<In, T, Prev, P> ChainCall<In> for OnNoneNode<Prev, P>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    P: ProducerCall<Out = ()>,
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        let result = self.prev.call(world, input);
+        if result.is_none() {
+            self.producer.call(world);
+        }
+        result
+    }
+}
+
+/// Chain node for `.ok_or()` — `Option<T>` → `Result<T, E>`.
+#[doc(hidden)]
+pub struct OkOrNode<Prev, E> {
+    pub(crate) prev: Prev,
+    pub(crate) err: E,
+}
+
+impl<In, T, E: Clone, Prev: ChainCall<In, Out = Option<T>>> ChainCall<In> for OkOrNode<Prev, E> {
+    type Out = Result<T, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
+        self.prev.call(world, input).ok_or_else(|| self.err.clone())
+    }
+}
+
+/// Chain node for `.ok_or_else()` — `Option<T>` → `Result<T, E>`.
+#[doc(hidden)]
+pub struct OkOrElseNode<Prev, P> {
+    pub(crate) prev: Prev,
+    pub(crate) producer: P,
+}
+
+impl<In, T, E, Prev, P> ChainCall<In> for OkOrElseNode<Prev, P>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    P: ProducerCall<Out = E>,
+{
+    type Out = Result<T, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
+        self.prev
+            .call(world, input)
+            .ok_or_else(|| self.producer.call(world))
+    }
+}
+
+/// Chain node for `.unwrap_or()` on `Option<T>`.
+#[doc(hidden)]
+pub struct UnwrapOrOptionNode<Prev, T> {
+    pub(crate) prev: Prev,
+    pub(crate) default: T,
+}
+
+impl<In, T: Clone, Prev: ChainCall<In, Out = Option<T>>> ChainCall<In>
+    for UnwrapOrOptionNode<Prev, T>
+{
+    type Out = T;
+    fn call(&mut self, world: &mut World, input: In) -> T {
+        self.prev
+            .call(world, input)
+            .unwrap_or_else(|| self.default.clone())
+    }
+}
+
+/// Chain node for `.unwrap_or_else()` on `Option<T>`.
+#[doc(hidden)]
+pub struct UnwrapOrElseOptionNode<Prev, P> {
+    pub(crate) prev: Prev,
+    pub(crate) producer: P,
+}
+
+impl<In, T, Prev, P> ChainCall<In> for UnwrapOrElseOptionNode<Prev, P>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    P: ProducerCall<Out = T>,
+{
+    type Out = T;
+    fn call(&mut self, world: &mut World, input: In) -> T {
+        self.prev
+            .call(world, input)
+            .unwrap_or_else(|| self.producer.call(world))
+    }
+}
+
+// -- Result<T, E> nodes ------------------------------------------------------
+
+/// Chain node for `.map()` on `Result<T, E>`.
+#[doc(hidden)]
+pub struct MapResultNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, Prev, S> ChainCall<In> for MapResultNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: StepCall<T>,
+{
+    type Out = Result<S::Out, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<S::Out, E> {
+        self.prev
+            .call(world, input)
+            .map(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.and_then()` on `Result<T, E>`.
+#[doc(hidden)]
+pub struct AndThenResultNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, U, E, Prev, S> ChainCall<In> for AndThenResultNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: StepCall<T, Out = Result<U, E>>,
+{
+    type Out = Result<U, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<U, E> {
+        self.prev
+            .call(world, input)
+            .and_then(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.catch()` — `Result<T, E>` → `Option<T>`.
+#[doc(hidden)]
+pub struct CatchNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, Prev, S> ChainCall<In> for CatchNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: StepCall<E, Out = ()>,
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        match self.prev.call(world, input) {
+            Ok(val) => Some(val),
+            Err(err) => {
+                self.step.call(world, err);
+                None
+            }
+        }
+    }
+}
+
+/// Chain node for `.map_err()`.
+#[doc(hidden)]
+pub struct MapErrNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, Prev, S> ChainCall<In> for MapErrNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: StepCall<E>,
+{
+    type Out = Result<T, S::Out>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, S::Out> {
+        self.prev
+            .call(world, input)
+            .map_err(|err| self.step.call(world, err))
+    }
+}
+
+/// Chain node for `.or_else()`.
+#[doc(hidden)]
+pub struct OrElseNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, E2, Prev, S> ChainCall<In> for OrElseNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: StepCall<E, Out = Result<T, E2>>,
+{
+    type Out = Result<T, E2>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, E2> {
+        self.prev
+            .call(world, input)
+            .or_else(|err| self.step.call(world, err))
+    }
+}
+
+/// Chain node for `.inspect()` on `Result<T, E>`.
+#[doc(hidden)]
+pub struct InspectResultNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, Prev, S> ChainCall<In> for InspectResultNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: RefStepCall<T, Out = ()>,
+{
+    type Out = Result<T, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
+        self.prev
+            .call(world, input)
+            .inspect(|val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for `.inspect_err()`.
+#[doc(hidden)]
+pub struct InspectErrNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, Prev, S> ChainCall<In> for InspectErrNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: RefStepCall<E, Out = ()>,
+{
+    type Out = Result<T, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
+        self.prev
+            .call(world, input)
+            .inspect_err(|err| self.step.call(world, err))
+    }
+}
+
+/// Chain node for `.ok()` — `Result<T, E>` → `Option<T>`.
+#[doc(hidden)]
+pub struct OkResultNode<Prev> {
+    pub(crate) prev: Prev,
+}
+
+impl<In, T, E, Prev: ChainCall<In, Out = Result<T, E>>> ChainCall<In> for OkResultNode<Prev> {
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        self.prev.call(world, input).ok()
+    }
+}
+
+/// Chain node for `.unwrap_or()` on `Result<T, E>`.
+#[doc(hidden)]
+pub struct UnwrapOrResultNode<Prev, T> {
+    pub(crate) prev: Prev,
+    pub(crate) default: T,
+}
+
+impl<In, T: Clone, E, Prev: ChainCall<In, Out = Result<T, E>>> ChainCall<In>
+    for UnwrapOrResultNode<Prev, T>
+{
+    type Out = T;
+    fn call(&mut self, world: &mut World, input: In) -> T {
+        self.prev
+            .call(world, input)
+            .unwrap_or_else(|_| self.default.clone())
+    }
+}
+
+/// Chain node for `.unwrap_or_else()` on `Result<T, E>`.
+#[doc(hidden)]
+pub struct UnwrapOrElseResultNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E, Prev, S> ChainCall<In> for UnwrapOrElseResultNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: StepCall<E, Out = T>,
+{
+    type Out = T;
+    fn call(&mut self, world: &mut World, input: In) -> T {
+        match self.prev.call(world, input) {
+            Ok(val) => val,
+            Err(err) => self.step.call(world, err),
+        }
+    }
+}
+
+// -- Bool nodes --------------------------------------------------------------
+
+/// Chain node for `.not()`.
+#[doc(hidden)]
+pub struct NotNode<Prev> {
+    pub(crate) prev: Prev,
+}
+
+impl<In, Prev: ChainCall<In, Out = bool>> ChainCall<In> for NotNode<Prev> {
+    type Out = bool;
+    fn call(&mut self, world: &mut World, input: In) -> bool {
+        !self.prev.call(world, input)
+    }
+}
+
+/// Chain node for `.and()` on bool.
+#[doc(hidden)]
+pub struct AndBoolNode<Prev, P> {
+    pub(crate) prev: Prev,
+    pub(crate) producer: P,
+}
+
+impl<In, Prev, P> ChainCall<In> for AndBoolNode<Prev, P>
+where
+    Prev: ChainCall<In, Out = bool>,
+    P: ProducerCall<Out = bool>,
+{
+    type Out = bool;
+    fn call(&mut self, world: &mut World, input: In) -> bool {
+        self.prev.call(world, input) && self.producer.call(world)
+    }
+}
+
+/// Chain node for `.or()` on bool.
+#[doc(hidden)]
+pub struct OrBoolNode<Prev, P> {
+    pub(crate) prev: Prev,
+    pub(crate) producer: P,
+}
+
+impl<In, Prev, P> ChainCall<In> for OrBoolNode<Prev, P>
+where
+    Prev: ChainCall<In, Out = bool>,
+    P: ProducerCall<Out = bool>,
+{
+    type Out = bool;
+    fn call(&mut self, world: &mut World, input: In) -> bool {
+        self.prev.call(world, input) || self.producer.call(world)
+    }
+}
+
+/// Chain node for `.xor()` on bool.
+#[doc(hidden)]
+pub struct XorBoolNode<Prev, P> {
+    pub(crate) prev: Prev,
+    pub(crate) producer: P,
+}
+
+impl<In, Prev, P> ChainCall<In> for XorBoolNode<Prev, P>
+where
+    Prev: ChainCall<In, Out = bool>,
+    P: ProducerCall<Out = bool>,
+{
+    type Out = bool;
+    fn call(&mut self, world: &mut World, input: In) -> bool {
+        self.prev.call(world, input) ^ self.producer.call(world)
+    }
+}
+
+// -- Cloned nodes ------------------------------------------------------------
+
+/// Chain node for `.cloned()` on `&T`.
+#[doc(hidden)]
+pub struct ClonedNode<Prev> {
+    pub(crate) prev: Prev,
+}
+
+impl<'a, In, T: Clone + 'a, Prev: ChainCall<In, Out = &'a T>> ChainCall<In>
+    for ClonedNode<Prev>
+{
+    type Out = T;
+    fn call(&mut self, world: &mut World, input: In) -> T {
+        T::clone(self.prev.call(world, input))
+    }
+}
+
+/// Chain node for `.cloned()` on `Option<&T>`.
+#[doc(hidden)]
+pub struct ClonedOptionNode<Prev> {
+    pub(crate) prev: Prev,
+}
+
+impl<'a, In, T: Clone + 'a, Prev: ChainCall<In, Out = Option<&'a T>>> ChainCall<In>
+    for ClonedOptionNode<Prev>
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        self.prev.call(world, input).cloned()
+    }
+}
+
+/// Chain node for `.cloned()` on `Result<&T, E>`.
+#[doc(hidden)]
+pub struct ClonedResultNode<Prev> {
+    pub(crate) prev: Prev,
+}
+
+impl<'a, In, T: Clone + 'a, E, Prev: ChainCall<In, Out = Result<&'a T, E>>> ChainCall<In>
+    for ClonedResultNode<Prev>
+{
+    type Out = Result<T, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
+        self.prev.call(world, input).cloned()
+    }
+}
+
+// -- DAG-specific nodes (borrow intermediate) --------------------------------
+//
+// DAG steps borrow `&Prev::Out` instead of consuming by value. These nodes
+// parallel the pipeline nodes above but use `for<'a> StepCall<&'a T>` bounds
+// and HRTB arm chains (`for<'a> ChainCall<&'a T>`).
+
+/// Chain node for DAG `.then()` — borrows intermediate output for next step.
+///
+/// Unlike pipeline's [`ThenNode`] which passes by value, this borrows `&Prev::Out`
+/// for the step. Used for DAG chains where intermediates are owned and borrowed.
+#[doc(hidden)]
+pub struct DagThenNode<Prev, S, NewOut> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) _out: PhantomData<fn() -> NewOut>,
+}
+
+impl<In, Prev, S, NewOut: 'static> ChainCall<In> for DagThenNode<Prev, S, NewOut>
+where
+    Prev: ChainCall<In>,
+    Prev::Out: 'static,
+    S: for<'a> StepCall<&'a Prev::Out, Out = NewOut>,
+{
+    type Out = NewOut;
+    fn call(&mut self, world: &mut World, input: In) -> NewOut {
+        let out = self.prev.call(world, input);
+        self.step.call(world, &out)
+    }
+}
+
+/// Chain node for DAG `.scan()` — scan with borrowed input.
+///
+/// Like [`ScanNode`] but the step receives `&Prev::Out` via [`RefScanStepCall`].
+#[doc(hidden)]
+pub struct RefScanNode<Prev, S, Acc> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) acc: Acc,
+}
+
+impl<In, Prev, S, Acc> ChainCall<In> for RefScanNode<Prev, S, Acc>
+where
+    Prev: ChainCall<In>,
+    S: RefScanStepCall<Acc, Prev::Out>,
+{
+    type Out = S::Out;
+    fn call(&mut self, world: &mut World, input: In) -> S::Out {
+        let val = self.prev.call(world, input);
+        self.step.call(world, &mut self.acc, &val)
+    }
+}
+
+/// Chain node for DAG `.route()` — arms borrow `&Prev::Out` (HRTB).
+///
+/// Unlike pipeline's [`RouteNode`] which passes by value, this borrows
+/// the value for the predicate and arms. Arms satisfy `for<'a> ChainCall<&'a Out>`.
+#[doc(hidden)]
+pub struct DagRouteNode<Prev, P, C0, C1, NewOut> {
+    pub(crate) prev: Prev,
+    pub(crate) pred: P,
+    pub(crate) on_true: C0,
+    pub(crate) on_false: C1,
+    pub(crate) _out: PhantomData<fn() -> NewOut>,
+}
+
+impl<In, Prev, P, C0, C1, NewOut> ChainCall<In> for DagRouteNode<Prev, P, C0, C1, NewOut>
+where
+    Prev: ChainCall<In>,
+    Prev::Out: 'static,
+    P: RefStepCall<Prev::Out, Out = bool>,
+    C0: for<'a> ChainCall<&'a Prev::Out, Out = NewOut>,
+    C1: for<'a> ChainCall<&'a Prev::Out, Out = NewOut>,
+{
+    type Out = NewOut;
+    fn call(&mut self, world: &mut World, input: In) -> NewOut {
+        let val = self.prev.call(world, input);
+        if self.pred.call(world, &val) {
+            self.on_true.call(world, &val)
+        } else {
+            self.on_false.call(world, &val)
+        }
+    }
+}
+
+/// Chain node for DAG `.map()` on `Option<T>` — step borrows `&T`.
+///
+/// Like [`MapOptionNode`] but the step receives `&T` instead of `T` by value.
+#[doc(hidden)]
+pub struct DagMapOptionNode<Prev, S, U> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) _out: PhantomData<fn() -> U>,
+}
+
+impl<In, T: 'static, U: 'static, Prev, S> ChainCall<In> for DagMapOptionNode<Prev, S, U>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    S: for<'a> StepCall<&'a T, Out = U>,
+{
+    type Out = Option<U>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<U> {
+        self.prev
+            .call(world, input)
+            .map(|ref val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for DAG `.and_then()` on `Option<T>` — step borrows `&T`.
+#[doc(hidden)]
+pub struct DagAndThenOptionNode<Prev, S, U> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) _out: PhantomData<fn() -> U>,
+}
+
+impl<In, T: 'static, U: 'static, Prev, S> ChainCall<In> for DagAndThenOptionNode<Prev, S, U>
+where
+    Prev: ChainCall<In, Out = Option<T>>,
+    S: for<'a> StepCall<&'a T, Out = Option<U>>,
+{
+    type Out = Option<U>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<U> {
+        self.prev
+            .call(world, input)
+            .and_then(|ref val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for DAG `.map()` on `Result<T, E>` — step borrows `&T`.
+#[doc(hidden)]
+pub struct DagMapResultNode<Prev, S, U> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) _out: PhantomData<fn() -> U>,
+}
+
+impl<In, T: 'static, E, U: 'static, Prev, S> ChainCall<In> for DagMapResultNode<Prev, S, U>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: for<'a> StepCall<&'a T, Out = U>,
+{
+    type Out = Result<U, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<U, E> {
+        self.prev
+            .call(world, input)
+            .map(|ref val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for DAG `.and_then()` on `Result<T, E>` — step borrows `&T`.
+#[doc(hidden)]
+pub struct DagAndThenResultNode<Prev, S, U> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+    pub(crate) _out: PhantomData<fn() -> U>,
+}
+
+impl<In, T: 'static, E, U: 'static, Prev, S> ChainCall<In> for DagAndThenResultNode<Prev, S, U>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: for<'a> StepCall<&'a T, Out = Result<U, E>>,
+{
+    type Out = Result<U, E>;
+    fn call(&mut self, world: &mut World, input: In) -> Result<U, E> {
+        self.prev
+            .call(world, input)
+            .and_then(|ref val| self.step.call(world, val))
+    }
+}
+
+/// Chain node for DAG `.catch()` on `Result<T, E>` — error handler borrows `&E`.
+///
+/// Like [`CatchNode`] but the step receives `&E` instead of consuming `E`.
+#[doc(hidden)]
+pub struct DagCatchNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<In, T, E: 'static, Prev, S> ChainCall<In> for DagCatchNode<Prev, S>
+where
+    Prev: ChainCall<In, Out = Result<T, E>>,
+    S: for<'a> StepCall<&'a E, Out = ()>,
+{
+    type Out = Option<T>;
+    fn call(&mut self, world: &mut World, input: In) -> Option<T> {
+        match self.prev.call(world, input) {
+            Ok(val) => Some(val),
+            Err(ref err) => {
+                self.step.call(world, err);
+                None
+            }
+        }
+    }
+}
+
+// -- Terminal nodes ----------------------------------------------------------
+
+/// Chain node for `build()` on `Option<()>` — discards the option wrapper.
+#[doc(hidden)]
+pub struct DiscardOptionNode<Prev> {
+    pub(crate) prev: Prev,
+}
+
+impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionNode<Prev> {
+    type Out = ();
+    fn call(&mut self, world: &mut World, input: In) {
+        let _ = self.prev.call(world, input);
+    }
+}
+
+// =============================================================================
+// PipelineBuilder — entry point
 // =============================================================================
 
 /// Entry point for building a pre-resolved step pipeline.
@@ -1290,7 +2240,7 @@ all_tuples!(impl_splat5_step);
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart, Handler};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder, Handler};
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(10);
@@ -1305,7 +2255,7 @@ all_tuples!(impl_splat5_step);
 /// }
 ///
 /// let r = world.registry_mut();
-/// let mut pipeline = PipelineStart::<u32>::new()
+/// let mut pipeline = PipelineBuilder::<u32>::new()
 ///     .then(double, r)
 ///     .then(store, r)
 ///     .build();
@@ -1313,9 +2263,9 @@ all_tuples!(impl_splat5_step);
 /// pipeline.run(&mut world, 5);
 /// assert_eq!(world.resource::<String>().as_str(), "50");
 /// ```
-pub struct PipelineStart<In>(PhantomData<fn(In)>);
+pub struct PipelineBuilder<In>(PhantomData<fn(In)>);
 
-impl<In> PipelineStart<In> {
+impl<In> PipelineBuilder<In> {
     /// Create a new step pipeline entry point.
     pub fn new() -> Self {
         Self(PhantomData)
@@ -1326,10 +2276,12 @@ impl<In> PipelineStart<In> {
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out + use<In, Out, Params, S>> {
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| resolved.call(world, input),
+    ) -> PipelineChain<In, Out, ThenNode<IdentityNode, S::Step>> {
+        PipelineChain {
+            chain: ThenNode {
+                prev: IdentityNode,
+                step: f.into_step(registry),
+            },
             _marker: PhantomData,
         }
     }
@@ -1342,45 +2294,46 @@ impl<In> PipelineStart<In> {
         initial: Acc,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out + use<In, Acc, Out, Params, S>>
+    ) -> PipelineChain<In, Out, ScanNode<IdentityNode, S::Step, Acc>>
     where
         Acc: 'static,
         S: IntoScanStep<Acc, In, Out, Params>,
     {
-        let mut step = f.into_scan_step(registry);
-        let mut acc = initial;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                step.call(world, &mut acc, input)
+        PipelineChain {
+            chain: ScanNode {
+                prev: IdentityNode,
+                step: f.into_scan_step(registry),
+                acc: initial,
             },
             _marker: PhantomData,
         }
     }
 }
 
-impl<In> Default for PipelineStart<In> {
+impl<In> Default for PipelineBuilder<In> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 // =============================================================================
-// PipelineBuilder — typestate builder
+// PipelineChain — typestate builder
 // =============================================================================
 
-/// Builder that composes pre-resolved pipeline steps via closure nesting.
+/// Builder that composes pre-resolved pipeline steps via named chain nodes.
 ///
 /// `In` is the pipeline's input type (fixed). `Out` is the current output.
-/// `Chain` is the concrete composed closure type (opaque, never named by users).
+/// `Chain` is the concrete chain type (nested named nodes, like iterator adapters).
 ///
-/// Each combinator consumes `self`, captures the previous chain in a new
-/// closure, and returns a new `PipelineBuilder`. The compiler
-/// monomorphizes the entire chain — zero virtual dispatch through steps.
+/// Each combinator consumes `self`, wraps the previous chain in a new named
+/// node, and returns a new `PipelineChain`. The compiler monomorphizes the
+/// entire chain — zero virtual dispatch through steps. Named types (not
+/// closures) preserve HRTB: `Pipeline<Chain>` can satisfy `for<'a> Handler<&'a T>`.
 ///
 /// IntoStep-based methods (`.then()`, `.map()`, `.and_then()`, `.catch()`)
 /// take `&Registry` to resolve Param state at build time. Closure-based
 /// methods don't need the registry.
-pub struct PipelineBuilder<In, Out, Chain> {
+pub struct PipelineChain<In, Out, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(In) -> Out>,
 }
@@ -1389,26 +2342,17 @@ pub struct PipelineBuilder<In, Out, Chain> {
 // Core — any Out
 // =============================================================================
 
-impl<In, Out, Chain> PipelineBuilder<In, Out, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Out,
-{
+impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// Add a step. Params resolved from the registry.
     pub fn then<NewOut, Params, S: IntoStep<Out, NewOut, Params>>(
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        NewOut,
-        impl FnMut(&mut World, In) -> NewOut + use<In, Out, NewOut, Params, Chain, S>,
-    > {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let out = chain(world, input);
-                resolved.call(world, out)
+    ) -> PipelineChain<In, NewOut, ThenNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: ThenNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -1416,7 +2360,7 @@ where
 
     /// Run the pipeline directly. No boxing, no `'static` on `In`.
     pub fn run(&mut self, world: &mut World, input: In) -> Out {
-        (self.chain)(world, input)
+        self.chain.call(world, input)
     }
 
     /// Dispatch pipeline output to a [`Handler<Out>`].
@@ -1426,13 +2370,12 @@ where
     /// [`fan_out!`](crate::fan_out).
     pub fn dispatch<H: Handler<Out>>(
         self,
-        mut handler: H,
-    ) -> PipelineBuilder<In, (), impl FnMut(&mut World, In) + use<In, Out, Chain, H>> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let out = chain(world, input);
-                handler.run(world, out);
+        handler: H,
+    ) -> PipelineChain<In, (), DispatchNode<Chain, H>> {
+        PipelineChain {
+            chain: DispatchNode {
+                prev: self.chain,
+                handler,
             },
             _marker: PhantomData,
         }
@@ -1447,13 +2390,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<Out>, impl FnMut(&mut World, In) -> Option<Out> + use<In, Out, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_ref_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let val = chain(world, input);
-                if resolved.call(world, &val) { Some(val) } else { None }
+    ) -> PipelineChain<In, Option<Out>, GuardNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: GuardNode {
+                prev: self.chain,
+                step: f.into_ref_step(registry),
             },
             _marker: PhantomData,
         }
@@ -1467,14 +2408,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out + use<In, Out, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_ref_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let val = chain(world, input);
-                resolved.call(world, &val);
-                val
+    ) -> PipelineChain<In, Out, TapNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: TapNode {
+                prev: self.chain,
+                step: f.into_ref_step(registry),
             },
             _marker: PhantomData,
         }
@@ -1484,14 +2422,14 @@ where
     /// current value, then moves it into exactly one of two arms.
     ///
     /// Both arms must produce the same output type. Build each arm as
-    /// a sub-pipeline from [`PipelineStart`]. For N-ary routing, nest
+    /// a sub-pipeline from [`PipelineBuilder`]. For N-ary routing, nest
     /// `route` calls in the false arm.
     ///
     /// ```ignore
-    /// let large = PipelineStart::new().then(large_check, reg).then(submit, reg);
-    /// let small = PipelineStart::new().then(submit, reg);
+    /// let large = PipelineBuilder::new().then(large_check, reg).then(submit, reg);
+    /// let small = PipelineBuilder::new().then(submit, reg);
     ///
-    /// PipelineStart::<Order>::new()
+    /// PipelineBuilder::<Order>::new()
     ///     .then(validate, reg)
     ///     .route(|order: &Order| order.size > 1000, reg, large, small)
     ///     .build();
@@ -1500,29 +2438,19 @@ where
         self,
         pred: Pred,
         registry: &Registry,
-        on_true: PipelineBuilder<Out, NewOut, C0>,
-        on_false: PipelineBuilder<Out, NewOut, C1>,
-    ) -> PipelineBuilder<
-        In,
-        NewOut,
-        impl FnMut(&mut World, In) -> NewOut + use<In, Out, NewOut, Params, Chain, C0, C1, Pred>,
-    >
+        on_true: PipelineChain<Out, NewOut, C0>,
+        on_false: PipelineChain<Out, NewOut, C1>,
+    ) -> PipelineChain<In, NewOut, RouteNode<Chain, Pred::Step, C0, C1>>
     where
-        C0: FnMut(&mut World, Out) -> NewOut,
-        C1: FnMut(&mut World, Out) -> NewOut,
+        C0: ChainCall<Out, Out = NewOut>,
+        C1: ChainCall<Out, Out = NewOut>,
     {
-        let mut chain = self.chain;
-        let mut resolved = pred.into_ref_step(registry);
-        let mut c0 = on_true.chain;
-        let mut c1 = on_false.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let val = chain(world, input);
-                if resolved.call(world, &val) {
-                    c0(world, val)
-                } else {
-                    c1(world, val)
-                }
+        PipelineChain {
+            chain: RouteNode {
+                prev: self.chain,
+                pred: pred.into_ref_step(registry),
+                on_true: on_true.chain,
+                on_false: on_false.chain,
             },
             _marker: PhantomData,
         }
@@ -1534,21 +2462,18 @@ where
     ///
     /// Multi-step version of [`tap`](Self::tap) — the arm has the
     /// full DAG combinator API with Param resolution. Build with
-    /// [`DagArmStart::new()`](crate::dag::DagArmStart::new).
+    /// [`DagArmSeed::new()`](crate::dag::DagArmSeed::new).
     pub fn tee<C>(
         self,
         side: DagArm<Out, (), C>,
-    ) -> PipelineBuilder<In, Out, impl FnMut(&mut World, In) -> Out>
+    ) -> PipelineChain<In, Out, TeeNode<Chain, C>>
     where
-        C: FnMut(&mut World, &Out),
+        C: for<'a> ChainCall<&'a Out, Out = ()>,
     {
-        let mut chain = self.chain;
-        let mut side_chain = side.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let val = chain(world, input);
-                side_chain(world, &val);
-                val
+        PipelineChain {
+            chain: TeeNode {
+                prev: self.chain,
+                side: side.chain,
             },
             _marker: PhantomData,
         }
@@ -1562,7 +2487,7 @@ where
     ///
     /// ```ignore
     /// // Running sum — suppress values below threshold
-    /// PipelineStart::<u64>::new()
+    /// PipelineBuilder::<u64>::new()
     ///     .then(identity, reg)
     ///     .scan(0u64, |acc: &mut u64, val: u64| {
     ///         *acc += val;
@@ -1575,27 +2500,20 @@ where
         initial: Acc,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        NewOut,
-        impl FnMut(&mut World, In) -> NewOut + use<In, Out, Acc, NewOut, Params, S, Chain>,
-    >
+    ) -> PipelineChain<In, NewOut, ScanNode<Chain, S::Step, Acc>>
     where
         Acc: 'static,
         S: IntoScanStep<Acc, Out, NewOut, Params>,
     {
-        let mut chain = self.chain;
-        let mut step = f.into_scan_step(registry);
-        let mut acc = initial;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let val = chain(world, input);
-                step.call(world, &mut acc, val)
+        PipelineChain {
+            chain: ScanNode {
+                prev: self.chain,
+                step: f.into_scan_step(registry),
+                acc: initial,
             },
             _marker: PhantomData,
         }
     }
-
 }
 
 // =============================================================================
@@ -1604,7 +2522,7 @@ where
 //
 // `.splat()` transitions from a tuple output to a builder whose `.then()`
 // accepts a function taking the tuple elements as individual arguments.
-// After `.splat().then(f, reg)`, the user is back on PipelineBuilder.
+// After `.splat().then(f, reg)`, the user is back on PipelineChain.
 //
 // Builder types are `#[doc(hidden)]` — users only see `.splat().then()`.
 
@@ -1615,11 +2533,31 @@ macro_rules! define_splat_builders {
         $N:literal,
         start: $SplatStart:ident,
         mid: $SplatBuilder:ident,
+        node: $SplatThenNode:ident,
         into_trait: $IntoSplatStep:ident,
         call_trait: $SplatCall:ident,
         ($($T:ident),+),
         ($($idx:tt),+)
     ) => {
+        /// Chain node for `.splat().then()` — destructures tuple into individual arguments.
+        #[doc(hidden)]
+        pub struct $SplatThenNode<Prev, S> {
+            prev: Prev,
+            step: S,
+        }
+
+        impl<In, $($T,)+ Prev, S> ChainCall<In> for $SplatThenNode<Prev, S>
+        where
+            Prev: ChainCall<In, Out = ($($T,)+)>,
+            S: $SplatCall<$($T),+>,
+        {
+            type Out = S::Out;
+            fn call(&mut self, world: &mut World, input: In) -> S::Out {
+                let tuple = self.prev.call(world, input);
+                self.step.call_splat(world, $(tuple.$idx),+)
+            }
+        }
+
         /// Splat builder at pipeline start position.
         #[doc(hidden)]
         pub struct $SplatStart<$($T),+>(PhantomData<fn(($($T,)+))>);
@@ -1630,26 +2568,21 @@ macro_rules! define_splat_builders {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> PipelineBuilder<
-                ($($T,)+),
-                Out,
-                impl FnMut(&mut World, ($($T,)+)) -> Out
-                    + use<$($T,)+ Out, Params, S>,
-            >
+            ) -> PipelineChain<($($T,)+), Out, $SplatThenNode<IdentityNode, S::Step>>
             where
                 S: $IntoSplatStep<$($T,)+ Out, Params>,
             {
-                let mut resolved = f.into_splat_step(registry);
-                PipelineBuilder {
-                    chain: move |world: &mut World, input: ($($T,)+)| {
-                        resolved.call_splat(world, $(input.$idx),+)
+                PipelineChain {
+                    chain: $SplatThenNode {
+                        prev: IdentityNode,
+                        step: f.into_splat_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<$($T),+> PipelineStart<($($T,)+)> {
+        impl<$($T),+> PipelineBuilder<($($T,)+)> {
             /// Destructure the tuple input into individual function arguments.
             pub fn splat(self) -> $SplatStart<$($T),+> {
                 $SplatStart(PhantomData)
@@ -1663,40 +2596,27 @@ macro_rules! define_splat_builders {
             _marker: PhantomData<fn(In) -> ($($T,)+)>,
         }
 
-        impl<In, $($T,)+ Chain> $SplatBuilder<In, $($T,)+ Chain>
-        where
-            Chain: FnMut(&mut World, In) -> ($($T,)+),
-        {
+        impl<In, $($T,)+ Chain: ChainCall<In, Out = ($($T,)+)>> $SplatBuilder<In, $($T,)+ Chain> {
             /// Add a step that receives the tuple elements as individual arguments.
             pub fn then<Out, Params, S>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> PipelineBuilder<
-                In,
-                Out,
-                impl FnMut(&mut World, In) -> Out
-                    + use<In, $($T,)+ Out, Params, Chain, S>,
-            >
+            ) -> PipelineChain<In, Out, $SplatThenNode<Chain, S::Step>>
             where
                 S: $IntoSplatStep<$($T,)+ Out, Params>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_splat_step(registry);
-                PipelineBuilder {
-                    chain: move |world: &mut World, input: In| {
-                        let tuple = chain(world, input);
-                        resolved.call_splat(world, $(tuple.$idx),+)
+                PipelineChain {
+                    chain: $SplatThenNode {
+                        prev: self.chain,
+                        step: f.into_splat_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<In, $($T,)+ Chain> PipelineBuilder<In, ($($T,)+), Chain>
-        where
-            Chain: FnMut(&mut World, In) -> ($($T,)+),
-        {
+        impl<In, $($T,)+ Chain: ChainCall<In, Out = ($($T,)+)>> PipelineChain<In, ($($T,)+), Chain> {
             /// Destructure the tuple output into individual function arguments.
             pub fn splat(self) -> $SplatBuilder<In, $($T,)+ Chain> {
                 $SplatBuilder {
@@ -1711,6 +2631,7 @@ macro_rules! define_splat_builders {
 define_splat_builders!(2,
     start: SplatStart2,
     mid: SplatBuilder2,
+    node: SplatThenNode2,
     into_trait: IntoSplatStep2,
     call_trait: SplatCall2,
     (A, B),
@@ -1720,6 +2641,7 @@ define_splat_builders!(2,
 define_splat_builders!(3,
     start: SplatStart3,
     mid: SplatBuilder3,
+    node: SplatThenNode3,
     into_trait: IntoSplatStep3,
     call_trait: SplatCall3,
     (A, B, C),
@@ -1729,6 +2651,7 @@ define_splat_builders!(3,
 define_splat_builders!(4,
     start: SplatStart4,
     mid: SplatBuilder4,
+    node: SplatThenNode4,
     into_trait: IntoSplatStep4,
     call_trait: SplatCall4,
     (A, B, C, D),
@@ -1738,6 +2661,7 @@ define_splat_builders!(4,
 define_splat_builders!(5,
     start: SplatStart5,
     mid: SplatBuilder5,
+    node: SplatThenNode5,
     into_trait: IntoSplatStep5,
     call_trait: SplatCall5,
     (A, B, C, D, E),
@@ -1748,9 +2672,8 @@ define_splat_builders!(5,
 // Dedup — suppress unchanged values
 // =============================================================================
 
-impl<In, Out: PartialEq + Clone, Chain> PipelineBuilder<In, Out, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Out,
+impl<In, Out: PartialEq + Clone, Chain: ChainCall<In, Out = Out>>
+    PipelineChain<In, Out, Chain>
 {
     /// Suppress consecutive unchanged values. Returns `Some(val)`
     /// when the value differs from the previous invocation, `None`
@@ -1758,20 +2681,11 @@ where
     ///
     /// Requires `PartialEq + Clone` — the previous value is stored
     /// internally for comparison.
-    pub fn dedup(
-        self,
-    ) -> PipelineBuilder<In, Option<Out>, impl FnMut(&mut World, In) -> Option<Out>> {
-        let mut chain = self.chain;
-        let mut prev: Option<Out> = None;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let val = chain(world, input);
-                if prev.as_ref() == Some(&val) {
-                    None
-                } else {
-                    prev = Some(val.clone());
-                    Some(val)
-                }
+    pub fn dedup(self) -> PipelineChain<In, Option<Out>, DedupNode<Chain, Out>> {
+        PipelineChain {
+            chain: DedupNode {
+                prev: self.chain,
+                last: None,
             },
             _marker: PhantomData,
         }
@@ -1782,16 +2696,12 @@ where
 // Bool combinators
 // =============================================================================
 
-impl<In, Chain> PipelineBuilder<In, bool, Chain>
-where
-    Chain: FnMut(&mut World, In) -> bool,
-{
+impl<In, Chain: ChainCall<In, Out = bool>> PipelineChain<In, bool, Chain> {
     /// Invert a boolean value.
     #[allow(clippy::should_implement_trait)]
-    pub fn not(self) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| !chain(world, input),
+    pub fn not(self) -> PipelineChain<In, bool, NotNode<Chain>> {
+        PipelineChain {
+            chain: NotNode { prev: self.chain },
             _marker: PhantomData,
         }
     }
@@ -1803,12 +2713,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool + use<In, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_producer(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input) && resolved.call(world)
+    ) -> PipelineChain<In, bool, AndBoolNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: AndBoolNode {
+                prev: self.chain,
+                producer: f.into_producer(registry),
             },
             _marker: PhantomData,
         }
@@ -1821,12 +2730,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool + use<In, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_producer(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input) || resolved.call(world)
+    ) -> PipelineChain<In, bool, OrBoolNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: OrBoolNode {
+                prev: self.chain,
+                producer: f.into_producer(registry),
             },
             _marker: PhantomData,
         }
@@ -1839,12 +2747,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, bool, impl FnMut(&mut World, In) -> bool + use<In, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_producer(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input) ^ resolved.call(world)
+    ) -> PipelineChain<In, bool, XorBoolNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: XorBoolNode {
+                prev: self.chain,
+                producer: f.into_producer(registry),
             },
             _marker: PhantomData,
         }
@@ -1855,62 +2762,49 @@ where
 // Clone helpers — &T → T transitions
 // =============================================================================
 
-impl<'a, In, T: Clone, Chain> PipelineBuilder<In, &'a T, Chain>
-where
-    Chain: FnMut(&mut World, In) -> &'a T,
-{
+impl<'a, In, T: Clone, Chain: ChainCall<In, Out = &'a T>> PipelineChain<In, &'a T, Chain> {
     /// Clone a borrowed output to produce an owned value.
     ///
     /// Transitions the pipeline from `&T` to `T`. Uses UFCS
     /// (`T::clone(val)`) — `val.clone()` on a `&&T` resolves to
     /// `<&T as Clone>::clone` and returns `&T`, not `T`.
-    pub fn cloned(self) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| T::clone(chain(world, input)),
+    pub fn cloned(self) -> PipelineChain<In, T, ClonedNode<Chain>> {
+        PipelineChain {
+            chain: ClonedNode { prev: self.chain },
             _marker: PhantomData,
         }
     }
 }
 
-impl<'a, In, T: Clone, Chain> PipelineBuilder<In, Option<&'a T>, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Option<&'a T>,
+impl<'a, In, T: Clone, Chain: ChainCall<In, Out = Option<&'a T>>>
+    PipelineChain<In, Option<&'a T>, Chain>
 {
     /// Clone inner borrowed value. `Option<&T>` → `Option<T>`.
-    pub fn cloned(self) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T>> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| chain(world, input).cloned(),
+    pub fn cloned(self) -> PipelineChain<In, Option<T>, ClonedOptionNode<Chain>> {
+        PipelineChain {
+            chain: ClonedOptionNode { prev: self.chain },
             _marker: PhantomData,
         }
     }
 }
 
-impl<'a, In, T: Clone, E, Chain> PipelineBuilder<In, Result<&'a T, E>, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Result<&'a T, E>,
+impl<'a, In, T: Clone, E, Chain: ChainCall<In, Out = Result<&'a T, E>>>
+    PipelineChain<In, Result<&'a T, E>, Chain>
 {
     /// Clone inner borrowed Ok value. `Result<&T, E>` → `Result<T, E>`.
-    pub fn cloned(
-        self,
-    ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| chain(world, input).cloned(),
+    pub fn cloned(self) -> PipelineChain<In, Result<T, E>, ClonedResultNode<Chain>> {
+        PipelineChain {
+            chain: ClonedResultNode { prev: self.chain },
             _marker: PhantomData,
         }
     }
 }
 
 // =============================================================================
-// Option helpers — PipelineBuilder<In, Option<T>, Chain>
+// Option helpers — PipelineChain<In, Option<T>, Chain>
 // =============================================================================
 
-impl<In, T, Chain> PipelineBuilder<In, Option<T>, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Option<T>,
-{
+impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineChain<In, Option<T>, Chain> {
     // -- IntoStep-based (hot path) -------------------------------------------
 
     /// Transform the inner value. Step not called on None.
@@ -1918,16 +2812,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        Option<U>,
-        impl FnMut(&mut World, In) -> Option<U> + use<In, T, U, Params, Chain, S>,
-    > {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).map(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Option<U>, MapOptionNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: MapOptionNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -1938,16 +2827,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        Option<U>,
-        impl FnMut(&mut World, In) -> Option<U> + use<In, T, U, Params, Chain, S>,
-    > {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).and_then(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Option<U>, AndThenNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: AndThenNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -1960,16 +2844,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T> + use<In, T, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_producer(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                let result = chain(world, input);
-                if result.is_none() {
-                    resolved.call(world);
-                }
-                result
+    ) -> PipelineChain<In, Option<T>, OnNoneNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: OnNoneNode {
+                prev: self.chain,
+                producer: f.into_producer(registry),
             },
             _marker: PhantomData,
         }
@@ -1980,12 +2859,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T> + use<In, T, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_ref_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).filter(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Option<T>, FilterNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: FilterNode {
+                prev: self.chain,
+                step: f.into_ref_step(registry),
             },
             _marker: PhantomData,
         }
@@ -1996,12 +2874,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T> + use<In, T, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_ref_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).inspect(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Option<T>, InspectOptionNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: InspectOptionNode {
+                prev: self.chain,
+                step: f.into_ref_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2011,14 +2888,11 @@ where
     ///
     /// `Clone` required because the pipeline may run many times —
     /// the error value is cloned on each `None` invocation.
-    pub fn ok_or<E: Clone>(
-        self,
-        err: E,
-    ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E>> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).ok_or_else(|| err.clone())
+    pub fn ok_or<E: Clone>(self, err: E) -> PipelineChain<In, Result<T, E>, OkOrNode<Chain, E>> {
+        PipelineChain {
+            chain: OkOrNode {
+                prev: self.chain,
+                err,
             },
             _marker: PhantomData,
         }
@@ -2029,12 +2903,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E> + use<In, T, E, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_producer(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).ok_or_else(|| resolved.call(world))
+    ) -> PipelineChain<In, Result<T, E>, OkOrElseNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: OkOrElseNode {
+                prev: self.chain,
+                producer: f.into_producer(registry),
             },
             _marker: PhantomData,
         }
@@ -2045,14 +2918,14 @@ where
     /// `Clone` required because the pipeline may run many times —
     /// the default is cloned on each `None` invocation (unlike
     /// std's `unwrap_or` which consumes the value once).
-    pub fn unwrap_or(self, default: T) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T>
+    pub fn unwrap_or(self, default: T) -> PipelineChain<In, T, UnwrapOrOptionNode<Chain, T>>
     where
         T: Clone,
     {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).unwrap_or_else(|| default.clone())
+        PipelineChain {
+            chain: UnwrapOrOptionNode {
+                prev: self.chain,
+                default,
             },
             _marker: PhantomData,
         }
@@ -2063,12 +2936,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T + use<In, T, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_producer(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).unwrap_or_else(|| resolved.call(world))
+    ) -> PipelineChain<In, T, UnwrapOrElseOptionNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: UnwrapOrElseOptionNode {
+                prev: self.chain,
+                producer: f.into_producer(registry),
             },
             _marker: PhantomData,
         }
@@ -2076,12 +2948,11 @@ where
 }
 
 // =============================================================================
-// Result helpers — PipelineBuilder<In, Result<T, E>, Chain>
+// Result helpers — PipelineChain<In, Result<T, E>, Chain>
 // =============================================================================
 
-impl<In, T, E, Chain> PipelineBuilder<In, Result<T, E>, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Result<T, E>,
+impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
+    PipelineChain<In, Result<T, E>, Chain>
 {
     // -- IntoStep-based (hot path) -------------------------------------------
 
@@ -2090,16 +2961,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        Result<U, E>,
-        impl FnMut(&mut World, In) -> Result<U, E> + use<In, T, E, U, Params, Chain, S>,
-    > {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).map(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Result<U, E>, MapResultNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: MapResultNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2110,16 +2976,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        Result<U, E>,
-        impl FnMut(&mut World, In) -> Result<U, E> + use<In, T, E, U, Params, Chain, S>,
-    > {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).and_then(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Result<U, E>, AndThenResultNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: AndThenResultNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2133,20 +2994,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<
-        In,
-        Option<T>,
-        impl FnMut(&mut World, In) -> Option<T> + use<In, T, E, Params, Chain, S>,
-    > {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| match chain(world, input) {
-                Ok(val) => Some(val),
-                Err(err) => {
-                    resolved.call(world, err);
-                    None
-                }
+    ) -> PipelineChain<In, Option<T>, CatchNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: CatchNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2159,12 +3011,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E2>, impl FnMut(&mut World, In) -> Result<T, E2> + use<In, T, E, E2, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).map_err(|err| resolved.call(world, err))
+    ) -> PipelineChain<In, Result<T, E2>, MapErrNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: MapErrNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2175,12 +3026,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E2>, impl FnMut(&mut World, In) -> Result<T, E2> + use<In, T, E, E2, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).or_else(|err| resolved.call(world, err))
+    ) -> PipelineChain<In, Result<T, E2>, OrElseNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: OrElseNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2191,12 +3041,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E> + use<In, T, E, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_ref_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).inspect(|val| resolved.call(world, val))
+    ) -> PipelineChain<In, Result<T, E>, InspectResultNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: InspectResultNode {
+                prev: self.chain,
+                step: f.into_ref_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2207,22 +3056,20 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, Result<T, E>, impl FnMut(&mut World, In) -> Result<T, E> + use<In, T, E, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_ref_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).inspect_err(|err| resolved.call(world, err))
+    ) -> PipelineChain<In, Result<T, E>, InspectErrNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: InspectErrNode {
+                prev: self.chain,
+                step: f.into_ref_step(registry),
             },
             _marker: PhantomData,
         }
     }
 
     /// Discard error, enter Option land. std: `Result::ok`
-    pub fn ok(self) -> PipelineBuilder<In, Option<T>, impl FnMut(&mut World, In) -> Option<T>> {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| chain(world, input).ok(),
+    pub fn ok(self) -> PipelineChain<In, Option<T>, OkResultNode<Chain>> {
+        PipelineChain {
+            chain: OkResultNode { prev: self.chain },
             _marker: PhantomData,
         }
     }
@@ -2232,14 +3079,14 @@ where
     /// `Clone` required because the pipeline may run many times —
     /// the default is cloned on each `Err` invocation (unlike
     /// std's `unwrap_or` which consumes the value once).
-    pub fn unwrap_or(self, default: T) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T>
+    pub fn unwrap_or(self, default: T) -> PipelineChain<In, T, UnwrapOrResultNode<Chain, T>>
     where
         T: Clone,
     {
-        let mut chain = self.chain;
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| {
-                chain(world, input).unwrap_or_else(|_| default.clone())
+        PipelineChain {
+            chain: UnwrapOrResultNode {
+                prev: self.chain,
+                default,
             },
             _marker: PhantomData,
         }
@@ -2250,13 +3097,11 @@ where
         self,
         f: S,
         registry: &Registry,
-    ) -> PipelineBuilder<In, T, impl FnMut(&mut World, In) -> T + use<In, T, E, Params, S, Chain>> {
-        let mut chain = self.chain;
-        let mut resolved = f.into_step(registry);
-        PipelineBuilder {
-            chain: move |world: &mut World, input: In| match chain(world, input) {
-                Ok(val) => val,
-                Err(err) => resolved.call(world, err),
+    ) -> PipelineChain<In, T, UnwrapOrElseResultNode<Chain, S::Step>> {
+        PipelineChain {
+            chain: UnwrapOrElseResultNode {
+                prev: self.chain,
+                step: f.into_step(registry),
             },
             _marker: PhantomData,
         }
@@ -2267,7 +3112,7 @@ where
 // PipelineOutput — marker trait for build()
 // =============================================================================
 
-/// Marker trait restricting [`PipelineBuilder::build`] to pipelines
+/// Marker trait restricting [`PipelineChain::build`] to pipelines
 /// that produce `()`.
 ///
 /// If your pipeline produces a value, add a final `.then()` that
@@ -2282,25 +3127,35 @@ impl PipelineOutput for () {}
 impl PipelineOutput for Option<()> {}
 
 // =============================================================================
-// build — when Out = ()
+// build — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<In: 'static, Chain> PipelineBuilder<In, (), Chain>
-where
-    Chain: FnMut(&mut World, In) + 'static,
-{
+impl<In, Chain: ChainCall<In, Out = ()>> PipelineChain<In, (), Chain> {
     /// Finalize the pipeline into a [`Pipeline`].
     ///
     /// The returned pipeline is a concrete, monomorphized type — no boxing,
     /// no virtual dispatch. Call `.run()` directly for zero-cost execution,
     /// or wrap in `Box<dyn Handler<In>>` when type erasure is needed.
     ///
-    /// Only available when the pipeline ends with `()`. If your chain
-    /// produces a value, add a final `.then()` that consumes the output.
-    pub fn build(self) -> Pipeline<In, Chain> {
+    /// Only available when the pipeline ends with `()` or `Option<()>`.
+    /// If your chain produces a value, add a final `.then()` that consumes
+    /// the output.
+    pub fn build(self) -> Pipeline<Chain> {
         Pipeline {
             chain: self.chain,
-            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In, Chain: ChainCall<In, Out = Option<()>>> PipelineChain<In, Option<()>, Chain> {
+    /// Finalize the pipeline into a [`Pipeline`], discarding the `Option<()>`.
+    ///
+    /// Pipelines ending with `Option<()>` (e.g. after `.map()` on an
+    /// `Option<T>` with a step that returns `()`) produce the same
+    /// [`Pipeline`] as those ending with `()`.
+    pub fn build(self) -> Pipeline<DiscardOptionNode<Chain>> {
+        Pipeline {
+            chain: DiscardOptionNode { prev: self.chain },
         }
     }
 }
@@ -2309,13 +3164,12 @@ where
 // build_batch — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<In: 'static, Out: PipelineOutput, Chain> PipelineBuilder<In, Out, Chain>
-where
-    Chain: FnMut(&mut World, In) -> Out + 'static,
+impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>>
+    PipelineChain<In, Out, Chain>
 {
     /// Finalize into a [`BatchPipeline`] with a pre-allocated input buffer.
     ///
-    /// Same pipeline chain as [`build`](PipelineBuilder::build), but the
+    /// Same pipeline chain as [`build`](PipelineChain::build), but the
     /// pipeline owns an input buffer that drivers fill between dispatch
     /// cycles. Each call to [`BatchPipeline::run`] drains the buffer,
     /// running every item through the chain independently.
@@ -2335,30 +3189,26 @@ where
 }
 
 // =============================================================================
-// Pipeline<In, F> — built pipeline
+// Pipeline<F> — built pipeline
 // =============================================================================
 
-/// Built step pipeline implementing [`Handler<In>`](crate::Handler).
+/// Built step pipeline implementing [`Handler<E>`](crate::Handler).
 ///
-/// Created by [`PipelineBuilder::build`]. The entire pipeline chain is
+/// Created by [`PipelineChain::build`]. The entire pipeline chain is
 /// monomorphized at compile time — no boxing, no virtual dispatch.
 /// Call `.run()` directly for zero-cost execution, or wrap in
-/// `Box<dyn Handler<In>>` when you need type erasure (single box).
+/// `Box<dyn Handler<E>>` when you need type erasure (single box).
 ///
-/// Implements [`Handler<In>`](crate::Handler), so it can be stored in
-/// driver handler collections alongside [`Callback`](crate::Callback)
-/// and [`HandlerFn`](crate::HandlerFn). For batch processing, see
-/// [`BatchPipeline`].
-pub struct Pipeline<In, F> {
+/// Implements [`Handler<E>`](crate::Handler) for any event type `E`
+/// that the chain accepts — including borrowed types like `&'a [u8]`.
+/// Supports `for<'a> Handler<&'a T>` for zero-copy event dispatch.
+pub struct Pipeline<F> {
     chain: F,
-    _marker: PhantomData<fn(In)>,
 }
 
-impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
-    for Pipeline<In, F>
-{
-    fn run(&mut self, world: &mut World, event: In) {
-        (self.chain)(world, event);
+impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
+    fn run(&mut self, world: &mut World, event: E) {
+        self.chain.call(world, event);
     }
 }
 
@@ -2368,7 +3218,7 @@ impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
 
 /// Batch pipeline that owns a pre-allocated input buffer.
 ///
-/// Created by [`PipelineBuilder::build_batch`]. Each item flows through
+/// Created by [`PipelineChain::build_batch`]. Each item flows through
 /// the full pipeline chain independently — the same per-item `Option`
 /// and `Result` flow control as [`Pipeline`]. Errors are handled inline
 /// (via `.catch()`, `.unwrap_or()`, etc.) and the batch continues to
@@ -2377,7 +3227,7 @@ impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineStart};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder};
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(0);
@@ -2388,7 +3238,7 @@ impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
 /// }
 ///
 /// let r = world.registry_mut();
-/// let mut batch = PipelineStart::<u32>::new()
+/// let mut batch = PipelineBuilder::<u32>::new()
 ///     .then(accumulate, r)
 ///     .build_batch(64);
 ///
@@ -2403,7 +3253,7 @@ pub struct BatchPipeline<In, F> {
     chain: F,
 }
 
-impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In, F> {
+impl<In, Out: PipelineOutput, F: ChainCall<In, Out = Out>> BatchPipeline<In, F> {
     /// Mutable access to the input buffer. Drivers fill this between
     /// dispatch cycles.
     pub fn input_mut(&mut self) -> &mut Vec<In> {
@@ -2422,7 +3272,7 @@ impl<In, Out: PipelineOutput, F: FnMut(&mut World, In) -> Out> BatchPipeline<In,
     /// the input buffer is empty but retains its allocation.
     pub fn run(&mut self, world: &mut World) {
         for item in self.input.drain(..) {
-            let _ = (self.chain)(world, item);
+            let _ = self.chain.call(world, item);
         }
     }
 }
@@ -2482,7 +3332,7 @@ mod tests {
     fn step_pure_transform() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(|x: u32| x as u64 * 2, r);
+        let mut p = PipelineBuilder::<u32>::new().then(|x: u32| x as u64 * 2, r);
         assert_eq!(p.run(&mut world, 5), 10u64);
     }
 
@@ -2497,7 +3347,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(multiply, r);
+        let mut p = PipelineBuilder::<u32>::new().then(multiply, r);
         assert_eq!(p.run(&mut world, 5), 50);
     }
 
@@ -2512,7 +3362,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(accumulate, r);
+        let mut p = PipelineBuilder::<u32>::new().then(accumulate, r);
         p.run(&mut world, 10);
         p.run(&mut world, 5);
         assert_eq!(*world.resource::<u64>(), 15);
@@ -2530,7 +3380,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(conditional, r);
+        let mut p = PipelineBuilder::<u32>::new().then(conditional, r);
         assert_eq!(p.run(&mut world, 5), 50);
     }
 
@@ -2545,7 +3395,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(double, r)
             .then(|val: u64| val + 1, r);
         assert_eq!(p.run(&mut world, 5), 11); // 2*5 + 1
@@ -2566,7 +3416,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .map(add_factor, r);
         assert_eq!(p.run(&mut world, 5), Some(15));
@@ -2584,7 +3434,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .map(mark, r);
         assert_eq!(p.run(&mut world, 5), None);
@@ -2603,7 +3453,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .and_then(check, r);
         assert_eq!(p.run(&mut world, 20), Some(20));
@@ -2621,7 +3471,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .and_then(check, r);
         assert_eq!(p.run(&mut world, 5), None);
@@ -2634,7 +3484,7 @@ mod tests {
         let mut world = wb.build();
 
         let r = world.registry();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .on_none(|w: &mut World| {
                 *w.resource_mut::<bool>() = true;
@@ -2647,7 +3497,7 @@ mod tests {
     fn option_filter_keeps() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .filter(|x: &u32| *x > 3, r);
         assert_eq!(p.run(&mut world, 5), Some(5));
@@ -2657,7 +3507,7 @@ mod tests {
     fn option_filter_drops() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| Some(x), r)
             .filter(|x: &u32| *x > 10, r);
         assert_eq!(p.run(&mut world, 5), None);
@@ -2678,7 +3528,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, String> { Ok(x) }, r)
             .map(add_factor, r);
         assert_eq!(p.run(&mut world, 5), Ok(15));
@@ -2696,7 +3546,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, String> { Err("fail".into()) }, r)
             .map(mark, r);
         assert!(p.run(&mut world, 5).is_err());
@@ -2714,7 +3564,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, String> { Err("caught".into()) }, r)
             .catch(log_error, r);
         assert_eq!(p.run(&mut world, 0), None);
@@ -2732,7 +3582,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, String> { Ok(x) }, r)
             .catch(log_error, r);
         assert_eq!(p.run(&mut world, 5), Some(5));
@@ -2754,7 +3604,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut pipeline = PipelineStart::<u32>::new().then(accumulate, r).build();
+        let mut pipeline = PipelineBuilder::<u32>::new().then(accumulate, r).build();
 
         pipeline.run(&mut world, 10);
         pipeline.run(&mut world, 5);
@@ -2772,7 +3622,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(multiply, r);
+        let mut p = PipelineBuilder::<u32>::new().then(multiply, r);
         let result: u64 = p.run(&mut world, 7);
         assert_eq!(result, 21);
     }
@@ -2791,7 +3641,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let _p = PipelineStart::<u32>::new().then(needs_u64, r);
+        let _p = PipelineBuilder::<u32>::new().then(needs_u64, r);
     }
 
     // =========================================================================
@@ -2811,7 +3661,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let _p = PipelineStart::<u32>::new().then(bad, r);
+        let _p = PipelineBuilder::<u32>::new().then(bad, r);
     }
 
     // =========================================================================
@@ -2830,7 +3680,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new().then(count, r);
+        let mut p = PipelineBuilder::<u32>::new().then(count, r);
         p.run(&mut world, 0);
         p.run(&mut world, 0);
         p.run(&mut world, 0);
@@ -2845,7 +3695,7 @@ mod tests {
     fn option_unwrap_or_some() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .unwrap_or(99);
         assert_eq!(p.run(&mut world, 5), 5);
@@ -2855,7 +3705,7 @@ mod tests {
     fn option_unwrap_or_none() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .unwrap_or(99);
         assert_eq!(p.run(&mut world, 5), 99);
@@ -2865,7 +3715,7 @@ mod tests {
     fn option_unwrap_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .unwrap_or_else(|| 42, r);
         assert_eq!(p.run(&mut world, 0), 42);
@@ -2875,7 +3725,7 @@ mod tests {
     fn option_ok_or() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .ok_or("missing");
         assert_eq!(p.run(&mut world, 0), Err("missing"));
@@ -2885,7 +3735,7 @@ mod tests {
     fn option_ok_or_some() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .ok_or("missing");
         assert_eq!(p.run(&mut world, 7), Ok(7));
@@ -2895,7 +3745,7 @@ mod tests {
     fn option_ok_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
             .ok_or_else(|| "computed", r);
         assert_eq!(p.run(&mut world, 0), Err("computed"));
@@ -2907,7 +3757,7 @@ mod tests {
         wb.register::<u64>(0);
         let mut world = wb.build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { Some(x) }, r)
             .inspect(|_val: &u32| {}, r);
         // inspect should pass through the value unchanged.
@@ -2922,7 +3772,7 @@ mod tests {
     fn result_map_err() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, i32> { Err(-1) }, r)
             .map_err(|e: i32| e.to_string(), r);
         assert_eq!(p.run(&mut world, 0), Err("-1".to_string()));
@@ -2932,7 +3782,7 @@ mod tests {
     fn result_map_err_ok_passthrough() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, i32> { Ok(x) }, r)
             .map_err(|e: i32| e.to_string(), r);
         assert_eq!(p.run(&mut world, 5), Ok(5));
@@ -2942,7 +3792,7 @@ mod tests {
     fn result_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("fail") }, r)
             .or_else(|_e: &str| Ok::<u32, &str>(42), r);
         assert_eq!(p.run(&mut world, 0), Ok(42));
@@ -2952,7 +3802,7 @@ mod tests {
     fn result_inspect_passes_through() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, &str> { Ok(x) }, r)
             .inspect(|_val: &u32| {}, r);
         // inspect should pass through Ok unchanged.
@@ -2963,7 +3813,7 @@ mod tests {
     fn result_inspect_err_passes_through() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("bad") }, r)
             .inspect_err(|_e: &&str| {}, r);
         // inspect_err should pass through Err unchanged.
@@ -2974,7 +3824,7 @@ mod tests {
     fn result_ok_converts() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, &str> { Ok(x) }, r)
             .ok();
         assert_eq!(p.run(&mut world, 5), Some(5));
@@ -2984,7 +3834,7 @@ mod tests {
     fn result_ok_drops_err() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("gone") }, r)
             .ok();
         assert_eq!(p.run(&mut world, 0), None);
@@ -2994,7 +3844,7 @@ mod tests {
     fn result_unwrap_or() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, &str> { Err("x") }, r)
             .unwrap_or(99);
         assert_eq!(p.run(&mut world, 0), 99);
@@ -3004,7 +3854,7 @@ mod tests {
     fn result_unwrap_or_else() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Result<u32, i32> { Err(-5) }, r)
             .unwrap_or_else(|e: i32| e.unsigned_abs(), r);
         assert_eq!(p.run(&mut world, 0), 5);
@@ -3025,7 +3875,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(accumulate, r)
             .build_batch(16);
 
@@ -3040,7 +3890,7 @@ mod tests {
     fn batch_retains_allocation() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(|_x: u32| {}, r)
             .build_batch(64);
 
@@ -3062,7 +3912,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(accumulate, r)
             .build_batch(16);
 
@@ -3090,7 +3940,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(validate, r)
             .catch(count_errors, r)
             .map(accumulate, r)
@@ -3115,7 +3965,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(
                 |x: u32| -> Option<u32> { if x > 2 { Some(x) } else { None } },
                 r,
@@ -3140,7 +3990,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(accumulate, r)
             .build_batch(16);
 
@@ -3165,7 +4015,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(multiply_and_collect, r)
             .build_batch(16);
 
@@ -3203,7 +4053,7 @@ mod tests {
         // val before p — val must outlive the pipeline's In = &u32
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_identity, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_identity, r).cloned();
         assert_eq!(p.run(&mut world, &val), 42u32);
     }
 
@@ -3212,7 +4062,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_some, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_some, r).cloned();
         assert_eq!(p.run(&mut world, &val), Some(42u32));
     }
 
@@ -3221,7 +4071,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_none, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_none, r).cloned();
         assert_eq!(p.run(&mut world, &val), None);
     }
 
@@ -3230,7 +4080,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_ok, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_ok, r).cloned();
         assert_eq!(p.run(&mut world, &val), Ok(42u32));
     }
 
@@ -3239,7 +4089,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineStart::<&u32>::new().then(ref_wrap_err, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_err, r).cloned();
         assert_eq!(p.run(&mut world, &val), Err("fail".into()));
     }
 
@@ -3258,9 +4108,9 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let handler = PipelineStart::<u32>::new().then(store, r).build();
+        let handler = PipelineBuilder::<u32>::new().then(store, r).build();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x * 2, r)
             .dispatch(handler)
             .build();
@@ -3288,7 +4138,7 @@ mod tests {
         let fan = fan_out!(h1, h2);
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x * 2, r)
             .dispatch(fan)
             .build();
@@ -3313,7 +4163,7 @@ mod tests {
         broadcast.add(write_u64.into_handler(world.registry()));
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x + 1, r)
             .dispatch(broadcast)
             .build();
@@ -3333,10 +4183,10 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let inner = PipelineStart::<u32>::new().then(store, r).build();
+        let inner = PipelineBuilder::<u32>::new().then(store, r).build();
 
         let mut pipeline: Box<dyn Handler<u32>> = Box::new(
-            PipelineStart::<u32>::new()
+            PipelineBuilder::<u32>::new()
                 .then(|x: u32| x + 1, r)
                 .dispatch(inner)
                 .build(),
@@ -3358,7 +4208,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .guard(|v: &u64| *v > 3, reg)
             .then(sink, reg);
@@ -3377,7 +4227,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .guard(|v: &u64| *v > 10, reg)
             .then(sink, reg);
@@ -3399,7 +4249,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 * 2, reg)
             .tap(|w: &mut World, val: &u64| {
                 *w.resource_mut::<bool>() = *val == 10;
@@ -3423,10 +4273,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = PipelineStart::new().then(|x: u64| x * 2, reg);
-        let arm_f = PipelineStart::new().then(|x: u64| x * 3, reg);
+        let arm_t = PipelineBuilder::new().then(|x: u64| x * 2, reg);
+        let arm_f = PipelineBuilder::new().then(|x: u64| x * 3, reg);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .route(|v: &u64| *v > 3, reg, arm_t, arm_f)
             .then(sink, reg);
@@ -3445,10 +4295,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = PipelineStart::new().then(|x: u64| x * 2, reg);
-        let arm_f = PipelineStart::new().then(|x: u64| x * 3, reg);
+        let arm_t = PipelineBuilder::new().then(|x: u64| x * 2, reg);
+        let arm_f = PipelineBuilder::new().then(|x: u64| x * 3, reg);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .route(|v: &u64| *v > 10, reg, arm_t, arm_f)
             .then(sink, reg);
@@ -3468,15 +4318,15 @@ mod tests {
         let reg = world.registry();
 
         // N-ary via nesting: <5 → +100, 5..10 → +200, >=10 → +300
-        let inner_t = PipelineStart::new().then(|x: u64| x + 200, reg);
-        let inner_f = PipelineStart::new().then(|x: u64| x + 300, reg);
-        let outer_t = PipelineStart::new().then(|x: u64| x + 100, reg);
+        let inner_t = PipelineBuilder::new().then(|x: u64| x + 200, reg);
+        let inner_f = PipelineBuilder::new().then(|x: u64| x + 300, reg);
+        let outer_t = PipelineBuilder::new().then(|x: u64| x + 100, reg);
         let outer_f =
-            PipelineStart::new()
+            PipelineBuilder::new()
                 .then(|x: u64| x, reg)
                 .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .route(|v: &u64| *v < 5, reg, outer_t, outer_f)
             .then(sink, reg);
@@ -3495,7 +4345,7 @@ mod tests {
 
     #[test]
     fn pipeline_tee_side_effect_chain() {
-        use crate::dag::DagArmStart;
+        use crate::dag::DagArmSeed;
 
         fn log_step(mut counter: ResMut<u32>, _val: &u64) {
             *counter += 1;
@@ -3509,9 +4359,9 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let side = DagArmStart::new().then(log_step, reg);
+        let side = DagArmSeed::new().then(log_step, reg);
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 * 2, reg)
             .tee(side)
             .then(sink, reg);
@@ -3539,7 +4389,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 / 2, reg)
             .dedup()
             .then(sink, reg);
@@ -3566,7 +4416,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .not()
             .then(sink, reg);
@@ -3588,7 +4438,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .and(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg);
@@ -3611,7 +4461,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .or(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg);
@@ -3634,7 +4484,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x > 5, reg)
             .xor(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg);
@@ -3651,7 +4501,7 @@ mod tests {
     fn splat2_closure_on_start() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u64)>::new()
+        let mut p = PipelineBuilder::<(u32, u64)>::new()
             .splat()
             .then(|a: u32, b: u64| a as u64 + b, r);
         assert_eq!(p.run(&mut world, (3, 7)), 10);
@@ -3668,7 +4518,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u32)>::new().splat().then(process, r);
+        let mut p = PipelineBuilder::<(u32, u32)>::new().splat().then(process, r);
         assert_eq!(p.run(&mut world, (3, 7)), 110);
     }
 
@@ -3676,7 +4526,7 @@ mod tests {
     fn splat2_mid_chain() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| (x, x * 2), r)
             .splat()
             .then(|a: u32, b: u32| a as u64 + b as u64, r);
@@ -3687,7 +4537,7 @@ mod tests {
     fn splat3_closure_on_start() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u32, u32)>::new()
+        let mut p = PipelineBuilder::<(u32, u32, u32)>::new()
             .splat()
             .then(|a: u32, b: u32, c: u32| a + b + c, r);
         assert_eq!(p.run(&mut world, (1, 2, 3)), 6);
@@ -3704,7 +4554,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u32, u32, u32)>::new()
+        let mut p = PipelineBuilder::<(u32, u32, u32)>::new()
             .splat()
             .then(process, r);
         assert_eq!(p.run(&mut world, (1, 2, 3)), 60);
@@ -3714,7 +4564,7 @@ mod tests {
     fn splat4_mid_chain() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| (x, x + 1, x + 2, x + 3), r)
             .splat()
             .then(|a: u32, b: u32, c: u32, d: u32| (a + b + c + d) as u64, r);
@@ -3725,7 +4575,7 @@ mod tests {
     fn splat5_closure_on_start() {
         let mut world = WorldBuilder::new().build();
         let r = world.registry_mut();
-        let mut p = PipelineStart::<(u8, u8, u8, u8, u8)>::new().splat().then(
+        let mut p = PipelineBuilder::<(u8, u8, u8, u8, u8)>::new().splat().then(
             |a: u8, b: u8, c: u8, d: u8, e: u8| {
                 (a as u64) + (b as u64) + (c as u64) + (d as u64) + (e as u64)
             },
@@ -3745,7 +4595,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut pipeline = PipelineStart::<(u32, u32)>::new()
+        let mut pipeline = PipelineBuilder::<(u32, u32)>::new()
             .splat()
             .then(store, r)
             .build();
@@ -3765,7 +4615,7 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut batch = PipelineStart::<(u32, u32)>::new()
+        let mut batch = PipelineBuilder::<(u32, u32)>::new()
             .splat()
             .then(accumulate, r)
             .build_batch(8);
@@ -3790,7 +4640,7 @@ mod tests {
 
         let r = world.registry_mut();
         // Should panic on duplicate ResMut<u64>
-        let _ = PipelineStart::<(u32, u32)>::new().splat().then(bad, r);
+        let _ = PipelineBuilder::<(u32, u32)>::new().splat().then(bad, r);
     }
 
     // -- Then (previously switch) --
@@ -3809,7 +4659,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut pipeline = PipelineStart::<u32>::new()
+        let mut pipeline = PipelineBuilder::<u32>::new()
             .then(double, reg)
             .then(|val: u64| if val > 10 { val * 100 } else { val + 1 }, reg)
             .then(sink, reg)
@@ -3833,7 +4683,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut pipeline = PipelineStart::<u32>::new()
+        let mut pipeline = PipelineBuilder::<u32>::new()
             .then(
                 |val: u32| match val % 3 {
                     0 => val as u64 + 100,
@@ -3876,7 +4726,7 @@ mod tests {
         let mut arm_offset = resolve_step(add_offset, reg);
         let mut arm_double = resolve_step(plain_double, reg);
 
-        let mut pipeline = PipelineStart::<u32>::new()
+        let mut pipeline = PipelineBuilder::<u32>::new()
             .then(
                 move |world: &mut World, val: u32| {
                     if val > 10 {
@@ -3908,7 +4758,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut batch = PipelineStart::<u32>::new()
+        let mut batch = PipelineBuilder::<u32>::new()
             .then(
                 |val: u32| {
                     if val % 2 == 0 {
@@ -3945,7 +4795,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .guard(above_threshold, reg)
             .then(sink, reg);
@@ -3971,7 +4821,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u64> { Some(x as u64) }, reg)
             .filter(is_allowed, reg)
             .map(count, reg)
@@ -3993,7 +4843,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u64> { Some(x as u64) }, reg)
             .inspect(log_value, reg)
             .unwrap_or(0);
@@ -4018,7 +4868,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
             .tap(observe, reg)
             .then(sink, reg);
@@ -4040,7 +4890,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| true, reg)
             .and(check_enabled, reg);
 
@@ -4060,7 +4910,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| false, reg)
             .or(check_enabled, reg);
 
@@ -4080,7 +4930,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { if x > 5 { Some(x) } else { None } }, reg)
             .on_none(log_miss, reg)
             .unwrap_or(0);
@@ -4101,7 +4951,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u32> { if x > 0 { Some(x) } else { None } }, reg)
             .ok_or_else(make_error, reg);
 
@@ -4122,7 +4972,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Option<u64> { if x > 0 { Some(x as u64) } else { None } }, reg)
             .unwrap_or_else(fallback, reg);
 
@@ -4148,7 +4998,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u32>::new()
+        let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| -> Result<u32, String> {
                 if x > 0 { Ok(x) } else { Err("zero".into()) }
             }, reg)
@@ -4171,7 +5021,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: u64| {
                 *acc += val;
@@ -4199,7 +5049,7 @@ mod tests {
             if *acc > *limit { Some(*acc) } else { None }
         }
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, threshold_scan, reg);
 
@@ -4215,7 +5065,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |world: &mut World, acc: &mut u64, val: u64| {
                 let factor = *world.resource::<u64>();
@@ -4232,7 +5082,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: u64| -> Option<u64> {
                 *acc += val;
@@ -4249,7 +5099,7 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .scan(0u64, |acc: &mut u64, val: u64| {
                 *acc += val;
                 *acc
@@ -4269,7 +5119,7 @@ mod tests {
 
         fn store(mut out: ResMut<u64>, val: u64) { *out = val; }
 
-        let mut p = PipelineStart::<u64>::new()
+        let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: u64| {
                 *acc += val;
@@ -4290,4 +5140,118 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 10);
     }
 
+    // =========================================================================
+    // Build — Option<()> terminal
+    // =========================================================================
+
+    #[test]
+    fn build_option_unit_terminal() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let r = world.registry_mut();
+
+        fn check(x: u32) -> Option<u32> {
+            if x > 5 { Some(x) } else { None }
+        }
+        fn store(mut out: ResMut<u64>, val: u32) {
+            *out += val as u64;
+        }
+
+        // .map(store) on Option<u32> produces Option<()> — build() must work
+        let mut p = PipelineBuilder::<u32>::new()
+            .then(check, r)
+            .map(store, r)
+            .build();
+
+        p.run(&mut world, 3); // None, skipped
+        assert_eq!(*world.resource::<u64>(), 0);
+        p.run(&mut world, 7); // Some, stores
+        assert_eq!(*world.resource::<u64>(), 7);
+        p.run(&mut world, 10);
+        assert_eq!(*world.resource::<u64>(), 17);
+    }
+
+    #[test]
+    fn build_option_unit_boxes_into_handler() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let r = world.registry_mut();
+
+        fn double(x: u32) -> Option<u64> {
+            if x > 0 { Some(x as u64 * 2) } else { None }
+        }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out += val;
+        }
+
+        let mut h: Box<dyn Handler<u32>> = Box::new(
+            PipelineBuilder::<u32>::new()
+                .then(double, r)
+                .map(store, r)
+                .build(),
+        );
+        h.run(&mut world, 0); // None
+        assert_eq!(*world.resource::<u64>(), 0);
+        h.run(&mut world, 5); // 10
+        assert_eq!(*world.resource::<u64>(), 10);
+    }
+
+    // =========================================================================
+    // Build — borrowed event type
+    // =========================================================================
+
+    #[test]
+    fn build_borrowed_event_direct() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn decode(msg: &[u8]) -> u64 {
+            msg.len() as u64
+        }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        // msg declared before p so it outlives the pipeline (drop order).
+        // Matches real-world usage: pipeline lives long, events come and go.
+        let msg = vec![1u8, 2, 3];
+        let r = world.registry_mut();
+        let mut p = PipelineBuilder::<&[u8]>::new()
+            .then(decode, r)
+            .then(store, r)
+            .build();
+
+        p.run(&mut world, &msg);
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    #[test]
+    fn build_borrowed_event_option_unit() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn decode(msg: &[u8]) -> Option<u64> {
+            if msg.is_empty() { None } else { Some(msg.len() as u64) }
+        }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
+
+        let empty = vec![];
+        let data = vec![1u8, 2, 3];
+        let r = world.registry_mut();
+        let mut p = PipelineBuilder::<&[u8]>::new()
+            .then(decode, r)
+            .map(store, r)
+            .build();
+
+        p.run(&mut world, &empty); // None
+        assert_eq!(*world.resource::<u64>(), 0);
+        p.run(&mut world, &data); // Some(3)
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
 }

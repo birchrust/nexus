@@ -166,7 +166,7 @@ plugins, each owning a domain's resources.
 ### Lifecycle — Startup, Run, Shutdown
 
 After `build()`, you often need to initialize state that depends on
-multiple resources being present. `run_startup` runs a handler once with
+multiple resources being present. `run_startup` runs a system once with
 full dependency injection:
 
 ```rust
@@ -179,7 +179,7 @@ let mut builder = WorldBuilder::new();
 builder.register(PriceCache { prices: Vec::new() });
 builder.register(RiskLimits { max_position: 100 });
 
-fn initialize(mut cache: ResMut<PriceCache>, config: Res<RiskLimits>, _event: ()) {
+fn initialize(mut cache: ResMut<PriceCache>, config: Res<RiskLimits>) {
     // Both resources are available — set up initial state
     cache.prices.extend_from_slice(&[100.0, 200.0, 300.0]);
 }
@@ -436,7 +436,7 @@ Typed composition chains where each step is a named function with
 
 ```rust
 let reg = world.registry();
-let mut pipeline = PipelineStart::<Order>::new()
+let mut pipeline = PipelineBuilder::<Order>::new()
     .then(validate, &reg)            // Order → Result<Order, Error>
     .and_then(enrich, &reg)          // Order → Result<Order, Error>
     .catch(log_error, &reg)          // Error → () (side effect)
@@ -461,7 +461,7 @@ independently — errors are handled per-item, not per-batch.
 
 ```rust
 let reg = world.registry();
-let mut batch = PipelineStart::<Order>::new()
+let mut batch = PipelineBuilder::<Order>::new()
     .then(validate, &reg)            // Order → Result<Order, Error>
     .catch(log_error, &reg)          // handle error, continue batch
     .map(enrich, &reg)              // runs for valid items only
@@ -478,14 +478,14 @@ the per-item chain identically to the single-event pipeline.
 
 ### DAG Pipeline — fan-out, merge, and data-flow graphs
 
-`DagStart` builds a monomorphized data-flow graph where topology is
+`DagBuilder` builds a monomorphized data-flow graph where topology is
 encoded in the type system. After monomorphization the entire DAG is
 a single flat function — all values are stack locals, no arena, no
 vtable dispatch.
 
 ```rust
 use nexus_rt::{WorldBuilder, ResMut, Handler};
-use nexus_rt::dag::DagStart;
+use nexus_rt::dag::DagBuilder;
 
 let mut wb = WorldBuilder::new();
 wb.register::<u64>(0);
@@ -498,7 +498,7 @@ fn mul3(val: &u64) -> u64 { *val * 3 }
 fn merge_add(a: &u64, b: &u64) -> u64 { *a + *b }
 fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 
-let mut dag = DagStart::<u32>::new()
+let mut dag = DagBuilder::<u32>::new()
     .root(decode, reg)
     .fork()
     .arm(|a| a.then(add_one, reg))
@@ -581,7 +581,7 @@ receives individual arguments instead of the whole tuple:
 fn split(order: Order) -> (OrderId, f64) { (order.id, order.price) }
 fn process(id: OrderId, price: f64) -> bool { price > 0.0 }
 
-PipelineStart::<Order>::new()
+PipelineBuilder::<Order>::new()
     .then(split, reg)
     .splat()            // (OrderId, f64) → individual args
     .then(process, reg) // receives OrderId, f64 separately
@@ -590,7 +590,7 @@ PipelineStart::<Order>::new()
 // DAG (by reference): fn(Params..., &A, &B) -> Out
 fn process_ref(id: &OrderId, price: &f64) -> bool { *price > 0.0 }
 
-DagStart::<Order>::new()
+DagBuilder::<Order>::new()
     .root(split, reg)
     .splat()                // (OrderId, f64) → &OrderId, &f64
     .then(process_ref, reg)
@@ -634,7 +634,7 @@ Handlers inside combinators receive `&E`. Use `Cloned` or `Owned`
 adapters for handlers that expect owned events.
 
 For fan-out with merge (data flowing back together), use
-[DagStart](#dag-pipeline--fan-out-merge-and-data-flow-graphs).
+[DagBuilder](#dag-pipeline--fan-out-merge-and-data-flow-graphs).
 
 ### Change detection
 
@@ -889,7 +889,13 @@ propagation in a DAG scheduler.
 | Return | `()` | `bool` |
 | Purpose | React | Reconcile |
 
+`IntoSystem` accepts two signatures:
+- `fn(params...) -> bool` — returns propagation decision for scheduler DAGs
+- `fn(params...)` — void return, always propagates (`true`). Useful for
+  `run_startup` and systems that unconditionally propagate.
+
 ```rust
+// Bool-returning: controls DAG propagation
 fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoValue>) -> bool {
     if mid.is_changed() {
         theo.0 = mid.0 * 1.001;
@@ -897,6 +903,11 @@ fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoValue>) -> bool {
     } else {
         false // nothing changed — skip downstream
     }
+}
+
+// Void-returning: always propagates
+fn initialize(mut cache: ResMut<PriceCache>) {
+    cache.prices.extend_from_slice(&[100.0, 200.0]);
 }
 ```
 
@@ -1051,13 +1062,13 @@ filters and transforms before dispatching to `Handler<T>`.
 | Type-erased handler storage | `Box<dyn Handler<E>>` / `Virtual<E>` | When you need heterogeneous collections (driver slabs, timer wheels). |
 | Per-instance private state | `Callback` (via `IntoCallback`) or `CallbackTemplate` | Context-owning handlers for connection state, timer metadata, etc. |
 | Composable resource registration | `Plugin` | Fire-and-forget, consumed by `WorldBuilder`. |
-| Fan-out with merge | `DagStart` → `Dag` | Monomorphized data-flow graph. Zero vtable, all stack locals. |
+| Fan-out with merge | `DagBuilder` → `Dag` | Monomorphized data-flow graph. Zero vtable, all stack locals. |
 | Static fan-out (known count) | `FanOut` / `fan_out!` | Dispatch `&E` to N handlers. Zero allocation, concrete types. |
 | Dynamic fan-out (runtime count) | `Broadcast` | `Vec<Box<dyn RefHandler>>`. One heap alloc per handler, zero clones. |
 
 **Rule of thumb:** If a handler is created once, use `IntoHandler`. If
 it's created repeatedly on every event (move-out-fire pattern), use a
-template. For data that must fan out and merge back, use `DagStart`.
+template. For data that must fan out and merge back, use `DagBuilder`.
 For fire-and-forget fan-out, use `FanOut` (static) or `Broadcast`
 (dynamic).
 
@@ -1077,7 +1088,7 @@ One vtable call amortized over many internal steps is the design:
 ```rust
 // Concrete type is unnameable — box it
 let handler: Box<dyn Handler<Order>> = Box::new(
-    DagStart::<Order>::new()
+    DagBuilder::<Order>::new()
         .root(decode, reg)
         .fork()
         .arm(|a| a.then(process, reg))

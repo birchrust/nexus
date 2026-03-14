@@ -2,7 +2,7 @@
 //!
 //! DAGs extend linear Pipelines with fan-out and merge. Use DAG when
 //! data needs to flow to multiple processing arms and optionally merge
-//! back. For purely sequential chains, prefer `PipelineStart`.
+//! back. For purely sequential chains, prefer `PipelineBuilder`.
 //!
 //! Key design points:
 //! - **Root** takes the event by value (`E → T`). All subsequent nodes
@@ -32,7 +32,7 @@
 //! cargo run -p nexus-rt --example dag
 //! ```
 
-use nexus_rt::dag::{DagArmStart, DagStart};
+use nexus_rt::dag::{DagArmSeed, DagBuilder};
 use nexus_rt::{Handler, Res, ResMut, WorldBuilder};
 
 // =============================================================================
@@ -139,7 +139,7 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let mut linear = DagStart::<Tick>::new()
+    let mut linear = DagBuilder::<Tick>::new()
         .root(extract_price, reg)
         .then(apply_spread, reg)
         .then(store_price, reg)
@@ -173,7 +173,7 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let mut diamond = DagStart::<Tick>::new()
+    let mut diamond = DagBuilder::<Tick>::new()
         .root(extract_price, reg)
         .fork()
         .arm(|a| a.then(apply_spread, reg))
@@ -203,7 +203,7 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let mut fanout = DagStart::<Tick>::new()
+    let mut fanout = DagBuilder::<Tick>::new()
         .root(extract_price, reg)
         .fork()
         .arm(|a| a.then(store_price, reg))
@@ -247,11 +247,11 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let high_value = DagArmStart::<f64>::new().then(store_price, reg);
+    let high_value = DagArmSeed::<f64>::new().then(store_price, reg);
     let low_value =
-        DagArmStart::<f64>::new().then(|p: &f64| println!("  [skip] low-value price={p:.2}"), reg);
+        DagArmSeed::<f64>::new().then(|p: &f64| println!("  [skip] low-value price={p:.2}"), reg);
 
-    let mut routed = DagStart::<Tick>::new()
+    let mut routed = DagBuilder::<Tick>::new()
         .root(extract_price, reg)
         .route(|price: &f64| *price > 10_000.0, reg, high_value, low_value)
         .build();
@@ -290,7 +290,7 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let mut tapped = DagStart::<Tick>::new()
+    let mut tapped = DagBuilder::<Tick>::new()
         .root(extract_price, reg)
         .tap(|price: &f64| println!("  [tap] saw price={price:.2}"), reg)
         .then(store_price, reg)
@@ -316,9 +316,9 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let log_side = DagArmStart::<Tick>::new().then(log_trade, reg);
+    let log_side = DagArmSeed::<Tick>::new().then(log_trade, reg);
 
-    let mut teed = DagStart::<Tick>::new()
+    let mut teed = DagBuilder::<Tick>::new()
         .root(|t: Tick| t, reg)
         .tee(log_side)
         .then(get_price, reg)
@@ -350,7 +350,7 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let mut deduped = DagStart::<u32>::new()
+    let mut deduped = DagBuilder::<u32>::new()
         .root(|x: u32| x, reg)
         .dedup()
         .inspect(|val: &u32| println!("  [dedup] passed: {val:?}"), reg)
@@ -375,7 +375,7 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
-    let mut guarded = DagStart::<u32>::new()
+    let mut guarded = DagBuilder::<u32>::new()
         .root(|x: u32| x, reg)
         .guard(|x: &u32| *x % 2 == 0, reg)
         .map(count_and_print, reg)
@@ -401,7 +401,7 @@ fn main() {
     let reg = world.registry();
 
     let dag: Box<dyn Handler<Tick>> = Box::new(
-        DagStart::<Tick>::new()
+        DagBuilder::<Tick>::new()
             .root(extract_price, reg)
             .then(apply_spread, reg)
             .then(store_price, reg)
@@ -444,7 +444,7 @@ fn main() {
         cache.latest = *val;
     }
 
-    let mut dag = DagStart::<Tick>::new()
+    let mut dag = DagBuilder::<Tick>::new()
         .root(split_tick, reg)
         .splat()
         .then(weighted, reg)

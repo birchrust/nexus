@@ -3,7 +3,7 @@
 
 //! DAG pipeline — monomorphized data-flow graphs with fan-out and merge.
 //!
-//! [`DagStart`] begins a typed DAG that encodes topology in the type system.
+//! [`DagBuilder`] begins a typed DAG that encodes topology in the type system.
 //! After monomorphization, the entire DAG is a single flat function with
 //! all values as stack locals — no arena, no vtable dispatch. The only
 //! `unsafe` is in the shared [`Param::fetch`](crate::Param) path
@@ -16,7 +16,7 @@
 //! # When to use
 //!
 //! Use DAG pipelines when data needs to fan out to multiple arms and
-//! merge back. For linear chains, prefer [`PipelineStart`](crate::PipelineStart).
+//! merge back. For linear chains, prefer [`PipelineBuilder`](crate::PipelineBuilder).
 //! For dynamic fan-out by reference, use [`FanOut`](crate::FanOut) or
 //! [`Broadcast`](crate::Broadcast).
 //!
@@ -39,7 +39,7 @@
 //! To skip an entire fork, resolve Option/Result **before** `.fork()`:
 //!
 //! ```ignore
-//! DagStart::<RawMsg>::new()
+//! DagBuilder::<RawMsg>::new()
 //!     .root(decode, reg)
 //!     .guard(|msg: &RawMsg| !msg.is_empty(), reg)  // None skips everything below
 //!     .unwrap_or(default)                           // → T, enter fork with concrete type
@@ -84,7 +84,7 @@
 //! fn split(t: Tick) -> (f64, u64) { (t.price, t.size) }
 //! fn weighted(price: &f64, size: &u64) -> f64 { *price * *size as f64 }
 //!
-//! DagStart::<Tick>::new()
+//! DagBuilder::<Tick>::new()
 //!     .root(split, reg)       // Tick → (f64, u64)
 //!     .splat()                // destructure
 //!     .then(weighted, reg)    // (&f64, &u64) → f64
@@ -113,7 +113,7 @@
 //!
 //! ```
 //! use nexus_rt::{WorldBuilder, ResMut, Handler};
-//! use nexus_rt::dag::DagStart;
+//! use nexus_rt::dag::DagBuilder;
 //!
 //! let mut wb = WorldBuilder::new();
 //! wb.register::<u64>(0);
@@ -123,7 +123,7 @@
 //! fn double(x: u32) -> u64 { x as u64 * 2 }
 //! fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 //!
-//! let mut dag = DagStart::<u32>::new()
+//! let mut dag = DagBuilder::<u32>::new()
 //!     .root(double, reg)
 //!     .then(store, reg)
 //!     .build();
@@ -136,8 +136,14 @@ use std::marker::PhantomData;
 
 use crate::Handler;
 use crate::pipeline::{
-    IntoProducer, IntoRefScanStep, IntoRefStep, IntoStep, ProducerCall, RefScanStepCall,
-    RefStepCall, StepCall,
+    ChainCall, DagAndThenOptionNode, DagAndThenResultNode, DagCatchNode, DagMapOptionNode,
+    DagMapResultNode, DagRouteNode, DagThenNode, DedupNode, DiscardOptionNode, DispatchNode,
+    FilterNode, GuardNode, IdentityNode, InspectErrNode, InspectOptionNode, InspectResultNode,
+    IntoProducer, IntoRefScanStep, IntoRefStep, IntoStep, MapErrNode, NotNode, OkOrElseNode,
+    OkOrNode, OkResultNode, OnNoneNode, OrElseNode, RefScanNode,
+    StepCall, TapNode, TeeNode, ThenNode, UnwrapOrElseOptionNode,
+    UnwrapOrElseResultNode, UnwrapOrOptionNode, UnwrapOrResultNode,
+    AndBoolNode, OrBoolNode, XorBoolNode, ClonedNode, ClonedOptionNode, ClonedResultNode,
 };
 use crate::world::{Registry, World};
 
@@ -514,7 +520,7 @@ all_tuples!(impl_merge5_step);
 /// Entry point for building a DAG pipeline.
 ///
 /// The DAG encodes topology in the type system at compile time,
-/// producing a single monomorphized closure chain. All values live as
+/// producing a single monomorphized chain of named node types. All values live as
 /// stack locals in the `run()` body — no arena, no vtable dispatch.
 /// The only `unsafe` is in the shared [`Param::fetch`](crate::Param)
 /// path (resource access by pre-resolved index).
@@ -523,7 +529,7 @@ all_tuples!(impl_merge5_step);
 ///
 /// ```
 /// use nexus_rt::{WorldBuilder, ResMut, Handler};
-/// use nexus_rt::dag::DagStart;
+/// use nexus_rt::dag::DagBuilder;
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(0);
@@ -533,7 +539,7 @@ all_tuples!(impl_merge5_step);
 /// fn double(x: u32) -> u64 { x as u64 * 2 }
 /// fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 ///
-/// let mut dag = DagStart::<u32>::new()
+/// let mut dag = DagBuilder::<u32>::new()
 ///     .root(double, reg)
 ///     .then(store, reg)
 ///     .build();
@@ -541,9 +547,9 @@ all_tuples!(impl_merge5_step);
 /// dag.run(&mut world, 5u32);
 /// assert_eq!(*world.resource::<u64>(), 10);
 /// ```
-pub struct DagStart<E>(PhantomData<fn(E)>);
+pub struct DagBuilder<E>(PhantomData<fn(E)>);
 
-impl<E: 'static> DagStart<E> {
+impl<E> DagBuilder<E> {
     /// Create a new typed DAG entry point.
     pub fn new() -> Self {
         Self(PhantomData)
@@ -554,20 +560,22 @@ impl<E: 'static> DagStart<E> {
         self,
         f: S,
         registry: &Registry,
-    ) -> DagChain<E, Out, impl FnMut(&mut World, E) -> Out + use<E, Out, Params, S>>
+    ) -> DagChain<E, Out, ThenNode<IdentityNode, S::Step>>
     where
         Out: 'static,
         S: IntoStep<E, Out, Params>,
     {
-        let mut resolved = f.into_step(registry);
         DagChain {
-            chain: move |world: &mut World, event: E| resolved.call(world, event),
+            chain: ThenNode {
+                prev: IdentityNode,
+                step: f.into_step(registry),
+            },
             _marker: PhantomData,
         }
     }
 }
 
-impl<E: 'static> Default for DagStart<E> {
+impl<E> Default for DagBuilder<E> {
     fn default() -> Self {
         Self::new()
     }
@@ -575,17 +583,14 @@ impl<E: 'static> Default for DagStart<E> {
 
 /// Main chain builder for a typed DAG.
 ///
-/// `Chain` is `FnMut(&mut World, E) -> Out` — the monomorphized closure
-/// representing all steps composed so far.
+/// `Chain` implements [`ChainCall<E, Out = Out>`] — a named node type
+/// representing all steps composed so far. No closures, no `use<>`.
 pub struct DagChain<E, Out, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(E) -> Out>,
 }
 
-impl<E: 'static, Out: 'static, Chain> DagChain<E, Out, Chain>
-where
-    Chain: FnMut(&mut World, E) -> Out,
-{
+impl<E, Out: 'static, Chain> DagChain<E, Out, Chain> {
     /// Enter fork mode. Subsequent `.arm()` calls add parallel branches.
     pub fn fork(self) -> DagChainFork<E, Out, Chain, ()> {
         DagChainFork {
@@ -596,18 +601,33 @@ where
     }
 }
 
-impl<E: 'static, Chain> DagChain<E, (), Chain>
+impl<E, Chain> DagChain<E, (), Chain>
 where
-    Chain: FnMut(&mut World, E) + Send + 'static,
+    Chain: ChainCall<E, Out = ()> + Send,
 {
     /// Finalize into a [`Dag`](crate::Dag) that implements [`Handler<E>`].
     ///
-    /// Only available when the chain ends with `()`. If your DAG
-    /// produces a value, add a final `.then()` that consumes the output.
-    pub fn build(self) -> Dag<E, Chain> {
+    /// Only available when the chain ends with `()` or `Option<()>`.
+    /// If your DAG produces a value, add a final `.then()` that consumes
+    /// the output.
+    pub fn build(self) -> Dag<Chain> {
         Dag {
             chain: self.chain,
-            _marker: PhantomData,
+        }
+    }
+}
+
+impl<E, Chain> DagChain<E, Option<()>, Chain>
+where
+    Chain: ChainCall<E, Out = Option<()>> + Send,
+{
+    /// Finalize into a [`Dag`](crate::Dag), discarding the `Option<()>`.
+    ///
+    /// DAGs ending with `Option<()>` produce the same [`Dag`] as those
+    /// ending with `()`.
+    pub fn build(self) -> Dag<DiscardOptionNode<Chain>> {
+        Dag {
+            chain: DiscardOptionNode { prev: self.chain },
         }
     }
 }
@@ -616,17 +636,17 @@ where
 /// [`.route()`](DagChain::route).
 ///
 /// Call `.then()` to add the first step in this arm.
-pub struct DagArmStart<In>(PhantomData<fn(*const In)>);
+pub struct DagArmSeed<In>(PhantomData<fn(*const In)>);
 
-impl<In: 'static> DagArmStart<In> {
+impl<In: 'static> DagArmSeed<In> {
     /// Create a new arm builder seed.
     ///
     /// Used to build arms passed to [`DagChain::route`] or
     /// [`DagArm::route`]:
     ///
     /// ```ignore
-    /// let fast = DagArmStart::new().then(fast_path, &reg);
-    /// let slow = DagArmStart::new().then(slow_path, &reg);
+    /// let fast = DagArmSeed::new().then(fast_path, &reg);
+    /// let slow = DagArmSeed::new().then(slow_path, &reg);
     /// dag.route(predicate, &reg, fast, slow)
     /// ```
     pub fn new() -> Self {
@@ -634,27 +654,29 @@ impl<In: 'static> DagArmStart<In> {
     }
 }
 
-impl<In: 'static> Default for DagArmStart<In> {
+impl<In: 'static> Default for DagArmSeed<In> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<In: 'static> DagArmStart<In> {
+impl<In: 'static> DagArmSeed<In> {
     /// Add the first step in this arm. Takes `&In` by reference.
     pub fn then<Out, Params, S>(
         self,
         f: S,
         registry: &Registry,
-    ) -> DagArm<In, Out, impl FnMut(&mut World, &In) -> Out + use<In, Out, Params, S>>
+    ) -> DagArm<In, Out, ThenNode<IdentityNode, S::Step>>
     where
         Out: 'static,
         S: IntoStep<&'static In, Out, Params>,
-        S::Step: for<'a> StepCall<&'a In, Out>,
+        S::Step: for<'a> StepCall<&'a In, Out = Out>,
     {
-        let mut resolved = f.into_step(registry);
         DagArm {
-            chain: move |world: &mut World, input: &In| resolved.call(world, input),
+            chain: ThenNode {
+                prev: IdentityNode,
+                step: f.into_step(registry),
+            },
             _marker: PhantomData,
         }
     }
@@ -662,17 +684,14 @@ impl<In: 'static> DagArmStart<In> {
 
 /// Built arm in a typed DAG fork.
 ///
-/// `Chain` is `FnMut(&mut World, &In) -> Out` — the monomorphized
-/// closure for this arm's steps.
+/// `Chain` implements [`ChainCall<&In, Out = Out>`] — a named node type
+/// for this arm's steps.
 pub struct DagArm<In, Out, Chain> {
     pub(crate) chain: Chain,
     _marker: PhantomData<fn(*const In) -> Out>,
 }
 
-impl<In: 'static, Out: 'static, Chain> DagArm<In, Out, Chain>
-where
-    Chain: FnMut(&mut World, &In) -> Out,
-{
+impl<In: 'static, Out: 'static, Chain> DagArm<In, Out, Chain> {
     /// Enter fork mode within this arm.
     pub fn fork(self) -> DagArmFork<In, Out, Chain, ()> {
         DagArmFork {
@@ -701,18 +720,18 @@ pub struct DagArmFork<In, ForkOut, Chain, Arms> {
 ///
 /// Created by [`DagChain::build`]. The entire DAG is monomorphized
 /// at compile time — no boxing, no virtual dispatch, no arena.
+/// Supports `for<'a> Handler<&'a T>` for zero-copy event dispatch.
 /// For batch processing, see [`BatchDag`].
-pub struct Dag<E, Chain> {
+pub struct Dag<Chain> {
     chain: Chain,
-    _marker: PhantomData<fn(E)>,
 }
 
-impl<E: 'static, Chain> Handler<E> for Dag<E, Chain>
+impl<E, Chain> Handler<E> for Dag<Chain>
 where
-    Chain: FnMut(&mut World, E) + Send + 'static,
+    Chain: ChainCall<E, Out = ()> + Send,
 {
     fn run(&mut self, world: &mut World, event: E) {
-        (self.chain)(world, event);
+        self.chain.call(world, event);
     }
 
     fn name(&self) -> &'static str {
@@ -730,260 +749,157 @@ where
 
 /// Generates step combinators, Option/Result helpers, and clone helpers.
 ///
-/// DagChain and DagArm differ only in how the upstream chain is
-/// called (by value vs by reference). This macro generates identical
-/// combinator sets for both.
-///
-/// All `IntoStep`-based methods resolve steps with `&T` input (DAG
-/// semantics — every step borrows its input, never consumes it).
+/// DagChain and DagArm use the same named node types — `In` appears only
+/// on the `ChainCall<In>` trait impl, not on the struct. No closures, no
+/// `use<>` captures.
 macro_rules! impl_dag_combinators {
-    (
-        builder: $Builder:ident,
-        upstream: $U:ident,
-        chain_input: $chain_input:ty,
-        param: $pname:ident : $pty:ty
-    ) => {
+    (builder: $Builder:ident, upstream: $U:ident) => {
         // =============================================================
         // Core — any Out
         // =============================================================
 
-        impl<$U: 'static, Out: 'static, Chain> $Builder<$U, Out, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> Out,
-        {
+        impl<$U, Out: 'static, Chain> $Builder<$U, Out, Chain> {
             /// Append a step. The step receives `&Out` by reference.
             pub fn then<NewOut, Params, S>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                NewOut,
-                impl FnMut(&mut World, $pty) -> NewOut
-                    + use<$U, Out, NewOut, Params, Chain, S>,
-            >
+            ) -> $Builder<$U, NewOut, DagThenNode<Chain, S::Step, NewOut>>
             where
                 NewOut: 'static,
                 S: IntoStep<&'static Out, NewOut, Params>,
-                S::Step: for<'a> StepCall<&'a Out, NewOut>,
+                S::Step: for<'a> StepCall<&'a Out, Out = NewOut>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let out = chain(world, $pname);
-                        resolved.call(world, &out)
+                    chain: DagThenNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
+                        _out: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Dispatch output to a [`Handler<Out>`].
-            ///
-            /// Feeds the chain's output into any handler —
-            /// [`HandlerFn`](crate::HandlerFn), [`Callback`](crate::Callback),
-            /// [`Pipeline`](crate::Pipeline), etc.
             pub fn dispatch<H: Handler<Out>>(
                 self,
-                mut handler: H,
-            ) -> $Builder<$U, (), impl FnMut(&mut World, $pty) + use<$U, Out, Chain, H>>
-            {
-                let mut chain = self.chain;
+                handler: H,
+            ) -> $Builder<$U, (), DispatchNode<Chain, H>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let out = chain(world, $pname);
-                        handler.run(world, out);
+                    chain: DispatchNode {
+                        prev: self.chain,
+                        handler,
                     },
                     _marker: PhantomData,
                 }
             }
 
-            /// Conditionally wrap the output in `Option`. `Some(val)` if
-            /// the predicate returns true, `None` otherwise.
-            ///
-            /// Enters Option-combinator land — follow with `.map()`,
-            /// `.and_then()`, `.filter()`, `.unwrap_or()`, etc.
-            ///
-            /// Within a DAG arm, `None` short-circuits the remaining arm
-            /// steps — sibling arms and the merge step still execute.
+            /// Conditionally wrap the output in `Option`.
             pub fn guard<Params, S: IntoRefStep<Out, bool, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<Out>,
-                impl FnMut(&mut World, $pty) -> Option<Out>
-                    + use<$U, Out, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_ref_step(registry);
+            ) -> $Builder<$U, Option<Out>, GuardNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let val = chain(world, $pname);
-                        if resolved.call(world, &val) { Some(val) } else { None }
+                    chain: GuardNode {
+                        prev: self.chain,
+                        step: f.into_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Observe the current value without consuming or changing it.
-            ///
-            /// The step receives `&Out`. The value passes through unchanged.
-            /// Useful for logging, metrics, or debugging mid-chain.
             pub fn tap<Params, S: IntoRefStep<Out, (), Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<$U, Out, impl FnMut(&mut World, $pty) -> Out + use<$U, Out, Params, S, Chain>> {
-                let mut chain = self.chain;
-                let mut resolved = f.into_ref_step(registry);
+            ) -> $Builder<$U, Out, TapNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let val = chain(world, $pname);
-                        resolved.call(world, &val);
-                        val
+                    chain: TapNode {
+                        prev: self.chain,
+                        step: f.into_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
-            /// Binary conditional routing. Evaluates the predicate on the
-            /// current value, then executes exactly one of two arms.
-            ///
-            /// Both arms receive the value by reference (same as fork arms)
-            /// and must produce the same output type. Build arms with
-            /// [`DagArmStart::new()`] and pass them in. For N-ary routing,
-            /// nest `route` calls in the false arm.
-            ///
-            /// ```ignore
-            /// let fast = DagArmStart::new().then(fast_path, reg).then(store, reg);
-            /// let slow = DagArmStart::new().then(slow_path, reg).then(store, reg);
-            ///
-            /// DagStart::<Order>::new()
-            ///     .root(decode, reg)
-            ///     .route(|order: &Order| order.priority > 5, reg, fast, slow)
-            ///     .build();
-            /// ```
+            /// Binary conditional routing. Both arms borrow `&Out`.
             pub fn route<NewOut, C0, C1, Params, Pred: IntoRefStep<Out, bool, Params>>(
                 self,
                 pred: Pred,
                 registry: &Registry,
                 on_true: DagArm<Out, NewOut, C0>,
                 on_false: DagArm<Out, NewOut, C1>,
-            ) -> $Builder<
-                $U,
-                NewOut,
-                impl FnMut(&mut World, $pty) -> NewOut + use<$U, Out, NewOut, Params, Chain, C0, C1, Pred>,
-            >
+            ) -> $Builder<$U, NewOut, DagRouteNode<Chain, Pred::Step, C0, C1, NewOut>>
             where
-                C0: FnMut(&mut World, &Out) -> NewOut,
-                C1: FnMut(&mut World, &Out) -> NewOut,
+                C0: for<'a> ChainCall<&'a Out, Out = NewOut>,
+                C1: for<'a> ChainCall<&'a Out, Out = NewOut>,
             {
-                let mut chain = self.chain;
-                let mut resolved = pred.into_ref_step(registry);
-                let mut c0 = on_true.chain;
-                let mut c1 = on_false.chain;
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let val = chain(world, $pname);
-                        if resolved.call(world, &val) {
-                            c0(world, &val)
-                        } else {
-                            c1(world, &val)
-                        }
+                    chain: DagRouteNode {
+                        prev: self.chain,
+                        pred: pred.into_ref_step(registry),
+                        on_true: on_true.chain,
+                        on_false: on_false.chain,
+                        _out: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
 
-            /// Fork off a multi-step side-effect chain. The arm borrows
-            /// `&Out`, runs to completion (producing `()`), and the
-            /// original value passes through unchanged.
-            ///
-            /// Multi-step version of [`tap`](Self::tap) — the arm has the
-            /// full combinator API with Param resolution. Build with
-            /// [`DagArmStart::new()`].
+            /// Fork off a multi-step side-effect chain.
             pub fn tee<C>(
                 self,
                 side: DagArm<Out, (), C>,
-            ) -> $Builder<$U, Out, impl FnMut(&mut World, $pty) -> Out>
+            ) -> $Builder<$U, Out, TeeNode<Chain, C>>
             where
-                C: FnMut(&mut World, &Out),
+                C: for<'a> ChainCall<&'a Out, Out = ()>,
             {
-                let mut chain = self.chain;
-                let mut side_chain = side.chain;
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let val = chain(world, $pname);
-                        side_chain(world, &val);
-                        val
+                    chain: TeeNode {
+                        prev: self.chain,
+                        side: side.chain,
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Scan with persistent accumulator. The step receives
-            /// `&mut Acc` and `&Out` by reference, returning the new
-            /// output. State persists across invocations.
+            /// `&mut Acc` and `&Out` by reference.
             pub fn scan<Acc, NewOut, Params, S>(
                 self,
                 initial: Acc,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                NewOut,
-                impl FnMut(&mut World, $pty) -> NewOut
-                    + use<$U, Out, Acc, NewOut, Params, S, Chain>,
-            >
+            ) -> $Builder<$U, NewOut, RefScanNode<Chain, S::Step, Acc>>
             where
                 Acc: 'static,
                 NewOut: 'static,
                 S: IntoRefScanStep<Acc, Out, NewOut, Params>,
             {
-                let mut chain = self.chain;
-                let mut step = f.into_ref_scan_step(registry);
-                let mut acc = initial;
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let val = chain(world, $pname);
-                        step.call(world, &mut acc, &val)
+                    chain: RefScanNode {
+                        prev: self.chain,
+                        step: f.into_ref_scan_step(registry),
+                        acc: initial,
                     },
                     _marker: PhantomData,
                 }
             }
-
         }
 
         // =============================================================
         // Dedup — suppress unchanged values
         // =============================================================
 
-        impl<$U: 'static, Out: PartialEq + Clone, Chain> $Builder<$U, Out, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> Out,
-        {
-            /// Suppress consecutive unchanged values. Returns `Some(val)`
-            /// when the value differs from the previous invocation, `None`
-            /// when unchanged. First invocation always returns `Some`.
-            ///
-            /// Requires `PartialEq + Clone` — the previous value is stored
-            /// internally for comparison.
-            pub fn dedup(
-                self,
-            ) -> $Builder<$U, Option<Out>, impl FnMut(&mut World, $pty) -> Option<Out>> {
-                let mut chain = self.chain;
-                let mut prev: Option<Out> = None;
+        impl<$U, Out: PartialEq + Clone + 'static, Chain> $Builder<$U, Out, Chain> {
+            /// Suppress consecutive unchanged values.
+            pub fn dedup(self) -> $Builder<$U, Option<Out>, DedupNode<Chain, Out>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let val = chain(world, $pname);
-                        if prev.as_ref() == Some(&val) {
-                            None
-                        } else {
-                            prev = Some(val.clone());
-                            Some(val)
-                        }
+                    chain: DedupNode {
+                        prev: self.chain,
+                        last: None,
                     },
                     _marker: PhantomData,
                 }
@@ -994,73 +910,56 @@ macro_rules! impl_dag_combinators {
         // Bool combinators
         // =============================================================
 
-        impl<$U: 'static, Chain> $Builder<$U, bool, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> bool,
-        {
+        impl<$U, Chain> $Builder<$U, bool, Chain> {
             /// Invert a boolean value.
             #[allow(clippy::should_implement_trait)]
-            pub fn not(
-                self,
-            ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool> {
-                let mut chain = self.chain;
+            pub fn not(self) -> $Builder<$U, bool, NotNode<Chain>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        !chain(world, $pname)
-                    },
+                    chain: NotNode { prev: self.chain },
                     _marker: PhantomData,
                 }
             }
 
             /// Short-circuit AND with a second boolean.
-            ///
-            /// If the chain produces `false`, the step is not called.
             pub fn and<Params, S: IntoProducer<bool, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool + use<$U, Params, S, Chain>> {
-                let mut chain = self.chain;
-                let mut resolved = f.into_producer(registry);
+            ) -> $Builder<$U, bool, AndBoolNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname) && resolved.call(world)
+                    chain: AndBoolNode {
+                        prev: self.chain,
+                        producer: f.into_producer(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Short-circuit OR with a second boolean.
-            ///
-            /// If the chain produces `true`, the step is not called.
             pub fn or<Params, S: IntoProducer<bool, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool + use<$U, Params, S, Chain>> {
-                let mut chain = self.chain;
-                let mut resolved = f.into_producer(registry);
+            ) -> $Builder<$U, bool, OrBoolNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname) || resolved.call(world)
+                    chain: OrBoolNode {
+                        prev: self.chain,
+                        producer: f.into_producer(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// XOR with a second boolean.
-            ///
-            /// Both sides are always evaluated.
             pub fn xor<Params, S: IntoProducer<bool, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<$U, bool, impl FnMut(&mut World, $pty) -> bool + use<$U, Params, S, Chain>> {
-                let mut chain = self.chain;
-                let mut resolved = f.into_producer(registry);
+            ) -> $Builder<$U, bool, XorBoolNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname) ^ resolved.call(world)
+                    chain: XorBoolNode {
+                        prev: self.chain,
+                        producer: f.into_producer(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1071,158 +970,91 @@ macro_rules! impl_dag_combinators {
         // Clone helpers — &T → T transitions
         // =============================================================
 
-        impl<'a, $U: 'static, T: Clone, Chain> $Builder<$U, &'a T, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> &'a T,
-        {
+        impl<'a, $U, T: Clone, Chain> $Builder<$U, &'a T, Chain> {
             /// Clone a borrowed output to produce an owned value.
-            ///
-            /// Uses UFCS (`T::clone(val)`) — `val.clone()` on `&&T`
-            /// resolves to `<&T as Clone>::clone`, returning `&T` not `T`.
-            pub fn cloned(
-                self,
-            ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T> {
-                let mut chain = self.chain;
+            pub fn cloned(self) -> $Builder<$U, T, ClonedNode<Chain>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        T::clone(chain(world, $pname))
-                    },
+                    chain: ClonedNode { prev: self.chain },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<'a, $U: 'static, T: Clone, Chain> $Builder<$U, Option<&'a T>, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> Option<&'a T>,
-        {
+        impl<'a, $U, T: Clone, Chain> $Builder<$U, Option<&'a T>, Chain> {
             /// Clone inner borrowed value. `Option<&T>` → `Option<T>`.
-            pub fn cloned(
-                self,
-            ) -> $Builder<$U, Option<T>, impl FnMut(&mut World, $pty) -> Option<T>>
-            {
-                let mut chain = self.chain;
+            pub fn cloned(self) -> $Builder<$U, Option<T>, ClonedOptionNode<Chain>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).cloned()
-                    },
+                    chain: ClonedOptionNode { prev: self.chain },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<'a, $U: 'static, T: Clone, Err, Chain>
-            $Builder<$U, Result<&'a T, Err>, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> Result<&'a T, Err>,
-        {
+        impl<'a, $U, T: Clone, Err, Chain> $Builder<$U, Result<&'a T, Err>, Chain> {
             /// Clone inner borrowed Ok value.
-            /// `Result<&T, Err>` → `Result<T, Err>`.
-            pub fn cloned(
-                self,
-            ) -> $Builder<
-                $U,
-                Result<T, Err>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err>,
-            > {
-                let mut chain = self.chain;
+            pub fn cloned(self) -> $Builder<$U, Result<T, Err>, ClonedResultNode<Chain>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).cloned()
-                    },
+                    chain: ClonedResultNode { prev: self.chain },
                     _marker: PhantomData,
                 }
             }
         }
 
         // =============================================================
-        // Option helpers — $Builder<$U, Option<T>, Chain>
+        // Option helpers
         // =============================================================
 
-        impl<$U: 'static, T: 'static, Chain> $Builder<$U, Option<T>, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> Option<T>,
-        {
-            // -- IntoStep-based (hot path) --------------------------------
-
+        impl<$U, T: 'static, Chain> $Builder<$U, Option<T>, Chain> {
             /// Transform the inner value. Step not called on None.
             pub fn map<U, Params, S: IntoStep<&'static T, U, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<U>,
-                impl FnMut(&mut World, $pty) -> Option<U>
-                    + use<$U, T, U, Params, Chain, S>,
-            >
+            ) -> $Builder<$U, Option<U>, DagMapOptionNode<Chain, S::Step, U>>
             where
                 U: 'static,
-                S::Step: for<'x> StepCall<&'x T, U>,
+                S::Step: for<'x> StepCall<&'x T, Out = U>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .map(|ref val| resolved.call(world, val))
+                    chain: DagMapOptionNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
+                        _out: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Short-circuits on None. std: `Option::and_then`
-            pub fn and_then<
-                U,
-                Params,
-                S: IntoStep<&'static T, Option<U>, Params>,
-            >(
+            pub fn and_then<U, Params, S: IntoStep<&'static T, Option<U>, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<U>,
-                impl FnMut(&mut World, $pty) -> Option<U>
-                    + use<$U, T, U, Params, Chain, S>,
-            >
+            ) -> $Builder<$U, Option<U>, DagAndThenOptionNode<Chain, S::Step, U>>
             where
                 U: 'static,
-                S::Step: for<'x> StepCall<&'x T, Option<U>>,
+                S::Step: for<'x> StepCall<&'x T, Out = Option<U>>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .and_then(|ref val| resolved.call(world, val))
+                    chain: DagAndThenOptionNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
+                        _out: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
-
-            // -- Resolved (now with Param resolution) -------------------------
 
             /// Side effect on None.
             pub fn on_none<Params, S: IntoProducer<(), Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<T>,
-                impl FnMut(&mut World, $pty) -> Option<T>
-                    + use<$U, T, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_producer(registry);
+            ) -> $Builder<$U, Option<T>, OnNoneNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let result = chain(world, $pname);
-                        if result.is_none() {
-                            resolved.call(world);
-                        }
-                        result
+                    chain: OnNoneNode {
+                        prev: self.chain,
+                        producer: f.into_producer(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1233,17 +1065,11 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<T>,
-                impl FnMut(&mut World, $pty) -> Option<T>
-                    + use<$U, T, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_ref_step(registry);
+            ) -> $Builder<$U, Option<T>, FilterNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).filter(|val| resolved.call(world, val))
+                    chain: FilterNode {
+                        prev: self.chain,
+                        step: f.into_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1254,38 +1080,25 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<T>,
-                impl FnMut(&mut World, $pty) -> Option<T>
-                    + use<$U, T, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_ref_step(registry);
+            ) -> $Builder<$U, Option<T>, InspectOptionNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).inspect(|val| resolved.call(world, val))
+                    chain: InspectOptionNode {
+                        prev: self.chain,
+                        step: f.into_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// None becomes Err(err). std: `Option::ok_or`
-            ///
-            /// `Clone` required because the chain may run many times —
-            /// the error value is cloned on each `None` invocation.
             pub fn ok_or<Err: Clone>(
                 self,
                 err: Err,
-            ) -> $Builder<
-                $U,
-                Result<T, Err>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err>,
-            > {
-                let mut chain = self.chain;
+            ) -> $Builder<$U, Result<T, Err>, OkOrNode<Chain, Err>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).ok_or_else(|| err.clone())
+                    chain: OkOrNode {
+                        prev: self.chain,
+                        err,
                     },
                     _marker: PhantomData,
                 }
@@ -1296,39 +1109,28 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<T, Err>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err>
-                    + use<$U, T, Err, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_producer(registry);
+            ) -> $Builder<$U, Result<T, Err>, OkOrElseNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).ok_or_else(|| resolved.call(world))
+                    chain: OkOrElseNode {
+                        prev: self.chain,
+                        producer: f.into_producer(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Exit Option — None becomes the default value.
-            ///
-            /// `Clone` required because the chain may run many times —
-            /// the default is cloned on each `None` invocation (unlike
-            /// std's `unwrap_or` which consumes the value once).
             pub fn unwrap_or(
                 self,
                 default: T,
-            ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T>
+            ) -> $Builder<$U, T, UnwrapOrOptionNode<Chain, T>>
             where
                 T: Clone,
             {
-                let mut chain = self.chain;
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .unwrap_or_else(|| default.clone())
+                    chain: UnwrapOrOptionNode {
+                        prev: self.chain,
+                        default,
                     },
                     _marker: PhantomData,
                 }
@@ -1339,13 +1141,11 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T + use<$U, T, Params, S, Chain>>
-            {
-                let mut chain = self.chain;
-                let mut resolved = f.into_producer(registry);
+            ) -> $Builder<$U, T, UnwrapOrElseOptionNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).unwrap_or_else(|| resolved.call(world))
+                    chain: UnwrapOrElseOptionNode {
+                        prev: self.chain,
+                        producer: f.into_producer(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1353,124 +1153,78 @@ macro_rules! impl_dag_combinators {
         }
 
         // =============================================================
-        // Result helpers — $Builder<$U, Result<T, Err>, Chain>
+        // Result helpers
         // =============================================================
 
-        impl<$U: 'static, T: 'static, Err: 'static, Chain>
-            $Builder<$U, Result<T, Err>, Chain>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> Result<T, Err>,
-        {
-            // -- IntoStep-based (hot path) --------------------------------
-
+        impl<$U, T: 'static, Err: 'static, Chain> $Builder<$U, Result<T, Err>, Chain> {
             /// Transform the Ok value. Step not called on Err.
             pub fn map<U, Params, S: IntoStep<&'static T, U, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<U, Err>,
-                impl FnMut(&mut World, $pty) -> Result<U, Err>
-                    + use<$U, T, Err, U, Params, Chain, S>,
-            >
+            ) -> $Builder<$U, Result<U, Err>, DagMapResultNode<Chain, S::Step, U>>
             where
                 U: 'static,
-                S::Step: for<'x> StepCall<&'x T, U>,
+                S::Step: for<'x> StepCall<&'x T, Out = U>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .map(|ref val| resolved.call(world, val))
+                    chain: DagMapResultNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
+                        _out: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Short-circuits on Err. std: `Result::and_then`
-            pub fn and_then<
-                U,
-                Params,
-                S: IntoStep<&'static T, Result<U, Err>, Params>,
-            >(
+            pub fn and_then<U, Params, S: IntoStep<&'static T, Result<U, Err>, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<U, Err>,
-                impl FnMut(&mut World, $pty) -> Result<U, Err>
-                    + use<$U, T, Err, U, Params, Chain, S>,
-            >
+            ) -> $Builder<$U, Result<U, Err>, DagAndThenResultNode<Chain, S::Step, U>>
             where
                 U: 'static,
-                S::Step: for<'x> StepCall<&'x T, Result<U, Err>>,
+                S::Step: for<'x> StepCall<&'x T, Out = Result<U, Err>>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .and_then(|ref val| resolved.call(world, val))
+                    chain: DagAndThenResultNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
+                        _out: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Handle error and transition to Option.
-            ///
-            /// `Ok(val)` becomes `Some(val)` — handler not called.
-            /// `Err(err)` calls the handler, then produces `None`.
             pub fn catch<Params, S: IntoStep<&'static Err, (), Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Option<T>,
-                impl FnMut(&mut World, $pty) -> Option<T>
-                    + use<$U, T, Err, Params, Chain, S>,
-            >
+            ) -> $Builder<$U, Option<T>, DagCatchNode<Chain, S::Step>>
             where
-                S::Step: for<'x> StepCall<&'x Err, ()>,
+                S::Step: for<'x> StepCall<&'x Err, Out = ()>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        match chain(world, $pname) {
-                            Ok(val) => Some(val),
-                            Err(ref err) => {
-                                resolved.call(world, err);
-                                None
-                            }
-                        }
+                    chain: DagCatchNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
-
-            // -- Resolved (now with Param resolution) -------------------------
 
             /// Transform the error. std: `Result::map_err`
             pub fn map_err<Err2, Params, S: IntoStep<Err, Err2, Params>>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<T, Err2>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err2>
-                    + use<$U, T, Err, Err2, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
+            ) -> $Builder<$U, Result<T, Err2>, MapErrNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .map_err(|err| resolved.call(world, err))
+                    chain: MapErrNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1481,18 +1235,11 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<T, Err2>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err2>
-                    + use<$U, T, Err, Err2, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
+            ) -> $Builder<$U, Result<T, Err2>, OrElseNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .or_else(|err| resolved.call(world, err))
+                    chain: OrElseNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1503,18 +1250,11 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<T, Err>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err>
-                    + use<$U, T, Err, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_ref_step(registry);
+            ) -> $Builder<$U, Result<T, Err>, InspectResultNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .inspect(|val| resolved.call(world, val))
+                    chain: InspectResultNode {
+                        prev: self.chain,
+                        step: f.into_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1525,57 +1265,36 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<
-                $U,
-                Result<T, Err>,
-                impl FnMut(&mut World, $pty) -> Result<T, Err>
-                    + use<$U, T, Err, Params, S, Chain>,
-            > {
-                let mut chain = self.chain;
-                let mut resolved = f.into_ref_step(registry);
+            ) -> $Builder<$U, Result<T, Err>, InspectErrNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .inspect_err(|err| resolved.call(world, err))
+                    chain: InspectErrNode {
+                        prev: self.chain,
+                        step: f.into_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
             }
 
             /// Discard error, enter Option land. std: `Result::ok`
-            pub fn ok(
-                self,
-            ) -> $Builder<
-                $U,
-                Option<T>,
-                impl FnMut(&mut World, $pty) -> Option<T>,
-            > {
-                let mut chain = self.chain;
+            pub fn ok(self) -> $Builder<$U, Option<T>, OkResultNode<Chain>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname).ok()
-                    },
+                    chain: OkResultNode { prev: self.chain },
                     _marker: PhantomData,
                 }
             }
 
             /// Exit Result — Err becomes the default value.
-            ///
-            /// `Clone` required because the chain may run many times —
-            /// the default is cloned on each `Err` invocation (unlike
-            /// std's `unwrap_or` which consumes the value once).
             pub fn unwrap_or(
                 self,
                 default: T,
-            ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T>
+            ) -> $Builder<$U, T, UnwrapOrResultNode<Chain, T>>
             where
                 T: Clone,
             {
-                let mut chain = self.chain;
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        chain(world, $pname)
-                            .unwrap_or_else(|_| default.clone())
+                    chain: UnwrapOrResultNode {
+                        prev: self.chain,
+                        default,
                     },
                     _marker: PhantomData,
                 }
@@ -1586,16 +1305,11 @@ macro_rules! impl_dag_combinators {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> $Builder<$U, T, impl FnMut(&mut World, $pty) -> T + use<$U, T, Err, Params, S, Chain>>
-            {
-                let mut chain = self.chain;
-                let mut resolved = f.into_step(registry);
+            ) -> $Builder<$U, T, UnwrapOrElseResultNode<Chain, S::Step>> {
                 $Builder {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        match chain(world, $pname) {
-                            Ok(val) => val,
-                            Err(err) => resolved.call(world, err),
-                        }
+                    chain: UnwrapOrElseResultNode {
+                        prev: self.chain,
+                        step: f.into_step(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1604,19 +1318,205 @@ macro_rules! impl_dag_combinators {
     };
 }
 
-impl_dag_combinators!(
-    builder: DagChain,
-    upstream: E,
-    chain_input: E,
-    param: event: E
-);
+impl_dag_combinators!(builder: DagChain, upstream: E);
+impl_dag_combinators!(builder: DagArm, upstream: In);
 
-impl_dag_combinators!(
-    builder: DagArm,
-    upstream: In,
-    chain_input: &In,
-    param: input: &In
-);
+// =============================================================================
+// Merge / Join named nodes — fork terminal nodes
+// =============================================================================
+
+/// Merge two fork arms into a single output via [`MergeStepCall`].
+#[doc(hidden)]
+pub struct MergeNode2<Chain, C0, C1, MS, ForkOut, A0, A1, MOut> {
+    pub(crate) chain: Chain,
+    pub(crate) arm0: C0,
+    pub(crate) arm1: C1,
+    pub(crate) merge: MS,
+    pub(crate) _marker: PhantomData<fn(ForkOut) -> (A0, A1, MOut)>,
+}
+
+impl<In, Chain, C0, C1, MS, ForkOut, A0, A1, MOut> ChainCall<In>
+    for MergeNode2<Chain, C0, C1, MS, ForkOut, A0, A1, MOut>
+where
+    ForkOut: 'static,
+    A0: 'static,
+    A1: 'static,
+    Chain: ChainCall<In, Out = ForkOut>,
+    C0: for<'a> ChainCall<&'a ForkOut, Out = A0>,
+    C1: for<'a> ChainCall<&'a ForkOut, Out = A1>,
+    MS: for<'x> MergeStepCall<(&'x A0, &'x A1), MOut>,
+{
+    type Out = MOut;
+
+    fn call(&mut self, world: &mut World, input: In) -> MOut {
+        let fork_out = self.chain.call(world, input);
+        let o0 = self.arm0.call(world, &fork_out);
+        let o1 = self.arm1.call(world, &fork_out);
+        self.merge.call(world, (&o0, &o1))
+    }
+}
+
+/// Merge three fork arms into a single output via [`MergeStepCall`].
+#[doc(hidden)]
+pub struct MergeNode3<Chain, C0, C1, C2, MS, ForkOut, A0, A1, A2, MOut> {
+    pub(crate) chain: Chain,
+    pub(crate) arm0: C0,
+    pub(crate) arm1: C1,
+    pub(crate) arm2: C2,
+    pub(crate) merge: MS,
+    pub(crate) _marker: PhantomData<fn(ForkOut) -> (A0, A1, A2, MOut)>,
+}
+
+impl<In, Chain, C0, C1, C2, MS, ForkOut, A0, A1, A2, MOut> ChainCall<In>
+    for MergeNode3<Chain, C0, C1, C2, MS, ForkOut, A0, A1, A2, MOut>
+where
+    ForkOut: 'static,
+    A0: 'static,
+    A1: 'static,
+    A2: 'static,
+    Chain: ChainCall<In, Out = ForkOut>,
+    C0: for<'a> ChainCall<&'a ForkOut, Out = A0>,
+    C1: for<'a> ChainCall<&'a ForkOut, Out = A1>,
+    C2: for<'a> ChainCall<&'a ForkOut, Out = A2>,
+    MS: for<'x> MergeStepCall<(&'x A0, &'x A1, &'x A2), MOut>,
+{
+    type Out = MOut;
+
+    fn call(&mut self, world: &mut World, input: In) -> MOut {
+        let fork_out = self.chain.call(world, input);
+        let o0 = self.arm0.call(world, &fork_out);
+        let o1 = self.arm1.call(world, &fork_out);
+        let o2 = self.arm2.call(world, &fork_out);
+        self.merge.call(world, (&o0, &o1, &o2))
+    }
+}
+
+/// Merge four fork arms into a single output via [`MergeStepCall`].
+#[doc(hidden)]
+pub struct MergeNode4<Chain, C0, C1, C2, C3, MS, ForkOut, A0, A1, A2, A3, MOut> {
+    pub(crate) chain: Chain,
+    pub(crate) arm0: C0,
+    pub(crate) arm1: C1,
+    pub(crate) arm2: C2,
+    pub(crate) arm3: C3,
+    pub(crate) merge: MS,
+    pub(crate) _marker: PhantomData<fn(ForkOut) -> (A0, A1, A2, A3, MOut)>,
+}
+
+#[allow(clippy::many_single_char_names)]
+impl<In, Chain, C0, C1, C2, C3, MS, ForkOut, A0, A1, A2, A3, MOut> ChainCall<In>
+    for MergeNode4<Chain, C0, C1, C2, C3, MS, ForkOut, A0, A1, A2, A3, MOut>
+where
+    ForkOut: 'static,
+    A0: 'static,
+    A1: 'static,
+    A2: 'static,
+    A3: 'static,
+    Chain: ChainCall<In, Out = ForkOut>,
+    C0: for<'a> ChainCall<&'a ForkOut, Out = A0>,
+    C1: for<'a> ChainCall<&'a ForkOut, Out = A1>,
+    C2: for<'a> ChainCall<&'a ForkOut, Out = A2>,
+    C3: for<'a> ChainCall<&'a ForkOut, Out = A3>,
+    MS: for<'x> MergeStepCall<(&'x A0, &'x A1, &'x A2, &'x A3), MOut>,
+{
+    type Out = MOut;
+
+    fn call(&mut self, world: &mut World, input: In) -> MOut {
+        let fork_out = self.chain.call(world, input);
+        let o0 = self.arm0.call(world, &fork_out);
+        let o1 = self.arm1.call(world, &fork_out);
+        let o2 = self.arm2.call(world, &fork_out);
+        let o3 = self.arm3.call(world, &fork_out);
+        self.merge.call(world, (&o0, &o1, &o2, &o3))
+    }
+}
+
+/// Join two fork arms (all producing `()`).
+#[doc(hidden)]
+pub struct JoinNode2<Chain, C0, C1, ForkOut> {
+    pub(crate) chain: Chain,
+    pub(crate) arm0: C0,
+    pub(crate) arm1: C1,
+    pub(crate) _marker: PhantomData<fn() -> ForkOut>,
+}
+
+impl<In, Chain, C0, C1, ForkOut> ChainCall<In> for JoinNode2<Chain, C0, C1, ForkOut>
+where
+    ForkOut: 'static,
+    Chain: ChainCall<In, Out = ForkOut>,
+    C0: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+    C1: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+{
+    type Out = ();
+
+    fn call(&mut self, world: &mut World, input: In) {
+        let fork_out = self.chain.call(world, input);
+        self.arm0.call(world, &fork_out);
+        self.arm1.call(world, &fork_out);
+    }
+}
+
+/// Join three fork arms (all producing `()`).
+#[doc(hidden)]
+pub struct JoinNode3<Chain, C0, C1, C2, ForkOut> {
+    pub(crate) chain: Chain,
+    pub(crate) arm0: C0,
+    pub(crate) arm1: C1,
+    pub(crate) arm2: C2,
+    pub(crate) _marker: PhantomData<fn() -> ForkOut>,
+}
+
+impl<In, Chain, C0, C1, C2, ForkOut> ChainCall<In>
+    for JoinNode3<Chain, C0, C1, C2, ForkOut>
+where
+    ForkOut: 'static,
+    Chain: ChainCall<In, Out = ForkOut>,
+    C0: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+    C1: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+    C2: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+{
+    type Out = ();
+
+    fn call(&mut self, world: &mut World, input: In) {
+        let fork_out = self.chain.call(world, input);
+        self.arm0.call(world, &fork_out);
+        self.arm1.call(world, &fork_out);
+        self.arm2.call(world, &fork_out);
+    }
+}
+
+/// Join four fork arms (all producing `()`).
+#[doc(hidden)]
+pub struct JoinNode4<Chain, C0, C1, C2, C3, ForkOut> {
+    pub(crate) chain: Chain,
+    pub(crate) arm0: C0,
+    pub(crate) arm1: C1,
+    pub(crate) arm2: C2,
+    pub(crate) arm3: C3,
+    pub(crate) _marker: PhantomData<fn() -> ForkOut>,
+}
+
+#[allow(clippy::many_single_char_names)]
+impl<In, Chain, C0, C1, C2, C3, ForkOut> ChainCall<In>
+    for JoinNode4<Chain, C0, C1, C2, C3, ForkOut>
+where
+    ForkOut: 'static,
+    Chain: ChainCall<In, Out = ForkOut>,
+    C0: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+    C1: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+    C2: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+    C3: for<'a> ChainCall<&'a ForkOut, Out = ()>,
+{
+    type Out = ();
+
+    fn call(&mut self, world: &mut World, input: In) {
+        let fork_out = self.chain.call(world, input);
+        self.arm0.call(world, &fork_out);
+        self.arm1.call(world, &fork_out);
+        self.arm2.call(world, &fork_out);
+        self.arm3.call(world, &fork_out);
+    }
+}
 
 // =============================================================================
 // Splat — tuple destructuring into individual reference arguments (DAG)
@@ -1634,9 +1534,56 @@ macro_rules! define_dag_splat_builders {
         chain: $SplatChain:ident,
         arm: $SplatArm:ident,
         arm_start: $SplatArmStart:ident,
+        splat_then: $SplatThenNode:ident,
+        splat_arm_start: $SplatArmStartNode:ident,
         ($($T:ident),+),
         ($($idx:tt),+)
     ) => {
+        // -- Named node: splat + step on upstream chain --
+
+        #[doc(hidden)]
+        pub struct $SplatThenNode<Chain, MS, $($T,)+ NewOut> {
+            pub(crate) chain: Chain,
+            pub(crate) merge: MS,
+            pub(crate) _marker: PhantomData<fn() -> ($($T,)+ NewOut)>,
+        }
+
+        impl<In, Chain, MS, $($T: 'static,)+ NewOut> ChainCall<In>
+            for $SplatThenNode<Chain, MS, $($T,)+ NewOut>
+        where
+            Chain: ChainCall<In, Out = ($($T,)+)>,
+            MS: for<'x> MergeStepCall<($(&'x $T,)+), NewOut>,
+        {
+            type Out = NewOut;
+
+            fn call(&mut self, world: &mut World, input: In) -> NewOut {
+                let tuple = self.chain.call(world, input);
+                self.merge.call(world, ($(&tuple.$idx,)+))
+            }
+        }
+
+        // -- Named node: splat at arm start (no upstream chain) --
+
+        #[doc(hidden)]
+        pub struct $SplatArmStartNode<MS, $($T,)+ Out> {
+            pub(crate) merge: MS,
+            pub(crate) _marker: PhantomData<fn() -> ($($T,)+ Out)>,
+        }
+
+        impl<'inp, $($T: 'static,)+ MS, Out> ChainCall<&'inp ($($T,)+)>
+            for $SplatArmStartNode<MS, $($T,)+ Out>
+        where
+            MS: for<'x> MergeStepCall<($(&'x $T,)+), Out>,
+        {
+            type Out = Out;
+
+            fn call(&mut self, world: &mut World, input: &($($T,)+)) -> Out {
+                self.merge.call(world, ($(&input.$idx,)+))
+            }
+        }
+
+        // -- Splat builder on main chain --
+
         /// DAG splat builder on the main chain.
         #[doc(hidden)]
         pub struct $SplatChain<E, $($T,)+ Chain> {
@@ -1644,42 +1591,30 @@ macro_rules! define_dag_splat_builders {
             _marker: PhantomData<fn(E) -> ($($T,)+)>,
         }
 
-        impl<E: 'static, $($T: 'static,)+ Chain> $SplatChain<E, $($T,)+ Chain>
-        where
-            Chain: FnMut(&mut World, E) -> ($($T,)+),
-        {
+        impl<E, $($T: 'static,)+ Chain> $SplatChain<E, $($T,)+ Chain> {
             /// Add a step that receives the tuple elements as individual `&T` arguments.
             pub fn then<NewOut, Params, S>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> DagChain<
-                E,
-                NewOut,
-                impl FnMut(&mut World, E) -> NewOut
-                    + use<E, $($T,)+ NewOut, Params, Chain, S>,
-            >
+            ) -> DagChain<E, NewOut, $SplatThenNode<Chain, S::Step, $($T,)+ NewOut>>
             where
                 NewOut: 'static,
                 S: IntoMergeStep<($(&'static $T,)+), NewOut, Params>,
                 S::Step: for<'x> MergeStepCall<($(&'x $T,)+), NewOut>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_merge_step(registry);
                 DagChain {
-                    chain: move |world: &mut World, event: E| {
-                        let tuple = chain(world, event);
-                        resolved.call(world, ($(&tuple.$idx,)+))
+                    chain: $SplatThenNode {
+                        chain: self.chain,
+                        merge: f.into_merge_step(registry),
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<E: 'static, $($T: 'static,)+ Chain> DagChain<E, ($($T,)+), Chain>
-        where
-            Chain: FnMut(&mut World, E) -> ($($T,)+),
-        {
+        impl<E, $($T: 'static,)+ Chain> DagChain<E, ($($T,)+), Chain> {
             /// Destructure the tuple output into individual `&T` arguments.
             pub fn splat(self) -> $SplatChain<E, $($T,)+ Chain> {
                 $SplatChain {
@@ -1689,6 +1624,8 @@ macro_rules! define_dag_splat_builders {
             }
         }
 
+        // -- Splat builder within an arm --
+
         /// DAG splat builder within an arm.
         #[doc(hidden)]
         pub struct $SplatArm<In, $($T,)+ Chain> {
@@ -1696,42 +1633,30 @@ macro_rules! define_dag_splat_builders {
             _marker: PhantomData<fn(*const In) -> ($($T,)+)>,
         }
 
-        impl<In: 'static, $($T: 'static,)+ Chain> $SplatArm<In, $($T,)+ Chain>
-        where
-            Chain: FnMut(&mut World, &In) -> ($($T,)+),
-        {
+        impl<In: 'static, $($T: 'static,)+ Chain> $SplatArm<In, $($T,)+ Chain> {
             /// Add a step that receives the tuple elements as individual `&T` arguments.
             pub fn then<NewOut, Params, S>(
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> DagArm<
-                In,
-                NewOut,
-                impl FnMut(&mut World, &In) -> NewOut
-                    + use<In, $($T,)+ NewOut, Params, Chain, S>,
-            >
+            ) -> DagArm<In, NewOut, $SplatThenNode<Chain, S::Step, $($T,)+ NewOut>>
             where
                 NewOut: 'static,
                 S: IntoMergeStep<($(&'static $T,)+), NewOut, Params>,
                 S::Step: for<'x> MergeStepCall<($(&'x $T,)+), NewOut>,
             {
-                let mut chain = self.chain;
-                let mut resolved = f.into_merge_step(registry);
                 DagArm {
-                    chain: move |world: &mut World, input: &In| {
-                        let tuple = chain(world, input);
-                        resolved.call(world, ($(&tuple.$idx,)+))
+                    chain: $SplatThenNode {
+                        chain: self.chain,
+                        merge: f.into_merge_step(registry),
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<In: 'static, $($T: 'static,)+ Chain> DagArm<In, ($($T,)+), Chain>
-        where
-            Chain: FnMut(&mut World, &In) -> ($($T,)+),
-        {
+        impl<In: 'static, $($T: 'static,)+ Chain> DagArm<In, ($($T,)+), Chain> {
             /// Destructure the tuple output into individual `&T` arguments.
             pub fn splat(self) -> $SplatArm<In, $($T,)+ Chain> {
                 $SplatArm {
@@ -1740,6 +1665,8 @@ macro_rules! define_dag_splat_builders {
                 }
             }
         }
+
+        // -- Splat at arm start position --
 
         /// DAG splat builder at arm start position.
         #[doc(hidden)]
@@ -1751,28 +1678,23 @@ macro_rules! define_dag_splat_builders {
                 self,
                 f: S,
                 registry: &Registry,
-            ) -> DagArm<
-                ($($T,)+),
-                Out,
-                impl FnMut(&mut World, &($($T,)+)) -> Out
-                    + use<$($T,)+ Out, Params, S>,
-            >
+            ) -> DagArm<($($T,)+), Out, $SplatArmStartNode<S::Step, $($T,)+ Out>>
             where
                 Out: 'static,
                 S: IntoMergeStep<($(&'static $T,)+), Out, Params>,
                 S::Step: for<'x> MergeStepCall<($(&'x $T,)+), Out>,
             {
-                let mut resolved = f.into_merge_step(registry);
                 DagArm {
-                    chain: move |world: &mut World, input: &($($T,)+)| {
-                        resolved.call(world, ($(&input.$idx,)+))
+                    chain: $SplatArmStartNode {
+                        merge: f.into_merge_step(registry),
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<$($T: 'static),+> DagArmStart<($($T,)+)> {
+        impl<$($T: 'static),+> DagArmSeed<($($T,)+)> {
             /// Destructure the tuple input into individual `&T` arguments.
             pub fn splat(self) -> $SplatArmStart<$($T),+> {
                 $SplatArmStart(PhantomData)
@@ -1785,6 +1707,8 @@ define_dag_splat_builders!(2,
     chain: DagSplatChain2,
     arm: DagSplatArm2,
     arm_start: DagSplatArmStart2,
+    splat_then: SplatThenNode2,
+    splat_arm_start: SplatArmStartNode2,
     (T0, T1),
     (0, 1)
 );
@@ -1793,6 +1717,8 @@ define_dag_splat_builders!(3,
     chain: DagSplatChain3,
     arm: DagSplatArm3,
     arm_start: DagSplatArmStart3,
+    splat_then: SplatThenNode3,
+    splat_arm_start: SplatArmStartNode3,
     (T0, T1, T2),
     (0, 1, 2)
 );
@@ -1801,6 +1727,8 @@ define_dag_splat_builders!(4,
     chain: DagSplatChain4,
     arm: DagSplatArm4,
     arm_start: DagSplatArmStart4,
+    splat_then: SplatThenNode4,
+    splat_arm_start: SplatArmStartNode4,
     (T0, T1, T2, T3),
     (0, 1, 2, 3)
 );
@@ -1809,6 +1737,8 @@ define_dag_splat_builders!(5,
     chain: DagSplatChain5,
     arm: DagSplatArm5,
     arm_start: DagSplatArmStart5,
+    splat_then: SplatThenNode5,
+    splat_arm_start: SplatArmStartNode5,
     (T0, T1, T2, T3, T4),
     (0, 1, 2, 3, 4)
 );
@@ -1819,16 +1749,14 @@ define_dag_splat_builders!(5,
 
 /// Generates arm accumulation, merge, and join for a fork type.
 ///
-/// ChainFork and ArmFork differ only in:
-/// - How the upstream chain is called (by value vs by reference)
-/// - What output type is produced (DagChain vs DagArm)
+/// ChainFork and ArmFork differ only in what output builder they
+/// produce (DagChain vs DagArm). All dispatch logic lives in the
+/// named MergeNode/JoinNode types — the macro just wires construction.
 macro_rules! impl_dag_fork {
     (
         fork: $Fork:ident,
         output: $Output:ident,
-        upstream: $U:ident,
-        chain_input: $chain_input:ty,
-        param: $pname:ident : $pty:ty
+        upstream: $U:ident
     ) => {
         // =============================================================
         // Arm accumulation: 0→1, 1→2, 2→3, 3→4
@@ -1838,9 +1766,9 @@ macro_rules! impl_dag_fork {
             /// Add the first arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, AOut, ACh>,)> {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 $Fork {
                     chain: self.chain,
                     arms: (arm,),
@@ -1853,10 +1781,10 @@ macro_rules! impl_dag_fork {
             /// Add a second arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, A0, C0>, DagArm<ForkOut, AOut, ACh>)>
             {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 let (a0,) = self.arms;
                 $Fork {
                     chain: self.chain,
@@ -1872,7 +1800,7 @@ macro_rules! impl_dag_fork {
             /// Add a third arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<
                 $U,
                 ForkOut,
@@ -1883,7 +1811,7 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, AOut, ACh>,
                 ),
             > {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 let (a0, a1) = self.arms;
                 $Fork {
                     chain: self.chain,
@@ -1908,7 +1836,7 @@ macro_rules! impl_dag_fork {
             /// Add a fourth arm to this fork.
             pub fn arm<AOut, ACh>(
                 self,
-                f: impl FnOnce(DagArmStart<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
+                f: impl FnOnce(DagArmSeed<ForkOut>) -> DagArm<ForkOut, AOut, ACh>,
             ) -> $Fork<
                 $U,
                 ForkOut,
@@ -1920,7 +1848,7 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, AOut, ACh>,
                 ),
             > {
-                let arm = f(DagArmStart(PhantomData));
+                let arm = f(DagArmSeed(PhantomData));
                 let (a0, a1, a2) = self.arms;
                 $Fork {
                     chain: self.chain,
@@ -1934,12 +1862,8 @@ macro_rules! impl_dag_fork {
         // Merge arity 2
         // =============================================================
 
-        impl<$U: 'static, ForkOut: 'static, Chain, A0: 'static, C0, A1: 'static, C1>
+        impl<$U, ForkOut: 'static, Chain, A0: 'static, C0, A1: 'static, C1>
             $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, A0, C0>, DagArm<ForkOut, A1, C1>)>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> ForkOut,
-            C0: FnMut(&mut World, &ForkOut) -> A0,
-            C1: FnMut(&mut World, &ForkOut) -> A1,
         {
             /// Merge two arms with a merge step.
             pub fn merge<MOut, Params, S>(
@@ -1949,52 +1873,41 @@ macro_rules! impl_dag_fork {
             ) -> $Output<
                 $U,
                 MOut,
-                impl FnMut(&mut World, $pty) -> MOut
-                + use<$U, ForkOut, MOut, Params, Chain, S, A0, C0, A1, C1>,
+                MergeNode2<Chain, C0, C1, S::Step, ForkOut, A0, A1, MOut>,
             >
             where
                 MOut: 'static,
                 S: IntoMergeStep<(&'static A0, &'static A1), MOut, Params>,
                 S::Step: for<'x> MergeStepCall<(&'x A0, &'x A1), MOut>,
             {
-                let mut chain = self.chain;
                 let (a0, a1) = self.arms;
-                let mut c0 = a0.chain;
-                let mut c1 = a1.chain;
-                let mut ms = f.into_merge_step(registry);
                 $Output {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let fork_out = chain(world, $pname);
-                        let o0 = c0(world, &fork_out);
-                        let o1 = c1(world, &fork_out);
-                        ms.call(world, (&o0, &o1))
+                    chain: MergeNode2 {
+                        chain: self.chain,
+                        arm0: a0.chain,
+                        arm1: a1.chain,
+                        merge: f.into_merge_step(registry),
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<$U: 'static, ForkOut: 'static, Chain, C0, C1>
+        impl<$U, ForkOut: 'static, Chain, C0, C1>
             $Fork<$U, ForkOut, Chain, (DagArm<ForkOut, (), C0>, DagArm<ForkOut, (), C1>)>
-        where
-            Chain: FnMut(&mut World, $chain_input) -> ForkOut,
-            C0: FnMut(&mut World, &ForkOut),
-            C1: FnMut(&mut World, &ForkOut),
         {
             /// Join two sink arms (all producing `()`).
             pub fn join(
                 self,
-            ) -> $Output<$U, (), impl FnMut(&mut World, $pty) + use<$U, ForkOut, Chain, C0, C1>>
-            {
-                let mut chain = self.chain;
+            ) -> $Output<$U, (), JoinNode2<Chain, C0, C1, ForkOut>> {
                 let (a0, a1) = self.arms;
-                let mut c0 = a0.chain;
-                let mut c1 = a1.chain;
                 $Output {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let fork_out = chain(world, $pname);
-                        c0(world, &fork_out);
-                        c1(world, &fork_out);
+                    chain: JoinNode2 {
+                        chain: self.chain,
+                        arm0: a0.chain,
+                        arm1: a1.chain,
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
@@ -2005,17 +1918,7 @@ macro_rules! impl_dag_fork {
         // Merge arity 3
         // =============================================================
 
-        impl<
-            $U: 'static,
-            ForkOut: 'static,
-            Chain,
-            A0: 'static,
-            C0,
-            A1: 'static,
-            C1,
-            A2: 'static,
-            C2,
-        >
+        impl<$U, ForkOut: 'static, Chain, A0: 'static, C0, A1: 'static, C1, A2: 'static, C2>
             $Fork<
                 $U,
                 ForkOut,
@@ -2026,11 +1929,6 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, A2, C2>,
                 ),
             >
-        where
-            Chain: FnMut(&mut World, $chain_input) -> ForkOut,
-            C0: FnMut(&mut World, &ForkOut) -> A0,
-            C1: FnMut(&mut World, &ForkOut) -> A1,
-            C2: FnMut(&mut World, &ForkOut) -> A2,
         {
             /// Merge three arms with a merge step.
             pub fn merge<MOut, Params, S>(
@@ -2040,34 +1938,29 @@ macro_rules! impl_dag_fork {
             ) -> $Output<
                 $U,
                 MOut,
-                impl FnMut(&mut World, $pty) -> MOut
-                + use<$U, ForkOut, MOut, Params, Chain, S, A0, C0, A1, C1, A2, C2>,
+                MergeNode3<Chain, C0, C1, C2, S::Step, ForkOut, A0, A1, A2, MOut>,
             >
             where
                 MOut: 'static,
                 S: IntoMergeStep<(&'static A0, &'static A1, &'static A2), MOut, Params>,
                 S::Step: for<'x> MergeStepCall<(&'x A0, &'x A1, &'x A2), MOut>,
             {
-                let mut chain = self.chain;
                 let (a0, a1, a2) = self.arms;
-                let mut c0 = a0.chain;
-                let mut c1 = a1.chain;
-                let mut c2 = a2.chain;
-                let mut ms = f.into_merge_step(registry);
                 $Output {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let fork_out = chain(world, $pname);
-                        let o0 = c0(world, &fork_out);
-                        let o1 = c1(world, &fork_out);
-                        let o2 = c2(world, &fork_out);
-                        ms.call(world, (&o0, &o1, &o2))
+                    chain: MergeNode3 {
+                        chain: self.chain,
+                        arm0: a0.chain,
+                        arm1: a1.chain,
+                        arm2: a2.chain,
+                        merge: f.into_merge_step(registry),
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<$U: 'static, ForkOut: 'static, Chain, C0, C1, C2>
+        impl<$U, ForkOut: 'static, Chain, C0, C1, C2>
             $Fork<
                 $U,
                 ForkOut,
@@ -2078,28 +1971,19 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, (), C2>,
                 ),
             >
-        where
-            Chain: FnMut(&mut World, $chain_input) -> ForkOut,
-            C0: FnMut(&mut World, &ForkOut),
-            C1: FnMut(&mut World, &ForkOut),
-            C2: FnMut(&mut World, &ForkOut),
         {
             /// Join three sink arms (all producing `()`).
             pub fn join(
                 self,
-            ) -> $Output<$U, (), impl FnMut(&mut World, $pty) + use<$U, ForkOut, Chain, C0, C1, C2>>
-            {
-                let mut chain = self.chain;
+            ) -> $Output<$U, (), JoinNode3<Chain, C0, C1, C2, ForkOut>> {
                 let (a0, a1, a2) = self.arms;
-                let mut c0 = a0.chain;
-                let mut c1 = a1.chain;
-                let mut c2 = a2.chain;
                 $Output {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let fork_out = chain(world, $pname);
-                        c0(world, &fork_out);
-                        c1(world, &fork_out);
-                        c2(world, &fork_out);
+                    chain: JoinNode3 {
+                        chain: self.chain,
+                        arm0: a0.chain,
+                        arm1: a1.chain,
+                        arm2: a2.chain,
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
@@ -2112,7 +1996,7 @@ macro_rules! impl_dag_fork {
 
         #[allow(clippy::many_single_char_names)]
         impl<
-            $U: 'static,
+            $U,
             ForkOut: 'static,
             Chain,
             A0: 'static,
@@ -2135,12 +2019,6 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, A3, C3>,
                 ),
             >
-        where
-            Chain: FnMut(&mut World, $chain_input) -> ForkOut,
-            C0: FnMut(&mut World, &ForkOut) -> A0,
-            C1: FnMut(&mut World, &ForkOut) -> A1,
-            C2: FnMut(&mut World, &ForkOut) -> A2,
-            C3: FnMut(&mut World, &ForkOut) -> A3,
         {
             /// Merge four arms with a merge step.
             pub fn merge<MOut, Params, S>(
@@ -2150,40 +2028,34 @@ macro_rules! impl_dag_fork {
             ) -> $Output<
                 $U,
                 MOut,
-                impl FnMut(&mut World, $pty) -> MOut
-                + use<$U, ForkOut, MOut, Params, Chain, S, A0, C0, A1, C1, A2, C2, A3, C3>,
+                MergeNode4<Chain, C0, C1, C2, C3, S::Step, ForkOut, A0, A1, A2, A3, MOut>,
             >
             where
                 MOut: 'static,
                 S: IntoMergeStep<
-                        (&'static A0, &'static A1, &'static A2, &'static A3),
-                        MOut,
-                        Params,
-                    >,
+                    (&'static A0, &'static A1, &'static A2, &'static A3),
+                    MOut,
+                    Params,
+                >,
                 S::Step: for<'x> MergeStepCall<(&'x A0, &'x A1, &'x A2, &'x A3), MOut>,
             {
-                let mut chain = self.chain;
                 let (a0, a1, a2, a3) = self.arms;
-                let mut c0 = a0.chain;
-                let mut c1 = a1.chain;
-                let mut c2 = a2.chain;
-                let mut c3 = a3.chain;
-                let mut ms = f.into_merge_step(registry);
                 $Output {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let fork_out = chain(world, $pname);
-                        let o0 = c0(world, &fork_out);
-                        let o1 = c1(world, &fork_out);
-                        let o2 = c2(world, &fork_out);
-                        let o3 = c3(world, &fork_out);
-                        ms.call(world, (&o0, &o1, &o2, &o3))
+                    chain: MergeNode4 {
+                        chain: self.chain,
+                        arm0: a0.chain,
+                        arm1: a1.chain,
+                        arm2: a2.chain,
+                        arm3: a3.chain,
+                        merge: f.into_merge_step(registry),
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
             }
         }
 
-        impl<$U: 'static, ForkOut: 'static, Chain, C0, C1, C2, C3>
+        impl<$U, ForkOut: 'static, Chain, C0, C1, C2, C3>
             $Fork<
                 $U,
                 ForkOut,
@@ -2195,34 +2067,20 @@ macro_rules! impl_dag_fork {
                     DagArm<ForkOut, (), C3>,
                 ),
             >
-        where
-            Chain: FnMut(&mut World, $chain_input) -> ForkOut,
-            C0: FnMut(&mut World, &ForkOut),
-            C1: FnMut(&mut World, &ForkOut),
-            C2: FnMut(&mut World, &ForkOut),
-            C3: FnMut(&mut World, &ForkOut),
         {
             /// Join four sink arms (all producing `()`).
             pub fn join(
                 self,
-            ) -> $Output<
-                $U,
-                (),
-                impl FnMut(&mut World, $pty) + use<$U, ForkOut, Chain, C0, C1, C2, C3>,
-            > {
-                let mut chain = self.chain;
+            ) -> $Output<$U, (), JoinNode4<Chain, C0, C1, C2, C3, ForkOut>> {
                 let (a0, a1, a2, a3) = self.arms;
-                let mut c0 = a0.chain;
-                let mut c1 = a1.chain;
-                let mut c2 = a2.chain;
-                let mut c3 = a3.chain;
                 $Output {
-                    chain: move |world: &mut World, $pname: $pty| {
-                        let fork_out = chain(world, $pname);
-                        c0(world, &fork_out);
-                        c1(world, &fork_out);
-                        c2(world, &fork_out);
-                        c3(world, &fork_out);
+                    chain: JoinNode4 {
+                        chain: self.chain,
+                        arm0: a0.chain,
+                        arm1: a1.chain,
+                        arm2: a2.chain,
+                        arm3: a3.chain,
+                        _marker: PhantomData,
                     },
                     _marker: PhantomData,
                 }
@@ -2231,30 +2089,14 @@ macro_rules! impl_dag_fork {
     };
 }
 
-impl_dag_fork!(
-    fork: DagChainFork,
-    output: DagChain,
-    upstream: E,
-    chain_input: E,
-    param: event: E
-);
-
-impl_dag_fork!(
-    fork: DagArmFork,
-    output: DagArm,
-    upstream: In,
-    chain_input: &In,
-    param: input: &In
-);
+impl_dag_fork!(fork: DagChainFork, output: DagChain, upstream: E);
+impl_dag_fork!(fork: DagArmFork, output: DagArm, upstream: In);
 
 // =============================================================================
 // build_batch — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<E: 'static, Out: crate::PipelineOutput, Chain> DagChain<E, Out, Chain>
-where
-    Chain: FnMut(&mut World, E) -> Out + 'static,
-{
+impl<E, Out: crate::PipelineOutput, Chain: ChainCall<E, Out = Out>> DagChain<E, Out, Chain> {
     /// Finalize into a [`BatchDag`] with a pre-allocated input buffer.
     ///
     /// Same DAG chain as [`build`](DagChain::build), but the DAG owns an
@@ -2294,7 +2136,7 @@ where
 ///
 /// ```
 /// use nexus_rt::{WorldBuilder, ResMut};
-/// use nexus_rt::dag::DagStart;
+/// use nexus_rt::dag::DagBuilder;
 ///
 /// let mut wb = WorldBuilder::new();
 /// wb.register::<u64>(0);
@@ -2304,7 +2146,7 @@ where
 /// fn double(x: u32) -> u64 { x as u64 * 2 }
 /// fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
 ///
-/// let mut batch = DagStart::<u32>::new()
+/// let mut batch = DagBuilder::<u32>::new()
 ///     .root(double, reg)
 ///     .then(store, reg)
 ///     .build_batch(8);
@@ -2320,7 +2162,7 @@ pub struct BatchDag<E, F> {
     chain: F,
 }
 
-impl<E, Out: crate::PipelineOutput, F: FnMut(&mut World, E) -> Out> BatchDag<E, F> {
+impl<E, Out: crate::PipelineOutput, F: ChainCall<E, Out = Out>> BatchDag<E, F> {
     /// Mutable access to the input buffer. Drivers fill this between
     /// dispatch cycles.
     pub fn input_mut(&mut self) -> &mut Vec<E> {
@@ -2339,7 +2181,7 @@ impl<E, Out: crate::PipelineOutput, F: FnMut(&mut World, E) -> Out> BatchDag<E, 
     /// the input buffer is empty but retains its allocation.
     pub fn run(&mut self, world: &mut World) {
         for item in self.input.drain(..) {
-            let _ = (self.chain)(world, item);
+            let _ = self.chain.call(world, item);
         }
     }
 }
@@ -2374,7 +2216,7 @@ where
     In: 'static,
     Out: 'static,
     S: IntoStep<&'static In, Out, Params>,
-    S::Step: for<'a> StepCall<&'a In, Out>,
+    S::Step: for<'a> StepCall<&'a In, Out = Out>,
 {
     let mut resolved = f.into_step(registry);
     move |world: &mut World, input: &In| resolved.call(world, input)
@@ -2405,7 +2247,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .then(store, reg)
             .build();
@@ -2431,7 +2273,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .then(add_one, reg)
             .then(store, reg)
@@ -2458,7 +2300,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .then(add_one, reg)
             .then(add_one, reg)
@@ -2495,7 +2337,7 @@ mod tests {
             *out = *val as u64;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .fork()
             .arm(|a| a.then(add_one, reg))
@@ -2529,7 +2371,7 @@ mod tests {
             *out = *val as i64 * 3;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| a.then(sink_u64, reg))
@@ -2580,7 +2422,7 @@ mod tests {
         //     inner_merge(30,45)=75
         //   arm_b: mul3(5)=15
         // outer_merge(75,15)=90
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| {
@@ -2631,7 +2473,7 @@ mod tests {
         //   a: add_one(10)=11 → add_then_mul2(11)=24
         //   b: mul3(10)=30
         // merge(24, 30) = 54
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_mul2, reg)
             .fork()
             .arm(|a| a.then(add_one, reg).then(add_then_mul2, reg))
@@ -2661,7 +2503,7 @@ mod tests {
         }
 
         let mut boxed: Virtual<u32> = Box::new(
-            DagStart::<u32>::new()
+            DagBuilder::<u32>::new()
                 .root(root_id, reg)
                 .then(store, reg)
                 .build(),
@@ -2687,7 +2529,7 @@ mod tests {
             *out = val.to_string();
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(|x: u32| x, reg)
             .then(scale, reg)
             .then(store, reg)
@@ -2706,7 +2548,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(
                 |mut out: ResMut<u64>, x: u32| {
                     *out = x as u64;
@@ -2735,7 +2577,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .then(store, reg)
             .build();
@@ -2773,7 +2615,7 @@ mod tests {
             *out = format!("{},{},{}", a, b, c);
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| a.then(mul1, reg))
@@ -2801,7 +2643,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .dispatch(sink.into_handler(reg))
             .build();
@@ -2826,7 +2668,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map(double, reg)
             .then(sink, reg)
@@ -2852,7 +2694,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map(double, reg)
             .then(sink, reg)
@@ -2878,7 +2720,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .and_then(check, reg)
             .then(sink, reg)
@@ -2900,7 +2742,7 @@ mod tests {
         wb.register::<u64>(0);
         let mut world = wb.build();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, world.registry())
             .filter(|v: &u64| *v > 3, world.registry())
             .then(sink, world.registry())
@@ -2922,7 +2764,7 @@ mod tests {
         wb.register::<u64>(0);
         let mut world = wb.build();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, world.registry())
             .filter(|v: &u64| *v > 10, world.registry())
             .then(sink, world.registry())
@@ -2943,7 +2785,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .on_none(|w: &mut World| {
                 *w.resource_mut::<bool>() = true;
@@ -2968,7 +2810,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .unwrap_or(42u64)
             .then(sink, reg)
@@ -2994,7 +2836,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .ok_or("missing")
             .then(sink, reg)
@@ -3020,7 +2862,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map(double, reg)
             .then(sink, reg)
@@ -3050,7 +2892,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .and_then(check, reg)
             .then(sink, reg)
@@ -3077,7 +2919,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .catch(handle_err, reg)
             .then(sink, reg)
@@ -3101,7 +2943,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .ok()
             .then(sink, reg)
@@ -3124,7 +2966,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .unwrap_or_else(|_err: &str| 42u64, reg)
             .then(sink, reg)
@@ -3150,7 +2992,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .map_err(|e: u32| format!("err:{e}"), reg)
             .then(sink, reg)
@@ -3185,7 +3027,7 @@ mod tests {
 
         // Arm 0: root → arm_step (Option) → unwrap_or(0)
         // Arm 1: root → double
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| a.then(arm_step, reg).unwrap_or(0u64))
@@ -3215,7 +3057,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .inspect(|w: &mut World, _val: &u64| {
                 *w.resource_mut::<bool>() = true;
@@ -3243,7 +3085,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .guard(|v: &u64| *v > 3, reg)
             .then(sink, reg)
@@ -3266,7 +3108,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .guard(|v: &u64| *v > 10, reg)
             .then(sink, reg)
@@ -3296,7 +3138,7 @@ mod tests {
         let reg = world.registry();
 
         // arm_a: guard drops (5 < 10), arm_b: runs normally
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| a.then(double, reg).guard(|v: &u64| *v > 100, reg))
@@ -3326,7 +3168,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .tap(|w: &mut World, val: &u64| {
                 // Side-effect: record that we observed the value.
@@ -3360,7 +3202,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| {
@@ -3400,10 +3242,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = DagArmStart::new().then(double, reg);
-        let arm_f = DagArmStart::new().then(triple, reg);
+        let arm_t = DagArmSeed::new().then(double, reg);
+        let arm_f = DagArmSeed::new().then(triple, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .route(|v: &u64| *v > 3, reg, arm_t, arm_f)
             .then(sink, reg)
@@ -3432,10 +3274,10 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let arm_t = DagArmStart::new().then(double, reg);
-        let arm_f = DagArmStart::new().then(triple, reg);
+        let arm_t = DagArmSeed::new().then(double, reg);
+        let arm_f = DagArmSeed::new().then(triple, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .route(|v: &u64| *v > 10, reg, arm_t, arm_f)
             .then(sink, reg)
@@ -3471,14 +3313,14 @@ mod tests {
         let reg = world.registry();
 
         // N-ary via nesting: <5 → +100, 5..10 → +200, >=10 → +300
-        let inner_t = DagArmStart::new().then(add_200, reg);
-        let inner_f = DagArmStart::new().then(add_300, reg);
-        let outer_t = DagArmStart::new().then(add_100, reg);
-        let outer_f = DagArmStart::new()
+        let inner_t = DagArmSeed::new().then(add_200, reg);
+        let inner_f = DagArmSeed::new().then(add_300, reg);
+        let outer_t = DagArmSeed::new().then(add_100, reg);
+        let outer_f = DagArmSeed::new()
             .then(pass, reg)
             .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .route(|v: &u64| *v < 5, reg, outer_t, outer_f)
             .then(sink, reg)
@@ -3513,9 +3355,9 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let side = DagArmStart::new().then(log_step, reg);
+        let side = DagArmSeed::new().then(log_step, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .tee(side)
             .then(sink, reg)
@@ -3547,7 +3389,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .dedup()
             .then(sink, reg)
@@ -3578,7 +3420,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .not()
             .then(sink, reg)
@@ -3604,7 +3446,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .and(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg)
@@ -3631,7 +3473,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .or(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg)
@@ -3658,7 +3500,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .xor(|w: &mut World| *w.resource::<bool>(), reg)
             .then(sink, reg)
@@ -3686,7 +3528,7 @@ mod tests {
             *out = *a as u64 + *b as u64;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(store, reg)
@@ -3713,7 +3555,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split3, reg)
             .splat()
             .then(sum3, reg)
@@ -3741,7 +3583,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(add_base, reg)
@@ -3775,7 +3617,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .fork()
             .arm(|a| a.splat().then(sum2, reg))
@@ -3817,7 +3659,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root_id, reg)
             .fork()
             .arm(|a| a.then(make_pair, reg).splat().then(sum2, reg))
@@ -3850,7 +3692,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split4, reg)
             .splat()
             .then(sum4, reg)
@@ -3879,7 +3721,7 @@ mod tests {
             *out = *val;
         }
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(split5, reg)
             .splat()
             .then(sum5, reg)
@@ -3904,7 +3746,7 @@ mod tests {
             *out = *a as u64 + *b as u64;
         }
 
-        let dag = DagStart::<u32>::new()
+        let dag = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(store, reg)
@@ -3931,7 +3773,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .then(store, reg)
             .build_batch(8);
@@ -3957,7 +3799,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .guard(|val: &u64| *val > 5, reg)
             .map(store, reg)
@@ -3986,7 +3828,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .then(store, reg)
             .build_batch(8);
@@ -4008,7 +3850,7 @@ mod tests {
 
         fn noop(_x: u32) {}
 
-        let mut batch = DagStart::<u32>::new().root(noop, reg).build_batch(64);
+        let mut batch = DagBuilder::<u32>::new().root(noop, reg).build_batch(64);
 
         batch.input_mut().extend([1, 2, 3]);
         batch.run(&mut world);
@@ -4031,7 +3873,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(double, reg)
             .then(store, reg)
             .build_batch(8);
@@ -4057,7 +3899,7 @@ mod tests {
             *out += *val;
         }
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(split, reg)
             .splat()
             .then(combine, reg)
@@ -4087,7 +3929,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(|val: &u64| if *val > 5 { *val * 10 } else { *val + 1 }, reg)
             .then(sink, reg)
@@ -4114,7 +3956,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(|val: &u32| match *val % 3 {
                 0 => *val as u64 + 100,
@@ -4157,7 +3999,7 @@ mod tests {
         let mut arm_even = resolve_arm(double, reg);
         let mut arm_odd = resolve_arm(triple, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(move |world: &mut World, val: &u32| {
                 if *val % 2 == 0 {
@@ -4201,7 +4043,7 @@ mod tests {
         let mut arm_offset = resolve_arm(add_offset, reg);
         let mut arm_double = resolve_arm(plain_double, reg);
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(move |world: &mut World, val: &u32| {
                 if *val > 10 {
@@ -4241,7 +4083,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut dag = DagStart::<u32>::new()
+        let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
             .fork()
             .arm(|a| {
@@ -4282,7 +4124,7 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut batch = DagStart::<u32>::new()
+        let mut batch = DagBuilder::<u32>::new()
             .root(root, reg)
             .then(|val: &u32| {
                 if *val % 2 == 0 {
@@ -4314,7 +4156,7 @@ mod tests {
 
         fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 
-        let mut dag = DagStart::<u64>::new()
+        let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
             .scan(0u64, |acc: &mut u64, val: &u64| {
                 *acc += val;
@@ -4350,7 +4192,7 @@ mod tests {
             };
         }
 
-        let mut dag = DagStart::<u64>::new()
+        let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
             .scan(0u64, threshold, reg)
             .then(store_opt, reg)
@@ -4371,7 +4213,7 @@ mod tests {
 
         fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
 
-        let scan_arm = DagArmStart::<u64>::new()
+        let scan_arm = DagArmSeed::<u64>::new()
             .then(|v: &u64| *v, reg)
             .scan(0u64, |acc: &mut u64, val: &u64| {
                 *acc += val;
@@ -4379,10 +4221,10 @@ mod tests {
             }, reg)
             .then(store, reg);
 
-        let pass_arm = DagArmStart::<u64>::new()
+        let pass_arm = DagArmSeed::<u64>::new()
             .then(|_: &u64| {}, reg);
 
-        let mut dag = DagStart::<u64>::new()
+        let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
             .fork()
             .arm(|_| scan_arm)
@@ -4396,4 +4238,64 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 30);
     }
 
+    // =========================================================================
+    // Build — Option<()> terminal
+    // =========================================================================
+
+    #[test]
+    fn build_option_unit_terminal() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // root takes by value (IntoStep), then .guard() produces Option
+        fn check(x: u32) -> u64 {
+            x as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out += *val;
+        }
+
+        // guard → Option<u64>, map(store) → Option<()>, build() should work
+        let mut dag = DagBuilder::<u32>::new()
+            .root(check, reg)
+            .guard(|val: &u64| *val > 5, reg)
+            .map(store, reg)
+            .build();
+
+        dag.run(&mut world, 3); // guard filters → None
+        assert_eq!(*world.resource::<u64>(), 0);
+        dag.run(&mut world, 7); // passes guard → stores 7
+        assert_eq!(*world.resource::<u64>(), 7);
+    }
+
+    // =========================================================================
+    // Build — borrowed event type
+    // =========================================================================
+
+    #[test]
+    fn build_borrowed_event_direct() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+
+        fn decode(msg: &[u8]) -> u64 {
+            msg.len() as u64
+        }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
+
+        // msg declared before dag so it outlives the DAG (drop order).
+        let msg = vec![1u8, 2, 3];
+        let reg = world.registry();
+        let mut dag = DagBuilder::<&[u8]>::new()
+            .root(decode, reg)
+            .then(store, reg)
+            .build();
+
+        dag.run(&mut world, &msg);
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
 }
