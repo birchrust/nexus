@@ -119,7 +119,8 @@ fn main() {
                 let start = rdtsc_start();
                 let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
-                drop(slot);
+                // SAFETY: slot was allocated from this slab
+                unsafe { slab.free(slot) };
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
             } else {
@@ -128,7 +129,8 @@ fn main() {
                 let start = rdtsc_start();
                 let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
-                drop(slot);
+                // SAFETY: slot was allocated from this slab
+                unsafe { slab.free(slot) };
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
 
@@ -168,7 +170,8 @@ fn main() {
                 let start = rdtsc_start();
                 let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
-                drop(slot);
+                // SAFETY: slot was allocated from this slab
+                unsafe { slab.free(slot) };
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
             } else {
@@ -176,7 +179,8 @@ fn main() {
                 let start = rdtsc_start();
                 let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
-                drop(slot);
+                // SAFETY: slot was allocated from this slab
+                unsafe { slab.free(slot) };
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
 

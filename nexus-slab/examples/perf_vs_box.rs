@@ -167,27 +167,6 @@ fn bench_deallocation() {
         let mut samples = Vec::with_capacity(SAMPLES);
 
         for i in 0..SAMPLES {
-            // Pre-allocate boxes
-            let boxes: Vec<_> = (0..100)
-                .map(|j| Box::new(TestValue::new((i * 100 + j) as u64)))
-                .collect();
-
-            let mut idx = 0usize;
-            let start = rdtsc_start();
-            unroll_100!({
-                drop(black_box(std::mem::replace(
-                    &mut boxes.get(idx).map(|_| ()),
-                    None,
-                )));
-                idx += 1;
-            });
-            let end = rdtsc_end();
-            let _ = idx;
-
-            // Actually drop them
-            drop(boxes);
-
-            // Re-measure with actual drops
             let boxes: Vec<_> = (0..100)
                 .map(|j| Box::new(TestValue::new((i * 100 + j) as u64)))
                 .collect();

@@ -79,12 +79,12 @@ fn rdtsc_end() -> u64 {
 
 #[cfg(not(target_arch = "x86_64"))]
 fn rdtsc_start() -> u64 {
-    std::time::Instant::now().elapsed().as_nanos() as u64
+    panic!("rdtsc only supported on x86_64")
 }
 
 #[cfg(not(target_arch = "x86_64"))]
 fn rdtsc_end() -> u64 {
-    std::time::Instant::now().elapsed().as_nanos() as u64
+    panic!("rdtsc only supported on x86_64")
 }
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {

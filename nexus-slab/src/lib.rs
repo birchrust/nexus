@@ -94,18 +94,18 @@
 #![warn(missing_docs)]
 
 pub mod alloc;
-#[doc(hidden)]
 pub mod bounded;
 pub mod byte;
 #[doc(hidden)]
 pub mod macros;
 #[doc(hidden)]
 pub mod shared;
-#[doc(hidden)]
 pub mod unbounded;
 
-// Re-export trait + markers + error + LocalStatic + BoxSlot
-pub use alloc::{Alloc, BoundedAlloc, BoxSlot, Full, LocalStatic, UnboundedAlloc};
+// Re-export trait + markers + error + LocalStatic + BoxSlot + RcSlot + WeakSlot
+pub use alloc::{
+    Alloc, BoundedAlloc, BoxSlot, Full, LocalStatic, RcSlot, UnboundedAlloc, WeakSlot,
+};
 
 // Re-export byte slab types
 pub use byte::{AlignedBytes, BoundedByteAlloc, UnboundedByteAlloc};

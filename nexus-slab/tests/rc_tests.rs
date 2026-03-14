@@ -1,5 +1,6 @@
 //! Integration tests for RcSlot and WeakSlot.
 
+use nexus_slab::Alloc;
 use std::cell::Cell;
 
 // =============================================================================
@@ -499,6 +500,100 @@ fn debug_format() {
 
     drop(weak);
     drop(rc);
+}
+
+// =============================================================================
+// into_slot — unique succeeds
+// =============================================================================
+
+#[test]
+fn into_slot_unique() {
+    init_drop_rc();
+    reset_drop_count();
+
+    let rc = drop_rc::RcSlot::try_new(DropTracker(42)).unwrap();
+    let slot = rc.into_slot().expect("unique — should succeed");
+
+    // Value not dropped yet (ManuallyDrop in RcInner)
+    assert_eq!(get_drop_count(), 0);
+
+    // SAFETY: slot came from this allocator
+    unsafe { drop_rc::Allocator::free(slot) };
+}
+
+// =============================================================================
+// into_slot — cloned returns None
+// =============================================================================
+
+#[test]
+fn into_slot_cloned_returns_none() {
+    init_bounded_rc();
+
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 30, price: 1.0 }).unwrap();
+    let _rc2 = rc.clone();
+
+    assert!(rc.into_slot().is_none());
+}
+
+// =============================================================================
+// into_slot — weak exists returns None
+// =============================================================================
+
+#[test]
+fn into_slot_weak_returns_none() {
+    init_bounded_rc();
+
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 31, price: 2.0 }).unwrap();
+    let _weak = rc.downgrade();
+
+    assert!(rc.into_slot().is_none());
+}
+
+// =============================================================================
+// into_raw / from_raw roundtrip
+// =============================================================================
+
+#[test]
+fn into_raw_from_raw_roundtrip() {
+    init_bounded_rc();
+
+    let rc = bounded_rc::RcSlot::try_new(Order { id: 32, price: 3.0 }).unwrap();
+    let ptr = rc.into_raw();
+
+    // Reconstruct from raw pointer
+    // SAFETY: ptr came from into_raw, we own the strong count
+    let rc2 = unsafe { bounded_rc::RcSlot::from_raw(ptr) };
+    assert_eq!(rc2.id, 32);
+    assert_eq!(rc2.strong_count(), 1);
+
+    drop(rc2);
+}
+
+// =============================================================================
+// increment_strong_count / decrement_strong_count
+// =============================================================================
+
+#[test]
+fn increment_decrement_strong_count() {
+    init_drop_rc();
+    reset_drop_count();
+
+    let rc = drop_rc::RcSlot::try_new(DropTracker(50)).unwrap();
+    let ptr = rc.as_ptr();
+
+    // Manually bump strong count
+    // SAFETY: ptr points to a live RcInner (rc is alive)
+    unsafe { drop_rc::RcSlot::increment_strong_count(ptr) };
+    assert_eq!(rc.strong_count(), 2);
+
+    // Drop original — value should NOT be dropped (strong still 1)
+    drop(rc);
+    assert_eq!(get_drop_count(), 0);
+
+    // Decrement the manual strong count — now drops value and frees slot
+    // SAFETY: we own the extra strong count from increment above
+    unsafe { drop_rc::RcSlot::decrement_strong_count(ptr) };
+    assert_eq!(get_drop_count(), 1);
 }
 
 // =============================================================================

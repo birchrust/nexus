@@ -177,8 +177,6 @@ impl<T> WheelEntry<T> {
 ///   be held across a `free_ptr` call on the same slot).
 #[inline]
 pub(crate) unsafe fn entry_ref<'a, T>(ptr: EntryPtr<T>) -> &'a WheelEntry<T> {
-    // SAFETY: SlotCell is a union; when occupied, the `value` field is active.
-    // The value is `ManuallyDrop<MaybeUninit<WheelEntry<T>>>`, and we know it's
-    // initialized because the slot was allocated via slab.alloc/try_alloc.
-    unsafe { (*ptr).value.assume_init_ref() }
+    // SAFETY: Slot is occupied (allocated via slab.alloc/try_alloc).
+    unsafe { (*ptr).value_ref() }
 }

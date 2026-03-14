@@ -17,8 +17,7 @@
 
 use std::cell::Cell;
 use std::fmt;
-use std::mem::{self, ManuallyDrop, MaybeUninit};
-use std::ptr;
+use std::mem;
 
 use crate::bounded::Slab as BoundedSlab;
 use crate::shared::{RawSlot, SlotCell};
@@ -52,12 +51,21 @@ impl<T> Claim<'_, T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
-            (*slot_ptr).value = ManuallyDrop::new(MaybeUninit::new(value));
+            (*slot_ptr).write_value(value);
         }
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
         unsafe { RawSlot::from_ptr(slot_ptr) }
+    }
+}
+
+impl<T> fmt::Debug for Claim<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Claim")
+            .field("slot_ptr", &self.slot_ptr)
+            .field("chunk_idx", &self.chunk_idx)
+            .finish()
     }
 }
 
@@ -72,7 +80,7 @@ impl<T> Drop for Claim<'_, T> {
 
         // SAFETY: slot_ptr is valid and still vacant (never written to)
         unsafe {
-            (*self.slot_ptr).next_free = free_head;
+            (*self.slot_ptr).set_next_free(free_head);
         }
         chunk_slab.free_head.set(self.slot_ptr);
 
@@ -108,6 +116,16 @@ struct ChunkEntry<T> {
 /// Growable slab allocator.
 ///
 /// Uses independent chunks for growth — no copying when the slab grows.
+///
+/// # Drop Behavior
+///
+/// Dropping a `Slab` does **not** drop values in occupied slots. `SlotCell` is
+/// a union, so the compiler cannot know which slots contain live values. The
+/// caller must free all outstanding [`RawSlot`] handles before dropping the
+/// slab, or the values will be leaked.
+///
+/// This is acceptable for the primary use case (TLS via `thread_local!`) where
+/// thread exit leaks all TLS storage anyway.
 ///
 /// # Const Construction
 ///
@@ -206,14 +224,16 @@ impl<T> Slab<T> {
 
     #[inline]
     fn chunks(&self) -> &Vec<ChunkEntry<T>> {
-        // SAFETY: Single-threaded access guaranteed by !Send
+        // SAFETY: !Sync prevents shared access across threads.
+        // Only one thread can hold &self at a time.
         unsafe { &*self.chunks.get() }
     }
 
     #[inline]
     #[allow(clippy::mut_from_ref)]
     fn chunks_mut(&self) -> &mut Vec<ChunkEntry<T>> {
-        // SAFETY: Single-threaded access guaranteed by !Send
+        // SAFETY: !Sync prevents shared access across threads.
+        // Only one thread can hold &self at a time.
         unsafe { &mut *self.chunks.get() }
     }
 
@@ -333,7 +353,7 @@ impl<T> Slab<T> {
         debug_assert!(!slot_ptr.is_null(), "chunk on freelist has no free slots");
 
         // SAFETY: slot_ptr came from the freelist. Slot is vacant, so next_free is active.
-        let next_free = unsafe { (*slot_ptr).next_free };
+        let next_free = unsafe { (*slot_ptr).get_next_free() };
 
         // Update chunk's freelist head
         chunk_slab.free_head.set(next_free);
@@ -351,35 +371,11 @@ impl<T> Slab<T> {
     /// Always succeeds — grows the slab if needed.
     #[inline]
     pub fn alloc(&self, value: T) -> RawSlot<T> {
-        // Ensure we have space (grow if needed)
-        if self.head_with_space.get() == CHUNK_NONE {
-            self.grow();
-        }
+        let (slot_ptr, _chunk_idx) = self.claim_ptr();
 
-        // Get the chunk with space
-        let chunk_idx = self.head_with_space.get();
-        let chunk = self.chunk(chunk_idx);
-        let chunk_slab = &*chunk.inner;
-
-        // Load freelist head pointer from chunk
-        let slot_ptr = chunk_slab.free_head.get();
-        debug_assert!(!slot_ptr.is_null(), "chunk on freelist has no free slots");
-
-        // SAFETY: slot_ptr came from the freelist. Slot is vacant, so next_free is active.
-        let next_free = unsafe { (*slot_ptr).next_free };
-
-        // Write the value — overwrites next_free (union semantics)
         // SAFETY: Slot is claimed from freelist, we have exclusive access
         unsafe {
-            (*slot_ptr).value = ManuallyDrop::new(MaybeUninit::new(value));
-        }
-
-        // Update chunk's freelist head
-        chunk_slab.free_head.set(next_free);
-
-        // If chunk is now full, remove from slab's available-chunk list
-        if next_free.is_null() {
-            self.head_with_space.set(chunk.next_with_space.get());
+            (*slot_ptr).write_value(value);
         }
 
         // SAFETY: slot_ptr is valid and occupied
@@ -406,7 +402,7 @@ impl<T> Slab<T> {
         );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
-            ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
+            (*slot_ptr).drop_value_in_place();
             self.free_ptr(slot_ptr);
         }
     }
@@ -431,7 +427,7 @@ impl<T> Slab<T> {
         );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
-            let value = ptr::read((*slot_ptr).value.as_ptr());
+            let value = (*slot_ptr).read_value();
             self.free_ptr(slot_ptr);
             value
         }
@@ -463,7 +459,7 @@ impl<T> Slab<T> {
 
                 // SAFETY: slot_ptr is within this chunk's range
                 unsafe {
-                    (*slot_ptr).next_free = free_head;
+                    (*slot_ptr).set_next_free(free_head);
                 }
                 chunk_slab.free_head.set(slot_ptr);
 
@@ -475,7 +471,7 @@ impl<T> Slab<T> {
             }
         }
 
-        debug_assert!(false, "free_ptr: slot_ptr not found in any chunk");
+        unreachable!("free_ptr: slot_ptr not found in any chunk");
     }
 }
 

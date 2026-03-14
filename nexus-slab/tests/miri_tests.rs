@@ -25,6 +25,7 @@ thread_local! {
     static DROP_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
+#[derive(Debug)]
 pub struct DropTracker(u64);
 
 impl Drop for DropTracker {
@@ -539,4 +540,247 @@ fn miri_rc_get_mut() {
     // get_mut fails when cloned
     let _rc2 = rc.clone();
     assert!(rc.get_mut().is_none());
+}
+
+// =============================================================================
+// Byte Slab (H4)
+// =============================================================================
+
+#[test]
+fn miri_byte_slab_basic() {
+    let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(8);
+
+    let slot = slab.try_insert(42u64).unwrap();
+    assert_eq!(*slot, 42u64);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.remove(slot) };
+}
+
+#[test]
+fn miri_byte_slab_multiple_types() {
+    let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(8);
+
+    let s1 = slab.try_insert(42u64).unwrap();
+    let s2 = slab.try_insert("hello".to_string()).unwrap();
+    let s3 = slab.try_insert([1u8; 32]).unwrap();
+
+    assert_eq!(*s1, 42u64);
+    assert_eq!(&*s2, "hello");
+    assert_eq!(*s3, [1u8; 32]);
+
+    // SAFETY: slots were allocated from this slab
+    unsafe {
+        slab.remove(s1);
+        slab.remove(s2);
+        slab.remove(s3);
+    }
+}
+
+#[test]
+fn miri_byte_slab_drop_types() {
+    reset_drop_count();
+
+    let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(8);
+
+    let slot = slab.try_insert(DropTracker(1)).unwrap();
+    assert_eq!(get_drop_count(), 0);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.remove(slot) };
+    assert_eq!(get_drop_count(), 1);
+}
+
+#[test]
+fn miri_byte_slab_take_value() {
+    reset_drop_count();
+
+    let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(8);
+
+    let slot = slab.try_insert(DropTracker(1)).unwrap();
+    assert_eq!(get_drop_count(), 0);
+    // SAFETY: slot was allocated from this slab
+    let _value = unsafe { slab.take_value(slot) };
+    assert_eq!(get_drop_count(), 0);
+    drop(_value);
+    assert_eq!(get_drop_count(), 1);
+}
+
+#[test]
+fn miri_byte_slab_reclaim() {
+    let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(8);
+
+    let slot = slab.try_insert(42u64).unwrap();
+    let _value = unsafe { std::ptr::read(&*slot as *const u64) };
+    // SAFETY: slot was allocated from this slab, value moved out
+    unsafe { slab.reclaim(slot) };
+}
+
+#[test]
+fn miri_byte_slab_reuse() {
+    let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(2);
+
+    let s1 = slab.try_insert("first".to_string()).unwrap();
+    let ptr1 = &*s1 as *const String;
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.remove(s1) };
+
+    let s2 = slab.try_insert("second".to_string()).unwrap();
+    assert_eq!(&*s2 as *const String, ptr1);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.remove(s2) };
+}
+
+#[test]
+fn miri_byte_slab_unbounded() {
+    let slab = UnboundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_chunk_capacity(4);
+
+    let slots: Vec<_> = (0..12)
+        .map(|i| slab.insert(format!("str_{}", i)))
+        .collect();
+
+    for (i, slot) in slots.iter().enumerate() {
+        let s: &String = &*slot;
+        assert_eq!(s, &format!("str_{}", i));
+    }
+
+    for slot in slots {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.remove(slot) };
+    }
+}
+
+// =============================================================================
+// Claim Abandonment (H5)
+// =============================================================================
+
+#[test]
+fn miri_bounded_claim_abandon() {
+    let slab = BoundedSlab::<u64>::with_capacity(4);
+
+    // Claim and abandon — should return slot to freelist
+    {
+        let claim = slab.claim().unwrap();
+        drop(claim);
+    }
+
+    // Slab should still be at full capacity
+    let slots: Vec<_> = (0..4).map(|i| slab.alloc(i)).collect();
+    for slot in slots {
+        // SAFETY: slot was allocated from this slab
+        unsafe { slab.free(slot) };
+    }
+}
+
+#[test]
+fn miri_bounded_claim_abandon_capacity_one() {
+    let slab = BoundedSlab::<u64>::with_capacity(1);
+
+    // Claim and abandon
+    {
+        let claim = slab.claim().unwrap();
+        drop(claim);
+    }
+
+    // Should be able to allocate again
+    let slot = slab.alloc(42);
+    assert_eq!(*slot, 42);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
+}
+
+#[test]
+fn miri_unbounded_claim_abandon() {
+    let slab = UnboundedSlab::<u64>::with_chunk_capacity(4);
+
+    // Allocate and free to ensure chunk exists
+    let slot = slab.alloc(0);
+    unsafe { slab.free(slot) };
+
+    // Claim and abandon
+    {
+        let claim = slab.claim();
+        drop(claim);
+    }
+
+    // Should still be able to allocate
+    let slot = slab.alloc(99);
+    assert_eq!(*slot, 99);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
+}
+
+#[test]
+fn miri_unbounded_claim_abandon_full_chunk() {
+    let slab = UnboundedSlab::<u64>::with_chunk_capacity(2);
+
+    // Fill first chunk
+    let s1 = slab.alloc(1);
+    let s2 = slab.alloc(2);
+
+    // Claim from second chunk, then abandon
+    {
+        let claim = slab.claim();
+        drop(claim);
+    }
+
+    // Should still be able to allocate from that chunk
+    let s3 = slab.alloc(3);
+    assert_eq!(*s3, 3);
+
+    // SAFETY: slots were allocated from this slab
+    unsafe {
+        slab.free(s1);
+        slab.free(s2);
+        slab.free(s3);
+    }
+}
+
+// =============================================================================
+// Claim::write (L8)
+// =============================================================================
+
+#[test]
+fn miri_bounded_claim_write() {
+    let slab = BoundedSlab::<u64>::with_capacity(4);
+
+    let claim = slab.claim().unwrap();
+    let slot = claim.write(42);
+    assert_eq!(*slot, 42);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
+}
+
+#[test]
+fn miri_bounded_claim_write_string() {
+    let slab = BoundedSlab::<String>::with_capacity(4);
+
+    let claim = slab.claim().unwrap();
+    let slot = claim.write("hello world".to_string());
+    assert_eq!(*slot, "hello world");
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
+}
+
+#[test]
+fn miri_bounded_claim_write_drop_type() {
+    reset_drop_count();
+
+    let slab = BoundedSlab::<DropTracker>::with_capacity(4);
+
+    let claim = slab.claim().unwrap();
+    let slot = claim.write(DropTracker(1));
+    assert_eq!(get_drop_count(), 0);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
+    assert_eq!(get_drop_count(), 1);
+}
+
+#[test]
+fn miri_unbounded_claim_write() {
+    let slab = UnboundedSlab::<u64>::with_chunk_capacity(4);
+
+    let claim = slab.claim();
+    let slot = claim.write(99);
+    assert_eq!(*slot, 99);
+    // SAFETY: slot was allocated from this slab
+    unsafe { slab.free(slot) };
 }

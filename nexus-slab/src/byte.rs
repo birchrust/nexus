@@ -398,6 +398,10 @@ impl<T: ?Sized, A: Alloc> Drop for BoxSlot<T, A> {
         // For dyn Trait, drop_in_place dispatches through the vtable.
         // Extract the data pointer (drops vtable for fat ptrs) to
         // reconstruct the Slot for A::free.
+        //
+        // A::free MUST NOT call drop_in_place — it only returns the slot
+        // to the freelist. We handle the drop here. This is guaranteed by
+        // the byte Alloc trait's free() contract (see alloc.rs).
         unsafe {
             ptr::drop_in_place(self.ptr);
             let data_ptr = self.ptr as *mut () as *mut SlotCell<A::Item>;

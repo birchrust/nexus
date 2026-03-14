@@ -155,15 +155,15 @@ impl<T: 'static> Level<T> {
     }
 
     /// Returns the shift for this level.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn shift(&self) -> u32 {
         self.shift
     }
 
     /// Returns the mask for this level.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn mask(&self) -> usize {
         self.mask
     }
@@ -218,8 +218,8 @@ impl<T: 'static> Level<T> {
     }
 
     /// Returns the number of slots per level.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn num_slots(&self) -> usize {
         self.slots.len()
     }
@@ -300,8 +300,11 @@ mod tests {
 
     #[test]
     fn level_slot_index_computation() {
-        // Level 0: shift=0, mask=63
+        // Level 0: shift=0, mask=63, 64 slots
         let lvl = Level::<u64>::new(64, 0, 3);
+        assert_eq!(lvl.shift(), 0);
+        assert_eq!(lvl.mask(), 63);
+        assert_eq!(lvl.num_slots(), 64);
         assert_eq!(lvl.slot_index(0), 0);
         assert_eq!(lvl.slot_index(1), 1);
         assert_eq!(lvl.slot_index(63), 63);
@@ -310,6 +313,9 @@ mod tests {
 
         // Level 1: shift=3, mask=63
         let lvl1 = Level::<u64>::new(64, 1, 3);
+        assert_eq!(lvl1.shift(), 3);
+        assert_eq!(lvl1.mask(), 63);
+        assert_eq!(lvl1.num_slots(), 64);
         assert_eq!(lvl1.slot_index(0), 0);
         assert_eq!(lvl1.slot_index(8), 1); // 8 >> 3 = 1
         assert_eq!(lvl1.slot_index(64), 8); // 64 >> 3 = 8
@@ -317,6 +323,7 @@ mod tests {
 
         // Level 2: shift=6, mask=63
         let lvl2 = Level::<u64>::new(64, 2, 3);
+        assert_eq!(lvl2.shift(), 6);
         assert_eq!(lvl2.slot_index(64), 1); // 64 >> 6 = 1
         assert_eq!(lvl2.slot_index(512), 8); // 512 >> 6 = 8
         assert_eq!(lvl2.range(), 4096);
