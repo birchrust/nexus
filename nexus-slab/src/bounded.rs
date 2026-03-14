@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 use std::fmt;
-use std::mem::{self, ManuallyDrop, MaybeUninit};
+use std::mem;
 use std::ptr;
 
 use crate::alloc::Full;
@@ -50,12 +50,20 @@ impl<T> Claim<'_, T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
-            (*slot_ptr).value = ManuallyDrop::new(MaybeUninit::new(value));
+            (*slot_ptr).write_value(value);
         }
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
         unsafe { RawSlot::from_ptr(slot_ptr) }
+    }
+}
+
+impl<T> fmt::Debug for Claim<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Claim")
+            .field("slot_ptr", &self.slot_ptr)
+            .finish()
     }
 }
 
@@ -65,7 +73,7 @@ impl<T> Drop for Claim<'_, T> {
         // SAFETY: slot_ptr is valid and still vacant (never written to)
         let free_head = self.slab.free_head.get();
         unsafe {
-            (*self.slot_ptr).next_free = free_head;
+            (*self.slot_ptr).set_next_free(free_head);
         }
         self.slab.free_head.set(self.slot_ptr);
     }
@@ -78,6 +86,16 @@ impl<T> Drop for Claim<'_, T> {
 /// Fixed-capacity slab allocator.
 ///
 /// Uses pointer-based freelist for O(1) allocation.
+///
+/// # Drop Behavior
+///
+/// Dropping a `Slab` does **not** drop values in occupied slots. `SlotCell` is
+/// a union, so the compiler cannot know which slots contain live values. The
+/// caller must free all outstanding [`RawSlot`] handles before dropping the
+/// slab, or the values will be leaked.
+///
+/// This is acceptable for the primary use case (TLS via `thread_local!`) where
+/// thread exit leaks all TLS storage anyway.
 ///
 /// # Const Construction
 ///
@@ -102,8 +120,7 @@ pub struct Slab<T> {
     capacity: Cell<usize>,
     /// Head of freelist - raw pointer for fast allocation.
     /// NULL when slab is full or uninitialized.
-    #[doc(hidden)]
-    pub free_head: Cell<*mut SlotCell<T>>,
+    pub(crate) free_head: Cell<*mut SlotCell<T>>,
 }
 
 impl<T> Slab<T> {
@@ -169,7 +186,8 @@ impl<T> Slab<T> {
         // Wire up the freelist: each slot's next_free points to the next slot
         for i in 0..(capacity - 1) {
             let next_ptr = slots.as_mut_ptr().wrapping_add(i + 1);
-            slots[i].next_free = next_ptr;
+            // SAFETY: Slot is vacant, wiring up the freelist during init
+            unsafe { slots[i].set_next_free(next_ptr) };
         }
         // Last slot points to NULL (end of freelist) — already null from vacant()
 
@@ -264,7 +282,7 @@ impl<T> Slab<T> {
 
         // SAFETY: slot_ptr came from the freelist within this slab.
         // The slot is vacant, so next_free is the active union field.
-        let next_free = unsafe { (*slot_ptr).next_free };
+        let next_free = unsafe { (*slot_ptr).get_next_free() };
 
         // Update freelist head
         self.free_head.set(next_free);
@@ -288,24 +306,14 @@ impl<T> Slab<T> {
     /// Returns `Err(Full(value))` if the slab is at capacity.
     #[inline]
     pub fn try_alloc(&self, value: T) -> Result<RawSlot<T>, Full<T>> {
-        let slot_ptr = self.free_head.get();
-
-        if slot_ptr.is_null() {
+        let Some(slot_ptr) = self.claim_ptr() else {
             return Err(Full(value));
-        }
+        };
 
-        // SAFETY: slot_ptr came from the freelist within this slab.
-        // The slot is vacant, so next_free is the active union field.
-        let next_free = unsafe { (*slot_ptr).next_free };
-
-        // Write the value — this overwrites next_free (union semantics)
         // SAFETY: Slot is claimed from freelist, we have exclusive access
         unsafe {
-            (*slot_ptr).value = ManuallyDrop::new(MaybeUninit::new(value));
+            (*slot_ptr).write_value(value);
         }
-
-        // Update freelist head
-        self.free_head.set(next_free);
 
         // SAFETY: slot_ptr is valid and occupied
         Ok(unsafe { RawSlot::from_ptr(slot_ptr) })
@@ -327,7 +335,7 @@ impl<T> Slab<T> {
         );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
-            ptr::drop_in_place((*(*slot_ptr).value).as_mut_ptr());
+            (*slot_ptr).drop_value_in_place();
             self.free_ptr(slot_ptr);
         }
     }
@@ -348,7 +356,7 @@ impl<T> Slab<T> {
         );
         // SAFETY: Caller guarantees slot is valid and occupied
         unsafe {
-            let value = ptr::read((*slot_ptr).value.as_ptr());
+            let value = (*slot_ptr).read_value();
             self.free_ptr(slot_ptr);
             value
         }
@@ -370,9 +378,9 @@ impl<T> Slab<T> {
             "slot was not allocated from this slab"
         );
         let free_head = self.free_head.get();
-        // SAFETY: Caller guarantees slot_ptr is valid
+        // SAFETY: Caller guarantees slot_ptr is valid, transitioning to vacant
         unsafe {
-            (*slot_ptr).next_free = free_head;
+            (*slot_ptr).set_next_free(free_head);
         }
         self.free_head.set(slot_ptr);
     }

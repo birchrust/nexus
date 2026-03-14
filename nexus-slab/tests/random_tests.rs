@@ -1,6 +1,7 @@
-//! Property-based tests using proptest.
+//! Randomized stress tests for slab allocator invariants.
 //!
-//! These tests verify invariants hold under randomized inputs:
+//! These tests verify invariants hold under randomized inputs using
+//! deterministic RNG seeds for reproducibility:
 //! - Freelist maintains integrity under arbitrary insert/remove sequences
 //! - Values are never corrupted
 //! - Capacity bounds are respected

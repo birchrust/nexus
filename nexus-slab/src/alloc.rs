@@ -13,7 +13,6 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::ptr;
 
 use crate::shared::{RawSlot, RcInner, SlotCell};
 
@@ -45,6 +44,8 @@ impl<T> fmt::Display for Full<T> {
         f.write_str("allocator full")
     }
 }
+
+impl<T> std::error::Error for Full<T> {}
 
 // =============================================================================
 // Traits
@@ -164,7 +165,7 @@ pub trait UnboundedAlloc: Alloc {
 pub struct BoxSlot<T, A: Alloc<Item = T>> {
     ptr: *mut SlotCell<T>,
     // PhantomData carries the allocator type AND makes BoxSlot !Send + !Sync
-    // (*mut is !Send + !Sync, and PhantomData<A> ties the type)
+    // (*const () is !Send + !Sync, and PhantomData<A> ties the type)
     _marker: PhantomData<(A, *const ())>,
 }
 
@@ -183,7 +184,7 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
         // SAFETY: Destructor won't run (forgot self).
         // The pointer is valid for 'static because slab storage is leaked.
         // Union field `value` is active because the slot is occupied.
-        let value_ptr = unsafe { (*slot_ptr).value.as_ptr() };
+        let value_ptr = unsafe { (*slot_ptr).value_ptr() };
         unsafe { LocalStatic::new(value_ptr) }
     }
 
@@ -218,11 +219,10 @@ impl<T, A: Alloc<Item = T>> BoxSlot<T, A> {
     /// Replaces the value in the slot, returning the old value.
     #[inline]
     pub fn replace(&mut self, value: T) -> T {
-        // SAFETY: We own the slot exclusively (&mut self), union field `value` is active
+        // SAFETY: We own the slot exclusively (&mut self), slot is occupied
         unsafe {
-            let val_ptr = (*(*self.ptr).value).as_mut_ptr();
-            let old = ptr::read(val_ptr);
-            ptr::write(val_ptr, value);
+            let old = (*self.ptr).read_value();
+            (*self.ptr).write_value(value);
             old
         }
     }
@@ -359,8 +359,7 @@ impl<T, A: Alloc<Item = T>> Deref for BoxSlot<T, A> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         // SAFETY: BoxSlot was created from a valid, occupied SlotCell.
-        // Union field `value` is active because the slot is occupied.
-        unsafe { (*self.ptr).value.assume_init_ref() }
+        unsafe { (*self.ptr).value_ref() }
     }
 }
 
@@ -368,8 +367,7 @@ impl<T, A: Alloc<Item = T>> DerefMut for BoxSlot<T, A> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: We have &mut self, guaranteeing exclusive access.
-        // Union field `value` is active because the slot is occupied.
-        unsafe { (*(*self.ptr).value).assume_init_mut() }
+        unsafe { (*self.ptr).value_mut() }
     }
 }
 
@@ -619,7 +617,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
         // SAFETY: Caller guarantees exclusive access.
         // Navigate through SlotCell union → RcInner → ManuallyDrop<T> → T
         let cell_ptr = self.inner.as_ptr();
-        let rc_inner = unsafe { (*(*cell_ptr).value).assume_init_mut() };
+        let rc_inner = unsafe { (*cell_ptr).value_mut() };
         // SAFETY: value is live, caller guarantees exclusive access.
         // Dereference through ManuallyDrop to get &mut T.
         let md = unsafe { rc_inner.value_manual_drop_mut() };
@@ -628,11 +626,18 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
 
     /// Converts to a raw slot for manual memory management.
     ///
-    /// Returns `Some(Slot)` if this is the only reference (strong == 1, no weak refs).
+    /// Returns `Some(RawSlot)` if this is the only reference (strong == 1, no weak refs).
     /// Returns `None` if other strong or weak references exist.
     ///
     /// The strong count is decremented but the value is NOT dropped.
     /// Caller takes ownership and must eventually free via the allocator.
+    ///
+    /// # Important
+    ///
+    /// The `T` inside `RcInner<T>` is wrapped in `ManuallyDrop`. Calling
+    /// `A::free()` on the returned slot does **not** drop `T`. The caller must
+    /// extract the value (e.g., via `ptr::read`) before freeing, or the inner
+    /// `T` will be leaked.
     #[inline]
     pub fn into_slot(self) -> Option<RawSlot<RcInner<T>>> {
         let rc_inner: &RcInner<T> = &self.inner;
@@ -695,6 +700,12 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
         self.inner.as_ptr()
     }
 
+    /// Returns `true` if two `RcSlot`s point to the same allocation.
+    #[inline]
+    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
+        this.as_ptr() == other.as_ptr()
+    }
+
     /// Consumes the `RcSlot` without decrementing the strong count.
     ///
     /// The caller takes responsibility for the strong count and must
@@ -736,9 +747,12 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
     #[inline]
     pub unsafe fn increment_strong_count(ptr: *mut SlotCell<RcInner<T>>) {
         // SAFETY: Caller guarantees ptr points to a live RcInner
-        let rc_inner = unsafe { (*ptr).value.assume_init_ref() };
+        let rc_inner = unsafe { (*ptr).value_ref() };
         let strong = rc_inner.strong();
-        rc_inner.set_strong(strong + 1);
+        let new_strong = strong
+            .checked_add(1)
+            .expect("RcSlot strong count overflow");
+        rc_inner.set_strong(new_strong);
     }
 
     /// Decrements the strong count via a raw pointer.
@@ -849,29 +863,29 @@ impl<T, A: Alloc<Item = RcInner<T>>> Drop for RcSlot<T, A> {
         // Borrows invalidation when we take &mut to drop the value.
         let cell_ptr = self.inner.as_ptr();
 
-        // SAFETY: Slot is alive, union field `value` is active
-        let strong = unsafe { (*cell_ptr).value.assume_init_ref().strong() };
+        // SAFETY: Slot is alive, slot is occupied
+        let strong = unsafe { (*cell_ptr).value_ref().strong() };
         if strong > 1 {
             // SAFETY: same as above
-            unsafe { (*cell_ptr).value.assume_init_ref().set_strong(strong - 1) };
+            unsafe { (*cell_ptr).value_ref().set_strong(strong - 1) };
             return;
         }
 
         // Last strong reference — drop the value
         // SAFETY: same as above
-        unsafe { (*cell_ptr).value.assume_init_ref().set_strong(0) };
+        unsafe { (*cell_ptr).value_ref().set_strong(0) };
 
         // SAFETY: We are the last strong ref, value is live. We need &mut
         // to drop the ManuallyDrop<T> inside RcInner.
         unsafe {
-            let rc_inner_mut = (*(*cell_ptr).value).assume_init_mut();
+            let rc_inner_mut = (*cell_ptr).value_mut();
             ManuallyDrop::drop(rc_inner_mut.value_manual_drop_mut());
         }
 
         // Re-derive shared ref after the mutable drop above
         // SAFETY: RcInner is still valid memory (Cell<u32> fields are Copy,
         // ManuallyDrop<T> is dropped but the storage is still there)
-        let weak = unsafe { (*cell_ptr).value.assume_init_ref().weak() };
+        let weak = unsafe { (*cell_ptr).value_ref().weak() };
         if weak == 1 {
             // No outstanding weaks — free the slot.
             // SAFETY: Value is dropped. Slot's drop_in_place on RcInner is
@@ -880,7 +894,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> Drop for RcSlot<T, A> {
             unsafe { ManuallyDrop::drop(&mut self.inner) };
         } else {
             // SAFETY: same as weak read above
-            unsafe { (*cell_ptr).value.assume_init_ref().set_weak(weak - 1) };
+            unsafe { (*cell_ptr).value_ref().set_weak(weak - 1) };
             // Zombie: T dropped, weak refs still hold the slot alive
         }
     }
@@ -996,9 +1010,10 @@ impl<T, A: Alloc<Item = RcInner<T>>> Drop for WeakSlot<T, A> {
     fn drop(&mut self) {
         let rc_inner: &RcInner<T> = &self.inner;
         let weak = rc_inner.weak();
+        debug_assert!(weak > 0, "WeakSlot dropped with zero weak count");
 
         // Always decrement weak count
-        rc_inner.set_weak(weak.saturating_sub(1));
+        rc_inner.set_weak(weak.checked_sub(1).expect("WeakSlot: weak count underflow"));
 
         // Dealloc only if this was the last weak AND value already dropped (strong==0)
         if weak == 1 && rc_inner.strong() == 0 {

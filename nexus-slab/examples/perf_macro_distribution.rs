@@ -47,8 +47,9 @@ fn rdtsc_start() -> u64 {
 #[inline(always)]
 fn rdtsc_end() -> u64 {
     unsafe {
+        let tsc = std::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         std::arch::x86_64::_mm_lfence();
-        std::arch::x86_64::_rdtsc()
+        tsc
     }
 }
 
@@ -480,6 +481,35 @@ fn main() {
         std::mem::size_of::<macro_alloc::BoxSlot>()
     );
     println!();
+
+    // Warmup: exercise all allocator paths to trigger page faults,
+    // TLS init, and cache priming before timed measurements.
+    {
+        let warmup_slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
+        let warmup_entries: Vec<RawSlot<u64>> =
+            (0..NUM_SLOTS as u64).map(|i| warmup_slab.alloc(i)).collect();
+        for slot in &warmup_entries {
+            black_box(&**slot);
+        }
+        for slot in warmup_entries {
+            unsafe { warmup_slab.free(slot) };
+        }
+        let warmup_macro: Vec<macro_alloc::BoxSlot> = (0..NUM_SLOTS as u64)
+            .map(|i| macro_alloc::BoxSlot::try_new(Val(i)).unwrap())
+            .collect();
+        for s in &warmup_macro {
+            black_box(&**s);
+        }
+        drop(warmup_macro);
+        let mut warmup_ext = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
+        let warmup_keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| warmup_ext.insert(i)).collect();
+        for &k in &warmup_keys {
+            black_box(warmup_ext.get(k));
+        }
+        for k in warmup_keys {
+            warmup_ext.remove(k);
+        }
+    }
 
     bench_get();
     bench_get_mut();

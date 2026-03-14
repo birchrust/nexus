@@ -12,7 +12,7 @@ use std::hint::black_box;
 
 macro_rules! define_pod {
     ($name:ident, $size:expr) => {
-        #[derive(Clone, Copy)]
+        #[derive(Clone)]
         #[repr(C)]
         pub struct $name {
             pub data: [u8; $size],
@@ -155,8 +155,6 @@ const SAMPLES: usize = 10_000;
 
 macro_rules! bench_size {
     ($name:expr, $pod:ty, $alloc_mod:ident) => {{
-        let val = <$pod>::default();
-
         // ── CHURN: alloc + deref + drop (LIFO single-slot) ──
         // This is the realistic pattern: create, use, destroy, repeat.
         // malloc gets its LIFO fast path here (same address reused).
@@ -164,12 +162,12 @@ macro_rules! bench_size {
         {
             // Warmup both paths
             for _ in 0..1000 {
-                let b = Box::new(val);
+                let b = Box::new(<$pod>::default());
                 black_box(&*b);
                 drop(b);
             }
             for _ in 0..1000 {
-                let s = $alloc_mod::BoxSlot::try_new(val).unwrap();
+                let s = $alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap();
                 black_box(&*s);
                 drop(s);
             }
@@ -182,7 +180,7 @@ macro_rules! bench_size {
                 if i % 2 == 0 {
                     let start = rdtsc_start();
                     unroll_100!({
-                        let b = black_box(Box::new(val));
+                        let b = black_box(Box::new(<$pod>::default()));
                         black_box(b.data[0]);
                         drop(b);
                     });
@@ -191,7 +189,7 @@ macro_rules! bench_size {
 
                     let start = rdtsc_start();
                     unroll_100!({
-                        let s = black_box($alloc_mod::BoxSlot::try_new(val).unwrap());
+                        let s = black_box($alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap());
                         black_box(s.data[0]);
                         drop(s);
                     });
@@ -200,7 +198,7 @@ macro_rules! bench_size {
                 } else {
                     let start = rdtsc_start();
                     unroll_100!({
-                        let s = black_box($alloc_mod::BoxSlot::try_new(val).unwrap());
+                        let s = black_box($alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap());
                         black_box(s.data[0]);
                         drop(s);
                     });
@@ -209,7 +207,7 @@ macro_rules! bench_size {
 
                     let start = rdtsc_start();
                     unroll_100!({
-                        let b = black_box(Box::new(val));
+                        let b = black_box(Box::new(<$pod>::default()));
                         black_box(b.data[0]);
                         drop(b);
                     });
@@ -228,9 +226,9 @@ macro_rules! bench_size {
         // Both are pointer dereferences. Should be identical.
         {
             let count = 1000usize;
-            let boxes: Vec<_> = (0..count).map(|_| Box::new(val)).collect();
+            let boxes: Vec<_> = (0..count).map(|_| Box::new(<$pod>::default())).collect();
             let slots: Vec<$alloc_mod::BoxSlot> = (0..count)
-                .map(|_| $alloc_mod::BoxSlot::try_new(val).unwrap())
+                .map(|_| $alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap())
                 .collect();
 
             let mut rng = 12345u64;
@@ -284,8 +282,6 @@ macro_rules! bench_size {
 
 macro_rules! bench_batch {
     ($name:expr, $pod:ty, $alloc_mod:ident) => {{
-        let val = <$pod>::default();
-
         // Batch alloc: 100 sequential allocations, no interleaved frees.
         // This is NOT the LIFO fast path — malloc must service 100
         // different addresses from the thread cache.
@@ -295,7 +291,7 @@ macro_rules! bench_batch {
                 let mut temp = Vec::with_capacity(100);
                 let start = rdtsc_start();
                 unroll_100!({
-                    temp.push(black_box(Box::new(val)));
+                    temp.push(black_box(Box::new(<$pod>::default())));
                 });
                 let end = rdtsc_end();
                 box_samples.push((end - start) / 100);
@@ -307,7 +303,7 @@ macro_rules! bench_batch {
                 let mut temp: Vec<$alloc_mod::BoxSlot> = Vec::with_capacity(100);
                 let start = rdtsc_start();
                 unroll_100!({
-                    temp.push(black_box($alloc_mod::BoxSlot::try_new(val).unwrap()));
+                    temp.push(black_box($alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap()));
                 });
                 let end = rdtsc_end();
                 macro_samples.push((end - start) / 100);
@@ -328,7 +324,7 @@ macro_rules! bench_batch {
         {
             let mut box_samples = Vec::with_capacity(SAMPLES);
             for _ in 0..SAMPLES {
-                let boxes: Vec<_> = (0..100).map(|_| Box::new(val)).collect();
+                let boxes: Vec<_> = (0..100).map(|_| Box::new(<$pod>::default())).collect();
                 let mut iter = boxes.into_iter();
                 let start = rdtsc_start();
                 unroll_100!({
@@ -341,7 +337,7 @@ macro_rules! bench_batch {
             let mut macro_samples = Vec::with_capacity(SAMPLES);
             for _ in 0..SAMPLES {
                 let slots: Vec<$alloc_mod::BoxSlot> = (0..100)
-                    .map(|_| $alloc_mod::BoxSlot::try_new(val).unwrap())
+                    .map(|_| $alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap())
                     .collect();
                 let mut iter = slots.into_iter();
                 let start = rdtsc_start();

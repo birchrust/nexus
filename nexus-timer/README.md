@@ -92,17 +92,18 @@ wheel.cancel(handle);
 
 | Method | Wheel | Returns | Notes |
 |---|---|---|---|
-| `schedule(deadline, value)` | Unbounded | `TimerHandle<T>` | Always succeeds |
-| `schedule_forget(deadline, value)` | Unbounded | `()` | Fire-and-forget, no handle |
+| `schedule(deadline, value)` | All | `TimerHandle<T>` | Panics if bounded slab is full |
+| `schedule_forget(deadline, value)` | All | `()` | Fire-and-forget; panics if bounded slab is full |
 | `try_schedule(deadline, value)` | Bounded | `Result<TimerHandle<T>, Full<T>>` | Fails at capacity |
 | `try_schedule_forget(deadline, value)` | Bounded | `Result<(), Full<T>>` | Fire-and-forget, fails at capacity |
 
-### Cancellation
+### Cancellation & Rescheduling
 
 | Method | Returns | Notes |
 |---|---|---|
 | `cancel(handle)` | `Option<T>` | `Some(T)` if active, `None` if already fired |
 | `free(handle)` | `()` | Releases handle, timer stays as fire-and-forget |
+| `reschedule(handle, new_deadline)` | `TimerHandle<T>` | Moves active timer to new deadline without rebuilding value |
 
 ### Polling
 
@@ -144,8 +145,9 @@ without consuming it is a programming error (caught by `debug_assert!`
 in debug builds).
 
 ```text
-schedule() ─▶ TimerHandle ─┬─ cancel() ─▶ Option<T>
-                            └─ free()   ─▶ (fire-and-forget)
+schedule() ─▶ TimerHandle ─┬─ cancel()     ─▶ Option<T>
+                            ├─ free()       ─▶ (fire-and-forget)
+                            └─ reschedule() ─▶ TimerHandle (new deadline)
 ```
 
 ## Performance
@@ -174,7 +176,8 @@ taskset -c 0 ./target/release/examples/perf_timer
 
 ### Thread Safety
 
-`!Send`, `!Sync`. Timer wheels are designed for single-threaded event
+`Send` (if `T: Send`), `!Sync`. Timer wheels can be moved to another
+thread at setup time, but are designed for single-threaded event
 loops — no locking, no atomic operations on the hot path.
 
 ## License

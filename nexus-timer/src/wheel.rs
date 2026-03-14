@@ -1463,6 +1463,360 @@ mod tests {
         // h is now a zombie — reschedule should panic
         let _h = wheel.reschedule(h, now + ms(100));
     }
+
+    // -------------------------------------------------------------------------
+    // Non-default builder configurations (L13)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn custom_slots_per_level() {
+        let now = Instant::now();
+        // 32 slots/level instead of default 64
+        let mut wheel: Wheel<u64> = WheelBuilder::default()
+            .slots_per_level(32)
+            .unbounded(256)
+            .build(now);
+
+        // Level 0 range = 32 ticks (32ms with 1ms tick)
+        // Deadline at 20ms should go to level 0
+        let h1 = wheel.schedule(now + ms(20), 1);
+        // Deadline at 40ms should go to level 1 (>= 32 ticks)
+        let h2 = wheel.schedule(now + ms(40), 2);
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(25), &mut buf);
+        assert_eq!(buf, vec![1]);
+
+        buf.clear();
+        wheel.poll(now + ms(50), &mut buf);
+        assert_eq!(buf, vec![2]);
+
+        wheel.cancel(h1);
+        wheel.cancel(h2);
+    }
+
+    #[test]
+    fn custom_clk_shift() {
+        let now = Instant::now();
+        // clk_shift=2 means 4x multiplier between levels (instead of 8x)
+        let mut wheel: Wheel<u64> = WheelBuilder::default()
+            .clk_shift(2)
+            .unbounded(256)
+            .build(now);
+
+        // Level 0: 64 slots × 1ms = 64ms range
+        // Level 1: 64 slots × 4ms = 256ms range (with 4x multiplier)
+        let h1 = wheel.schedule(now + ms(50), 1); // level 0
+        let h2 = wheel.schedule(now + ms(100), 2); // level 1 (>= 64 ticks, <256 ticks)
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(55), &mut buf);
+        assert_eq!(buf, vec![1]);
+
+        buf.clear();
+        wheel.poll(now + ms(110), &mut buf);
+        assert_eq!(buf, vec![2]);
+
+        wheel.cancel(h1);
+        wheel.cancel(h2);
+    }
+
+    #[test]
+    fn custom_num_levels() {
+        let now = Instant::now();
+        // Only 3 levels instead of 7
+        let mut wheel: Wheel<u64> = WheelBuilder::default()
+            .num_levels(3)
+            .unbounded(256)
+            .build(now);
+
+        // Level 0: 64ms, Level 1: 512ms, Level 2: 4096ms
+        // Max range is level 2 = 4096ms. Beyond that, clamped.
+        let h = wheel.schedule(now + ms(3000), 42);
+        assert_eq!(wheel.len(), 1);
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(3100), &mut buf);
+        assert_eq!(buf, vec![42]);
+
+        wheel.cancel(h);
+    }
+
+    #[test]
+    fn custom_tick_duration() {
+        let now = Instant::now();
+        // 100μs ticks instead of 1ms
+        let mut wheel: Wheel<u64> = WheelBuilder::default()
+            .tick_duration(Duration::from_micros(100))
+            .unbounded(256)
+            .build(now);
+
+        // 1ms = 10 ticks, should be level 0 (< 64 ticks)
+        wheel.schedule_forget(now + ms(1), 1);
+        // 10ms = 100 ticks, should be level 1 (>= 64 ticks)
+        wheel.schedule_forget(now + ms(10), 2);
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(2), &mut buf);
+        assert_eq!(buf, vec![1]);
+
+        buf.clear();
+        wheel.poll(now + ms(15), &mut buf);
+        assert_eq!(buf, vec![2]);
+    }
+
+    #[test]
+    fn bounded_custom_config() {
+        let now = Instant::now();
+        let mut wheel: BoundedWheel<u64> = WheelBuilder::default()
+            .slots_per_level(16)
+            .num_levels(4)
+            .bounded(8)
+            .build(now);
+
+        // Fill to capacity
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            handles.push(wheel.try_schedule(now + ms(i * 10 + 10), i).unwrap());
+        }
+        assert!(wheel.try_schedule(now + ms(100), 99).is_err());
+
+        // Cancel one, schedule another
+        wheel.cancel(handles.remove(0));
+        let h = wheel.try_schedule(now + ms(100), 99).unwrap();
+        handles.push(h);
+
+        // Clean up
+        for h in handles {
+            wheel.cancel(h);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Builder validation (L13)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "slots_per_level must be <= 64")]
+    fn invalid_config_too_many_slots() {
+        let now = Instant::now();
+        WheelBuilder::default()
+            .slots_per_level(128)
+            .unbounded(1024)
+            .build::<u64>(now);
+    }
+
+    #[test]
+    #[should_panic(expected = "num_levels must be > 0")]
+    fn invalid_config_zero_levels() {
+        let now = Instant::now();
+        WheelBuilder::default()
+            .num_levels(0)
+            .unbounded(1024)
+            .build::<u64>(now);
+    }
+
+    #[test]
+    #[should_panic(expected = "num_levels must be <= 8")]
+    fn invalid_config_too_many_levels() {
+        let now = Instant::now();
+        WheelBuilder::default()
+            .num_levels(9)
+            .unbounded(1024)
+            .build::<u64>(now);
+    }
+
+    #[test]
+    #[should_panic(expected = "clk_shift must be > 0")]
+    fn invalid_config_zero_shift() {
+        let now = Instant::now();
+        WheelBuilder::default()
+            .clk_shift(0)
+            .unbounded(1024)
+            .build::<u64>(now);
+    }
+
+    #[test]
+    #[should_panic(expected = "tick_duration must be non-zero")]
+    fn invalid_config_zero_tick() {
+        let now = Instant::now();
+        WheelBuilder::default()
+            .tick_duration(Duration::ZERO)
+            .unbounded(1024)
+            .build::<u64>(now);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn invalid_config_shift_overflow() {
+        let now = Instant::now();
+        // 8 levels × clk_shift=8 = 56 bits shift on level 7
+        // Plus 64 slots (6 bits) = 62 bits, should be OK
+        // But 8 levels × clk_shift=9 = 63 + 6 = 69 bits — overflow
+        WheelBuilder::default()
+            .num_levels(8)
+            .clk_shift(9)
+            .unbounded(1024)
+            .build::<u64>(now);
+    }
+
+    // -------------------------------------------------------------------------
+    // Miri-compatible tests (L12)
+    // -------------------------------------------------------------------------
+    // These tests exercise the raw pointer paths (DLL operations, entry
+    // lifecycle, poll) with Drop types to catch UB under Miri.
+
+    #[test]
+    fn miri_schedule_cancel_drop_type() {
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        let h = wheel.schedule(now + ms(50), "hello".to_string());
+        let val = wheel.cancel(h);
+        assert_eq!(val, Some("hello".to_string()));
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn miri_poll_fires_drop_type() {
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        wheel.schedule_forget(now + ms(10), "a".to_string());
+        wheel.schedule_forget(now + ms(10), "b".to_string());
+        wheel.schedule_forget(now + ms(10), "c".to_string());
+
+        let mut buf = Vec::new();
+        let fired = wheel.poll(now + ms(20), &mut buf);
+        assert_eq!(fired, 3);
+        assert_eq!(buf.len(), 3);
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn miri_cancel_zombie_drop_type() {
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        let h = wheel.schedule(now + ms(10), "zombie".to_string());
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(20), &mut buf);
+        assert_eq!(buf, vec!["zombie".to_string()]);
+
+        // h is now a zombie — cancel frees the entry
+        let val = wheel.cancel(h);
+        assert_eq!(val, None);
+    }
+
+    #[test]
+    fn miri_free_active_and_zombie() {
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        // Active → fire-and-forget via free
+        let h1 = wheel.schedule(now + ms(10), "active".to_string());
+        wheel.free(h1);
+
+        // Poll fires the fire-and-forget entry
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(20), &mut buf);
+        assert_eq!(buf, vec!["active".to_string()]);
+
+        // Zombie → free
+        let h2 = wheel.schedule(now + ms(10), "will-fire".to_string());
+        buf.clear();
+        wheel.poll(now + ms(20), &mut buf);
+        wheel.free(h2); // zombie cleanup
+    }
+
+    #[test]
+    fn miri_reschedule_drop_type() {
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        let h = wheel.schedule(now + ms(100), "moveme".to_string());
+        let h = wheel.reschedule(h, now + ms(50));
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(55), &mut buf);
+        assert_eq!(buf, vec!["moveme".to_string()]);
+
+        wheel.cancel(h);
+    }
+
+    #[test]
+    fn miri_dll_multi_entry_same_slot() {
+        // Multiple entries in same slot exercises DLL push/remove paths
+        let now = Instant::now();
+        let mut wheel: Wheel<Vec<u8>> = Wheel::unbounded(64, now);
+
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            handles.push(wheel.schedule(now + ms(10), vec![i; 32]));
+        }
+
+        // Cancel middle, then head, then tail
+        let v2 = wheel.cancel(handles.remove(2));
+        assert_eq!(v2.unwrap(), vec![2; 32]);
+
+        let v0 = wheel.cancel(handles.remove(0));
+        assert_eq!(v0.unwrap(), vec![0; 32]);
+
+        // Poll remaining
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(20), &mut buf);
+        assert_eq!(buf.len(), 3);
+
+        // Clean up zombie handles
+        for h in handles {
+            wheel.cancel(h);
+        }
+    }
+
+    #[test]
+    fn miri_drop_wheel_with_entries() {
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        // Schedule entries across multiple levels
+        for i in 0..20 {
+            wheel.schedule_forget(now + ms(i * 100), format!("entry-{i}"));
+        }
+        assert_eq!(wheel.len(), 20);
+
+        // Drop with active entries — must not leak or UB
+        drop(wheel);
+    }
+
+    #[test]
+    fn miri_bounded_lifecycle() {
+        let now = Instant::now();
+        let mut wheel: BoundedWheel<String> = BoundedWheel::bounded(4, now);
+
+        let h1 = wheel.try_schedule(now + ms(10), "a".to_string()).unwrap();
+        let h2 = wheel.try_schedule(now + ms(20), "b".to_string()).unwrap();
+        let h3 = wheel.try_schedule(now + ms(30), "c".to_string()).unwrap();
+        let h4 = wheel.try_schedule(now + ms(40), "d".to_string()).unwrap();
+
+        // Full
+        let err = wheel.try_schedule(now + ms(50), "e".to_string());
+        assert!(err.is_err());
+
+        // Cancel and reuse
+        wheel.cancel(h1);
+        let h5 = wheel.try_schedule(now + ms(50), "e".to_string()).unwrap();
+
+        // Poll fires some
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(25), &mut buf);
+
+        // Clean up all remaining handles
+        wheel.cancel(h2);
+        wheel.free(h3);
+        wheel.free(h4);
+        wheel.free(h5);
+    }
 }
 
 #[cfg(test)]

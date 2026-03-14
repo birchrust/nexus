@@ -153,7 +153,8 @@ fn contention_test<T: Default + Clone>(name: &str, slab: BoundedSlab<T>) {
         for _ in 0..BATCH {
             let slot = slab.alloc(T::default());
             black_box(&*slot);
-            drop(slot);
+            // SAFETY: slot was allocated from this slab
+            unsafe { slab.free(slot) };
         }
         let elapsed = rdtsc_end() - start;
         slab_samples.push(elapsed / BATCH as u64);

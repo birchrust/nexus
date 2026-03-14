@@ -22,12 +22,8 @@ use std::ops::{Deref, DerefMut};
 /// Size: `max(8, size_of::<T>())`.
 #[repr(C)]
 pub union SlotCell<T> {
-    /// Points to next free slot (or null). Active when slot is vacant.
-    #[doc(hidden)]
-    pub next_free: *mut SlotCell<T>,
-    /// Contains the user's `T`. Active when slot is occupied.
-    #[doc(hidden)]
-    pub value: ManuallyDrop<MaybeUninit<T>>,
+    next_free: *mut SlotCell<T>,
+    value: ManuallyDrop<MaybeUninit<T>>,
 }
 
 impl<T> SlotCell<T> {
@@ -35,6 +31,97 @@ impl<T> SlotCell<T> {
     #[inline]
     pub(crate) fn vacant(next_free: *mut SlotCell<T>) -> Self {
         SlotCell { next_free }
+    }
+
+    /// Writes a value into this slot, transitioning it from vacant to occupied.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be vacant (no live value present).
+    #[inline]
+    pub unsafe fn write_value(&mut self, value: T) {
+        self.value = ManuallyDrop::new(MaybeUninit::new(value));
+    }
+
+    /// Reads the value out of this slot without dropping it.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied with a valid `T`.
+    /// After this call, the caller owns the value and the slot must not be
+    /// read again without a subsequent write.
+    #[inline]
+    pub unsafe fn read_value(&self) -> T {
+        // SAFETY: Caller guarantees the slot is occupied.
+        unsafe { std::ptr::read(self.value.as_ptr()) }
+    }
+
+    /// Drops the value in place without returning it.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied with a valid `T`.
+    #[inline]
+    pub unsafe fn drop_value_in_place(&mut self) {
+        // SAFETY: Caller guarantees the slot is occupied.
+        unsafe {
+            std::ptr::drop_in_place((*self.value).as_mut_ptr());
+        }
+    }
+
+    /// Returns a reference to the occupied value.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied with a valid `T`.
+    #[inline]
+    pub unsafe fn value_ref(&self) -> &T {
+        // SAFETY: Caller guarantees the slot is occupied.
+        unsafe { self.value.assume_init_ref() }
+    }
+
+    /// Returns a mutable reference to the occupied value.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied with a valid `T`.
+    /// Caller must have exclusive access.
+    #[inline]
+    pub unsafe fn value_mut(&mut self) -> &mut T {
+        // SAFETY: Caller guarantees the slot is occupied.
+        unsafe { (*self.value).assume_init_mut() }
+    }
+
+    /// Returns a raw const pointer to the value storage.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be occupied.
+    #[inline]
+    pub unsafe fn value_ptr(&self) -> *const T {
+        // SAFETY: Caller guarantees the slot is occupied.
+        unsafe { self.value.as_ptr() }
+    }
+
+    /// Returns the next_free pointer.
+    ///
+    /// # Safety
+    ///
+    /// The slot must be vacant.
+    #[inline]
+    pub(crate) unsafe fn get_next_free(&self) -> *mut SlotCell<T> {
+        // SAFETY: Caller guarantees the slot is vacant.
+        unsafe { self.next_free }
+    }
+
+    /// Sets the next_free pointer.
+    ///
+    /// # Safety
+    ///
+    /// Caller must be transitioning this slot to vacant.
+    #[inline]
+    pub(crate) unsafe fn set_next_free(&mut self, next: *mut SlotCell<T>) {
+        self.next_free = next;
     }
 }
 
@@ -49,8 +136,8 @@ impl<T> SlotCell<T> {
 ///
 /// # Layout
 ///
-/// Two `u32` refcounts (8 bytes) followed by the value. Zero padding waste
-/// for types with alignment >= 4.
+/// Two `u32` refcounts (8 bytes) followed by the value. The 8-byte header
+/// aligns naturally with the value for types with alignment <= 8.
 #[repr(C)]
 pub struct RcInner<T> {
     strong: Cell<u32>,
@@ -187,8 +274,7 @@ impl<T> Deref for RawSlot<T> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         // SAFETY: RawSlot was created from a valid, occupied SlotCell.
-        // Union field `value` is active because the slot is occupied.
-        unsafe { (*self.0).value.assume_init_ref() }
+        unsafe { (*self.0).value_ref() }
     }
 }
 
@@ -196,8 +282,7 @@ impl<T> DerefMut for RawSlot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: We have &mut self, guaranteeing exclusive access.
-        // Union field `value` is active because the slot is occupied.
-        unsafe { (*(*self.0).value).assume_init_mut() }
+        unsafe { (*self.0).value_mut() }
     }
 }
 
