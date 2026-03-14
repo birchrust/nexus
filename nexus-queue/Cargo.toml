@@ -35,3 +35,6 @@ name = "bench_mpsc"
 
 [[example]]
 name = "bench_mpsc_pingpong"
+
+[[example]]
+name = "bench_spmc"

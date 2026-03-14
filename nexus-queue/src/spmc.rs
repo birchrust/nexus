@@ -1,32 +1,30 @@
-//! Multi-producer single-consumer bounded queue.
+//! Single-producer multi-consumer bounded queue.
 //!
-//! A lock-free ring buffer optimized for multiple producer threads sending to
-//! one consumer thread. Uses CAS-based slot claiming with Vyukov-style turn
-//! counters for synchronization.
+//! A lock-free ring buffer optimized for one producer thread fanning out to
+//! multiple consumer threads. Uses Vyukov-style turn counters with CAS-based
+//! head claiming for consumers.
 //!
 //! # Design
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │ Shared (Arc):                                               │
-//! │   tail: CachePadded<AtomicUsize>   ← Producers CAS here     │
-//! │   head: CachePadded<AtomicUsize>   ← Consumer writes        │
-//! │   slots: *mut Slot<T>              ← Per-slot turn counters │
-//! └─────────────────────────────────────────────────────────────┘
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ Shared (Arc):                                                   │
+//! │   head: CachePadded<AtomicUsize>   ← Consumers CAS here         │
+//! │   tail: CachePadded<AtomicUsize>   ← Producer publishes here    │
+//! │   producer_alive: AtomicBool       ← Disconnection detection    │
+//! │   slots: *mut Slot<T>              ← Per-slot turn counters     │
+//! └─────────────────────────────────────────────────────────────────┘
 //!
 //! ┌─────────────────────┐     ┌─────────────────────┐
-//! │ Producer (Clone):   │     │ Consumer (!Clone):  │
-//! │   cached_head       │     │   local_head        │
-//! │   shared: Arc       │     │   shared: Arc       │
-//! └─────────────────────┘     └─────────────────────┘
+//! │ Producer (!Clone):  │     │ Consumer (Clone):    │
+//! │   local_tail        │     │   shared: Arc        │
+//! │   shared: Arc       │     └─────────────────────┘
+//! └─────────────────────┘
 //! ```
 //!
-//! Producers compete via CAS on the tail index. After claiming a slot, the
-//! producer waits for the slot's turn counter to indicate it's writable, writes
-//! the data, then advances the turn to signal readiness.
-//!
-//! The consumer checks the turn counter to know when data is ready, reads it,
-//! then advances the turn for the next producer lap.
+//! The producer writes directly (no CAS) since it's the sole writer. Consumers
+//! compete via CAS on the head index to claim slots. After claiming, the consumer
+//! reads the data and advances the turn counter for the next producer lap.
 //!
 //! # Turn Counter Protocol
 //!
@@ -34,46 +32,73 @@
 //! - `turn * 2`: Slot is ready for producer to write
 //! - `turn * 2 + 1`: Slot contains data, ready for consumer
 //!
+//! # Disconnection
+//!
+//! Unlike MPSC where `Arc::strong_count == 1` detects disconnection on both
+//! sides, SPMC consumers hold Arc refs to each other. An `AtomicBool` tracks
+//! whether the producer is alive so consumers can detect disconnection.
+//!
 //! # Example
 //!
 //! ```
-//! use nexus_queue::mpsc;
+//! use nexus_queue::spmc;
 //! use std::thread;
 //!
-//! let (mut tx, mut rx) = mpsc::bounded::<u64>(1024);
+//! let (mut tx, rx) = spmc::bounded::<u64>(1024);
 //!
-//! let mut tx2 = tx.clone();
+//! let mut rx2 = rx.clone();
+//! let mut rx1 = rx;
 //! let h1 = thread::spawn(move || {
-//!     for i in 0..100 {
-//!         while tx.push(i).is_err() { std::hint::spin_loop(); }
+//!     let mut received = Vec::new();
+//!     loop {
+//!         if let Some(v) = rx1.pop() {
+//!             received.push(v);
+//!         } else if rx1.is_disconnected() {
+//!             while let Some(v) = rx1.pop() { received.push(v); }
+//!             break;
+//!         } else {
+//!             std::hint::spin_loop();
+//!         }
 //!     }
+//!     received
 //! });
 //! let h2 = thread::spawn(move || {
-//!     for i in 100..200 {
-//!         while tx2.push(i).is_err() { std::hint::spin_loop(); }
+//!     let mut received = Vec::new();
+//!     loop {
+//!         if let Some(v) = rx2.pop() {
+//!             received.push(v);
+//!         } else if rx2.is_disconnected() {
+//!             while let Some(v) = rx2.pop() { received.push(v); }
+//!             break;
+//!         } else {
+//!             std::hint::spin_loop();
+//!         }
 //!     }
+//!     received
 //! });
 //!
-//! let mut received = 0;
-//! while received < 200 {
-//!     if rx.pop().is_some() { received += 1; }
+//! for i in 0..200 {
+//!     while tx.push(i).is_err() { std::hint::spin_loop(); }
 //! }
+//! drop(tx);
 //!
-//! h1.join().unwrap();
-//! h2.join().unwrap();
+//! let mut all: Vec<_> = h1.join().unwrap();
+//! all.extend(h2.join().unwrap());
+//! all.sort();
+//! assert_eq!(all, (0..200).collect::<Vec<_>>());
 //! ```
 
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 
 use crate::Full;
 
-/// Creates a bounded MPSC queue with the given capacity.
+/// Creates a bounded SPMC queue with the given capacity.
 ///
 /// Capacity is rounded up to the next power of two.
 ///
@@ -86,7 +111,7 @@ pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let capacity = capacity.next_power_of_two();
     let mask = capacity - 1;
 
-    // Allocate slots with turn counters initialized to 0 (ready for turn 0 producers)
+    // Allocate slots with turn counters initialized to 0 (ready for turn 0 producer)
     let slots: Vec<Slot<T>> = (0..capacity)
         .map(|_| Slot {
             turn: AtomicUsize::new(0),
@@ -98,8 +123,9 @@ pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let shift = capacity.trailing_zeros();
 
     let shared = Arc::new(Shared {
-        tail: CachePadded::new(AtomicUsize::new(0)),
         head: CachePadded::new(AtomicUsize::new(0)),
+        tail: CachePadded::new(AtomicUsize::new(0)),
+        producer_alive: AtomicBool::new(true),
         slots,
         capacity,
         shift,
@@ -108,15 +134,13 @@ pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
 
     (
         Producer {
-            cached_head: 0,
+            local_tail: 0,
             slots,
             mask,
-            capacity,
             shift,
             shared: Arc::clone(&shared),
         },
         Consumer {
-            local_head: 0,
             slots,
             mask,
             shift,
@@ -135,14 +159,16 @@ struct Slot<T> {
     data: UnsafeCell<MaybeUninit<T>>,
 }
 
-/// Shared state between producers and the consumer.
+/// Shared state between the producer and consumers.
 // repr(C): Guarantees field order for cache line layout.
 #[repr(C)]
 struct Shared<T> {
-    /// Tail index - producers CAS on this to claim slots.
-    tail: CachePadded<AtomicUsize>,
-    /// Head index - consumer publishes progress here.
+    /// Head index - consumers CAS on this to claim slots.
     head: CachePadded<AtomicUsize>,
+    /// Tail index - producer publishes progress here.
+    tail: CachePadded<AtomicUsize>,
+    /// Whether the producer is still alive (for consumer disconnection detection).
+    producer_alive: AtomicBool,
     /// Pointer to the slot array.
     slots: *mut Slot<T>,
     /// Actual capacity (power of two).
@@ -187,42 +213,26 @@ impl<T> Drop for Shared<T> {
     }
 }
 
-/// The producer endpoint of an MPSC queue.
+/// The producer endpoint of an SPMC queue.
 ///
-/// This endpoint can be cloned to create additional producers. Each clone
-/// maintains its own cached state for performance.
+/// This endpoint cannot be cloned - only one producer thread is allowed.
+/// The single-writer design eliminates CAS contention on the tail index.
 // repr(C): Hot fields at struct base share cache line with struct pointer.
 #[repr(C)]
 pub struct Producer<T> {
-    /// Cached head for fast full-check. Only refreshed when cache indicates full.
-    cached_head: usize,
+    /// Local tail index - only this thread reads/writes.
+    local_tail: usize,
     /// Cached slots pointer (avoids Arc deref on hot path).
     slots: *mut Slot<T>,
     /// Cached mask (avoids Arc deref on hot path).
     mask: usize,
-    /// Cached capacity (avoids Arc deref on hot path).
-    capacity: usize,
     /// Cached shift for fast division (log2(capacity)).
     shift: u32,
     shared: Arc<Shared<T>>,
 }
 
-impl<T> Clone for Producer<T> {
-    fn clone(&self) -> Self {
-        Producer {
-            // Fresh cache - will be populated on first push
-            cached_head: self.shared.head.load(Ordering::Relaxed),
-            slots: self.slots,
-            mask: self.mask,
-            capacity: self.capacity,
-            shift: self.shift,
-            shared: Arc::clone(&self.shared),
-        }
-    }
-}
-
-// SAFETY: Producer can be sent to another thread. Each Producer instance is
-// used by one thread (not Sync - use clone() for multiple threads).
+// SAFETY: Producer can be sent to another thread. It has exclusive write access
+// to slots (via turn protocol) and maintains the tail index.
 unsafe impl<T: Send> Send for Producer<T> {}
 
 impl<T> Producer<T> {
@@ -231,66 +241,28 @@ impl<T> Producer<T> {
     /// Returns `Err(Full(value))` if the queue is full, returning ownership
     /// of the value to the caller for backpressure handling.
     ///
-    /// This method spins internally on CAS contention but returns immediately
-    /// when the queue is actually full.
+    /// No CAS required - single writer principle.
     #[inline]
     #[must_use = "push returns Err if full, which should be handled"]
     pub fn push(&mut self, value: T) -> Result<(), Full<T>> {
-        let mut spin_count = 0u32;
+        // SAFETY: slots pointer is valid for the lifetime of shared.
+        let slot = unsafe { &*self.slots.add(self.local_tail & self.mask) };
+        let turn = self.local_tail >> self.shift;
 
-        loop {
-            let tail = self.shared.tail.load(Ordering::Relaxed);
-
-            // Check against cached head (avoids atomic load most of the time)
-            if tail.wrapping_sub(self.cached_head) >= self.capacity {
-                // Cache miss: refresh from shared head
-                self.cached_head = self.shared.head.load(Ordering::Acquire);
-
-                // Re-check with fresh head - if still full, return error
-                if tail.wrapping_sub(self.cached_head) >= self.capacity {
-                    return Err(Full(value));
-                }
-            }
-
-            // SAFETY: slots pointer is valid for the lifetime of shared.
-            let slot = unsafe { &*self.slots.add(tail & self.mask) };
-            let turn = tail >> self.shift;
-            let expected_stamp = turn * 2;
-
-            // Check if slot is ready BEFORE attempting CAS (Vyukov optimization)
-            let stamp = slot.turn.load(Ordering::Acquire);
-
-            if stamp == expected_stamp {
-                // Slot is ready - try to claim it
-                if self
-                    .shared
-                    .tail
-                    .compare_exchange_weak(
-                        tail,
-                        tail.wrapping_add(1),
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // SAFETY: We own this slot via successful CAS.
-                    unsafe { (*slot.data.get()).write(value) };
-
-                    // Signal ready for consumer: turn * 2 + 1
-                    slot.turn.store(turn * 2 + 1, Ordering::Release);
-
-                    return Ok(());
-                }
-            }
-
-            // CAS failed or slot not ready - exponential backoff
-            // Cap at 6 to avoid excessive spinning (1, 2, 4, 8, 16, 32, 64 iterations)
-            let spins = 1 << spin_count.min(6);
-            for _ in 0..spins {
-                std::hint::spin_loop();
-            }
-            spin_count += 1;
+        // Check if slot is ready (consumer has freed it).
+        if slot.turn.load(Ordering::Acquire) != turn * 2 {
+            return Err(Full(value));
         }
+
+        // SAFETY: Turn counter confirms slot is free for this lap.
+        unsafe { (*slot.data.get()).write(value) };
+
+        // Signal ready for consumer: turn * 2 + 1
+        slot.turn.store(turn * 2 + 1, Ordering::Release);
+
+        self.local_tail = self.local_tail.wrapping_add(1);
+
+        Ok(())
     }
 
     /// Returns the capacity of the queue.
@@ -299,13 +271,18 @@ impl<T> Producer<T> {
         1 << self.shift
     }
 
-    /// Returns `true` if the consumer has been dropped.
-    ///
-    /// With multiple producers, this returns `true` only when this is the
-    /// last handle (all other producers and the consumer are dropped).
+    /// Returns `true` if all consumers have been dropped.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.shared) == 1
+    }
+}
+
+impl<T> Drop for Producer<T> {
+    fn drop(&mut self) {
+        // Publish final tail for Shared::drop cleanup
+        self.shared.tail.store(self.local_tail, Ordering::Relaxed);
+        self.shared.producer_alive.store(false, Ordering::Release);
     }
 }
 
@@ -317,14 +294,13 @@ impl<T> fmt::Debug for Producer<T> {
     }
 }
 
-/// The consumer endpoint of an MPSC queue.
+/// The consumer endpoint of an SPMC queue.
 ///
-/// This endpoint cannot be cloned - only one consumer thread is allowed.
+/// This endpoint can be cloned to create additional consumers. Each clone
+/// competes via CAS on the shared head index.
 // repr(C): Hot fields at struct base share cache line with struct pointer.
 #[repr(C)]
 pub struct Consumer<T> {
-    /// Local head index - only this thread reads/writes.
-    local_head: usize,
     /// Cached slots pointer (avoids Arc deref on hot path).
     slots: *mut Slot<T>,
     /// Cached mask (avoids Arc deref on hot path).
@@ -334,37 +310,74 @@ pub struct Consumer<T> {
     shared: Arc<Shared<T>>,
 }
 
-// SAFETY: Consumer can be sent to another thread. It has exclusive read access
-// to slots (via turn protocol) and maintains the head index.
+impl<T> Clone for Consumer<T> {
+    fn clone(&self) -> Self {
+        Consumer {
+            slots: self.slots,
+            mask: self.mask,
+            shift: self.shift,
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+// SAFETY: Consumer can be sent to another thread. Each Consumer instance is
+// used by one thread (not Sync - use clone() for multiple threads).
 unsafe impl<T: Send> Send for Consumer<T> {}
 
 impl<T> Consumer<T> {
     /// Pops a value from the queue.
     ///
     /// Returns `None` if the queue is empty.
+    ///
+    /// This method spins internally on CAS contention but returns immediately
+    /// when the queue is actually empty.
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
-        let head = self.local_head;
-        // SAFETY: slots pointer is valid for the lifetime of shared.
-        let slot = unsafe { &*self.slots.add(head & self.mask) };
-        let turn = head >> self.shift;
+        let mut spin_count = 0u32;
 
-        // Check if slot is ready (turn * 2 + 1 means producer has written)
-        if slot.turn.load(Ordering::Acquire) != turn * 2 + 1 {
-            return None;
+        loop {
+            let head = self.shared.head.load(Ordering::Relaxed);
+
+            // SAFETY: slots pointer is valid for the lifetime of shared.
+            let slot = unsafe { &*self.slots.add(head & self.mask) };
+            let turn = head >> self.shift;
+
+            let stamp = slot.turn.load(Ordering::Acquire);
+
+            if stamp == turn * 2 + 1 {
+                // Slot has data - try to claim it
+                if self
+                    .shared
+                    .head
+                    .compare_exchange_weak(
+                        head,
+                        head.wrapping_add(1),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    // SAFETY: We own this slot via successful CAS.
+                    let value = unsafe { (*slot.data.get()).assume_init_read() };
+
+                    // Signal slot is free for next lap: (turn + 1) * 2
+                    slot.turn.store((turn + 1) * 2, Ordering::Release);
+
+                    return Some(value);
+                }
+
+                // CAS failed - another consumer claimed it, retry with backoff
+                let spins = 1 << spin_count.min(6);
+                for _ in 0..spins {
+                    std::hint::spin_loop();
+                }
+                spin_count += 1;
+            } else {
+                // Slot not ready - queue is empty
+                return None;
+            }
         }
-
-        // SAFETY: Turn counter confirms producer has written to this slot.
-        let value = unsafe { (*slot.data.get()).assume_init_read() };
-
-        // Signal slot is free for next lap: (turn + 1) * 2
-        slot.turn.store((turn + 1) * 2, Ordering::Release);
-
-        // Advance head and publish for producers' capacity check
-        self.local_head = head.wrapping_add(1);
-        self.shared.head.store(self.local_head, Ordering::Release);
-
-        Some(value)
     }
 
     /// Returns the capacity of the queue.
@@ -373,10 +386,10 @@ impl<T> Consumer<T> {
         1 << self.shift
     }
 
-    /// Returns `true` if all producers have been dropped.
+    /// Returns `true` if the producer has been dropped.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
-        Arc::strong_count(&self.shared) == 1
+        !self.shared.producer_alive.load(Ordering::Acquire)
     }
 }
 
@@ -450,7 +463,7 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn interleaved_single_producer() {
+    fn interleaved_single_consumer() {
         let (mut tx, mut rx) = bounded::<u64>(8);
 
         for i in 0..1000 {
@@ -475,94 +488,110 @@ mod tests {
     }
 
     // ============================================================================
-    // Multiple Producers
+    // Multiple Consumers
     // ============================================================================
 
     #[test]
-    fn two_producers_single_consumer() {
+    fn two_consumers_single_producer() {
         use std::thread;
 
-        let (mut tx, mut rx) = bounded::<u64>(64);
-        let mut tx2 = tx.clone();
+        let (mut tx, rx) = bounded::<u64>(64);
+        let mut rx2 = rx.clone();
 
+        let mut rx1 = rx;
         let h1 = thread::spawn(move || {
-            for i in 0..1000 {
-                while tx.push(i).is_err() {
+            let mut received = Vec::new();
+            loop {
+                if let Some(val) = rx1.pop() {
+                    received.push(val);
+                } else if rx1.is_disconnected() {
+                    while let Some(val) = rx1.pop() {
+                        received.push(val);
+                    }
+                    break;
+                } else {
                     std::hint::spin_loop();
                 }
             }
+            received
         });
 
         let h2 = thread::spawn(move || {
-            for i in 1000..2000 {
-                while tx2.push(i).is_err() {
+            let mut received = Vec::new();
+            loop {
+                if let Some(val) = rx2.pop() {
+                    received.push(val);
+                } else if rx2.is_disconnected() {
+                    while let Some(val) = rx2.pop() {
+                        received.push(val);
+                    }
+                    break;
+                } else {
                     std::hint::spin_loop();
                 }
             }
+            received
         });
 
-        let mut received = Vec::new();
-        while received.len() < 2000 {
-            if let Some(val) = rx.pop() {
-                received.push(val);
-            } else {
+        for i in 0..2000 {
+            while tx.push(i).is_err() {
                 std::hint::spin_loop();
             }
         }
+        drop(tx);
 
-        h1.join().unwrap();
-        h2.join().unwrap();
+        let mut received = h1.join().unwrap();
+        received.extend(h2.join().unwrap());
 
-        // All values received (order not guaranteed across producers)
+        // All values received (order not guaranteed across consumers)
         received.sort();
         assert_eq!(received, (0..2000).collect::<Vec<_>>());
     }
 
     #[test]
-    fn four_producers_single_consumer() {
+    fn four_consumers_single_producer() {
         use std::thread;
 
-        let (tx, mut rx) = bounded::<u64>(256);
+        let (mut tx, rx) = bounded::<u64>(256);
 
         let handles: Vec<_> = (0..4)
-            .map(|p| {
-                let mut tx = tx.clone();
+            .map(|_| {
+                let mut rx = rx.clone();
                 thread::spawn(move || {
-                    for i in 0..1000 {
-                        let val = p * 1000 + i;
-                        while tx.push(val).is_err() {
+                    let mut received = Vec::new();
+                    loop {
+                        if let Some(val) = rx.pop() {
+                            received.push(val);
+                        } else if rx.is_disconnected() {
+                            while let Some(val) = rx.pop() {
+                                received.push(val);
+                            }
+                            break;
+                        } else {
                             std::hint::spin_loop();
                         }
                     }
+                    received
                 })
             })
             .collect();
 
-        drop(tx); // Drop original producer
+        drop(rx); // Drop original consumer
 
-        let mut received = Vec::new();
-        while received.len() < 4000 {
-            if let Some(val) = rx.pop() {
-                received.push(val);
-            } else if rx.is_disconnected() && received.len() < 4000 {
-                // Keep trying if not all received
-                std::hint::spin_loop();
-            } else {
+        for i in 0..4000u64 {
+            while tx.push(i).is_err() {
                 std::hint::spin_loop();
             }
         }
+        drop(tx);
 
+        let mut received = Vec::new();
         for h in handles {
-            h.join().unwrap();
+            received.extend(h.join().unwrap());
         }
 
         received.sort();
-        let expected: Vec<u64> = (0..4)
-            .flat_map(|p| (0..1000).map(move |i| p * 1000 + i))
-            .collect();
-        let mut expected_sorted = expected;
-        expected_sorted.sort();
-        assert_eq!(received, expected_sorted);
+        assert_eq!(received, (0..4000).collect::<Vec<_>>());
     }
 
     // ============================================================================
@@ -585,7 +614,7 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn producer_disconnected() {
+    fn consumer_detects_producer_drop() {
         let (tx, rx) = bounded::<u64>(4);
 
         assert!(!rx.is_disconnected());
@@ -594,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn consumer_disconnected() {
+    fn producer_detects_all_consumers_drop() {
         let (tx, rx) = bounded::<u64>(4);
 
         assert!(!tx.is_disconnected());
@@ -603,15 +632,16 @@ mod tests {
     }
 
     #[test]
-    fn multiple_producers_one_disconnects() {
-        let (tx1, rx) = bounded::<u64>(4);
-        let tx2 = tx1.clone();
+    fn one_consumer_drops_others_alive() {
+        let (tx, rx) = bounded::<u64>(4);
+        let rx2 = rx.clone();
 
-        assert!(!rx.is_disconnected());
-        drop(tx1);
-        assert!(!rx.is_disconnected()); // tx2 still alive
-        drop(tx2);
-        assert!(rx.is_disconnected());
+        assert!(!tx.is_disconnected());
+        drop(rx);
+        assert!(!tx.is_disconnected()); // rx2 still alive
+        assert!(!rx2.is_disconnected()); // producer still alive
+        drop(rx2);
+        assert!(tx.is_disconnected());
     }
 
     // ============================================================================
@@ -722,7 +752,7 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn stress_single_producer() {
+    fn stress_single_consumer() {
         use std::thread;
 
         const COUNT: u64 = 100_000;
@@ -757,43 +787,54 @@ mod tests {
     }
 
     #[test]
-    fn stress_multiple_producers() {
+    fn stress_multiple_consumers() {
         use std::thread;
 
-        const PRODUCERS: u64 = 4;
-        const PER_PRODUCER: u64 = 25_000;
-        const TOTAL: u64 = PRODUCERS * PER_PRODUCER;
+        const CONSUMERS: usize = 4;
+        const TOTAL: u64 = 100_000;
 
-        let (tx, mut rx) = bounded::<u64>(1024);
+        let (mut tx, rx) = bounded::<u64>(1024);
 
-        let handles: Vec<_> = (0..PRODUCERS)
+        let handles: Vec<_> = (0..CONSUMERS)
             .map(|_| {
-                let mut tx = tx.clone();
+                let mut rx = rx.clone();
                 thread::spawn(move || {
-                    for i in 0..PER_PRODUCER {
-                        while tx.push(i).is_err() {
+                    let mut received = Vec::new();
+                    loop {
+                        if let Some(val) = rx.pop() {
+                            received.push(val);
+                        } else if rx.is_disconnected() {
+                            while let Some(val) = rx.pop() {
+                                received.push(val);
+                            }
+                            break;
+                        } else {
                             std::hint::spin_loop();
                         }
                     }
+                    received
                 })
             })
             .collect();
 
-        drop(tx);
+        drop(rx);
 
-        let mut received = 0u64;
-        while received < TOTAL {
-            if rx.pop().is_some() {
-                received += 1;
-            } else {
-                std::hint::spin_loop();
+        let producer = thread::spawn(move || {
+            for i in 0..TOTAL {
+                while tx.push(i).is_err() {
+                    std::hint::spin_loop();
+                }
             }
-        }
+        });
 
+        producer.join().unwrap();
+
+        let mut all_received = Vec::new();
         for h in handles {
-            h.join().unwrap();
+            all_received.extend(h.join().unwrap());
         }
 
-        assert_eq!(received, TOTAL);
+        all_received.sort();
+        assert_eq!(all_received, (0..TOTAL).collect::<Vec<_>>());
     }
 }
