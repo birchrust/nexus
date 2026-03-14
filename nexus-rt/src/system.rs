@@ -18,7 +18,14 @@
 //!
 //! Systems are converted from plain functions via [`IntoSystem`], using
 //! the same HRTB double-bound pattern as [`IntoHandler`](crate::IntoHandler).
-//! The function signature is `fn(params...) -> bool` — no event parameter.
+//!
+//! # Supported signatures
+//!
+//! - `fn(params...) -> bool` — returns propagation decision for
+//!   scheduler DAGs
+//! - `fn(params...)` — void return, always propagates (`true`). Useful
+//!   for [`World::run_startup`] and systems that unconditionally
+//!   propagate.
 
 use crate::handler::Param;
 use crate::world::{Registry, World};
@@ -76,17 +83,26 @@ pub struct SystemFn<F, Params: Param, Marker = bool> {
 
 /// Converts a plain function into a [`System`].
 ///
-/// The function signature is `fn(params...) -> bool` — no event parameter.
+/// Accepts two signatures:
+/// - `fn(params...) -> bool` — returns propagation decision
+/// - `fn(params...)` — void return, always propagates (`true`)
+///
+/// The `Marker` type parameter (defaulting to `bool`) distinguishes
+/// between the two. Existing code using `IntoSystem<Params>` continues
+/// to require `-> bool` with no changes.
+///
 /// Parameters are resolved from a [`Registry`] at conversion time.
 ///
 /// # Closures vs named functions
 ///
-/// Zero-parameter systems (`fn() -> bool`) accept closures. For
-/// parameterized systems (one or more [`Param`] arguments), Rust's
-/// HRTB + GAT inference fails on closures — use named functions.
-/// Same limitation as [`IntoHandler`](crate::IntoHandler).
+/// Zero-parameter systems accept closures. For parameterized systems
+/// (one or more [`Param`] arguments), Rust's HRTB + GAT inference
+/// fails on closures — use named functions. Same limitation as
+/// [`IntoHandler`](crate::IntoHandler).
 ///
 /// # Examples
+///
+/// Bool-returning (scheduler propagation):
 ///
 /// ```
 /// use nexus_rt::{WorldBuilder, Res, ResMut, IntoSystem, System};
@@ -108,6 +124,24 @@ pub struct SystemFn<F, Params: Param, Marker = bool> {
 /// let mut sys = reconcile.into_system(world.registry());
 /// assert!(sys.run(&mut world));
 /// assert!(*world.resource::<bool>());
+/// ```
+///
+/// Void-returning (startup, unconditional propagation):
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System};
+///
+/// fn initialize(mut val: ResMut<u64>) {
+///     *val = 42;
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// let mut world = builder.build();
+///
+/// let mut sys = initialize.into_system(world.registry());
+/// assert!(sys.run(&mut world)); // void → always true
+/// assert_eq!(*world.resource::<u64>(), 42);
 /// ```
 ///
 /// # Panics

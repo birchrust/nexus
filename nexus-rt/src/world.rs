@@ -728,8 +728,9 @@ impl World {
     /// Intended for one-shot initialization after [`build()`](WorldBuilder::build).
     /// Accepts both void-returning (`fn(params...)`) and bool-returning
     /// (`fn(params...) -> bool`) functions via [`IntoSystem`](crate::IntoSystem).
-    /// Named functions only (same closure limitation as
-    /// [`IntoHandler`](crate::IntoHandler)).
+    /// The return value is always ignored — startup has no DAG to
+    /// propagate through. Named functions only (same closure limitation
+    /// as [`IntoHandler`](crate::IntoHandler)).
     ///
     /// Can be called multiple times for phased initialization.
     ///

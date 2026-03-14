@@ -889,7 +889,13 @@ propagation in a DAG scheduler.
 | Return | `()` | `bool` |
 | Purpose | React | Reconcile |
 
+`IntoSystem` accepts two signatures:
+- `fn(params...) -> bool` — returns propagation decision for scheduler DAGs
+- `fn(params...)` — void return, always propagates (`true`). Useful for
+  `run_startup` and systems that unconditionally propagate.
+
 ```rust
+// Bool-returning: controls DAG propagation
 fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoValue>) -> bool {
     if mid.is_changed() {
         theo.0 = mid.0 * 1.001;
@@ -897,6 +903,11 @@ fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoValue>) -> bool {
     } else {
         false // nothing changed — skip downstream
     }
+}
+
+// Void-returning: always propagates
+fn initialize(mut cache: ResMut<PriceCache>) {
+    cache.prices.extend_from_slice(&[100.0, 200.0]);
 }
 ```
 
