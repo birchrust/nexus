@@ -3,6 +3,11 @@ macro_rules! impl_running_min {
         /// All-time minimum tracker.
         ///
         /// Tracks the smallest value ever seen. One comparison per update.
+        ///
+        /// # Use Cases
+        /// - Best-case latency tracking (all-time min RTT)
+        /// - Low-water mark for prices or levels
+        /// - Input to range calculations (max - min)
         #[derive(Debug, Clone)]
         pub struct $name {
             min: $ty,
@@ -65,6 +70,11 @@ macro_rules! impl_running_max {
         /// All-time maximum tracker.
         ///
         /// Tracks the largest value ever seen. One comparison per update.
+        ///
+        /// # Use Cases
+        /// - High-water mark tracking (peak throughput, max latency)
+        /// - Capacity planning (peak resource usage)
+        /// - Input to range calculations (max - min)
         #[derive(Debug, Clone)]
         pub struct $name {
             max: $ty,

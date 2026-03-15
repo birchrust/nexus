@@ -65,6 +65,8 @@ macro_rules! impl_cusum {
             threshold_upper: Option<$ty>,
             threshold_lower: Option<$ty>,
             min_samples: u64,
+            seed_upper: Option<$ty>,
+            seed_lower: Option<$ty>,
         }
 
         impl $name {
@@ -79,6 +81,8 @@ macro_rules! impl_cusum {
                     threshold_upper: Option::None,
                     threshold_lower: Option::None,
                     min_samples: 0,
+                    seed_upper: Option::None,
+                    seed_lower: Option::None,
                 }
             }
 
@@ -308,6 +312,26 @@ macro_rules! impl_cusum {
                 self
             }
 
+            /// Pre-loads the upper cumulative sum from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately.
+            #[inline]
+            #[must_use]
+            pub fn seed_upper(mut self, val: $ty) -> Self {
+                self.seed_upper = Option::Some(val);
+                self
+            }
+
+            /// Pre-loads the lower cumulative sum from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately.
+            #[inline]
+            #[must_use]
+            pub fn seed_lower(mut self, val: $ty) -> Self {
+                self.seed_lower = Option::Some(val);
+                self
+            }
+
             /// Builds the detector.
             ///
             /// # Panics
@@ -332,15 +356,18 @@ macro_rules! impl_cusum {
                 assert!(threshold_upper > (0 as $ty), "threshold_upper must be positive");
                 assert!(threshold_lower > (0 as $ty), "threshold_lower must be positive");
 
+                let seeded = self.seed_upper.is_some() || self.seed_lower.is_some();
+                let initial_count = if seeded { self.min_samples } else { 0 };
+
                 $name {
                     target: self.target,
                     slack_upper,
                     slack_lower,
                     threshold_upper,
                     threshold_lower,
-                    upper: 0 as $ty,
-                    lower: 0 as $ty,
-                    count: 0,
+                    upper: self.seed_upper.unwrap_or(0 as $ty),
+                    lower: self.seed_lower.unwrap_or(0 as $ty),
+                    count: initial_count,
                     min_samples: self.min_samples,
                     slack_upper_explicit,
                     slack_lower_explicit,

@@ -1,6 +1,8 @@
 [package]
 name = "nexus-stats"
 version = "0.1.0"
+description = "Fixed-memory, zero-allocation streaming statistics for real-time systems"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

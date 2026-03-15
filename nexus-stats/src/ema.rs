@@ -36,6 +36,7 @@ macro_rules! impl_ema_float {
         pub struct $builder {
             alpha: Option<$ty>,
             min_samples: u64,
+            seed: Option<$ty>,
         }
 
         impl $name {
@@ -46,6 +47,7 @@ macro_rules! impl_ema_float {
                 $builder {
                     alpha: Option::None,
                     min_samples: 1,
+                    seed: Option::None,
                 }
             }
 
@@ -150,6 +152,17 @@ macro_rules! impl_ema_float {
                 self
             }
 
+            /// Pre-loads the smoothed value from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately and
+            /// the first `update()` applies smoothing (no raw initialization).
+            #[inline]
+            #[must_use]
+            pub fn seed(mut self, value: $ty) -> Self {
+                self.seed = Option::Some(value);
+                self
+            }
+
             /// Builds the EMA.
             ///
             /// # Panics
@@ -162,11 +175,17 @@ macro_rules! impl_ema_float {
                 let alpha = self.alpha.expect("EMA alpha must be set (use .alpha(), .halflife(), or .span())");
                 assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "EMA alpha must be in (0, 1), got {alpha}");
 
+                let (value, count) = if let Some(seed_val) = self.seed {
+                    (seed_val, self.min_samples)
+                } else {
+                    (0.0 as $ty, 0)
+                };
+
                 $name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
-                    value: 0.0 as $ty,
-                    count: 0,
+                    value,
+                    count,
                     min_samples: self.min_samples,
                 }
             }
@@ -237,6 +256,7 @@ macro_rules! impl_ema_int {
         pub struct $builder {
             span: Option<u64>,
             min_samples: u64,
+            seed: Option<$ty>,
         }
 
         impl $name {
@@ -247,6 +267,7 @@ macro_rules! impl_ema_int {
                 $builder {
                     span: Option::None,
                     min_samples: 1,
+                    seed: Option::None,
                 }
             }
 
@@ -341,6 +362,16 @@ macro_rules! impl_ema_int {
                 self
             }
 
+            /// Pre-loads the smoothed value from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately.
+            #[inline]
+            #[must_use]
+            pub fn seed(mut self, value: $ty) -> Self {
+                self.seed = Option::Some(value);
+                self
+            }
+
             /// Builds the EMA.
             ///
             /// # Panics
@@ -356,13 +387,19 @@ macro_rules! impl_ema_int {
                 let effective = next_power_of_two_minus_one(requested);
                 let shift = log2_of_span_plus_one(effective);
 
+                let (acc, count, initialized) = if let Some(seed_val) = self.seed {
+                    ((seed_val as $acc_ty) << shift, self.min_samples, true)
+                } else {
+                    (0, 0, false)
+                };
+
                 $name {
-                    acc: 0,
+                    acc,
                     shift,
                     span: effective,
-                    count: 0,
+                    count,
                     min_samples: self.min_samples,
-                    initialized: false,
+                    initialized,
                 }
             }
         }
