@@ -638,7 +638,7 @@ fn generate_struct_builder_impl(
                     // IntEnum field - validate repr value fits in field
                     Some(quote! {
                         const _: () = assert!(
-                            std::mem::size_of::<<#ty as nexus_bits::IntEnum>::Repr>() <= std::mem::size_of::<#repr>(),
+                            core::mem::size_of::<<#ty as nexus_bits::IntEnum>::Repr>() <= core::mem::size_of::<#repr>(),
                             "IntEnum repr type is wider than storage repr — values may be truncated"
                         );
                         if let Some(v) = self.#field_name {
@@ -978,6 +978,13 @@ fn generate_enum_parent_impl(
     let kind_name = kind_enum_name(name);
     let disc_start = discriminant.start;
     let disc_len = discriminant.len;
+
+    // Discriminant is extracted as u64 for matching. Wider discriminants
+    // would truncate silently, so reject them at macro expansion time.
+    assert!(
+        disc_len <= 64,
+        "discriminant length must be <= 64 bits (got {disc_len})"
+    );
 
     let disc_mask = if disc_len >= repr_bit_count {
         quote! { #repr::MAX }
