@@ -1,0 +1,63 @@
+# Use Case: Rate Management
+
+Tracking event rates, detecting rate changes, and monitoring against limits.
+
+Note: active rate *limiting* (token bucket, GCRA, sliding window counter)
+lives in the `nexus-rate` crate. This covers the *measurement* side.
+
+## Recipe: Monitor Against Exchange Rate Limits
+
+```rust
+use nexus_stats::*;
+
+// Track our own order rate
+let mut order_rate = EventRateF64::builder().span(20).build();
+
+// Detect if we're approaching the limit
+let mut limit_sat = SaturationF64::builder()
+    .span(10)
+    .threshold(0.80)  // warn at 80% of exchange limit
+    .build();
+
+// On each order sent:
+order_rate.tick(now);
+
+if let Some(rate) = order_rate.rate() {
+    let utilization = rate / exchange_rate_limit;
+    if let Some(Pressure::Saturated) = limit_sat.update(utilization) {
+        throttle_order_flow();
+    }
+}
+```
+
+## Recipe: Detect Rate Anomalies
+
+```rust
+use nexus_stats::*;
+
+let mut rate = EventRateF64::builder().span(30).build();
+let mut cusum = CusumF64::builder(expected_rate)
+    .slack(expected_rate * 0.1)
+    .threshold(expected_rate * 2.0)
+    .build();
+
+rate.tick(now);
+if let Some(r) = rate.rate() {
+    if let Some(shift) = cusum.update(r) {
+        match shift {
+            Shift::Upper => log::warn!("rate spike detected"),
+            Shift::Lower => log::warn!("rate drop detected"),
+            Shift::None => {}
+        }
+    }
+}
+```
+
+## Primitives Used
+
+| Primitive | Role |
+|-----------|------|
+| [EventRate](../algorithms/event-rate.md) | Smoothed rate measurement |
+| [Saturation](../algorithms/saturation.md) | Rate limit utilization |
+| [CUSUM](../algorithms/cusum.md) | Rate shift detection |
+| [LevelCrossing](../algorithms/level-crossing.md) | Count rate limit breaches |

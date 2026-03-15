@@ -1,0 +1,124 @@
+# Use Case: Backpressure Detection
+
+How to detect queue congestion before buffers fill, using sojourn time
+monitoring and resource tracking.
+
+## The Problem
+
+You have producer-consumer queues (Aeron ring buffers, event loop queues,
+request queues). When consumers slow down, the queue builds up. By the
+time the buffer is full and you hit hard backpressure, it's too late —
+messages are dropped or producers block.
+
+You want **early warning**: detect standing queues while there's still
+room to act.
+
+## Recipe: CoDel-Style Queue Health
+
+```rust
+use nexus_stats::*;
+
+// Detect standing queues via sojourn time
+let mut qd = QueueDelayI64::builder()
+    .target(10_000)          // 10μs acceptable queue wait
+    .window(100_000_000)     // 100ms observation window
+    .min_samples(20)
+    .build();
+
+// At dequeue time, measure how long the item waited:
+let sojourn_ns = now_ns - item.enqueue_timestamp;
+
+match qd.update(now_ns as u64, sojourn_ns) {
+    Some(QueuePressure::Elevated) => {
+        // Standing queue detected — even the fastest items are waiting too long
+        slow_down_producers();
+    }
+    Some(QueuePressure::Normal) => {
+        // Queue is healthy
+    }
+    None => {} // not primed
+}
+```
+
+## Recipe: Multi-Signal Pressure Valve
+
+Combine queue delay with resource saturation for comprehensive monitoring:
+
+```rust
+use nexus_stats::*;
+
+let mut queue_health = QueueDelayI64::builder()
+    .target(10_000).window(100_000_000).build();
+
+let mut cpu_sat = SaturationF64::builder()
+    .span(20).threshold(0.85).build();
+
+let mut latency_trend = TrendAlertF64::builder()
+    .alpha(0.3).beta(0.1).trend_threshold(1.0).build();
+
+// Composite pressure assessment:
+let queue_pressure = queue_health.update(now, sojourn);
+let cpu_pressure = cpu_sat.update(cpu_utilization);
+let trend = latency_trend.update(processing_time);
+
+let should_throttle = matches!(
+    (&queue_pressure, &cpu_pressure, &trend),
+    (Some(QueuePressure::Elevated), _, _) |       // queue backing up
+    (_, Some(Pressure::Saturated), _) |            // CPU maxed
+    (_, _, Some(Trend::Rising))                    // getting worse
+);
+
+if should_throttle {
+    reduce_strategy_aggression();
+}
+```
+
+## Recipe: Aeron Publication Monitoring
+
+```rust
+use nexus_stats::*;
+
+// Track Aeron buffer utilization
+let mut buf_sat = SaturationF64::builder()
+    .span(50)
+    .threshold(0.70)  // start worrying at 70% full
+    .build();
+
+// Track publication latency with asymmetric EMA
+// (react fast to increases, slow to decreases)
+let mut pub_latency = AsymEmaF64::builder()
+    .alpha_up(0.3)    // fast reaction to degradation
+    .alpha_down(0.05) // slow to declare recovery
+    .build();
+
+// On each publication:
+let buf_utilization = aeron_pub.buffer_used() as f64 / aeron_pub.buffer_capacity() as f64;
+buf_sat.update(buf_utilization);
+
+if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64) {
+    // smoothed tracks the publication latency with fast-rise/slow-fall
+}
+```
+
+## Primitives Used
+
+| Primitive | Role |
+|-----------|------|
+| [QueueDelay](../algorithms/queue-delay.md) | Standing queue detection (CoDel) |
+| [Saturation](../algorithms/saturation.md) | Resource utilization threshold |
+| [TrendAlert](../algorithms/trend-alert.md) | "Getting worse" detection |
+| [AsymmetricEMA](../algorithms/asym-ema.md) | Fast-rise/slow-fall tracking |
+| [CUSUM](../algorithms/cusum.md) | Persistent processing time shifts |
+
+## Tips
+
+- **Measure sojourn time, not queue depth.** A deep queue that drains
+  fast is fine. A shallow queue where every item waits 50ms is not.
+  QueueDelay measures what matters.
+
+- **Use asymmetric response.** React fast to degradation (alpha_up=0.3),
+  recover slowly (alpha_down=0.05). This prevents oscillation where you
+  throttle, recover, un-throttle, overload, repeat.
+
+- **Multiple signals beat one signal.** Queue depth + CPU utilization +
+  latency trend together give higher confidence than any one alone.

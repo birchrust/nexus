@@ -1,0 +1,56 @@
+# LevelCrossing — Threshold Crossing Counter
+
+**Counts how often a signal crosses a fixed threshold.** One comparison
+per sample.
+
+| Property | Value |
+|----------|-------|
+| Update cost | ~1-2 cycles |
+| Memory | ~16 bytes |
+| Types | All (f32, f64, i32, i64) |
+| Output | `bool` — true on crossing |
+
+## What It Does
+
+```
+  Signal crossing threshold:
+
+  Value
+  110 ┤     ·        ·        ·
+  100 ┤──·──×──·──·──×──·──·──×──·── threshold
+   90 ┤        ·        ·        ·
+      └────────────────────────────── t
+             ↑        ↑        ↑
+          crossing  crossing  crossing  (count = 3)
+```
+
+Detects the moment a signal transitions across the threshold in either
+direction. Useful for frequency estimation (crossings/sec ≈ 2 × frequency)
+and activity/oscillation counting.
+
+## API
+
+```rust
+let mut lc = LevelCrossingF64::new(100.0);  // threshold
+
+lc.update(95.0);   // below — false
+lc.update(105.0);  // crossed! — true
+lc.update(110.0);  // still above — false
+lc.update(90.0);   // crossed back — true
+
+assert_eq!(lc.crossing_count(), 2);
+```
+
+## Examples
+
+- Frequency estimation: `crossings / (2 × time) ≈ dominant frequency`
+- Oscillation detection: high crossing rate = unstable signal
+- Event counting: "how many times did latency exceed 100ms?"
+
+## Performance
+
+| Operation | p50 | p99 |
+|-----------|-----|-----|
+| `LevelCrossingF64::update` | ~2 cycles | ~2 cycles |
+
+One comparison per sample. Branch perfectly predicted for stable signals.

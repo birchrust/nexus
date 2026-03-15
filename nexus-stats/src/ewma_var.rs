@@ -1,0 +1,272 @@
+use crate::math::MulAdd;
+macro_rules! impl_ewma_var {
+    ($name:ident, $builder:ident, $ty:ty) => {
+        /// EWMA Variance — Exponentially Weighted Moving Average with variance tracking.
+        ///
+        /// Tracks both the exponentially smoothed mean and variance of a streaming
+        /// signal. Based on the RiskMetrics (JP Morgan, 1996) pattern.
+        ///
+        /// # Use Cases
+        /// - Volatility tracking
+        /// - Adaptive thresholds (mean ± k * std_dev)
+        /// - Regime detection (variance spike = regime change)
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            alpha: $ty,
+            one_minus_alpha: $ty,
+            mean: $ty,
+            variance: $ty,
+            count: u64,
+            min_samples: u64,
+        }
+
+        /// Builder for [`
+        #[doc = stringify!($name)]
+        /// `].
+        #[derive(Debug, Clone)]
+        pub struct $builder {
+            alpha: Option<$ty>,
+            min_samples: u64,
+        }
+
+        impl $name {
+            /// Creates a builder.
+            #[inline]
+            #[must_use]
+            pub fn builder() -> $builder {
+                $builder {
+                    alpha: Option::None,
+                    min_samples: 2,
+                }
+            }
+
+            /// Feeds a sample. Returns `(mean, variance)` once primed.
+            #[inline]
+            #[must_use]
+            pub fn update(&mut self, sample: $ty) -> Option<($ty, $ty)> {
+                self.count += 1;
+
+                if self.count == 1 {
+                    self.mean = sample;
+                    self.variance = 0.0 as $ty;
+                } else {
+                    let diff = sample - self.mean;
+                    self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
+                    let diff2 = sample - self.mean;
+                    self.variance = self.alpha.fma(diff * diff2, self.one_minus_alpha * self.variance);
+                }
+
+                if self.count >= self.min_samples {
+                    Option::Some((self.mean, self.variance))
+                } else {
+                    Option::None
+                }
+            }
+
+            /// Current smoothed mean, or `None` if not primed.
+            #[inline]
+            #[must_use]
+            pub fn mean(&self) -> Option<$ty> {
+                if self.count >= self.min_samples {
+                    Option::Some(self.mean)
+                } else {
+                    Option::None
+                }
+            }
+
+            /// Current exponentially weighted variance, or `None` if not primed.
+            #[inline]
+            #[must_use]
+            pub fn variance(&self) -> Option<$ty> {
+                if self.count >= self.min_samples {
+                    Option::Some(self.variance)
+                } else {
+                    Option::None
+                }
+            }
+
+            /// Current exponentially weighted standard deviation, or `None` if not primed.
+            #[inline]
+            #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
+            pub fn std_dev(&self) -> Option<$ty> {
+                self.variance().map(|v| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    { crate::math::sqrt(v as f64) as $ty }
+                })
+            }
+
+            /// The smoothing factor alpha.
+            #[inline]
+            #[must_use]
+            pub fn alpha(&self) -> $ty {
+                self.alpha
+            }
+
+            /// Number of samples processed.
+            #[inline]
+            #[must_use]
+            pub fn count(&self) -> u64 {
+                self.count
+            }
+
+            /// Whether the EWMA has reached `min_samples`.
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
+
+            /// Resets to uninitialized state. Parameters unchanged.
+            #[inline]
+            pub fn reset(&mut self) {
+                self.mean = 0.0 as $ty;
+                self.variance = 0.0 as $ty;
+                self.count = 0;
+            }
+        }
+
+        impl $builder {
+            /// Direct smoothing factor. Must be in (0, 1) exclusive.
+            #[inline]
+            #[must_use]
+            pub fn alpha(mut self, alpha: $ty) -> Self {
+                self.alpha = Option::Some(alpha);
+                self
+            }
+
+            /// Samples for weight to decay by half.
+            #[inline]
+            #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
+            pub fn halflife(mut self, halflife: $ty) -> Self {
+                let ln2 = core::f64::consts::LN_2 as $ty;
+                let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;
+                self.alpha = Option::Some(alpha);
+                self
+            }
+
+            /// Number of samples for center of mass (pandas convention).
+            #[inline]
+            #[must_use]
+            pub fn span(mut self, n: u64) -> Self {
+                let alpha = 2.0 as $ty / (n as $ty + 1.0 as $ty);
+                self.alpha = Option::Some(alpha);
+                self
+            }
+
+            /// Minimum samples before values are valid. Default: 2.
+            #[inline]
+            #[must_use]
+            pub fn min_samples(mut self, min: u64) -> Self {
+                self.min_samples = min;
+                self
+            }
+
+            /// Builds the EWMA variance tracker.
+            ///
+            /// # Panics
+            ///
+            /// - Alpha must have been set.
+            /// - Alpha must be in (0, 1) exclusive.
+            #[inline]
+            #[must_use]
+            pub fn build(self) -> $name {
+                let alpha = self.alpha.expect("EWMA variance alpha must be set (use .alpha(), .halflife(), or .span())");
+                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "EWMA variance alpha must be in (0, 1), got {alpha}");
+
+                $name {
+                    alpha,
+                    one_minus_alpha: 1.0 as $ty - alpha,
+                    mean: 0.0 as $ty,
+                    variance: 0.0 as $ty,
+                    count: 0,
+                    min_samples: self.min_samples,
+                }
+            }
+        }
+    };
+}
+
+impl_ewma_var!(EwmaVarF64, EwmaVarF64Builder, f64);
+impl_ewma_var!(EwmaVarF32, EwmaVarF32Builder, f32);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_input_zero_variance() {
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+
+        for _ in 0..100 {
+            let _ = ev.update(100.0);
+        }
+
+        let var = ev.variance().unwrap();
+        assert!(var.abs() < 1e-10, "constant input should have ~zero variance, got {var}");
+    }
+
+    #[test]
+    fn variance_positive_for_varying_input() {
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+
+        for i in 0..100 {
+            let _ = ev.update(if i % 2 == 0 { 100.0 } else { 110.0 });
+        }
+
+        let var = ev.variance().unwrap();
+        assert!(var > 0.0, "varying input should have positive variance, got {var}");
+    }
+
+    #[test]
+    fn priming_behavior() {
+        let mut ev = EwmaVarF64::builder().alpha(0.1).min_samples(5).build();
+
+        for _ in 0..4 {
+            assert!(ev.update(100.0).is_none());
+        }
+        assert!(ev.update(100.0).is_some());
+        assert!(ev.is_primed());
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+        for i in 0..50 {
+            let _ = ev.update(i as f64);
+        }
+
+        ev.reset();
+        assert_eq!(ev.count(), 0);
+        assert!(ev.mean().is_none());
+        assert!(ev.variance().is_none());
+    }
+
+    #[test]
+    fn std_dev_is_sqrt_of_variance() {
+        let mut ev = EwmaVarF64::builder().alpha(0.3).build();
+        for i in 0..50 {
+            let _ = ev.update(100.0 + (i % 10) as f64);
+        }
+
+        let var = ev.variance().unwrap();
+        let sd = ev.std_dev().unwrap();
+        let expected = crate::math::sqrt(var);
+        assert!((sd - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn f32_basic() {
+        let mut ev = EwmaVarF32::builder().alpha(0.1).build();
+        let _ = ev.update(100.0);
+        let _ = ev.update(110.0);
+        assert!(ev.variance().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "alpha must be set")]
+    fn panics_without_alpha() {
+        let _ = EwmaVarF64::builder().build();
+    }
+}

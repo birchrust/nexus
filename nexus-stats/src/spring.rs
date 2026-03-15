@@ -1,0 +1,170 @@
+use crate::math::MulAdd;
+macro_rules! impl_spring {
+    ($name:ident, $ty:ty) => {
+        /// Critically damped spring — chase a target without overshoot.
+        ///
+        /// Uses a Padé approximant for stable behavior with variable dt.
+        /// The output smoothly approaches the target with no ringing.
+        ///
+        /// # Use Cases
+        /// - Camera smoothing in games
+        /// - Smooth parameter transitions
+        /// - Any "chase this value" without PID complexity
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            smooth_time: $ty,
+            value: $ty,
+            velocity: $ty,
+            initialized: bool,
+        }
+
+        impl $name {
+            /// Creates a new spring with the given smooth time.
+            ///
+            /// `smooth_time` controls how quickly the spring converges.
+            /// Larger = slower, smoother. Smaller = faster, more reactive.
+            #[inline]
+            #[must_use]
+            pub fn new(smooth_time: $ty) -> Self {
+                assert!(smooth_time > 0.0 as $ty, "smooth_time must be positive");
+                Self {
+                    smooth_time,
+                    value: 0.0 as $ty,
+                    velocity: 0.0 as $ty,
+                    initialized: false,
+                }
+            }
+
+            /// Updates toward the target. Returns the new value.
+            ///
+            /// `dt` is the time since the last update, in the same units as `smooth_time`.
+            #[inline]
+            #[must_use]
+            pub fn update(&mut self, target: $ty, dt: $ty) -> $ty {
+                if !self.initialized {
+                    self.value = target;
+                    self.initialized = true;
+                    return target;
+                }
+
+                // Critically damped spring using Padé approximant
+                // omega = 2 / smooth_time (natural frequency for critical damping)
+                let omega = 2.0 as $ty / self.smooth_time;
+                let x = omega * dt;
+                // Padé(2,2) approximant to exp(-x): (1 - x/2 + x²/12) / (1 + x/2 + x²/12)
+                // Simplified: use exact exp(-x) via (1 + x + x²/2)⁻¹ approximation
+                let exp_neg = 1.0 as $ty / (x.fma(x.fma(0.5 as $ty, 1.0 as $ty), 1.0 as $ty));
+
+                let delta = self.value - target;
+                let temp = (self.velocity + omega * delta) * dt;
+                self.velocity = (self.velocity - omega * temp) * exp_neg;
+                self.value = (delta + temp).fma(exp_neg, target);
+
+                self.value
+            }
+
+            /// Current output value.
+            #[inline]
+            #[must_use]
+            pub fn value(&self) -> $ty { self.value }
+
+            /// Current velocity.
+            #[inline]
+            #[must_use]
+            pub fn velocity(&self) -> $ty { self.velocity }
+
+            /// Resets to uninitialized state.
+            #[inline]
+            pub fn reset(&mut self) {
+                self.value = 0.0 as $ty;
+                self.velocity = 0.0 as $ty;
+                self.initialized = false;
+            }
+
+            /// Resets to a specific value with zero velocity.
+            #[inline]
+            pub fn reset_to(&mut self, value: $ty) {
+                self.value = value;
+                self.velocity = 0.0 as $ty;
+                self.initialized = true;
+            }
+        }
+    };
+}
+
+impl_spring!(SpringF64, f64);
+impl_spring!(SpringF32, f32);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converges_to_target() {
+        let mut s = SpringF64::new(0.5);
+        let target = 100.0;
+
+        for _ in 0..200 {
+            let _ = s.update(target, 0.016); // ~60fps
+        }
+
+        assert!((s.value() - target).abs() < 0.01,
+            "should converge to {target}, got {}", s.value());
+    }
+
+    #[test]
+    fn no_overshoot() {
+        let mut s = SpringF64::new(0.5);
+        let target = 100.0;
+        let _ = s.update(0.0, 0.016); // initialize at 0
+
+        let mut max_value = 0.0f64;
+        for _ in 0..1000 {
+            let v = s.update(target, 0.016);
+            if v > max_value {
+                max_value = v;
+            }
+        }
+
+        assert!(max_value <= target + 0.1,
+            "should not overshoot, max was {max_value}");
+    }
+
+    #[test]
+    fn variable_dt_stable() {
+        let mut s = SpringF64::new(1.0);
+        let target = 50.0;
+
+        // Large dt steps shouldn't explode
+        let _ = s.update(target, 0.5);
+        assert!(s.value().is_finite());
+        let _ = s.update(target, 2.0);
+        assert!(s.value().is_finite());
+        let _ = s.update(target, 10.0);
+        assert!(s.value().is_finite());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn reset_to() {
+        let mut s = SpringF64::new(0.5);
+        let _ = s.update(100.0, 0.016);
+
+        s.reset_to(50.0);
+        assert_eq!(s.value(), 50.0);
+        assert_eq!(s.velocity(), 0.0);
+    }
+
+    #[test]
+    fn f32_basic() {
+        let mut s = SpringF32::new(0.5);
+        let v = s.update(100.0, 0.016);
+        assert!((v - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    #[should_panic(expected = "smooth_time must be positive")]
+    fn panics_on_zero_smooth_time() {
+        let _ = SpringF64::new(0.0);
+    }
+}

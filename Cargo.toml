@@ -15,6 +15,8 @@ members = [
 	"nexus-timer",
 	"nexus-slot",
 	"nexus-smartptr",
+	"nexus-stats",
+	"nexus-rate",
 ]
 
 [workspace.package]
