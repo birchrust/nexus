@@ -215,7 +215,7 @@ pub fn rdtsc_fenced_start() -> u64 {
 pub fn rdtsc_fenced_end() -> u64 {
     unsafe {
         let mut aux = 0u32;
-        let tsc = core::arch::x86_64::__rdtscp(&mut aux as *mut _);
+        let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
         tsc
     }

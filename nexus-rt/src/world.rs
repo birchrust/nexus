@@ -28,12 +28,12 @@
 
 use std::any::{TypeId, type_name};
 use std::cell::Cell;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 #[cfg(debug_assertions)]
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rustc_hash::FxHashMap;
 
@@ -1401,10 +1401,9 @@ mod tests {
         let mut builder = WorldBuilder::new();
         let id_a = builder.register::<u64>(0);
         let id_b = builder.register::<u32>(0);
-        builder.registry().check_access(&[
-            (Some(id_a), "a"),
-            (Some(id_b), "b"),
-        ]);
+        builder
+            .registry()
+            .check_access(&[(Some(id_a), "a"), (Some(id_b), "b")]);
     }
 
     #[test]
@@ -1412,10 +1411,9 @@ mod tests {
     fn check_access_detects_conflict() {
         let mut builder = WorldBuilder::new();
         let id = builder.register::<u64>(0);
-        builder.registry().check_access(&[
-            (Some(id), "a"),
-            (Some(id), "b"),
-        ]);
+        builder
+            .registry()
+            .check_access(&[(Some(id), "a"), (Some(id), "b")]);
     }
 
     #[test]

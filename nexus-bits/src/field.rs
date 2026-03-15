@@ -17,6 +17,7 @@ use crate::error::Overflow;
 /// let packed = EXCHANGE.set(0, 42).unwrap();
 /// assert_eq!(EXCHANGE.get(packed), 42);
 /// ```
+#[allow(clippy::len_without_is_empty)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BitField<T> {
     start: u32,

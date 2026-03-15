@@ -26,7 +26,7 @@ thread_local! {
 }
 
 #[derive(Debug)]
-pub struct DropTracker(u64);
+pub struct DropTracker(#[allow(dead_code)] u64);
 
 impl Drop for DropTracker {
     fn drop(&mut self) {
@@ -39,10 +39,10 @@ fn reset_drop_count() {
 }
 
 fn get_drop_count() -> usize {
-    DROP_COUNT.with(|c| c.get())
+    DROP_COUNT.with(Cell::get)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroSized;
 
 #[derive(Clone)]
@@ -598,9 +598,9 @@ fn miri_byte_slab_take_value() {
     let slot = slab.try_insert(DropTracker(1)).unwrap();
     assert_eq!(get_drop_count(), 0);
     // SAFETY: slot was allocated from this slab
-    let _value = unsafe { slab.take_value(slot) };
+    let value = unsafe { slab.take_value(slot) };
     assert_eq!(get_drop_count(), 0);
-    drop(_value);
+    drop(value);
     assert_eq!(get_drop_count(), 1);
 }
 
@@ -609,6 +609,7 @@ fn miri_byte_slab_reclaim() {
     let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(8);
 
     let slot = slab.try_insert(42u64).unwrap();
+    #[allow(clippy::borrow_as_ptr)]
     let _value = unsafe { std::ptr::read(&*slot as *const u64) };
     // SAFETY: slot was allocated from this slab, value moved out
     unsafe { slab.reclaim(slot) };
@@ -619,12 +620,12 @@ fn miri_byte_slab_reuse() {
     let slab = BoundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_capacity(2);
 
     let s1 = slab.try_insert("first".to_string()).unwrap();
-    let ptr1 = &*s1 as *const String;
+    let ptr1 = std::ptr::from_ref(&*s1);
     // SAFETY: slot was allocated from this slab
     unsafe { slab.remove(s1) };
 
     let s2 = slab.try_insert("second".to_string()).unwrap();
-    assert_eq!(&*s2 as *const String, ptr1);
+    assert_eq!(std::ptr::from_ref(&*s2), ptr1);
     // SAFETY: slot was allocated from this slab
     unsafe { slab.remove(s2) };
 }
@@ -633,13 +634,10 @@ fn miri_byte_slab_reuse() {
 fn miri_byte_slab_unbounded() {
     let slab = UnboundedSlab::<nexus_slab::byte::AlignedBytes<64>>::with_chunk_capacity(4);
 
-    let slots: Vec<_> = (0..12)
-        .map(|i| slab.insert(format!("str_{}", i)))
-        .collect();
+    let slots: Vec<_> = (0..12).map(|i| slab.insert(format!("str_{}", i))).collect();
 
     for (i, slot) in slots.iter().enumerate() {
-        let s: &String = &*slot;
-        assert_eq!(s, &format!("str_{}", i));
+        assert_eq!(&**slot, &format!("str_{}", i));
     }
 
     for slot in slots {

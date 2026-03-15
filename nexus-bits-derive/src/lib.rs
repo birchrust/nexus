@@ -13,24 +13,24 @@ use syn::{
 pub fn derive_int_enum(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    match derive_int_enum_impl(input) {
+    match derive_int_enum_impl(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-fn derive_int_enum_impl(input: DeriveInput) -> Result<TokenStream2> {
+fn derive_int_enum_impl(input: &DeriveInput) -> Result<TokenStream2> {
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
         _ => {
             return Err(Error::new_spanned(
-                &input,
+                input,
                 "IntEnum can only be derived for enums",
             ));
         }
     };
 
-    let repr = parse_repr(&input)?;
+    let repr = parse_repr(input)?;
 
     for variant in variants {
         if !matches!(variant.fields, Fields::Unit) {
@@ -76,8 +76,7 @@ fn parse_repr(input: &DeriveInput) -> Result<Ident> {
         if attr.path().is_ident("repr") {
             let repr: Ident = attr.parse_args()?;
             match repr.to_string().as_str() {
-                "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64"
-                | "i128" => {
+                "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => {
                     return Ok(repr);
                 }
                 _ => {
@@ -105,20 +104,20 @@ pub fn bit_storage(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = parse_macro_input!(item as DeriveInput);
 
-    match bit_storage_impl(attr, item) {
+    match bit_storage_impl(attr, &item) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-fn bit_storage_impl(attr: TokenStream2, input: DeriveInput) -> Result<TokenStream2> {
+fn bit_storage_impl(attr: TokenStream2, input: &DeriveInput) -> Result<TokenStream2> {
     let storage_attr = parse_storage_attr_tokens(attr)?;
 
     match &input.data {
-        Data::Struct(data) => derive_storage_struct(&input, data, storage_attr),
-        Data::Enum(data) => derive_storage_enum(&input, data, storage_attr),
+        Data::Struct(data) => derive_storage_struct(input, data, &storage_attr),
+        Data::Enum(data) => derive_storage_enum(input, data, &storage_attr),
         Data::Union(_) => Err(Error::new_spanned(
-            &input,
+            input,
             "bit_storage cannot be applied to unions",
         )),
     }
@@ -135,6 +134,7 @@ struct StorageAttr {
 }
 
 /// Bit range for a field
+#[derive(Clone, Copy)]
 struct BitRange {
     start: u32,
     len: u32,
@@ -144,7 +144,7 @@ struct BitRange {
 enum MemberDef {
     Field {
         name: Ident,
-        ty: Type,
+        ty: Box<Type>,
         range: BitRange,
     },
     Flag {
@@ -156,8 +156,7 @@ enum MemberDef {
 impl MemberDef {
     fn name(&self) -> &Ident {
         match self {
-            MemberDef::Field { name, .. } => name,
-            MemberDef::Flag { name, .. } => name,
+            MemberDef::Field { name, .. } | MemberDef::Flag { name, .. } => name,
         }
     }
 }
@@ -244,7 +243,11 @@ fn parse_member(field: &syn::Field) -> Result<MemberDef> {
     for attr in &field.attrs {
         if attr.path().is_ident("field") {
             let range = attr.parse_args_with(parse_bit_range)?;
-            return Ok(MemberDef::Field { name, ty, range });
+            return Ok(MemberDef::Field {
+                name,
+                ty: Box::new(ty),
+                range,
+            });
         } else if attr.path().is_ident("flag") {
             let bit: syn::LitInt = attr.parse_args()?;
             let bit: u32 = bit.base10_parse()?;
@@ -368,7 +371,7 @@ fn member_bit_range(m: &MemberDef) -> (u32, u32) {
 fn derive_storage_struct(
     input: &DeriveInput,
     data: &syn::DataStruct,
-    storage_attr: StorageAttr,
+    storage_attr: &StorageAttr,
 ) -> Result<TokenStream2> {
     let fields = match &data.fields {
         Fields::Named(f) => &f.named,
@@ -577,7 +580,7 @@ fn generate_struct_builder_impl(
                 };
 
                 if is_primitive(ty) {
-                    let type_bits: u32 = match ty {
+                    let type_bits: u32 = match &**ty {
                         Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
                         Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
                         Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
@@ -592,7 +595,7 @@ fn generate_struct_builder_impl(
                     }
 
                     // Check if this is a signed type
-                    let is_signed = matches!(ty,
+                    let is_signed = matches!(&**ty,
                         Type::Path(p) if p.path.is_ident("i8") || p.path.is_ident("i16") ||
                                          p.path.is_ident("i32") || p.path.is_ident("i64") ||
                                          p.path.is_ident("i128")
@@ -656,7 +659,7 @@ fn generate_struct_builder_impl(
                     })
                 }
             }
-            _ => None,
+            MemberDef::Flag { .. } => None,
         })
         .collect();
 
@@ -741,7 +744,7 @@ struct ParsedVariant {
 fn derive_storage_enum(
     input: &DeriveInput,
     data: &syn::DataEnum,
-    storage_attr: StorageAttr,
+    storage_attr: &StorageAttr,
 ) -> Result<TokenStream2> {
     let discriminant = storage_attr.discriminant.ok_or_else(|| {
         Error::new_spanned(
@@ -820,11 +823,8 @@ fn derive_storage_enum(
         // Validate members don't overlap with discriminant
         let disc_range = MemberDef::Field {
             name: Ident::new("__discriminant", proc_macro2::Span::call_site()),
-            ty: syn::parse_quote!(u64),
-            range: BitRange {
-                start: discriminant.start,
-                len: discriminant.len,
-            },
+            ty: Box::new(syn::parse_quote!(u64)),
+            range: discriminant,
         };
 
         for member in &members {
@@ -853,9 +853,9 @@ fn derive_storage_enum(
     let variant_types = generate_enum_variant_types(vis, name, repr, &variants);
     let kind_enum = generate_enum_kind(vis, name, &variants);
     let builder_structs = generate_enum_builder_structs(vis, name, &variants);
-    let parent_impl = generate_enum_parent_impl(name, repr, &discriminant, &variants);
+    let parent_impl = generate_enum_parent_impl(name, repr, discriminant, &variants);
     let variant_impls = generate_enum_variant_impls(name, repr, &variants);
-    let builder_impls = generate_enum_builder_impls(name, repr, &discriminant, &variants);
+    let builder_impls = generate_enum_builder_impls(name, repr, discriminant, &variants);
     let from_impls = generate_enum_from_impls(name, &variants);
 
     Ok(quote! {
@@ -971,7 +971,7 @@ fn generate_enum_builder_structs(
 fn generate_enum_parent_impl(
     name: &Ident,
     repr: &Ident,
-    discriminant: &BitRange,
+    discriminant: BitRange,
     variants: &[ParsedVariant],
 ) -> TokenStream2 {
     let repr_bit_count = repr_bits(repr);
@@ -1230,7 +1230,7 @@ fn generate_enum_variant_impls(
 fn generate_enum_builder_impls(
     parent_name: &Ident,
     repr: &Ident,
-    discriminant: &BitRange,
+    discriminant: BitRange,
     variants: &[ParsedVariant],
 ) -> TokenStream2 {
     let repr_bit_count = repr_bits(repr);
@@ -1284,7 +1284,7 @@ fn generate_enum_builder_impls(
                         };
 
                         if is_primitive(ty) {
-                            let type_bits: u32 = match ty {
+                            let type_bits: u32 = match &**ty {
                                 Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
                                 Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
                                 Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
@@ -1297,7 +1297,7 @@ fn generate_enum_builder_impls(
                                 return None;
                             }
 
-                            let is_signed = matches!(ty,
+                            let is_signed = matches!(&**ty,
                                 Type::Path(p) if p.path.is_ident("i8") || p.path.is_ident("i16") ||
                                                  p.path.is_ident("i32") || p.path.is_ident("i64") ||
                                                  p.path.is_ident("i128")
@@ -1354,7 +1354,7 @@ fn generate_enum_builder_impls(
                             })
                         }
                     }
-                    _ => None,
+                    MemberDef::Flag { .. } => None,
                 })
                 .collect();
 

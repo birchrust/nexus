@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn basic_acquire_release() {
-        let acquirer = Pool::new(3, || Vec::<u8>::with_capacity(16), |v| v.clear());
+        let acquirer = Pool::new(3, || Vec::<u8>::with_capacity(16), Vec::clear);
 
         let mut a = acquirer.try_acquire().unwrap();
         a.extend_from_slice(b"hello");
@@ -348,7 +348,7 @@ mod tests {
     fn acquirer_dropped_first() {
         let item;
         {
-            let acquirer = Pool::new(1, || String::from("test"), |s| s.clear());
+            let acquirer = Pool::new(1, || String::from("test"), String::clear);
             item = acquirer.try_acquire().unwrap();
             // acquirer drops here
         }
@@ -385,36 +385,36 @@ mod tests {
 
     #[test]
     fn lifo_ordering() {
-        let acquirer = Pool::new(3, || Vec::<u8>::new(), |v| v.clear());
+        let acquirer = Pool::new(3, Vec::<u8>::new, Vec::clear);
 
-        let mut a = acquirer.try_acquire().unwrap();
-        let mut b = acquirer.try_acquire().unwrap();
-        let mut c = acquirer.try_acquire().unwrap();
+        let mut guard_a = acquirer.try_acquire().unwrap();
+        let mut guard_b = acquirer.try_acquire().unwrap();
+        let mut guard_c = acquirer.try_acquire().unwrap();
 
-        a.push(1);
-        b.push(2);
-        c.push(3);
+        guard_a.push(1);
+        guard_b.push(2);
+        guard_c.push(3);
 
         // Return in order: a, b, c
-        drop(a);
-        drop(b);
-        drop(c);
+        drop(guard_a);
+        drop(guard_b);
+        drop(guard_c);
 
         // Should get back in LIFO order: c, b, a
-        let x = acquirer.try_acquire().unwrap();
-        assert!(x.is_empty()); // reset was called, but this was 'c'
+        let reacquired_1 = acquirer.try_acquire().unwrap();
+        assert!(reacquired_1.is_empty()); // reset was called, but this was 'c'
 
-        let y = acquirer.try_acquire().unwrap();
-        assert!(y.is_empty()); // this was 'b'
+        let reacquired_2 = acquirer.try_acquire().unwrap();
+        assert!(reacquired_2.is_empty()); // this was 'b'
 
-        let z = acquirer.try_acquire().unwrap();
-        assert!(z.is_empty()); // this was 'a'
+        let reacquired_3 = acquirer.try_acquire().unwrap();
+        assert!(reacquired_3.is_empty()); // this was 'a'
     }
 
     #[test]
     #[should_panic(expected = "capacity must be non-zero")]
     fn zero_capacity_panics() {
-        let _ = Pool::new(0, || (), |_| {});
+        let _ = Pool::new(0, || (), |()| {});
     }
 
     // =========================================================================
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn stress_single_thread() {
-        let acquirer = Pool::new(100, || Vec::<u8>::with_capacity(64), |v| v.clear());
+        let acquirer = Pool::new(100, || Vec::<u8>::with_capacity(64), Vec::clear);
 
         for _ in 0..10_000 {
             let mut items: Vec<_> = (0..50).filter_map(|_| acquirer.try_acquire()).collect();

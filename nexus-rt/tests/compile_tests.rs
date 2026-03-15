@@ -17,7 +17,7 @@
     clippy::many_single_char_names,
     clippy::option_if_let_else,
     clippy::redundant_closure,
-    clippy::manual_assert,
+    clippy::manual_assert
 )]
 
 use nexus_rt::dag::{DagArmSeed, DagBuilder};
@@ -324,9 +324,7 @@ fn build_world() -> World {
 fn pipeline_single_step() {
     let mut world = build_world();
     let r = world.registry_mut();
-    let mut p = PipelineBuilder::<u32>::new()
-        .then(store_u32, r)
-        .build();
+    let mut p = PipelineBuilder::<u32>::new().then(store_u32, r).build();
     p.run(&mut world, 42);
     assert_eq!(*world.resource::<u32>(), 42);
 }
@@ -365,10 +363,7 @@ fn pipeline_build_batch() {
     let mut world = build_world();
     let r = world.registry_mut();
     let mut batch = PipelineBuilder::<u32>::new()
-        .then(
-            |x: u32| -> u64 { x as u64 },
-            r,
-        )
+        .then(|x: u32| -> u64 { x as u64 }, r)
         .then(store_u64, r)
         .build_batch(16);
 
@@ -383,8 +378,7 @@ fn pipeline_build_batch() {
 fn pipeline_run_direct() {
     let mut world = build_world();
     let r = world.registry_mut();
-    let mut builder = PipelineBuilder::<u32>::new()
-        .then(double_u32, r);
+    let mut builder = PipelineBuilder::<u32>::new().then(double_u32, r);
 
     let result = builder.run(&mut world, 5);
     assert_eq!(result, 10);
@@ -441,8 +435,7 @@ fn pipeline_with_option_res() {
     wb.register::<u64>(100);
     let mut world = wb.build();
     let r = world.registry_mut();
-    let mut p = PipelineBuilder::<u32>::new()
-        .then(opt_res_step, r);
+    let mut p = PipelineBuilder::<u32>::new().then(opt_res_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 105);
 }
@@ -453,8 +446,7 @@ fn pipeline_with_option_res_mut() {
     wb.register::<String>(String::new());
     let mut world = wb.build();
     let r = world.registry_mut();
-    let mut p = PipelineBuilder::<u32>::new()
-        .then(opt_res_mut_step, r);
+    let mut p = PipelineBuilder::<u32>::new().then(opt_res_mut_step, r);
     let result = p.run(&mut world, 7);
     assert_eq!(result, 7);
     assert_eq!(world.resource::<String>().as_str(), "7");
@@ -464,8 +456,7 @@ fn pipeline_with_option_res_mut() {
 fn pipeline_with_seq() {
     let mut world = build_world();
     let r = world.registry_mut();
-    let mut p = PipelineBuilder::<u32>::new()
-        .then(seq_step, r);
+    let mut p = PipelineBuilder::<u32>::new().then(seq_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 5);
 }
@@ -474,8 +465,7 @@ fn pipeline_with_seq() {
 fn pipeline_with_seq_mut() {
     let mut world = build_world();
     let r = world.registry_mut();
-    let mut p = PipelineBuilder::<u32>::new()
-        .then(seq_mut_step, r);
+    let mut p = PipelineBuilder::<u32>::new().then(seq_mut_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 5);
 }
@@ -484,8 +474,7 @@ fn pipeline_with_seq_mut() {
 fn pipeline_with_shutdown() {
     let mut world = build_world();
     let r = world.registry_mut();
-    let mut p = PipelineBuilder::<u32>::new()
-        .then(shutdown_step, r);
+    let mut p = PipelineBuilder::<u32>::new().then(shutdown_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 5);
 }
@@ -501,7 +490,12 @@ fn pipeline_option_map() {
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> Option<u32> { Some(x) }, r)
         .map(double_u32, r)
-        .map(|x: u64| { let _ = x; }, r)
+        .map(
+            |x: u64| {
+                let _ = x;
+            },
+            r,
+        )
         .build();
     p.run(&mut world, 5);
 }
@@ -624,9 +618,17 @@ fn pipeline_cloned_option() {
     static NO: u64 = 0;
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> Option<u32> { Some(x) }, r)
-        .map(|x: u32| -> &'static u64 { if x > 0 { &YES } else { &NO } }, r)
+        .map(
+            |x: u32| -> &'static u64 { if x > 0 { &YES } else { &NO } },
+            r,
+        )
         .cloned()
-        .map(|val: u64| { let _ = val; }, r)
+        .map(
+            |val: u64| {
+                let _ = val;
+            },
+            r,
+        )
         .build();
     p.run(&mut world, 1);
 }
@@ -958,10 +960,14 @@ fn pipeline_scan() {
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
-        .scan(0u64, |acc: &mut u64, val: u32| {
-            *acc += val as u64;
-            *acc
-        }, r)
+        .scan(
+            0u64,
+            |acc: &mut u64, val: u32| {
+                *acc += val as u64;
+                *acc
+            },
+            r,
+        )
         .then(store_u64, r)
         .build();
 
@@ -1117,9 +1123,12 @@ fn pipeline_then_opaque() {
     let mut world = build_world();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new()
-        .then(|w: &mut World, x: u32| {
-            *w.resource_mut::<u64>() = x as u64;
-        }, r)
+        .then(
+            |w: &mut World, x: u32| {
+                *w.resource_mut::<u64>() = x as u64;
+            },
+            r,
+        )
         .build();
     p.run(&mut world, 42);
     assert_eq!(*world.resource::<u64>(), 42);
@@ -1250,8 +1259,7 @@ fn pipeline_borrowed_run_direct() {
         data.len() as u32
     }
 
-    let mut builder = PipelineBuilder::<&[u8]>::new()
-        .then(decode_len, r);
+    let mut builder = PipelineBuilder::<&[u8]>::new().then(decode_len, r);
 
     let result = builder.run(&mut world, &data);
     assert_eq!(result, 4);
@@ -1262,9 +1270,7 @@ fn pipeline_to_boxed_handler() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    let p = PipelineBuilder::<u32>::new()
-        .then(store_u32, r)
-        .build();
+    let p = PipelineBuilder::<u32>::new().then(store_u32, r).build();
 
     let mut boxed: Virtual<u32> = Box::new(p);
     boxed.run(&mut world, 77);
@@ -1310,7 +1316,12 @@ fn dag_root_single_step() {
     let mut world = build_world();
     let r = world.registry_mut();
     let mut d = DagBuilder::<u32>::new()
-        .root(|x: u32| { let _ = x; }, r)
+        .root(
+            |x: u32| {
+                let _ = x;
+            },
+            r,
+        )
         .build();
     d.run(&mut world, 1);
 }
@@ -1320,7 +1331,9 @@ fn dag_fork_merge_2arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1341,7 +1354,9 @@ fn dag_fork_join_2arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1361,7 +1376,9 @@ fn dag_build_batch() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u64 { x as u64 }
+    fn root(x: u32) -> u64 {
+        x as u64
+    }
     fn accumulate(mut sum: ResMut<u64>, val: &u64) {
         *sum += *val;
     }
@@ -1386,7 +1403,9 @@ fn dag_fork_merge_3arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1409,8 +1428,12 @@ fn dag_fork_merge_4arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u64 { x as u64 }
-    fn arm_fn(x: &u64) -> u64 { *x }
+    fn root(x: u32) -> u64 {
+        x as u64
+    }
+    fn arm_fn(x: &u64) -> u64 {
+        *x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1432,7 +1455,9 @@ fn dag_fork_arms_with_multiple_steps() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1455,7 +1480,9 @@ fn dag_fork_arm_with_guard() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u64 { x as u64 }
+    fn root(x: u32) -> u64 {
+        x as u64
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1479,7 +1506,9 @@ fn dag_nested_fork() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1532,7 +1561,9 @@ fn dag_splat_inside_arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1634,7 +1665,9 @@ fn dag_option_unit_terminal() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1655,7 +1688,9 @@ fn dag_route() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let fast = DagArmSeed::new().then(|x: &u32| *x as u64 * 100, r);
     let slow = DagArmSeed::new().then(|x: &u32| *x as u64, r);
@@ -1738,9 +1773,10 @@ fn pipeline_realistic_decode_validate_enrich_store() {
 
     let mut p = PipelineBuilder::<Order>::new()
         .then(validate_order, r)
-        .and_then(|vo: ValidOrder| -> Option<EnrichedOrder> {
-            Some(enrich_order(vo))
-        }, r)
+        .and_then(
+            |vo: ValidOrder| -> Option<EnrichedOrder> { Some(enrich_order(vo)) },
+            r,
+        )
         .map(store_enriched, r)
         .build();
 
@@ -1799,9 +1835,7 @@ fn pipeline_build_into_virtual() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    let pipeline = PipelineBuilder::<u32>::new()
-        .then(store_u32, r)
-        .build();
+    let pipeline = PipelineBuilder::<u32>::new().then(store_u32, r).build();
 
     let mut v: Virtual<u32> = Box::new(pipeline);
     v.run(&mut world, 99);
@@ -1910,7 +1944,9 @@ fn batch_dag_fill_run_check() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u64 { x as u64 }
+    fn root(x: u32) -> u64 {
+        x as u64
+    }
     fn accumulate(mut sum: ResMut<u64>, val: &u64) {
         *sum += *val;
     }
@@ -1938,10 +1974,14 @@ fn pipeline_scan_at_start() {
     let r = world.registry_mut();
 
     let mut p = PipelineBuilder::<u32>::new()
-        .scan(0u64, |acc: &mut u64, x: u32| {
-            *acc += x as u64;
-            *acc
-        }, r)
+        .scan(
+            0u64,
+            |acc: &mut u64, x: u32| {
+                *acc += x as u64;
+                *acc
+            },
+            r,
+        )
         .then(store_u64, r)
         .build();
 
@@ -1956,14 +1996,20 @@ fn dag_scan() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
-        .scan(0u64, |acc: &mut u64, x: &u32| {
-            *acc += *x as u64;
-            *acc
-        }, r)
+        .scan(
+            0u64,
+            |acc: &mut u64, x: &u32| {
+                *acc += *x as u64;
+                *acc
+            },
+            r,
+        )
         .then(dag_store_u64, r)
         .build();
 
@@ -1978,7 +2024,9 @@ fn dag_dedup() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -1999,7 +2047,9 @@ fn dag_bool_not_and() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> bool { x > 5 }
+    fn root(x: u32) -> bool {
+        x > 5
+    }
     fn store_bool(mut out: ResMut<bool>, val: &bool) {
         *out = *val;
     }
@@ -2024,7 +2074,9 @@ fn dag_tap() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u64 { x as u64 }
+    fn root(x: u32) -> u64 {
+        x as u64
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2041,7 +2093,9 @@ fn dag_tee() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let side = DagArmSeed::<u32>::new()
         .then(|x: &u32| *x as u64, r)
@@ -2090,7 +2144,9 @@ fn dag_option_combinators() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2115,7 +2171,9 @@ fn dag_option_ok_or() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2134,7 +2192,9 @@ fn dag_option_unwrap_or() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2156,7 +2216,11 @@ fn dag_result_ok() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2175,7 +2239,11 @@ fn dag_result_unwrap_or() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2194,7 +2262,11 @@ fn dag_result_map_err() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2214,7 +2286,11 @@ fn dag_result_inspect_err() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2234,7 +2310,11 @@ fn dag_result_or_else() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2258,7 +2338,9 @@ fn dag_dispatch() {
     }
     let handler = handler_fn.into_handler(r);
 
-    fn root(x: u32) -> u64 { x as u64 * 3 }
+    fn root(x: u32) -> u64 {
+        x as u64 * 3
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2307,7 +2389,9 @@ fn dag_option_on_none() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2325,7 +2409,9 @@ fn dag_option_ok_or_else() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2344,7 +2430,9 @@ fn dag_option_unwrap_or_else() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
@@ -2363,7 +2451,11 @@ fn dag_result_unwrap_or_else() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2382,11 +2474,19 @@ fn dag_result_and_then() {
     let r = world.registry_mut();
 
     fn root(x: u32) -> Result<u64, MyError> {
-        if x > 0 { Ok(x as u64) } else { Err(MyError("zero".into())) }
+        if x > 0 {
+            Ok(x as u64)
+        } else {
+            Err(MyError("zero".into()))
+        }
     }
 
     fn validate(x: &u64) -> Result<u64, MyError> {
-        if *x < 100 { Ok(*x * 2) } else { Err(MyError("too large".into())) }
+        if *x < 100 {
+            Ok(*x * 2)
+        } else {
+            Err(MyError("too large".into()))
+        }
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2405,7 +2505,9 @@ fn dag_bool_or() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> bool { x > 5 }
+    fn root(x: u32) -> bool {
+        x > 5
+    }
     fn store_bool(mut out: ResMut<bool>, val: &bool) {
         *out = *val;
     }
@@ -2428,7 +2530,9 @@ fn dag_bool_xor() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> bool { x > 5 }
+    fn root(x: u32) -> bool {
+        x > 5
+    }
     fn store_bool(mut out: ResMut<bool>, val: &bool) {
         *out = *val;
     }
@@ -2472,7 +2576,9 @@ fn dag_batch_option_terminal() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
     fn accumulate(mut sum: ResMut<u64>, x: &u32) {
         *sum += *x as u64;
     }
@@ -2493,13 +2599,29 @@ fn dag_join_3arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
         .fork()
-        .arm(|a| a.then(|x: &u32| { let _ = *x; }, r))
-        .arm(|a| a.then(|x: &u32| { let _ = *x; }, r))
+        .arm(|a| {
+            a.then(
+                |x: &u32| {
+                    let _ = *x;
+                },
+                r,
+            )
+        })
+        .arm(|a| {
+            a.then(
+                |x: &u32| {
+                    let _ = *x;
+                },
+                r,
+            )
+        })
         .arm(|a| a.then(dag_store_u32, r))
         .join()
         .build();
@@ -2513,14 +2635,37 @@ fn dag_join_4arm() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     let mut d = DagBuilder::<u32>::new()
         .root(root, r)
         .fork()
-        .arm(|a| a.then(|x: &u32| { let _ = *x; }, r))
-        .arm(|a| a.then(|x: &u32| { let _ = *x; }, r))
-        .arm(|a| a.then(|x: &u32| { let _ = *x; }, r))
+        .arm(|a| {
+            a.then(
+                |x: &u32| {
+                    let _ = *x;
+                },
+                r,
+            )
+        })
+        .arm(|a| {
+            a.then(
+                |x: &u32| {
+                    let _ = *x;
+                },
+                r,
+            )
+        })
+        .arm(|a| {
+            a.then(
+                |x: &u32| {
+                    let _ = *x;
+                },
+                r,
+            )
+        })
         .arm(|a| a.then(dag_store_u32, r))
         .join()
         .build();
@@ -2550,7 +2695,9 @@ fn dag_option_and_then() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn root(x: u32) -> u32 { x }
+    fn root(x: u32) -> u32 {
+        x
+    }
 
     fn validate(x: &u32) -> Option<u64> {
         if *x > 5 { Some(*x as u64) } else { None }
@@ -2613,14 +2760,26 @@ struct Message<'a> {
     payload: &'a [u8],
 }
 
-fn slice_len(data: &[u8]) -> usize { data.len() }
-fn store_len(mut out: ResMut<u64>, len: usize) { *out = len as u64; }
+fn slice_len(data: &[u8]) -> usize {
+    data.len()
+}
+fn store_len(mut out: ResMut<u64>, len: usize) {
+    *out = len as u64;
+}
 
-fn msg_payload_len(msg: Message<'_>) -> usize { msg.payload.len() }
+fn msg_payload_len(msg: Message<'_>) -> usize {
+    msg.payload.len()
+}
 
-fn hrtb_dag_double_len(len: &usize) -> usize { *len * 2 }
-fn hrtb_dag_store_len(mut out: ResMut<u64>, len: &usize) { *out = *len as u64; }
-fn hrtb_dag_add_lens(a: &usize, b: &usize) -> usize { *a + *b }
+fn hrtb_dag_double_len(len: &usize) -> usize {
+    *len * 2
+}
+fn hrtb_dag_store_len(mut out: ResMut<u64>, len: &usize) {
+    *out = *len as u64;
+}
+fn hrtb_dag_add_lens(a: &usize, b: &usize) -> usize {
+    *a + *b
+}
 
 #[test]
 fn hrtb_pipeline_basic() {
@@ -2667,7 +2826,9 @@ fn hrtb_pipeline_with_option_chain() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn mark_none(mut flag: ResMut<bool>) { *flag = true; }
+    fn mark_none(mut flag: ResMut<bool>) {
+        *flag = true;
+    }
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -2699,7 +2860,12 @@ fn hrtb_pipeline_with_closure() {
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(|data: &[u8]| data.len() * 2, r)
         .guard(|doubled: &usize| *doubled > 0, r)
-        .map(|val: usize| { let _ = val; }, r)
+        .map(
+            |val: usize| {
+                let _ = val;
+            },
+            r,
+        )
         .build();
 
     let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
@@ -2753,8 +2919,12 @@ fn hrtb_dag_fork_join() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn store_len_u32(mut out: ResMut<u32>, len: &usize) { *out = *len as u32; }
-    fn store_len_i64(mut out: ResMut<i64>, len: &usize) { *out = *len as i64; }
+    fn store_len_u32(mut out: ResMut<u32>, len: &usize) {
+        *out = *len as u32;
+    }
+    fn store_len_i64(mut out: ResMut<i64>, len: &usize) {
+        *out = *len as i64;
+    }
 
     let dag = DagBuilder::<&[u8]>::new()
         .root(slice_len, r)
@@ -2785,7 +2955,10 @@ fn hrtb_borrowed_struct_event() {
     let mut boxed: Box<dyn for<'a> Handler<Message<'a>>> = Box::new(pipeline);
 
     let payload = vec![10u8, 20, 30, 40];
-    let msg = Message { topic: 1, payload: &payload };
+    let msg = Message {
+        topic: 1,
+        payload: &payload,
+    };
     boxed.run(&mut world, msg);
     assert_eq!(*world.resource::<u64>(), 4);
 }
@@ -2795,7 +2968,9 @@ fn hrtb_dispatch_map() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn store_len_u32(mut out: ResMut<u32>, len: usize) { *out = len as u32; }
+    fn store_len_u32(mut out: ResMut<u32>, len: usize) {
+        *out = len as u32;
+    }
 
     let p1 = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -2808,8 +2983,7 @@ fn hrtb_dispatch_map() {
         .build();
 
     type HrtbSliceHandler = Box<dyn for<'a> Handler<&'a [u8]>>;
-    let mut map: std::collections::HashMap<u8, HrtbSliceHandler> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<u8, HrtbSliceHandler> = std::collections::HashMap::new();
     map.insert(0, Box::new(p1));
     map.insert(1, Box::new(p2));
 
@@ -2870,8 +3044,7 @@ fn hrtb_pipeline_and_dag_in_same_map() {
         .build();
 
     type HrtbSliceHandler = Box<dyn for<'a> Handler<&'a [u8]>>;
-    let mut map: std::collections::HashMap<u8, HrtbSliceHandler> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<u8, HrtbSliceHandler> = std::collections::HashMap::new();
     map.insert(0, Box::new(pipeline));
     map.insert(1, Box::new(dag));
 
@@ -2919,9 +3092,12 @@ fn hrtb_pipeline_opaque_closure() {
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
-        .then(|w: &mut World, len: usize| {
-            *w.resource_mut::<u64>() = len as u64;
-        }, r)
+        .then(
+            |w: &mut World, len: usize| {
+                *w.resource_mut::<u64>() = len as u64;
+            },
+            r,
+        )
         .build();
 
     let mut boxed: Box<dyn for<'a> Handler<&'a [u8]>> = Box::new(pipeline);
@@ -2936,11 +3112,12 @@ fn hrtb_pipeline_tee() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn store_len_u32(mut out: ResMut<u32>, len: &usize) { *out = *len as u32; }
+    fn store_len_u32(mut out: ResMut<u32>, len: &usize) {
+        *out = *len as u32;
+    }
 
     // Side arm observes &usize (nested HRTB: C: for<'a> ChainCall<&'a usize>)
-    let side = DagArmSeed::<usize>::new()
-        .then(store_len_u32, r);
+    let side = DagArmSeed::<usize>::new().then(store_len_u32, r);
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)

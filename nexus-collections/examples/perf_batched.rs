@@ -140,7 +140,7 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             seq!(I in 0..100 { heap.link(&h[I]); });
-            for hh in h.iter() {
+            for hh in h {
                 heap.unlink(hh);
             }
         }
@@ -149,7 +149,7 @@ fn main() {
             seq!(I in 0..100 { heap.link(&h[I]); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
-            for hh in h.iter() {
+            for hh in h {
                 heap.unlink(hh);
             }
         }
@@ -315,7 +315,7 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             seq!(I in 0..100 { list.link_back(&h[I]); });
-            for hh in h.iter() {
+            for hh in h {
                 list.unlink(hh);
             }
         }
@@ -324,7 +324,7 @@ fn main() {
             seq!(I in 0..100 { list.link_back(&h[I]); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
-            for hh in h.iter() {
+            for hh in h {
                 list.unlink(hh);
             }
         }

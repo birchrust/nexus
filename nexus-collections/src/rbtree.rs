@@ -550,9 +550,7 @@ impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, C> {
     /// Returns a cursor positioned at the given key, or at the first
     /// element greater than the key.
     pub fn cursor_at(&mut self, key: &K) -> Cursor<'_, K, V, A, C> {
-        let current = self
-            .find(key)
-            .map_or_else(|| self.lower_bound(key), |ptr| ptr);
+        let current = self.find(key).unwrap_or_else(|| self.lower_bound(key));
         Cursor {
             tree: self,
             current,

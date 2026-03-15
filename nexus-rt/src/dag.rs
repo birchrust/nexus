@@ -136,14 +136,14 @@ use std::marker::PhantomData;
 
 use crate::Handler;
 use crate::pipeline::{
-    ChainCall, DagAndThenOptionNode, DagAndThenResultNode, DagCatchNode, DagMapOptionNode,
-    DagMapResultNode, DagRouteNode, DagThenNode, DedupNode, DiscardOptionNode, DispatchNode,
-    FilterNode, GuardNode, IdentityNode, InspectErrNode, InspectOptionNode, InspectResultNode,
-    IntoProducer, IntoRefScanStep, IntoRefStep, IntoStep, MapErrNode, NotNode, OkOrElseNode,
-    OkOrNode, OkResultNode, OnNoneNode, OrElseNode, RefScanNode,
-    StepCall, TapNode, TeeNode, ThenNode, UnwrapOrElseOptionNode,
-    UnwrapOrElseResultNode, UnwrapOrOptionNode, UnwrapOrResultNode,
-    AndBoolNode, OrBoolNode, XorBoolNode, ClonedNode, ClonedOptionNode, ClonedResultNode,
+    AndBoolNode, ChainCall, ClonedNode, ClonedOptionNode, ClonedResultNode, DagAndThenOptionNode,
+    DagAndThenResultNode, DagCatchNode, DagMapOptionNode, DagMapResultNode, DagRouteNode,
+    DagThenNode, DedupNode, DiscardOptionNode, DispatchNode, FilterNode, GuardNode, IdentityNode,
+    InspectErrNode, InspectOptionNode, InspectResultNode, IntoProducer, IntoRefScanStep,
+    IntoRefStep, IntoStep, MapErrNode, NotNode, OkOrElseNode, OkOrNode, OkResultNode, OnNoneNode,
+    OrBoolNode, OrElseNode, RefScanNode, StepCall, TapNode, TeeNode, ThenNode,
+    UnwrapOrElseOptionNode, UnwrapOrElseResultNode, UnwrapOrOptionNode, UnwrapOrResultNode,
+    XorBoolNode,
 };
 use crate::world::{Registry, World};
 
@@ -611,9 +611,7 @@ where
     /// If your DAG produces a value, add a final `.then()` that consumes
     /// the output.
     pub fn build(self) -> Dag<Chain> {
-        Dag {
-            chain: self.chain,
-        }
+        Dag { chain: self.chain }
     }
 }
 
@@ -849,10 +847,7 @@ macro_rules! impl_dag_combinators {
             }
 
             /// Fork off a multi-step side-effect chain.
-            pub fn tee<C>(
-                self,
-                side: DagArm<Out, (), C>,
-            ) -> $Builder<$U, Out, TeeNode<Chain, C>>
+            pub fn tee<C>(self, side: DagArm<Out, (), C>) -> $Builder<$U, Out, TeeNode<Chain, C>>
             where
                 C: for<'a> ChainCall<&'a Out, Out = ()>,
             {
@@ -1120,10 +1115,7 @@ macro_rules! impl_dag_combinators {
             }
 
             /// Exit Option — None becomes the default value.
-            pub fn unwrap_or(
-                self,
-                default: T,
-            ) -> $Builder<$U, T, UnwrapOrOptionNode<Chain, T>>
+            pub fn unwrap_or(self, default: T) -> $Builder<$U, T, UnwrapOrOptionNode<Chain, T>>
             where
                 T: Clone,
             {
@@ -1284,10 +1276,7 @@ macro_rules! impl_dag_combinators {
             }
 
             /// Exit Result — Err becomes the default value.
-            pub fn unwrap_or(
-                self,
-                default: T,
-            ) -> $Builder<$U, T, UnwrapOrResultNode<Chain, T>>
+            pub fn unwrap_or(self, default: T) -> $Builder<$U, T, UnwrapOrResultNode<Chain, T>>
             where
                 T: Clone,
             {
@@ -1466,8 +1455,7 @@ pub struct JoinNode3<Chain, C0, C1, C2, ForkOut> {
     pub(crate) _marker: PhantomData<fn() -> ForkOut>,
 }
 
-impl<In, Chain, C0, C1, C2, ForkOut> ChainCall<In>
-    for JoinNode3<Chain, C0, C1, C2, ForkOut>
+impl<In, Chain, C0, C1, C2, ForkOut> ChainCall<In> for JoinNode3<Chain, C0, C1, C2, ForkOut>
 where
     ForkOut: 'static,
     Chain: ChainCall<In, Out = ForkOut>,
@@ -1497,8 +1485,7 @@ pub struct JoinNode4<Chain, C0, C1, C2, C3, ForkOut> {
 }
 
 #[allow(clippy::many_single_char_names)]
-impl<In, Chain, C0, C1, C2, C3, ForkOut> ChainCall<In>
-    for JoinNode4<Chain, C0, C1, C2, C3, ForkOut>
+impl<In, Chain, C0, C1, C2, C3, ForkOut> ChainCall<In> for JoinNode4<Chain, C0, C1, C2, C3, ForkOut>
 where
     ForkOut: 'static,
     Chain: ChainCall<In, Out = ForkOut>,
@@ -2787,9 +2774,12 @@ mod tests {
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
-            .on_none(|w: &mut World| {
-                *w.resource_mut::<bool>() = true;
-            }, reg)
+            .on_none(
+                |w: &mut World| {
+                    *w.resource_mut::<bool>() = true;
+                },
+                reg,
+            )
             .then(sink, reg)
             .build();
 
@@ -3059,9 +3049,12 @@ mod tests {
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
-            .inspect(|w: &mut World, _val: &u64| {
-                *w.resource_mut::<bool>() = true;
-            }, reg)
+            .inspect(
+                |w: &mut World, _val: &u64| {
+                    *w.resource_mut::<bool>() = true;
+                },
+                reg,
+            )
             .then(sink, reg)
             .build();
 
@@ -3170,10 +3163,13 @@ mod tests {
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
-            .tap(|w: &mut World, val: &u64| {
-                // Side-effect: record that we observed the value.
-                *w.resource_mut::<bool>() = *val == 10;
-            }, reg)
+            .tap(
+                |w: &mut World, val: &u64| {
+                    // Side-effect: record that we observed the value.
+                    *w.resource_mut::<bool>() = *val == 10;
+                },
+                reg,
+            )
             .then(sink, reg)
             .build();
 
@@ -3206,9 +3202,12 @@ mod tests {
             .root(root, reg)
             .fork()
             .arm(|a| {
-                a.then(double, reg).tap(|w: &mut World, _v: &u64| {
-                    *w.resource_mut::<bool>() = true;
-                }, reg)
+                a.then(double, reg).tap(
+                    |w: &mut World, _v: &u64| {
+                        *w.resource_mut::<bool>() = true;
+                    },
+                    reg,
+                )
             })
             .arm(|b| b.then(double, reg))
             .merge(merge_add, reg)
@@ -3316,9 +3315,10 @@ mod tests {
         let inner_t = DagArmSeed::new().then(add_200, reg);
         let inner_f = DagArmSeed::new().then(add_300, reg);
         let outer_t = DagArmSeed::new().then(add_100, reg);
-        let outer_f = DagArmSeed::new()
-            .then(pass, reg)
-            .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
+        let outer_f =
+            DagArmSeed::new()
+                .then(pass, reg)
+                .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
@@ -3958,11 +3958,14 @@ mod tests {
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
-            .then(|val: &u32| match *val % 3 {
-                0 => *val as u64 + 100,
-                1 => *val as u64 + 200,
-                _ => *val as u64 + 300,
-            }, reg)
+            .then(
+                |val: &u32| match *val % 3 {
+                    0 => *val as u64 + 100,
+                    1 => *val as u64 + 200,
+                    _ => *val as u64 + 300,
+                },
+                reg,
+            )
             .then(sink, reg)
             .build();
 
@@ -4001,13 +4004,16 @@ mod tests {
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
-            .then(move |world: &mut World, val: &u32| {
-                if *val % 2 == 0 {
-                    arm_even(world, val)
-                } else {
-                    arm_odd(world, val)
-                }
-            }, reg)
+            .then(
+                move |world: &mut World, val: &u32| {
+                    if *val % 2 == 0 {
+                        arm_even(world, val)
+                    } else {
+                        arm_odd(world, val)
+                    }
+                },
+                reg,
+            )
             .then(sink, reg)
             .build();
 
@@ -4045,13 +4051,16 @@ mod tests {
 
         let mut dag = DagBuilder::<u32>::new()
             .root(root, reg)
-            .then(move |world: &mut World, val: &u32| {
-                if *val > 10 {
-                    arm_offset(world, val)
-                } else {
-                    arm_double(world, val)
-                }
-            }, reg)
+            .then(
+                move |world: &mut World, val: &u32| {
+                    if *val > 10 {
+                        arm_offset(world, val)
+                    } else {
+                        arm_double(world, val)
+                    }
+                },
+                reg,
+            )
             .then(sink, reg)
             .build();
 
@@ -4088,13 +4097,16 @@ mod tests {
             .fork()
             .arm(|a| {
                 a.then(pass, reg)
-                    .then(|val: &u32| {
-                        if *val > 5 {
-                            *val as u64 * 10
-                        } else {
-                            *val as u64
-                        }
-                    }, reg)
+                    .then(
+                        |val: &u32| {
+                            if *val > 5 {
+                                *val as u64 * 10
+                            } else {
+                                *val as u64
+                            }
+                        },
+                        reg,
+                    )
                     .then(sink_u64, reg)
             })
             .arm(|a| a.then(sink_i64, reg))
@@ -4126,13 +4138,16 @@ mod tests {
 
         let mut batch = DagBuilder::<u32>::new()
             .root(root, reg)
-            .then(|val: &u32| {
-                if *val % 2 == 0 {
-                    *val as u64 * 10
-                } else {
-                    *val as u64
-                }
-            }, reg)
+            .then(
+                |val: &u32| {
+                    if *val % 2 == 0 {
+                        *val as u64 * 10
+                    } else {
+                        *val as u64
+                    }
+                },
+                reg,
+            )
             .then(sink, reg)
             .build_batch(8);
 
@@ -4154,14 +4169,20 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
 
         let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)
-            .scan(0u64, |acc: &mut u64, val: &u64| {
-                *acc += val;
-                *acc
-            }, reg)
+            .scan(
+                0u64,
+                |acc: &mut u64, val: &u64| {
+                    *acc += val;
+                    *acc
+                },
+                reg,
+            )
             .then(store, reg)
             .build();
 
@@ -4211,18 +4232,23 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+        fn store(mut out: ResMut<u64>, val: &u64) {
+            *out = *val;
+        }
 
         let scan_arm = DagArmSeed::<u64>::new()
             .then(|v: &u64| *v, reg)
-            .scan(0u64, |acc: &mut u64, val: &u64| {
-                *acc += val;
-                *acc
-            }, reg)
+            .scan(
+                0u64,
+                |acc: &mut u64, val: &u64| {
+                    *acc += val;
+                    *acc
+                },
+                reg,
+            )
             .then(store, reg);
 
-        let pass_arm = DagArmSeed::<u64>::new()
-            .then(|_: &u64| {}, reg);
+        let pass_arm = DagArmSeed::<u64>::new().then(|_: &u64| {}, reg);
 
         let mut dag = DagBuilder::<u64>::new()
             .root(|x: u64| x, reg)

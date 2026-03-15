@@ -5,14 +5,14 @@
 #![allow(clippy::type_complexity)]
 #![allow(unused_variables)]
 
+use super::helpers::*;
 use crate::adapt::{Adapt, ByRef, Cloned, Owned};
 use crate::catch_unwind::CatchAssertUnwindSafe;
 use crate::template::{CallbackTemplate, HandlerTemplate};
 use crate::{
-    Broadcast, Handler, IntoCallback, IntoHandler,
-    Res, ResMut, World, callback_blueprint, fan_out, handler_blueprint,
+    Broadcast, Handler, IntoCallback, IntoHandler, Res, ResMut, World, callback_blueprint, fan_out,
+    handler_blueprint,
 };
-use super::helpers::*;
 
 // ═══════════════════════════════════════════════════════════════════
 // 23. Adapters
@@ -20,7 +20,9 @@ use super::helpers::*;
 
 // -- ByRef: owned → borrowed dispatch --
 
-fn ref_handler_add(a: Res<ResA>, x: &u64) { let _ = a.0.wrapping_add(*x); }
+fn ref_handler_add(a: Res<ResA>, x: &u64) {
+    let _ = a.0.wrapping_add(*x);
+}
 
 #[inline(never)]
 pub fn adapt_by_ref(world: &mut World, input: u64) {
@@ -32,7 +34,9 @@ pub fn adapt_by_ref(world: &mut World, input: u64) {
 
 // -- Cloned: borrowed → owned dispatch --
 
-fn owned_handler_add(mut a: ResMut<ResA>, x: u64) { a.0 = a.0.wrapping_add(x); }
+fn owned_handler_add(mut a: ResMut<ResA>, x: u64) {
+    a.0 = a.0.wrapping_add(x);
+}
 
 #[inline(never)]
 pub fn adapt_cloned(world: &mut World, input: &u64) {
@@ -48,10 +52,7 @@ pub fn adapt_cloned(world: &mut World, input: &u64) {
 pub fn adapt_decode(world: &mut World, input: u64) {
     let reg = world.registry();
     let inner = owned_handler_add.into_handler(&reg);
-    let mut h = Adapt::new(
-        |wire: u64| if wire > 0 { Some(wire) } else { None },
-        inner,
-    );
+    let mut h = Adapt::new(|wire: u64| if wire > 0 { Some(wire) } else { None }, inner);
     h.run(world, input);
 }
 
@@ -60,7 +61,13 @@ pub fn adapt_decode_skip(world: &mut World, input: u64) {
     let reg = world.registry();
     let inner = owned_handler_add.into_handler(&reg);
     let mut h = Adapt::new(
-        |wire: u64| if wire < 100 { Some(wire.wrapping_mul(2)) } else { None },
+        |wire: u64| {
+            if wire < 100 {
+                Some(wire.wrapping_mul(2))
+            } else {
+                None
+            }
+        },
         inner,
     );
     // Half the inputs will be skipped — interesting for branch prediction codegen.
@@ -123,9 +130,15 @@ pub fn broadcast_4(world: &mut World, input: u64) {
 
 // -- Direct IntoHandler dispatch --
 
-fn handler_1_param(a: Res<ResA>, x: u64) { let _ = a.0.wrapping_add(x); }
-fn handler_2_param(a: Res<ResA>, b: Res<ResB>, x: u64) { let _ = a.0.wrapping_add(b.0 as u64).wrapping_add(x); }
-fn handler_3_param(a: Res<ResA>, b: Res<ResB>, c: Res<ResC>, x: u64) { let _ = a.0.wrapping_add(b.0 as u64).wrapping_add(c.0 as u64); }
+fn handler_1_param(a: Res<ResA>, x: u64) {
+    let _ = a.0.wrapping_add(x);
+}
+fn handler_2_param(a: Res<ResA>, b: Res<ResB>, x: u64) {
+    let _ = a.0.wrapping_add(b.0 as u64).wrapping_add(x);
+}
+fn handler_3_param(a: Res<ResA>, b: Res<ResB>, c: Res<ResC>, x: u64) {
+    let _ = a.0.wrapping_add(b.0 as u64).wrapping_add(c.0 as u64);
+}
 
 #[inline(never)]
 pub fn handler_0_param_dispatch(world: &mut World, input: u64) {
@@ -212,7 +225,9 @@ pub fn template_stamp_5(world: &mut World, input: u64) {
 
 // ---- 23.3: Cloned with String (heap clone) ----
 
-fn string_handler(mut a: ResMut<ResA>, x: String) { a.0 = x.len() as u64; }
+fn string_handler(mut a: ResMut<ResA>, x: String) {
+    a.0 = x.len() as u64;
+}
 
 #[inline(never)]
 pub fn adapt_cloned_string(world: &mut World, input: &String) {
@@ -291,7 +306,9 @@ pub fn adapt_in_fanout(world: &mut World, input: u64) {
 
 // ---- 24.4: Callback dispatch (context + params) ----
 
-struct CounterCtx { count: u64 }
+struct CounterCtx {
+    count: u64,
+}
 
 fn callback_handler(ctx: &mut CounterCtx, mut a: ResMut<ResA>, x: u64) {
     ctx.count += 1;

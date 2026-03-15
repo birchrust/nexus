@@ -51,7 +51,8 @@ fn main() {
 
     // ---- Measured section: pure push, no cleanup ----
     for handle in &handles {
-        black_box(heap.link(handle));
+        heap.link(handle);
+        black_box(());
     }
 
     black_box(&heap);

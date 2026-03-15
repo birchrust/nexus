@@ -37,7 +37,7 @@ fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
+        std::arch::x86_64::__rdtscp(&raw mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

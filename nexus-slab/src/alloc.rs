@@ -749,9 +749,7 @@ impl<T, A: Alloc<Item = RcInner<T>>> RcSlot<T, A> {
         // SAFETY: Caller guarantees ptr points to a live RcInner
         let rc_inner = unsafe { (*ptr).value_ref() };
         let strong = rc_inner.strong();
-        let new_strong = strong
-            .checked_add(1)
-            .expect("RcSlot strong count overflow");
+        let new_strong = strong.checked_add(1).expect("RcSlot strong count overflow");
         rc_inner.set_strong(new_strong);
     }
 

@@ -2794,7 +2794,7 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let s: AsciiString<32> = Default::default();
+        let s: AsciiString<32> = AsciiString::default();
         assert!(s.is_empty());
     }
 
@@ -3161,7 +3161,7 @@ mod tests {
     #[test]
     fn chars_iterate_and_transform() {
         let s: AsciiString<32> = AsciiString::try_from("abc").unwrap();
-        let upper: Vec<_> = s.chars().map(|c| c.to_uppercase()).collect();
+        let upper: Vec<_> = s.chars().map(AsciiChar::to_uppercase).collect();
         assert_eq!(upper, vec![AsciiChar::A, AsciiChar::B, AsciiChar::C]);
     }
 
@@ -4800,7 +4800,7 @@ mod tests {
 
     #[test]
     fn format_then_parse_roundtrip() {
-        let original: u64 = 12345678901234;
+        let original: u64 = 12_345_678_901_234;
         let s: AsciiString<32> = AsciiString::from_u64(original).unwrap();
         let parsed = s.parse_u64().unwrap();
         assert_eq!(original, parsed);
@@ -4808,7 +4808,7 @@ mod tests {
 
     #[test]
     fn format_then_parse_roundtrip_negative() {
-        let original: i64 = -98765432109876;
+        let original: i64 = -98_765_432_109_876;
         let s: AsciiString<32> = AsciiString::from_i64(original).unwrap();
         let parsed = s.parse_i64().unwrap();
         assert_eq!(original, parsed);

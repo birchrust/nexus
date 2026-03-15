@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use std::hint::black_box;
 
 use nexus_rt::{
-    Handler, Installer, IntoHandler, Local, PipelineBuilder, Plugin, Res, ResMut, World, WorldBuilder,
+    Handler, Installer, IntoHandler, Local, PipelineBuilder, Plugin, Res, ResMut, World,
+    WorldBuilder,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────

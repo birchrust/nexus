@@ -14,7 +14,7 @@ fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
+        std::arch::x86_64::__rdtscp(&raw mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     panic!("rdtscp only supported on x86_64");
@@ -58,7 +58,7 @@ fn bench_bounded_pool() -> Stats {
     use nexus_pool::local::BoundedPool;
 
     let pool: BoundedPool<Vec<u8>> =
-        BoundedPool::new(CAPACITY, || Vec::with_capacity(1024), |v| v.clear());
+        BoundedPool::new(CAPACITY, || Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
 
@@ -86,7 +86,7 @@ fn bench_bounded_pool_held() -> Stats {
 
     // Test with multiple items held - more realistic scenario
     let pool: BoundedPool<Vec<u8>> =
-        BoundedPool::new(CAPACITY, || Vec::with_capacity(1024), |v| v.clear());
+        BoundedPool::new(CAPACITY, || Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
     let mut held = Vec::with_capacity(CAPACITY / 2);
@@ -122,7 +122,7 @@ fn bench_pool_fast_path() -> Stats {
 
     // Pre-populate so we only hit fast path (no factory calls)
     let pool: Pool<Vec<u8>> =
-        Pool::with_capacity(CAPACITY, || Vec::with_capacity(1024), |v| v.clear());
+        Pool::with_capacity(CAPACITY, || Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
 
@@ -148,7 +148,7 @@ fn bench_pool_slow_path() -> Stats {
     use nexus_pool::local::Pool;
 
     // Empty pool - every acquire hits factory
-    let pool: Pool<Vec<u8>> = Pool::new(|| Vec::with_capacity(1024), |v| v.clear());
+    let pool: Pool<Vec<u8>> = Pool::new(|| Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
 

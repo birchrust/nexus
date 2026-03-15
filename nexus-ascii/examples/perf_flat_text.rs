@@ -77,12 +77,7 @@ fn main() {
 
     bench_batched("len() (7B)", || black_box(t7).len() as u64);
     bench_batched("as_str() (7B)", || black_box(t7).as_str().len() as u64);
-    bench_batched(
-        "is_empty()",
-        || {
-            if black_box(t7).is_empty() { 0 } else { 1 }
-        },
-    );
+    bench_batched("is_empty()", || u64::from(!black_box(t7).is_empty()));
 
     // =========================================================================
     // Replacement: checked vs unchecked

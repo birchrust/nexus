@@ -818,15 +818,15 @@ fn test_byte_box_slot_size_is_8_bytes() {
 // =============================================================================
 
 trait Animal: fmt::Debug {
-    fn speak(&self) -> &str;
+    fn speak(&self) -> &'static str;
 }
 
 use std::fmt;
 
 #[derive(Debug)]
-struct Dog(String);
+struct Dog(#[allow(dead_code)] String);
 impl Animal for Dog {
-    fn speak(&self) -> &str {
+    fn speak(&self) -> &'static str {
         "woof"
     }
 }
@@ -834,7 +834,7 @@ impl Animal for Dog {
 #[derive(Debug)]
 struct Cat;
 impl Animal for Cat {
-    fn speak(&self) -> &str {
+    fn speak(&self) -> &'static str {
         "meow"
     }
 }
@@ -898,10 +898,10 @@ mod bounded_dyn_drop_test {
     static COUNT: AtomicUsize = AtomicUsize::new(0);
 
     #[derive(Debug)]
-    pub struct DropDog(pub String);
+    pub struct DropDog(#[allow(dead_code)] pub String);
 
     impl super::Animal for DropDog {
-        fn speak(&self) -> &str {
+        fn speak(&self) -> &'static str {
             "woof"
         }
     }
@@ -1084,7 +1084,7 @@ mod unbounded_dyn_drop_test {
     pub struct DropCat;
 
     impl super::Animal for DropCat {
-        fn speak(&self) -> &str {
+        fn speak(&self) -> &'static str {
             "meow"
         }
     }
@@ -1212,7 +1212,7 @@ mod slot_box_drop_test {
     pub struct DropAnimal(pub &'static str);
 
     impl super::Animal for DropAnimal {
-        fn speak(&self) -> &str {
+        fn speak(&self) -> &'static str {
             self.0
         }
     }
@@ -1270,6 +1270,7 @@ fn byte_slot_reclaim() {
     let slot = slab.try_insert(Order::new(1, 1.0)).unwrap();
 
     // Read the value out manually via Deref, then move out with ptr::read
+    #[allow(clippy::borrow_as_ptr)]
     let value = unsafe { std::ptr::read(&*slot as *const Order) };
     assert_eq!(value.id, 1);
 

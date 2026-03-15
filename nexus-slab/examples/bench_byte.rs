@@ -16,15 +16,10 @@ use std::hint::black_box;
 // Pod types
 // ============================================================================
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[repr(C)]
 pub struct Pod32 {
     pub data: [u8; 32],
-}
-impl Default for Pod32 {
-    fn default() -> Self {
-        Self { data: [0; 32] }
-    }
 }
 
 trait PodTrait {
@@ -305,6 +300,7 @@ fn tls_batch_drop_sized() {
 
     let mut samples = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
+        #[allow(clippy::needless_collect)]
         let slots: Vec<bounded_byte::BoxSlot<Pod32>> = (0..100)
             .map(|_| bounded_byte::BoxSlot::<Pod32>::try_new(val.clone()).unwrap())
             .collect();

@@ -62,7 +62,7 @@ fn rdtsc_start() -> u64 {
 fn rdtsc_end() -> u64 {
     let mut aux: u32 = 0;
     unsafe {
-        let t = core::arch::x86_64::__rdtscp(&mut aux);
+        let t = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
         t
     }
@@ -89,7 +89,7 @@ fn print_stats(name: &str, samples: &mut [u64]) {
     );
 }
 
-fn contention_test<T: Default + Clone>(name: &str, slab: BoundedSlab<T>) {
+fn contention_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
     println!("\n  -- {} --", name);
 
     let mut rng = 12345u64;
@@ -170,14 +170,14 @@ fn main() {
     println!("========================");
 
     let slab64 = BoundedSlab::<Pod64>::with_capacity(SAMPLES * 2);
-    contention_test("64B", slab64);
+    contention_test("64B", &slab64);
 
     let slab256 = BoundedSlab::<Pod256>::with_capacity(SAMPLES * 2);
-    contention_test("256B", slab256);
+    contention_test("256B", &slab256);
 
     let slab1024 = BoundedSlab::<Pod1024>::with_capacity(SAMPLES * 2);
-    contention_test("1024B", slab1024);
+    contention_test("1024B", &slab1024);
 
     let slab4096 = BoundedSlab::<Pod4096>::with_capacity(SAMPLES * 2);
-    contention_test("4096B", slab4096);
+    contention_test("4096B", &slab4096);
 }

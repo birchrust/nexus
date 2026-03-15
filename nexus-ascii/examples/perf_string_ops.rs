@@ -26,19 +26,19 @@ fn main() {
     let composite: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     bench("split_once (found)", || {
         let result = black_box(&composite).split_once(AsciiChar::MINUS);
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     let no_sep: AsciiString<32> = AsciiString::try_from("BTCUSD").unwrap();
     bench("split_once (not found)", || {
         let result = black_box(&no_sep).split_once(AsciiChar::MINUS);
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     let multi_sep: AsciiString<32> = AsciiString::try_from("A-B-C-D-E").unwrap();
     bench("split_once (multi sep)", || {
         let result = black_box(&multi_sep).split_once(AsciiChar::MINUS);
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     // =========================================================================
@@ -50,23 +50,23 @@ fn main() {
     let prefixed: AsciiString<32> = AsciiString::try_from("ORDER-12345").unwrap();
     bench("strip_prefix (found)", || {
         let result = black_box(&prefixed).strip_prefix("ORDER-");
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     bench("strip_prefix (not found)", || {
         let result = black_box(&prefixed).strip_prefix("TRADE-");
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     let suffixed: AsciiString<32> = AsciiString::try_from("BTC-PERP").unwrap();
     bench("strip_suffix (found)", || {
         let result = black_box(&suffixed).strip_suffix("-PERP");
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     bench("strip_suffix (not found)", || {
         let result = black_box(&suffixed).strip_suffix("-SPOT");
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     // =========================================================================
@@ -77,38 +77,22 @@ fn main() {
 
     let numeric: AsciiString<16> = AsciiString::try_from("12345678").unwrap();
     bench("is_numeric (true, 8B)", || {
-        if black_box(&numeric).is_numeric() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&numeric).is_numeric())
     });
 
     let not_numeric: AsciiString<16> = AsciiString::try_from("1234a678").unwrap();
     bench("is_numeric (false, 8B)", || {
-        if black_box(&not_numeric).is_numeric() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&not_numeric).is_numeric())
     });
 
     let alphanum: AsciiString<16> = AsciiString::try_from("ABC12345").unwrap();
     bench("is_alphanumeric (true, 8B)", || {
-        if black_box(&alphanum).is_alphanumeric() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&alphanum).is_alphanumeric())
     });
 
     let not_alphanum: AsciiString<16> = AsciiString::try_from("ABC-1234").unwrap();
     bench("is_alphanumeric (false, 8B)", || {
-        if black_box(&not_alphanum).is_alphanumeric() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&not_alphanum).is_alphanumeric())
     });
 
     // =========================================================================
@@ -185,7 +169,7 @@ fn main() {
     let text: AsciiText<32> = AsciiText::try_from("BTC-USD").unwrap();
     bench("AsciiText::split_once", || {
         let result = black_box(&text).split_once(AsciiChar::MINUS);
-        if result.is_some() { 1 } else { 0 }
+        u64::from(result.is_some())
     });
 
     let text_num: AsciiText<16> = AsciiText::try_from("12345678").unwrap();
@@ -194,7 +178,7 @@ fn main() {
     });
 
     bench("AsciiText::from_u64", || {
-        let s: AsciiText<32> = AsciiText::from_u64(black_box(12345678901234)).unwrap();
+        let s: AsciiText<32> = AsciiText::from_u64(black_box(12_345_678_901_234)).unwrap();
         s.len() as u64
     });
 

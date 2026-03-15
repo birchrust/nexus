@@ -1793,7 +1793,7 @@ mod tests {
     #[test]
     fn split() {
         let s: FlatAsciiString<32> = FlatAsciiString::try_from("a,b,c").unwrap();
-        let parts: Vec<&str> = s.split(b',').map(|p| p.as_str()).collect();
+        let parts: Vec<&str> = s.split(b',').map(AsciiStr::as_str).collect();
         assert_eq!(parts, vec!["a", "b", "c"]);
     }
 
@@ -1863,7 +1863,7 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let s: FlatAsciiString<32> = Default::default();
+        let s: FlatAsciiString<32> = FlatAsciiString::default();
         assert!(s.is_empty());
     }
 
@@ -1885,7 +1885,7 @@ mod tests {
     #[test]
     fn deref_to_ascii_str() {
         let s: FlatAsciiString<32> = FlatAsciiString::try_from("hello").unwrap();
-        let ascii_str: &AsciiStr = &*s;
+        let ascii_str: &AsciiStr = &s;
         assert_eq!(ascii_str.as_str(), "hello");
     }
 

@@ -17,6 +17,11 @@ use bench_utils::{bench, print_header, print_intro};
 use nexus_ascii::{AsciiStr, AsciiString};
 use std::hint::black_box;
 
+#[inline(never)]
+fn process_ascii_str(s: &AsciiStr) -> u64 {
+    s.len() as u64
+}
+
 fn main() {
     print_intro("ASCIISTR BENCHMARK");
 
@@ -119,35 +124,19 @@ fn main() {
     let ascii_string: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
 
     bench("AsciiStr == AsciiStr", || {
-        if black_box(ascii_str) == black_box(ascii_str) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(ascii_str) == black_box(ascii_str))
     });
 
     bench("AsciiString == AsciiStr", || {
-        if black_box(&ascii_string) == black_box(ascii_str) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&ascii_string) == black_box(ascii_str))
     });
 
     bench("AsciiStr == str", || {
-        if black_box(ascii_str) == black_box("BTC-USD") {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(ascii_str) == black_box("BTC-USD"))
     });
 
     bench("AsciiStr == &[u8]", || {
-        if *black_box(ascii_str) == black_box(b"BTC-USD")[..] {
-            1
-        } else {
-            0
-        }
+        u64::from(*black_box(ascii_str) == black_box(b"BTC-USD")[..])
     });
 
     // =========================================================================
@@ -155,11 +144,6 @@ fn main() {
     // =========================================================================
     println!();
     print_header("FUNCTION ACCEPTING &AsciiStr");
-
-    #[inline(never)]
-    fn process_ascii_str(s: &AsciiStr) -> u64 {
-        s.len() as u64
-    }
 
     bench("call with &AsciiStr directly", || {
         process_ascii_str(black_box(ascii_str))
@@ -185,19 +169,11 @@ fn main() {
     });
 
     bench("&str == &str (baseline)", || {
-        if black_box(str_ref) == black_box("BTC-USD") {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(str_ref) == black_box("BTC-USD"))
     });
 
     bench("&[u8] == &[u8] (baseline)", || {
-        if black_box(byte_slice) == black_box(b"BTC-USD") {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(byte_slice) == black_box(b"BTC-USD"))
     });
 
     println!();

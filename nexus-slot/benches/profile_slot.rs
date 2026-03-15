@@ -17,7 +17,6 @@ use hdrhistogram::Histogram;
 use seqlock::SeqLock;
 use std::sync::Arc;
 
-
 const WARMUP: usize = 100_000;
 const SAMPLES: usize = 1_000_000;
 const THROUGHPUT_WRITES: u64 = 10_000_000;
@@ -48,7 +47,7 @@ impl Default for Quote {
 fn rdtscp() -> u64 {
     unsafe {
         let mut aux: u32 = 0;
-        core::arch::x86_64::__rdtscp(&mut aux)
+        core::arch::x86_64::__rdtscp(&raw mut aux)
     }
 }
 

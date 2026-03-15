@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_with_various_seeds() {
-        let seeds: [u64; 6] = [0, 1, 42, 12345, u64::MAX, 0xDEADBEEF];
+        let seeds: [u64; 6] = [0, 1, 42, 12345, u64::MAX, 0xDEAD_BEEF];
 
         for seed in seeds {
             for len in [0, 1, 3, 4, 8, 9, 16, 17, 32, 64, 128] {
@@ -955,7 +955,9 @@ mod tests {
     /// Simple LCG for reproducible pseudo-random testing
     fn lcg_next(state: &mut u64) -> u64 {
         // LCG parameters from Numerical Recipes
-        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         *state
     }
 
@@ -1009,7 +1011,7 @@ mod tests {
         }
 
         // Also test with LCG-generated random 3-byte sequences
-        let mut rng_state = 0xDEADBEEF_u64;
+        let mut rng_state = 0xDEAD_BEEF_u64;
         for _ in 0..10000 {
             let r = lcg_next(&mut rng_state);
             let data = [
@@ -1025,7 +1027,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_random_4_to_8_bytes() {
-        let mut rng_state = 0x12345678_u64;
+        let mut rng_state = 0x1234_5678_u64;
 
         for len in 4..=8 {
             for _ in 0..10000 {
@@ -1047,7 +1049,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_random_9_to_16_bytes() {
-        let mut rng_state = 0xCAFEBABE_u64;
+        let mut rng_state = 0xCAFE_BABE_u64;
 
         for len in 9..=16 {
             for _ in 0..5000 {
@@ -1069,7 +1071,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_random_17_to_32_bytes() {
-        let mut rng_state = 0xFEEDFACE_u64;
+        let mut rng_state = 0xFEED_FACE_u64;
 
         for len in 17..=32 {
             for _ in 0..2000 {
@@ -1087,7 +1089,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_random_33_to_64_bytes() {
-        let mut rng_state = 0xBAADF00D_u64;
+        let mut rng_state = 0xBAAD_F00D_u64;
 
         for len in 33..=64 {
             for _ in 0..1000 {
@@ -1105,7 +1107,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_random_65_to_128_bytes() {
-        let mut rng_state = 0xC0FFEE_u64;
+        let mut rng_state = 0x00C0_FFEE_u64;
 
         for len in 65..=128 {
             for _ in 0..500 {
@@ -1123,7 +1125,7 @@ mod tests {
 
     #[test]
     fn const_matches_runtime_random_with_seeds() {
-        let mut rng_state = 0xABCDEF01_u64;
+        let mut rng_state = 0xABCD_EF01_u64;
         let seeds: [u64; 8] = [0, 1, 255, 256, 65535, 65536, u64::MAX - 1, u64::MAX];
 
         for seed in seeds {

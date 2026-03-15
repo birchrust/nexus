@@ -42,8 +42,11 @@ fn unread_flag_is_packed() {
 
     // Verify raw value has the flag bit set, WITHOUT calling is_inverse()
     let raw = id.raw();
-    let expected = 42u64 | (1u64 << 16) | (1u64 << 20) | (7u64 << 24);
-    assert_eq!(raw, expected, "flag bit missing from packed value — possible LLVM field elision");
+    let expected = 0x2A_u64 | (1u64 << 16) | (1u64 << 20) | (7u64 << 24);
+    assert_eq!(
+        raw, expected,
+        "flag bit missing from packed value — possible LLVM field elision"
+    );
 }
 
 #[test]
@@ -60,7 +63,7 @@ fn unread_field_is_packed() {
     let _ = id.symbol();
 
     let raw = id.raw();
-    let expected = 1000u64 | (2u64 << 16) | (99u64 << 24);
+    let expected = 0x03E8_u64 | (2u64 << 16) | (99u64 << 24);
     assert_eq!(raw, expected, "unread fields missing from packed value");
 }
 

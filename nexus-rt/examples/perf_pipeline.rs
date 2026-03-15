@@ -43,8 +43,8 @@
 use std::hint::black_box;
 
 use nexus_rt::{
-    Adapt, Broadcast, ByRef, Cloned, DagBuilder, Handler, IntoHandler, PipelineBuilder, Res, ResMut,
-    WorldBuilder, fan_out,
+    Adapt, Broadcast, ByRef, Cloned, DagBuilder, Handler, IntoHandler, PipelineBuilder, Res,
+    ResMut, WorldBuilder, fan_out,
 };
 
 // =============================================================================
@@ -237,11 +237,7 @@ pub fn probe_dyn_handler(sys: &mut dyn Handler<u64>, world: &mut nexus_rt::World
 /// Should compile to: chain call → move (Copy type elides clone).
 #[inline(never)]
 pub fn probe_cloned_pipeline<'a>(
-    p: &mut nexus_rt::PipelineChain<
-        &'a u64,
-        u64,
-        impl nexus_rt::ChainCall<&'a u64, Out = u64>,
-    >,
+    p: &mut nexus_rt::PipelineChain<&'a u64, u64, impl nexus_rt::ChainCall<&'a u64, Out = u64>>,
     world: &mut nexus_rt::World,
     input: &'a u64,
 ) -> u64 {
@@ -339,11 +335,7 @@ pub fn probe_guard_4map_res(
 /// DAG: root → guard → 4 maps → unwrap_or → sink → build.
 /// Verify same short-circuit in DAG chain (steps take &T, not T).
 #[inline(never)]
-pub fn probe_guard_dag(
-    dag: &mut impl Handler<u64>,
-    world: &mut nexus_rt::World,
-    input: u64,
-) {
+pub fn probe_guard_dag(dag: &mut impl Handler<u64>, world: &mut nexus_rt::World, input: u64) {
     dag.run(world, input);
 }
 
@@ -351,10 +343,7 @@ pub fn probe_guard_dag(
 /// Verify loop body still gets the short-circuit optimization.
 #[inline(never)]
 pub fn probe_guard_batch(
-    batch: &mut nexus_rt::BatchPipeline<
-        u64,
-        impl nexus_rt::ChainCall<u64, Out = ()>,
-    >,
+    batch: &mut nexus_rt::BatchPipeline<u64, impl nexus_rt::ChainCall<u64, Out = ()>>,
     world: &mut nexus_rt::World,
 ) {
     batch.run(world);
@@ -549,7 +538,9 @@ fn main() {
 
     // Pipeline .cloned(): &u64 → u64
     let input_val = 42u64;
-    let mut cloned_pipe = PipelineBuilder::<&u64>::new().then(ref_identity, r).cloned();
+    let mut cloned_pipe = PipelineBuilder::<&u64>::new()
+        .then(ref_identity, r)
+        .cloned();
 
     // Pipeline .dispatch(): pipeline → handler
     let dispatch_inner = PipelineBuilder::<u64>::new().then(sink, r).build();

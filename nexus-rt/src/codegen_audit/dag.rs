@@ -9,9 +9,9 @@
 #![allow(clippy::type_complexity)]
 #![allow(unused_variables)]
 
+use super::helpers::*;
 use crate::dag::{DagArmSeed, DagBuilder};
 use crate::{Handler, IntoHandler, ResMut, World, fan_out, resolve_arm};
-use super::helpers::*;
 
 // ═══════════════════════════════════════════════════════════════════
 // 13. DAG linear chains
@@ -544,7 +544,16 @@ pub fn dag_switch_basic(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
-        .then(|x: &u64| if *x > 100 { x.wrapping_mul(2) } else { x.wrapping_add(1) }, &reg)
+        .then(
+            |x: &u64| {
+                if *x > 100 {
+                    x.wrapping_mul(2)
+                } else {
+                    x.wrapping_add(1)
+                }
+            },
+            &reg,
+        )
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -555,11 +564,14 @@ pub fn dag_switch_3way(world: &mut World, input: u64) {
     let reg = world.registry();
     let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
-        .then(|x: &u64| match x % 3 {
-            0 => x.wrapping_mul(2),
-            1 => x.wrapping_add(10),
-            _ => x.wrapping_sub(5),
-        }, &reg)
+        .then(
+            |x: &u64| match x % 3 {
+                0 => x.wrapping_mul(2),
+                1 => x.wrapping_add(10),
+                _ => x.wrapping_sub(5),
+            },
+            &reg,
+        )
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -573,13 +585,16 @@ pub fn dag_switch_resolve_arm(world: &mut World, input: u64) {
 
     let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
-        .then(move |world: &mut World, x: &u64| {
-            if *x > 100 {
-                arm_big(world, x)
-            } else {
-                arm_small(world, x)
-            }
-        }, &reg)
+        .then(
+            move |world: &mut World, x: &u64| {
+                if *x > 100 {
+                    arm_big(world, x)
+                } else {
+                    arm_small(world, x)
+                }
+            },
+            &reg,
+        )
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -651,8 +666,7 @@ pub fn dag_tap(world: &mut World, input: u64) {
 pub fn dag_tee(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    let side = DagArmSeed::<u64>::new()
-        .then(ref_consume, &reg);
+    let side = DagArmSeed::<u64>::new().then(ref_consume, &reg);
 
     let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
@@ -826,13 +840,10 @@ pub fn dag_full_kitchen_sink(world: &mut World, input: u64) {
 
     fn log_error(_err: &u32) {}
 
-    let tee_side = DagArmSeed::<u64>::new()
-        .then(ref_consume, &reg);
+    let tee_side = DagArmSeed::<u64>::new().then(ref_consume, &reg);
 
-    let route_true = DagArmSeed::<u64>::new()
-        .then(ref_double, &reg);
-    let route_false = DagArmSeed::<u64>::new()
-        .then(ref_triple, &reg);
+    let route_true = DagArmSeed::<u64>::new().then(ref_double, &reg);
+    let route_false = DagArmSeed::<u64>::new().then(ref_triple, &reg);
 
     let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
@@ -1051,15 +1062,18 @@ pub fn dag_route_nested(world: &mut World, input: u64) {
     // 3-way branch via nested switch (same as pipe_route_nested_2 strategy)
     let mut d = DagBuilder::<u64>::new()
         .root(add_one, &reg)
-        .then(move |world: &mut World, x: &u64| {
-            if *x > 100 {
-                big(world, x)
-            } else if *x > 50 {
-                mid(world, x)
-            } else {
-                small(world, x)
-            }
-        }, &reg)
+        .then(
+            move |world: &mut World, x: &u64| {
+                if *x > 100 {
+                    big(world, x)
+                } else if *x > 50 {
+                    mid(world, x)
+                } else {
+                    small(world, x)
+                }
+            },
+            &reg,
+        )
         .then(ref_consume, &reg)
         .build();
     d.run(world, input);
@@ -1085,8 +1099,12 @@ pub fn dag_splat5(world: &mut World, input: u64) {
 pub fn dag_dispatch_fanout(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    fn sink_a(mut a: ResMut<ResA>, x: &u64) { a.0 = a.0.wrapping_add(*x); }
-    fn sink_b(mut a: ResMut<ResB>, x: &u64) { a.0 = a.0.wrapping_add(*x as u32); }
+    fn sink_a(mut a: ResMut<ResA>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x);
+    }
+    fn sink_b(mut a: ResMut<ResB>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u32);
+    }
 
     let h1 = sink_a.into_handler(&reg);
     let h2 = sink_b.into_handler(&reg);
@@ -1103,12 +1121,22 @@ pub fn dag_dispatch_fanout(world: &mut World, input: u64) {
 // DAG .cloned() requires the chain output to be a reference type.
 // Root steps must return &T for cloned() to apply.
 
-fn leak_u64(x: u64) -> &'static u64 { Box::leak(Box::new(x.wrapping_add(1))) }
+fn leak_u64(x: u64) -> &'static u64 {
+    Box::leak(Box::new(x.wrapping_add(1)))
+}
 fn maybe_leak(x: u64) -> Option<&'static u64> {
-    if x > 0 { Some(Box::leak(Box::new(x))) } else { None }
+    if x > 0 {
+        Some(Box::leak(Box::new(x)))
+    } else {
+        None
+    }
 }
 fn try_leak(x: u64) -> Result<&'static u64, u32> {
-    if x < 10_000 { Ok(Box::leak(Box::new(x))) } else { Err(x as u32) }
+    if x < 10_000 {
+        Ok(Box::leak(Box::new(x)))
+    } else {
+        Err(x as u32)
+    }
 }
 
 #[inline(never)]

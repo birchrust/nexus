@@ -272,6 +272,9 @@ fn freelist_no_duplicates() {
         }
     }
 
+    // Verify we saw some distinct pointers
+    assert!(!seen_ptrs.is_empty());
+
     // Clean up remaining slots
     for slot in slots {
         unsafe { slab.free(slot) };
@@ -334,7 +337,7 @@ fn reset_counter() {
 }
 
 fn get_counter() -> usize {
-    DROP_COUNTER.with(|c| c.get())
+    DROP_COUNTER.with(Cell::get)
 }
 
 #[test]

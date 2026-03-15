@@ -700,8 +700,8 @@ impl<E, F: FnMut(&mut World, E) + Send + 'static> IntoHandler<E, Opaque> for F {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::Sequence;
     use crate::WorldBuilder;
+    use crate::world::Sequence;
 
     // -- Param tests ----------------------------------------------------
 
@@ -1107,8 +1107,7 @@ mod tests {
             *w.resource_mut::<u64>() += event;
         };
 
-        let mut h: Box<dyn Handler<u64>> =
-            Box::new(opaque_fn.into_handler(world.registry_mut()));
+        let mut h: Box<dyn Handler<u64>> = Box::new(opaque_fn.into_handler(world.registry_mut()));
         h.run(&mut world, 7u64);
 
         assert_eq!(*world.resource::<u64>(), 7);

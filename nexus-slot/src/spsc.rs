@@ -60,7 +60,12 @@ unsafe impl<T: Send> Send for Reader<T> {}
 /// Returns a `(Writer, Reader)` pair. Neither is `Clone` — for multiple
 /// readers, use [`spmc::shared_slot`](crate::spmc::shared_slot).
 pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
-    const { assert!(!std::mem::needs_drop::<T>(), "Pod types must not require drop") };
+    const {
+        assert!(
+            !std::mem::needs_drop::<T>(),
+            "Pod types must not require drop"
+        );
+    };
 
     let inner = Arc::new(Inner {
         seq: AtomicUsize::new(0),

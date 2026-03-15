@@ -950,7 +950,7 @@ mod tests {
     #[test]
     fn deref_to_flat_ascii_string() {
         let t: FlatAsciiText<32> = FlatAsciiText::try_from("hello").unwrap();
-        let raw: &FlatAsciiString<32> = &*t;
+        let raw: &FlatAsciiString<32> = &t;
         assert_eq!(raw.as_str(), "hello");
     }
 
@@ -985,7 +985,7 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let t: FlatAsciiText<32> = Default::default();
+        let t: FlatAsciiText<32> = FlatAsciiText::default();
         assert!(t.is_empty());
     }
 

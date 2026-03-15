@@ -8,6 +8,8 @@
 //!   taskset -c 0 ./target/release/examples/bench_isolated box
 //!   taskset -c 0 ./target/release/examples/bench_isolated slot
 
+#![allow(clippy::large_stack_frames)]
+
 use std::hint::black_box;
 
 // ============================================================================

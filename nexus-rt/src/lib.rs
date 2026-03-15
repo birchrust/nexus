@@ -129,7 +129,7 @@ pub use handler::{
 };
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
-    PipelineChain, PipelineOutput, PipelineBuilder, resolve_producer, resolve_ref_scan_step,
+    PipelineBuilder, PipelineChain, PipelineOutput, resolve_producer, resolve_ref_scan_step,
     resolve_ref_step, resolve_scan_step, resolve_step,
 };
 pub use plugin::Plugin;

@@ -4,6 +4,8 @@
 //!   cargo build --release --example perf_macro_vs_box
 //!   taskset -c 0 ./target/release/examples/perf_macro_vs_box
 
+#![allow(clippy::large_stack_frames)]
+
 use std::hint::black_box;
 
 // ============================================================================
@@ -303,7 +305,9 @@ macro_rules! bench_batch {
                 let mut temp: Vec<$alloc_mod::BoxSlot> = Vec::with_capacity(100);
                 let start = rdtsc_start();
                 unroll_100!({
-                    temp.push(black_box($alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap()));
+                    temp.push(black_box(
+                        $alloc_mod::BoxSlot::try_new(<$pod>::default()).unwrap(),
+                    ));
                 });
                 let end = rdtsc_end();
                 macro_samples.push((end - start) / 100);

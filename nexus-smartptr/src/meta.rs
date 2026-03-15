@@ -105,7 +105,7 @@ mod tests {
         let trait_ptr: *const dyn Display = &val as &dyn Display;
 
         let meta = extract_metadata(trait_ptr);
-        let data = &val as *const u64 as *const ();
+        let data = &raw const val as *const ();
 
         // SAFETY: data points to val, meta extracted from same concrete type.
         let reconstructed: *const dyn Display = unsafe { make_ptr(data, meta) };
@@ -123,7 +123,7 @@ mod tests {
         let trait_ptr: *mut dyn Debug = &mut val as &mut dyn Debug;
 
         let meta = extract_metadata(trait_ptr as *const dyn Debug);
-        let data = &mut val as *mut Vec<u8> as *mut ();
+        let data = &raw mut val as *mut ();
 
         // SAFETY: data points to val, meta from same concrete type.
         let reconstructed: *mut dyn Debug = unsafe { make_ptr_mut(data, meta) };
@@ -134,8 +134,8 @@ mod tests {
     #[test]
     fn thin_pointer_roundtrip() {
         let val: u64 = 99;
-        let meta = extract_metadata(&val as *const u64);
-        let data = &val as *const u64 as *const ();
+        let meta = extract_metadata(&raw const val);
+        let data = &raw const val as *const ();
 
         // SAFETY: data points to val. For Sized T, meta is ignored.
         let reconstructed: *const u64 = unsafe { make_ptr(data, meta) };
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn thin_pointer_null_metadata() {
         let val: u32 = 7;
-        let meta = extract_metadata(&val as *const u32);
+        let meta = extract_metadata(&raw const val);
         assert!(meta.0.is_null());
     }
 
@@ -154,8 +154,9 @@ mod tests {
         let val: u32 = 7;
         let ptr: *const dyn Display = &val as &dyn Display;
         let meta = extract_metadata(ptr);
-        let _copy = meta;
-        let _another = meta;
+        let copy = meta;
+        let another = meta;
+        assert_eq!(copy.0, another.0);
     }
 
     #[test]
@@ -165,8 +166,8 @@ mod tests {
         let meta = extract_metadata(&a as &dyn Display as *const dyn Display);
 
         // SAFETY: both a and b are u64, meta extracted from u64's Display vtable.
-        let ptr_a: *const dyn Display = unsafe { make_ptr(&a as *const u64 as *const (), meta) };
-        let ptr_b: *const dyn Display = unsafe { make_ptr(&b as *const u64 as *const (), meta) };
+        let ptr_a: *const dyn Display = unsafe { make_ptr(&raw const a as *const (), meta) };
+        let ptr_b: *const dyn Display = unsafe { make_ptr(&raw const b as *const (), meta) };
 
         assert_eq!(format!("{}", unsafe { &*ptr_a }), "100");
         assert_eq!(format!("{}", unsafe { &*ptr_b }), "200");

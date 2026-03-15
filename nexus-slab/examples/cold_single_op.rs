@@ -66,7 +66,7 @@ fn rdtsc_start() -> u64 {
 fn rdtsc_end() -> u64 {
     let mut aux: u32 = 0;
     unsafe {
-        let t = core::arch::x86_64::__rdtscp(&mut aux);
+        let t = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
         t
     }
@@ -105,6 +105,7 @@ fn main() {
 
         // Interleaved to avoid ordering bias
         for i in 0..SAMPLES {
+            #[allow(clippy::branches_sharing_code)]
             if i % 2 == 0 {
                 // Box first
                 evict_cache();
@@ -157,6 +158,7 @@ fn main() {
         let mut slab_samples = Vec::with_capacity(SAMPLES);
 
         for i in 0..SAMPLES {
+            #[allow(clippy::branches_sharing_code)]
             if i % 2 == 0 {
                 evict_cache();
                 let start = rdtsc_start();

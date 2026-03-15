@@ -4,6 +4,8 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_vs_box`
 
+#![allow(clippy::items_after_statements)]
+
 use nexus_slab::RawSlot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
@@ -55,6 +57,7 @@ const SEPARATOR: &str = "-------------------------------------------------------
 
 /// Simulates a realistic struct (e.g., an Order)
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct TestValue {
     id: u64,
     price: u64,
@@ -167,6 +170,7 @@ fn bench_deallocation() {
         let mut samples = Vec::with_capacity(SAMPLES);
 
         for i in 0..SAMPLES {
+            #[allow(clippy::needless_collect)]
             let boxes: Vec<_> = (0..100)
                 .map(|j| Box::new(TestValue::new((i * 100 + j) as u64)))
                 .collect();
@@ -198,7 +202,8 @@ fn bench_deallocation() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                black_box(unsafe { alloc.free(slot) });
+                unsafe { alloc.free(slot) };
+                black_box(());
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);

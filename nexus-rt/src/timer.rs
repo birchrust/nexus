@@ -384,7 +384,9 @@ where
 pub struct Periodic<
     H,
     C: TimerConfig = BoxedTimers,
-    Store: SlabStore<Item = WheelEntry<C::Storage>> = nexus_timer::store::UnboundedSlab<WheelEntry<Box<dyn Handler<Instant>>>>,
+    Store: SlabStore<Item = WheelEntry<C::Storage>> = nexus_timer::store::UnboundedSlab<
+        WheelEntry<Box<dyn Handler<Instant>>>,
+    >,
 > {
     inner: Option<H>,
     interval: Duration,
@@ -488,7 +490,8 @@ mod tests {
     #[test]
     fn install_registers_wheel() {
         let mut builder = WorldBuilder::new();
-        let _handle: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let _handle: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let world = builder.build();
         assert!(world.contains::<TimerWheel>());
     }
@@ -496,7 +499,8 @@ mod tests {
     #[test]
     fn poll_empty_returns_zero() {
         let mut builder = WorldBuilder::new();
-        let mut handle: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut handle: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
         assert_eq!(handle.poll(&mut world, Instant::now()), 0);
     }
@@ -505,7 +509,8 @@ mod tests {
     fn one_shot_fires() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_timeout(mut flag: ResMut<bool>, _now: Instant) {
@@ -528,7 +533,8 @@ mod tests {
     fn expired_timer_fires_accumulated() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn inc(mut counter: ResMut<u64>, _now: Instant) {
@@ -554,7 +560,8 @@ mod tests {
     fn future_timer_does_not_fire() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_timeout(mut flag: ResMut<bool>, _now: Instant) {
@@ -576,7 +583,8 @@ mod tests {
     #[test]
     fn next_deadline_reports_earliest() {
         let mut builder = WorldBuilder::new();
-        let timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         let now = Instant::now();
@@ -603,7 +611,8 @@ mod tests {
     #[test]
     fn len_tracks_active_timers() {
         let mut builder = WorldBuilder::new();
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         assert_eq!(timer.len(&world), 0);
@@ -628,7 +637,8 @@ mod tests {
     fn self_rescheduling_callback() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn periodic(
@@ -673,7 +683,8 @@ mod tests {
     fn cancellable_timer() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
@@ -701,7 +712,8 @@ mod tests {
     fn poll_advances_sequence() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn inc(mut counter: ResMut<u64>, _now: Instant) {
@@ -728,7 +740,8 @@ mod tests {
     fn reschedule_timer() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_fire(mut counter: ResMut<u64>, _now: Instant) {
@@ -764,7 +777,8 @@ mod tests {
     fn periodic_fires_repeatedly() {
         let mut builder = WorldBuilder::new();
         builder.register::<u64>(0);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn tick(mut counter: ResMut<u64>, _now: Instant) {
@@ -799,7 +813,8 @@ mod tests {
     fn periodic_cancel_drops_inner() {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
-        let mut timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let mut timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let mut world = builder.build();
 
         fn on_fire(mut flag: ResMut<bool>, _now: Instant) {
@@ -826,7 +841,8 @@ mod tests {
     #[test]
     fn periodic_into_inner_recovers_handler() {
         let mut builder = WorldBuilder::new();
-        let _timer: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+        let _timer: TimerPoller =
+            builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
         let world = builder.build();
 
         fn noop(_now: Instant) {}
@@ -842,8 +858,7 @@ mod tests {
     fn bounded_install_registers_wheel() {
         let mut builder = WorldBuilder::new();
         let wheel = BoundedTimerWheel::bounded(64, Instant::now());
-        let _handle: BoundedTimerPoller =
-            builder.install_driver(TimerInstaller::new(wheel));
+        let _handle: BoundedTimerPoller = builder.install_driver(TimerInstaller::new(wheel));
         let world = builder.build();
         assert!(world.contains::<BoundedTimerWheel>());
     }
@@ -853,8 +868,7 @@ mod tests {
         let mut builder = WorldBuilder::new();
         builder.register::<bool>(false);
         let wheel = BoundedTimerWheel::bounded(64, Instant::now());
-        let mut timer: BoundedTimerPoller =
-            builder.install_driver(TimerInstaller::new(wheel));
+        let mut timer: BoundedTimerPoller = builder.install_driver(TimerInstaller::new(wheel));
         let mut world = builder.build();
 
         fn on_timeout(mut flag: ResMut<bool>, _now: Instant) {
@@ -878,8 +892,7 @@ mod tests {
     fn bounded_cancel_and_query() {
         let mut builder = WorldBuilder::new();
         let wheel = BoundedTimerWheel::bounded(64, Instant::now());
-        let mut timer: BoundedTimerPoller =
-            builder.install_driver(TimerInstaller::new(wheel));
+        let mut timer: BoundedTimerPoller = builder.install_driver(TimerInstaller::new(wheel));
         let mut world = builder.build();
 
         fn noop(_now: Instant) {}
@@ -907,8 +920,7 @@ mod tests {
     fn bounded_full_returns_error() {
         let mut builder = WorldBuilder::new();
         let wheel = BoundedTimerWheel::bounded(1, Instant::now());
-        let _timer: BoundedTimerPoller =
-            builder.install_driver(TimerInstaller::new(wheel));
+        let _timer: BoundedTimerPoller = builder.install_driver(TimerInstaller::new(wheel));
         let mut world = builder.build();
 
         fn noop(_now: Instant) {}
@@ -1014,7 +1026,10 @@ mod tests {
     fn cfg_unbounded_clk_shift() {
         let now = Instant::now();
         assert_unbounded_fires(TimerInstaller::new(
-            WheelBuilder::default().clk_shift(2).unbounded(64).build(now),
+            WheelBuilder::default()
+                .clk_shift(2)
+                .unbounded(64)
+                .build(now),
         ));
     }
 
@@ -1087,10 +1102,7 @@ mod tests {
     fn cfg_bounded_num_levels() {
         let now = Instant::now();
         assert_bounded_fires(TimerInstaller::new(
-            WheelBuilder::default()
-                .num_levels(4)
-                .bounded(64)
-                .build(now),
+            WheelBuilder::default().num_levels(4).bounded(64).build(now),
         ));
     }
 

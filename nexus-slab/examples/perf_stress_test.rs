@@ -8,6 +8,8 @@
 //!
 //! Run with: `taskset -c 0 ./target/release/examples/perf_stress_test`
 
+#![allow(clippy::items_after_statements, clippy::large_stack_arrays)]
+
 use nexus_slab::bounded::Slab as BoundedSlab;
 use std::collections::VecDeque;
 use std::hint::black_box;
@@ -63,6 +65,7 @@ fn print_histogram(name: &str, samples: &mut [u64]) {
 // ============================================================================
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct TestValue {
     id: u64,
     data: [u64; 7], // 64 bytes total - realistic order/message size
@@ -93,7 +96,7 @@ fn test_long_running_churn() {
     println!("  Box<TestValue>:");
     {
         let mut items: Vec<Option<Box<TestValue>>> = vec![None; CAPACITY];
-        let mut occupied = 0usize;
+        let mut _occupied = 0usize;
         let mut rng = 12345u64;
         let mut next_id = 0u64;
 
@@ -101,7 +104,7 @@ fn test_long_running_churn() {
         for i in 0..CAPACITY / 2 {
             items[i] = Some(Box::new(TestValue::new(next_id)));
             next_id += 1;
-            occupied += 1;
+            _occupied += 1;
         }
 
         for phase in 0..PHASES {
@@ -119,12 +122,12 @@ fn test_long_running_churn() {
                 if items[idx].is_some() {
                     // Remove
                     black_box(items[idx].take());
-                    occupied -= 1;
+                    _occupied -= 1;
                 } else {
                     // Insert
                     items[idx] = Some(Box::new(TestValue::new(next_id)));
                     next_id += 1;
-                    occupied += 1;
+                    _occupied += 1;
                 }
 
                 if should_sample {
@@ -154,7 +157,7 @@ fn test_long_running_churn() {
         let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(CAPACITY);
 
         let mut items: Vec<Option<_>> = (0..CAPACITY).map(|_| None).collect();
-        let mut occupied = 0usize;
+        let mut _occupied = 0usize;
         let mut rng = 12345u64; // Same seed for fair comparison
         let mut next_id = 0u64;
 
@@ -162,7 +165,7 @@ fn test_long_running_churn() {
         for i in 0..CAPACITY / 2 {
             items[i] = Some(alloc.alloc(TestValue::new(next_id)));
             next_id += 1;
-            occupied += 1;
+            _occupied += 1;
         }
 
         for phase in 0..PHASES {
@@ -178,11 +181,11 @@ fn test_long_running_churn() {
                 if let Some(slot) = items[idx].take() {
                     // SAFETY: slot was allocated from this slab
                     unsafe { alloc.free(slot) };
-                    occupied -= 1;
+                    _occupied -= 1;
                 } else {
                     items[idx] = Some(alloc.alloc(TestValue::new(next_id)));
                     next_id += 1;
-                    occupied += 1;
+                    _occupied += 1;
                 }
 
                 if should_sample {
@@ -204,8 +207,6 @@ fn test_long_running_churn() {
                 samples.last().copied().unwrap_or(0),
             );
         }
-
-        let _ = occupied;
     }
 }
 
@@ -480,21 +481,25 @@ fn test_tail_latency() {
 
 /// Different sized allocations to scatter across allocator size classes
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Small {
     data: [u8; 32],
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Medium {
     data: [u8; 128],
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Large {
     data: [u8; 512],
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct XLarge {
     data: [u8; 2048],
 }
@@ -825,6 +830,7 @@ fn fragment_global_allocator() -> Vec<Box<[u8]>> {
     fragments
 }
 
+#[allow(dead_code)]
 fn print_full_histogram(name: &str, samples: &mut [u64]) {
     samples.sort_unstable();
     println!(

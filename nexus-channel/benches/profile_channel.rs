@@ -20,7 +20,7 @@ const THROUGHPUT_COUNT: u64 = 10_000_000;
 fn rdtscp() -> u64 {
     unsafe {
         let mut aux: u32 = 0;
-        core::arch::x86_64::__rdtscp(&mut aux)
+        core::arch::x86_64::__rdtscp(&raw mut aux)
     }
 }
 

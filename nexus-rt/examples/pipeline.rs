@@ -110,9 +110,12 @@ fn main() {
             r,
         )
         .filter(|tick: &MarketTick| tick.symbol == "BTC", r)
-        .inspect(|tick: &MarketTick| {
-            println!("  [inspect] {} @ {:.2}", tick.symbol, tick.price);
-        }, r)
+        .inspect(
+            |tick: &MarketTick| {
+                println!("  [inspect] {} @ {:.2}", tick.symbol, tick.price);
+            },
+            r,
+        )
         .map(store_price, r);
 
     let ticks = [

@@ -544,7 +544,7 @@ mod tests {
         received.extend(h2.join().unwrap());
 
         // All values received (order not guaranteed across consumers)
-        received.sort();
+        received.sort_unstable();
         assert_eq!(received, (0..2000).collect::<Vec<_>>());
     }
 
@@ -590,7 +590,7 @@ mod tests {
             received.extend(h.join().unwrap());
         }
 
-        received.sort();
+        received.sort_unstable();
         assert_eq!(received, (0..4000).collect::<Vec<_>>());
     }
 
@@ -834,7 +834,7 @@ mod tests {
             all_received.extend(h.join().unwrap());
         }
 
-        all_received.sort();
+        all_received.sort_unstable();
         assert_eq!(all_received, (0..TOTAL).collect::<Vec<_>>());
     }
 }

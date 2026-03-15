@@ -20,7 +20,7 @@ fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
+        std::arch::x86_64::__rdtscp(&raw mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -121,7 +121,7 @@ fn bench_roundtrip_latency(payload_size: usize) -> Histogram<u64> {
             // Wait for message
             loop {
                 if let Some(record) = cons_fwd.try_claim() {
-                    buf.copy_from_slice(&*record);
+                    buf.copy_from_slice(&record);
                     break;
                 }
                 std::hint::spin_loop();

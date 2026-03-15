@@ -14,7 +14,7 @@
 mod bench_utils;
 
 use bench_utils::{bench, print_header, print_intro};
-use nexus_ascii::AsciiString;
+use nexus_ascii::{AsciiChar, AsciiString};
 use std::hint::black_box;
 
 fn main() {
@@ -200,19 +200,11 @@ fn main() {
     });
 
     bench("all uppercase check (8B)", || {
-        if black_box(&s8).chars().all(|c| c.is_uppercase()) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&s8).chars().all(AsciiChar::is_uppercase))
     });
 
     bench("any digit check (13B)", || {
-        if black_box(&mixed).chars().any(|c| c.is_digit()) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&mixed).chars().any(AsciiChar::is_digit))
     });
 
     println!();

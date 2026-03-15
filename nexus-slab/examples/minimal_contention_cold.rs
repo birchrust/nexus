@@ -90,7 +90,7 @@ fn rdtsc_start() -> u64 {
 fn rdtsc_end() -> u64 {
     let mut aux: u32 = 0;
     unsafe {
-        let t = core::arch::x86_64::__rdtscp(&mut aux);
+        let t = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
         t
     }
@@ -123,6 +123,7 @@ fn cold_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
 
     // Interleaved measurement - alternating Box/Slab to avoid ordering bias
     for i in 0..SAMPLES {
+        #[allow(clippy::branches_sharing_code)]
         if i % 2 == 0 {
             // Box first this iteration
             evict_cache();
