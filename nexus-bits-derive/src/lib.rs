@@ -141,10 +141,13 @@ struct BitRange {
 }
 
 /// Parsed field/flag from struct
+// Field variant holds syn::Type (~256 bytes) vs Flag (~28 bytes). Boxing isn't
+// worth it — this is compile-time proc-macro code, not runtime.
+#[allow(clippy::large_enum_variant)]
 enum MemberDef {
     Field {
         name: Ident,
-        ty: Box<Type>,
+        ty: Type,
         range: BitRange,
     },
     Flag {
@@ -245,7 +248,7 @@ fn parse_member(field: &syn::Field) -> Result<MemberDef> {
             let range = attr.parse_args_with(parse_bit_range)?;
             return Ok(MemberDef::Field {
                 name,
-                ty: Box::new(ty),
+                ty,
                 range,
             });
         } else if attr.path().is_ident("flag") {
@@ -580,7 +583,7 @@ fn generate_struct_builder_impl(
                 };
 
                 if is_primitive(ty) {
-                    let type_bits: u32 = match &**ty {
+                    let type_bits: u32 = match ty {
                         Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
                         Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
                         Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
@@ -595,7 +598,7 @@ fn generate_struct_builder_impl(
                     }
 
                     // Check if this is a signed type
-                    let is_signed = matches!(&**ty,
+                    let is_signed = matches!(ty,
                         Type::Path(p) if p.path.is_ident("i8") || p.path.is_ident("i16") ||
                                          p.path.is_ident("i32") || p.path.is_ident("i64") ||
                                          p.path.is_ident("i128")
@@ -823,7 +826,7 @@ fn derive_storage_enum(
         // Validate members don't overlap with discriminant
         let disc_range = MemberDef::Field {
             name: Ident::new("__discriminant", proc_macro2::Span::call_site()),
-            ty: Box::new(syn::parse_quote!(u64)),
+            ty: syn::parse_quote!(u64),
             range: discriminant,
         };
 
@@ -1284,7 +1287,7 @@ fn generate_enum_builder_impls(
                         };
 
                         if is_primitive(ty) {
-                            let type_bits: u32 = match &**ty {
+                            let type_bits: u32 = match ty {
                                 Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
                                 Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
                                 Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
@@ -1297,7 +1300,7 @@ fn generate_enum_builder_impls(
                                 return None;
                             }
 
-                            let is_signed = matches!(&**ty,
+                            let is_signed = matches!(ty,
                                 Type::Path(p) if p.path.is_ident("i8") || p.path.is_ident("i16") ||
                                                  p.path.is_ident("i32") || p.path.is_ident("i64") ||
                                                  p.path.is_ident("i128")
