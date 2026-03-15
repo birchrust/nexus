@@ -35,6 +35,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(any(feature = "std", feature = "libm"))]
 mod adaptive_threshold;
 mod asym_ema;
 #[cfg(feature = "alloc")]
@@ -43,6 +44,7 @@ mod covariance;
 mod cusum;
 mod dead_band;
 mod debounce;
+#[cfg(any(feature = "std", feature = "libm"))]
 mod decay_accum;
 mod diff;
 mod drawdown;
@@ -71,6 +73,7 @@ mod queue_delay;
 mod robust_z;
 mod running;
 mod saturation;
+#[cfg(any(feature = "std", feature = "libm"))]
 mod shiryaev_roberts;
 mod slew;
 mod spring;
@@ -87,12 +90,14 @@ pub use asym_ema::{
 };
 #[cfg(feature = "alloc")]
 pub use bool_window::BoolWindow;
+#[cfg(any(feature = "std", feature = "libm"))]
 pub use adaptive_threshold::{
     AdaptiveThresholdF32, AdaptiveThresholdF32Builder, AdaptiveThresholdF64,
     AdaptiveThresholdF64Builder, Anomaly,
 };
 pub use covariance::{CovarianceF32, CovarianceF64};
 pub use dead_band::{DeadBandF32, DeadBandF64, DeadBandI32, DeadBandI64};
+#[cfg(any(feature = "std", feature = "libm"))]
 pub use decay_accum::DecayAccumF64;
 pub use debounce::{DebounceU32, DebounceU64};
 pub use diff::{
@@ -145,6 +150,7 @@ pub use running::{
     RunningMaxF32, RunningMaxF64, RunningMaxI32, RunningMaxI64, RunningMinF32, RunningMinF64,
     RunningMinI32, RunningMinI64,
 };
+#[cfg(any(feature = "std", feature = "libm"))]
 pub use shiryaev_roberts::{ShiryaevRobertsF64, ShiryaevRobertsF64Builder};
 pub use slew::{SlewF32, SlewF64, SlewI32, SlewI64};
 pub use spring::{SpringF32, SpringF64};

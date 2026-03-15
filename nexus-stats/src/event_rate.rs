@@ -42,6 +42,9 @@ macro_rules! impl_event_rate_float {
             }
 
             /// Records an event at the given timestamp.
+            ///
+            /// If two events share a timestamp, the interval is zero and
+            /// `rate()` returns `None` until a non-zero interval is observed.
             #[inline]
             pub fn tick(&mut self, timestamp: $ty) {
                 self.count += 1;
@@ -116,6 +119,7 @@ macro_rules! impl_event_rate_float {
             /// Halflife for interval smoothing.
             #[inline]
             #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
                 let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;
@@ -396,6 +400,15 @@ mod tests {
         er.tick(0);
         er.tick(50);
         assert!(er.interval().is_some());
+    }
+
+    #[test]
+    fn zero_interval_returns_none() {
+        let mut er = EventRateF64::builder().alpha(0.3).build();
+        er.tick(100.0);
+        er.tick(100.0); // same timestamp → interval = 0
+        // rate() should return None (division by zero guard)
+        assert!(er.rate().is_none(), "rate should be None with zero interval");
     }
 
     #[test]

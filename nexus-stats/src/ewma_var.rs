@@ -88,6 +88,7 @@ macro_rules! impl_ewma_var {
             /// Current exponentially weighted standard deviation, or `None` if not primed.
             #[inline]
             #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
             pub fn std_dev(&self) -> Option<$ty> {
                 self.variance().map(|v| {
                     #[allow(clippy::cast_possible_truncation)]
@@ -137,6 +138,7 @@ macro_rules! impl_ewma_var {
             /// Samples for weight to decay by half.
             #[inline]
             #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
                 let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;

@@ -32,6 +32,7 @@ macro_rules! impl_kalman1d {
             r: $ty, // measurement noise
             count: u64,
             min_samples: u64,
+            initialized: bool,
         }
 
         /// Builder for [`
@@ -69,14 +70,14 @@ macro_rules! impl_kalman1d {
             pub fn update(&mut self, measurement: $ty) -> Option<($ty, $ty)> {
                 self.count += 1;
 
-                #[allow(clippy::float_cmp)]
-                if self.count == 1 && self.x0 == (0.0 as $ty) && self.x1 == (0.0 as $ty) {
+                if !self.initialized {
                     // Initialize from first measurement
                     self.x0 = measurement;
                     self.x1 = 0.0 as $ty;
                     self.p00 = self.r;
                     self.p01 = 0.0 as $ty;
                     self.p11 = 1.0 as $ty;
+                    self.initialized = true;
 
                     return if self.count >= self.min_samples {
                         Option::Some((self.x0, self.x1))
@@ -160,6 +161,7 @@ macro_rules! impl_kalman1d {
                 self.p01 = 0.0 as $ty;
                 self.p11 = 1.0 as $ty;
                 self.count = 0;
+                self.initialized = false;
             }
         }
 
@@ -214,10 +216,10 @@ macro_rules! impl_kalman1d {
                 assert!(q > 0.0 as $ty, "process_noise must be positive");
                 assert!(r > 0.0 as $ty, "measurement_noise must be positive");
 
-                let (x0, x1, count) = if let (Some(pos), Some(vel)) = (self.seed_pos, self.seed_vel) {
-                    (pos, vel, self.min_samples)
+                let (x0, x1, count, initialized) = if let (Some(pos), Some(vel)) = (self.seed_pos, self.seed_vel) {
+                    (pos, vel, self.min_samples, true)
                 } else {
-                    (0.0 as $ty, 0.0 as $ty, 0)
+                    (0.0 as $ty, 0.0 as $ty, 0, false)
                 };
 
                 $name {
@@ -228,6 +230,7 @@ macro_rules! impl_kalman1d {
                     q, r,
                     count,
                     min_samples: self.min_samples,
+                    initialized,
                 }
             }
         }
@@ -349,6 +352,20 @@ mod tests {
 
         let _ = kf.update(50.0);
         assert!(kf.position().is_some());
+    }
+
+    #[test]
+    fn seed_zero_zero_works() {
+        let mut kf = Kalman1dF64::builder()
+            .process_noise(0.01)
+            .measurement_noise(1.0)
+            .seed(0.0, 0.0)
+            .build();
+
+        assert!(kf.is_primed());
+        // First update should apply predict+update, not re-initialize
+        let (pos, _vel) = kf.update(10.0).unwrap();
+        assert!(pos > 0.0, "should track toward 10, got {pos}");
     }
 
     #[test]

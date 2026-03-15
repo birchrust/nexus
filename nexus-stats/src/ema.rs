@@ -127,6 +127,7 @@ macro_rules! impl_ema_float {
             /// Computes: `alpha = 1 - exp(-ln(2) / halflife)`
             #[inline]
             #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
                 let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;

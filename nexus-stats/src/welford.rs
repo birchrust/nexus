@@ -83,6 +83,7 @@ macro_rules! impl_welford {
             /// Sample standard deviation, or `None` if < 2 samples.
             #[inline]
             #[must_use]
+            #[cfg(any(feature = "std", feature = "libm"))]
             pub fn std_dev(&self) -> Option<$ty> {
                 self.variance().map(|v| {
                     #[allow(clippy::cast_possible_truncation)]

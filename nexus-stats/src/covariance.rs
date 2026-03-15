@@ -55,9 +55,6 @@ macro_rules! impl_covariance {
                 self.m2_x += dx * dx2;
                 let dy2 = y - self.mean_y;
                 self.m2_y += dy * dy2;
-
-                // Suppress unused variable warning — dy2 used above
-                let _ = dy2;
             }
 
             /// Number of paired samples processed.
@@ -96,6 +93,7 @@ macro_rules! impl_covariance {
             ///
             /// Returns a value in [-1, 1]. Returns `None` if either variable
             /// has zero variance (undefined correlation).
+            #[cfg(any(feature = "std", feature = "libm"))]
             #[inline]
             #[must_use]
             pub fn correlation(&self) -> Option<$ty> {
