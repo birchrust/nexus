@@ -1285,3 +1285,28 @@ fn public_storage_accessible() {
     let s = inner::PublicStorage::builder().value(456).build().unwrap();
     assert_eq!(s.value(), 456);
 }
+
+// =============================================================================
+// Error value correctness (B1/B7 — must report extracted field value, not full packed int)
+// =============================================================================
+
+#[test]
+fn unknown_enum_error_reports_field_value_not_packed_int() {
+    // sparse field at bits 0-3, value field at bits 4-11
+    // Set sparse=1 (invalid for SparseEnum), value=42
+    let raw: u64 = 1 | (42 << 4);
+    let s = WithSparseEnum::from_raw(raw);
+    let err = s.sparse().unwrap_err();
+    assert_eq!(err.field, "sparse");
+    // Must report 1 (the extracted field value), not the full packed int
+    assert_eq!(err.value, 1);
+}
+
+#[test]
+fn unknown_enum_error_reports_field_value_high_bits() {
+    // Set sparse=3 (invalid), value=100
+    let raw: u64 = 3 | (100 << 4);
+    let s = WithSparseEnum::from_raw(raw);
+    let err = s.sparse().unwrap_err();
+    assert_eq!(err.value, 3);
+}
