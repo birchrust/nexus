@@ -34,14 +34,7 @@ macro_rules! impl_slew {
                     return sample;
                 }
 
-                let delta = sample - self.value;
-                if delta > self.max_rate {
-                    self.value += self.max_rate;
-                } else if delta < -self.max_rate {
-                    self.value -= self.max_rate;
-                } else {
-                    self.value = sample;
-                }
+                self.value = sample.clamp(self.value - self.max_rate, self.value + self.max_rate);
                 self.value
             }
 

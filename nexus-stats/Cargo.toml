@@ -1,6 +1,6 @@
 [package]
 name = "nexus-stats"
-version = "0.1.0"
+version = "1.0.0"
 description = "Fixed-memory, zero-allocation streaming statistics for real-time systems"
 readme = "README.md"
 edition.workspace = true
@@ -12,10 +12,19 @@ categories.workspace = true
 
 [features]
 default = ["std"]
-std = []
+std = ["alloc"]
+alloc = []
 
 [dependencies]
 libm = { version = "0.2", optional = true }
+
+[[example]]
+name = "perf_stats"
+required-features = ["alloc"]
+
+[[example]]
+name = "basic"
+required-features = ["std"]
 
 [lints]
 workspace = true

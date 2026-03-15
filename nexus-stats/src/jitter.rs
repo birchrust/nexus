@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_jitter_float {
     ($name:ident, $builder:ident, $ty:ty) => {
         /// Jitter tracker — smoothed absolute deviation between consecutive samples.
@@ -63,10 +64,10 @@ macro_rules! impl_jitter_float {
 
                 if self.count == 2 {
                     self.jitter = abs_delta;
-                    self.mean = self.alpha.mul_add(sample, self.one_minus_alpha * self.mean);
+                    self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
                 } else {
-                    self.jitter = self.alpha.mul_add(abs_delta, self.one_minus_alpha * self.jitter);
-                    self.mean = self.alpha.mul_add(sample, self.one_minus_alpha * self.mean);
+                    self.jitter = self.alpha.fma(abs_delta, self.one_minus_alpha * self.jitter);
+                    self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
                 }
 
                 if self.count >= self.min_samples {

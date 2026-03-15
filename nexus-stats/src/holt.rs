@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_holt {
     ($name:ident, $builder:ident, $ty:ty) => {
         /// Holt's Double Exponential Smoothing — level + trend tracking.
@@ -60,9 +61,9 @@ macro_rules! impl_holt {
                 } else {
                     let prev_level = self.level;
                     // Level: alpha * sample + (1 - alpha) * (prev_level + prev_trend)
-                    self.level = self.alpha.mul_add(sample, (1.0 as $ty - self.alpha) * (prev_level + self.trend));
+                    self.level = self.alpha.fma(sample, (1.0 as $ty - self.alpha) * (prev_level + self.trend));
                     // Trend: beta * (level - prev_level) + (1 - beta) * prev_trend
-                    self.trend = self.beta.mul_add(self.level - prev_level, (1.0 as $ty - self.beta) * self.trend);
+                    self.trend = self.beta.fma(self.level - prev_level, (1.0 as $ty - self.beta) * self.trend);
                 }
 
                 if self.count >= self.min_samples {
@@ -99,7 +100,7 @@ macro_rules! impl_holt {
             #[must_use]
             pub fn forecast(&self, steps: u64) -> Option<$ty> {
                 if self.count >= self.min_samples {
-                    Option::Some(self.trend.mul_add(steps as $ty, self.level))
+                    Option::Some(self.trend.fma(steps as $ty, self.level))
                 } else {
                     Option::None
                 }
@@ -226,7 +227,7 @@ mod tests {
         let trend = h.trend().unwrap();
 
         // forecast(5) = level + 5 * trend
-        let expected = 5.0f64.mul_add(trend, level);
+        let expected = 5.0f64.fma(trend, level);
         assert!((forecast_5 - expected).abs() < 1e-10);
     }
 

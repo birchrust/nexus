@@ -266,7 +266,7 @@ fn bench_liveness_f64(samples: &mut [u64]) {
 }
 
 fn bench_mosum_f64(samples: &mut [u64]) {
-    let mut mosum = MosumF64::<64>::builder(100.0).threshold(1e18).build();
+    let mut mosum = MosumF64::builder(100.0).window_size(64).threshold(1e18).build();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = mosum.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -447,6 +447,210 @@ fn bench_queue_delay_i64(samples: &mut [u64]) {
 }
 
 // ============================================================================
+// Phase 5: Anomaly Detection
+// ============================================================================
+
+fn bench_multi_gate_f64(samples: &mut [u64]) {
+    let mut mg = MultiGateF64::builder()
+        .alpha(0.1).hard_limit(0.5).suspect_z(5.0).min_samples(5).build();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = mg.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = mg.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(mg.ema_abs_return());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_windowed_median_f64(samples: &mut [u64]) {
+    let mut wm = WindowedMedianF64::new(32);
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(wm.median());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_robust_z_f64(samples: &mut [u64]) {
+    let mut rz = RobustZScoreF64::builder()
+        .alpha(0.1).reject_threshold(10.0).min_samples(5).build();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = rz.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = rz.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(rz.z_score());
+        *s = (end - start) / BATCH;
+    }
+}
+
+// ============================================================================
+// Phase 6: Signal Processing
+// ============================================================================
+
+fn bench_spring_f64(samples: &mut [u64]) {
+    let mut sp = SpringF64::new(0.5);
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = sp.update(90.0 + (next_val(&mut rng) % 20) as f64, 0.016);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = sp.update(90.0 + (next_val(&mut rng) % 20) as f64, 0.016);
+        }
+        let end = rdtsc_end();
+        black_box(sp.value());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_peak_hold_f64(samples: &mut [u64]) {
+    let mut ph = PeakHoldF64::builder().decay_rate(0.99).hold_samples(10).build();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = ph.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = ph.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(ph.peak());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_asym_ema_f64(samples: &mut [u64]) {
+    let mut ae = AsymEmaF64::builder().alpha_up(0.9).alpha_down(0.1).build();
+    let mut rng = 12345u64;
+    let _ = ae.update(100.0);
+    for _ in 0..WARMUP {
+        let _ = ae.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = ae.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(ae.value());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_kama_f64(samples: &mut [u64]) {
+    let mut kama = KamaF64::builder().window_size(10).build();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = kama.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = kama.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(kama.value());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_kalman1d_f64(samples: &mut [u64]) {
+    let mut kf = Kalman1dF64::builder()
+        .process_noise(0.01).measurement_noise(1.0).build();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = kf.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = kf.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(kf.position());
+        *s = (end - start) / BATCH;
+    }
+}
+
+// ============================================================================
+// Phase 7: Utilities
+// ============================================================================
+
+fn bench_slew_f64(samples: &mut [u64]) {
+    let mut sl = SlewF64::new(5.0);
+    let mut rng = 12345u64;
+    let _ = sl.update(100.0);
+    for _ in 0..WARMUP {
+        let _ = sl.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = sl.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(sl.value());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_bool_window(samples: &mut [u64]) {
+    let mut bw = BoolWindow::new(64);
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        bw.record(next_val(&mut rng) % 10 > 0);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            bw.record(next_val(&mut rng) % 10 > 0);
+        }
+        let end = rdtsc_end();
+        black_box(bw.failure_rate());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_hysteresis_f64(samples: &mut [u64]) {
+    let mut hy = HysteresisF64::new(40.0, 60.0);
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = hy.update((next_val(&mut rng) % 100) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = hy.update((next_val(&mut rng) % 100) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(hy.state());
+        *s = (end - start) / BATCH;
+    }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -463,7 +667,7 @@ fn main() {
     bench_cusum_i64(&mut buf);
     print_row("CusumI64::update", &mut buf);
     bench_mosum_f64(&mut buf);
-    print_row("MosumF64<64>::update", &mut buf);
+    print_row("MosumF64(64)::update", &mut buf);
     bench_shiryaev_roberts(&mut buf);
     print_row("ShiryaevRoberts::update", &mut buf);
 
@@ -503,6 +707,37 @@ fn main() {
     print_row("EventRateF64::tick", &mut buf);
     bench_queue_delay_i64(&mut buf);
     print_row("QueueDelayI64::update", &mut buf);
+
+    section("Anomaly Detection");
+    print_header();
+    bench_multi_gate_f64(&mut buf);
+    print_row("MultiGateF64::update", &mut buf);
+    bench_windowed_median_f64(&mut buf);
+    print_row("WindowedMedian(32)::update", &mut buf);
+    bench_robust_z_f64(&mut buf);
+    print_row("RobustZScoreF64::update", &mut buf);
+
+    section("Signal Processing");
+    print_header();
+    bench_spring_f64(&mut buf);
+    print_row("SpringF64::update", &mut buf);
+    bench_peak_hold_f64(&mut buf);
+    print_row("PeakHoldF64::update", &mut buf);
+    bench_asym_ema_f64(&mut buf);
+    print_row("AsymEmaF64::update", &mut buf);
+    bench_kama_f64(&mut buf);
+    print_row("KamaF64(10)::update", &mut buf);
+    bench_kalman1d_f64(&mut buf);
+    print_row("Kalman1dF64::update", &mut buf);
+
+    section("Utilities");
+    print_header();
+    bench_slew_f64(&mut buf);
+    print_row("SlewF64::update", &mut buf);
+    bench_bool_window(&mut buf);
+    print_row("BoolWindow<1>::record", &mut buf);
+    bench_hysteresis_f64(&mut buf);
+    print_row("HysteresisF64::update", &mut buf);
 
     section("Frequency");
     print_header();

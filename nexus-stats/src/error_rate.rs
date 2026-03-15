@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 /// Health state from error rate monitoring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
@@ -78,7 +79,7 @@ macro_rules! impl_error_rate {
                 if self.count == 1 {
                     self.value = sample;
                 } else {
-                    self.value = self.alpha.mul_add(sample, self.one_minus_alpha * self.value);
+                    self.value = self.alpha.fma(sample, self.one_minus_alpha * self.value);
                 }
 
                 if self.count < self.min_samples {

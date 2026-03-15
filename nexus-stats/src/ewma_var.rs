@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_ewma_var {
     ($name:ident, $builder:ident, $ty:ty) => {
         /// EWMA Variance — Exponentially Weighted Moving Average with variance tracking.
@@ -50,9 +51,9 @@ macro_rules! impl_ewma_var {
                     self.variance = 0.0 as $ty;
                 } else {
                     let diff = sample - self.mean;
-                    self.mean = self.alpha.mul_add(sample, self.one_minus_alpha * self.mean);
+                    self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
                     let diff2 = sample - self.mean;
-                    self.variance = self.alpha.mul_add(diff * diff2, self.one_minus_alpha * self.variance);
+                    self.variance = self.alpha.fma(diff * diff2, self.one_minus_alpha * self.variance);
                 }
 
                 if self.count >= self.min_samples {

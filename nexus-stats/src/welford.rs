@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_welford {
     ($name:ident, $ty:ty) => {
         /// Welford — Online mean, variance, and standard deviation.
@@ -108,9 +109,9 @@ macro_rules! impl_welford {
                 let combined_count = self.count + other.count;
                 let delta = other.mean - self.mean;
                 let weight = other.count as $ty / combined_count as $ty;
-                let new_mean = delta.mul_add(weight, self.mean);
+                let new_mean = delta.fma(weight, self.mean);
                 let cross = self.count as $ty * other.count as $ty / combined_count as $ty;
-                let new_m2 = delta.mul_add(delta * cross, self.m2 + other.m2);
+                let new_m2 = delta.fma(delta * cross, self.m2 + other.m2);
 
                 self.count = combined_count;
                 self.mean = new_mean;
@@ -222,7 +223,7 @@ mod tests {
         let base = 1e8;
 
         for i in 0..1000 {
-            w.update((i as f64).mul_add(0.001, base));
+            w.update((i as f64).fma(0.001, base));
         }
 
         let var = w.variance().unwrap();

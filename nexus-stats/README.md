@@ -46,101 +46,99 @@ if let Some(mean) = stats.mean() {
 
 ## Algorithms
 
+45 algorithms across 7 categories. See [full documentation](docs/INDEX.md)
+for deep-dives on each algorithm.
+
 ### Change Detection
 
-| Type | Algorithm | What It Detects | Cycles (p50) |
-|------|-----------|----------------|-------------|
-| `CusumF64` | CUSUM (Page, 1954) | Persistent mean shifts (up or down) | 5 |
-| `MosumF64<N>` | Moving Sum | Transient spikes within a window | 6 |
-| `ShiryaevRobertsF64` | Shiryaev-Roberts | Mean shifts with optimal detection delay | 17 |
+| Type | What It Detects | p50 |
+|------|----------------|-----|
+| `CusumF64` | Persistent mean shifts (up or down) | 5 |
+| `MosumF64` | Transient spikes within a window | 6 |
+| `ShiryaevRobertsF64` | Mean shifts with optimal detection delay | 17 |
+| `MultiGateF64` | Graded anomalies: Accept/Unusual/Suspect/Reject | 12 |
+| `RobustZScoreF64` | MAD-based outlier scoring with estimator freeze | 12 |
+| `AdaptiveThresholdF64` | Z-score anomalies with self-learning baseline | 15 |
 
-CUSUM is the workhorse — detects when the mean of a process has shifted
-and reports the direction (`Shift::Upper` or `Shift::Lower`). MOSUM
-complements it by catching transient spikes that CUSUM would ignore.
-Shiryaev-Roberts offers theoretically optimal detection at the cost of
-one `exp()` per update.
+### Smoothing & Filtering
 
-### Smoothing
+| Type | What It Computes | p50 |
+|------|-----------------|-----|
+| `EmaF64` / `EmaI64` | Exponential moving average (float / integer) | 5 |
+| `AsymEmaF64` | Different alpha for rising vs falling | 11 |
+| `KamaF64` | Kaufman adaptive MA (adapts to trend/noise) | 16 |
+| `Kalman1dF64` | 1D Kalman filter with velocity tracking | 25 |
+| `HoltF64` | Double exponential (level + trend) | 11 |
+| `SpringF64` | Critically damped spring (smooth target chasing) | 12 |
+| `SlewF64` | Hard rate-of-change clamp | 3 |
+| `WindowedMedianF64` | Robust median filter (outlier-immune) | 132 |
 
-| Type | Algorithm | What It Computes | Cycles (p50) |
-|------|-----------|-----------------|-------------|
-| `EmaF64` | Exponential Moving Average | Smoothed signal (float) | 5 |
-| `EmaI64` | EMA (kernel fixed-point) | Smoothed signal (integer, no float) | 5 |
-| `HoltF64` | Holt's Double Exponential | Level + trend | 11 |
+### Statistics
 
-EMA is available in float (`EmaF64`) and integer (`EmaI64`) variants. The
-integer variant uses the Linux kernel's fixed-point bit-shift pattern — no
-floating point at all. Holt's adds trend tracking: "latency isn't just high,
-it's getting worse."
-
-Three ways to configure EMA smoothing:
-- `.alpha(a)` — direct smoothing factor, α ∈ (0, 1)
-- `.halflife(h)` — samples for weight to decay by half
-- `.span(n)` — pandas/finance convention, α = 2/(n+1)
-
-### Variance & Correlation
-
-| Type | Algorithm | What It Computes | Cycles (p50) |
-|------|-----------|-----------------|-------------|
-| `WelfordF64` | Welford's | Online mean, variance, std dev | 10 |
-| `EwmaVarF64` | EWMA Variance | Exponentially weighted variance | 12 |
-| `CovarianceF64` | Online Covariance | Covariance + Pearson correlation | 12 |
-
-Welford's is numerically stable (no catastrophic cancellation) and supports
-`merge()` via Chan's algorithm for parallel aggregation. EWMA Variance
-tracks recent volatility (RiskMetrics / JP Morgan 1996 pattern).
+| Type | What It Computes | p50 |
+|------|-----------------|-----|
+| `WelfordF64` | Online mean, variance, std dev (Chan's merge) | 10 |
+| `EwmaVarF64` | Exponentially weighted variance | 12 |
+| `CovarianceF64` | Online covariance + Pearson correlation | 12 |
+| `HarmonicMeanF64` | Correct average for rates/throughputs | 5 |
 
 ### Monitoring
 
-| Type | Algorithm | What It Tracks | Cycles (p50) |
-|------|-----------|---------------|-------------|
-| `DrawdownF64` | Peak tracker | Peak-to-trough decline | 5 |
-| `RunningMinF64` | All-time min | Minimum value ever seen | 5 |
-| `RunningMaxF64` | All-time max | Maximum value ever seen | 5 |
-| `WindowedMaxF64` | Nichols' (kernel) | Max within a sliding time window | 9 |
-| `WindowedMinF64` | Nichols' (kernel) | Min within a sliding time window | 10 |
-| `LivenessF64` | EMA + deadline | Source alive/dead detection | 6 |
-| `EventRateF64` | EMA of arrivals | Smoothed events per unit time | 6 |
-| `QueueDelayI64` | CoDel-inspired | Queue backpressure detection | 7 |
+| Type | What It Tracks | p50 |
+|------|---------------|-----|
+| `DrawdownF64` | Peak-to-trough decline, max drawdown | 5 |
+| `RunningMinF64` / `RunningMaxF64` | All-time extrema | 5 |
+| `WindowedMaxF64` / `WindowedMinF64` | Sliding window extrema (Nichols'/BBR) | 9 |
+| `PeakHoldF64` | Peak envelope with hold + decay | 7 |
+| `MaxGaugeF64` | Reset-on-read maximum (Netflix pattern) | 5 |
+| `LivenessF64` | Source alive/dead detection | 6 |
+| `EventRateF64` | Smoothed events per unit time | 6 |
+| `QueueDelayI64` | Queue backpressure detection (CoDel-inspired) | 7 |
+| `SaturationF64` | Resource utilization threshold (USE method) | 6 |
+| `ErrorRateF64` | Failure rate with weighted severity | 6 |
+| `TrendAlertF64` | Trend direction (Stable/Rising/Falling) | 12 |
+| `JitterF64` | Signal variability measurement | 6 |
 
-Windowed Min/Max is ported from the Linux kernel's `win_minmax.h` (used by
-TCP BBR). Three samples, 24 bytes, O(1) amortized.
+### Frequency & Scoring
 
-QueueDelay detects standing queues before buffers fill — if the minimum
-sojourn time exceeds a target for an entire observation window, the queue
-has structural congestion.
+| Type | What It Tracks | p50 |
+|------|---------------|-----|
+| `TopK<K, CAP>` | Space-Saving top-K frequent items | 42 |
+| `FlexProportionGlobal/Entity` | Per-entity fraction with lazy decay | O(1) |
+| `DecayAccumF64` | Event-driven score with time decay | O(1) |
 
-### Frequency
+### Utilities
 
-| Type | Algorithm | What It Tracks | Cycles (p50) |
-|------|-----------|---------------|-------------|
-| `TopK<K, CAP>` | Space-Saving | Top-K frequent items | 42 (CAP=16) |
-
-Fixed-size top-K tracker. No heap allocation — uses a const-generic array.
+| Type | What It Does | p50 |
+|------|-------------|-----|
+| `DebounceU32` | N consecutive events before triggering | 2 |
+| `DeadBandF64` | Suppress changes below threshold | 2 |
+| `HysteresisF64` | Binary decision with different rising/falling thresholds | 3 |
+| `BoolWindow` | Sliding pass/fail rate over last N events | 6 |
+| `PeakDetectorF64` | Local maxima/minima with prominence | 3 |
+| `LevelCrossingF64` | Threshold crossing counter | 2 |
+| `FirstDiffF64` | Discrete derivative (rate of change) | 2 |
+| `SecondDiffF64` | Discrete acceleration | 2 |
 
 ## Type Variants
 
-Every algorithm is available as explicit concrete types — no generics to
-fight with. Float types use FMA intrinsics; integer types use bit-shift
-arithmetic.
+Explicit concrete types — no generics to fight with. Float types use FMA
+intrinsics; integer types use bit-shift arithmetic.
 
 | Algorithm | f32 | f64 | i32 | i64 |
-|-----------|-----|-----|-----|-----|
-| CUSUM | ✓ | ✓ | ✓ | ✓ |
-| EMA | ✓ | ✓ | ✓ | ✓ |
-| Welford | ✓ | ✓ | | |
-| Drawdown | ✓ | ✓ | ✓ | ✓ |
-| RunningMin/Max | ✓ | ✓ | ✓ | ✓ |
-| WindowedMin/Max | ✓ | ✓ | ✓ | ✓ |
-| EWMA Variance | ✓ | ✓ | | |
-| Liveness | ✓ | ✓ | ✓ | ✓ |
-| EventRate | ✓ | ✓ | ✓ | ✓ |
+|-----------|:---:|:---:|:---:|:---:|
+| CUSUM, EMA, Drawdown, Jitter | ✓ | ✓ | ✓ | ✓ |
+| RunningMin/Max, WindowedMin/Max | ✓ | ✓ | ✓ | ✓ |
+| Liveness, EventRate, AsymEMA | ✓ | ✓ | ✓ | ✓ |
+| SlewLimiter, DeadBand, Hysteresis | ✓ | ✓ | ✓ | ✓ |
+| PeakHold, PeakDetector, LevelCrossing | ✓ | ✓ | ✓ | ✓ |
+| FirstDiff, SecondDiff, MOSUM | ✓ | ✓ | ✓ | ✓ |
+| Welford, EwmaVar, Covariance, HarmonicMean | ✓ | ✓ | | |
+| Holt, KAMA, Kalman1D, Spring | ✓ | ✓ | | |
+| MultiGate, RobustZScore, AdaptiveThreshold | ✓ | ✓ | | |
+| Saturation, ErrorRate, TrendAlert | ✓ | ✓ | | |
 | QueueDelay | | | ✓ | ✓ |
-| MOSUM | ✓ | ✓ | ✓ | ✓ |
-| Holt's | ✓ | ✓ | | |
-| Covariance | ✓ | ✓ | | |
-| Shiryaev-Roberts | | ✓ | | |
-| TopK | | | generic key, u64 count | |
+| ShiryaevRoberts | | ✓ | | |
 
 ## Common API Patterns
 
@@ -152,7 +150,19 @@ All types follow consistent conventions:
 - **`is_primed()`** — check if enough data has been seen
 - **`count()`** — total samples processed
 - **`reset()`** — clear state for operational/admin reset
+- **`seed()`** — skip warmup with pre-loaded baseline (CUSUM, EMA, AdaptiveThreshold)
 - **`#[must_use]`** — compiler warns if you ignore return values
+
+## Documentation
+
+Comprehensive [documentation](docs/INDEX.md) including:
+
+- [Which algorithm do I need?](docs/guides/choosing.md) — decision tree
+- [Quick start recipes](docs/guides/quickstart.md) — copy-paste examples
+- [Parameter tuning guide](docs/guides/parameter-tuning.md) — how to set alpha, slack, etc.
+- [Composing primitives](docs/guides/composition.md) — building monitors from parts
+- 40 algorithm deep-dives with ASCII diagrams, domain examples, and performance data
+- 10 use-case guides (latency, backpressure, anomaly detection, feed health, networking, gaming, SRE, capacity planning, industrial, rate management)
 
 ## Performance
 
@@ -170,6 +180,7 @@ taskset -c 0 ./target/release/examples/perf_stats
 |---------|---------|------|
 | `std` | yes | Hardware intrinsics for `sqrt`/`exp` |
 | `libm` | no | Pure Rust math fallback for `no_std` |
+| `alloc` | no | Runtime-sized windows (MOSUM, WindowedMedian, KAMA, BoolWindow) |
 
 One of `std` or `libm` must be enabled. Update hot paths never use
 transcendentals — `sqrt` and `exp` are only used in queries (`std_dev()`)

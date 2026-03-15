@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 /// Resource pressure state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pressure {
@@ -59,7 +60,7 @@ macro_rules! impl_saturation {
                 if self.count == 1 {
                     self.value = utilization;
                 } else {
-                    self.value = self.alpha.mul_add(utilization, self.one_minus_alpha * self.value);
+                    self.value = self.alpha.fma(utilization, self.one_minus_alpha * self.value);
                 }
 
                 if self.count < self.min_samples {

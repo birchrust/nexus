@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_event_rate_float {
     ($name:ident, $builder:ident, $ty:ty) => {
         /// Smoothed event rate tracker.
@@ -56,7 +57,7 @@ macro_rules! impl_event_rate_float {
                 if self.count == 2 {
                     self.interval = dt;
                 } else {
-                    self.interval = self.alpha.mul_add(dt, self.one_minus_alpha * self.interval);
+                    self.interval = self.alpha.fma(dt, self.one_minus_alpha * self.interval);
                 }
             }
 

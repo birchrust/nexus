@@ -99,12 +99,13 @@ macro_rules! impl_cusum {
                 let diff = sample - self.target;
 
                 // S_high = max(0, S_high + (x - target) - slack_upper)
+                // .max(0) compiles to branchless maxsd (float) / cmov (int)
                 let s_high = self.upper + diff - self.slack_upper;
-                self.upper = if s_high > (0 as $ty) { s_high } else { 0 as $ty };
+                self.upper = s_high.max(0 as $ty);
 
                 // S_low = max(0, S_low + (target - x) - slack_lower)
                 let s_low = self.lower - diff - self.slack_lower;
-                self.lower = if s_low > (0 as $ty) { s_low } else { 0 as $ty };
+                self.lower = s_low.max(0 as $ty);
 
                 if self.count < self.min_samples {
                     return Option::None;

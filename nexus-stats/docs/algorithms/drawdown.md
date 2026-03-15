@@ -1,0 +1,59 @@
+# Drawdown — Peak-to-Trough Decline Tracking
+
+**Tracks peak value and current/maximum drawdown.** Core risk metric
+for circuit breakers.
+
+| Property | Value |
+|----------|-------|
+| Update cost | ~5 cycles |
+| Memory | ~24 bytes |
+| Types | `DrawdownF64`, `DrawdownF32`, `DrawdownI64`, `DrawdownI32` |
+| Output | Current drawdown value |
+
+## What It Does
+
+```
+  Value
+  100 ┤──────────┐
+   90 ┤          │  peak = 100
+   80 ┤          │╲
+   70 ┤          │  ╲────╱╲
+   60 ┤          │        ╲──── drawdown = 40 (peak - current)
+      │          │
+      │  max_drawdown = 40 (worst ever observed)
+      └──────────────────────────────────────── t
+```
+
+Tracks three values: peak (highest value seen), current drawdown
+(peak - last sample), and maximum drawdown (worst drawdown ever).
+
+## When to Use It
+
+- Risk circuit breaker: "halt if PnL drops $X from peak"
+- High-water mark tracking for fee calculation
+- Maximum adverse excursion analysis
+
+## Configuration
+
+```rust
+let mut dd = DrawdownF64::new();
+
+dd.update(100.0);  // peak = 100, drawdown = 0
+dd.update(90.0);   // peak = 100, drawdown = 10
+dd.update(95.0);   // peak = 100, drawdown = 5
+dd.update(60.0);   // peak = 100, drawdown = 40
+
+assert_eq!(dd.max_drawdown(), 40.0);
+
+dd.update(110.0);  // NEW peak = 110, drawdown = 0
+```
+
+Zero config — just create and update. Implements `Default`.
+
+## Performance
+
+| Operation | p50 | p99 |
+|-----------|-----|-----|
+| `DrawdownF64::update` | 5 cycles | 5 cycles |
+
+One comparison + one conditional update. Pure arithmetic.

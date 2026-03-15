@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_liveness_float {
     ($name:ident, $builder:ident, $ty:ty) => {
         /// Liveness detector — EMA of inter-arrival times with deadline threshold.
@@ -66,7 +67,7 @@ macro_rules! impl_liveness_float {
                 if self.count == 2 {
                     self.interval = dt;
                 } else {
-                    self.interval = self.alpha.mul_add(dt, self.one_minus_alpha * self.interval);
+                    self.interval = self.alpha.fma(dt, self.one_minus_alpha * self.interval);
                 }
 
                 if self.count < self.min_samples {

@@ -198,6 +198,7 @@ impl_trend_alert!(TrendAlertF32, TrendAlertF32Builder, f32, HoltF32);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::MulAdd;
 
     #[test]
     fn constant_is_stable() {
@@ -233,7 +234,7 @@ mod tests {
             .build();
 
         for i in 0..100 {
-            let _ = ta.update((i as f64).mul_add(-10.0, 1000.0));
+            let _ = ta.update((i as f64).fma(-10.0, 1000.0));
         }
         let result = ta.update(0.0);
         assert_eq!(result, Some(Trend::Falling));
@@ -247,7 +248,7 @@ mod tests {
             .build();
 
         for i in 0..100 {
-            let _ = ta.update((i as f64).mul_add(10.0, 100.0));
+            let _ = ta.update((i as f64).fma(10.0, 100.0));
         }
         // Trend should be ~10, level ~1000-ish, ratio ~0.01
         // But early on with strong trend it should trigger

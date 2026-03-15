@@ -1,3 +1,4 @@
+use crate::math::MulAdd;
 macro_rules! impl_covariance {
     ($name:ident, $ty:ty) => {
         /// Online covariance and Pearson correlation between two signals.
@@ -125,12 +126,12 @@ macro_rules! impl_covariance {
                 let dy = other.mean_y - self.mean_y;
                 let weight = self.count as $ty * other.count as $ty / combined as $ty;
 
-                let new_mean_x = (dx * other.count as $ty).mul_add(1.0 as $ty / combined as $ty, self.mean_x);
-                let new_mean_y = (dy * other.count as $ty).mul_add(1.0 as $ty / combined as $ty, self.mean_y);
+                let new_mean_x = (dx * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_x);
+                let new_mean_y = (dy * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_y);
 
-                self.co_moment += (dx * dy).mul_add(weight, other.co_moment);
-                self.m2_x += (dx * dx).mul_add(weight, other.m2_x);
-                self.m2_y += (dy * dy).mul_add(weight, other.m2_y);
+                self.co_moment += (dx * dy).fma(weight, other.co_moment);
+                self.m2_x += (dx * dx).fma(weight, other.m2_x);
+                self.m2_y += (dy * dy).fma(weight, other.m2_y);
                 self.mean_x = new_mean_x;
                 self.mean_y = new_mean_y;
                 self.count = combined;
