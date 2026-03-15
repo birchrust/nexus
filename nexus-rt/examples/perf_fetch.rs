@@ -35,7 +35,7 @@ fn rdtsc_start() -> u64 {
 fn rdtsc_end() -> u64 {
     unsafe {
         let mut aux = 0u32;
-        let tsc = core::arch::x86_64::__rdtscp(&mut aux as *mut _);
+        let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
         tsc
     }
@@ -94,6 +94,7 @@ struct VenueState {
 }
 
 /// Padding component to make the container realistic (not just 2 slots).
+#[derive(Default)]
 #[repr(align(64))]
 struct Padding {
     _data: [u64; 8],
@@ -108,12 +109,6 @@ impl Default for PriceCache {
 impl Default for VenueState {
     fn default() -> Self {
         Self { values: [2; 8] }
-    }
-}
-
-impl Default for Padding {
-    fn default() -> Self {
-        Self { _data: [0; 8] }
     }
 }
 
@@ -148,15 +143,16 @@ struct VecContainer {
 
 impl VecContainer {
     fn new() -> Self {
-        let mut slots: Vec<Box<dyn std::any::Any>> = Vec::new();
-        slots.push(Box::new(PriceCache::default())); // 0
-        slots.push(Box::new(Padding::default())); // 1
-        slots.push(Box::new(Padding::default())); // 2
-        slots.push(Box::new(Padding::default())); // 3
-        slots.push(Box::new(VenueState::default())); // 4
-        slots.push(Box::new(Padding::default())); // 5
-        slots.push(Box::new(Padding::default())); // 6
-        slots.push(Box::new(Padding::default())); // 7
+        let slots: Vec<Box<dyn std::any::Any>> = vec![
+            Box::new(PriceCache::default()), // 0
+            Box::new(Padding::default()),    // 1
+            Box::new(Padding::default()),    // 2
+            Box::new(Padding::default()),    // 3
+            Box::new(VenueState::default()), // 4
+            Box::new(Padding::default()),    // 5
+            Box::new(Padding::default()),    // 6
+            Box::new(Padding::default()),    // 7
+        ];
         Self { slots }
     }
 }
@@ -186,15 +182,16 @@ struct ErasedContainer {
 
 impl ErasedContainer {
     fn new() -> Self {
-        let mut storage: Vec<Box<dyn std::any::Any>> = Vec::new();
-        storage.push(Box::new(PriceCache::default()));
-        storage.push(Box::new(Padding::default()));
-        storage.push(Box::new(Padding::default()));
-        storage.push(Box::new(Padding::default()));
-        storage.push(Box::new(VenueState::default()));
-        storage.push(Box::new(Padding::default()));
-        storage.push(Box::new(Padding::default()));
-        storage.push(Box::new(Padding::default()));
+        let mut storage: Vec<Box<dyn std::any::Any>> = vec![
+            Box::new(PriceCache::default()),
+            Box::new(Padding::default()),
+            Box::new(Padding::default()),
+            Box::new(Padding::default()),
+            Box::new(VenueState::default()),
+            Box::new(Padding::default()),
+            Box::new(Padding::default()),
+            Box::new(Padding::default()),
+        ];
 
         let ptrs = storage
             .iter_mut()
@@ -276,22 +273,22 @@ fn system_boxed_cached(cached: &BoxedCachedFetch) -> u64 {
 
 struct HashTypeMap {
     ptrs: HashMap<TypeId, *mut u8>,
-    _storage: Vec<Box<dyn Any>>,
+    storage: Vec<Box<dyn Any>>,
 }
 
 impl HashTypeMap {
     fn new() -> Self {
         Self {
             ptrs: HashMap::new(),
-            _storage: Vec::new(),
+            storage: Vec::new(),
         }
     }
 
     fn insert<T: 'static>(&mut self, value: T) {
         let mut boxed = Box::new(value);
-        let ptr = &mut *boxed as *mut T as *mut u8;
+        let ptr = &raw mut *boxed as *mut u8;
         self.ptrs.insert(TypeId::of::<T>(), ptr);
-        self._storage.push(boxed);
+        self.storage.push(boxed);
     }
 
     fn get<T: 'static>(&self) -> *mut u8 {
@@ -308,24 +305,24 @@ impl HashTypeMap {
 
 struct DenseTypeMap {
     ptrs: Vec<*mut u8>,
-    _storage: Vec<Box<dyn Any>>,
+    storage: Vec<Box<dyn Any>>,
 }
 
 impl DenseTypeMap {
     fn new() -> Self {
         Self {
             ptrs: Vec::new(),
-            _storage: Vec::new(),
+            storage: Vec::new(),
         }
     }
 
     /// Returns the assigned ComponentId (index).
     fn insert<T: 'static>(&mut self, value: T) -> usize {
         let mut boxed = Box::new(value);
-        let ptr = &mut *boxed as *mut T as *mut u8;
+        let ptr = &raw mut *boxed as *mut u8;
         let id = self.ptrs.len();
         self.ptrs.push(ptr);
-        self._storage.push(boxed);
+        self.storage.push(boxed);
         id
     }
 }

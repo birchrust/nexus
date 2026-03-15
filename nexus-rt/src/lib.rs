@@ -93,6 +93,12 @@
 //! | [`HandlerTemplate`] | *(no equivalent)* | Resolve-once, stamp-many |
 
 #![warn(missing_docs)]
+// SystemParam types (Res, ResMut, Local, Option<Res<T>>) must be passed by value
+// for the HRTB double-bound inference pattern to work. Same pattern as Bevy.
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::trivially_copy_pass_by_ref)]
+// Macro-generated codegen audit tests declare types inline within test functions.
+#![allow(clippy::items_after_statements)]
 
 mod adapt;
 mod callback;

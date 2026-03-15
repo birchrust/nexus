@@ -293,6 +293,8 @@ mod tests {
         let mut res = ResMut::new(&mut val, &changed_at, Sequence::default());
         *res = 99;
         assert_eq!(*res, 99);
+        // Intentional drop to end mutable borrow before asserting.
+        #[allow(clippy::drop_non_drop)]
         drop(res);
         assert_eq!(val, 99);
     }

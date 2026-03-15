@@ -2214,6 +2214,13 @@ where
 // =============================================================================
 
 #[cfg(test)]
+#[allow(
+    clippy::ref_option,
+    clippy::unnecessary_wraps,
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::ptr_arg
+)]
 mod tests {
     use super::*;
     use crate::{IntoHandler, Res, ResMut, Virtual, WorldBuilder};
@@ -2816,10 +2823,7 @@ mod tests {
             None
         }
         fn sink(mut out: ResMut<u64>, val: &Result<u64, &str>) {
-            *out = match val {
-                Ok(v) => *v,
-                Err(_) => 999,
-            };
+            *out = val.as_ref().map_or(999, |v| *v);
         }
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
@@ -3714,6 +3718,7 @@ mod tests {
             let x = x as u8;
             (x, x + 1, x + 2, x + 3, x + 4)
         }
+        #[allow(clippy::many_single_char_names)]
         fn sum5(a: &u8, b: &u8, c: &u8, d: &u8, e: &u8) -> u64 {
             (*a as u64) + (*b as u64) + (*c as u64) + (*d as u64) + (*e as u64)
         }
@@ -4083,7 +4088,7 @@ mod tests {
             *out = *val;
         }
         fn sink_i64(mut out: ResMut<i64>, val: &u32) {
-            *out = *val as i64 * -1;
+            *out = -(*val as i64);
         }
 
         let mut wb = WorldBuilder::new();
@@ -4207,10 +4212,9 @@ mod tests {
             if *acc > *limit { Some(*acc) } else { None }
         }
         fn store_opt(mut out: ResMut<String>, val: &Option<u64>) {
-            *out = match val {
-                Some(v) => format!("hit:{v}"),
-                None => "below".into(),
-            };
+            *out = val
+                .as_ref()
+                .map_or_else(|| "below".into(), |v| format!("hit:{v}"));
         }
 
         let mut dag = DagBuilder::<u64>::new()
@@ -4255,7 +4259,7 @@ mod tests {
             .fork()
             .arm(|_| scan_arm)
             .arm(|_| pass_arm)
-            .merge(|_: &(), _: &()| {}, reg)
+            .merge(|(): &(), (): &()| {}, reg)
             .build();
 
         dag.run(&mut world, 10);

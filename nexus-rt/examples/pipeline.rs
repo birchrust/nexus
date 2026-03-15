@@ -63,17 +63,20 @@ fn check_known(tick: MarketTick) -> Result<MarketTick, ProcessError> {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn count_error(mut errors: ResMut<u64>, err: ProcessError) {
     println!("  [catch] {err:?}");
     *errors += 1;
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn store_price(mut cache: ResMut<PriceCache>, tick: MarketTick) {
     println!("  [ok] {} @ {:.2}", tick.symbol, tick.price);
     cache.latest = tick.price;
     cache.updates += 1;
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn accumulate(mut total: ResMut<u64>, x: u32) {
     *total += u64::from(x);
 }
@@ -147,7 +150,10 @@ fn main() {
         cache.latest, cache.updates
     );
     assert_eq!(cache.updates, 2);
-    assert_eq!(cache.latest, 51_000.0);
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(cache.latest, 51_000.0);
+    }
 
     // --- Result pipeline: validate → check → catch → store ---
 
@@ -242,9 +248,11 @@ fn main() {
     let mut world = wb.build();
     let r = world.registry_mut();
 
+    #[allow(clippy::items_after_statements)]
     fn split(x: u32) -> (u32, u32) {
         (x, x * 3)
     }
+    #[allow(clippy::items_after_statements, clippy::needless_pass_by_value)]
     fn combine(mut out: ResMut<u64>, a: u32, b: u32) {
         *out = a as u64 + b as u64;
     }

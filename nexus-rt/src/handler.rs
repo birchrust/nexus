@@ -768,9 +768,9 @@ mod tests {
     #[test]
     fn empty_tuple_param() {
         let mut world = WorldBuilder::new().build();
-        let mut state = <() as Param>::init(world.registry_mut());
+        <() as Param>::init(world.registry_mut());
         // SAFETY: no params to alias.
-        let () = unsafe { <() as Param>::fetch(&world, &mut state) };
+        unsafe { <() as Param>::fetch(&world, &mut ()) };
     }
 
     // -- Handler dispatch tests -----------------------------------------------
@@ -855,7 +855,7 @@ mod tests {
 
         let mut handlers: Vec<Box<dyn Handler<u64>>> = vec![Box::new(sys_a), Box::new(sys_b)];
 
-        for h in handlers.iter_mut() {
+        for h in &mut handlers {
             h.run(&mut world, 3u64);
         }
         // 0 + 3 = 3, then 3 * 3 = 9
@@ -1145,7 +1145,7 @@ mod tests {
         // seq starts at 0, handler advances twice → 1, 2
         let mut handler = stamp.into_handler(world.registry_mut());
         handler.run(&mut world, ());
-        assert_eq!(*world.resource::<u64>(), 1 * 100 + 2);
+        assert_eq!(*world.resource::<u64>(), 100 + 2);
         // World sequence is now 2
         assert_eq!(world.current_sequence(), Sequence(2));
     }

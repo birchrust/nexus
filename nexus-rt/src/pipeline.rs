@@ -4020,12 +4020,14 @@ mod tests {
     fn ref_identity(x: &u32) -> &u32 {
         x
     }
+    #[allow(clippy::unnecessary_wraps)]
     fn ref_wrap_some(x: &u32) -> Option<&u32> {
         Some(x)
     }
     fn ref_wrap_none(_x: &u32) -> Option<&u32> {
         None
     }
+    #[allow(clippy::unnecessary_wraps)]
     fn ref_wrap_ok(x: &u32) -> Result<&u32, String> {
         Ok(x)
     }
@@ -4629,7 +4631,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "conflicting access")]
     fn splat_access_conflict_detected() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
@@ -4788,7 +4790,7 @@ mod tests {
             *val > *threshold
         }
         fn sink(mut out: ResMut<i64>, val: Option<u64>) {
-            *out = val.map(|v| v as i64).unwrap_or(-1);
+            *out = val.map_or(-1, |v| v as i64);
         }
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(5); // threshold

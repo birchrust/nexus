@@ -107,8 +107,8 @@ fn main() {
         println!("  output len: {}", world.resource::<Vec<u32>>().len());
 
         let output = world.resource::<Vec<u32>>();
-        println!("\nFinal output: {:?}", &*output);
-        assert_eq!(&*output, &[1, 2, 3]);
+        println!("\nFinal output: {:?}", &**output);
+        assert_eq!(&**output, &[1, 2, 3]);
     }
 
     println!("\nDone.");

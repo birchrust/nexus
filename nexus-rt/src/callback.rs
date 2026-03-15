@@ -558,7 +558,7 @@ mod tests {
 
         let mut handlers: Vec<Box<dyn Handler<()>>> = vec![Box::new(cb_add), Box::new(cb_mul)];
 
-        for h in handlers.iter_mut() {
+        for h in &mut handlers {
             h.run(&mut world, ());
         }
         // 0 + 3 = 3, then 3 * 2 = 6
@@ -605,7 +605,7 @@ mod tests {
 
         let mut handlers: Vec<Box<dyn Handler<u64>>> = vec![Box::new(sys), Box::new(cb)];
 
-        for h in handlers.iter_mut() {
+        for h in &mut handlers {
             h.run(&mut world, 5u64);
         }
         // 0 + 5 = 5, then 5 * 3 = 15

@@ -87,26 +87,32 @@ fn root_mul2(x: u32) -> u32 {
     x.wrapping_mul(2)
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn add_one(val: &u32) -> u32 {
     val.wrapping_add(1)
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn mul3(val: &u32) -> u32 {
     val.wrapping_mul(3)
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn sink_store(mut out: ResMut<u32>, val: &u32) {
     *out = *val;
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn sink_add(mut out: ResMut<u32>, val: &u32) {
     *out = out.wrapping_add(*val);
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn merge2_add(a: &u32, b: &u32) -> u32 {
     a.wrapping_add(*b)
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn merge2_add_sink(mut out: ResMut<u32>, a: &u32, b: &u32) {
     *out = a.wrapping_add(*b);
 }
@@ -120,11 +126,13 @@ fn pipe_add1(x: u32) -> u32 {
     x.wrapping_add(1)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn pipe_sink(mut out: ResMut<u32>, x: u32) {
     *out = x;
 }
 
 // World-accessing DAG node
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn scale_by_res(factor: Res<u32>, val: &u32) -> u32 {
     val.wrapping_mul(*factor)
 }

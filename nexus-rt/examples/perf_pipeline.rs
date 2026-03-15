@@ -171,14 +171,17 @@ pub fn baseline_handwritten(world: &mut nexus_rt::World, input: u64) -> u64 {
 // Step functions for World-accessing pipeline
 // =============================================================================
 
+#[allow(clippy::needless_pass_by_value)]
 fn add_resource(val: Res<u64>, x: u64) -> u64 {
     x.wrapping_add(*val)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn mul_resource(val: Res<u64>, x: u64) -> u64 {
     x.wrapping_mul(*val)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn sub_resource(val: Res<u32>, x: u64) -> u64 {
     x.wrapping_sub(*val as u64)
 }
@@ -187,14 +190,17 @@ fn sub_resource(val: Res<u32>, x: u64) -> u64 {
 // Handler dispatch probes — Param fetch hot path
 // =============================================================================
 
+#[allow(clippy::needless_pass_by_value)]
 fn handler_res_read(counter: Res<u64>, input: u64) {
     black_box((*counter).wrapping_add(input));
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn handler_res_mut_write(mut counter: ResMut<u64>, input: u64) {
     *counter = (*counter).wrapping_add(input);
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn handler_two_res(a: Res<u64>, b: Res<u32>, input: u64) {
     black_box((*a).wrapping_add(input).wrapping_add(*b as u64));
 }
@@ -353,27 +359,33 @@ pub fn probe_guard_batch(
 // Step functions for guard short-circuit pipelines
 // =============================================================================
 
+#[allow(clippy::needless_pass_by_value)]
 fn add_res_u64(val: Res<u64>, x: u64) -> u64 {
     x.wrapping_add(*val)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn mul_res_u32(val: Res<u32>, x: u64) -> u64 {
     x.wrapping_mul(*val as u64)
 }
 
 // DAG map steps take &T
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn dag_mul3(x: &u64) -> u64 {
     x.wrapping_mul(3)
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn dag_add7(x: &u64) -> u64 {
     x.wrapping_add(7)
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn dag_shr1(x: &u64) -> u64 {
     x >> 1
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn dag_xor_dead(x: &u64) -> u64 {
     x ^ 0xDEAD
 }
@@ -382,10 +394,12 @@ fn dag_xor_dead(x: &u64) -> u64 {
 // Step functions for combinator/adapter setup
 // =============================================================================
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn ref_identity(x: &u64) -> &u64 {
     x
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn ref_accumulate(mut total: ResMut<u64>, event: &u64) {
     *total = total.wrapping_add(*event);
 }
@@ -445,6 +459,7 @@ fn main() {
 
     // --- Batch pipelines (same chains as their linear counterparts) ---
 
+    #[allow(clippy::items_after_statements, clippy::needless_pass_by_value)]
     fn sink(mut acc: ResMut<u64>, x: u64) {
         *acc = acc.wrapping_add(x);
     }
@@ -507,6 +522,11 @@ fn main() {
         .map(mul_res_u32, r);
 
     // DAG: root → guard → 4 maps → unwrap_or → sink
+    #[allow(
+        clippy::items_after_statements,
+        clippy::needless_pass_by_value,
+        clippy::trivially_copy_pass_by_ref
+    )]
     fn dag_sink(mut acc: ResMut<u64>, val: &u64) {
         *acc = acc.wrapping_add(*val);
     }
