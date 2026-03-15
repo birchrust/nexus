@@ -572,9 +572,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::redundant_clone)]
     fn producer_is_clone() {
         let (prod, _cons) = new(1024);
-        let _prod2 = prod;
+        let _prod2 = prod.clone();
     }
 
     #[test]

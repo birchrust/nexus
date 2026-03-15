@@ -1494,9 +1494,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_clone() {
         let text: AsciiText<32> = AsciiText::try_from("Hello").unwrap();
-        let cloned = text;
+        let cloned = text.clone();
         assert_eq!(text, cloned);
     }
 

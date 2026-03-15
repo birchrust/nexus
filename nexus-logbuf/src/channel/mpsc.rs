@@ -474,9 +474,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::redundant_clone)]
     fn sender_is_clone() {
         let (tx, _rx) = channel(1024);
-        let _tx2 = tx;
+        let _tx2 = tx.clone();
     }
 
     #[test]
