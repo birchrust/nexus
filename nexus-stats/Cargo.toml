@@ -1,0 +1,19 @@
+[package]
+name = "nexus-stats"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+libm = { version = "0.2", optional = true }
+
+[lints]
+workspace = true
