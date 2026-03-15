@@ -714,6 +714,19 @@ impl<const CAP: usize> TryFrom<FlatAsciiString<CAP>> for FlatAsciiText<CAP> {
 }
 
 // =============================================================================
+// FromStr
+// =============================================================================
+
+impl<const CAP: usize> core::str::FromStr for FlatAsciiText<CAP> {
+    type Err = AsciiError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
+// =============================================================================
 // AsRef Implementations
 // =============================================================================
 
@@ -1087,5 +1100,17 @@ mod tests {
         let t: FlatAsciiText<8> = FlatAsciiText::try_from_null_terminated(b"abcdefgh").unwrap();
         assert_eq!(t.len(), 8);
         assert_eq!(t.as_str(), "abcdefgh");
+    }
+
+    #[test]
+    fn from_str_parse() {
+        let s: FlatAsciiText<32> = "BTC-USD".parse().unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+    }
+
+    #[test]
+    fn from_str_non_printable() {
+        let result = "hello\x01".parse::<FlatAsciiText<32>>();
+        assert!(result.is_err());
     }
 }

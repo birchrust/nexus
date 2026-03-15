@@ -21,6 +21,7 @@ fn read_small(data: &[u8]) -> u64 {
 /// Read exactly 8 bytes as little-endian u64.
 #[inline(always)]
 fn read_u64(data: &[u8]) -> u64 {
+    debug_assert!(data.len() >= 8);
     u64::from_le_bytes(data[..8].try_into().unwrap())
 }
 

@@ -992,6 +992,19 @@ impl<const CAP: usize> TryFrom<AsciiString<CAP>> for AsciiText<CAP> {
 }
 
 // =============================================================================
+// FromStr
+// =============================================================================
+
+impl<const CAP: usize> core::str::FromStr for AsciiText<CAP> {
+    type Err = AsciiError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
+// =============================================================================
 // AsRef implementations
 // =============================================================================
 
@@ -2055,5 +2068,17 @@ mod tests {
         let s: AsciiText<32> = AsciiText::from_u64(original).unwrap();
         let parsed = s.parse_u64().unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn from_str_parse() {
+        let s: AsciiText<32> = "BTC-USD".parse().unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+    }
+
+    #[test]
+    fn from_str_non_printable() {
+        let result = "hello\x01".parse::<AsciiText<32>>();
+        assert!(result.is_err());
     }
 }
