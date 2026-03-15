@@ -474,6 +474,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::redundant_clone)]
     fn sender_is_clone() {
         let (tx, _rx) = channel(1024);
         let _tx2 = tx.clone();
@@ -481,10 +482,10 @@ mod tests {
 
     #[test]
     fn multiple_senders() {
-        let (tx, mut rx) = channel(4096);
-
         const SENDERS: usize = 4;
         const MESSAGES: usize = 100;
+
+        let (tx, mut rx) = channel(4096);
 
         let handles: Vec<_> = (0..SENDERS)
             .map(|id| {

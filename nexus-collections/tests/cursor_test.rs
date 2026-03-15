@@ -127,6 +127,7 @@ fn cursor_remove_head() {
 }
 
 #[test]
+#[allow(clippy::drop_non_drop)]
 fn cursor_remove_tail() {
     init();
     let mut list = orders::List::new(orders::Allocator);
@@ -279,6 +280,7 @@ fn cursor_remove_if_matches() {
 }
 
 #[test]
+#[allow(clippy::drop_non_drop)]
 fn cursor_remove_if_no_match() {
     init();
     let mut list = orders::List::new(orders::Allocator);
@@ -317,6 +319,7 @@ fn cursor_single_element() {
 }
 
 #[test]
+#[allow(clippy::drop_non_drop)]
 fn cursor_remove_single_element() {
     init();
     let mut list = orders::List::new(orders::Allocator);
@@ -338,6 +341,7 @@ fn cursor_remove_single_element() {
 // =============================================================================
 
 #[test]
+#[allow(clippy::drop_non_drop)]
 fn cursor_consecutive_removals() {
     init();
     let mut list = orders::List::new(orders::Allocator);
@@ -374,6 +378,7 @@ fn cursor_consecutive_removals() {
 // =============================================================================
 
 #[test]
+#[allow(clippy::drop_non_drop, clippy::float_cmp)]
 fn cursor_write_via_guard() {
     init();
     let mut list = orders::List::new(orders::Allocator);

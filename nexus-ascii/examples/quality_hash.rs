@@ -698,8 +698,12 @@ fn main() {
     // Summary
     println!("\n=== RECOMMENDATION ===\n");
 
-    let lower_score = lower_chi_1k + lower_chi_64k + (lower_aval - 24.0).abs() * 100.0;
-    let upper_score = upper_chi_1k + upper_chi_64k + (upper_aval - 24.0).abs() * 100.0;
+    let lower_score = (lower_aval - 24.0)
+        .abs()
+        .mul_add(100.0, lower_chi_1k + lower_chi_64k);
+    let upper_score = (upper_aval - 24.0)
+        .abs()
+        .mul_add(100.0, upper_chi_1k + upper_chi_64k);
 
     println!("  Composite score (lower is better):");
     println!("    lower_48: {:.2}", lower_score);

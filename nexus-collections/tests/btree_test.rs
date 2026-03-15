@@ -653,9 +653,9 @@ fn debug_fmt() {
     map.try_insert(1, "a".into()).unwrap();
     map.try_insert(2, "b".into()).unwrap();
     let s = format!("{:?}", map);
-    assert!(s.contains("1"));
+    assert!(s.contains('1'));
     assert!(s.contains("\"a\""));
-    assert!(s.contains("2"));
+    assert!(s.contains('2'));
     assert!(s.contains("\"b\""));
 }
 
@@ -880,7 +880,7 @@ fn iter_mut_modify_values() {
         map.try_insert(k, format!("{k}")).unwrap();
     }
 
-    for (_, v) in map.iter_mut() {
+    for (_, v) in &mut map {
         *v = v.to_uppercase();
     }
 
@@ -900,7 +900,7 @@ fn values_mut_modify() {
     }
 
     for v in map.values_mut() {
-        v.push_str("!");
+        v.push('!');
     }
 
     assert_eq!(map.get(&1), Some(&String::from("v1!")));
@@ -1036,7 +1036,7 @@ fn range_mut_modify() {
     }
 
     for (_, v) in map.range_mut(20..=40) {
-        v.push_str("!");
+        v.push('!');
     }
 
     assert_eq!(map.get(&10), Some(&String::from("10")));

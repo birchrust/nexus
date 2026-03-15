@@ -1095,7 +1095,7 @@ mod tests {
         let (mut tx, mut rx) = channel::<LargeMessage>(4);
 
         let msg = LargeMessage { data: [42u8; 4096] };
-        tx.send(msg.clone()).unwrap();
+        tx.send(msg).unwrap();
 
         let received = rx.recv().unwrap();
         assert_eq!(received.data[0], 42);

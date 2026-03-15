@@ -1,5 +1,7 @@
 //! Tests for the bounded_allocator! and unbounded_allocator! macros.
 
+#![allow(clippy::float_cmp)]
+
 use nexus_slab::Alloc;
 
 // =============================================================================
@@ -132,7 +134,7 @@ mod drop_called_test {
 
     static COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    pub struct Tracker(pub u64);
+    pub struct Tracker(#[allow(dead_code)] pub u64);
     impl Drop for Tracker {
         fn drop(&mut self) {
             COUNT.fetch_add(1, Ordering::SeqCst);
@@ -156,7 +158,7 @@ mod drop_leak_test {
 
     static COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    pub struct Tracker(pub u64);
+    pub struct Tracker(#[allow(dead_code)] pub u64);
     impl Drop for Tracker {
         fn drop(&mut self) {
             COUNT.fetch_add(1, Ordering::SeqCst);
@@ -391,7 +393,7 @@ mod unbounded_drop_test {
 
     static COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    pub struct Tracker(pub u64);
+    pub struct Tracker(#[allow(dead_code)] pub u64);
     impl Drop for Tracker {
         fn drop(&mut self) {
             COUNT.fetch_add(1, Ordering::SeqCst);
@@ -446,6 +448,7 @@ fn test_unbounded_grows_automatically() {
 
     // Capacity should have grown (at least 3 chunks of 4 = 12)
     assert!(local_alloc::Allocator::capacity() >= 10);
+    assert_eq!(slots.len(), 10);
 
     // Drop all slots
     slots.clear();
@@ -523,20 +526,20 @@ fn test_unbounded_borrow_traits() {
 // Trait assertion tests
 // =============================================================================
 
-fn _assert_bounded<A: nexus_slab::BoundedAlloc>() {}
-fn _assert_unbounded<A: nexus_slab::UnboundedAlloc>() {}
-fn _assert_slab_allocator<A: nexus_slab::Alloc>() {}
+fn assert_bounded<A: nexus_slab::BoundedAlloc>() {}
+fn assert_unbounded<A: nexus_slab::UnboundedAlloc>() {}
+fn assert_slab_allocator<A: nexus_slab::Alloc>() {}
 
 #[test]
 fn test_bounded_trait_marker() {
-    _assert_bounded::<order_alloc::Allocator>();
-    _assert_slab_allocator::<order_alloc::Allocator>();
+    assert_bounded::<order_alloc::Allocator>();
+    assert_slab_allocator::<order_alloc::Allocator>();
 }
 
 #[test]
 fn test_unbounded_trait_marker() {
-    _assert_unbounded::<unbounded_order_alloc::Allocator>();
-    _assert_slab_allocator::<unbounded_order_alloc::Allocator>();
+    assert_unbounded::<unbounded_order_alloc::Allocator>();
+    assert_slab_allocator::<unbounded_order_alloc::Allocator>();
 }
 
 #[test]

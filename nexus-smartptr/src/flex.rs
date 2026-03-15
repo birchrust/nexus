@@ -350,14 +350,15 @@ mod tests {
 
     struct Hello;
     impl Greet for Hello {
-        fn greet(&self) -> &str {
+        fn greet(&self) -> &'static str {
             "hello"
         }
     }
 
+    #[allow(dead_code)]
     struct World(u64);
     impl Greet for World {
-        fn greet(&self) -> &str {
+        fn greet(&self) -> &'static str {
             "world"
         }
     }
@@ -436,9 +437,10 @@ mod tests {
     #[test]
     fn large_value_heap() {
         // [u64; 8] = 64 bytes, B32 ?Sized capacity = 16 bytes
+        #[allow(dead_code)]
         struct Big([u64; 8]);
         impl Greet for Big {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "big"
             }
         }
@@ -544,7 +546,7 @@ mod tests {
             }
         }
         impl Greet for Dropper {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "dropping"
             }
         }
@@ -562,6 +564,7 @@ mod tests {
     fn drop_heap() {
         static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+        #[allow(dead_code)]
         struct BigDropper([u64; 8]);
         impl Drop for BigDropper {
             fn drop(&mut self) {
@@ -569,7 +572,7 @@ mod tests {
             }
         }
         impl Greet for BigDropper {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "big drop"
             }
         }
@@ -587,6 +590,7 @@ mod tests {
     fn drop_heap_sized() {
         static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+        #[allow(dead_code)]
         struct BigDropper([u64; 8]);
         impl Drop for BigDropper {
             fn drop(&mut self) {
@@ -614,9 +618,10 @@ mod tests {
     #[test]
     fn exact_fit_is_inline() {
         // [usize; 2] = 16 bytes, B32 ?Sized capacity = 16 bytes — exact fit
+        #[allow(dead_code)]
         struct Exact([usize; 2]);
         impl Greet for Exact {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "exact"
             }
         }
@@ -635,7 +640,7 @@ mod tests {
             _extra: u8,
         }
         impl Greet for OneTooMany {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "spilled"
             }
         }
@@ -657,9 +662,10 @@ mod tests {
 
     #[test]
     fn macro_construction_heap() {
+        #[allow(dead_code)]
         struct Big([u64; 8]);
         impl Greet for Big {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "big"
             }
         }

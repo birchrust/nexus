@@ -467,6 +467,7 @@ pub fn contains_control_chars(bytes: &[u8]) -> bool {
     if len < 8 {
         let mut found: u8 = 0;
         for &b in bytes {
+            #[allow(clippy::needless_bitwise_bool)]
             let is_ctrl = ((b < 0x20) | (b == 0x7F)) as u8;
             found |= is_ctrl;
         }
@@ -519,6 +520,7 @@ pub fn is_all_printable(bytes: &[u8]) -> bool {
     if len < 8 {
         let mut valid_acc: u8 = 1;
         for &b in bytes {
+            #[allow(clippy::needless_bitwise_bool)]
             let is_printable = ((b >= 0x20) & (b <= 0x7E)) as u8;
             valid_acc &= is_printable;
         }
@@ -1239,10 +1241,10 @@ mod tests {
     #[test]
     fn test_is_all_numeric_boundaries() {
         // Test boundaries around digits
-        assert!(!is_all_numeric(&[b'/' as u8])); // Just below '0'
-        assert!(is_all_numeric(&[b'0']));
-        assert!(is_all_numeric(&[b'9']));
-        assert!(!is_all_numeric(&[b':'])); // Just above '9'
+        assert!(!is_all_numeric(b"/")); // Just below '0'
+        assert!(is_all_numeric(b"0"));
+        assert!(is_all_numeric(b"9"));
+        assert!(!is_all_numeric(b":")); // Just above '9'
     }
 
     #[test]
@@ -1310,22 +1312,22 @@ mod tests {
     fn test_is_all_alphanumeric_boundaries() {
         // Test boundaries around each range
         // Digits: '/' < '0' <= digit <= '9' < ':'
-        assert!(!is_all_alphanumeric(&[b'/']));
-        assert!(is_all_alphanumeric(&[b'0']));
-        assert!(is_all_alphanumeric(&[b'9']));
-        assert!(!is_all_alphanumeric(&[b':']));
+        assert!(!is_all_alphanumeric(b"/"));
+        assert!(is_all_alphanumeric(b"0"));
+        assert!(is_all_alphanumeric(b"9"));
+        assert!(!is_all_alphanumeric(b":"));
 
         // Uppercase: '@' < 'A' <= upper <= 'Z' < '['
-        assert!(!is_all_alphanumeric(&[b'@']));
-        assert!(is_all_alphanumeric(&[b'A']));
-        assert!(is_all_alphanumeric(&[b'Z']));
-        assert!(!is_all_alphanumeric(&[b'[']));
+        assert!(!is_all_alphanumeric(b"@"));
+        assert!(is_all_alphanumeric(b"A"));
+        assert!(is_all_alphanumeric(b"Z"));
+        assert!(!is_all_alphanumeric(b"["));
 
         // Lowercase: '`' < 'a' <= lower <= 'z' < '{'
-        assert!(!is_all_alphanumeric(&[b'`']));
-        assert!(is_all_alphanumeric(&[b'a']));
-        assert!(is_all_alphanumeric(&[b'z']));
-        assert!(!is_all_alphanumeric(&[b'{']));
+        assert!(!is_all_alphanumeric(b"`"));
+        assert!(is_all_alphanumeric(b"a"));
+        assert!(is_all_alphanumeric(b"z"));
+        assert!(!is_all_alphanumeric(b"{"));
     }
 
     #[test]

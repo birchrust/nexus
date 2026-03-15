@@ -1,5 +1,7 @@
 //! Tests for bit_storage attribute macro on tagged enums.
 
+#![allow(clippy::struct_field_names)]
+
 use nexus_bits::{IntEnum, bit_storage};
 
 // =============================================================================
@@ -181,7 +183,7 @@ fn with_flags_only() {
 
     assert!(flags.a());
     assert!(!flags.b());
-    assert_eq!(flags.raw(), 0 | (1 << 2));
+    assert_eq!(flags.raw(), 1 << 2);
 
     let parent = flags.as_parent();
     let unpacked = parent.as_flags_only().unwrap();
@@ -271,18 +273,18 @@ fn order_limit() {
         .side(Side::Sell)
         .exchange(Exchange::Cboe)
         .quantity(500)
-        .price(10050)
+        .price(10_050)
         .build()
         .unwrap();
 
     assert_eq!(limit.side(), Side::Sell);
     assert_eq!(limit.exchange(), Exchange::Cboe);
     assert_eq!(limit.quantity(), 500);
-    assert_eq!(limit.price(), 10050);
+    assert_eq!(limit.price(), 10_050);
 
     let parent = limit.as_parent();
     let unpacked = parent.as_limit().unwrap();
-    assert_eq!(unpacked.price(), 10050);
+    assert_eq!(unpacked.price(), 10_050);
 }
 
 // =============================================================================
@@ -333,19 +335,19 @@ pub enum InstrumentId {
 fn instrument_equity() {
     let equity = InstrumentId::equity()
         .exchange(Exchange::Nyse)
-        .symbol(123456)
+        .symbol(123_456)
         .build()
         .unwrap();
 
     assert_eq!(equity.exchange(), Exchange::Nyse);
-    assert_eq!(equity.symbol(), 123456);
+    assert_eq!(equity.symbol(), 123_456);
 
     let parent = equity.as_parent();
     assert!(parent.is_equity());
     assert_eq!(parent.kind().unwrap(), InstrumentIdKind::Equity);
 
     let unpacked = parent.as_equity().unwrap();
-    assert_eq!(unpacked.symbol(), 123456);
+    assert_eq!(unpacked.symbol(), 123_456);
 }
 
 #[test]
@@ -372,7 +374,7 @@ fn instrument_option() {
         .exchange(Exchange::Nasdaq)
         .underlying(1234)
         .expiry(2506)
-        .strike(15000)
+        .strike(15_000)
         .put_call(PutCall::Put)
         .build()
         .unwrap();
@@ -380,7 +382,7 @@ fn instrument_option() {
     assert_eq!(option.exchange(), Exchange::Nasdaq);
     assert_eq!(option.underlying(), 1234);
     assert_eq!(option.expiry(), 2506);
-    assert_eq!(option.strike(), 15000);
+    assert_eq!(option.strike(), 15_000);
     assert_eq!(option.put_call(), PutCall::Put);
 
     let parent = option.as_parent();
@@ -393,7 +395,7 @@ fn instrument_all_variants_roundtrip() {
     // Build each variant, convert to parent, then back
     let equity = InstrumentId::equity()
         .exchange(Exchange::Nasdaq)
-        .symbol(0xFFFFF)
+        .symbol(0xF_FFFF)
         .build()
         .unwrap();
 
@@ -528,7 +530,7 @@ fn tiny_enum_u8() {
     let a = TinyEnum::a().value(63).build().unwrap(); // max 6-bit
     let b = TinyEnum::b().flag(true).build().unwrap();
 
-    assert_eq!(a.raw(), 0 | (63 << 2));
+    assert_eq!(a.raw(), 63 << 2);
     assert_eq!(b.raw(), 1 | (1 << 2));
 
     assert_eq!(a.value(), 63);
@@ -546,12 +548,12 @@ pub enum SignedEnum {
 
 #[test]
 fn signed_repr_enum() {
-    let pos = SignedEnum::positive().value(12345).build().unwrap();
-    assert_eq!(pos.value(), 12345);
+    let pos = SignedEnum::positive().value(12_345).build().unwrap();
+    assert_eq!(pos.value(), 12_345);
 
     let parent = pos.as_parent();
     let unpacked = parent.as_positive().unwrap();
-    assert_eq!(unpacked.value(), 12345);
+    assert_eq!(unpacked.value(), 12_345);
 }
 
 // =============================================================================
@@ -648,7 +650,7 @@ fn as_variant_validates_int_enum() {
 fn as_variant_rejects_invalid_int_enum() {
     // Manually construct raw with valid discriminant but invalid IntEnum
     // discriminant = 0, value = 3 (not a valid SparseIntEnum)
-    let raw: u64 = 0 | (3 << 4);
+    let raw: u64 = 3 << 4;
     let parent = WithSparseIntEnum::from_raw(raw);
 
     // Discriminant is correct
@@ -1207,7 +1209,7 @@ fn monster_kitchen_sink() {
         .is_routed(false)
         .quantity(1_000_000)
         .is_test(true)
-        .symbol(0xABCDE)
+        .symbol(0xA_BCDE)
         .price(0x1234_5678_9ABC)
         .high_bit(true)
         .build()
@@ -1219,7 +1221,7 @@ fn monster_kitchen_sink() {
     assert!(!m.is_routed());
     assert_eq!(m.quantity(), 1_000_000);
     assert!(m.is_test());
-    assert_eq!(m.symbol(), 0xABCDE);
+    assert_eq!(m.symbol(), 0xA_BCDE);
     assert_eq!(m.price(), 0x1234_5678_9ABC);
     assert!(m.high_bit());
 
@@ -1417,14 +1419,14 @@ fn monster_edge_discriminant() {
 fn monster_max_discriminant() {
     let m = Monster::max_discriminant()
         .value(255)
-        .other(65535)
+        .other(65_535)
         .build()
         .unwrap();
 
     // Discriminant should be 15 (0xF)
     assert_eq!(m.raw() & 0xF, 15);
     assert_eq!(m.value(), 255);
-    assert_eq!(m.other(), 65535);
+    assert_eq!(m.other(), 65_535);
 
     let parent = m.as_parent();
     assert!(parent.is_max_discriminant());
@@ -1475,8 +1477,8 @@ fn monster_all_variants_roundtrip() {
             .seven_bits(100)
             .eleven_bits(1500)
             .thirteen_bits(7000)
-            .seventeen_bits(100000)
-            .nineteen_bits(400000)
+            .seventeen_bits(100_000)
+            .nineteen_bits(400_000)
             .build()
             .unwrap()
             .as_parent(),
@@ -1495,9 +1497,9 @@ fn monster_all_variants_roundtrip() {
             .is_hidden(false)
             .venue(StressVenue::Memx)
             .is_routed(true)
-            .quantity(999999)
+            .quantity(999_999)
             .is_test(false)
-            .symbol(0x12345)
+            .symbol(0x1_2345)
             .price(0xABCD_EF01_2345)
             .high_bit(false)
             .build()
@@ -1505,7 +1507,7 @@ fn monster_all_variants_roundtrip() {
             .as_parent(),
         Monster::byte_spanners()
             .spans_0_1(0x123)
-            .spans_2_4(0x456789)
+            .spans_2_4(0x45_6789)
             .spans_5_9(0x1_2345_6789)
             .spans_9_14(0xABC_DEF0_1234)
             .build()
@@ -1573,7 +1575,7 @@ fn monster_all_variants_roundtrip() {
             .as_parent(),
         Monster::max_discriminant()
             .value(128)
-            .other(32768)
+            .other(32_768)
             .build()
             .unwrap()
             .as_parent(),
@@ -1696,12 +1698,12 @@ pub enum EnumWithSignedFields {
 fn enum_signed_fields_positive() {
     let s = EnumWithSignedFields::signed()
         .signed_byte(127)
-        .signed_short(32767)
+        .signed_short(32_767)
         .build()
         .unwrap();
 
     assert_eq!(s.signed_byte(), 127);
-    assert_eq!(s.signed_short(), 32767);
+    assert_eq!(s.signed_short(), 32_767);
 }
 
 #[test]
@@ -1740,8 +1742,8 @@ pub enum SingleVariant {
 
 #[test]
 fn single_variant_enum() {
-    let only = SingleVariant::only().value(12345).build().unwrap();
-    assert_eq!(only.value(), 12345);
+    let only = SingleVariant::only().value(12_345).build().unwrap();
+    assert_eq!(only.value(), 12_345);
 
     let parent = only.as_parent();
     assert!(parent.is_only());

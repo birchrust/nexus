@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn bounded_pool_basic() {
-        let pool = BoundedPool::new(3, || Vec::<u8>::with_capacity(16), |v| v.clear());
+        let pool = BoundedPool::new(3, || Vec::<u8>::with_capacity(16), Vec::clear);
 
         assert_eq!(pool.available(), 3);
 
@@ -438,7 +438,7 @@ mod tests {
     fn bounded_pool_outlives_guard() {
         let guard;
         {
-            let pool = BoundedPool::new(1, || String::from("test"), |s| s.clear());
+            let pool = BoundedPool::new(1, || String::from("test"), String::clear);
             guard = pool.try_acquire().unwrap();
         }
         // Pool dropped, guard still valid
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn growable_pool_basic() {
-        let pool = Pool::new(|| Vec::<u8>::with_capacity(16), |v| v.clear());
+        let pool = Pool::new(|| Vec::<u8>::with_capacity(16), Vec::clear);
 
         assert_eq!(pool.available(), 0);
 
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn growable_pool_with_capacity() {
-        let pool = Pool::with_capacity(5, || String::new(), |s| s.clear());
+        let pool = Pool::with_capacity(5, String::new, String::clear);
 
         assert_eq!(pool.available(), 5);
 
@@ -497,7 +497,7 @@ mod tests {
     fn growable_pool_outlives_guard() {
         let guard;
         {
-            let pool = Pool::new(|| String::from("test"), |s| s.clear());
+            let pool = Pool::new(|| String::from("test"), String::clear);
             guard = pool.acquire();
         }
         // Pool dropped, guard still valid
@@ -508,12 +508,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "capacity must be non-zero")]
     fn bounded_pool_zero_capacity_panics() {
-        let _ = BoundedPool::new(0, || (), |_| {});
+        let _ = BoundedPool::new(0, || (), |()| {});
     }
 
     #[test]
     fn take_put_basic() {
-        let pool = Pool::new(|| Vec::<u8>::with_capacity(16), |v| v.clear());
+        let pool = Pool::new(|| Vec::<u8>::with_capacity(16), Vec::clear);
 
         let mut buf = pool.take();
         buf.extend_from_slice(b"hello");
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn take_put_with_capacity() {
-        let pool = Pool::with_capacity(5, || String::from("init"), |s| s.clear());
+        let pool = Pool::with_capacity(5, || String::from("init"), String::clear);
         assert_eq!(pool.available(), 5);
 
         let s = pool.try_take().unwrap();
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn mix_raii_and_manual() {
-        let pool = Pool::with_capacity(3, || Vec::<u8>::new(), |v| v.clear());
+        let pool = Pool::with_capacity(3, Vec::<u8>::new, Vec::clear);
 
         // Take one manually
         let mut manual = pool.take();

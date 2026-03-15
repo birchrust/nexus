@@ -7,6 +7,8 @@
 //!   cargo build --release --example perf_full_distribution
 //!   taskset -c 0 ./target/release/examples/perf_full_distribution
 
+#![allow(clippy::iter_with_drain)]
+
 use hdrhistogram::Histogram;
 use nexus_slab::RawSlot;
 use nexus_slab::bounded::Slab as BoundedSlab;
@@ -398,8 +400,9 @@ fn main() {
     // TLS init, and cache priming before timed measurements.
     {
         let warmup_slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-        let warmup_entries: Vec<RawSlot<u64>> =
-            (0..NUM_SLOTS as u64).map(|i| warmup_slab.alloc(i)).collect();
+        let warmup_entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64)
+            .map(|i| warmup_slab.alloc(i))
+            .collect();
         for slot in &warmup_entries {
             black_box(&**slot);
         }
@@ -407,7 +410,9 @@ fn main() {
             unsafe { warmup_slab.free(slot) };
         }
         let mut warmup_ext = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
-        let warmup_keys: Vec<_> = (0..NUM_SLOTS as u64).map(|i| warmup_ext.insert(i)).collect();
+        let warmup_keys: Vec<_> = (0..NUM_SLOTS as u64)
+            .map(|i| warmup_ext.insert(i))
+            .collect();
         for &k in &warmup_keys {
             black_box(warmup_ext.get(k));
         }

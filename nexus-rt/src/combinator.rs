@@ -319,7 +319,10 @@ mod tests {
         fan.run(&mut world, 10u32);
         assert_eq!(*world.resource::<u64>(), 10);
         assert_eq!(*world.resource::<i64>(), 20);
-        assert_eq!(*world.resource::<f64>(), 5.0);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(*world.resource::<f64>(), 5.0);
+        }
     }
 
     #[test]

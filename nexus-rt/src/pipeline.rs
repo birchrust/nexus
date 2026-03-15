@@ -411,9 +411,7 @@ pub struct OpaqueRefStep<F> {
     name: &'static str,
 }
 
-impl<In, Out, F: FnMut(&mut World, &In) -> Out + 'static> RefStepCall<In>
-    for OpaqueRefStep<F>
-{
+impl<In, Out, F: FnMut(&mut World, &In) -> Out + 'static> RefStepCall<In> for OpaqueRefStep<F> {
     type Out = Out;
     #[inline(always)]
     fn call(&mut self, world: &mut World, input: &In) -> Out {
@@ -645,9 +643,7 @@ pub trait IntoScanStep<Acc, In, Out, Params> {
 
 // -- Arity 0: FnMut(&mut Acc, In) -> Out — closures work --------------------
 
-impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
-    ScanStepCall<Acc, In> for Step<F, ()>
-{
+impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static> ScanStepCall<Acc, In> for Step<F, ()> {
     type Out = Out;
     #[inline(always)]
     fn call(&mut self, _world: &mut World, acc: &mut Acc, input: In) -> Out {
@@ -655,9 +651,7 @@ impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
     }
 }
 
-impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static>
-    IntoScanStep<Acc, In, Out, ()> for F
-{
+impl<Acc, In, Out, F: FnMut(&mut Acc, In) -> Out + 'static> IntoScanStep<Acc, In, Out, ()> for F {
     type Step = Step<F, ()>;
 
     fn into_scan_step(self, registry: &Registry) -> Self::Step {
@@ -742,8 +736,8 @@ pub struct OpaqueScanStep<F> {
     name: &'static str,
 }
 
-impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, In) -> Out + 'static>
-    ScanStepCall<Acc, In> for OpaqueScanStep<F>
+impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, In) -> Out + 'static> ScanStepCall<Acc, In>
+    for OpaqueScanStep<F>
 {
     type Out = Out;
     #[inline(always)]
@@ -815,8 +809,8 @@ pub trait IntoRefScanStep<Acc, In, Out, Params> {
 
 // -- Arity 0: FnMut(&mut Acc, &In) -> Out — closures work -------------------
 
-impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
-    RefScanStepCall<Acc, In> for Step<F, ()>
+impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static> RefScanStepCall<Acc, In>
+    for Step<F, ()>
 {
     type Out = Out;
     #[inline(always)]
@@ -825,8 +819,8 @@ impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
     }
 }
 
-impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static>
-    IntoRefScanStep<Acc, In, Out, ()> for F
+impl<Acc, In, Out, F: FnMut(&mut Acc, &In) -> Out + 'static> IntoRefScanStep<Acc, In, Out, ()>
+    for F
 {
     type Step = Step<F, ()>;
 
@@ -912,8 +906,8 @@ pub struct OpaqueRefScanStep<F> {
     name: &'static str,
 }
 
-impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, &In) -> Out + 'static>
-    RefScanStepCall<Acc, In> for OpaqueRefScanStep<F>
+impl<Acc, In, Out, F: FnMut(&mut World, &mut Acc, &In) -> Out + 'static> RefScanStepCall<Acc, In>
+    for OpaqueRefScanStep<F>
 {
     type Out = Out;
     #[inline(always)]
@@ -1410,7 +1404,11 @@ where
     type Out = Option<Prev::Out>;
     fn call(&mut self, world: &mut World, input: In) -> Option<Prev::Out> {
         let val = self.prev.call(world, input);
-        if self.step.call(world, &val) { Some(val) } else { None }
+        if self.step.call(world, &val) {
+            Some(val)
+        } else {
+            None
+        }
     }
 }
 
@@ -1421,9 +1419,7 @@ pub struct DedupNode<Prev, T> {
     pub(crate) last: Option<T>,
 }
 
-impl<In, T: PartialEq + Clone, Prev: ChainCall<In, Out = T>> ChainCall<In>
-    for DedupNode<Prev, T>
-{
+impl<In, T: PartialEq + Clone, Prev: ChainCall<In, Out = T>> ChainCall<In> for DedupNode<Prev, T> {
     type Out = Option<T>;
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         let val = self.prev.call(world, input);
@@ -1977,9 +1973,7 @@ pub struct ClonedNode<Prev> {
     pub(crate) prev: Prev,
 }
 
-impl<'a, In, T: Clone + 'a, Prev: ChainCall<In, Out = &'a T>> ChainCall<In>
-    for ClonedNode<Prev>
-{
+impl<'a, In, T: Clone + 'a, Prev: ChainCall<In, Out = &'a T>> ChainCall<In> for ClonedNode<Prev> {
     type Out = T;
     fn call(&mut self, world: &mut World, input: In) -> T {
         T::clone(self.prev.call(world, input))
@@ -2463,10 +2457,7 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// Multi-step version of [`tap`](Self::tap) — the arm has the
     /// full DAG combinator API with Param resolution. Build with
     /// [`DagArmSeed::new()`](crate::dag::DagArmSeed::new).
-    pub fn tee<C>(
-        self,
-        side: DagArm<Out, (), C>,
-    ) -> PipelineChain<In, Out, TeeNode<Chain, C>>
+    pub fn tee<C>(self, side: DagArm<Out, (), C>) -> PipelineChain<In, Out, TeeNode<Chain, C>>
     where
         C: for<'a> ChainCall<&'a Out, Out = ()>,
     {
@@ -2672,9 +2663,7 @@ define_splat_builders!(5,
 // Dedup — suppress unchanged values
 // =============================================================================
 
-impl<In, Out: PartialEq + Clone, Chain: ChainCall<In, Out = Out>>
-    PipelineChain<In, Out, Chain>
-{
+impl<In, Out: PartialEq + Clone, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// Suppress consecutive unchanged values. Returns `Some(val)`
     /// when the value differs from the previous invocation, `None`
     /// when unchanged. First invocation always returns `Some`.
@@ -2951,9 +2940,7 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineChain<In, Option<T>, 
 // Result helpers — PipelineChain<In, Result<T, E>, Chain>
 // =============================================================================
 
-impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>>
-    PipelineChain<In, Result<T, E>, Chain>
-{
+impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>> PipelineChain<In, Result<T, E>, Chain> {
     // -- IntoStep-based (hot path) -------------------------------------------
 
     /// Transform the Ok value. Step not called on Err.
@@ -3141,9 +3128,7 @@ impl<In, Chain: ChainCall<In, Out = ()>> PipelineChain<In, (), Chain> {
     /// If your chain produces a value, add a final `.then()` that consumes
     /// the output.
     pub fn build(self) -> Pipeline<Chain> {
-        Pipeline {
-            chain: self.chain,
-        }
+        Pipeline { chain: self.chain }
     }
 }
 
@@ -3164,9 +3149,7 @@ impl<In, Chain: ChainCall<In, Out = Option<()>>> PipelineChain<In, Option<()>, C
 // build_batch — when Out: PipelineOutput (() or Option<()>)
 // =============================================================================
 
-impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>>
-    PipelineChain<In, Out, Chain>
-{
+impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// Finalize into a [`BatchPipeline`] with a pre-allocated input buffer.
     ///
     /// Same pipeline chain as [`build`](PipelineChain::build), but the
@@ -3486,9 +3469,12 @@ mod tests {
         let r = world.registry();
         let mut p = PipelineBuilder::<u32>::new()
             .then(|_x: u32| -> Option<u32> { None }, r)
-            .on_none(|w: &mut World| {
-                *w.resource_mut::<bool>() = true;
-            }, r);
+            .on_none(
+                |w: &mut World| {
+                    *w.resource_mut::<bool>() = true;
+                },
+                r,
+            );
         p.run(&mut world, 0);
         assert!(*world.resource::<bool>());
     }
@@ -4034,12 +4020,14 @@ mod tests {
     fn ref_identity(x: &u32) -> &u32 {
         x
     }
+    #[allow(clippy::unnecessary_wraps)]
     fn ref_wrap_some(x: &u32) -> Option<&u32> {
         Some(x)
     }
     fn ref_wrap_none(_x: &u32) -> Option<&u32> {
         None
     }
+    #[allow(clippy::unnecessary_wraps)]
     fn ref_wrap_ok(x: &u32) -> Result<&u32, String> {
         Ok(x)
     }
@@ -4053,7 +4041,9 @@ mod tests {
         // val before p — val must outlive the pipeline's In = &u32
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineBuilder::<&u32>::new().then(ref_identity, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new()
+            .then(ref_identity, r)
+            .cloned();
         assert_eq!(p.run(&mut world, &val), 42u32);
     }
 
@@ -4062,7 +4052,9 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_some, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new()
+            .then(ref_wrap_some, r)
+            .cloned();
         assert_eq!(p.run(&mut world, &val), Some(42u32));
     }
 
@@ -4071,7 +4063,9 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_none, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new()
+            .then(ref_wrap_none, r)
+            .cloned();
         assert_eq!(p.run(&mut world, &val), None);
     }
 
@@ -4089,7 +4083,9 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let val = 42u32;
         let r = world.registry_mut();
-        let mut p = PipelineBuilder::<&u32>::new().then(ref_wrap_err, r).cloned();
+        let mut p = PipelineBuilder::<&u32>::new()
+            .then(ref_wrap_err, r)
+            .cloned();
         assert_eq!(p.run(&mut world, &val), Err("fail".into()));
     }
 
@@ -4251,9 +4247,12 @@ mod tests {
 
         let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64 * 2, reg)
-            .tap(|w: &mut World, val: &u64| {
-                *w.resource_mut::<bool>() = *val == 10;
-            }, reg)
+            .tap(
+                |w: &mut World, val: &u64| {
+                    *w.resource_mut::<bool>() = *val == 10;
+                },
+                reg,
+            )
             .then(sink, reg);
 
         p.run(&mut world, 5u32);
@@ -4321,10 +4320,12 @@ mod tests {
         let inner_t = PipelineBuilder::new().then(|x: u64| x + 200, reg);
         let inner_f = PipelineBuilder::new().then(|x: u64| x + 300, reg);
         let outer_t = PipelineBuilder::new().then(|x: u64| x + 100, reg);
-        let outer_f =
-            PipelineBuilder::new()
-                .then(|x: u64| x, reg)
-                .route(|v: &u64| *v < 10, reg, inner_t, inner_f);
+        let outer_f = PipelineBuilder::new().then(|x: u64| x, reg).route(
+            |v: &u64| *v < 10,
+            reg,
+            inner_t,
+            inner_f,
+        );
 
         let mut p = PipelineBuilder::<u32>::new()
             .then(|x: u32| x as u64, reg)
@@ -4518,7 +4519,9 @@ mod tests {
         }
 
         let r = world.registry_mut();
-        let mut p = PipelineBuilder::<(u32, u32)>::new().splat().then(process, r);
+        let mut p = PipelineBuilder::<(u32, u32)>::new()
+            .splat()
+            .then(process, r);
         assert_eq!(p.run(&mut world, (3, 7)), 110);
     }
 
@@ -4628,7 +4631,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "conflicting access")]
     fn splat_access_conflict_detected() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
@@ -4787,7 +4790,7 @@ mod tests {
             *val > *threshold
         }
         fn sink(mut out: ResMut<i64>, val: Option<u64>) {
-            *out = val.map(|v| v as i64).unwrap_or(-1);
+            *out = val.map_or(-1, |v| v as i64);
         }
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(5); // threshold
@@ -4931,7 +4934,10 @@ mod tests {
         let reg = world.registry();
 
         let mut p = PipelineBuilder::<u32>::new()
-            .then(|x: u32| -> Option<u32> { if x > 5 { Some(x) } else { None } }, reg)
+            .then(
+                |x: u32| -> Option<u32> { if x > 5 { Some(x) } else { None } },
+                reg,
+            )
             .on_none(log_miss, reg)
             .unwrap_or(0);
 
@@ -4952,7 +4958,10 @@ mod tests {
         let reg = world.registry();
 
         let mut p = PipelineBuilder::<u32>::new()
-            .then(|x: u32| -> Option<u32> { if x > 0 { Some(x) } else { None } }, reg)
+            .then(
+                |x: u32| -> Option<u32> { if x > 0 { Some(x) } else { None } },
+                reg,
+            )
             .ok_or_else(make_error, reg);
 
         let r: Result<u32, String> = p.run(&mut world, 5u32);
@@ -4973,7 +4982,10 @@ mod tests {
         let reg = world.registry();
 
         let mut p = PipelineBuilder::<u32>::new()
-            .then(|x: u32| -> Option<u64> { if x > 0 { Some(x as u64) } else { None } }, reg)
+            .then(
+                |x: u32| -> Option<u64> { if x > 0 { Some(x as u64) } else { None } },
+                reg,
+            )
             .unwrap_or_else(fallback, reg);
 
         assert_eq!(p.run(&mut world, 5u32), 5);
@@ -4999,9 +5011,10 @@ mod tests {
         let reg = world.registry();
 
         let mut p = PipelineBuilder::<u32>::new()
-            .then(|x: u32| -> Result<u32, String> {
-                if x > 0 { Ok(x) } else { Err("zero".into()) }
-            }, reg)
+            .then(
+                |x: u32| -> Result<u32, String> { if x > 0 { Ok(x) } else { Err("zero".into()) } },
+                reg,
+            )
             .map_err(tag_error, reg)
             .then(sink, reg);
 
@@ -5021,12 +5034,14 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineBuilder::<u64>::new()
-            .then(|x: u64| x, reg)
-            .scan(0u64, |acc: &mut u64, val: u64| {
+        let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, reg).scan(
+            0u64,
+            |acc: &mut u64, val: u64| {
                 *acc += val;
                 Some(*acc)
-            }, reg);
+            },
+            reg,
+        );
 
         assert_eq!(p.run(&mut world, 10), Some(10));
         assert_eq!(p.run(&mut world, 20), Some(30));
@@ -5040,18 +5055,15 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn threshold_scan(
-            limit: Res<u64>,
-            acc: &mut u64,
-            val: u64,
-        ) -> Option<u64> {
+        fn threshold_scan(limit: Res<u64>, acc: &mut u64, val: u64) -> Option<u64> {
             *acc += val;
             if *acc > *limit { Some(*acc) } else { None }
         }
 
-        let mut p = PipelineBuilder::<u64>::new()
-            .then(|x: u64| x, reg)
-            .scan(0u64, threshold_scan, reg);
+        let mut p =
+            PipelineBuilder::<u64>::new()
+                .then(|x: u64| x, reg)
+                .scan(0u64, threshold_scan, reg);
 
         assert_eq!(p.run(&mut world, 50), None);
         assert_eq!(p.run(&mut world, 30), None);
@@ -5065,13 +5077,15 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut p = PipelineBuilder::<u64>::new()
-            .then(|x: u64| x, reg)
-            .scan(0u64, |world: &mut World, acc: &mut u64, val: u64| {
+        let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, reg).scan(
+            0u64,
+            |world: &mut World, acc: &mut u64, val: u64| {
                 let factor = *world.resource::<u64>();
                 *acc += val * factor;
                 Some(*acc)
-            }, reg);
+            },
+            reg,
+        );
 
         assert_eq!(p.run(&mut world, 1), Some(10));
         assert_eq!(p.run(&mut world, 2), Some(30));
@@ -5082,12 +5096,14 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineBuilder::<u64>::new()
-            .then(|x: u64| x, reg)
-            .scan(0u64, |acc: &mut u64, val: u64| -> Option<u64> {
+        let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, reg).scan(
+            0u64,
+            |acc: &mut u64, val: u64| -> Option<u64> {
                 *acc += val;
                 if *acc > 50 { Some(*acc) } else { None }
-            }, reg);
+            },
+            reg,
+        );
 
         assert_eq!(p.run(&mut world, 20), None);
         assert_eq!(p.run(&mut world, 20), None);
@@ -5099,11 +5115,14 @@ mod tests {
         let mut world = WorldBuilder::new().build();
         let reg = world.registry();
 
-        let mut p = PipelineBuilder::<u64>::new()
-            .scan(0u64, |acc: &mut u64, val: u64| {
+        let mut p = PipelineBuilder::<u64>::new().scan(
+            0u64,
+            |acc: &mut u64, val: u64| {
                 *acc += val;
                 *acc
-            }, reg);
+            },
+            reg,
+        );
 
         assert_eq!(p.run(&mut world, 5), 5);
         assert_eq!(p.run(&mut world, 3), 8);
@@ -5117,14 +5136,20 @@ mod tests {
         let mut world = wb.build();
         let reg = world.registry();
 
-        fn store(mut out: ResMut<u64>, val: u64) { *out = val; }
+        fn store(mut out: ResMut<u64>, val: u64) {
+            *out = val;
+        }
 
         let mut p = PipelineBuilder::<u64>::new()
             .then(|x: u64| x, reg)
-            .scan(0u64, |acc: &mut u64, val: u64| {
-                *acc += val;
-                *acc
-            }, reg)
+            .scan(
+                0u64,
+                |acc: &mut u64, val: u64| {
+                    *acc += val;
+                    *acc
+                },
+                reg,
+            )
             .then(store, reg)
             .build_batch(4);
 
@@ -5235,7 +5260,11 @@ mod tests {
         let mut world = wb.build();
 
         fn decode(msg: &[u8]) -> Option<u64> {
-            if msg.is_empty() { None } else { Some(msg.len() as u64) }
+            if msg.is_empty() {
+                None
+            } else {
+                Some(msg.len() as u64)
+            }
         }
         fn store(mut out: ResMut<u64>, val: u64) {
             *out = val;

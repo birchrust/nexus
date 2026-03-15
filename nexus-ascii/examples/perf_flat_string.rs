@@ -14,6 +14,8 @@ mod bench_utils;
 
 use bench_utils::{bench_batched, print_header, print_intro};
 use nexus_ascii::{AsciiChar, AsciiString, FlatAsciiString};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::hint::black_box;
 
 fn main() {
@@ -123,12 +125,7 @@ fn main() {
 
     bench_batched("as_bytes() (7B)", || black_box(s7).as_bytes().len() as u64);
 
-    bench_batched(
-        "is_empty()",
-        || {
-            if black_box(s7).is_empty() { 0 } else { 1 }
-        },
-    );
+    bench_batched("is_empty()", || u64::from(!black_box(s7).is_empty()));
 
     // =========================================================================
     // String operations
@@ -150,27 +147,15 @@ fn main() {
     });
 
     bench_batched("contains (found, 3B)", || {
-        if black_box(&s).contains(black_box(b"USD")) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&s).contains(black_box(b"USD")))
     });
 
     bench_batched("contains (not found)", || {
-        if black_box(&s).contains(black_box(b"EUR")) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&s).contains(black_box(b"EUR")))
     });
 
     bench_batched("split_once (found)", || {
-        if black_box(&s).split_once(b'-').is_some() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&s).split_once(b'-').is_some())
     });
 
     // =========================================================================
@@ -256,9 +241,6 @@ fn main() {
     println!();
     print_header("HASHING (Flat vs AsciiString)");
 
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
     let flat7: FlatAsciiString<32> = FlatAsciiString::try_from("BTC-USD").unwrap();
     let ascii7: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
     let flat32: FlatAsciiString<32> =
@@ -300,38 +282,22 @@ fn main() {
     let ascii7b: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
 
     bench_batched("Flat == (7B, equal)", || {
-        if black_box(flat7) == black_box(flat7b) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(flat7) == black_box(flat7b))
     });
 
     bench_batched("AsciiString == (7B, equal)", || {
-        if black_box(ascii7) == black_box(ascii7b) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(ascii7) == black_box(ascii7b))
     });
 
     let flat_diff: FlatAsciiString<32> = FlatAsciiString::try_from("ETH-USD").unwrap();
     let ascii_diff: AsciiString<32> = AsciiString::try_from("ETH-USD").unwrap();
 
     bench_batched("Flat == (7B, not equal)", || {
-        if black_box(flat7) == black_box(flat_diff) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(flat7) == black_box(flat_diff))
     });
 
     bench_batched("AsciiString == (7B, not equal)", || {
-        if black_box(ascii7) == black_box(ascii_diff) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(ascii7) == black_box(ascii_diff))
     });
 
     // =========================================================================

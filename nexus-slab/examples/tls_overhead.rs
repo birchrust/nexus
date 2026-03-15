@@ -258,6 +258,7 @@ fn bench_bounded() {
     {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
+            #[allow(clippy::needless_collect)]
             let slots: Vec<_> = (0..100)
                 .map(|_| bounded_alloc::BoxSlot::try_new(bounded_alloc::Pod64::default()).unwrap())
                 .collect();
@@ -345,6 +346,7 @@ fn bench_unbounded() {
     {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
+            #[allow(clippy::needless_collect)]
             let slots: Vec<_> = (0..100)
                 .map(|_| unbounded_alloc::BoxSlot::new(unbounded_alloc::Pod64::default()))
                 .collect();
@@ -382,6 +384,7 @@ fn bench_side_by_side() {
     let mut macro_samples = Vec::with_capacity(SAMPLES);
 
     for i in 0..SAMPLES {
+        #[allow(clippy::branches_sharing_code)]
         if i % 2 == 0 {
             // Direct first
             let start = rdtsc_start();

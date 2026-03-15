@@ -68,22 +68,22 @@ fn main() {
     let s4: AsciiString<32> = AsciiString::try_from("BTC").unwrap();
 
     bench("eq (same content)", || {
-        if black_box(s1) == black_box(s2) { 1 } else { 0 }
+        u64::from(black_box(s1) == black_box(s2))
     });
 
     bench("eq (different content)", || {
-        if black_box(s1) == black_box(s3) { 1 } else { 0 }
+        u64::from(black_box(s1) == black_box(s3))
     });
 
     bench("eq (different length)", || {
-        if black_box(s1) == black_box(s4) { 1 } else { 0 }
+        u64::from(black_box(s1) == black_box(s4))
     });
 
     // Baseline: raw u64 comparison (what our header compare should match)
     let h1 = s1.header();
     let h2 = s2.header();
     bench("baseline: u64 == u64", || {
-        if black_box(h1) == black_box(h2) { 1 } else { 0 }
+        u64::from(black_box(h1) == black_box(h2))
     });
 
     // =========================================================================

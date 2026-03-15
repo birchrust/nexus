@@ -130,20 +130,16 @@ fn bench_mpsc(num_producers: usize, mode: ContentionMode) -> (u64, u64) {
                         ContentionMode::Backoff => {
                             let backoff = Backoff::new();
                             loop {
-                                match prod.try_claim(len) {
-                                    Ok(mut claim) => {
-                                        claim.copy_from_slice(&payload[..len]);
-                                        claim.commit();
-                                        local_bytes += len as u64;
-                                        local_msgs += 1;
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        backoff.snooze();
-                                        if backoff.is_completed() {
-                                            backoff.reset();
-                                        }
-                                    }
+                                if let Ok(mut claim) = prod.try_claim(len) {
+                                    claim.copy_from_slice(&payload[..len]);
+                                    claim.commit();
+                                    local_bytes += len as u64;
+                                    local_msgs += 1;
+                                    break;
+                                }
+                                backoff.snooze();
+                                if backoff.is_completed() {
+                                    backoff.reset();
                                 }
                             }
                         }

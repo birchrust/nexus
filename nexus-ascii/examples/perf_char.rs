@@ -29,7 +29,7 @@ fn main() {
 
     bench("try_new (invalid)", || {
         let r = AsciiChar::try_new(black_box(0x80));
-        if r.is_err() { 1 } else { 0 }
+        u64::from(r.is_err())
     });
 
     bench("new_unchecked", || {
@@ -43,8 +43,8 @@ fn main() {
     });
 
     bench("from_char (invalid)", || {
-        let r = AsciiChar::from_char(black_box('é'));
-        if r.is_err() { 1 } else { 0 }
+        let r = AsciiChar::from_char(black_box('\u{00e9}'));
+        u64::from(r.is_err())
     });
 
     // =========================================================================
@@ -72,78 +72,39 @@ fn main() {
     let ctrl = AsciiChar::SOH;
 
     bench("is_uppercase (true)", || {
-        if black_box(upper).is_uppercase() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).is_uppercase())
     });
 
     bench("is_uppercase (false)", || {
-        if black_box(lower).is_uppercase() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(lower).is_uppercase())
     });
 
     bench("is_lowercase", || {
-        if black_box(lower).is_lowercase() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(lower).is_lowercase())
     });
 
     bench("is_alphabetic", || {
-        if black_box(upper).is_alphabetic() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).is_alphabetic())
     });
 
-    bench(
-        "is_digit",
-        || {
-            if black_box(digit).is_digit() { 1 } else { 0 }
-        },
-    );
+    bench("is_digit", || u64::from(black_box(digit).is_digit()));
 
     bench("is_alphanumeric", || {
-        if black_box(upper).is_alphanumeric() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).is_alphanumeric())
     });
 
     bench("is_whitespace", || {
-        if black_box(space).is_whitespace() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(space).is_whitespace())
     });
 
     bench("is_printable", || {
-        if black_box(upper).is_printable() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).is_printable())
     });
 
-    bench("is_control", || {
-        if black_box(ctrl).is_control() { 1 } else { 0 }
-    });
+    bench("is_control", || u64::from(black_box(ctrl).is_control()));
 
     bench("is_hex_digit", || {
-        if black_box(upper).is_hex_digit() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).is_hex_digit())
     });
 
     // =========================================================================
@@ -169,19 +130,11 @@ fn main() {
     });
 
     bench("eq_ignore_case (same case)", || {
-        if black_box(upper).eq_ignore_case(black_box(upper)) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).eq_ignore_case(black_box(upper)))
     });
 
     bench("eq_ignore_case (diff case)", || {
-        if black_box(upper).eq_ignore_case(black_box(lower)) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(upper).eq_ignore_case(black_box(lower)))
     });
 
     // =========================================================================
@@ -194,23 +147,19 @@ fn main() {
     let a: u8 = b'A';
     let b: u8 = b'A';
     bench("u8 == u8 (baseline)", || {
-        if black_box(a) == black_box(b) { 1 } else { 0 }
+        u64::from(black_box(a) == black_box(b))
     });
 
     // Raw u8 range check (like is_uppercase)
     bench("u8 range check (baseline)", || {
         let x = black_box(a);
-        if x >= b'A' && x <= b'Z' { 1 } else { 0 }
+        u64::from(x >= b'A' && x <= b'Z')
     });
 
     // char.is_ascii_uppercase (std)
     let ch: char = 'A';
     bench("char.is_ascii_uppercase (std)", || {
-        if black_box(ch).is_ascii_uppercase() {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(ch).is_ascii_uppercase())
     });
 
     // char.to_ascii_lowercase (std)

@@ -553,7 +553,9 @@ macro_rules! bounded_byte_allocator {
             }
 
             #[inline]
-            unsafe fn take(slot: $crate::RawSlot<$crate::byte::AlignedBytes<$n>>) -> $crate::byte::AlignedBytes<$n> {
+            unsafe fn take(
+                slot: $crate::RawSlot<$crate::byte::AlignedBytes<$n>>,
+            ) -> $crate::byte::AlignedBytes<$n> {
                 let slot_ptr = slot.into_ptr();
                 // SAFETY: Caller guarantees slot is valid and occupied
                 let value = (*slot_ptr).read_value();
@@ -701,7 +703,9 @@ macro_rules! unbounded_byte_allocator {
             }
 
             #[inline]
-            unsafe fn take(slot: $crate::RawSlot<$crate::byte::AlignedBytes<$n>>) -> $crate::byte::AlignedBytes<$n> {
+            unsafe fn take(
+                slot: $crate::RawSlot<$crate::byte::AlignedBytes<$n>>,
+            ) -> $crate::byte::AlignedBytes<$n> {
                 let slot_ptr = slot.into_ptr();
                 // SAFETY: Caller guarantees slot is valid and occupied
                 let value = (*slot_ptr).read_value();

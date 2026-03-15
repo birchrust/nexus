@@ -25,7 +25,7 @@ fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
+        std::arch::x86_64::__rdtscp(&raw mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -140,7 +140,7 @@ fn main() {
         for h in &heap_handles {
             heap.link(h);
         }
-        while heap.len() > 0 {
+        while !heap.is_empty() {
             let s = rdtscp();
             let _ = black_box(heap.pop());
             let e = rdtscp();
@@ -292,7 +292,7 @@ fn main() {
         for h in &list_handles {
             list.link_back(h);
         }
-        while list.len() > 0 {
+        while !list.is_empty() {
             let s = rdtscp();
             let _ = black_box(list.pop_front());
             let e = rdtscp();
@@ -308,7 +308,7 @@ fn main() {
         for h in &list_handles {
             list.link_back(h);
         }
-        while list.len() > 0 {
+        while !list.is_empty() {
             let s = rdtscp();
             let _ = black_box(list.pop_back());
             let e = rdtscp();

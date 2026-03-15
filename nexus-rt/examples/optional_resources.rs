@@ -40,6 +40,7 @@ struct Metrics {
 // -- Handlers ----------------------------------------------------------------
 
 /// Always runs. Uses Config (required) and DebugLog (optional).
+#[allow(clippy::needless_pass_by_value)]
 fn process_event(config: Res<Config>, mut debug: Option<ResMut<DebugLog>>, value: f64) {
     let above = value > config.threshold;
     println!(
@@ -55,6 +56,7 @@ fn process_event(config: Res<Config>, mut debug: Option<ResMut<DebugLog>>, value
 }
 
 /// Always runs. Increments metrics if they exist.
+#[allow(clippy::needless_pass_by_value)]
 fn track_metrics(metrics: Option<ResMut<Metrics>>, _event: f64) {
     match metrics {
         Some(mut m) => {

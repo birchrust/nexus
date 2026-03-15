@@ -36,10 +36,10 @@ fn reset_drop_count() {
 }
 
 fn get_drop_count() -> usize {
-    DROP_COUNT.with(|c| c.get())
+    DROP_COUNT.with(Cell::get)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroSized;
 
 pub struct LargeStruct {

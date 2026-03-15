@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn unpack_64() {
         // ts=100, worker=5, seq=42 for <42, 6, 16>
-        let raw = (100u64 << 22) | (5u64 << 16) | 42u64;
+        let raw = (100u64 << 22) | (5u64 << 16) | 0x2A_u64;
         let id = Id64::from_raw(raw);
 
         assert_eq!(id.timestamp(), 100);
@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn unpack_32() {
         // ts=50, worker=7, seq=200 for <20, 4, 8>
-        let raw = (50u32 << 12) | (7u32 << 8) | 200u32;
+        let raw = (50u32 << 12) | (7u32 << 8) | 0xC8_u32;
         let id = Id32::from_raw(raw);
 
         assert_eq!(id.timestamp(), 50);
@@ -494,8 +494,8 @@ mod tests {
 
     #[test]
     fn ordering_preserves_time() {
-        let id1 = Id64::from_raw((100u64 << 22) | (5u64 << 16) | 0);
-        let id2 = Id64::from_raw((101u64 << 22) | (5u64 << 16) | 0);
+        let id1 = Id64::from_raw((100u64 << 22) | (5u64 << 16));
+        let id2 = Id64::from_raw((101u64 << 22) | (5u64 << 16));
         let id3 = Id64::from_raw((100u64 << 22) | (5u64 << 16) | 1);
 
         // Later timestamp > earlier timestamp
@@ -513,14 +513,14 @@ mod tests {
 
     #[test]
     fn to_base62_roundtrip() {
-        let id = Id64::from_raw(12345678);
+        let id = Id64::from_raw(12_345_678);
         let b62 = id.to_base62();
         assert_eq!(b62.decode(), id.raw());
     }
 
     #[test]
     fn to_base36_roundtrip() {
-        let id = Id64::from_raw(12345678);
+        let id = Id64::from_raw(12_345_678);
         let b36 = id.to_base36();
         assert_eq!(b36.decode(), id.raw());
     }
@@ -534,16 +534,16 @@ mod tests {
 
     #[test]
     fn snowflake32_to_base62_roundtrip() {
-        let id = Id32::from_raw(12345678);
+        let id = Id32::from_raw(12_345_678);
         let b62 = id.to_base62();
-        assert_eq!(b62.decode(), 12345678_u64);
+        assert_eq!(b62.decode(), 12_345_678_u64);
     }
 
     #[test]
     fn snowflake32_to_base36_roundtrip() {
-        let id = Id32::from_raw(12345678);
+        let id = Id32::from_raw(12_345_678);
         let b36 = id.to_base36();
-        assert_eq!(b36.decode(), 12345678_u64);
+        assert_eq!(b36.decode(), 12_345_678_u64);
     }
 
     #[test]

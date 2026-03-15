@@ -259,14 +259,15 @@ mod tests {
 
     struct Hello;
     impl Greet for Hello {
-        fn greet(&self) -> &str {
+        fn greet(&self) -> &'static str {
             "hello"
         }
     }
 
+    #[allow(dead_code)]
     struct World(u64);
     impl Greet for World {
-        fn greet(&self) -> &str {
+        fn greet(&self) -> &'static str {
             "world"
         }
     }
@@ -370,7 +371,7 @@ mod tests {
             }
         }
         impl Greet for Dropper {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "dropping"
             }
         }
@@ -387,6 +388,7 @@ mod tests {
     fn drop_runs_sized() {
         static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+        #[allow(dead_code)]
         struct Dropper(u64);
         impl Drop for Dropper {
             fn drop(&mut self) {
@@ -404,9 +406,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds capacity")]
     fn panics_on_overflow_unsized() {
+        #[allow(dead_code)]
         struct Big([u64; 8]);
         impl Greet for Big {
-            fn greet(&self) -> &str {
+            fn greet(&self) -> &'static str {
                 "big"
             }
         }

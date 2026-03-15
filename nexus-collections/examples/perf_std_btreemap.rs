@@ -68,6 +68,7 @@ impl Xorshift {
     }
 }
 
+#[allow(clippy::collection_is_never_read, clippy::unnecessary_semicolon)]
 fn main() {
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
 

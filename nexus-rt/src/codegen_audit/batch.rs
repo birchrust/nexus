@@ -9,10 +9,10 @@
 #![allow(clippy::type_complexity)]
 #![allow(unused_variables)]
 
+use super::helpers::*;
 use crate::dag::{DagArmSeed, DagBuilder};
 use crate::pipeline::PipelineBuilder;
 use crate::{IntoHandler, World};
-use super::helpers::*;
 
 // ═══════════════════════════════════════════════════════════════════
 // 21. Batch pipeline
@@ -371,11 +371,14 @@ pub fn batch_pipe_transition(world: &mut World) {
 pub fn batch_pipe_switch(world: &mut World) {
     let reg = world.registry();
     let mut bp = PipelineBuilder::<u64>::new()
-        .then(|x: u64| match x % 3 {
-            0 => x.wrapping_mul(2),
-            1 => x.wrapping_add(10),
-            _ => x.wrapping_sub(5),
-        }, &reg)
+        .then(
+            |x: u64| match x % 3 {
+                0 => x.wrapping_mul(2),
+                1 => x.wrapping_add(10),
+                _ => x.wrapping_sub(5),
+            },
+            &reg,
+        )
         .then(consume_val, &reg)
         .build_batch(64);
     bp.input_mut().extend(0..64);

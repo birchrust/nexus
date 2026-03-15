@@ -40,15 +40,15 @@ fn basic_fields_accessors() {
 fn basic_fields_roundtrip() {
     let original = BasicFields::builder()
         .a(255)
-        .b(65535)
-        .c(0xFFFFFFFF)
+        .b(65_535)
+        .c(0xFFFF_FFFF)
         .build()
         .unwrap();
 
     let s = BasicFields::from_raw(original.raw());
     assert_eq!(s.a(), 255);
-    assert_eq!(s.b(), 65535);
-    assert_eq!(s.c(), 0xFFFFFFFF);
+    assert_eq!(s.b(), 65_535);
+    assert_eq!(s.c(), 0xFFFF_FFFF);
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn mixed_build() {
 
 #[test]
 fn mixed_accessors() {
-    let raw: u64 = 42 | (1 << 8) | (1000 << 16);
+    let raw: u64 = 0x2A | (1 << 8) | (1000 << 16);
     let s = Mixed::from_raw(raw);
 
     assert_eq!(s.value(), 42);
@@ -216,7 +216,7 @@ fn mixed_roundtrip() {
     let original = Mixed::builder()
         .value(255)
         .enabled(true)
-        .count(65535)
+        .count(65_535)
         .high_flag(true)
         .build()
         .unwrap();
@@ -267,7 +267,7 @@ fn enum_fields_build() {
     // side=0 at bit 0
     // tif=2 at bits 1-2
     // quantity=100 at bits 3-18
-    assert_eq!(s.raw(), 0 | (2 << 1) | (100 << 3));
+    assert_eq!(s.raw(), (2 << 1) | (100 << 3));
 }
 
 #[test]
@@ -285,14 +285,14 @@ fn enum_fields_roundtrip() {
     let original = OrderFlags::builder()
         .side(Side::Sell)
         .tif(TimeInForce::Gtc)
-        .quantity(12345)
+        .quantity(12_345)
         .build()
         .unwrap();
 
     let unpacked = OrderFlags::from_raw(original.raw());
     assert_eq!(unpacked.side().unwrap(), Side::Sell);
     assert_eq!(unpacked.tif().unwrap(), TimeInForce::Gtc);
-    assert_eq!(unpacked.quantity(), 12345);
+    assert_eq!(unpacked.quantity(), 12_345);
 }
 
 // =============================================================================
@@ -406,7 +406,7 @@ fn u32_repr_roundtrip() {
         .build()
         .unwrap();
 
-    assert_eq!(original.raw(), 0x56781234);
+    assert_eq!(original.raw(), 0x5678_1234);
     let unpacked = U32Storage::from_raw(original.raw());
     assert_eq!(unpacked.low(), 0x1234);
     assert_eq!(unpacked.high(), 0x5678);
@@ -423,14 +423,14 @@ pub struct SignedRepr {
 #[test]
 fn i64_repr_roundtrip() {
     let original = SignedRepr::builder()
-        .a(0xDEADBEEF)
-        .b(0xCAFEBABE)
+        .a(0xDEAD_BEEF)
+        .b(0xCAFE_BABE)
         .build()
         .unwrap();
 
     let unpacked = SignedRepr::from_raw(original.raw());
-    assert_eq!(unpacked.a(), 0xDEADBEEF);
-    assert_eq!(unpacked.b(), 0xCAFEBABE);
+    assert_eq!(unpacked.a(), 0xDEAD_BEEF);
+    assert_eq!(unpacked.b(), 0xCAFE_BABE);
 }
 
 // =============================================================================
@@ -647,7 +647,7 @@ fn instrument_id_roundtrip() {
     let original = InstrumentId::builder()
         .asset_class(AssetClass::Option)
         .exchange(Exchange::Cboe)
-        .symbol(123456)
+        .symbol(123_456)
         .is_test(true)
         .build()
         .unwrap();
@@ -655,7 +655,7 @@ fn instrument_id_roundtrip() {
     let unpacked = InstrumentId::from_raw(original.raw());
     assert_eq!(unpacked.asset_class().unwrap(), AssetClass::Option);
     assert_eq!(unpacked.exchange().unwrap(), Exchange::Cboe);
-    assert_eq!(unpacked.symbol(), 123456);
+    assert_eq!(unpacked.symbol(), 123_456);
     assert!(unpacked.is_test());
 }
 
@@ -677,7 +677,7 @@ fn instrument_id_all_variants() {
                 let original = InstrumentId::builder()
                     .asset_class(ac)
                     .exchange(ex)
-                    .symbol(999999)
+                    .symbol(999_999)
                     .is_test(test)
                     .build()
                     .unwrap();
@@ -685,7 +685,7 @@ fn instrument_id_all_variants() {
                 let unpacked = InstrumentId::from_raw(original.raw());
                 assert_eq!(unpacked.asset_class().unwrap(), ac);
                 assert_eq!(unpacked.exchange().unwrap(), ex);
-                assert_eq!(unpacked.symbol(), 999999);
+                assert_eq!(unpacked.symbol(), 999_999);
                 assert_eq!(unpacked.is_test(), test);
             }
         }
@@ -788,15 +788,15 @@ pub struct TightPacking {
 #[test]
 fn crosses_byte_boundary() {
     let s = CrossesByteBoundary::builder()
-        .value(0xABCDEF)
+        .value(0xAB_CDEF)
         .build()
         .unwrap();
 
-    // value 0xABCDEF shifted left 4 bits
-    assert_eq!(s.raw(), 0xABCDEF << 4);
+    // value 0xAB_CDEF shifted left 4 bits
+    assert_eq!(s.raw(), 0xAB_CDEF << 4);
 
     let unpacked = CrossesByteBoundary::from_raw(s.raw());
-    assert_eq!(unpacked.value(), 0xABCDEF);
+    assert_eq!(unpacked.value(), 0xAB_CDEF);
 }
 
 #[test]
@@ -850,19 +850,19 @@ fn scattered_bits_alternating() {
 fn odd_offsets_roundtrip() {
     let s = OddOffsets::builder()
         .a(0b111) // max 3 bits = 7
-        .b(0b11111) // max 5 bits = 31
-        .c(0b1111111) // max 7 bits = 127
-        .d(0b11111111111) // max 11 bits = 2047
-        .e(0b1111111111111) // max 13 bits = 8191
+        .b(0b1_1111) // max 5 bits = 31
+        .c(0b111_1111) // max 7 bits = 127
+        .d(0b111_1111_1111) // max 11 bits = 2047
+        .e(0b1_1111_1111_1111) // max 13 bits = 8191
         .build()
         .unwrap();
 
     let unpacked = OddOffsets::from_raw(s.raw());
     assert_eq!(unpacked.a(), 0b111);
-    assert_eq!(unpacked.b(), 0b11111);
-    assert_eq!(unpacked.c(), 0b1111111);
-    assert_eq!(unpacked.d(), 0b11111111111);
-    assert_eq!(unpacked.e(), 0b1111111111111);
+    assert_eq!(unpacked.b(), 0b1_1111);
+    assert_eq!(unpacked.c(), 0b111_1111);
+    assert_eq!(unpacked.d(), 0b111_1111_1111);
+    assert_eq!(unpacked.e(), 0b1_1111_1111_1111);
 }
 
 #[test]
@@ -918,8 +918,8 @@ fn tight_packing_manual_verify() {
     // bit 1: 0
     // bits 2-4: 101
     // bits 5-7: 110
-    // = 0b110_101_0_1 = 0b11010101 = 0xD5
-    assert_eq!(s.raw(), 0b11010101);
+    // = 0b110_101_0_1 = 0b1101_0101 = 0xD5
+    assert_eq!(s.raw(), 0b1101_0101);
 }
 
 // =============================================================================
@@ -993,14 +993,14 @@ pub struct U128Storage {
 #[test]
 fn u128_repr_roundtrip() {
     let original = U128Storage::builder()
-        .low(0xDEADBEEF_CAFEBABE)
-        .high(0x12345678_9ABCDEF0)
+        .low(0xDEAD_BEEF_CAFE_BABE)
+        .high(0x1234_5678_9ABC_DEF0)
         .build()
         .unwrap();
 
     let unpacked = U128Storage::from_raw(original.raw());
-    assert_eq!(unpacked.low(), 0xDEADBEEF_CAFEBABE);
-    assert_eq!(unpacked.high(), 0x12345678_9ABCDEF0);
+    assert_eq!(unpacked.low(), 0xDEAD_BEEF_CAFE_BABE);
+    assert_eq!(unpacked.high(), 0x1234_5678_9ABC_DEF0);
 }
 
 #[test]
@@ -1057,13 +1057,13 @@ pub struct SignedFields {
 fn signed_fields_positive() {
     let s = SignedFields::builder()
         .signed_byte(127)
-        .signed_short(32767)
+        .signed_short(32_767)
         .build()
         .unwrap();
 
     let unpacked = SignedFields::from_raw(s.raw());
     assert_eq!(unpacked.signed_byte(), 127);
-    assert_eq!(unpacked.signed_short(), 32767);
+    assert_eq!(unpacked.signed_short(), 32_767);
 }
 
 #[test]

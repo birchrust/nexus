@@ -17,6 +17,7 @@
 mod bench_utils;
 
 use bench_utils::{bench_wide, print_header_wide, print_intro};
+use nexus_ascii::AsciiString;
 use nexus_ascii::simd;
 use std::hint::black_box;
 
@@ -157,8 +158,6 @@ fn main() {
     // =========================================================================
     println!();
     print_header_wide("CASE CONVERSION (to_uppercase)");
-
-    use nexus_ascii::AsciiString;
 
     let s32_7: AsciiString<32> = AsciiString::try_from("btc-usd").unwrap();
     bench_wide("uppercase CAP=32 len=7  (current)", || {

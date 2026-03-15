@@ -261,6 +261,7 @@ mod tests {
     struct WireMsg(u32);
 
     // Wire type is &WireMsg — taken by value (already a reference).
+    #[allow(clippy::unnecessary_wraps)]
     fn decode_wire(wire: &WireMsg) -> Option<u64> {
         Some(wire.0 as u64)
     }

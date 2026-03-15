@@ -1353,7 +1353,8 @@ mod tests {
 
     #[test]
     fn uuid_compact_from_bytes_roundtrip() {
-        let original: UuidCompact = UuidCompact::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
+        let original: UuidCompact =
+            UuidCompact::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
         let bytes = original.to_bytes();
         let recovered: UuidCompact = UuidCompact::from_bytes(&bytes).unwrap();
         assert_eq!(original, recovered);

@@ -11,19 +11,19 @@ use std::hint::black_box;
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub fn audit_try_from_32(bytes: &[u8]) -> Option<AsciiString<32>> {
+pub extern "Rust" fn audit_try_from_32(bytes: &[u8]) -> Option<AsciiString<32>> {
     AsciiString::<32>::try_from_bytes(bytes).ok()
 }
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub fn audit_try_from_8(bytes: &[u8]) -> Option<AsciiString<8>> {
+pub extern "Rust" fn audit_try_from_8(bytes: &[u8]) -> Option<AsciiString<8>> {
     AsciiString::<8>::try_from_bytes(bytes).ok()
 }
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub fn audit_hash_32(s: &AsciiString<32>) -> u64 {
+pub extern "Rust" fn audit_hash_32(s: &AsciiString<32>) -> u64 {
     let mut hasher = nohash_hasher::NoHashHasher::<u64>::default();
     s.hash(&mut hasher);
     hasher.finish()
@@ -31,13 +31,13 @@ pub fn audit_hash_32(s: &AsciiString<32>) -> u64 {
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub fn audit_eq_32(a: &AsciiString<32>, b: &AsciiString<32>) -> bool {
+pub extern "Rust" fn audit_eq_32(a: &AsciiString<32>, b: &AsciiString<32>) -> bool {
     a == b
 }
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub fn audit_cmp_32(a: &AsciiString<32>, b: &AsciiString<32>) -> std::cmp::Ordering {
+pub extern "Rust" fn audit_cmp_32(a: &AsciiString<32>, b: &AsciiString<32>) -> std::cmp::Ordering {
     a.cmp(b)
 }
 

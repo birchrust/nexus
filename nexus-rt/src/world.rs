@@ -28,12 +28,12 @@
 
 use std::any::{TypeId, type_name};
 use std::cell::Cell;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 #[cfg(debug_assertions)]
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rustc_hash::FxHashMap;
 
@@ -995,6 +995,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn resource_ids_are_distinct() {
         let mut builder = WorldBuilder::new();
         let id0 = builder.register::<Price>(Price { value: 0.0 });
@@ -1013,6 +1014,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn get_returns_registered_value() {
         let mut builder = WorldBuilder::new();
         builder.register::<Price>(Price { value: 42.5 });
@@ -1025,6 +1027,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn get_mut_modifies_value() {
         let mut builder = WorldBuilder::new();
         builder.register::<Price>(Price { value: 1.0 });
@@ -1104,6 +1107,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn multiple_types_independent() {
         let mut builder = WorldBuilder::new();
         let price_id = builder.register::<Price>(Price { value: 10.0 });
@@ -1133,6 +1137,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn send_to_another_thread() {
         let mut builder = WorldBuilder::new();
         builder.register::<Price>(Price { value: 55.5 });
@@ -1175,6 +1180,7 @@ mod tests {
     // -- Safe accessor tests --------------------------------------------------
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn resource_reads_value() {
         let mut builder = WorldBuilder::new();
         builder.register::<Price>(Price { value: 42.5 });
@@ -1365,7 +1371,7 @@ mod tests {
         let world = builder.build();
 
         assert_eq!(*world.resource::<u64>(), 42);
-        assert_eq!(*world.resource::<bool>(), true);
+        assert!(*world.resource::<bool>());
     }
 
     #[test]
@@ -1401,10 +1407,9 @@ mod tests {
         let mut builder = WorldBuilder::new();
         let id_a = builder.register::<u64>(0);
         let id_b = builder.register::<u32>(0);
-        builder.registry().check_access(&[
-            (Some(id_a), "a"),
-            (Some(id_b), "b"),
-        ]);
+        builder
+            .registry()
+            .check_access(&[(Some(id_a), "a"), (Some(id_b), "b")]);
     }
 
     #[test]
@@ -1412,10 +1417,9 @@ mod tests {
     fn check_access_detects_conflict() {
         let mut builder = WorldBuilder::new();
         let id = builder.register::<u64>(0);
-        builder.registry().check_access(&[
-            (Some(id), "a"),
-            (Some(id), "b"),
-        ]);
+        builder
+            .registry()
+            .check_access(&[(Some(id), "a"), (Some(id), "b")]);
     }
 
     #[test]

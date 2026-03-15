@@ -77,19 +77,19 @@ fn bitfield_new_exceeds_bounds_u8_panics() {
 #[test]
 fn bitfield_get_low_bits() {
     const FIELD: BitField<u64> = BitField::<u64>::new(0, 8);
-    assert_eq!(FIELD.get(0x12345678), 0x78);
+    assert_eq!(FIELD.get(0x1234_5678), 0x78);
 }
 
 #[test]
 fn bitfield_get_middle_bits() {
     const FIELD: BitField<u64> = BitField::<u64>::new(8, 8);
-    assert_eq!(FIELD.get(0x12345678), 0x56);
+    assert_eq!(FIELD.get(0x1234_5678), 0x56);
 }
 
 #[test]
 fn bitfield_get_high_bits() {
     const FIELD: BitField<u64> = BitField::<u64>::new(24, 8);
-    assert_eq!(FIELD.get(0x12345678), 0x12);
+    assert_eq!(FIELD.get(0x1234_5678), 0x12);
 }
 
 #[test]
@@ -135,12 +135,12 @@ fn bitfield_set_offset() {
 #[test]
 fn bitfield_set_preserves_other_bits() {
     const FIELD: BitField<u64> = BitField::<u64>::new(8, 8);
-    let initial = 0xFF00FF;
+    let initial = 0x00FF_00FF;
     let result = FIELD.set(initial, 0x42).unwrap();
     // Bits 0-7 preserved: 0xFF
     // Bits 8-15 replaced: 0x42
     // Bits 16-23 preserved: 0xFF
-    assert_eq!(result, 0xFF42FF);
+    assert_eq!(result, 0x00FF_42FF);
 }
 
 #[test]
@@ -228,8 +228,8 @@ fn bitfield_clear_basic() {
 #[test]
 fn bitfield_clear_preserves_other_bits() {
     const FIELD: BitField<u64> = BitField::<u64>::new(8, 8);
-    let result = FIELD.clear(0xFFFFFF);
-    assert_eq!(result, 0xFF00FF);
+    let result = FIELD.clear(0x00FF_FFFF);
+    assert_eq!(result, 0x00FF_00FF);
 }
 
 #[test]
@@ -252,11 +252,11 @@ fn bitfield_multiple_fields_pack_unpack() {
     let mut id: u64 = 0;
     id = KIND.set(id, 3).unwrap();
     id = EXCHANGE.set(id, 42).unwrap();
-    id = SYMBOL.set(id, 123456).unwrap();
+    id = SYMBOL.set(id, 123_456).unwrap();
 
     assert_eq!(KIND.get(id), 3);
     assert_eq!(EXCHANGE.get(id), 42);
-    assert_eq!(SYMBOL.get(id), 123456);
+    assert_eq!(SYMBOL.get(id), 123_456);
 }
 
 #[test]
@@ -265,12 +265,12 @@ fn bitfield_adjacent_fields_no_overlap() {
     const HIGH: BitField<u64> = BitField::<u64>::new(32, 32);
 
     let mut val: u64 = 0;
-    val = LOW.set(val, 0xDEADBEEF).unwrap();
-    val = HIGH.set(val, 0xCAFEBABE).unwrap();
+    val = LOW.set(val, 0xDEAD_BEEF).unwrap();
+    val = HIGH.set(val, 0xCAFE_BABE).unwrap();
 
-    assert_eq!(LOW.get(val), 0xDEADBEEF);
-    assert_eq!(HIGH.get(val), 0xCAFEBABE);
-    assert_eq!(val, 0xCAFEBABE_DEADBEEF);
+    assert_eq!(LOW.get(val), 0xDEAD_BEEF);
+    assert_eq!(HIGH.get(val), 0xCAFE_BABE);
+    assert_eq!(val, 0xCAFE_BABE_DEAD_BEEF);
 }
 
 // =============================================================================
@@ -457,7 +457,7 @@ fn flag_toggle_preserves_other_bits() {
 #[test]
 fn flag_toggle_twice_restores() {
     const FLAG: Flag<u64> = Flag::<u64>::new(7);
-    let original = 0x12345678u64;
+    let original = 0x1234_5678_u64;
     let toggled = FLAG.toggle(original);
     let restored = FLAG.toggle(toggled);
     assert_eq!(restored, original);
@@ -636,6 +636,6 @@ fn const_flag_is_set() {
     const FLAG: Flag<u64> = Flag::<u64>::new(0);
     const IS_SET: bool = FLAG.is_set(1);
     const IS_CLEAR: bool = FLAG.is_set(0);
-    assert!(IS_SET);
-    assert!(!IS_CLEAR);
+    const { assert!(IS_SET) };
+    const { assert!(!IS_CLEAR) };
 }

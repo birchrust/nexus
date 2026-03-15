@@ -219,7 +219,7 @@ fn main() {
         for _ in 0..SAMPLES {
             let k = rng.next();
             let s = rdtsc_start();
-            black_box(map.try_insert(k, 0));
+            let _ = black_box(map.try_insert(k, 0));
             let e = rdtsc_end();
             samples.push(e - s);
         }
@@ -237,18 +237,18 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
-            seq!(I in 0..100 { black_box(map.try_insert(batch[I], 0)); });
-            for &k in batch.iter() {
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(batch[I], 0)); });
+            for &k in &batch {
                 map.remove(&k);
             }
         }
         for _ in 0..SAMPLES {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
-            seq!(I in 0..100 { black_box(map.try_insert(batch[I], 0)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(batch[I], 0)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &k in batch.iter() {
+            for &k in &batch {
                 map.remove(&k);
             }
         }
@@ -269,7 +269,7 @@ fn main() {
             let base = offset % keys.len();
             let batch: [u64; BATCH_READ] = std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
-            for &k in batch.iter() {
+            for &k in &batch {
                 map.try_insert(k, k).unwrap();
             }
             offset += BATCH_READ;
@@ -282,7 +282,7 @@ fn main() {
             seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &k in batch.iter() {
+            for &k in &batch {
                 map.try_insert(k, k).unwrap();
             }
             offset += BATCH_READ;
@@ -301,11 +301,11 @@ fn main() {
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { black_box(map.try_insert(lookup[I], 999)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(lookup[I], 999)); });
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { black_box(map.try_insert(lookup[I], 999)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(lookup[I], 999)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
         }
@@ -351,18 +351,18 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
-            seq!(I in 0..100 { black_box(map.entry(batch[I]).or_try_insert(0)); });
-            for &k in batch.iter() {
+            seq!(I in 0..100 { let _ = black_box(map.entry(batch[I]).or_try_insert(0)); });
+            for &k in &batch {
                 map.remove(&k);
             }
         }
         for _ in 0..SAMPLES {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
-            seq!(I in 0..100 { black_box(map.entry(batch[I]).or_try_insert(0)); });
+            seq!(I in 0..100 { let _ = black_box(map.entry(batch[I]).or_try_insert(0)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &k in batch.iter() {
+            for &k in &batch {
                 map.remove(&k);
             }
         }
@@ -389,10 +389,10 @@ fn main() {
         let mut popped = [(0u64, 0u64); BATCH_READ];
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            for p in popped.iter_mut() {
+            for p in &mut popped {
                 *p = map.pop_first().unwrap();
             }
-            for &(k, v) in popped.iter() {
+            for &(k, v) in &popped {
                 map.try_insert(k, v).unwrap();
             }
         }
@@ -401,7 +401,7 @@ fn main() {
             seq!(I in 0..100 { popped[I] = map.pop_first().unwrap(); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &(k, v) in popped.iter() {
+            for &(k, v) in &popped {
                 map.try_insert(k, v).unwrap();
             }
         }
@@ -419,10 +419,10 @@ fn main() {
         let mut popped = [(0u64, 0u64); BATCH_READ];
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            for p in popped.iter_mut() {
+            for p in &mut popped {
                 *p = map.pop_last().unwrap();
             }
-            for &(k, v) in popped.iter() {
+            for &(k, v) in &popped {
                 map.try_insert(k, v).unwrap();
             }
         }
@@ -431,7 +431,7 @@ fn main() {
             seq!(I in 0..100 { popped[I] = map.pop_last().unwrap(); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
-            for &(k, v) in popped.iter() {
+            for &(k, v) in &popped {
                 map.try_insert(k, v).unwrap();
             }
         }

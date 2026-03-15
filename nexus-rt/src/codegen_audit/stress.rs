@@ -9,10 +9,10 @@
 // Stress tests intentionally pass large types by value to audit stack codegen.
 #![allow(clippy::large_types_passed_by_value)]
 
+use super::helpers::*;
 use crate::dag::{DagArmSeed, DagBuilder};
 use crate::pipeline::PipelineBuilder;
 use crate::{Handler, IntoHandler, World};
-use super::helpers::*;
 
 // ═══════════════════════════════════════════════════════════════════
 // 25.1: 30-step linear pipeline
@@ -132,35 +132,34 @@ pub fn stress_pipe_all_combinators(world: &mut World, input: u64) -> u64 {
 
     fn log_error(_err: u32) {}
 
-    let tee_side = DagArmSeed::<u64>::new()
-        .then(ref_consume, &reg);
+    let tee_side = DagArmSeed::<u64>::new().then(ref_consume, &reg);
 
     let on_true = PipelineBuilder::<u64>::new().then(double, &reg);
     let on_false = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
     let mut p = PipelineBuilder::<u64>::new()
-        .then(add_one, &reg)                    // then
-        .tap(|_x: &u64| {}, &reg)               // tap
-        .tee(tee_side)                           // tee
-        .guard(|x: &u64| *x > 0, &reg)          // guard
-        .filter(|x: &u64| *x < 10000, &reg)     // filter
-        .inspect(|_x: &u64| {}, &reg)            // inspect (Option)
-        .on_none(|| {}, &reg)                    // on_none
-        .ok_or(0u32)                             // ok_or
-        .map(double, &reg)                       // map (Result)
-        .inspect(|_x: &u64| {}, &reg)            // inspect (Result)
-        .inspect_err(|_e: &u32| {}, &reg)        // inspect_err
-        .map_err(|e: u32| e, &reg)               // map_err
-        .catch(log_error, &reg)                  // catch
-        .unwrap_or(0)                            // unwrap_or (Option)
-        .then(add_three, &reg)                   // then again
-        .then(is_even, &reg)                     // bool
-        .and(|| true, &reg)                      // and
-        .or(|| false, &reg)                      // or
-        .not()                                   // not
-        .xor(|| true, &reg)                      // xor
+        .then(add_one, &reg) // then
+        .tap(|_x: &u64| {}, &reg) // tap
+        .tee(tee_side) // tee
+        .guard(|x: &u64| *x > 0, &reg) // guard
+        .filter(|x: &u64| *x < 10000, &reg) // filter
+        .inspect(|_x: &u64| {}, &reg) // inspect (Option)
+        .on_none(|| {}, &reg) // on_none
+        .ok_or(0u32) // ok_or
+        .map(double, &reg) // map (Result)
+        .inspect(|_x: &u64| {}, &reg) // inspect (Result)
+        .inspect_err(|_e: &u32| {}, &reg) // inspect_err
+        .map_err(|e: u32| e, &reg) // map_err
+        .catch(log_error, &reg) // catch
+        .unwrap_or(0) // unwrap_or (Option)
+        .then(add_three, &reg) // then again
+        .then(is_even, &reg) // bool
+        .and(|| true, &reg) // and
+        .or(|| false, &reg) // or
+        .not() // not
+        .xor(|| true, &reg) // xor
         .then(|b: bool| if b { 100u64 } else { 0u64 }, &reg) // then (was switch)
-        .route(|x: &u64| *x > 50, &reg, on_true, on_false);  // route
+        .route(|x: &u64| *x > 50, &reg, on_true, on_false); // route
     p.run(world, input)
 }
 
@@ -210,19 +209,44 @@ pub fn stress_pipe_route_4_deep(world: &mut World, input: u64) -> u64 {
     let l8 = PipelineBuilder::<u64>::new().then(shr_one, &reg);
 
     // Level 3 (4 routes)
-    let r3a = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 10, &reg, l1, l2);
-    let r3b = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 20, &reg, l3, l4);
-    let r3c = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 30, &reg, l5, l6);
-    let r3d = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 40, &reg, l7, l8);
+    let r3a =
+        PipelineBuilder::<u64>::new()
+            .then(|x: u64| x, &reg)
+            .route(|x: &u64| *x > 10, &reg, l1, l2);
+    let r3b =
+        PipelineBuilder::<u64>::new()
+            .then(|x: u64| x, &reg)
+            .route(|x: &u64| *x > 20, &reg, l3, l4);
+    let r3c =
+        PipelineBuilder::<u64>::new()
+            .then(|x: u64| x, &reg)
+            .route(|x: &u64| *x > 30, &reg, l5, l6);
+    let r3d =
+        PipelineBuilder::<u64>::new()
+            .then(|x: u64| x, &reg)
+            .route(|x: &u64| *x > 40, &reg, l7, l8);
 
     // Level 2 (2 routes)
-    let r2a = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 50, &reg, r3a, r3b);
-    let r2b = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(|x: &u64| *x > 60, &reg, r3c, r3d);
+    let r2a = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 50,
+        &reg,
+        r3a,
+        r3b,
+    );
+    let r2b = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 60,
+        &reg,
+        r3c,
+        r3d,
+    );
 
     // Level 1 (top)
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 100, &reg, r2a, r2b);
+    let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 100,
+        &reg,
+        r2a,
+        r2b,
+    );
     p.run(world, input)
 }
 
@@ -476,12 +500,14 @@ pub fn stress_pipe_tee_in_route(world: &mut World, input: u64) -> u64 {
         .tee(tee_side)
         .then(add_three, &reg);
 
-    let arm_f = PipelineBuilder::<u64>::new()
-        .then(add_one, &reg);
+    let arm_f = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 100, &reg, arm_t, arm_f);
+    let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 100,
+        &reg,
+        arm_t,
+        arm_f,
+    );
     p.run(world, input)
 }
 
@@ -495,8 +521,7 @@ pub fn stress_mixed_everything(world: &mut World, input: u64) {
 
     fn log_error(_err: u32) {}
 
-    let tee_side = DagArmSeed::<u64>::new()
-        .then(ref_consume, &reg);
+    let tee_side = DagArmSeed::<u64>::new().then(ref_consume, &reg);
 
     let on_true = PipelineBuilder::<u64>::new().then(double, &reg);
     let on_false = PipelineBuilder::<u64>::new().then(add_one, &reg);

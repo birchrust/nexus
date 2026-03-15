@@ -360,8 +360,8 @@ mod tests {
 
     #[test]
     fn ulid_encode_larger_cap() {
-        let small: AsciiString<32> = ulid_encode(1234567890, 0xABCD, 0x123456789ABCDEF0);
-        let large: AsciiString<64> = ulid_encode(1234567890, 0xABCD, 0x123456789ABCDEF0);
+        let small: AsciiString<32> = ulid_encode(1_234_567_890, 0xABCD, 0x1234_5678_9ABC_DEF0);
+        let large: AsciiString<64> = ulid_encode(1_234_567_890, 0xABCD, 0x1234_5678_9ABC_DEF0);
         assert_eq!(small.as_str(), large.as_str());
         assert_eq!(small.len(), 26);
     }

@@ -92,23 +92,15 @@ fn main() {
     let s1: AsciiString<32> = AsciiString::try_from("BTC-USD").unwrap();
 
     bench_batched("AsciiText == AsciiText (same)", || {
-        if black_box(&t1) == black_box(&t2) {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(&t1) == black_box(&t2))
     });
 
     bench_batched("AsciiText == AsciiString", || {
-        if black_box(t1) == black_box(s1) { 1 } else { 0 }
+        u64::from(black_box(t1) == black_box(s1))
     });
 
     bench_batched("AsciiText == &str", || {
-        if black_box(t1) == black_box("BTC-USD") {
-            1
-        } else {
-            0
-        }
+        u64::from(black_box(t1) == black_box("BTC-USD"))
     });
 
     println!();

@@ -277,7 +277,8 @@ mod tests {
         #[test]
         fn advance_moves_time() {
             let mut builder = WorldBuilder::new();
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+            let poller: TimerPoller =
+                builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
             let mut timer = TestTimerDriver::new(poller);
 
             let start = timer.now();
@@ -289,7 +290,8 @@ mod tests {
         fn poll_fires_expired() {
             let mut builder = WorldBuilder::new();
             builder.register::<bool>(false);
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+            let poller: TimerPoller =
+                builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
             let mut timer = TestTimerDriver::new(poller);
             let mut world = builder.build();
 
@@ -309,7 +311,8 @@ mod tests {
         fn poll_skips_future() {
             let mut builder = WorldBuilder::new();
             builder.register::<bool>(false);
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+            let poller: TimerPoller =
+                builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
             let mut timer = TestTimerDriver::new(poller);
             let mut world = builder.build();
 
@@ -327,7 +330,8 @@ mod tests {
         #[test]
         fn set_now_overrides() {
             let mut builder = WorldBuilder::new();
-            let poller: TimerPoller = builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+            let poller: TimerPoller =
+                builder.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
             let mut timer = TestTimerDriver::new(poller);
 
             let target = timer.now() + Duration::from_secs(999);

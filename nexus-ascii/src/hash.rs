@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn truncate_roundtrip() {
-        let original: u64 = 0x123456789ABC;
+        let original: u64 = 0x1234_5678_9ABC;
         let truncated = truncate_lower_48(original);
         let expanded = expand_48_to_64(truncated);
         assert_eq!(expanded, original);
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn truncate_upper_captures_high_bits() {
-        let h: u64 = 0xAABBCCDDEEFF1122;
+        let h: u64 = 0xAABB_CCDD_EEFF_1122;
         let upper = truncate_upper_48(h);
         assert_eq!(upper[5], 0xAA);
         assert_eq!(upper[4], 0xBB);

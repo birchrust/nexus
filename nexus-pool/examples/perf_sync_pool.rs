@@ -18,7 +18,7 @@ fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let mut aux: u32 = 0;
-        std::arch::x86_64::__rdtscp(&mut aux)
+        std::arch::x86_64::__rdtscp(&raw mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     panic!("rdtscp only supported on x86_64");
@@ -60,7 +60,7 @@ impl Stats {
 
 /// Baseline: acquire and release on same thread (no cross-thread)
 fn bench_same_thread() -> Stats {
-    let pool: Pool<Vec<u8>> = Pool::new(CAPACITY, || Vec::with_capacity(1024), |v| v.clear());
+    let pool: Pool<Vec<u8>> = Pool::new(CAPACITY, || Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
 
@@ -83,7 +83,7 @@ fn bench_same_thread() -> Stats {
 
 /// Cross-thread: acquire on main, return on N worker threads
 fn bench_cross_thread(num_returners: usize) -> Stats {
-    let pool: Pool<Vec<u8>> = Pool::new(CAPACITY, || Vec::with_capacity(1024), |v| v.clear());
+    let pool: Pool<Vec<u8>> = Pool::new(CAPACITY, || Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
     let done = Arc::new(AtomicBool::new(false));
@@ -173,7 +173,7 @@ fn bench_concurrent_return(num_returners: usize) -> Stats {
     const ROUNDS: usize = 100;
     let items_per_thread = CAPACITY / num_returners;
 
-    let pool: Pool<Vec<u8>> = Pool::new(CAPACITY, || Vec::with_capacity(1024), |v| v.clear());
+    let pool: Pool<Vec<u8>> = Pool::new(CAPACITY, || Vec::with_capacity(1024), Vec::clear);
 
     let mut stats = Stats::new();
 

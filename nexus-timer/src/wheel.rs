@@ -812,12 +812,12 @@ mod tests {
     // Thread safety
     // -------------------------------------------------------------------------
 
-    fn _assert_send<T: Send>() {}
+    fn assert_send<T: Send>() {}
 
     #[test]
     fn wheel_is_send() {
-        _assert_send::<Wheel<u64>>();
-        _assert_send::<BoundedWheel<u64>>();
+        assert_send::<Wheel<u64>>();
+        assert_send::<BoundedWheel<u64>>();
     }
 
     // -------------------------------------------------------------------------
@@ -1392,7 +1392,7 @@ mod tests {
         let mut buf = Vec::new();
         wheel.poll(now + ms(10), &mut buf);
 
-        buf.sort();
+        buf.sort_unstable();
         assert_eq!(buf, expected);
     }
 
@@ -1922,7 +1922,7 @@ mod proptests {
 
             // Sort poll times to be monotonically increasing
             let mut sorted_times: Vec<u64> = poll_times;
-            sorted_times.sort();
+            sorted_times.sort_unstable();
             sorted_times.dedup();
 
             let mut all_fired: Vec<u64> = Vec::new();
@@ -1947,7 +1947,7 @@ mod proptests {
             all_fired.extend(final_buf);
 
             // Every timer should have fired exactly once
-            all_fired.sort();
+            all_fired.sort_unstable();
             let expected: Vec<u64> = (0..deadlines.len() as u64).collect();
             prop_assert_eq!(all_fired, expected, "Not all timers fired exactly once");
             prop_assert!(wheel.is_empty());

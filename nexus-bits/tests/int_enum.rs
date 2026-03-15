@@ -112,7 +112,10 @@ fn u128_repr() {
 
     assert_eq!(WideU128::try_from_repr(0), Some(WideU128::Zero));
     assert_eq!(WideU128::try_from_repr(1), Some(WideU128::One));
-    assert_eq!(WideU128::try_from_repr(1_000_000_000_000), Some(WideU128::Big));
+    assert_eq!(
+        WideU128::try_from_repr(1_000_000_000_000),
+        Some(WideU128::Big)
+    );
     assert_eq!(WideU128::try_from_repr(2), None);
 }
 

@@ -1,5 +1,7 @@
 //! Integration tests for RcSlot and WeakSlot.
 
+#![allow(clippy::float_cmp)]
+
 use nexus_slab::Alloc;
 use std::cell::Cell;
 
@@ -27,7 +29,7 @@ thread_local! {
 }
 
 #[derive(Debug, Clone)]
-pub struct DropTracker(u64);
+pub struct DropTracker(#[allow(dead_code)] u64);
 
 impl Drop for DropTracker {
     fn drop(&mut self) {
@@ -40,7 +42,7 @@ fn reset_drop_count() {
 }
 
 fn get_drop_count() -> usize {
-    DROP_COUNT.with(|c| c.get())
+    DROP_COUNT.with(Cell::get)
 }
 
 mod drop_rc {

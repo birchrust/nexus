@@ -80,7 +80,12 @@ impl<T> Clone for SharedReader<T> {
 /// Returns a `(Writer, SharedReader)` pair. The reader can be cloned
 /// for multiple consumers.
 pub fn shared_slot<T: Pod>() -> (Writer<T>, SharedReader<T>) {
-    const { assert!(!std::mem::needs_drop::<T>(), "Pod types must not require drop") };
+    const {
+        assert!(
+            !std::mem::needs_drop::<T>(),
+            "Pod types must not require drop"
+        );
+    };
 
     let inner = Arc::new(Inner {
         seq: AtomicUsize::new(0),

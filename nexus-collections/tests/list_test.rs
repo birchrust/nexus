@@ -363,6 +363,7 @@ fn move_to_back() {
 // =============================================================================
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn write_via_exclusive_mut() {
     init();
     let mut list = orders::List::new(orders::Allocator);
@@ -374,6 +375,7 @@ fn write_via_exclusive_mut() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn peek_front_write() {
     init();
     let mut list = orders::List::new(orders::Allocator);

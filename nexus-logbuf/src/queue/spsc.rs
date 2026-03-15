@@ -380,7 +380,11 @@ impl Consumer {
                 // Zero payload first, then stamp last (mirrors write path)
                 if skip_size > HEADER_SIZE {
                     unsafe {
-                        ptr::write_bytes(buffer.add(offset + HEADER_SIZE), 0, skip_size - HEADER_SIZE);
+                        ptr::write_bytes(
+                            buffer.add(offset + HEADER_SIZE),
+                            0,
+                            skip_size - HEADER_SIZE,
+                        );
                     }
                 }
                 // Ensure payload zeroing completes before clearing stamp
@@ -478,7 +482,11 @@ impl Drop for ReadClaim<'_> {
         // Zero payload first, then stamp last (mirrors write path)
         if self.record_size > HEADER_SIZE {
             unsafe {
-                ptr::write_bytes(buffer.add(self.offset + HEADER_SIZE), 0, self.record_size - HEADER_SIZE);
+                ptr::write_bytes(
+                    buffer.add(self.offset + HEADER_SIZE),
+                    0,
+                    self.record_size - HEADER_SIZE,
+                );
             }
         }
         // Ensure payload zeroing completes before clearing stamp
@@ -597,15 +605,10 @@ mod tests {
 
         // Fill the buffer
         let mut count = 0;
-        loop {
-            match prod.try_claim(8) {
-                Ok(mut claim) => {
-                    claim.copy_from_slice(b"12345678");
-                    claim.commit();
-                    count += 1;
-                }
-                Err(_) => break,
-            }
+        while let Ok(mut claim) = prod.try_claim(8) {
+            claim.copy_from_slice(b"12345678");
+            claim.commit();
+            count += 1;
         }
 
         assert!(count > 0);

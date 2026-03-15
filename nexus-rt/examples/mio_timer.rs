@@ -26,8 +26,7 @@ use std::time::{Duration, Instant};
 
 use nexus_rt::{
     HandlerTemplate, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef,
-    ResMut, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
-    handler_blueprint,
+    ResMut, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder, handler_blueprint,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────

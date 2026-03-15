@@ -514,7 +514,7 @@ mod tests {
         h2.join().unwrap();
 
         // All values received (order not guaranteed across producers)
-        received.sort();
+        received.sort_unstable();
         assert_eq!(received, (0..2000).collect::<Vec<_>>());
     }
 
@@ -556,12 +556,12 @@ mod tests {
             h.join().unwrap();
         }
 
-        received.sort();
+        received.sort_unstable();
         let expected: Vec<u64> = (0..4)
             .flat_map(|p| (0..1000).map(move |i| p * 1000 + i))
             .collect();
         let mut expected_sorted = expected;
-        expected_sorted.sort();
+        expected_sorted.sort_unstable();
         assert_eq!(received, expected_sorted);
     }
 

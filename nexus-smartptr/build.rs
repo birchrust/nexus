@@ -37,9 +37,7 @@ fn main() {
     let data_ptr: *const u8 = &raw const val as *const u8;
     let trait_ptr: *const dyn Probe = &val as &dyn Probe;
 
-    let decomposed: FatPtr = unsafe {
-        ptr::read(ptr::addr_of!(trait_ptr).cast::<FatPtr>())
-    };
+    let decomposed: FatPtr = unsafe { ptr::read(ptr::addr_of!(trait_ptr).cast::<FatPtr>()) };
 
     assert!(
         decomposed.data == data_ptr,
@@ -50,9 +48,7 @@ fn main() {
     // Slice: data pointer first, length second.
     let array = [1_u8, 2, 3];
     let slice: &[u8] = &array;
-    let slice_repr: SlicePtr = unsafe {
-        ptr::read(ptr::addr_of!(slice).cast::<SlicePtr>())
-    };
+    let slice_repr: SlicePtr = unsafe { ptr::read(ptr::addr_of!(slice).cast::<SlicePtr>()) };
 
     assert!(
         slice_repr.data == slice.as_ptr() && slice_repr.len == slice.len(),

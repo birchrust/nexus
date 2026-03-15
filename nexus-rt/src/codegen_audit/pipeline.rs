@@ -5,10 +5,10 @@
 #![allow(clippy::type_complexity)]
 #![allow(unused_variables)]
 
+use super::helpers::*;
 use crate::dag::DagArmSeed;
 use crate::pipeline::{PipelineBuilder, resolve_step};
 use crate::{Broadcast, IntoHandler, Local, Res, ResMut, Sequence, World, fan_out};
-use super::helpers::*;
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Linear chains
@@ -456,9 +456,7 @@ pub fn pipe_res_inspect_err(world: &mut World, input: u64) -> Result<u64, u32> {
 #[inline(never)]
 pub fn pipe_res_ok(world: &mut World, input: u64) -> Option<u64> {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(try_parse, &reg)
-        .ok();
+    let mut p = PipelineBuilder::<u64>::new().then(try_parse, &reg).ok();
     p.run(world, input)
 }
 
@@ -698,13 +696,19 @@ pub fn pipe_route_nested_2(world: &mut World, input: u64) -> u64 {
     let arm_b = PipelineBuilder::<u64>::new().then(triple, &reg);
     let arm_c = PipelineBuilder::<u64>::new().then(add_one, &reg);
 
-    let inner_false = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 50, &reg, arm_b, arm_c);
+    let inner_false = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 50,
+        &reg,
+        arm_b,
+        arm_c,
+    );
 
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 100, &reg, arm_a, inner_false);
+    let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 100,
+        &reg,
+        arm_a,
+        inner_false,
+    );
     p.run(world, input)
 }
 
@@ -726,30 +730,42 @@ pub fn pipe_route_heavy_arms(world: &mut World, input: u64) -> u64 {
         .then(add_seven, &reg)
         .then(add_forty_two, &reg);
 
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(add_one, &reg)
-        .route(|x: &u64| *x > 100, &reg, arm_t, arm_f);
+    let mut p = PipelineBuilder::<u64>::new().then(add_one, &reg).route(
+        |x: &u64| *x > 100,
+        &reg,
+        arm_t,
+        arm_f,
+    );
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_switch_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(add_one, &reg)
-        .then(|x: u64| if x > 100 { x.wrapping_mul(2) } else { x.wrapping_add(1) }, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(add_one, &reg).then(
+        |x: u64| {
+            if x > 100 {
+                x.wrapping_mul(2)
+            } else {
+                x.wrapping_add(1)
+            }
+        },
+        &reg,
+    );
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_switch_3way(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(|x: u64| match x % 3 {
+    let mut p = PipelineBuilder::<u64>::new().then(
+        |x: u64| match x % 3 {
             0 => x.wrapping_mul(2),
             1 => x.wrapping_add(10),
             _ => x.wrapping_sub(5),
-        }, &reg);
+        },
+        &reg,
+    );
     p.run(world, input)
 }
 
@@ -759,22 +775,24 @@ pub fn pipe_switch_resolve_step(world: &mut World, input: u64) -> u64 {
     let mut arm_big = resolve_step(double, &reg);
     let mut arm_small = resolve_step(add_one, &reg);
 
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(move |world: &mut World, x: u64| {
+    let mut p = PipelineBuilder::<u64>::new().then(
+        move |world: &mut World, x: u64| {
             if x > 100 {
                 arm_big(world, x)
             } else {
                 arm_small(world, x)
             }
-        }, &reg);
+        },
+        &reg,
+    );
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_start_switch(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x.wrapping_mul(2).wrapping_add(1), &reg);
+    let mut p =
+        PipelineBuilder::<u64>::new().then(|x: u64| x.wrapping_mul(2).wrapping_add(1), &reg);
     p.run(world, input)
 }
 
@@ -865,9 +883,7 @@ pub fn pipe_splat_then_guard(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_bool_not(world: &mut World, input: u64) -> bool {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(is_even, &reg)
-        .not();
+    let mut p = PipelineBuilder::<u64>::new().then(is_even, &reg).not();
     p.run(world, input)
 }
 
@@ -972,8 +988,7 @@ pub fn pipe_tap_multiple(world: &mut World, input: u64) -> u64 {
 pub fn pipe_tee_basic(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
-    let side = DagArmSeed::<u64>::new()
-        .then(ref_consume, &reg);
+    let side = DagArmSeed::<u64>::new().then(ref_consume, &reg);
 
     let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
@@ -1005,10 +1020,13 @@ pub fn pipe_tap_with_world(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
     let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
-        .tap(|w: &mut World, x: &u64| {
-            // Force a World access in the tap closure.
-            let _ = w.resource::<ResA>().0.wrapping_add(*x);
-        }, &reg)
+        .tap(
+            |w: &mut World, x: &u64| {
+                // Force a World access in the tap closure.
+                let _ = w.resource::<ResA>().0.wrapping_add(*x);
+            },
+            &reg,
+        )
         .then(double, &reg);
     p.run(world, input)
 }
@@ -1034,16 +1052,14 @@ pub fn pipe_dispatch_handler(world: &mut World, input: u64) {
 #[inline(never)]
 pub fn pipe_world_res(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(add_res_a, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(add_res_a, &reg);
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_world_res_mut(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(write_res_a, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(write_res_a, &reg);
     p.run(world, input)
 }
 
@@ -1059,8 +1075,7 @@ pub fn pipe_world_res_res_mut(world: &mut World, input: u64) -> u64 {
 #[inline(never)]
 pub fn pipe_world_3_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(three_params, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(three_params, &reg);
     p.run(world, input)
 }
 
@@ -1099,8 +1114,7 @@ pub fn pipe_world_res_mut_stamp(world: &mut World, input: u64) -> u64 {
         x
     }
 
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(stamp_and_pass, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(stamp_and_pass, &reg);
     p.run(world, input)
 }
 
@@ -1154,19 +1168,28 @@ pub fn pipe_route_nested_3(world: &mut World, input: u64) -> u64 {
     let arm_d = PipelineBuilder::<u64>::new().then(add_seven, &reg);
 
     // Inner-most route: 3rd level
-    let inner2 = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 25, &reg, arm_c, arm_d);
+    let inner2 = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 25,
+        &reg,
+        arm_c,
+        arm_d,
+    );
 
     // 2nd level
-    let inner1 = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 50, &reg, arm_b, inner2);
+    let inner1 = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 50,
+        &reg,
+        arm_b,
+        inner2,
+    );
 
     // Top level — 4-way via nesting
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(|x: u64| x, &reg)
-        .route(|x: &u64| *x > 100, &reg, arm_a, inner1);
+    let mut p = PipelineBuilder::<u64>::new().then(|x: u64| x, &reg).route(
+        |x: &u64| *x > 100,
+        &reg,
+        arm_a,
+        inner1,
+    );
     p.run(world, input)
 }
 
@@ -1217,7 +1240,11 @@ pub fn pipe_cloned_option(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
     fn maybe_ref(x: u64) -> Option<&'static u64> {
-        if x > 0 { Some(Box::leak(Box::new(x))) } else { None }
+        if x > 0 {
+            Some(Box::leak(Box::new(x)))
+        } else {
+            None
+        }
     }
 
     // Option<&u64> → Option<u64> via cloned()
@@ -1233,7 +1260,11 @@ pub fn pipe_cloned_result(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
 
     fn try_ref(x: u64) -> Result<&'static u64, u32> {
-        if x < 10_000 { Ok(Box::leak(Box::new(x))) } else { Err(x as u32) }
+        if x < 10_000 {
+            Ok(Box::leak(Box::new(x)))
+        } else {
+            Err(x as u32)
+        }
     }
 
     // Result<&u64, u32> → Result<u64, u32> via cloned()
@@ -1255,9 +1286,7 @@ pub fn pipe_cloned_large_type(world: &mut World, input: u64) -> [u8; 256] {
     }
 
     // &[u8; 256] → [u8; 256] via cloned() — should be memcpy
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(make_ref, &reg)
-        .cloned();
+    let mut p = PipelineBuilder::<u64>::new().then(make_ref, &reg).cloned();
     p.run(world, input)
 }
 
@@ -1267,8 +1296,12 @@ pub fn pipe_cloned_large_type(world: &mut World, input: u64) -> [u8; 256] {
 pub fn pipe_dispatch_fanout2(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    fn sink_a(mut a: ResMut<ResA>, x: &u64) { a.0 = a.0.wrapping_add(*x); }
-    fn sink_b(mut a: ResMut<ResB>, x: &u64) { a.0 = a.0.wrapping_add(*x as u32); }
+    fn sink_a(mut a: ResMut<ResA>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x);
+    }
+    fn sink_b(mut a: ResMut<ResB>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u32);
+    }
 
     let h1 = sink_a.into_handler(&reg);
     let h2 = sink_b.into_handler(&reg);
@@ -1283,10 +1316,18 @@ pub fn pipe_dispatch_fanout2(world: &mut World, input: u64) {
 pub fn pipe_dispatch_fanout4(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    fn sink_a(mut a: ResMut<ResA>, x: &u64) { a.0 = a.0.wrapping_add(*x); }
-    fn sink_b(mut a: ResMut<ResB>, x: &u64) { a.0 = a.0.wrapping_add(*x as u32); }
-    fn sink_c(mut a: ResMut<ResC>, x: &u64) { a.0 = a.0.wrapping_add(*x as u16); }
-    fn sink_d(mut a: ResMut<ResD>, x: &u64) { a.0 = a.0.wrapping_add(*x as u8); }
+    fn sink_a(mut a: ResMut<ResA>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x);
+    }
+    fn sink_b(mut a: ResMut<ResB>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u32);
+    }
+    fn sink_c(mut a: ResMut<ResC>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u16);
+    }
+    fn sink_d(mut a: ResMut<ResD>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u8);
+    }
 
     let h1 = sink_a.into_handler(&reg);
     let h2 = sink_b.into_handler(&reg);
@@ -1303,14 +1344,30 @@ pub fn pipe_dispatch_fanout4(world: &mut World, input: u64) {
 pub fn pipe_dispatch_fanout8(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    fn s1(mut a: ResMut<ResA>, x: &u64) { a.0 = a.0.wrapping_add(*x); }
-    fn s2(mut a: ResMut<ResB>, x: &u64) { a.0 = a.0.wrapping_add(*x as u32); }
-    fn s3(mut a: ResMut<ResC>, x: &u64) { a.0 = a.0.wrapping_add(*x as u16); }
-    fn s4(mut a: ResMut<ResD>, x: &u64) { a.0 = a.0.wrapping_add(*x as u8); }
-    fn s5(mut a: ResMut<ResF>, x: &u64) { a.0 = a.0.wrapping_add(*x); }
-    fn s6(mut a: ResMut<ResG>, x: &u64) { a.0 = a.0.wrapping_add(*x as u32); }
-    fn s7(mut a: ResMut<ResH>, x: &u64) { a.0 = a.0.wrapping_add(*x as u16); }
-    fn s8(mut a: ResMut<ResE>, x: &u64) { a.0 += *x as f64; }
+    fn s1(mut a: ResMut<ResA>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x);
+    }
+    fn s2(mut a: ResMut<ResB>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u32);
+    }
+    fn s3(mut a: ResMut<ResC>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u16);
+    }
+    fn s4(mut a: ResMut<ResD>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u8);
+    }
+    fn s5(mut a: ResMut<ResF>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x);
+    }
+    fn s6(mut a: ResMut<ResG>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u32);
+    }
+    fn s7(mut a: ResMut<ResH>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u16);
+    }
+    fn s8(mut a: ResMut<ResE>, x: &u64) {
+        a.0 += *x as f64;
+    }
 
     let mut p = PipelineBuilder::<u64>::new()
         .then(add_one, &reg)
@@ -1331,9 +1388,15 @@ pub fn pipe_dispatch_fanout8(world: &mut World, input: u64) {
 pub fn pipe_dispatch_broadcast(world: &mut World, input: u64) {
     let reg = world.registry();
 
-    fn sink_a(mut a: ResMut<ResA>, x: &u64) { a.0 = a.0.wrapping_add(*x); }
-    fn sink_b(mut a: ResMut<ResB>, x: &u64) { a.0 = a.0.wrapping_add(*x as u32); }
-    fn sink_c(mut a: ResMut<ResC>, x: &u64) { a.0 = a.0.wrapping_add(*x as u16); }
+    fn sink_a(mut a: ResMut<ResA>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x);
+    }
+    fn sink_b(mut a: ResMut<ResB>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u32);
+    }
+    fn sink_c(mut a: ResMut<ResC>, x: &u64) {
+        a.0 = a.0.wrapping_add(*x as u16);
+    }
 
     let mut bc = Broadcast::<u64>::new();
     bc.add(sink_a.into_handler(&reg));
@@ -1369,24 +1432,21 @@ pub fn pipe_world_local(world: &mut World, input: u64) -> u64 {
         x.wrapping_add(*count)
     }
 
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(count_calls, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(count_calls, &reg);
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_world_5_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(five_params, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(five_params, &reg);
     p.run(world, input)
 }
 
 #[inline(never)]
 pub fn pipe_world_8_params(world: &mut World, input: u64) -> u64 {
     let reg = world.registry();
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(eight_params, &reg);
+    let mut p = PipelineBuilder::<u64>::new().then(eight_params, &reg);
     p.run(world, input)
 }
 
@@ -1396,7 +1456,11 @@ pub fn pipe_world_changed_after(world: &mut World, input: u64) -> u64 {
 
     fn check_since(a: Res<ResA>, x: u64) -> u64 {
         // Compare against a fixed tick value.
-        if a.changed_after(Sequence(0)) { x.wrapping_mul(2) } else { x }
+        if a.changed_after(Sequence(0)) {
+            x.wrapping_mul(2)
+        } else {
+            x
+        }
     }
 
     let mut p = PipelineBuilder::<u64>::new()

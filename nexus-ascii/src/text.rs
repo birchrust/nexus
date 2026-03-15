@@ -1494,6 +1494,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_clone() {
         let text: AsciiText<32> = AsciiText::try_from("Hello").unwrap();
         let cloned = text.clone();
@@ -2064,7 +2065,7 @@ mod tests {
 
     #[test]
     fn format_then_parse_roundtrip() {
-        let original: u64 = 12345678901234;
+        let original: u64 = 12_345_678_901_234;
         let s: AsciiText<32> = AsciiText::from_u64(original).unwrap();
         let parsed = s.parse_u64().unwrap();
         assert_eq!(original, parsed);

@@ -76,6 +76,7 @@ impl TradeLog {
 // Root steps — take event E by value
 // =============================================================================
 
+#[allow(clippy::needless_pass_by_value)]
 fn extract_price(tick: Tick) -> f64 {
     tick.price
 }
@@ -84,41 +85,49 @@ fn extract_price(tick: Tick) -> f64 {
 // Chain steps — take &T by reference (params first, input last)
 // =============================================================================
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn apply_spread(spread: Res<f64>, price: &f64) -> f64 {
     *price * (1.0 + *spread)
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn store_price(mut cache: ResMut<PriceCache>, price: &f64) {
     println!("  [store] price={:.2}", price);
     cache.latest = *price;
     cache.updates += 1;
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn get_price(tick: &Tick) -> f64 {
     tick.price
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn log_trade(mut log: ResMut<TradeLog>, tick: &Tick) {
     let entry = format!("{} {}@{:.2}", tick.symbol, tick.size, tick.price);
     println!("  [log] {entry}");
     log.entries.push(entry);
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn log_price(mut log: ResMut<TradeLog>, price: &f64) {
     let entry = format!("price={price:.2}");
     println!("  [log] {entry}");
     log.entries.push(entry);
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn merge_sum(a: &f64, b: &f64) -> f64 {
     println!("  [merge] {a:.2} + {b:.2} = {:.2}", a + b);
     a + b
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn count_update(mut ctr: ResMut<u64>, _val: &u32) {
     *ctr += 1;
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 fn count_and_print(mut ctr: ResMut<u64>, x: &u32) {
     println!("  [guard] passed: {x}");
     *ctr += 1;
@@ -434,12 +443,19 @@ fn main() {
     let mut world = wb.build();
     let reg = world.registry();
 
+    #[allow(clippy::items_after_statements, clippy::needless_pass_by_value)]
     fn split_tick(t: Tick) -> (f64, u64) {
         (t.price, t.size)
     }
+    #[allow(clippy::items_after_statements, clippy::trivially_copy_pass_by_ref)]
     fn weighted(price: &f64, size: &u64) -> f64 {
         *price * *size as f64
     }
+    #[allow(
+        clippy::items_after_statements,
+        clippy::needless_pass_by_value,
+        clippy::trivially_copy_pass_by_ref
+    )]
     fn store_weighted(mut cache: ResMut<PriceCache>, val: &f64) {
         cache.latest = *val;
     }
