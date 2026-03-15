@@ -185,7 +185,7 @@ impl_ema_float!(EmaF32, EmaF32Builder, f32);
 ///
 /// Examples: 1→1, 2→3, 3→3, 4→7, 5→7, 10→15, 20→31.
 #[inline]
-const fn next_power_of_two_minus_one(n: u64) -> u64 {
+pub(crate) const fn next_power_of_two_minus_one(n: u64) -> u64 {
     if n == 0 {
         return 0;
     }
@@ -198,7 +198,7 @@ const fn next_power_of_two_minus_one(n: u64) -> u64 {
 
 /// Returns log2 of (n + 1), where n must be of the form 2^k - 1.
 #[inline]
-const fn log2_of_span_plus_one(span: u64) -> u32 {
+pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
     // span = 2^k - 1, so span + 1 = 2^k
     (span + 1).trailing_zeros()
 }
