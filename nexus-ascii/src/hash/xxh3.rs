@@ -30,12 +30,14 @@ pub(super) const PRIME64_2: u64 = 0xC2B2_AE3D_27D4_EB4F;
 /// Read 4 bytes as little-endian u32.
 #[inline(always)]
 fn read_u32(data: &[u8]) -> u32 {
+    debug_assert!(data.len() >= 4);
     u32::from_le_bytes(data[..4].try_into().unwrap())
 }
 
 /// Read 8 bytes as little-endian u64.
 #[inline(always)]
 pub(super) fn read_u64(data: &[u8]) -> u64 {
+    debug_assert!(data.len() >= 8);
     u64::from_le_bytes(data[..8].try_into().unwrap())
 }
 

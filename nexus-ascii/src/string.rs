@@ -2483,6 +2483,19 @@ impl<const CAP: usize> TryFrom<&std::string::String> for AsciiString<CAP> {
 }
 
 // =============================================================================
+// FromStr
+// =============================================================================
+
+impl<const CAP: usize> core::str::FromStr for AsciiString<CAP> {
+    type Err = AsciiError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
+// =============================================================================
 // AsRef Implementations
 // =============================================================================
 
@@ -4799,5 +4812,23 @@ mod tests {
         let s: AsciiString<32> = AsciiString::from_i64(original).unwrap();
         let parsed = s.parse_i64().unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn from_str_parse() {
+        let s: AsciiString<32> = "BTC-USD".parse().unwrap();
+        assert_eq!(s.as_str(), "BTC-USD");
+    }
+
+    #[test]
+    fn from_str_invalid() {
+        let result = "héllo".parse::<AsciiString<32>>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_str_too_long() {
+        let result = "ABCDEFGHI".parse::<AsciiString<8>>();
+        assert!(result.is_err());
     }
 }

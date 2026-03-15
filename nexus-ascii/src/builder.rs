@@ -177,10 +177,10 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     pub fn push(&mut self, ch: AsciiChar) -> Result<(), AsciiError> {
         let byte = ch.as_u8();
         if byte == 0 {
-            return Err(AsciiError::InvalidByte { byte: 0, pos: 0 });
+            return Err(AsciiError::InvalidByte { byte: 0, pos: self.len });
         }
         if self.len >= CAP {
-            return Err(AsciiError::TooLong { len: 1, cap: 0 });
+            return Err(AsciiError::TooLong { len: 1, cap: self.remaining() });
         }
         self.data[self.len] = byte;
         self.len += 1;
@@ -208,10 +208,10 @@ impl<const CAP: usize> AsciiStringBuilder<CAP> {
     #[inline]
     pub fn push_byte(&mut self, byte: u8) -> Result<(), AsciiError> {
         if byte == 0 || byte > 127 {
-            return Err(AsciiError::InvalidByte { byte, pos: 0 });
+            return Err(AsciiError::InvalidByte { byte, pos: self.len });
         }
         if self.len >= CAP {
-            return Err(AsciiError::TooLong { len: 1, cap: 0 });
+            return Err(AsciiError::TooLong { len: 1, cap: self.remaining() });
         }
         self.data[self.len] = byte;
         self.len += 1;
