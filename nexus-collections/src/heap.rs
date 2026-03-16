@@ -147,13 +147,12 @@ impl<T> HeapNode<T> {
 /// - The returned pointer is only valid as long as the caller (or the heap)
 ///   holds a strong reference to the node.
 unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const HeapNode<T> {
-    // SlotCell.value: ManuallyDrop<MaybeUninit<RcInner<HeapNode<T>>>>
-    // → assume_init_ref() → &RcInner<HeapNode<T>>
+    // SlotCell::value_ref() → &RcInner<HeapNode<T>>
     // → .value() → &HeapNode<T> → cast to raw pointer
     //
     // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot
     // with strong > 0.
-    unsafe { (*ptr).value.assume_init_ref() }.value() as *const HeapNode<T>
+    unsafe { (*ptr).value_ref() }.value() as *const HeapNode<T>
 }
 
 // =============================================================================

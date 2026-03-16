@@ -183,13 +183,12 @@ impl<T> ListNode<T> {
 /// - The returned pointer is only valid as long as the caller (or the list)
 ///   holds a strong reference to the node.
 unsafe fn node_deref<T>(ptr: NodePtr<T>) -> *const ListNode<T> {
-    // SlotCell.value: ManuallyDrop<MaybeUninit<RcInner<ListNode<T>>>>
-    // → assume_init_ref() → &RcInner<ListNode<T>>
+    // SlotCell::value_ref() → &RcInner<ListNode<T>>
     // → .value() → &ListNode<T> → cast to raw pointer
     //
     // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot
     // with strong > 0.
-    unsafe { (*ptr).value.assume_init_ref() }.value() as *const ListNode<T>
+    unsafe { (*ptr).value_ref() }.value() as *const ListNode<T>
 }
 
 // =============================================================================
