@@ -1,12 +1,5 @@
+use crate::Condition;
 use crate::math::MulAdd;
-/// Health state from error rate monitoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Health {
-    /// Error rate below threshold.
-    Healthy,
-    /// Smoothed error rate exceeds threshold.
-    Degraded,
-}
 
 macro_rules! impl_error_rate {
     ($name:ident, $builder:ident, $ty:ty) => {
@@ -60,7 +53,7 @@ macro_rules! impl_error_rate {
             /// Records an outcome with default weight 1.0.
             #[inline]
             #[must_use]
-            pub fn record(&mut self, success: bool) -> Option<Health> {
+            pub fn record(&mut self, success: bool) -> Option<Condition> {
                 self.record_weighted(success, 1.0 as $ty)
             }
 
@@ -71,7 +64,7 @@ macro_rules! impl_error_rate {
             /// recent error rate in [0, 1]. With `weight > 1.0`, it can exceed 1.0.
             #[inline]
             #[must_use]
-            pub fn record_weighted(&mut self, success: bool, weight: $ty) -> Option<Health> {
+            pub fn record_weighted(&mut self, success: bool, weight: $ty) -> Option<Condition> {
                 self.count += 1;
 
                 let sample = if success { 0.0 as $ty } else { weight };
@@ -87,9 +80,9 @@ macro_rules! impl_error_rate {
                 }
 
                 if self.value > self.threshold {
-                    Option::Some(Health::Degraded)
+                    Option::Some(Condition::Degraded)
                 } else {
-                    Option::Some(Health::Healthy)
+                    Option::Some(Condition::Normal)
                 }
             }
 
@@ -122,6 +115,12 @@ macro_rules! impl_error_rate {
             pub fn reset(&mut self) {
                 self.value = 0.0 as $ty;
                 self.count = 0;
+            }
+
+            /// Updates the error rate threshold without resetting state.
+            #[inline]
+            pub fn reconfigure_threshold(&mut self, threshold: $ty) {
+                self.threshold = threshold;
             }
         }
 
@@ -170,27 +169,30 @@ macro_rules! impl_error_rate {
 
             /// Builds the error rate tracker.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha and threshold must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             /// - Threshold must be positive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("ErrorRate alpha must be set");
-                let threshold = self.threshold.expect("ErrorRate threshold must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "alpha must be in (0, 1)");
-                assert!(threshold > 0.0 as $ty, "threshold must be positive");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("ErrorRate alpha must be set"))?;
+                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("ErrorRate threshold must be set"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
+                if threshold <= 0.0 as $ty {
+                    return Err(crate::ConfigError::Invalid("threshold must be positive"));
+                }
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     value: 0.0 as $ty,
                     threshold,
                     count: 0,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -208,10 +210,10 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build();
+            .build().unwrap();
 
         for _ in 0..100 {
-            assert_eq!(er.record(true), Some(Health::Healthy));
+            assert_eq!(er.record(true), Some(Condition::Normal));
         }
     }
 
@@ -220,12 +222,12 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build();
+            .build().unwrap();
 
         for _ in 0..50 {
             let _ = er.record(false);
         }
-        assert_eq!(er.record(false), Some(Health::Degraded));
+        assert_eq!(er.record(false), Some(Condition::Degraded));
     }
 
     #[test]
@@ -233,19 +235,19 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.5)
-            .build();
+            .build().unwrap();
 
         // All success — should be healthy
         for _ in 0..20 {
             let _ = er.record(true);
         }
-        assert_eq!(er.record(true), Some(Health::Healthy));
+        assert_eq!(er.record(true), Some(Condition::Normal));
 
         // All failure — should become degraded
         for _ in 0..50 {
             let _ = er.record(false);
         }
-        assert_eq!(er.record(false), Some(Health::Degraded));
+        assert_eq!(er.record(false), Some(Condition::Degraded));
     }
 
     #[test]
@@ -253,11 +255,11 @@ mod tests {
         let mut light = ErrorRateF64::builder()
             .alpha(0.5)
             .threshold(0.5)
-            .build();
+            .build().unwrap();
         let mut heavy = ErrorRateF64::builder()
             .alpha(0.5)
             .threshold(0.5)
-            .build();
+            .build().unwrap();
 
         // Both start healthy
         for _ in 0..10 {
@@ -282,7 +284,7 @@ mod tests {
             .alpha(0.3)
             .threshold(0.05)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..4 {
             assert!(er.record(false).is_none());
@@ -295,7 +297,7 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = er.record(false);
@@ -310,14 +312,36 @@ mod tests {
         let mut er = ErrorRateF32::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build();
+            .build().unwrap();
 
-        assert_eq!(er.record(true), Some(Health::Healthy));
+        assert_eq!(er.record(true), Some(Condition::Normal));
+    }
+
+    #[test]
+    fn reconfigure_threshold_changes_behavior() {
+        let mut er = ErrorRateF64::builder()
+            .alpha(0.1)
+            .threshold(0.5)
+            .build().unwrap();
+
+        // Drive to low error rate with all successes
+        for _ in 0..50 {
+            let _ = er.record(true);
+        }
+        let rate = er.error_rate().unwrap();
+        assert!(rate < 0.5, "rate should be low after all successes, got {rate}");
+        assert_eq!(er.record(true), Some(Condition::Normal));
+
+        // Lower threshold below the current rate
+        er.reconfigure_threshold(0.0);
+        // Rate > 0.0 threshold now means degraded (any non-zero rate)
+        // Feed a failure to push rate above 0
+        assert_eq!(er.record(false), Some(Condition::Degraded));
     }
 
     #[test]
     #[should_panic(expected = "threshold must be set")]
     fn panics_without_threshold() {
-        let _ = ErrorRateF64::builder().alpha(0.3).build();
+        let _ = ErrorRateF64::builder().alpha(0.3).build().unwrap();
     }
 }

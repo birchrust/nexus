@@ -135,6 +135,20 @@ macro_rules! impl_liveness_float {
                 self.last_timestamp = 0.0 as $ty;
                 self.count = 0;
             }
+
+            /// Switches to a deadline-multiple threshold, clearing any absolute deadline.
+            #[inline]
+            pub fn reconfigure_deadline_multiple(&mut self, n: $ty) {
+                self.deadline_multiple = Option::Some(n);
+                self.deadline_absolute = Option::None;
+            }
+
+            /// Switches to an absolute deadline threshold, clearing any multiple deadline.
+            #[inline]
+            pub fn reconfigure_deadline_absolute(&mut self, t: $ty) {
+                self.deadline_absolute = Option::Some(t);
+                self.deadline_multiple = Option::None;
+            }
         }
 
         impl $builder {
@@ -194,22 +208,22 @@ macro_rules! impl_liveness_float {
 
             /// Builds the liveness detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             /// - At least one deadline (multiple or absolute) must be set.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("Liveness alpha must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "Liveness alpha must be in (0, 1)");
-                assert!(
-                    self.deadline_multiple.is_some() || self.deadline_absolute.is_some(),
-                    "Liveness requires a deadline (use .deadline_multiple() or .deadline_absolute())"
-                );
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("Liveness alpha must be set"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("Liveness alpha must be in (0, 1)"));
+                }
+                if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
+                    return Err(crate::ConfigError::Invalid("Liveness requires a deadline (use .deadline_multiple() or .deadline_absolute())"));
+                }
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     interval: 0.0 as $ty,
@@ -218,7 +232,7 @@ macro_rules! impl_liveness_float {
                     deadline_absolute: self.deadline_absolute,
                     count: 0,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -401,24 +415,24 @@ macro_rules! impl_liveness_int {
 
             /// Builds the liveness detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Span must have been set and >= 1.
             /// - At least one deadline must be set.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let requested = self.span.expect("Liveness span must be set");
-                assert!(requested >= 1, "Liveness span must be >= 1");
-                assert!(
-                    self.deadline_multiple.is_some() || self.deadline_absolute.is_some(),
-                    "Liveness requires a deadline"
-                );
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let requested = self.span.ok_or(crate::ConfigError::Missing("Liveness span must be set"))?;
+                if requested < 1 {
+                    return Err(crate::ConfigError::Invalid("Liveness span must be >= 1"));
+                }
+                if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
+                    return Err(crate::ConfigError::Invalid("Liveness requires a deadline"));
+                }
 
                 let effective = crate::ema::next_power_of_two_minus_one(requested);
                 let shift = crate::ema::log2_of_span_plus_one(effective);
 
-                $name {
+                Ok($name {
                     acc: 0,
                     shift,
                     span: effective,
@@ -428,7 +442,7 @@ macro_rules! impl_liveness_int {
                     count: 0,
                     min_samples: self.min_samples,
                     initialized: false,
-                }
+                })
             }
         }
     };
@@ -446,7 +460,7 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build();
+            .build().unwrap();
 
         // Regular events every 10 units
         for i in 0..20 {
@@ -459,7 +473,7 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build();
+            .build().unwrap();
 
         // Regular events every 10 units
         for i in 0..10 {
@@ -476,7 +490,7 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build();
+            .build().unwrap();
 
         for i in 0..10 {
             let _ = lv.record(i as f64 * 10.0);
@@ -495,7 +509,7 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_absolute(50.0)
-            .build();
+            .build().unwrap();
 
         let _ = lv.record(0.0);
         let _ = lv.record(10.0);
@@ -512,7 +526,7 @@ mod tests {
             .alpha(0.3)
             .deadline_multiple(3.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         // Even with huge gaps, returns true before primed
         assert!(lv.record(0.0));
@@ -525,7 +539,7 @@ mod tests {
         let mut lv = LivenessI64::builder()
             .span(7)
             .deadline_multiple(3)
-            .build();
+            .build().unwrap();
 
         for i in 0..10 {
             assert!(lv.record(i * 100));
@@ -540,7 +554,7 @@ mod tests {
         let mut lv = LivenessI32::builder()
             .span(3)
             .deadline_absolute(500)
-            .build();
+            .build().unwrap();
 
         let _ = lv.record(0);
         let _ = lv.record(100);
@@ -553,7 +567,7 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build();
+            .build().unwrap();
 
         for i in 0..10 {
             let _ = lv.record(i as f64 * 10.0);
@@ -565,14 +579,50 @@ mod tests {
     }
 
     #[test]
+    fn reconfigure_deadline_multiple() {
+        let mut lv = LivenessF64::builder()
+            .alpha(0.3)
+            .deadline_absolute(50.0)
+            .build().unwrap();
+
+        let _ = lv.record(0.0);
+        let _ = lv.record(10.0);
+
+        // With absolute 50, check at 55 is alive
+        assert!(lv.check(55.0));
+
+        // Switch to multiple=2 — smoothed interval ~10, deadline=20
+        lv.reconfigure_deadline_multiple(2.0);
+        // 55 - 10 = 45 > 20, should be dead
+        assert!(!lv.check(55.0));
+    }
+
+    #[test]
+    fn reconfigure_deadline_absolute() {
+        let mut lv = LivenessF64::builder()
+            .alpha(0.3)
+            .deadline_multiple(3.0)
+            .build().unwrap();
+
+        for i in 0..10 {
+            let _ = lv.record(i as f64 * 10.0);
+        }
+
+        // Switch to absolute deadline
+        lv.reconfigure_deadline_absolute(5.0);
+        // Last event at 90, check at 100 => dt=10 > 5
+        assert!(!lv.check(100.0));
+    }
+
+    #[test]
     #[should_panic(expected = "alpha must be set")]
     fn panics_without_alpha() {
-        let _ = LivenessF64::builder().deadline_multiple(3.0).build();
+        let _ = LivenessF64::builder().deadline_multiple(3.0).build().unwrap();
     }
 
     #[test]
     #[should_panic(expected = "requires a deadline")]
     fn panics_without_deadline() {
-        let _ = LivenessF64::builder().alpha(0.3).build();
+        let _ = LivenessF64::builder().alpha(0.3).build().unwrap();
     }
 }

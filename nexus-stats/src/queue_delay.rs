@@ -1,13 +1,5 @@
+use crate::Condition;
 use crate::windowed::{WindowedMinI32, WindowedMinI64};
-
-/// Queue pressure state (CoDel-inspired).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueuePressure {
-    /// Sojourn times are within target.
-    Normal,
-    /// Minimum sojourn time in the window exceeds target — standing queue.
-    Elevated,
-}
 
 macro_rules! impl_queue_delay {
     ($name:ident, $builder:ident, $ty:ty, $windowed_min:ty) => {
@@ -53,10 +45,10 @@ macro_rules! impl_queue_delay {
 
             /// Feeds a sojourn time at the given timestamp.
             ///
-            /// Returns `Some(QueuePressure)` once primed, `None` before.
+            /// Returns `Some(Condition)` once primed, `None` before.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, timestamp: u64, sojourn: $ty) -> Option<QueuePressure> {
+            pub fn update(&mut self, timestamp: u64, sojourn: $ty) -> Option<Condition> {
                 let min = self.windowed_min.update(timestamp, sojourn);
 
                 if self.windowed_min.count() < self.min_samples {
@@ -64,9 +56,9 @@ macro_rules! impl_queue_delay {
                 }
 
                 if min > self.target {
-                    Option::Some(QueuePressure::Elevated)
+                    Option::Some(Condition::Degraded)
                 } else {
-                    Option::Some(QueuePressure::Normal)
+                    Option::Some(Condition::Normal)
                 }
             }
 
@@ -136,22 +128,23 @@ macro_rules! impl_queue_delay {
 
             /// Builds the queue delay monitor.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Target must have been set.
             /// - Window must have been set and be positive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let target = self.target.expect("QueueDelay target must be set");
-                let window = self.window.expect("QueueDelay window must be set");
-                assert!(window > 0, "QueueDelay window must be positive");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let target = self.target.ok_or(crate::ConfigError::Missing("QueueDelay target must be set"))?;
+                let window = self.window.ok_or(crate::ConfigError::Missing("QueueDelay window must be set"))?;
+                if window == 0 {
+                    return Err(crate::ConfigError::Invalid("QueueDelay window must be positive"));
+                }
 
-                $name {
+                Ok($name {
                     windowed_min: <$windowed_min>::new(window),
                     target,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -169,12 +162,12 @@ mod tests {
         let mut qd = QueueDelayI64::builder()
             .target(100)
             .window(1000)
-            .build();
+            .build().unwrap();
 
         // All sojourn times below target
         for t in 0..100 {
             let result = qd.update(t * 10, 50);
-            assert_eq!(result, Some(QueuePressure::Normal));
+            assert_eq!(result, Some(Condition::Normal));
         }
         assert!(!qd.is_elevated());
     }
@@ -184,7 +177,7 @@ mod tests {
         let mut qd = QueueDelayI64::builder()
             .target(100)
             .window(1000)
-            .build();
+            .build().unwrap();
 
         // Sojourn times above target
         for t in 0..100 {
@@ -198,7 +191,7 @@ mod tests {
         let mut qd = QueueDelayI64::builder()
             .target(100)
             .window(10)
-            .build();
+            .build().unwrap();
 
         // Build up
         for t in 0..10 {
@@ -218,7 +211,7 @@ mod tests {
         let mut qd = QueueDelayI64::builder()
             .target(100)
             .window(10)
-            .build();
+            .build().unwrap();
 
         // Single burst sample among low values — min stays low, not elevated
         for t in 0..10 {
@@ -234,7 +227,7 @@ mod tests {
             .target(100)
             .window(1000)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for t in 0..4 {
             assert_eq!(qd.update(t, 200), None);
@@ -247,7 +240,7 @@ mod tests {
         let mut qd = QueueDelayI64::builder()
             .target(100)
             .window(1000)
-            .build();
+            .build().unwrap();
 
         for t in 0..10 {
             let _ = qd.update(t, 200);
@@ -262,21 +255,21 @@ mod tests {
         let mut qd = QueueDelayI32::builder()
             .target(50)
             .window(100)
-            .build();
+            .build().unwrap();
 
         let result = qd.update(0, 30);
-        assert_eq!(result, Some(QueuePressure::Normal));
+        assert_eq!(result, Some(Condition::Normal));
     }
 
     #[test]
     #[should_panic(expected = "target must be set")]
     fn panics_without_target() {
-        let _ = QueueDelayI64::builder().window(100).build();
+        let _ = QueueDelayI64::builder().window(100).build().unwrap();
     }
 
     #[test]
     #[should_panic(expected = "window must be set")]
     fn panics_without_window() {
-        let _ = QueueDelayI64::builder().target(100).build();
+        let _ = QueueDelayI64::builder().target(100).build().unwrap();
     }
 }

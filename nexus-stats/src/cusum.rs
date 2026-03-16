@@ -1,13 +1,4 @@
-/// Direction of a detected mean shift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shift {
-    /// No shift detected.
-    None,
-    /// Mean shifted upward (e.g., latency increased).
-    Upper,
-    /// Mean shifted downward (e.g., latency recovered).
-    Lower,
-}
+use crate::Direction;
 
 macro_rules! impl_cusum {
     ($name:ident, $builder:ident, $ty:ty, min_slack = $min_slack:expr) => {
@@ -55,7 +46,8 @@ macro_rules! impl_cusum {
         ///     .slack(5 as _)
         ///     .threshold(50 as _)
         ///     .min_samples(20)
-        ///     .build();
+        ///     .build()
+        ///     .unwrap();
         /// ```
         #[derive(Debug, Clone)]
         pub struct $builder {
@@ -89,11 +81,11 @@ macro_rules! impl_cusum {
             /// Feeds a sample. Returns shift direction once primed.
             ///
             /// Returns `None` until `min_samples` have been processed.
-            /// After priming, returns `Some(Shift::Upper)`, `Some(Shift::Lower)`,
-            /// or `Some(Shift::None)`.
+            /// After priming, returns `Some(Direction::Rising)`, `Some(Direction::Falling)`,
+            /// or `Some(Direction::Neutral)`.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Shift> {
+            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
                 self.count += 1;
 
                 let diff = sample - self.target;
@@ -112,11 +104,11 @@ macro_rules! impl_cusum {
                 }
 
                 if self.upper > self.threshold_upper {
-                    Option::Some(Shift::Upper)
+                    Option::Some(Direction::Rising)
                 } else if self.lower > self.threshold_lower {
-                    Option::Some(Shift::Lower)
+                    Option::Some(Direction::Falling)
                 } else {
-                    Option::Some(Shift::None)
+                    Option::Some(Direction::Neutral)
                 }
             }
 
@@ -222,6 +214,46 @@ macro_rules! impl_cusum {
             #[must_use]
             pub fn min_samples(&self) -> u64 {
                 self.min_samples
+            }
+
+            /// Updates all tuning parameters without resetting cumulative sums or count.
+            ///
+            /// # Errors
+            ///
+            /// - Slack values must be non-negative.
+            /// - Threshold values must be positive.
+            #[inline]
+            pub fn reconfigure(
+                &mut self,
+                target: $ty,
+                slack_upper: $ty,
+                slack_lower: $ty,
+                threshold_upper: $ty,
+                threshold_lower: $ty,
+            ) -> Result<(), crate::ConfigError> {
+                if slack_upper < (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("slack_upper must be non-negative"));
+                }
+                if slack_lower < (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("slack_lower must be non-negative"));
+                }
+                if threshold_upper <= (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("threshold_upper must be positive"));
+                }
+                if threshold_lower <= (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("threshold_lower must be positive"));
+                }
+
+                self.target = target;
+                self.slack_upper = slack_upper;
+                self.slack_lower = slack_lower;
+                self.threshold_upper = threshold_upper;
+                self.threshold_lower = threshold_lower;
+                self.slack_upper_explicit = true;
+                self.slack_lower_explicit = true;
+                self.threshold_upper_explicit = true;
+                self.threshold_lower_explicit = true;
+                Ok(())
             }
         }
 
@@ -335,13 +367,12 @@ macro_rules! impl_cusum {
 
             /// Builds the detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Slack values must be non-negative.
             /// - Threshold values must be positive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let slack_upper_explicit = self.slack_upper.is_some();
                 let slack_lower_explicit = self.slack_lower.is_some();
                 let threshold_upper_explicit = self.threshold_upper.is_some();
@@ -352,15 +383,23 @@ macro_rules! impl_cusum {
                 let threshold_upper = self.threshold_upper.unwrap_or_else(|| Self::default_threshold(self.target));
                 let threshold_lower = self.threshold_lower.unwrap_or_else(|| Self::default_threshold(self.target));
 
-                assert!(slack_upper >= (0 as $ty), "slack_upper must be non-negative");
-                assert!(slack_lower >= (0 as $ty), "slack_lower must be non-negative");
-                assert!(threshold_upper > (0 as $ty), "threshold_upper must be positive");
-                assert!(threshold_lower > (0 as $ty), "threshold_lower must be positive");
+                if slack_upper < (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("slack_upper must be non-negative"));
+                }
+                if slack_lower < (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("slack_lower must be non-negative"));
+                }
+                if threshold_upper <= (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("threshold_upper must be positive"));
+                }
+                if threshold_lower <= (0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("threshold_lower must be positive"));
+                }
 
                 let seeded = self.seed_upper.is_some() || self.seed_lower.is_some();
                 let initial_count = if seeded { self.min_samples } else { 0 };
 
-                $name {
+                Ok($name {
                     target: self.target,
                     slack_upper,
                     slack_lower,
@@ -374,7 +413,7 @@ macro_rules! impl_cusum {
                     slack_lower_explicit,
                     threshold_upper_explicit,
                     threshold_lower_explicit,
-                }
+                })
             }
         }
     };
@@ -398,18 +437,19 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build()
+            .unwrap();
 
         // Feed normal samples — should not trigger
         for _ in 0..10 {
             let result = cusum.update(100.0);
-            assert_eq!(result, Some(Shift::None));
+            assert_eq!(result, Some(Direction::Neutral));
         }
 
         // Feed elevated samples — should eventually trigger upper
         let mut triggered = false;
         for _ in 0..100 {
-            if cusum.update(120.0) == Some(Shift::Upper) {
+            if cusum.update(120.0) == Some(Direction::Rising) {
                 triggered = true;
                 break;
             }
@@ -422,12 +462,13 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build()
+            .unwrap();
 
         // Feed depressed samples — should eventually trigger lower
         let mut triggered = false;
         for _ in 0..100 {
-            if cusum.update(80.0) == Some(Shift::Lower) {
+            if cusum.update(80.0) == Some(Direction::Falling) {
                 triggered = true;
                 break;
             }
@@ -440,10 +481,10 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..1000 {
-            assert_eq!(cusum.update(100.0), Some(Shift::None));
+            assert_eq!(cusum.update(100.0), Some(Direction::Neutral));
         }
     }
 
@@ -457,7 +498,7 @@ mod tests {
             .slack(5.0)
             .threshold(50.0)
             .min_samples(10)
-            .build();
+            .build().unwrap();
 
         for _ in 0..9 {
             assert_eq!(cusum.update(200.0), None);
@@ -475,7 +516,7 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         assert_eq!(cusum.min_samples(), 0);
         // First sample should return Some
@@ -492,7 +533,7 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = cusum.update(120.0);
@@ -508,7 +549,7 @@ mod tests {
 
     #[test]
     fn reset_with_target_updates_defaults() {
-        let mut cusum = CusumF64::builder(100.0).build();
+        let mut cusum = CusumF64::builder(100.0).build().unwrap();
 
         // Defaults based on 100.0
         let original_slack = cusum.slack_upper();
@@ -527,7 +568,7 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(10.0)
             .threshold(75.0)
-            .build();
+            .build().unwrap();
 
         cusum.reset_with_target(200.0);
 
@@ -549,7 +590,7 @@ mod tests {
             .slack_upper(2.0)
             .slack_lower(10.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         // Small upward deviation should accumulate faster than downward
         for _ in 0..10 {
@@ -574,12 +615,12 @@ mod tests {
             .slack(5.0)
             .threshold_upper(20.0)    // trigger fast on increases
             .threshold_lower(500.0)   // very slow to trigger on decreases
-            .build();
+            .build().unwrap();
 
         // Upward shift should trigger quickly
         let mut upper_triggered = false;
         for _ in 0..20 {
-            if cusum.update(120.0) == Some(Shift::Upper) {
+            if cusum.update(120.0) == Some(Direction::Rising) {
                 upper_triggered = true;
                 break;
             }
@@ -591,7 +632,7 @@ mod tests {
         cusum.reset();
         let mut lower_triggered = false;
         for _ in 0..20 {
-            if cusum.update(80.0) == Some(Shift::Lower) {
+            if cusum.update(80.0) == Some(Direction::Falling) {
                 lower_triggered = true;
                 break;
             }
@@ -604,7 +645,7 @@ mod tests {
     fn symmetric_slack_sets_both() {
         let cusum = CusumF64::builder(100.0)
             .slack(7.5)
-            .build();
+            .build().unwrap();
 
         assert_eq!(cusum.slack_upper(), 7.5);
         assert_eq!(cusum.slack_lower(), 7.5);
@@ -615,7 +656,7 @@ mod tests {
     fn symmetric_threshold_sets_both() {
         let cusum = CusumF64::builder(100.0)
             .threshold(42.0)
-            .build();
+            .build().unwrap();
 
         assert_eq!(cusum.threshold_upper(), 42.0);
         assert_eq!(cusum.threshold_lower(), 42.0);
@@ -626,27 +667,27 @@ mod tests {
     // =========================================================================
 
     #[test]
-    #[should_panic(expected = "slack_upper must be non-negative")]
-    fn panics_on_negative_slack_upper() {
-        let _ = CusumF64::builder(100.0).slack_upper(-1.0).build();
+    fn rejects_negative_slack_upper() {
+        let result = CusumF64::builder(100.0).slack_upper(-1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid("slack_upper must be non-negative"))));
     }
 
     #[test]
-    #[should_panic(expected = "slack_lower must be non-negative")]
-    fn panics_on_negative_slack_lower() {
-        let _ = CusumF64::builder(100.0).slack_lower(-1.0).build();
+    fn rejects_negative_slack_lower() {
+        let result = CusumF64::builder(100.0).slack_lower(-1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid("slack_lower must be non-negative"))));
     }
 
     #[test]
-    #[should_panic(expected = "threshold_upper must be positive")]
-    fn panics_on_zero_threshold() {
-        let _ = CusumF64::builder(100.0).threshold(0.0).build();
+    fn rejects_zero_threshold() {
+        let result = CusumF64::builder(100.0).threshold(0.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid("threshold_upper must be positive"))));
     }
 
     #[test]
-    #[should_panic(expected = "threshold_lower must be positive")]
-    fn panics_on_negative_threshold_lower() {
-        let _ = CusumF64::builder(100.0).threshold_lower(-1.0).build();
+    fn rejects_negative_threshold_lower() {
+        let result = CusumF64::builder(100.0).threshold_lower(-1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid("threshold_lower must be positive"))));
     }
 
     // =========================================================================
@@ -658,11 +699,11 @@ mod tests {
         let mut cusum = CusumI64::builder(1000)
             .slack(50)
             .threshold(500)
-            .build();
+            .build().unwrap();
 
         let mut triggered = false;
         for _ in 0..100 {
-            if cusum.update(1200) == Some(Shift::Upper) {
+            if cusum.update(1200) == Some(Direction::Rising) {
                 triggered = true;
                 break;
             }
@@ -675,9 +716,9 @@ mod tests {
         let mut cusum = CusumI32::builder(100)
             .slack(5)
             .threshold(50)
-            .build();
+            .build().unwrap();
 
-        assert_eq!(cusum.update(100), Some(Shift::None));
+        assert_eq!(cusum.update(100), Some(Direction::Neutral));
     }
 
     #[test]
@@ -685,9 +726,9 @@ mod tests {
         let mut cusum = CusumF32::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
-        assert_eq!(cusum.update(100.0), Some(Shift::None));
+        assert_eq!(cusum.update(100.0), Some(Direction::Neutral));
     }
 
     // =========================================================================
@@ -699,7 +740,7 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         assert_eq!(cusum.count(), 0);
         let _ = cusum.update(100.0);
@@ -714,7 +755,7 @@ mod tests {
         let cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         assert_eq!(cusum.upper(), 0.0);
         assert_eq!(cusum.lower(), 0.0);
@@ -726,11 +767,57 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         // Deviation exactly equals slack — S_high = max(0, 0 + 5 - 5) = 0
         let _ = cusum.update(105.0);
         assert_eq!(cusum.upper(), 0.0);
+    }
+
+    // =========================================================================
+    // Reconfigure
+    // =========================================================================
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn reconfigure_changes_params_preserves_state() {
+        let mut cusum = CusumF64::builder(100.0)
+            .slack(5.0)
+            .threshold(50.0)
+            .build().unwrap();
+
+        // Accumulate some state
+        for _ in 0..5 {
+            let _ = cusum.update(120.0);
+        }
+        let upper_before = cusum.upper();
+        let count_before = cusum.count();
+        assert!(upper_before > 0.0);
+
+        // Reconfigure
+        cusum.reconfigure(200.0, 10.0, 10.0, 100.0, 100.0).unwrap();
+
+        // Parameters changed
+        assert_eq!(cusum.target(), 200.0);
+        assert_eq!(cusum.slack_upper(), 10.0);
+        assert_eq!(cusum.slack_lower(), 10.0);
+        assert_eq!(cusum.threshold_upper(), 100.0);
+        assert_eq!(cusum.threshold_lower(), 100.0);
+
+        // State preserved
+        assert_eq!(cusum.upper(), upper_before);
+        assert_eq!(cusum.count(), count_before);
+    }
+
+    #[test]
+    fn reconfigure_validates() {
+        let mut cusum = CusumF64::builder(100.0)
+            .slack(5.0).threshold(50.0).build().unwrap();
+
+        assert!(cusum.reconfigure(100.0, -1.0, 0.0, 1.0, 1.0).is_err());
+        assert!(cusum.reconfigure(100.0, 0.0, -1.0, 1.0, 1.0).is_err());
+        assert!(cusum.reconfigure(100.0, 0.0, 0.0, 0.0, 1.0).is_err());
+        assert!(cusum.reconfigure(100.0, 0.0, 0.0, 1.0, 0.0).is_err());
     }
 
     #[test]
@@ -739,7 +826,7 @@ mod tests {
         // Ensures at least 1 unit of noise tolerance for integer types
         let cusum = CusumI64::builder(10)
             .threshold(5)
-            .build();
+            .build().unwrap();
 
         assert_eq!(cusum.slack_upper(), 1);
         assert_eq!(cusum.slack_lower(), 1);
@@ -747,7 +834,7 @@ mod tests {
         // Larger target: 100/20 = 5, no floor needed
         let cusum = CusumI64::builder(100)
             .threshold(50)
-            .build();
+            .build().unwrap();
         assert_eq!(cusum.slack_upper(), 5);
     }
 }

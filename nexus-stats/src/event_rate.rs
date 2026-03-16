@@ -146,24 +146,25 @@ macro_rules! impl_event_rate_float {
 
             /// Builds the event rate tracker.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("EventRate alpha must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "EventRate alpha must be in (0, 1)");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("EventRate alpha must be set"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("EventRate alpha must be in (0, 1)"));
+                }
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     interval: 0.0 as $ty,
                     last_timestamp: 0.0 as $ty,
                     count: 0,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -287,19 +288,20 @@ macro_rules! impl_event_rate_int {
 
             /// Builds the event rate tracker.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Span must have been set and >= 1.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let requested = self.span.expect("EventRate span must be set");
-                assert!(requested >= 1, "EventRate span must be >= 1");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let requested = self.span.ok_or(crate::ConfigError::Missing("EventRate span must be set"))?;
+                if requested < 1 {
+                    return Err(crate::ConfigError::Invalid("EventRate span must be >= 1"));
+                }
 
                 let effective = crate::ema::next_power_of_two_minus_one(requested);
                 let shift = crate::ema::log2_of_span_plus_one(effective);
 
-                $name {
+                Ok($name {
                     acc: 0,
                     shift,
                     span: effective,
@@ -307,7 +309,7 @@ macro_rules! impl_event_rate_int {
                     count: 0,
                     min_samples: self.min_samples,
                     initialized: false,
-                }
+                })
             }
         }
     };
@@ -322,7 +324,7 @@ mod tests {
 
     #[test]
     fn constant_rate() {
-        let mut er = EventRateF64::builder().alpha(0.3).build();
+        let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
 
         // Events every 10 units → rate should converge to 0.1
         for i in 0..100 {
@@ -335,7 +337,7 @@ mod tests {
 
     #[test]
     fn burst_increases_rate() {
-        let mut er = EventRateF64::builder().alpha(0.5).build();
+        let mut er = EventRateF64::builder().alpha(0.5).build().unwrap();
 
         // Normal rate: every 10 units
         for i in 0..20 {
@@ -355,7 +357,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut er = EventRateF64::builder().alpha(0.3).min_samples(5).build();
+        let mut er = EventRateF64::builder().alpha(0.3).min_samples(5).build().unwrap();
 
         for i in 0..4 {
             er.tick(i as f64 * 10.0);
@@ -367,7 +369,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut er = EventRateF64::builder().alpha(0.3).build();
+        let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
         for i in 0..10 {
             er.tick(i as f64 * 10.0);
         }
@@ -378,7 +380,7 @@ mod tests {
 
     #[test]
     fn f32_basic() {
-        let mut er = EventRateF32::builder().alpha(0.3).build();
+        let mut er = EventRateF32::builder().alpha(0.3).build().unwrap();
         er.tick(0.0);
         er.tick(10.0);
         assert!(er.rate().is_some());
@@ -386,7 +388,7 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut er = EventRateI64::builder().span(7).build();
+        let mut er = EventRateI64::builder().span(7).build().unwrap();
         for i in 0..10 {
             er.tick(i * 100);
         }
@@ -396,7 +398,7 @@ mod tests {
 
     #[test]
     fn i32_basic() {
-        let mut er = EventRateI32::builder().span(3).build();
+        let mut er = EventRateI32::builder().span(3).build().unwrap();
         er.tick(0);
         er.tick(50);
         assert!(er.interval().is_some());
@@ -404,7 +406,7 @@ mod tests {
 
     #[test]
     fn zero_interval_returns_none() {
-        let mut er = EventRateF64::builder().alpha(0.3).build();
+        let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
         er.tick(100.0);
         er.tick(100.0); // same timestamp → interval = 0
         // rate() should return None (division by zero guard)
@@ -414,6 +416,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "alpha must be set")]
     fn panics_without_alpha() {
-        let _ = EventRateF64::builder().build();
+        let _ = EventRateF64::builder().build().unwrap();
     }
 }

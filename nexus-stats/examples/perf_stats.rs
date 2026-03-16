@@ -78,7 +78,7 @@ fn next_val(state: &mut u64) -> u64 {
 // ============================================================================
 
 fn bench_cusum_f64(samples: &mut [u64]) {
-    let mut cusum = CusumF64::builder(100.0).slack(5.0).threshold(1e18).build();
+    let mut cusum = CusumF64::builder(100.0).slack(5.0).threshold(1e18).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = cusum.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -95,7 +95,7 @@ fn bench_cusum_f64(samples: &mut [u64]) {
 }
 
 fn bench_cusum_i64(samples: &mut [u64]) {
-    let mut cusum = CusumI64::builder(1000).slack(50).threshold(i64::MAX).build();
+    let mut cusum = CusumI64::builder(1000).slack(50).threshold(i64::MAX).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = cusum.update(990 + (next_val(&mut rng) % 20) as i64);
@@ -112,7 +112,7 @@ fn bench_cusum_i64(samples: &mut [u64]) {
 }
 
 fn bench_ema_f64(samples: &mut [u64]) {
-    let mut ema = EmaF64::builder().alpha(0.1).build();
+    let mut ema = EmaF64::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     let _ = ema.update(100.0);
     for _ in 0..WARMUP {
@@ -130,7 +130,7 @@ fn bench_ema_f64(samples: &mut [u64]) {
 }
 
 fn bench_ema_i64(samples: &mut [u64]) {
-    let mut ema = EmaI64::builder().span(15).build();
+    let mut ema = EmaI64::builder().span(15).build().unwrap();
     let mut rng = 12345u64;
     let _ = ema.update(1000);
     for _ in 0..WARMUP {
@@ -224,7 +224,7 @@ fn bench_windowed_min_f64(samples: &mut [u64]) {
 }
 
 fn bench_ewma_var_f64(samples: &mut [u64]) {
-    let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+    let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -248,7 +248,7 @@ fn bench_liveness_f64(samples: &mut [u64]) {
     let mut lv = LivenessF64::builder()
         .alpha(0.3)
         .deadline_multiple(3.0)
-        .build();
+        .build().unwrap();
     let mut rng = 12345u64;
     for i in 0..WARMUP {
         let _ = lv.record((i as f64).mul_add(10.0, (next_val(&mut rng) % 5) as f64));
@@ -266,7 +266,7 @@ fn bench_liveness_f64(samples: &mut [u64]) {
 }
 
 fn bench_mosum_f64(samples: &mut [u64]) {
-    let mut mosum = MosumF64::builder(100.0).window_size(64).threshold(1e18).build();
+    let mut mosum = MosumF64::builder(100.0).window_size(64).threshold(1e18).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = mosum.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -308,7 +308,7 @@ fn bench_covariance_f64(samples: &mut [u64]) {
 }
 
 fn bench_holt_f64(samples: &mut [u64]) {
-    let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build();
+    let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = h.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -330,7 +330,7 @@ fn bench_shiryaev_roberts(samples: &mut [u64]) {
         .post_change_mean(110.0)
         .variance(25.0)
         .threshold(1e18)
-        .build();
+        .build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = sr.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -408,7 +408,7 @@ fn bench_running_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_event_rate_f64(samples: &mut [u64]) {
-    let mut er = EventRateF64::builder().alpha(0.3).build();
+    let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
     let mut rng = 12345u64;
     let mut t = 0.0f64;
     for _ in 0..WARMUP {
@@ -428,7 +428,7 @@ fn bench_event_rate_f64(samples: &mut [u64]) {
 }
 
 fn bench_queue_delay_i64(samples: &mut [u64]) {
-    let mut qd = QueueDelayI64::builder().target(100).window(1000).build();
+    let mut qd = QueueDelayI64::builder().target(100).window(1000).build().unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
         let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
@@ -452,7 +452,7 @@ fn bench_queue_delay_i64(samples: &mut [u64]) {
 
 fn bench_multi_gate_f64(samples: &mut [u64]) {
     let mut mg = MultiGateF64::builder()
-        .alpha(0.1).hard_limit(0.5).suspect_z(5.0).min_samples(5).build();
+        .alpha(0.1).hard_limit(0.5).suspect_z(5.0).min_samples(5).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = mg.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -487,7 +487,7 @@ fn bench_windowed_median_f64(samples: &mut [u64]) {
 
 fn bench_robust_z_f64(samples: &mut [u64]) {
     let mut rz = RobustZScoreF64::builder()
-        .alpha(0.1).reject_threshold(10.0).min_samples(5).build();
+        .alpha(0.1).reject_threshold(10.0).min_samples(5).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = rz.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -525,7 +525,7 @@ fn bench_spring_f64(samples: &mut [u64]) {
 }
 
 fn bench_peak_hold_f64(samples: &mut [u64]) {
-    let mut ph = PeakHoldF64::builder().decay_rate(0.99).hold_samples(10).build();
+    let mut ph = PeakHoldF64::builder().decay_rate(0.99).hold_samples(10).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = ph.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -542,7 +542,7 @@ fn bench_peak_hold_f64(samples: &mut [u64]) {
 }
 
 fn bench_asym_ema_f64(samples: &mut [u64]) {
-    let mut ae = AsymEmaF64::builder().alpha_up(0.9).alpha_down(0.1).build();
+    let mut ae = AsymEmaF64::builder().alpha_up(0.9).alpha_down(0.1).build().unwrap();
     let mut rng = 12345u64;
     let _ = ae.update(100.0);
     for _ in 0..WARMUP {
@@ -560,7 +560,7 @@ fn bench_asym_ema_f64(samples: &mut [u64]) {
 }
 
 fn bench_kama_f64(samples: &mut [u64]) {
-    let mut kama = KamaF64::builder().window_size(10).build();
+    let mut kama = KamaF64::builder().window_size(10).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = kama.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -578,7 +578,7 @@ fn bench_kama_f64(samples: &mut [u64]) {
 
 fn bench_kalman1d_f64(samples: &mut [u64]) {
     let mut kf = Kalman1dF64::builder()
-        .process_noise(0.01).measurement_noise(1.0).build();
+        .process_noise(0.01).measurement_noise(1.0).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = kf.update(90.0 + (next_val(&mut rng) % 20) as f64);

@@ -29,6 +29,8 @@ macro_rules! impl_holt {
             alpha: Option<$ty>,
             beta: Option<$ty>,
             min_samples: u64,
+            seed_level: Option<$ty>,
+            seed_trend: Option<$ty>,
         }
 
         impl $name {
@@ -40,6 +42,8 @@ macro_rules! impl_holt {
                     alpha: Option::None,
                     beta: Option::None,
                     min_samples: 2,
+                    seed_level: Option::None,
+                    seed_trend: Option::None,
                 }
             }
 
@@ -154,28 +158,47 @@ macro_rules! impl_holt {
                 self
             }
 
+            /// Pre-loads the level and trend from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately.
+            #[inline]
+            #[must_use]
+            pub fn seed(mut self, level: $ty, trend: $ty) -> Self {
+                self.seed_level = Option::Some(level);
+                self.seed_trend = Option::Some(trend);
+                self
+            }
+
             /// Builds the Holt's smoother.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha and beta must have been set.
             /// - Both must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("Holt alpha must be set");
-                let beta = self.beta.expect("Holt beta must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "Holt alpha must be in (0, 1)");
-                assert!(beta > 0.0 as $ty && beta < 1.0 as $ty, "Holt beta must be in (0, 1)");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("Holt alpha must be set"))?;
+                let beta = self.beta.ok_or(crate::ConfigError::Missing("Holt beta must be set"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("Holt alpha must be in (0, 1)"));
+                }
+                if !(beta > 0.0 as $ty && beta < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("Holt beta must be in (0, 1)"));
+                }
 
-                $name {
+                let (level, trend, count) = match (self.seed_level, self.seed_trend) {
+                    (Some(l), Some(t)) => (l, t, self.min_samples),
+                    _ => (0.0 as $ty, 0.0 as $ty, 0),
+                };
+
+                Ok($name {
                     alpha,
                     beta,
-                    level: 0.0 as $ty,
-                    trend: 0.0 as $ty,
-                    count: 0,
+                    level,
+                    trend,
+                    count,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -190,7 +213,7 @@ mod tests {
 
     #[test]
     fn constant_input_zero_trend() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build();
+        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
 
         for _ in 0..100 {
             let _ = h.update(50.0);
@@ -202,7 +225,7 @@ mod tests {
 
     #[test]
     fn linear_input_correct_trend() {
-        let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build();
+        let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build().unwrap();
 
         // Feed linear data: 0, 10, 20, 30, ...
         for i in 0..100 {
@@ -216,7 +239,7 @@ mod tests {
 
     #[test]
     fn forecast_accuracy() {
-        let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build();
+        let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build().unwrap();
 
         for i in 0..50 {
             let _ = h.update(i as f64 * 10.0);
@@ -233,7 +256,7 @@ mod tests {
 
     #[test]
     fn priming_needs_two_samples() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build();
+        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
 
         assert!(h.update(10.0).is_none()); // first sample — not primed
         assert!(h.update(20.0).is_some()); // second sample — primed
@@ -241,7 +264,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build();
+        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
         let _ = h.update(10.0);
         let _ = h.update(20.0);
 
@@ -253,21 +276,34 @@ mod tests {
 
     #[test]
     fn f32_basic() {
-        let mut h = HoltF32::builder().alpha(0.3).beta(0.1).build();
+        let mut h = HoltF32::builder().alpha(0.3).beta(0.1).build().unwrap();
         let _ = h.update(10.0);
         let result = h.update(20.0);
         assert!(result.is_some());
     }
 
     #[test]
+    fn seeded_is_primed() {
+        let h = HoltF64::builder()
+            .alpha(0.3)
+            .beta(0.1)
+            .seed(100.0, 5.0)
+            .build().unwrap();
+
+        assert!(h.is_primed());
+        assert!((h.level().unwrap() - 100.0).abs() < 1e-10);
+        assert!((h.trend().unwrap() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
     #[should_panic(expected = "alpha must be set")]
     fn panics_without_alpha() {
-        let _ = HoltF64::builder().beta(0.1).build();
+        let _ = HoltF64::builder().beta(0.1).build().unwrap();
     }
 
     #[test]
     #[should_panic(expected = "beta must be set")]
     fn panics_without_beta() {
-        let _ = HoltF64::builder().alpha(0.3).build();
+        let _ = HoltF64::builder().alpha(0.3).build().unwrap();
     }
 }

@@ -1,15 +1,4 @@
-use crate::{HoltF32, HoltF64};
-
-/// Trend direction from trend alert detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Trend {
-    /// Trend within threshold.
-    Stable,
-    /// Positive trend exceeds threshold (values increasing).
-    Rising,
-    /// Negative trend exceeds threshold (values decreasing).
-    Falling,
-}
+use crate::{Direction, HoltF32, HoltF64};
 
 macro_rules! impl_trend_alert {
     ($name:ident, $builder:ident, $ty:ty, $holt:ty) => {
@@ -59,7 +48,7 @@ macro_rules! impl_trend_alert {
             /// Feeds a sample. Returns trend direction once primed.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Trend> {
+            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
                 let result = self.holt.update(sample);
 
                 if self.holt.count() < self.min_samples {
@@ -71,9 +60,9 @@ macro_rules! impl_trend_alert {
                 // Check absolute threshold
                 if let Some(abs_thresh) = self.trend_threshold_abs {
                     if trend > abs_thresh {
-                        return Option::Some(Trend::Rising);
+                        return Option::Some(Direction::Rising);
                     } else if trend < -abs_thresh {
-                        return Option::Some(Trend::Falling);
+                        return Option::Some(Direction::Falling);
                     }
                 }
 
@@ -83,14 +72,14 @@ macro_rules! impl_trend_alert {
                     if level != (0.0 as $ty) {
                         let ratio = trend / level;
                         if ratio > rel_thresh {
-                            return Option::Some(Trend::Rising);
+                            return Option::Some(Direction::Rising);
                         } else if ratio < -rel_thresh {
-                            return Option::Some(Trend::Falling);
+                            return Option::Some(Direction::Falling);
                         }
                     }
                 }
 
-                Option::Some(Trend::Stable)
+                Option::Some(Direction::Neutral)
             }
 
             /// Current smoothed level, or `None` if not primed.
@@ -116,6 +105,12 @@ macro_rules! impl_trend_alert {
             /// Resets to empty state. Parameters unchanged.
             #[inline]
             pub fn reset(&mut self) { self.holt.reset(); }
+
+            /// Updates the absolute trend threshold without resetting state.
+            #[inline]
+            pub fn reconfigure_threshold(&mut self, threshold: $ty) {
+                self.trend_threshold_abs = Option::Some(threshold);
+            }
         }
 
         impl $builder {
@@ -161,32 +156,30 @@ macro_rules! impl_trend_alert {
 
             /// Builds the trend alert detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha and beta must have been set.
             /// - At least one threshold (absolute or relative) must be set.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("TrendAlert alpha must be set");
-                let beta = self.beta.expect("TrendAlert beta must be set");
-                assert!(
-                    self.trend_threshold_abs.is_some() || self.trend_threshold_rel.is_some(),
-                    "TrendAlert requires a trend threshold"
-                );
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("TrendAlert alpha must be set"))?;
+                let beta = self.beta.ok_or(crate::ConfigError::Missing("TrendAlert beta must be set"))?;
+                if self.trend_threshold_abs.is_none() && self.trend_threshold_rel.is_none() {
+                    return Err(crate::ConfigError::Invalid("TrendAlert requires a trend threshold"));
+                }
 
                 let holt = <$holt>::builder()
                     .alpha(alpha)
                     .beta(beta)
                     .min_samples(self.min_samples)
-                    .build();
+                    .build()?;
 
-                $name {
+                Ok($name {
                     holt,
                     trend_threshold_abs: self.trend_threshold_abs,
                     trend_threshold_rel: self.trend_threshold_rel,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -205,12 +198,12 @@ mod tests {
         let mut ta = TrendAlertF64::builder()
             .alpha(0.3).beta(0.1)
             .trend_threshold(1.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..50 {
             let _ = ta.update(100.0);
         }
-        assert_eq!(ta.update(100.0), Some(Trend::Stable));
+        assert_eq!(ta.update(100.0), Some(Direction::Neutral));
     }
 
     #[test]
@@ -218,12 +211,12 @@ mod tests {
         let mut ta = TrendAlertF64::builder()
             .alpha(0.5).beta(0.5)
             .trend_threshold(5.0)
-            .build();
+            .build().unwrap();
 
         for i in 0..100 {
             let _ = ta.update(i as f64 * 10.0);
         }
-        assert_eq!(ta.update(1000.0), Some(Trend::Rising));
+        assert_eq!(ta.update(1000.0), Some(Direction::Rising));
     }
 
     #[test]
@@ -231,13 +224,13 @@ mod tests {
         let mut ta = TrendAlertF64::builder()
             .alpha(0.5).beta(0.5)
             .trend_threshold(5.0)
-            .build();
+            .build().unwrap();
 
         for i in 0..100 {
             let _ = ta.update((i as f64).fma(-10.0, 1000.0));
         }
         let result = ta.update(0.0);
-        assert_eq!(result, Some(Trend::Falling));
+        assert_eq!(result, Some(Direction::Falling));
     }
 
     #[test]
@@ -245,7 +238,7 @@ mod tests {
         let mut ta = TrendAlertF64::builder()
             .alpha(0.5).beta(0.5)
             .trend_threshold_relative(0.05)
-            .build();
+            .build().unwrap();
 
         for i in 0..100 {
             let _ = ta.update((i as f64).fma(10.0, 100.0));
@@ -261,7 +254,7 @@ mod tests {
             .alpha(0.3).beta(0.1)
             .trend_threshold(1.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..4 {
             assert!(ta.update(100.0).is_none());
@@ -274,7 +267,7 @@ mod tests {
         let mut ta = TrendAlertF64::builder()
             .alpha(0.3).beta(0.1)
             .trend_threshold(1.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = ta.update(100.0);
@@ -288,7 +281,7 @@ mod tests {
         let mut ta = TrendAlertF32::builder()
             .alpha(0.3).beta(0.1)
             .trend_threshold(1.0)
-            .build();
+            .build().unwrap();
 
         let _ = ta.update(10.0);
         let _ = ta.update(20.0);
@@ -296,8 +289,25 @@ mod tests {
     }
 
     #[test]
+    fn reconfigure_threshold_preserves_state() {
+        let mut ta = TrendAlertF64::builder()
+            .alpha(0.3).beta(0.1)
+            .trend_threshold(1.0)
+            .build().unwrap();
+
+        for _ in 0..20 {
+            let _ = ta.update(100.0);
+        }
+        let count_before = ta.count();
+
+        ta.reconfigure_threshold(0.5);
+        assert_eq!(ta.count(), count_before);
+        assert!(ta.is_primed());
+    }
+
+    #[test]
     #[should_panic(expected = "requires a trend threshold")]
     fn panics_without_threshold() {
-        let _ = TrendAlertF64::builder().alpha(0.3).beta(0.1).build();
+        let _ = TrendAlertF64::builder().alpha(0.3).beta(0.1).build().unwrap();
     }
 }

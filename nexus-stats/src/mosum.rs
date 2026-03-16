@@ -1,4 +1,4 @@
-use crate::Shift;
+use crate::Direction;
 
 #[cfg(feature = "alloc")]
 macro_rules! impl_mosum {
@@ -68,7 +68,7 @@ macro_rules! impl_mosum {
             /// Feeds a sample. Returns shift direction once primed.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Shift> {
+            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
                 let target = self.target;
                 let head = self.head;
                 let window = self.window;
@@ -85,11 +85,11 @@ macro_rules! impl_mosum {
                     return Option::None;
                 }
                 if self.sum > self.threshold {
-                    Option::Some(Shift::Upper)
+                    Option::Some(Direction::Rising)
                 } else if self.sum < -self.threshold {
-                    Option::Some(Shift::Lower)
+                    Option::Some(Direction::Falling)
                 } else {
-                    Option::Some(Shift::None)
+                    Option::Some(Direction::Neutral)
                 }
             }
 
@@ -189,23 +189,26 @@ macro_rules! impl_mosum {
 
             /// Builds the MOSUM detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Window size must have been set and > 0.
             /// - Threshold must have been set and positive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let window = self.window.expect("Mosum window_size must be set");
-                assert!(window > 0, "window_size must be > 0");
-                let threshold = self.threshold.expect("Mosum threshold must be set");
-                assert!(threshold > $zero, "threshold must be positive");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let window = self.window.ok_or(crate::ConfigError::Missing("Mosum window_size must be set"))?;
+                if window == 0 {
+                    return Err(crate::ConfigError::Invalid("window_size must be > 0"));
+                }
+                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("Mosum threshold must be set"))?;
+                if threshold <= $zero {
+                    return Err(crate::ConfigError::Invalid("threshold must be positive"));
+                }
                 let min_samples = self.min_samples.unwrap_or(window as u64);
 
                 let mut vec = core::mem::ManuallyDrop::new(alloc::vec![$zero; window]);
                 let buffer = vec.as_mut_ptr();
 
-                $name {
+                Ok($name {
                     target: self.target,
                     threshold,
                     buffer,
@@ -214,7 +217,7 @@ macro_rules! impl_mosum {
                     sum: $zero,
                     count: 0,
                     min_samples,
-                }
+                })
             }
         }
     };
@@ -239,13 +242,13 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(10)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = mosum.update(100.0);
         }
         for _ in 0..100 {
-            assert_eq!(mosum.update(100.0), Some(Shift::None));
+            assert_eq!(mosum.update(100.0), Some(Direction::Neutral));
         }
     }
 
@@ -254,7 +257,7 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(10)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = mosum.update(100.0);
@@ -262,7 +265,7 @@ mod tests {
 
         let mut triggered = false;
         for _ in 0..10 {
-            if mosum.update(110.0) == Some(Shift::Upper) {
+            if mosum.update(110.0) == Some(Direction::Rising) {
                 triggered = true;
                 break;
             }
@@ -275,7 +278,7 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(5)
             .threshold(40.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..5 {
             let _ = mosum.update(100.0);
@@ -298,7 +301,7 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(10)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = mosum.update(120.0);
@@ -313,7 +316,7 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(5)
             .threshold(50.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..5 {
             let _ = mosum.update(110.0);
@@ -329,23 +332,23 @@ mod tests {
         let mut mosum = MosumI64::builder(1000)
             .window_size(5)
             .threshold(100)
-            .build();
+            .build().unwrap();
 
         for _ in 0..5 {
             let _ = mosum.update(1000);
         }
-        assert_eq!(mosum.update(1000), Some(Shift::None));
+        assert_eq!(mosum.update(1000), Some(Direction::Neutral));
     }
 
     #[test]
     #[should_panic(expected = "threshold must be set")]
     fn panics_without_threshold() {
-        let _ = MosumF64::builder(100.0).window_size(10).build();
+        let _ = MosumF64::builder(100.0).window_size(10).build().unwrap();
     }
 
     #[test]
     #[should_panic(expected = "window_size must be set")]
     fn panics_without_window() {
-        let _ = MosumF64::builder(100.0).threshold(50.0).build();
+        let _ = MosumF64::builder(100.0).threshold(50.0).build().unwrap();
     }
 }

@@ -1,15 +1,4 @@
-use crate::{EmaF32, EmaF64, WelfordF32, WelfordF64};
-
-/// Anomaly direction from adaptive threshold detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Anomaly {
-    /// Within normal bounds.
-    Normal,
-    /// z-score exceeds upper threshold.
-    High,
-    /// z-score exceeds lower threshold (negative).
-    Low,
-}
+use crate::{Direction, EmaF32, EmaF64, WelfordF32, WelfordF64};
 
 macro_rules! impl_adaptive_threshold {
     ($name:ident, $builder:ident, $ty:ty, $ema:ty, $ema_builder:ident, $welford:ty) => {
@@ -61,7 +50,7 @@ macro_rules! impl_adaptive_threshold {
             /// Feeds a sample. Returns anomaly direction once primed.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Anomaly> {
+            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
                 let _ = self.ema.update(sample);
                 self.welford.update(sample);
 
@@ -74,18 +63,18 @@ macro_rules! impl_adaptive_threshold {
                     Some(v) if v > 0.0 as $ty => v,
                     _ => {
                         self.last_z = 0.0 as $ty;
-                        return Option::Some(Anomaly::Normal);
+                        return Option::Some(Direction::Neutral);
                     }
                 };
 
                 self.last_z = (sample - baseline) / sd;
 
                 if self.last_z > self.z_threshold {
-                    Option::Some(Anomaly::High)
+                    Option::Some(Direction::Rising)
                 } else if self.last_z < -self.z_threshold {
-                    Option::Some(Anomaly::Low)
+                    Option::Some(Direction::Falling)
                 } else {
-                    Option::Some(Anomaly::Normal)
+                    Option::Some(Direction::Neutral)
                 }
             }
 
@@ -143,6 +132,12 @@ macro_rules! impl_adaptive_threshold {
                 self.welford.reset();
                 self.last_z = 0.0 as $ty;
             }
+
+            /// Updates the z-score threshold without resetting state.
+            #[inline]
+            pub fn reconfigure_z_threshold(&mut self, z: $ty) {
+                self.z_threshold = z;
+            }
         }
 
         impl $builder {
@@ -199,22 +194,25 @@ macro_rules! impl_adaptive_threshold {
 
             /// Builds the adaptive threshold detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             /// - z_threshold must be positive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("AdaptiveThreshold alpha must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "alpha must be in (0, 1)");
-                assert!(self.z_threshold > 0.0 as $ty, "z_threshold must be positive");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("AdaptiveThreshold alpha must be set"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
+                if self.z_threshold <= 0.0 as $ty {
+                    return Err(crate::ConfigError::Invalid("z_threshold must be positive"));
+                }
 
                 let ema = if let Some(seed_mean) = self.seed_mean {
-                    <$ema>::builder().alpha(alpha).seed(seed_mean).min_samples(1).build()
+                    <$ema>::builder().alpha(alpha).seed(seed_mean).min_samples(1).build()?
                 } else {
-                    <$ema>::builder().alpha(alpha).min_samples(1).build()
+                    <$ema>::builder().alpha(alpha).min_samples(1).build()?
                 };
 
                 // Welford doesn't support seeding directly — if seeded, we
@@ -222,13 +220,13 @@ macro_rules! impl_adaptive_threshold {
                 // the first few std_dev estimates will be from the seed approximation.
                 let min_samples = if self.seed_mean.is_some() { 2 } else { self.min_samples };
 
-                $name {
+                Ok($name {
                     ema,
                     welford: <$welford>::new(),
                     z_threshold: self.z_threshold,
                     last_z: 0.0 as $ty,
                     min_samples,
-                }
+                })
             }
         }
     };
@@ -247,7 +245,7 @@ mod tests {
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
-            .build();
+            .build().unwrap();
 
         // Feed normal samples around 100
         for _ in 0..50 {
@@ -256,7 +254,7 @@ mod tests {
 
         // Spike — should be anomalous
         let result = at.update(200.0);
-        assert_eq!(result, Some(Anomaly::High));
+        assert_eq!(result, Some(Direction::Rising));
     }
 
     #[test]
@@ -265,7 +263,7 @@ mod tests {
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
-            .build();
+            .build().unwrap();
 
         for _ in 0..50 {
             let _ = at.update(100.0);
@@ -277,14 +275,14 @@ mod tests {
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
-            .build();
+            .build().unwrap();
 
         for i in 0..50 {
             let _ = at2.update(100.0 + (i % 5) as f64);
         }
 
         let result = at2.update(50.0);
-        assert_eq!(result, Some(Anomaly::Low));
+        assert_eq!(result, Some(Direction::Falling));
     }
 
     #[test]
@@ -293,13 +291,13 @@ mod tests {
             .alpha(0.1)
             .z_threshold(3.0)
             .min_samples(20)
-            .build();
+            .build().unwrap();
 
         for i in 0..100 {
             let sample = 100.0 + (i % 3) as f64;
             let result = at.update(sample);
             if let Some(anomaly) = result {
-                assert_eq!(anomaly, Anomaly::Normal, "false positive at sample {i}");
+                assert_eq!(anomaly, Direction::Neutral, "false positive at sample {i}");
             }
         }
     }
@@ -309,7 +307,7 @@ mod tests {
         let mut at = AdaptiveThresholdF64::builder()
             .alpha(0.1)
             .min_samples(10)
-            .build();
+            .build().unwrap();
 
         for _ in 0..9 {
             assert!(at.update(100.0).is_none());
@@ -325,7 +323,7 @@ mod tests {
             .alpha(0.1)
             .z_threshold(3.0)
             .seed(100.0, 5.0)
-            .build();
+            .build().unwrap();
 
         // Should be primed quickly since seeded
         let _ = at.update(100.0);
@@ -339,7 +337,7 @@ mod tests {
         let mut at = AdaptiveThresholdF64::builder()
             .alpha(0.1)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = at.update(100.0);
@@ -354,7 +352,7 @@ mod tests {
         let mut at = AdaptiveThresholdF32::builder()
             .alpha(0.1)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = at.update(100.0);
@@ -363,8 +361,28 @@ mod tests {
     }
 
     #[test]
+    fn reconfigure_z_threshold_preserves_state() {
+        let mut at = AdaptiveThresholdF64::builder()
+            .alpha(0.1)
+            .z_threshold(3.0)
+            .min_samples(10)
+            .build().unwrap();
+
+        for i in 0..20 {
+            let _ = at.update(100.0 + (i % 5) as f64);
+        }
+        let count_before = at.count();
+
+        at.reconfigure_z_threshold(1.0);
+
+        // State preserved
+        assert_eq!(at.count(), count_before);
+        assert!(at.is_primed());
+    }
+
+    #[test]
     #[should_panic(expected = "alpha must be set")]
     fn panics_without_alpha() {
-        let _ = AdaptiveThresholdF64::builder().build();
+        let _ = AdaptiveThresholdF64::builder().build().unwrap();
     }
 }

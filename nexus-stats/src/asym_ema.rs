@@ -130,25 +130,28 @@ macro_rules! impl_asym_ema_float {
 
             /// Builds the asymmetric EMA.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Both alpha_up and alpha_down must have been set.
             /// - Both must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha_up = self.alpha_up.expect("AsymEma alpha_up must be set");
-                let alpha_down = self.alpha_down.expect("AsymEma alpha_down must be set");
-                assert!(alpha_up > 0.0 as $ty && alpha_up < 1.0 as $ty, "alpha_up must be in (0, 1)");
-                assert!(alpha_down > 0.0 as $ty && alpha_down < 1.0 as $ty, "alpha_down must be in (0, 1)");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha_up = self.alpha_up.ok_or(crate::ConfigError::Missing("AsymEma alpha_up must be set"))?;
+                let alpha_down = self.alpha_down.ok_or(crate::ConfigError::Missing("AsymEma alpha_down must be set"))?;
+                if !(alpha_up > 0.0 as $ty && alpha_up < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha_up must be in (0, 1)"));
+                }
+                if !(alpha_down > 0.0 as $ty && alpha_down < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha_down must be in (0, 1)"));
+                }
 
-                $name {
+                Ok($name {
                     alpha_up,
                     alpha_down,
                     value: 0.0 as $ty,
                     count: 0,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -292,21 +295,24 @@ macro_rules! impl_asym_ema_int {
 
             /// Builds the asymmetric EMA.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Both span_up and span_down must have been set and >= 1.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let req_up = self.span_up.expect("AsymEma span_up must be set");
-                let req_down = self.span_down.expect("AsymEma span_down must be set");
-                assert!(req_up >= 1, "span_up must be >= 1");
-                assert!(req_down >= 1, "span_down must be >= 1");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let req_up = self.span_up.ok_or(crate::ConfigError::Missing("AsymEma span_up must be set"))?;
+                let req_down = self.span_down.ok_or(crate::ConfigError::Missing("AsymEma span_down must be set"))?;
+                if req_up < 1 {
+                    return Err(crate::ConfigError::Invalid("span_up must be >= 1"));
+                }
+                if req_down < 1 {
+                    return Err(crate::ConfigError::Invalid("span_down must be >= 1"));
+                }
 
                 let eff_up = crate::ema::next_power_of_two_minus_one(req_up);
                 let eff_down = crate::ema::next_power_of_two_minus_one(req_down);
 
-                $name {
+                Ok($name {
                     acc: 0,
                     shift_up: crate::ema::log2_of_span_plus_one(eff_up),
                     shift_down: crate::ema::log2_of_span_plus_one(eff_down),
@@ -315,7 +321,7 @@ macro_rules! impl_asym_ema_int {
                     count: 0,
                     min_samples: self.min_samples,
                     initialized: false,
-                }
+                })
             }
         }
     };
@@ -335,7 +341,7 @@ mod tests {
         let mut ema = AsymEmaF64::builder()
             .alpha_up(0.9)   // fast attack
             .alpha_down(0.1) // slow decay
-            .build();
+            .build().unwrap();
 
         let _ = ema.update(0.0); // initialize
         let _ = ema.update(100.0); // fast attack
@@ -352,9 +358,9 @@ mod tests {
     #[test]
     fn asymmetric_response() {
         let mut fast_up = AsymEmaF64::builder()
-            .alpha_up(0.9).alpha_down(0.1).build();
+            .alpha_up(0.9).alpha_down(0.1).build().unwrap();
         let mut fast_down = AsymEmaF64::builder()
-            .alpha_up(0.1).alpha_down(0.9).build();
+            .alpha_up(0.1).alpha_down(0.9).build().unwrap();
 
         let _ = fast_up.update(50.0);
         let _ = fast_down.update(50.0);
@@ -371,7 +377,7 @@ mod tests {
         let mut ema = AsymEmaF64::builder()
             .alpha_up(0.5).alpha_down(0.5)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..4 {
             assert!(ema.update(100.0).is_none());
@@ -381,7 +387,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut ema = AsymEmaF64::builder().alpha_up(0.5).alpha_down(0.5).build();
+        let mut ema = AsymEmaF64::builder().alpha_up(0.5).alpha_down(0.5).build().unwrap();
         let _ = ema.update(100.0);
         ema.reset();
         assert_eq!(ema.count(), 0);
@@ -392,7 +398,7 @@ mod tests {
     fn i64_basic() {
         let mut ema = AsymEmaI64::builder()
             .span_up(3).span_down(7)
-            .build();
+            .build().unwrap();
 
         let _ = ema.update(100);
         let _ = ema.update(200);
@@ -403,7 +409,7 @@ mod tests {
     fn f32_basic() {
         let mut ema = AsymEmaF32::builder()
             .alpha_up(0.5).alpha_down(0.3)
-            .build();
+            .build().unwrap();
 
         assert!(ema.update(100.0).is_some());
     }
@@ -411,6 +417,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "alpha_up must be set")]
     fn panics_without_alpha_up() {
-        let _ = AsymEmaF64::builder().alpha_down(0.5).build();
+        let _ = AsymEmaF64::builder().alpha_down(0.5).build().unwrap();
     }
 }

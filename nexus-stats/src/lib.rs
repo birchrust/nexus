@@ -35,6 +35,8 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod enums;
+
 #[cfg(any(feature = "std", feature = "libm"))]
 mod adaptive_threshold;
 mod asym_ema;
@@ -90,10 +92,11 @@ pub use asym_ema::{
 };
 #[cfg(feature = "alloc")]
 pub use bool_window::BoolWindow;
+pub use enums::{Condition, ConfigError, Direction};
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use adaptive_threshold::{
     AdaptiveThresholdF32, AdaptiveThresholdF32Builder, AdaptiveThresholdF64,
-    AdaptiveThresholdF64Builder, Anomaly,
+    AdaptiveThresholdF64Builder,
 };
 pub use covariance::{CovarianceF32, CovarianceF64};
 pub use dead_band::{DeadBandF32, DeadBandF64, DeadBandI32, DeadBandI64};
@@ -106,10 +109,10 @@ pub use diff::{
 };
 pub use cusum::{
     CusumF32, CusumF32Builder, CusumF64, CusumF64Builder, CusumI32, CusumI32Builder, CusumI64,
-    CusumI64Builder, Shift,
+    CusumI64Builder,
 };
 pub use drawdown::{DrawdownF32, DrawdownF64, DrawdownI32, DrawdownI64};
-pub use error_rate::{ErrorRateF32, ErrorRateF32Builder, ErrorRateF64, ErrorRateF64Builder, Health};
+pub use error_rate::{ErrorRateF32, ErrorRateF32Builder, ErrorRateF64, ErrorRateF64Builder};
 pub use event_rate::{
     EventRateF32, EventRateF32Builder, EventRateF64, EventRateF64Builder, EventRateI32,
     EventRateI32Builder, EventRateI64, EventRateI64Builder,
@@ -144,8 +147,8 @@ pub use peak_hold::{
     PeakHoldI32Builder, PeakHoldI64, PeakHoldI64Builder,
 };
 pub use robust_z::{RobustZScoreF32, RobustZScoreF32Builder, RobustZScoreF64, RobustZScoreF64Builder};
-pub use queue_delay::{QueueDelayI32, QueueDelayI32Builder, QueueDelayI64, QueueDelayI64Builder, QueuePressure};
-pub use saturation::{SaturationF32, SaturationF32Builder, SaturationF64, SaturationF64Builder, Pressure};
+pub use queue_delay::{QueueDelayI32, QueueDelayI32Builder, QueueDelayI64, QueueDelayI64Builder};
+pub use saturation::{SaturationF32, SaturationF32Builder, SaturationF64, SaturationF64Builder};
 pub use running::{
     RunningMaxF32, RunningMaxF64, RunningMaxI32, RunningMaxI64, RunningMinF32, RunningMinF64,
     RunningMinI32, RunningMinI64,
@@ -155,7 +158,7 @@ pub use shiryaev_roberts::{ShiryaevRobertsF64, ShiryaevRobertsF64Builder};
 pub use slew::{SlewF32, SlewF64, SlewI32, SlewI64};
 pub use spring::{SpringF32, SpringF64};
 pub use topk::TopK;
-pub use trend_alert::{Trend, TrendAlertF32, TrendAlertF32Builder, TrendAlertF64, TrendAlertF64Builder};
+pub use trend_alert::{TrendAlertF32, TrendAlertF32Builder, TrendAlertF64, TrendAlertF64Builder};
 pub use welford::{WelfordF32, WelfordF64};
 #[cfg(feature = "alloc")]
 pub use windowed_median::{WindowedMedianF32, WindowedMedianF64, WindowedMedianI32, WindowedMedianI64};

@@ -18,10 +18,10 @@ fn main() {
     let mut cusum = CusumF64::builder(100.0)
         .slack(5.0)
         .threshold(30.0)
-        .build();
+        .build().unwrap();
 
     // EMA: smooth the noisy signal
-    let mut ema = EmaF64::builder().span(10).build();
+    let mut ema = EmaF64::builder().span(10).build().unwrap();
 
     // Welford: track running statistics
     let mut stats = WelfordF64::new();
@@ -38,9 +38,9 @@ fn main() {
         let mean_str = stats.mean().map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
         let sd_str = stats.std_dev().map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
         let shift_str = match shift {
-            Some(Shift::Upper) => " ↑ SHIFT",
-            Some(Shift::Lower) => " ↓ SHIFT",
-            Some(Shift::None) => "",
+            Some(Direction::Rising) => " ↑ SHIFT",
+            Some(Direction::Falling) => " ↓ SHIFT",
+            Some(Direction::Neutral) => "",
             None => " (warmup)",
         };
 

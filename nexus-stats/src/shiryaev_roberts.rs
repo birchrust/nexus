@@ -145,7 +145,7 @@ impl ShiryaevRobertsF64Builder {
 
     /// Builds the detector.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// - All of `pre_change_mean`, `post_change_mean`, `variance`, and `threshold`
     ///   must be set.
@@ -153,21 +153,23 @@ impl ShiryaevRobertsF64Builder {
     /// - Threshold must be positive.
     /// - Pre-change and post-change means must differ.
     #[inline]
-    #[must_use]
-    pub fn build(self) -> ShiryaevRobertsF64 {
-        let pre_mean = self.pre_mean.expect("pre_change_mean must be set");
-        let post_mean = self.post_mean.expect("post_change_mean must be set");
-        let variance = self.variance.expect("variance must be set");
-        let threshold = self.threshold.expect("threshold must be set");
+    pub fn build(self) -> Result<ShiryaevRobertsF64, crate::ConfigError> {
+        let pre_mean = self.pre_mean.ok_or(crate::ConfigError::Missing("pre_change_mean must be set"))?;
+        let post_mean = self.post_mean.ok_or(crate::ConfigError::Missing("post_change_mean must be set"))?;
+        let variance = self.variance.ok_or(crate::ConfigError::Missing("variance must be set"))?;
+        let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold must be set"))?;
 
-        assert!(variance > 0.0, "variance must be positive");
-        assert!(threshold > 0.0, "threshold must be positive");
-        assert!(
-            (post_mean - pre_mean).abs() > f64::EPSILON,
-            "pre and post change means must differ"
-        );
+        if variance <= 0.0 {
+            return Err(crate::ConfigError::Invalid("variance must be positive"));
+        }
+        if threshold <= 0.0 {
+            return Err(crate::ConfigError::Invalid("threshold must be positive"));
+        }
+        if (post_mean - pre_mean).abs() <= f64::EPSILON {
+            return Err(crate::ConfigError::Invalid("pre and post change means must differ"));
+        }
 
-        ShiryaevRobertsF64 {
+        Ok(ShiryaevRobertsF64 {
             pre_mean,
             post_mean,
             variance,
@@ -175,7 +177,7 @@ impl ShiryaevRobertsF64Builder {
             r: 0.0,
             count: 0,
             min_samples: self.min_samples,
-        }
+        })
     }
 }
 
@@ -190,7 +192,7 @@ mod tests {
             .post_change_mean(110.0)
             .variance(25.0)
             .threshold(100.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..100 {
             let result = sr.update(100.0);
@@ -205,7 +207,7 @@ mod tests {
             .post_change_mean(110.0)
             .variance(25.0)
             .threshold(100.0)
-            .build();
+            .build().unwrap();
 
         let mut detected = false;
         for _ in 0..100 {
@@ -224,7 +226,7 @@ mod tests {
             .post_change_mean(5.0)
             .variance(1.0)
             .threshold(1000.0)
-            .build();
+            .build().unwrap();
 
         let _ = sr.update(5.0);
         let r1 = sr.statistic();
@@ -241,7 +243,7 @@ mod tests {
             .post_change_mean(5.0)
             .variance(1.0)
             .threshold(100.0)
-            .build();
+            .build().unwrap();
 
         let _ = sr.update(5.0);
         assert!(sr.statistic() > 0.0);
@@ -262,7 +264,7 @@ mod tests {
             .variance(1.0)
             .threshold(100.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..4 {
             assert_eq!(sr.update(5.0), None);
@@ -277,7 +279,7 @@ mod tests {
             .pre_change_mean(0.0)
             .post_change_mean(5.0)
             .threshold(100.0)
-            .build();
+            .build().unwrap();
     }
 
     #[test]
@@ -288,6 +290,6 @@ mod tests {
             .post_change_mean(5.0)
             .variance(1.0)
             .threshold(100.0)
-            .build();
+            .build().unwrap();
     }
 }

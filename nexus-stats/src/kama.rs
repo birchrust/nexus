@@ -232,24 +232,29 @@ macro_rules! impl_kama {
 
             /// Builds the KAMA.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Window size must have been set and > 0.
             /// - `fast_span` must be >= 1.
             /// - `slow_span` must be > `fast_span`.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let window = self.window.expect("KAMA window_size must be set");
-                assert!(window > 0, "window_size must be > 0");
-                assert!(self.fast_span >= 1, "fast_span must be >= 1");
-                assert!(self.slow_span > self.fast_span, "slow_span must be > fast_span");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let window = self.window.ok_or(crate::ConfigError::Missing("KAMA window_size must be set"))?;
+                if window == 0 {
+                    return Err(crate::ConfigError::Invalid("window_size must be > 0"));
+                }
+                if self.fast_span < 1 {
+                    return Err(crate::ConfigError::Invalid("fast_span must be >= 1"));
+                }
+                if self.slow_span <= self.fast_span {
+                    return Err(crate::ConfigError::Invalid("slow_span must be > fast_span"));
+                }
                 let min_samples = self.min_samples.unwrap_or(window as u64);
 
                 let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0.0 as $ty; window]);
                 let ring = vec.as_mut_ptr();
 
-                $name {
+                Ok($name {
                     ring,
                     window,
                     head: 0,
@@ -259,7 +264,7 @@ macro_rules! impl_kama {
                     volatility_sum: 0.0 as $ty,
                     count: 0,
                     min_samples,
-                }
+                })
             }
         }
 
@@ -316,7 +321,7 @@ mod tests {
 
     #[test]
     fn trending_signal_fast_response() {
-        let mut kama = KamaF64::builder().window_size(10).build();
+        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
 
         // Linear trend — ER should be high, KAMA should track closely
         for i in 0..50 {
@@ -329,7 +334,7 @@ mod tests {
 
     #[test]
     fn noisy_signal_slow_response() {
-        let mut kama = KamaF64::builder().window_size(10).build();
+        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
 
         // Oscillating — ER should be low
         for i in 0..50 {
@@ -343,7 +348,7 @@ mod tests {
 
     #[test]
     fn er_bounds() {
-        let mut kama = KamaF64::builder().window_size(10).build();
+        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
         for i in 0..20 {
             let _ = kama.update(i as f64);
         }
@@ -353,7 +358,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut kama = KamaF64::builder().window_size(10).build();
+        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
         for i in 0..9 {
             assert!(kama.update(i as f64).is_none());
         }
@@ -362,7 +367,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut kama = KamaF64::builder().window_size(10).build();
+        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
         for i in 0..20 {
             let _ = kama.update(i as f64);
         }
@@ -372,7 +377,7 @@ mod tests {
 
     #[test]
     fn f32_basic() {
-        let mut kama = KamaF32::builder().window_size(5).build();
+        let mut kama = KamaF32::builder().window_size(5).build().unwrap();
         for i in 0..10 {
             let _ = kama.update(i as f32);
         }
@@ -381,7 +386,7 @@ mod tests {
 
     #[test]
     fn window_size_accessor() {
-        let kama = KamaF64::builder().window_size(10).build();
+        let kama = KamaF64::builder().window_size(10).build().unwrap();
         assert_eq!(kama.window_size(), 10);
     }
 }
