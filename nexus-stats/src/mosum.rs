@@ -195,11 +195,11 @@ macro_rules! impl_mosum {
             /// - Threshold must have been set and positive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let window = self.window.ok_or(crate::ConfigError::Missing("Mosum window_size must be set"))?;
+                let window = self.window.ok_or(crate::ConfigError::Missing("window_size"))?;
                 if window == 0 {
                     return Err(crate::ConfigError::Invalid("window_size must be > 0"));
                 }
-                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("Mosum threshold must be set"))?;
+                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
                 if threshold <= $zero {
                     return Err(crate::ConfigError::Invalid("threshold must be positive"));
                 }
@@ -341,14 +341,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "threshold must be set")]
-    fn panics_without_threshold() {
-        let _ = MosumF64::builder(100.0).window_size(10).build().unwrap();
+    fn errors_without_threshold() {
+        let result = MosumF64::builder(100.0).window_size(10).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
     }
 
     #[test]
-    #[should_panic(expected = "window_size must be set")]
-    fn panics_without_window() {
-        let _ = MosumF64::builder(100.0).threshold(50.0).build().unwrap();
+    fn errors_without_window() {
+        let result = MosumF64::builder(100.0).threshold(50.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("window_size"))));
     }
 }

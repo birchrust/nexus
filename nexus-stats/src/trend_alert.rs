@@ -107,9 +107,17 @@ macro_rules! impl_trend_alert {
             pub fn reset(&mut self) { self.holt.reset(); }
 
             /// Updates the absolute trend threshold without resetting state.
+            ///
+            /// # Errors
+            ///
+            /// Threshold must be >= 0.
             #[inline]
-            pub fn reconfigure_threshold(&mut self, threshold: $ty) {
+            pub fn reconfigure_threshold(&mut self, threshold: $ty) -> Result<(), crate::ConfigError> {
+                if threshold < (0.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("threshold must be non-negative"));
+                }
                 self.trend_threshold_abs = Option::Some(threshold);
+                Ok(())
             }
         }
 
@@ -162,8 +170,8 @@ macro_rules! impl_trend_alert {
             /// - At least one threshold (absolute or relative) must be set.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("TrendAlert alpha must be set"))?;
-                let beta = self.beta.ok_or(crate::ConfigError::Missing("TrendAlert beta must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let beta = self.beta.ok_or(crate::ConfigError::Missing("beta"))?;
                 if self.trend_threshold_abs.is_none() && self.trend_threshold_rel.is_none() {
                     return Err(crate::ConfigError::Invalid("TrendAlert requires a trend threshold"));
                 }
@@ -300,14 +308,14 @@ mod tests {
         }
         let count_before = ta.count();
 
-        ta.reconfigure_threshold(0.5);
+        ta.reconfigure_threshold(0.5).unwrap();
         assert_eq!(ta.count(), count_before);
         assert!(ta.is_primed());
     }
 
     #[test]
-    #[should_panic(expected = "requires a trend threshold")]
-    fn panics_without_threshold() {
-        let _ = TrendAlertF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+    fn errors_without_threshold() {
+        let result = TrendAlertF64::builder().alpha(0.3).beta(0.1).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }

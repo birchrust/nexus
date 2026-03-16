@@ -186,7 +186,7 @@ macro_rules! impl_ewma_var {
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("EWMA variance alpha must be set (use .alpha(), .halflife(), or .span())"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("EWMA variance alpha must be in (0, 1)"));
                 }
@@ -298,8 +298,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = EwmaVarF64::builder().build().unwrap();
+    fn errors_without_alpha() {
+        let result = EwmaVarF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 }

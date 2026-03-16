@@ -239,7 +239,7 @@ macro_rules! impl_kama {
             /// - `slow_span` must be > `fast_span`.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let window = self.window.ok_or(crate::ConfigError::Missing("KAMA window_size must be set"))?;
+                let window = self.window.ok_or(crate::ConfigError::Missing("window_size"))?;
                 if window == 0 {
                     return Err(crate::ConfigError::Invalid("window_size must be > 0"));
                 }

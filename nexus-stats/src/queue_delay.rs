@@ -134,8 +134,8 @@ macro_rules! impl_queue_delay {
             /// - Window must have been set and be positive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let target = self.target.ok_or(crate::ConfigError::Missing("QueueDelay target must be set"))?;
-                let window = self.window.ok_or(crate::ConfigError::Missing("QueueDelay window must be set"))?;
+                let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
+                let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
                 if window == 0 {
                     return Err(crate::ConfigError::Invalid("QueueDelay window must be positive"));
                 }
@@ -262,14 +262,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "target must be set")]
-    fn panics_without_target() {
-        let _ = QueueDelayI64::builder().window(100).build().unwrap();
+    fn errors_without_target() {
+        let result = QueueDelayI64::builder().window(100).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("target"))));
     }
 
     #[test]
-    #[should_panic(expected = "window must be set")]
-    fn panics_without_window() {
-        let _ = QueueDelayI64::builder().target(100).build().unwrap();
+    fn errors_without_window() {
+        let result = QueueDelayI64::builder().target(100).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("window"))));
     }
 }

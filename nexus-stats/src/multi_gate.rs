@@ -225,9 +225,9 @@ macro_rules! impl_multi_gate {
             /// - Alpha, hard_limit, and suspect_z must have been set.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("MultiGate alpha must be set"))?;
-                let hard_limit = self.hard_limit_pct.ok_or(crate::ConfigError::Missing("MultiGate hard_limit must be set"))?;
-                let suspect_z = self.suspect_z.ok_or(crate::ConfigError::Missing("MultiGate suspect_z must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let hard_limit = self.hard_limit_pct.ok_or(crate::ConfigError::Missing("hard_limit"))?;
+                let suspect_z = self.suspect_z.ok_or(crate::ConfigError::Missing("suspect_z"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
@@ -361,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "hard_limit must be set")]
-    fn panics_without_hard_limit() {
-        let _ = MultiGateF64::builder().alpha(0.1).suspect_z(3.0).build().unwrap();
+    fn errors_without_hard_limit() {
+        let result = MultiGateF64::builder().alpha(0.1).suspect_z(3.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("hard_limit"))));
     }
 }

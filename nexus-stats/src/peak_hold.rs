@@ -119,7 +119,7 @@ macro_rules! impl_peak_hold_float {
             /// - decay_rate must be in (0, 1].
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let rate = self.decay_rate.ok_or(crate::ConfigError::Missing("PeakHold decay_rate must be set"))?;
+                let rate = self.decay_rate.ok_or(crate::ConfigError::Missing("decay_rate"))?;
                 if !(rate > 0.0 as $ty && rate <= 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("decay_rate must be in (0, 1]"));
                 }
@@ -295,8 +295,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "decay_rate must be set")]
-    fn panics_without_decay_rate() {
-        let _ = PeakHoldF64::builder().build().unwrap();
+    fn errors_without_decay_rate() {
+        let result = PeakHoldF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("decay_rate"))));
     }
 }

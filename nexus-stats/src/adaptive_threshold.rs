@@ -134,9 +134,17 @@ macro_rules! impl_adaptive_threshold {
             }
 
             /// Updates the z-score threshold without resetting state.
+            ///
+            /// # Errors
+            ///
+            /// z must be positive.
             #[inline]
-            pub fn reconfigure_z_threshold(&mut self, z: $ty) {
+            pub fn reconfigure_z_threshold(&mut self, z: $ty) -> Result<(), crate::ConfigError> {
+                if z <= (0.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("z_threshold must be positive"));
+                }
                 self.z_threshold = z;
+                Ok(())
             }
         }
 
@@ -201,7 +209,7 @@ macro_rules! impl_adaptive_threshold {
             /// - z_threshold must be positive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("AdaptiveThreshold alpha must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
@@ -373,7 +381,7 @@ mod tests {
         }
         let count_before = at.count();
 
-        at.reconfigure_z_threshold(1.0);
+        at.reconfigure_z_threshold(1.0).unwrap();
 
         // State preserved
         assert_eq!(at.count(), count_before);
@@ -381,8 +389,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = AdaptiveThresholdF64::builder().build().unwrap();
+    fn errors_without_alpha() {
+        let result = AdaptiveThresholdF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 }

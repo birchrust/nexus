@@ -154,10 +154,10 @@ impl ShiryaevRobertsF64Builder {
     /// - Pre-change and post-change means must differ.
     #[inline]
     pub fn build(self) -> Result<ShiryaevRobertsF64, crate::ConfigError> {
-        let pre_mean = self.pre_mean.ok_or(crate::ConfigError::Missing("pre_change_mean must be set"))?;
-        let post_mean = self.post_mean.ok_or(crate::ConfigError::Missing("post_change_mean must be set"))?;
-        let variance = self.variance.ok_or(crate::ConfigError::Missing("variance must be set"))?;
-        let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold must be set"))?;
+        let pre_mean = self.pre_mean.ok_or(crate::ConfigError::Missing("pre_change_mean"))?;
+        let post_mean = self.post_mean.ok_or(crate::ConfigError::Missing("post_change_mean"))?;
+        let variance = self.variance.ok_or(crate::ConfigError::Missing("variance"))?;
+        let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
 
         if variance <= 0.0 {
             return Err(crate::ConfigError::Invalid("variance must be positive"));
@@ -273,23 +273,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "variance must be set")]
-    fn panics_without_variance() {
-        let _ = ShiryaevRobertsF64::builder()
+    fn errors_without_variance() {
+        let result = ShiryaevRobertsF64::builder()
             .pre_change_mean(0.0)
             .post_change_mean(5.0)
             .threshold(100.0)
-            .build().unwrap();
+            .build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("variance"))));
     }
 
     #[test]
-    #[should_panic(expected = "pre and post change means must differ")]
-    fn panics_on_equal_means() {
-        let _ = ShiryaevRobertsF64::builder()
+    fn errors_on_equal_means() {
+        let result = ShiryaevRobertsF64::builder()
             .pre_change_mean(5.0)
             .post_change_mean(5.0)
             .variance(1.0)
             .threshold(100.0)
-            .build().unwrap();
+            .build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }

@@ -153,8 +153,8 @@ macro_rules! impl_saturation {
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("Saturation alpha must be set"))?;
-                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("Saturation threshold must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
@@ -282,8 +282,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "threshold must be set")]
-    fn panics_without_threshold() {
-        let _ = SaturationF64::builder().alpha(0.3).build().unwrap();
+    fn errors_without_threshold() {
+        let result = SaturationF64::builder().alpha(0.3).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
     }
 }

@@ -185,8 +185,8 @@ macro_rules! impl_robust_z {
             /// - Alpha and reject_threshold must have been set.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("RobustZScore alpha must be set"))?;
-                let reject = self.reject_threshold.ok_or(crate::ConfigError::Missing("RobustZScore reject_threshold must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let reject = self.reject_threshold.ok_or(crate::ConfigError::Missing("reject_threshold"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
@@ -341,8 +341,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "reject_threshold must be set")]
-    fn panics_without_reject_threshold() {
-        let _ = RobustZScoreF64::builder().alpha(0.1).build().unwrap();
+    fn errors_without_reject_threshold() {
+        let result = RobustZScoreF64::builder().alpha(0.1).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("reject_threshold"))));
     }
 }

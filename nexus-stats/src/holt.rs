@@ -177,8 +177,8 @@ macro_rules! impl_holt {
             /// - Both must be in (0, 1) exclusive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("Holt alpha must be set"))?;
-                let beta = self.beta.ok_or(crate::ConfigError::Missing("Holt beta must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let beta = self.beta.ok_or(crate::ConfigError::Missing("beta"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("Holt alpha must be in (0, 1)"));
                 }
@@ -296,14 +296,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = HoltF64::builder().beta(0.1).build().unwrap();
+    fn errors_without_alpha() {
+        let result = HoltF64::builder().beta(0.1).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
-    #[should_panic(expected = "beta must be set")]
-    fn panics_without_beta() {
-        let _ = HoltF64::builder().alpha(0.3).build().unwrap();
+    fn errors_without_beta() {
+        let result = HoltF64::builder().alpha(0.3).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("beta"))));
     }
 }

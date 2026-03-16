@@ -136,8 +136,8 @@ macro_rules! impl_asym_ema_float {
             /// - Both must be in (0, 1) exclusive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha_up = self.alpha_up.ok_or(crate::ConfigError::Missing("AsymEma alpha_up must be set"))?;
-                let alpha_down = self.alpha_down.ok_or(crate::ConfigError::Missing("AsymEma alpha_down must be set"))?;
+                let alpha_up = self.alpha_up.ok_or(crate::ConfigError::Missing("alpha_up"))?;
+                let alpha_down = self.alpha_down.ok_or(crate::ConfigError::Missing("alpha_down"))?;
                 if !(alpha_up > 0.0 as $ty && alpha_up < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha_up must be in (0, 1)"));
                 }
@@ -300,8 +300,8 @@ macro_rules! impl_asym_ema_int {
             /// - Both span_up and span_down must have been set and >= 1.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let req_up = self.span_up.ok_or(crate::ConfigError::Missing("AsymEma span_up must be set"))?;
-                let req_down = self.span_down.ok_or(crate::ConfigError::Missing("AsymEma span_down must be set"))?;
+                let req_up = self.span_up.ok_or(crate::ConfigError::Missing("span_up"))?;
+                let req_down = self.span_down.ok_or(crate::ConfigError::Missing("span_down"))?;
                 if req_up < 1 {
                     return Err(crate::ConfigError::Invalid("span_up must be >= 1"));
                 }
@@ -415,8 +415,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "alpha_up must be set")]
-    fn panics_without_alpha_up() {
-        let _ = AsymEmaF64::builder().alpha_down(0.5).build().unwrap();
+    fn errors_without_alpha_up() {
+        let result = AsymEmaF64::builder().alpha_down(0.5).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha_up"))));
     }
 }

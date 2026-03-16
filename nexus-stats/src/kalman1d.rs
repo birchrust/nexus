@@ -210,8 +210,8 @@ macro_rules! impl_kalman1d {
             /// - Both must be positive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let q = self.q.ok_or(crate::ConfigError::Missing("Kalman process_noise must be set"))?;
-                let r = self.r.ok_or(crate::ConfigError::Missing("Kalman measurement_noise must be set"))?;
+                let q = self.q.ok_or(crate::ConfigError::Missing("process_noise"))?;
+                let r = self.r.ok_or(crate::ConfigError::Missing("measurement_noise"))?;
                 if q <= 0.0 as $ty {
                     return Err(crate::ConfigError::Invalid("process_noise must be positive"));
                 }
@@ -372,8 +372,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "process_noise must be set")]
-    fn panics_without_process_noise() {
-        let _ = Kalman1dF64::builder().measurement_noise(1.0).build().unwrap();
+    fn errors_without_process_noise() {
+        let result = Kalman1dF64::builder().measurement_noise(1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("process_noise"))));
     }
 }

@@ -215,7 +215,7 @@ macro_rules! impl_liveness_float {
             /// - At least one deadline (multiple or absolute) must be set.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("Liveness alpha must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("Liveness alpha must be in (0, 1)"));
                 }
@@ -421,7 +421,7 @@ macro_rules! impl_liveness_int {
             /// - At least one deadline must be set.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let requested = self.span.ok_or(crate::ConfigError::Missing("Liveness span must be set"))?;
+                let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
                 if requested < 1 {
                     return Err(crate::ConfigError::Invalid("Liveness span must be >= 1"));
                 }
@@ -615,14 +615,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = LivenessF64::builder().deadline_multiple(3.0).build().unwrap();
+    fn errors_without_alpha() {
+        let result = LivenessF64::builder().deadline_multiple(3.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
-    #[should_panic(expected = "requires a deadline")]
-    fn panics_without_deadline() {
-        let _ = LivenessF64::builder().alpha(0.3).build().unwrap();
+    fn errors_without_deadline() {
+        let result = LivenessF64::builder().alpha(0.3).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }

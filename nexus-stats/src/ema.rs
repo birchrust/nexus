@@ -188,7 +188,7 @@ macro_rules! impl_ema_float {
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("EMA alpha must be set (use .alpha(), .halflife(), or .span())"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
                 }
@@ -424,7 +424,7 @@ macro_rules! impl_ema_int {
             /// - Span must be >= 1.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let requested = self.span.ok_or(crate::ConfigError::Missing("EMA span must be set (use .span())"))?;
+                let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
                 if requested < 1 {
                     return Err(crate::ConfigError::Invalid("EMA span must be >= 1"));
                 }
@@ -548,21 +548,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = EmaF64::builder().build().unwrap();
+    fn errors_without_alpha() {
+        let result = EmaF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be in (0, 1)")]
-    fn panics_on_alpha_zero() {
-        let _ = EmaF64::builder().alpha(0.0).build().unwrap();
+    fn errors_on_alpha_zero() {
+        let result = EmaF64::builder().alpha(0.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be in (0, 1)")]
-    fn panics_on_alpha_one() {
-        let _ = EmaF64::builder().alpha(1.0).build().unwrap();
+    fn errors_on_alpha_one() {
+        let result = EmaF64::builder().alpha(1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
@@ -668,9 +668,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "span must be set")]
-    fn int_panics_without_span() {
-        let _ = EmaI64::builder().build().unwrap();
+    fn int_errors_without_span() {
+        let result = EmaI64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("span"))));
     }
 
     // =========================================================================

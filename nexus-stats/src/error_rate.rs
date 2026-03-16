@@ -118,9 +118,17 @@ macro_rules! impl_error_rate {
             }
 
             /// Updates the error rate threshold without resetting state.
+            ///
+            /// # Errors
+            ///
+            /// Threshold must be >= 0.
             #[inline]
-            pub fn reconfigure_threshold(&mut self, threshold: $ty) {
+            pub fn reconfigure_threshold(&mut self, threshold: $ty) -> Result<(), crate::ConfigError> {
+                if threshold < (0.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("threshold must be non-negative"));
+                }
                 self.threshold = threshold;
+                Ok(())
             }
         }
 
@@ -173,16 +181,16 @@ macro_rules! impl_error_rate {
             ///
             /// - Alpha and threshold must have been set.
             /// - Alpha must be in (0, 1) exclusive.
-            /// - Threshold must be positive.
+            /// - Threshold must be non-negative.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("ErrorRate alpha must be set"))?;
-                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("ErrorRate threshold must be set"))?;
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
-                if threshold <= 0.0 as $ty {
-                    return Err(crate::ConfigError::Invalid("threshold must be positive"));
+                if threshold < 0.0 as $ty {
+                    return Err(crate::ConfigError::Invalid("threshold must be non-negative"));
                 }
 
                 Ok($name {
@@ -333,15 +341,43 @@ mod tests {
         assert_eq!(er.record(true), Some(Condition::Normal));
 
         // Lower threshold below the current rate
-        er.reconfigure_threshold(0.0);
+        er.reconfigure_threshold(0.0).unwrap();
         // Rate > 0.0 threshold now means degraded (any non-zero rate)
         // Feed a failure to push rate above 0
         assert_eq!(er.record(false), Some(Condition::Degraded));
     }
 
     #[test]
-    #[should_panic(expected = "threshold must be set")]
-    fn panics_without_threshold() {
-        let _ = ErrorRateF64::builder().alpha(0.3).build().unwrap();
+    fn errors_without_threshold() {
+        let result = ErrorRateF64::builder().alpha(0.3).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
+    }
+
+    #[test]
+    fn allows_zero_threshold() {
+        let er = ErrorRateF64::builder()
+            .alpha(0.3)
+            .threshold(0.0)
+            .build();
+        assert!(er.is_ok());
+    }
+
+    #[test]
+    fn rejects_negative_threshold() {
+        let result = ErrorRateF64::builder()
+            .alpha(0.3)
+            .threshold(-0.1)
+            .build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn reconfigure_rejects_negative_threshold() {
+        let mut er = ErrorRateF64::builder()
+            .alpha(0.3)
+            .threshold(0.5)
+            .build().unwrap();
+        assert!(er.reconfigure_threshold(-0.1).is_err());
+        assert!(er.reconfigure_threshold(0.0).is_ok());
     }
 }
