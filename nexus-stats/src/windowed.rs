@@ -250,11 +250,13 @@ impl_windowed_max!(WindowedMaxF64, f64, f64::MIN);
 impl_windowed_max!(WindowedMaxF32, f32, f32::MIN);
 impl_windowed_max!(WindowedMaxI64, i64, i64::MIN);
 impl_windowed_max!(WindowedMaxI32, i32, i32::MIN);
+impl_windowed_max!(WindowedMaxI128, i128, i128::MIN);
 
 impl_windowed_min!(WindowedMinF64, f64, f64::MAX);
 impl_windowed_min!(WindowedMinF32, f32, f32::MAX);
 impl_windowed_min!(WindowedMinI64, i64, i64::MAX);
 impl_windowed_min!(WindowedMinI32, i32, i32::MAX);
+impl_windowed_min!(WindowedMinI128, i128, i128::MAX);
 
 #[cfg(test)]
 mod tests {
@@ -417,5 +419,21 @@ mod tests {
     #[test]
     fn min_rejects_zero_window() {
         assert!(matches!(WindowedMinF64::new(0), Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn max_i128_basic() {
+        let mut wm = WindowedMaxI128::new(10).unwrap();
+        assert_eq!(wm.update(0, 100), 100);
+        assert_eq!(wm.update(1, 200), 200);
+        assert_eq!(wm.update(2, 150), 200);
+    }
+
+    #[test]
+    fn min_i128_basic() {
+        let mut wm = WindowedMinI128::new(10).unwrap();
+        assert_eq!(wm.update(0, 100), 100);
+        assert_eq!(wm.update(1, 50), 50);
+        assert_eq!(wm.update(2, 75), 50);
     }
 }

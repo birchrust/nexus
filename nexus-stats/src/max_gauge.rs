@@ -71,6 +71,7 @@ impl_max_gauge!(MaxGaugeF64, f64, f64::MIN);
 impl_max_gauge!(MaxGaugeF32, f32, f32::MIN);
 impl_max_gauge!(MaxGaugeI64, i64, i64::MIN);
 impl_max_gauge!(MaxGaugeI32, i32, i32::MIN);
+impl_max_gauge!(MaxGaugeI128, i128, i128::MIN);
 
 #[cfg(test)]
 mod tests {
@@ -125,5 +126,13 @@ mod tests {
     fn default_is_empty() {
         let g = MaxGaugeI32::default();
         assert!(g.peek().is_none());
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut g = MaxGaugeI128::new();
+        g.update(100);
+        g.update(200);
+        assert_eq!(g.take(), Some(200));
     }
 }

@@ -99,19 +99,19 @@ pub use adaptive_threshold::{
     AdaptiveThresholdF64Builder,
 };
 pub use covariance::{CovarianceF32, CovarianceF64};
-pub use dead_band::{DeadBandF32, DeadBandF64, DeadBandI32, DeadBandI64};
+pub use dead_band::{DeadBandF32, DeadBandF64, DeadBandI32, DeadBandI64, DeadBandI128};
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use decay_accum::DecayAccumF64;
 pub use debounce::{DebounceU32, DebounceU64};
 pub use diff::{
-    FirstDiffF32, FirstDiffF64, FirstDiffI32, FirstDiffI64, SecondDiffF32, SecondDiffF64,
-    SecondDiffI32, SecondDiffI64,
+    FirstDiffF32, FirstDiffF64, FirstDiffI32, FirstDiffI64, FirstDiffI128, SecondDiffF32,
+    SecondDiffF64, SecondDiffI32, SecondDiffI64, SecondDiffI128,
 };
 pub use cusum::{
     CusumF32, CusumF32Builder, CusumF64, CusumF64Builder, CusumI32, CusumI32Builder, CusumI64,
-    CusumI64Builder,
+    CusumI64Builder, CusumI128, CusumI128Builder,
 };
-pub use drawdown::{DrawdownF32, DrawdownF64, DrawdownI32, DrawdownI64};
+pub use drawdown::{DrawdownF32, DrawdownF64, DrawdownI32, DrawdownI64, DrawdownI128};
 pub use error_rate::{ErrorRateF32, ErrorRateF32Builder, ErrorRateF64, ErrorRateF64Builder};
 pub use event_rate::{
     EventRateF32, EventRateF32Builder, EventRateF64, EventRateF64Builder, EventRateI32,
@@ -124,7 +124,7 @@ pub use ewma_var::{EwmaVarF32, EwmaVarF32Builder, EwmaVarF64, EwmaVarF64Builder}
 pub use flex_proportion::{FlexProportionEntity, FlexProportionGlobal};
 pub use harmonic_mean::{HarmonicMeanF32, HarmonicMeanF64};
 pub use holt::{HoltF32, HoltF32Builder, HoltF64, HoltF64Builder};
-pub use hysteresis::{HysteresisF32, HysteresisF64, HysteresisI32, HysteresisI64};
+pub use hysteresis::{HysteresisF32, HysteresisF64, HysteresisI32, HysteresisI64, HysteresisI128};
 pub use kalman1d::{Kalman1dF32, Kalman1dF32Builder, Kalman1dF64, Kalman1dF64Builder};
 #[cfg(feature = "alloc")]
 pub use kama::{KamaF32, KamaF32Builder, KamaF64, KamaF64Builder};
@@ -132,30 +132,30 @@ pub use jitter::{
     JitterF32, JitterF32Builder, JitterF64, JitterF64Builder, JitterI32, JitterI32Builder,
     JitterI64, JitterI64Builder,
 };
-pub use level_crossing::{LevelCrossingF32, LevelCrossingF64, LevelCrossingI32, LevelCrossingI64};
+pub use level_crossing::{LevelCrossingF32, LevelCrossingF64, LevelCrossingI32, LevelCrossingI64, LevelCrossingI128};
 pub use liveness::{
     LivenessF32, LivenessF32Builder, LivenessF64, LivenessF64Builder, LivenessI32,
     LivenessI32Builder, LivenessI64, LivenessI64Builder,
 };
-pub use max_gauge::{MaxGaugeF32, MaxGaugeF64, MaxGaugeI32, MaxGaugeI64};
+pub use max_gauge::{MaxGaugeF32, MaxGaugeF64, MaxGaugeI32, MaxGaugeI64, MaxGaugeI128};
 pub use multi_gate::{MultiGateF32, MultiGateF32Builder, MultiGateF64, MultiGateF64Builder, Verdict};
 #[cfg(feature = "alloc")]
-pub use mosum::{MosumF32, MosumF32Builder, MosumF64, MosumF64Builder, MosumI32, MosumI32Builder, MosumI64, MosumI64Builder};
-pub use peak_detector::{Peak, PeakDetectorF32, PeakDetectorF64, PeakDetectorI32, PeakDetectorI64};
+pub use mosum::{MosumF32, MosumF32Builder, MosumF64, MosumF64Builder, MosumI32, MosumI32Builder, MosumI64, MosumI64Builder, MosumI128, MosumI128Builder};
+pub use peak_detector::{Peak, PeakDetectorF32, PeakDetectorF64, PeakDetectorI32, PeakDetectorI64, PeakDetectorI128};
 pub use peak_hold::{
     PeakHoldF32, PeakHoldF32Builder, PeakHoldF64, PeakHoldF64Builder, PeakHoldI32,
-    PeakHoldI32Builder, PeakHoldI64, PeakHoldI64Builder,
+    PeakHoldI32Builder, PeakHoldI64, PeakHoldI64Builder, PeakHoldI128, PeakHoldI128Builder,
 };
 pub use robust_z::{RobustZScoreF32, RobustZScoreF32Builder, RobustZScoreF64, RobustZScoreF64Builder};
-pub use queue_delay::{QueueDelayI32, QueueDelayI32Builder, QueueDelayI64, QueueDelayI64Builder};
+pub use queue_delay::{QueueDelayI32, QueueDelayI32Builder, QueueDelayI64, QueueDelayI64Builder, QueueDelayI128, QueueDelayI128Builder};
 pub use saturation::{SaturationF32, SaturationF32Builder, SaturationF64, SaturationF64Builder};
 pub use running::{
-    RunningMaxF32, RunningMaxF64, RunningMaxI32, RunningMaxI64, RunningMinF32, RunningMinF64,
-    RunningMinI32, RunningMinI64,
+    RunningMaxF32, RunningMaxF64, RunningMaxI32, RunningMaxI64, RunningMaxI128, RunningMinF32,
+    RunningMinF64, RunningMinI32, RunningMinI64, RunningMinI128,
 };
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use shiryaev_roberts::{ShiryaevRobertsF64, ShiryaevRobertsF64Builder};
-pub use slew::{SlewF32, SlewF64, SlewI32, SlewI64};
+pub use slew::{SlewF32, SlewF64, SlewI32, SlewI64, SlewI128};
 pub use spring::{SpringF32, SpringF64};
 pub use topk::TopK;
 pub use trend_alert::{TrendAlertF32, TrendAlertF32Builder, TrendAlertF64, TrendAlertF64Builder};
@@ -163,6 +163,6 @@ pub use welford::{WelfordF32, WelfordF64};
 #[cfg(feature = "alloc")]
 pub use windowed_median::{WindowedMedianF32, WindowedMedianF64, WindowedMedianI32, WindowedMedianI64};
 pub use windowed::{
-    WindowedMaxF32, WindowedMaxF64, WindowedMaxI32, WindowedMaxI64, WindowedMinF32,
-    WindowedMinF64, WindowedMinI32, WindowedMinI64,
+    WindowedMaxF32, WindowedMaxF64, WindowedMaxI32, WindowedMaxI64, WindowedMaxI128,
+    WindowedMinF32, WindowedMinF64, WindowedMinI32, WindowedMinI64, WindowedMinI128,
 };

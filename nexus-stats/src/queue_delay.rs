@@ -1,5 +1,5 @@
 use crate::Condition;
-use crate::windowed::{WindowedMinI32, WindowedMinI64};
+use crate::windowed::{WindowedMinI32, WindowedMinI64, WindowedMinI128};
 
 macro_rules! impl_queue_delay {
     ($name:ident, $builder:ident, $ty:ty, $windowed_min:ty) => {
@@ -152,6 +152,7 @@ macro_rules! impl_queue_delay {
 
 impl_queue_delay!(QueueDelayI64, QueueDelayI64Builder, i64, WindowedMinI64);
 impl_queue_delay!(QueueDelayI32, QueueDelayI32Builder, i32, WindowedMinI32);
+impl_queue_delay!(QueueDelayI128, QueueDelayI128Builder, i128, WindowedMinI128);
 
 #[cfg(test)]
 mod tests {
@@ -271,5 +272,17 @@ mod tests {
     fn errors_without_window() {
         let result = QueueDelayI64::builder().target(100).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("window"))));
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut qd = QueueDelayI128::builder()
+            .target(50)
+            .window(100)
+            .build()
+            .unwrap();
+
+        let result = qd.update(0, 30);
+        assert_eq!(result, Some(Condition::Normal));
     }
 }

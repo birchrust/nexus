@@ -60,6 +60,7 @@ impl_slew!(SlewF64, f64, 0.0);
 impl_slew!(SlewF32, f32, 0.0);
 impl_slew!(SlewI64, i64, 0);
 impl_slew!(SlewI32, i32, 0);
+impl_slew!(SlewI128, i128, 0);
 
 #[cfg(test)]
 mod tests {
@@ -110,5 +111,12 @@ mod tests {
     fn rejects_zero_max_rate() {
         assert!(matches!(SlewF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
         assert!(matches!(SlewI64::new(0), Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut s = SlewI128::new(5).unwrap();
+        assert_eq!(s.update(100), 100);
+        assert_eq!(s.update(200), 105);
     }
 }

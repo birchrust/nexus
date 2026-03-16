@@ -136,11 +136,13 @@ impl_running_min!(RunningMinF64, f64, f64::MAX);
 impl_running_min!(RunningMinF32, f32, f32::MAX);
 impl_running_min!(RunningMinI64, i64, i64::MAX);
 impl_running_min!(RunningMinI32, i32, i32::MAX);
+impl_running_min!(RunningMinI128, i128, i128::MAX);
 
 impl_running_max!(RunningMaxF64, f64, f64::MIN);
 impl_running_max!(RunningMaxF32, f32, f32::MIN);
 impl_running_max!(RunningMaxI64, i64, i64::MIN);
 impl_running_max!(RunningMaxI32, i32, i32::MIN);
+impl_running_max!(RunningMaxI128, i128, i128::MIN);
 
 #[cfg(test)]
 mod tests {
@@ -232,5 +234,21 @@ mod tests {
         let mut rm = RunningMaxF32::new();
         assert_eq!(rm.update(30.0), 30.0);
         assert_eq!(rm.update(50.0), 50.0);
+    }
+
+    #[test]
+    fn min_i128() {
+        let mut rm = RunningMinI128::new();
+        assert_eq!(rm.update(100), 100);
+        assert_eq!(rm.update(50), 50);
+        assert_eq!(rm.update(75), 50);
+    }
+
+    #[test]
+    fn max_i128() {
+        let mut rm = RunningMaxI128::new();
+        assert_eq!(rm.update(50), 50);
+        assert_eq!(rm.update(100), 100);
+        assert_eq!(rm.update(75), 100);
     }
 }
