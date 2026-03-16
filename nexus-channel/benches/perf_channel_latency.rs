@@ -14,8 +14,8 @@ const SAMPLES: u64 = 100_000;
 const CAPACITY: usize = 64;
 
 fn main() {
-    let (mut tx_fwd, mut rx_fwd) = channel::<u64>(CAPACITY);
-    let (mut tx_ret, mut rx_ret) = channel::<u64>(CAPACITY);
+    let (tx_fwd, rx_fwd) = channel::<u64>(CAPACITY);
+    let (tx_ret, rx_ret) = channel::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 

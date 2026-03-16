@@ -37,8 +37,8 @@ fn latency_benchmark() {
     println!("Capacity: {:>8}", CAPACITY);
     println!();
 
-    let (mut tx_a, mut rx_a) = channel::<u64>(CAPACITY);
-    let (mut tx_b, mut rx_b) = channel::<u64>(CAPACITY);
+    let (tx_a, rx_a) = channel::<u64>(CAPACITY);
+    let (tx_b, rx_b) = channel::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 
@@ -120,7 +120,7 @@ fn throughput_benchmark() {
     println!("Capacity: {:>10}", CAPACITY);
     println!();
 
-    let (mut tx, mut rx) = channel::<u64>(CAPACITY);
+    let (tx, rx) = channel::<u64>(CAPACITY);
 
     let start = Instant::now();
 

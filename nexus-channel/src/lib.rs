@@ -24,7 +24,7 @@
 //! ```
 //! use nexus_channel::channel;
 //!
-//! let (mut tx, mut rx) = channel::<u64>(1024);
+//! let (tx, rx) = channel::<u64>(1024);
 //!
 //! tx.send(42).unwrap();
 //! assert_eq!(rx.recv().unwrap(), 42);
@@ -36,7 +36,7 @@
 //! use nexus_channel::{channel, RecvTimeoutError};
 //! use std::time::Duration;
 //!
-//! let (tx, mut rx) = channel::<u64>(4);
+//! let (tx, rx) = channel::<u64>(4);
 //!
 //! match rx.recv_timeout(Duration::from_millis(100)) {
 //!     Ok(value) => println!("got {}", value),
@@ -110,7 +110,7 @@ struct Shared {
 /// ```
 /// use nexus_channel::channel;
 ///
-/// let (mut tx, mut rx) = channel::<String>(100);
+/// let (tx, rx) = channel::<String>(100);
 ///
 /// tx.send("hello".to_string()).unwrap();
 /// assert_eq!(rx.recv().unwrap(), "hello");
@@ -185,7 +185,7 @@ impl<T> Sender<T> {
     /// or the receiver disconnects.
     ///
     /// Returns `Err(SendError(value))` if the receiver has been dropped.
-    pub fn send(&mut self, value: T) -> Result<(), SendError<T>> {
+    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         if self.producer.is_disconnected() {
             return Err(SendError(value));
         }
@@ -260,7 +260,7 @@ impl<T> Sender<T> {
     /// - `Ok(())` if the message was sent
     /// - `Err(TrySendError::Full(value))` if the channel is full
     /// - `Err(TrySendError::Disconnected(value))` if the receiver was dropped
-    pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
+    pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         if self.producer.is_disconnected() {
             return Err(TrySendError::Disconnected(value));
         }
@@ -335,7 +335,7 @@ impl<T> Receiver<T> {
     ///
     /// Returns `Err(RecvError)` if the sender has been dropped and no messages
     /// remain in the channel.
-    pub fn recv(&mut self) -> Result<T, RecvError> {
+    pub fn recv(&self) -> Result<T, RecvError> {
         // Fast path
         if let Some(v) = self.consumer.pop() {
             self.notify_sender();
@@ -392,7 +392,7 @@ impl<T> Receiver<T> {
     /// - `Ok(value)` if a message was received
     /// - `Err(RecvTimeoutError::Timeout)` if the timeout elapsed
     /// - `Err(RecvTimeoutError::Disconnected)` if the sender was dropped
-    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<T, RecvTimeoutError> {
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
         let deadline = Instant::now() + timeout;
 
         // Fast path
@@ -461,7 +461,8 @@ impl<T> Receiver<T> {
     /// - `Ok(value)` if a message was available
     /// - `Err(TryRecvError::Empty)` if the channel is empty
     /// - `Err(TryRecvError::Disconnected)` if the sender was dropped and channel is empty
-    pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+    #[allow(clippy::option_if_let_else)]
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
         match self.consumer.pop() {
             Some(v) => {
                 self.notify_sender();
@@ -675,7 +676,7 @@ mod tests {
 
     #[test]
     fn basic_send_recv() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         tx.send(1).unwrap();
         tx.send(2).unwrap();
@@ -688,7 +689,7 @@ mod tests {
 
     #[test]
     fn try_send_try_recv() {
-        let (mut tx, mut rx) = channel::<u64>(2);
+        let (tx, rx) = channel::<u64>(2);
 
         assert!(tx.try_send(1).is_ok());
         assert!(tx.try_send(2).is_ok());
@@ -701,7 +702,7 @@ mod tests {
 
     #[test]
     fn send_fills_then_recv_drains() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         for i in 0..4 {
             tx.try_send(i).unwrap();
@@ -720,7 +721,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_success() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         tx.send(42).unwrap();
 
@@ -730,7 +731,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_expires() {
-        let (_tx, mut rx) = channel::<u64>(4);
+        let (_tx, rx) = channel::<u64>(4);
 
         let start = Instant::now();
         let result = rx.recv_timeout(Duration::from_millis(50));
@@ -741,7 +742,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_disconnected() {
-        let (tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         drop(tx);
 
@@ -751,7 +752,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_data_arrives() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let handle = thread::spawn(move || {
             thread::sleep(Duration::from_millis(25));
@@ -766,7 +767,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_disconnect_while_waiting() {
-        let (tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let handle = thread::spawn(move || {
             thread::sleep(Duration::from_millis(25));
@@ -785,7 +786,7 @@ mod tests {
 
     #[test]
     fn recv_returns_error_when_sender_dropped() {
-        let (tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         drop(tx);
 
@@ -795,7 +796,7 @@ mod tests {
 
     #[test]
     fn recv_drains_before_error_when_sender_dropped() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         tx.send(1).unwrap();
         tx.send(2).unwrap();
@@ -808,7 +809,7 @@ mod tests {
 
     #[test]
     fn send_returns_error_when_receiver_dropped() {
-        let (mut tx, rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         drop(rx);
 
@@ -840,7 +841,7 @@ mod tests {
 
     #[test]
     fn cross_thread_single_message() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let handle = thread::spawn(move || rx.recv().unwrap());
 
@@ -851,7 +852,7 @@ mod tests {
 
     #[test]
     fn cross_thread_multiple_messages() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let handle = thread::spawn(move || {
             let mut sum = 0;
@@ -875,7 +876,7 @@ mod tests {
 
     #[test]
     fn fifo_ordering_single_thread() {
-        let (mut tx, mut rx) = channel::<u64>(8);
+        let (tx, rx) = channel::<u64>(8);
 
         for i in 0..8 {
             tx.try_send(i).unwrap();
@@ -888,7 +889,7 @@ mod tests {
 
     #[test]
     fn fifo_ordering_cross_thread() {
-        let (mut tx, mut rx) = channel::<u64>(64);
+        let (tx, rx) = channel::<u64>(64);
 
         let handle = thread::spawn(move || {
             let mut expected = 0u64;
@@ -912,7 +913,7 @@ mod tests {
 
     #[test]
     fn recv_blocks_until_send() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let start = Instant::now();
 
@@ -928,7 +929,7 @@ mod tests {
 
     #[test]
     fn send_blocks_until_recv() {
-        let (mut tx, mut rx) = channel::<u64>(2);
+        let (tx, rx) = channel::<u64>(2);
 
         // Fill the buffer
         tx.try_send(1).unwrap();
@@ -954,7 +955,7 @@ mod tests {
 
     #[test]
     fn recv_wakes_on_sender_drop() {
-        let (tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let handle = thread::spawn(move || {
             let result = rx.recv();
@@ -970,7 +971,7 @@ mod tests {
 
     #[test]
     fn send_wakes_on_receiver_drop() {
-        let (mut tx, rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         tx.try_send(1).unwrap(); // Fill it
 
@@ -992,7 +993,7 @@ mod tests {
 
     #[test]
     fn capacity_one() {
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         for i in 0..100 {
             tx.send(i).unwrap();
@@ -1002,7 +1003,7 @@ mod tests {
 
     #[test]
     fn capacity_one_cross_thread() {
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             for _ in 0..1000 {
@@ -1035,7 +1036,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let (mut tx, rx) = channel::<DropCounter>(4);
+        let (tx, rx) = channel::<DropCounter>(4);
 
         tx.try_send(DropCounter).unwrap();
         tx.try_send(DropCounter).unwrap();
@@ -1051,7 +1052,7 @@ mod tests {
 
     #[test]
     fn failed_send_returns_value() {
-        let (mut tx, rx) = channel::<String>(1);
+        let (tx, rx) = channel::<String>(1);
 
         tx.try_send("hello".to_string()).unwrap();
 
@@ -1076,7 +1077,7 @@ mod tests {
 
     #[test]
     fn zero_sized_type() {
-        let (mut tx, mut rx) = channel::<()>(4);
+        let (tx, rx) = channel::<()>(4);
 
         tx.send(()).unwrap();
         tx.send(()).unwrap();
@@ -1092,7 +1093,7 @@ mod tests {
             data: [u8; 4096],
         }
 
-        let (mut tx, mut rx) = channel::<LargeMessage>(4);
+        let (tx, rx) = channel::<LargeMessage>(4);
 
         let msg = LargeMessage { data: [42u8; 4096] };
         tx.send(msg).unwrap();
@@ -1108,7 +1109,7 @@ mod tests {
 
     #[test]
     fn many_laps_single_thread() {
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         // 1000 messages through 4-slot buffer = 250 laps
         for i in 0..1000 {
@@ -1121,7 +1122,7 @@ mod tests {
     fn many_laps_cross_thread() {
         const COUNT: u64 = 100_000;
 
-        let (mut tx, mut rx) = channel::<u64>(4); // Small buffer, many laps
+        let (tx, rx) = channel::<u64>(4); // Small buffer, many laps
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
@@ -1150,7 +1151,7 @@ mod tests {
     fn stress_high_volume() {
         const COUNT: u64 = 100_000;
 
-        let (mut tx, mut rx) = channel::<u64>(1024);
+        let (tx, rx) = channel::<u64>(1024);
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
@@ -1175,7 +1176,7 @@ mod tests {
     fn stress_small_buffer() {
         const COUNT: u64 = 10_000;
 
-        let (mut tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
@@ -1201,7 +1202,7 @@ mod tests {
     fn stress_capacity_one_high_volume() {
         const COUNT: u64 = 10_000;
 
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
@@ -1228,8 +1229,8 @@ mod tests {
 
     #[test]
     fn ping_pong_basic() {
-        let (mut tx1, mut rx1) = channel::<u64>(1);
-        let (mut tx2, mut rx2) = channel::<u64>(1);
+        let (tx1, rx1) = channel::<u64>(1);
+        let (tx2, rx2) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             for i in 0..1000 {
@@ -1250,8 +1251,8 @@ mod tests {
 
     #[test]
     fn ping_pong_high_iterations() {
-        let (mut tx1, mut rx1) = channel::<u64>(1);
-        let (mut tx2, mut rx2) = channel::<u64>(1);
+        let (tx1, rx1) = channel::<u64>(1);
+        let (tx2, rx2) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             for i in 0..10_000 {
@@ -1276,7 +1277,7 @@ mod tests {
 
     #[test]
     fn no_deadlock_alternating() {
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             for i in 0..1000u64 {
@@ -1293,7 +1294,7 @@ mod tests {
 
     #[test]
     fn no_deadlock_burst_then_drain() {
-        let (mut tx, mut rx) = channel::<u64>(8);
+        let (tx, rx) = channel::<u64>(8);
 
         for round in 0..100 {
             // Burst
@@ -1309,7 +1310,7 @@ mod tests {
 
     #[test]
     fn no_deadlock_concurrent_full_empty_transitions() {
-        let (mut tx, mut rx) = channel::<u64>(2);
+        let (tx, rx) = channel::<u64>(2);
 
         let producer = thread::spawn(move || {
             for i in 0..10_000u64 {
@@ -1329,7 +1330,7 @@ mod tests {
 
     #[test]
     fn no_deadlock_disconnect_while_blocked_recv() {
-        let (tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             // Will block waiting for data
@@ -1345,7 +1346,7 @@ mod tests {
 
     #[test]
     fn no_deadlock_disconnect_while_blocked_send() {
-        let (mut tx, rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
         tx.try_send(1).unwrap(); // Fill it
 
         let handle = thread::spawn(move || {
@@ -1366,7 +1367,7 @@ mod tests {
 
     #[test]
     fn stress_rapid_park_unpark_sender() {
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             for _ in 0..10_000 {
@@ -1383,7 +1384,7 @@ mod tests {
 
     #[test]
     fn stress_rapid_park_unpark_receiver() {
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let handle = thread::spawn(move || {
             for i in 0..10_000 {
@@ -1401,7 +1402,7 @@ mod tests {
     #[test]
     fn stress_park_unpark_both_sides() {
         // Both sender and receiver will park repeatedly
-        let (mut tx, mut rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
 
         let sender = thread::spawn(move || {
             for i in 0..50_000 {
@@ -1433,7 +1434,7 @@ mod tests {
         let (done_tx, done_rx) = mpsc::channel();
 
         let handle = thread::spawn(move || {
-            let (mut tx, mut rx) = channel::<u64>(1);
+            let (tx, rx) = channel::<u64>(1);
 
             let h = thread::spawn(move || {
                 for i in 0..1000 {
@@ -1461,7 +1462,7 @@ mod tests {
         let done = Arc::new(AtomicBool::new(false));
         let done_clone = done.clone();
 
-        let (tx, mut rx) = channel::<u64>(4);
+        let (tx, rx) = channel::<u64>(4);
 
         let handle = thread::spawn(move || {
             let _ = rx.recv(); // Will block, then return Err on disconnect
@@ -1482,7 +1483,7 @@ mod tests {
         let done = Arc::new(AtomicBool::new(false));
         let done_clone = done.clone();
 
-        let (mut tx, rx) = channel::<u64>(1);
+        let (tx, rx) = channel::<u64>(1);
         tx.try_send(1).unwrap(); // Fill it
 
         let handle = thread::spawn(move || {
@@ -1506,7 +1507,7 @@ mod tests {
     #[test]
     fn rapid_channel_creation() {
         for _ in 0..1000 {
-            let (mut tx, mut rx) = channel::<u64>(4);
+            let (tx, rx) = channel::<u64>(4);
             tx.try_send(1).unwrap();
             assert_eq!(rx.recv().unwrap(), 1);
         }

@@ -36,12 +36,13 @@
 //! ```
 //! use nexus_queue::spsc;
 //!
-//! let (mut tx, mut rx) = spsc::ring_buffer::<u64>(1024);
+//! let (tx, rx) = spsc::ring_buffer::<u64>(1024);
 //!
 //! tx.push(42).unwrap();
 //! assert_eq!(rx.pop(), Some(42));
 //! ```
 
+use std::cell::Cell;
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
@@ -76,15 +77,15 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
 
     (
         Producer {
-            local_tail: 0,
-            cached_head: 0,
+            local_tail: Cell::new(0),
+            cached_head: Cell::new(0),
             buffer,
             mask,
             shared: Arc::clone(&shared),
         },
         Consumer {
-            local_head: 0,
-            cached_tail: 0,
+            local_head: Cell::new(0),
+            cached_tail: Cell::new(0),
             buffer,
             mask,
             shared,
@@ -137,8 +138,8 @@ impl<T> Drop for Shared<T> {
 // with struct pointer. Cold field (shared Arc) pushed to end.
 #[repr(C)]
 pub struct Producer<T> {
-    local_tail: usize,
-    cached_head: usize,
+    local_tail: Cell<usize>,
+    cached_head: Cell<usize>,
     buffer: *mut T,
     mask: usize,
     shared: Arc<Shared<T>>,
@@ -156,14 +157,14 @@ impl<T> Producer<T> {
     /// of the value to the caller.
     #[inline]
     #[must_use = "push returns Err if full, which should be handled"]
-    pub fn push(&mut self, value: T) -> Result<(), Full<T>> {
-        let tail = self.local_tail;
+    pub fn push(&self, value: T) -> Result<(), Full<T>> {
+        let tail = self.local_tail.get();
 
-        if tail.wrapping_sub(self.cached_head) > self.mask {
-            self.cached_head = self.shared.head.load(Ordering::Relaxed);
+        if tail.wrapping_sub(self.cached_head.get()) > self.mask {
+            self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
 
             std::sync::atomic::fence(Ordering::Acquire);
-            if tail.wrapping_sub(self.cached_head) > self.mask {
+            if tail.wrapping_sub(self.cached_head.get()) > self.mask {
                 return Err(Full(value));
             }
         }
@@ -175,7 +176,7 @@ impl<T> Producer<T> {
         std::sync::atomic::fence(Ordering::Release);
 
         self.shared.tail.store(new_tail, Ordering::Relaxed);
-        self.local_tail = new_tail;
+        self.local_tail.set(new_tail);
 
         Ok(())
     }
@@ -208,8 +209,8 @@ impl<T> fmt::Debug for Producer<T> {
 // with struct pointer. Cold field (shared Arc) pushed to end.
 #[repr(C)]
 pub struct Consumer<T> {
-    local_head: usize,
-    cached_tail: usize,
+    local_head: Cell<usize>,
+    cached_tail: Cell<usize>,
     buffer: *mut T,
     mask: usize,
     shared: Arc<Shared<T>>,
@@ -225,14 +226,14 @@ impl<T> Consumer<T> {
     ///
     /// Returns `None` if the queue is empty.
     #[inline]
-    pub fn pop(&mut self) -> Option<T> {
-        let head = self.local_head;
+    pub fn pop(&self) -> Option<T> {
+        let head = self.local_head.get();
 
-        if head == self.cached_tail {
-            self.cached_tail = self.shared.tail.load(Ordering::Relaxed);
+        if head == self.cached_tail.get() {
+            self.cached_tail.set(self.shared.tail.load(Ordering::Relaxed));
             std::sync::atomic::fence(Ordering::Acquire);
 
-            if head == self.cached_tail {
+            if head == self.cached_tail.get() {
                 return None;
             }
         }
@@ -244,7 +245,7 @@ impl<T> Consumer<T> {
         std::sync::atomic::fence(Ordering::Release);
 
         self.shared.head.store(new_head, Ordering::Relaxed);
-        self.local_head = new_head;
+        self.local_head.set(new_head);
 
         Some(value)
     }
@@ -280,7 +281,7 @@ mod tests {
 
     #[test]
     fn basic_push_pop() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
+        let (prod, cons) = ring_buffer::<u64>(4);
 
         assert!(prod.push(1).is_ok());
         assert!(prod.push(2).is_ok());
@@ -294,14 +295,14 @@ mod tests {
 
     #[test]
     fn empty_pop_returns_none() {
-        let (_, mut cons) = ring_buffer::<u64>(4);
+        let (_, cons) = ring_buffer::<u64>(4);
         assert_eq!(cons.pop(), None);
         assert_eq!(cons.pop(), None);
     }
 
     #[test]
     fn fill_then_drain() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
+        let (prod, cons) = ring_buffer::<u64>(4);
 
         for i in 0..4 {
             assert!(prod.push(i).is_ok());
@@ -316,7 +317,7 @@ mod tests {
 
     #[test]
     fn push_returns_error_when_full() {
-        let (mut prod, _cons) = ring_buffer::<u64>(4);
+        let (prod, _cons) = ring_buffer::<u64>(4);
 
         assert!(prod.push(1).is_ok());
         assert!(prod.push(2).is_ok());
@@ -333,7 +334,7 @@ mod tests {
 
     #[test]
     fn interleaved_no_overwrite() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(8);
+        let (prod, cons) = ring_buffer::<u64>(8);
 
         for i in 0..1000 {
             assert!(prod.push(i).is_ok());
@@ -343,7 +344,7 @@ mod tests {
 
     #[test]
     fn partial_fill_drain_cycles() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(8);
+        let (prod, cons) = ring_buffer::<u64>(8);
 
         for round in 0..100 {
             for i in 0..4 {
@@ -362,7 +363,7 @@ mod tests {
 
     #[test]
     fn single_slot_bounded() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(1);
+        let (prod, cons) = ring_buffer::<u64>(1);
 
         assert!(prod.push(1).is_ok());
         assert!(prod.push(2).is_err());
@@ -412,7 +413,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let (mut prod, cons) = ring_buffer::<DropCounter>(4);
+        let (prod, cons) = ring_buffer::<DropCounter>(4);
 
         let _ = prod.push(DropCounter);
         let _ = prod.push(DropCounter);
@@ -434,7 +435,7 @@ mod tests {
     fn cross_thread_bounded() {
         use std::thread;
 
-        let (mut prod, mut cons) = ring_buffer::<u64>(64);
+        let (prod, cons) = ring_buffer::<u64>(64);
 
         let producer = thread::spawn(move || {
             for i in 0..10_000 {
@@ -467,7 +468,7 @@ mod tests {
 
     #[test]
     fn zero_sized_type() {
-        let (mut prod, mut cons) = ring_buffer::<()>(8);
+        let (prod, cons) = ring_buffer::<()>(8);
 
         let _ = prod.push(());
         let _ = prod.push(());
@@ -479,7 +480,7 @@ mod tests {
 
     #[test]
     fn string_type() {
-        let (mut prod, mut cons) = ring_buffer::<String>(4);
+        let (prod, cons) = ring_buffer::<String>(4);
 
         let _ = prod.push("hello".to_string());
         let _ = prod.push("world".to_string());
@@ -501,7 +502,7 @@ mod tests {
             data: [u8; 256],
         }
 
-        let (mut prod, mut cons) = ring_buffer::<LargeMessage>(8);
+        let (prod, cons) = ring_buffer::<LargeMessage>(8);
 
         let msg = LargeMessage { data: [42u8; 256] };
         assert!(prod.push(msg).is_ok());
@@ -513,7 +514,7 @@ mod tests {
 
     #[test]
     fn multiple_laps() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
+        let (prod, cons) = ring_buffer::<u64>(4);
 
         // 10 full laps through 4-slot buffer
         for i in 0..40 {
@@ -526,7 +527,7 @@ mod tests {
     fn fifo_order_cross_thread() {
         use std::thread;
 
-        let (mut prod, mut cons) = ring_buffer::<u64>(64);
+        let (prod, cons) = ring_buffer::<u64>(64);
 
         let producer = thread::spawn(move || {
             for i in 0..10_000u64 {
@@ -558,7 +559,7 @@ mod tests {
 
         const COUNT: u64 = 1_000_000;
 
-        let (mut prod, mut cons) = ring_buffer::<u64>(1024);
+        let (prod, cons) = ring_buffer::<u64>(1024);
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {

@@ -1,6 +1,6 @@
 [package]
 name = "nexus-channel"
-version = "1.1.0"
+version = "1.2.0"
 description = "High-performance lock-free SPSC channel for low-latency systems"
 readme = "README.md"
 edition.workspace = true
@@ -11,7 +11,7 @@ keywords = ["spsc", "channel", "lock-free", "low-latency"]
 categories = ["concurrency", "data-structures"]
 
 [dependencies]
-nexus-queue = { version = "1.0" }
+nexus-queue = { version = "1.2", path = "../nexus-queue" }
 crossbeam-utils.workspace = true
 
 [dev-dependencies]
