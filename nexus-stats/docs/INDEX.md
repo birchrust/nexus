@@ -43,7 +43,7 @@ examples.
 - [MaxGauge](algorithms/max-gauge.md) — Reset-on-read maximum
 - [Liveness](algorithms/liveness.md) — Source alive/dead detection
 - [EventRate](algorithms/event-rate.md) — Smoothed events per unit time
-- [QueueDelay](algorithms/queue-delay.md) — CoDel-inspired backpressure detection
+- [CoDel](algorithms/codel.md) — Controlled Delay queue monitor
 - [Saturation](algorithms/saturation.md) — Resource utilization threshold
 - [ErrorRate](algorithms/error-rate.md) — Failure rate tracking
 - [TrendAlert](algorithms/trend-alert.md) — Trend direction detection

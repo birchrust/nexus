@@ -39,7 +39,7 @@ pinned to a single core.
 | MaxGaugeF64 | ~5 | ~5 | compare-and-swap |
 | LivenessF64 | 6 | 20 | EMA + deadline |
 | EventRateF64 | 6 | 9 | EMA + inversion |
-| QueueDelayI64 | 7 | 10 | WindowedMin + threshold |
+| CoDelI64 | 7 | 10 | WindowedMin + threshold |
 | SaturationF64 | ~6 | ~8 | EMA + threshold |
 | ErrorRateF64 | ~6 | ~8 | EMA of outcomes |
 | TrendAlertF64 | ~12 | ~18 | Holt + threshold |
