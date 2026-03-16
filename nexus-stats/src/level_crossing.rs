@@ -71,6 +71,7 @@ impl_level_crossing!(LevelCrossingF64, f64);
 impl_level_crossing!(LevelCrossingF32, f32);
 impl_level_crossing!(LevelCrossingI64, i64);
 impl_level_crossing!(LevelCrossingI32, i32);
+impl_level_crossing!(LevelCrossingI128, i128);
 
 #[cfg(test)]
 mod tests {
@@ -130,5 +131,12 @@ mod tests {
         let _ = lc.update(60.0);
         lc.reset();
         assert_eq!(lc.crossing_count(), 0);
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut lc = LevelCrossingI128::new(100);
+        assert!(!lc.update(50));
+        assert!(lc.update(150));
     }
 }

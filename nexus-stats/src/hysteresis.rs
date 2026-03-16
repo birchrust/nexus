@@ -58,6 +58,7 @@ impl_hysteresis!(HysteresisF64, f64);
 impl_hysteresis!(HysteresisF32, f32);
 impl_hysteresis!(HysteresisI64, i64);
 impl_hysteresis!(HysteresisI32, i32);
+impl_hysteresis!(HysteresisI128, i128);
 
 #[cfg(test)]
 mod tests {
@@ -111,5 +112,13 @@ mod tests {
     #[test]
     fn rejects_invalid_thresholds() {
         assert!(matches!(HysteresisF64::new(70.0, 30.0), Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut h = HysteresisI128::new(30, 70).unwrap();
+        assert!(!h.update(50));
+        assert!(h.update(75));
+        assert!(!h.update(25));
     }
 }

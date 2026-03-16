@@ -122,11 +122,13 @@ impl_first_diff!(FirstDiffF64, f64, 0.0);
 impl_first_diff!(FirstDiffF32, f32, 0.0);
 impl_first_diff!(FirstDiffI64, i64, 0);
 impl_first_diff!(FirstDiffI32, i32, 0);
+impl_first_diff!(FirstDiffI128, i128, 0);
 
 impl_second_diff!(SecondDiffF64, f64, 0.0);
 impl_second_diff!(SecondDiffF32, f32, 0.0);
 impl_second_diff!(SecondDiffI64, i64, 0);
 impl_second_diff!(SecondDiffI32, i32, 0);
+impl_second_diff!(SecondDiffI128, i128, 0);
 
 #[cfg(test)]
 mod tests {
@@ -208,5 +210,20 @@ mod tests {
         let _ = sd.update(2.0);
         sd.reset();
         assert!(sd.update(5.0).is_none());
+    }
+
+    #[test]
+    fn first_diff_i128() {
+        let mut fd = FirstDiffI128::new();
+        let _ = fd.update(100);
+        assert_eq!(fd.update(130), Some(30));
+    }
+
+    #[test]
+    fn second_diff_i128() {
+        let mut sd = SecondDiffI128::new();
+        let _ = sd.update(10);
+        let _ = sd.update(20);
+        assert_eq!(sd.update(30), Some(0)); // linear
     }
 }

@@ -95,6 +95,7 @@ impl_peak_detector!(PeakDetectorF64, f64, 0.0);
 impl_peak_detector!(PeakDetectorF32, f32, 0.0);
 impl_peak_detector!(PeakDetectorI64, i64, 0);
 impl_peak_detector!(PeakDetectorI32, i32, 0);
+impl_peak_detector!(PeakDetectorI128, i128, 0);
 
 #[cfg(test)]
 mod tests {
@@ -156,5 +157,14 @@ mod tests {
     #[test]
     fn rejects_negative_prominence() {
         assert!(matches!(PeakDetectorF64::new(-1.0), Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut pd = PeakDetectorI128::new(10).unwrap();
+        let _ = pd.update(0);
+        let _ = pd.update(50);
+        let peak = pd.update(30); // dropped 20 > 10
+        assert_eq!(peak, Some(Peak { value: 50, is_maximum: true }));
     }
 }

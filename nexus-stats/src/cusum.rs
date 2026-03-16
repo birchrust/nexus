@@ -423,6 +423,7 @@ impl_cusum!(CusumF64, CusumF64Builder, f64, min_slack = 0.0);
 impl_cusum!(CusumF32, CusumF32Builder, f32, min_slack = 0.0);
 impl_cusum!(CusumI64, CusumI64Builder, i64, min_slack = 1);
 impl_cusum!(CusumI32, CusumI32Builder, i32, min_slack = 1);
+impl_cusum!(CusumI128, CusumI128Builder, i128, min_slack = 1);
 
 #[cfg(test)]
 mod tests {
@@ -818,6 +819,17 @@ mod tests {
         assert!(cusum.reconfigure(100.0, 0.0, -1.0, 1.0, 1.0).is_err());
         assert!(cusum.reconfigure(100.0, 0.0, 0.0, 0.0, 1.0).is_err());
         assert!(cusum.reconfigure(100.0, 0.0, 0.0, 1.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut cusum = CusumI128::builder(100)
+            .slack(5)
+            .threshold(50)
+            .build()
+            .unwrap();
+
+        assert_eq!(cusum.update(100), Some(Direction::Neutral));
     }
 
     #[test]

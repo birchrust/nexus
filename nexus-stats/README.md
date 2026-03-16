@@ -125,20 +125,21 @@ for deep-dives on each algorithm.
 Explicit concrete types — no generics to fight with. Float types use FMA
 intrinsics; integer types use bit-shift arithmetic.
 
-| Algorithm | f32 | f64 | i32 | i64 |
-|-----------|:---:|:---:|:---:|:---:|
-| CUSUM, EMA, Drawdown, Jitter | ✓ | ✓ | ✓ | ✓ |
-| RunningMin/Max, WindowedMin/Max | ✓ | ✓ | ✓ | ✓ |
-| Liveness, EventRate, AsymEMA | ✓ | ✓ | ✓ | ✓ |
-| SlewLimiter, DeadBand, Hysteresis | ✓ | ✓ | ✓ | ✓ |
-| PeakHold, PeakDetector, LevelCrossing | ✓ | ✓ | ✓ | ✓ |
-| FirstDiff, SecondDiff, MOSUM | ✓ | ✓ | ✓ | ✓ |
-| Welford, EwmaVar, Covariance, HarmonicMean | ✓ | ✓ | | |
-| Holt, KAMA, Kalman1D, Spring | ✓ | ✓ | | |
-| MultiGate, RobustZScore, AdaptiveThreshold | ✓ | ✓ | | |
-| Saturation, ErrorRate, TrendAlert | ✓ | ✓ | | |
-| QueueDelay | | | ✓ | ✓ |
-| ShiryaevRoberts | | ✓ | | |
+| Algorithm | f32 | f64 | i32 | i64 | i128 |
+|-----------|:---:|:---:|:---:|:---:|:----:|
+| CUSUM, Drawdown | ✓ | ✓ | ✓ | ✓ | ✓ |
+| RunningMin/Max, WindowedMin/Max | ✓ | ✓ | ✓ | ✓ | ✓ |
+| SlewLimiter, DeadBand, Hysteresis | ✓ | ✓ | ✓ | ✓ | ✓ |
+| PeakHold, PeakDetector, LevelCrossing | ✓ | ✓ | ✓ | ✓ | ✓ |
+| FirstDiff, SecondDiff, MOSUM | ✓ | ✓ | ✓ | ✓ | ✓ |
+| MaxGauge, QueueDelay | | | ✓ | ✓ | ✓ |
+| EMA, Jitter, AsymEMA | ✓ | ✓ | ✓ | ✓ | |
+| Liveness, EventRate | ✓ | ✓ | ✓ | ✓ | |
+| Welford, EwmaVar, Covariance, HarmonicMean | ✓ | ✓ | | | |
+| Holt, KAMA, Kalman1D, Spring | ✓ | ✓ | | | |
+| MultiGate, RobustZScore, AdaptiveThreshold | ✓ | ✓ | | | |
+| Saturation, ErrorRate, TrendAlert | ✓ | ✓ | | | |
+| ShiryaevRoberts | | ✓ | | | |
 
 ## Common API Patterns
 

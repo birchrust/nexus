@@ -116,6 +116,7 @@ impl_drawdown!(DrawdownF64, f64, 0.0);
 impl_drawdown!(DrawdownF32, f32, 0.0);
 impl_drawdown!(DrawdownI64, i64, 0);
 impl_drawdown!(DrawdownI32, i32, 0);
+impl_drawdown!(DrawdownI128, i128, 0);
 
 #[cfg(test)]
 mod tests {
@@ -217,6 +218,13 @@ mod tests {
         let mut dd = DrawdownF32::new();
         let _ = dd.update(100.0);
         assert_eq!(dd.update(95.0), 5.0);
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut dd = DrawdownI128::new();
+        let _ = dd.update(1000);
+        assert_eq!(dd.update(800), 200);
     }
 
     #[test]

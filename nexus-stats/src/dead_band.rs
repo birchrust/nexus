@@ -70,6 +70,7 @@ impl_dead_band!(DeadBandF64, f64, 0.0);
 impl_dead_band!(DeadBandF32, f32, 0.0);
 impl_dead_band!(DeadBandI64, i64, 0);
 impl_dead_band!(DeadBandI32, i32, 0);
+impl_dead_band!(DeadBandI128, i128, 0);
 
 #[cfg(test)]
 mod tests {
@@ -112,5 +113,13 @@ mod tests {
         let _ = db.update(100.0);
         db.reset();
         assert!(db.last_reported().is_none());
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut db = DeadBandI128::new(10);
+        assert_eq!(db.update(100), Some(100));
+        assert_eq!(db.update(105), None);
+        assert_eq!(db.update(115), Some(115));
     }
 }

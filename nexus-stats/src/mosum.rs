@@ -231,6 +231,8 @@ impl_mosum!(MosumF32, MosumF32Builder, f32, 0.0);
 impl_mosum!(MosumI64, MosumI64Builder, i64, 0);
 #[cfg(feature = "alloc")]
 impl_mosum!(MosumI32, MosumI32Builder, i32, 0);
+#[cfg(feature = "alloc")]
+impl_mosum!(MosumI128, MosumI128Builder, i128, 0);
 
 #[cfg(all(test, feature = "alloc"))]
 #[allow(clippy::float_cmp)]
@@ -350,5 +352,19 @@ mod tests {
     fn errors_without_window() {
         let result = MosumF64::builder(100.0).threshold(50.0).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("window_size"))));
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut mosum = MosumI128::builder(1000)
+            .window_size(5)
+            .threshold(100)
+            .build()
+            .unwrap();
+
+        for _ in 0..5 {
+            let _ = mosum.update(1000);
+        }
+        assert_eq!(mosum.update(1000), Some(Direction::Neutral));
     }
 }

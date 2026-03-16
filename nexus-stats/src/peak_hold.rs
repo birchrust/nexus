@@ -236,6 +236,7 @@ impl_peak_hold_float!(PeakHoldF64, PeakHoldF64Builder, f64);
 impl_peak_hold_float!(PeakHoldF32, PeakHoldF32Builder, f32);
 impl_peak_hold_int!(PeakHoldI64, PeakHoldI64Builder, i64);
 impl_peak_hold_int!(PeakHoldI32, PeakHoldI32Builder, i32);
+impl_peak_hold_int!(PeakHoldI128, PeakHoldI128Builder, i128);
 
 #[cfg(test)]
 mod tests {
@@ -298,5 +299,12 @@ mod tests {
     fn errors_without_decay_rate() {
         let result = PeakHoldF64::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("decay_rate"))));
+    }
+
+    #[test]
+    fn i128_basic() {
+        let mut ph = PeakHoldI128::builder().hold_samples(3).build().unwrap();
+        let _ = ph.update(100);
+        assert_eq!(ph.update(50), 100); // held
     }
 }
