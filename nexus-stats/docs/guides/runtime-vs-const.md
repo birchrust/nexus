@@ -11,7 +11,7 @@ BoolWindow. These need to know the size of the buffer.
 // Window size known at compile time
 let mut mosum = MosumF64::<64>::builder(target)
     .threshold(50.0)
-    .build();
+    .build().unwrap();
 ```
 
 - Buffer is stack-allocated: `[f64; 64]`
@@ -32,7 +32,7 @@ let window_size = config.mosum_window;
 let mut mosum = MosumF64::builder(target)
     .window_size(window_size)
     .threshold(50.0)
-    .build();
+    .build().unwrap();
 ```
 
 - Buffer is heap-allocated once in `build()` — no allocation after that

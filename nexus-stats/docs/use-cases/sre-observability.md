@@ -12,7 +12,7 @@ use nexus_stats::*;
 let mut error_rate = ErrorRateF64::builder()
     .span(1000)       // smooth over ~1000 requests
     .threshold(0.01)  // SLO: 99% success = 1% error budget
-    .build();
+    .build().unwrap();
 
 // Sliding window for precise rate (last 100 events)
 let mut window = BoolWindow::<2>::new();  // 128-event window
@@ -26,7 +26,7 @@ window.record(ok);
 // error_rate.error_rate() → smoothed (good for dashboards)
 // window.failure_rate()   → exact over last 128 requests (good for alerting)
 
-if let Some(Health::Degraded) = error_rate.record(ok) {
+if let Some(Condition::Degraded) = error_rate.record(ok) {
     // Smoothed error rate exceeds 1% → burning budget
 }
 ```
@@ -72,11 +72,11 @@ let mut health_debounce = DebounceU32::new(3);
 
 // Error rate for gradual degradation
 let mut errors = ErrorRateF64::builder()
-    .span(200).threshold(0.05).build();
+    .span(200).threshold(0.05).build().unwrap();
 
 // Latency shift for performance degradation
 let mut latency = CusumF64::builder(baseline_ms)
-    .slack(5.0).threshold(50.0).build();
+    .slack(5.0).threshold(50.0).build().unwrap();
 
 // Overall assessment:
 let check_passed = ping_service();
@@ -86,7 +86,7 @@ if is_confirmed_down {
     page_oncall();
 } else if matches!(errors.error_rate(), Some(r) if r > 0.05) {
     alert_warn("elevated error rate");
-} else if matches!(latency.update(response_ms), Some(Shift::Upper)) {
+} else if matches!(latency.update(response_ms), Some(Direction::Rising)) {
     alert_warn("latency degradation");
 }
 ```

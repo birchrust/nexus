@@ -9,7 +9,7 @@ buffers fill by tracking the minimum time items spend waiting.
 | Memory | ~80 bytes |
 | Types | `QueueDelayI64`, `QueueDelayI32` |
 | Priming | Configurable via `min_samples` |
-| Output | `Option<QueuePressure>` — `Normal` or `Elevated` |
+| Output | `Option<Condition>` — `Normal` or `Elevated` |
 
 ## What It Does
 
@@ -69,8 +69,8 @@ Internally:
 1. **WindowedMin** (Nichols' algorithm) tracks the minimum sojourn
    time over the observation window
 2. If the windowed minimum exceeds the target for an entire window
-   duration → `QueuePressure::Elevated`
-3. When the minimum drops below target → `QueuePressure::Normal`
+   duration → `Condition::Degraded`
+3. When the minimum drops below target → `QueueCondition::Normal`
 
 This is the **measurement layer** of CoDel. CoDel itself is a *policy*
 (drop packets when congested). QueueDelay gives you the signal — you
@@ -83,7 +83,7 @@ let mut qd = QueueDelayI64::builder()
     .target(100_000)       // 100μs target sojourn time
     .window(1_000_000_000) // 1 second observation window (in nanoseconds)
     .min_samples(10)
-    .build();
+    .build().unwrap();
 ```
 
 ### Parameters
@@ -112,16 +112,16 @@ let mut qd = QueueDelayI64::builder()
     .target(10_000)         // 10μs max queue wait
     .window(100_000_000)    // 100ms observation window
     .min_samples(20)
-    .build();
+    .build().unwrap();
 
 // At dequeue from ring buffer:
 let sojourn_ns = now_ns - message.enqueue_timestamp;
 match qd.update(now_ns as u64, sojourn_ns) {
-    Some(QueuePressure::Elevated) => {
+    Some(Condition::Degraded) => {
         // Standing queue detected — slow down strategies
         throttle_strategies();
     }
-    Some(QueuePressure::Normal) => {
+    Some(QueueCondition::Normal) => {
         // Queue is healthy
     }
     None => {} // not primed yet
@@ -135,11 +135,11 @@ match qd.update(now_ns as u64, sojourn_ns) {
 let mut qd = QueueDelayI64::builder()
     .target(5_000_000)       // 5ms max queue wait
     .window(10_000_000_000)  // 10s window
-    .build();
+    .build().unwrap();
 
 // On each request completion:
 let wait_ms = request.started_processing - request.received;
-if let Some(QueuePressure::Elevated) = qd.update(now_ns, wait_ms) {
+if let Some(Condition::Degraded) = qd.update(now_ns, wait_ms) {
     shed_load();  // start rejecting requests
 }
 ```
@@ -151,7 +151,7 @@ if let Some(QueuePressure::Elevated) = qd.update(now_ns, wait_ms) {
 let mut qd = QueueDelayI64::builder()
     .target(2_000)           // 2ms max command wait
     .window(100_000_000)     // 100ms window
-    .build();
+    .build().unwrap();
 ```
 
 ## Composition Patterns
@@ -163,8 +163,8 @@ let mut qd = QueueDelayI64::builder()
 ```rust
 // QueueDelay catches standing queues (latency-based)
 // Saturation catches high utilization (throughput-based)
-let mut qd = QueueDelayI64::builder().target(t).window(w).build();
-let mut sat = SaturationF64::builder().alpha(0.1).threshold(0.8).build();
+let mut qd = QueueDelayI64::builder().target(t).window(w).build().unwrap();
+let mut sat = SaturationF64::builder().alpha(0.1).threshold(0.8).build().unwrap();
 
 // On dequeue:
 let sojourn = now - enqueue_time;
@@ -172,8 +172,8 @@ let queue_pressure = qd.update(now, sojourn);
 let util_pressure = sat.update(utilization);
 
 match (queue_pressure, util_pressure) {
-    (Some(QueuePressure::Elevated), _) => { /* queue backing up */ }
-    (_, Some(Pressure::Saturated))     => { /* resource maxed out */ }
+    (Some(Condition::Degraded), _) => { /* queue backing up */ }
+    (_, Some(Condition::Degraded))     => { /* resource maxed out */ }
     _                                   => { /* healthy */ }
 }
 ```

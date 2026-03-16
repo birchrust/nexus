@@ -35,7 +35,7 @@ use nexus_stats::*;
 let mut load = Kalman1dF64::builder()
     .process_noise(0.5)
     .measurement_noise(10.0)
-    .build();
+    .build().unwrap();
 
 if let Some((current, trend)) = load.update(requests_per_sec) {
     let forecast_1h = current + trend * 3600.0;

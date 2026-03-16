@@ -65,7 +65,7 @@ let mut gate = MultiGateF64::builder()
     .suspect_z(6.0)          // suspect >6σ moves (Gate 2)
     .unusual_spread_mult(3.0) // unusual >3× recent spread (Gate 3)
     .min_samples(20)
-    .build();
+    .build().unwrap();
 
 match gate.update(sample) {
     Some(Verdict::Accept)  => process(sample),
@@ -86,7 +86,7 @@ let mut tick_filter = MultiGateF64::builder()
     .suspect_z(5.0)
     .unusual_spread_mult(5.0)
     .min_samples(100)
-    .build();
+    .build().unwrap();
 ```
 
 ### IoT — Sensor Data Validation
@@ -96,7 +96,7 @@ let mut sensor = MultiGateF64::builder()
     .hard_limit_pct(0.50)
     .suspect_z(4.0)
     .min_samples(30)
-    .build();
+    .build().unwrap();
 ```
 
 ## Performance

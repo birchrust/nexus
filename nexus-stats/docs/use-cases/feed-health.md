@@ -53,7 +53,7 @@ impl FeedMonitor {
         self.jitter.update(now_ns);
 
         if let Some(shift) = self.latency.update(latency_us) {
-            if matches!(shift, Shift::Upper) {
+            if matches!(shift, Direction::Rising) {
                 log::warn!("feed latency degraded");
             }
         }
@@ -79,11 +79,11 @@ use nexus_stats::*;
 let mut liveness = LivenessI64::builder()
     .span(15)
     .deadline_absolute(5_000_000_000)  // 5s absolute timeout
-    .build();
+    .build().unwrap();
 
-let mut msg_rate = EventRateI64::builder().span(20).build();
+let mut msg_rate = EventRateI64::builder().span(20).build().unwrap();
 let mut latency_cusum = CusumF64::builder(baseline_ws_latency)
-    .slack(2.0).threshold(20.0).min_samples(50).build();
+    .slack(2.0).threshold(20.0).min_samples(50).build().unwrap();
 
 // On each WebSocket message:
 liveness.record(now_ns);

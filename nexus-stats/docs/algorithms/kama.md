@@ -59,7 +59,7 @@ let mut kama = KamaF64::builder()
     .fast_span(2)     // alpha when ER=1 (very reactive)
     .slow_span(30)    // alpha when ER=0 (very smooth)
     .min_samples(10)
-    .build();
+    .build().unwrap();
 ```
 
 ### Parameters
@@ -78,7 +78,7 @@ let mut price_kama = KamaF64::builder()
     .window_size(10)
     .fast_span(2)
     .slow_span(30)
-    .build();
+    .build().unwrap();
 
 if let Some(smoothed) = price_kama.update(mid_price) {
     // Tracks trends closely, filters noise

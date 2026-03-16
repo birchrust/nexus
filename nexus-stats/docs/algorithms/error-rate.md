@@ -7,7 +7,7 @@
 | Update cost | ~6 cycles |
 | Memory | ~32 bytes |
 | Types | `ErrorRateF64`, `ErrorRateF32` |
-| Output | `Option<Health>` — `Healthy` or `Degraded` |
+| Output | `Option<Condition>` — `Healthy` or `Degraded` |
 
 ## What It Does
 
@@ -40,7 +40,7 @@ severity. Useful when not all errors are equal (timeout vs rejection vs crash).
 let mut er = ErrorRateF64::builder()
     .span(100)          // smooth over ~100 outcomes
     .threshold(0.05)    // degraded above 5% error rate
-    .build();
+    .build().unwrap();
 
 // Simple binary:
 er.record(request_succeeded);
@@ -48,7 +48,7 @@ er.record(request_succeeded);
 // Weighted:
 er.record_weighted(false, severity_score);
 
-if let Some(Health::Degraded) = er.record(false) {
+if let Some(Condition::Degraded) = er.record(false) {
     trip_circuit_breaker();
 }
 ```

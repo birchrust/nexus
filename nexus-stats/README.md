@@ -16,12 +16,12 @@ let mut cusum = CusumF64::builder(100.0)  // target: 100μs baseline
     .slack(5.0)                            // sensitivity
     .threshold(50.0)                       // decision boundary
     .min_samples(20)                       // warmup
-    .build();
+    .build().unwrap();
 
 for latency in samples {
     match cusum.update(latency) {
-        Some(Shift::Upper) => println!("latency degradation detected"),
-        Some(Shift::Lower) => println!("latency recovered"),
+        Some(Direction::Rising) => println!("latency degradation detected"),
+        Some(Direction::Falling) => println!("latency recovered"),
         _ => {}
     }
 }
@@ -30,7 +30,7 @@ for latency in samples {
 let mut ema = EmaF64::builder()
     .span(20)          // ~20-sample smoothing window
     .min_samples(10)
-    .build();
+    .build().unwrap();
 
 if let Some(smoothed) = ema.update(sample) {
     // use smoothed value

@@ -11,20 +11,20 @@ lives in the `nexus-rate` crate. This covers the *measurement* side.
 use nexus_stats::*;
 
 // Track our own order rate
-let mut order_rate = EventRateF64::builder().span(20).build();
+let mut order_rate = EventRateF64::builder().span(20).build().unwrap();
 
 // Detect if we're approaching the limit
 let mut limit_sat = SaturationF64::builder()
     .span(10)
     .threshold(0.80)  // warn at 80% of exchange limit
-    .build();
+    .build().unwrap();
 
 // On each order sent:
 order_rate.tick(now);
 
 if let Some(rate) = order_rate.rate() {
     let utilization = rate / exchange_rate_limit;
-    if let Some(Pressure::Saturated) = limit_sat.update(utilization) {
+    if let Some(Condition::Degraded) = limit_sat.update(utilization) {
         throttle_order_flow();
     }
 }
@@ -35,19 +35,19 @@ if let Some(rate) = order_rate.rate() {
 ```rust
 use nexus_stats::*;
 
-let mut rate = EventRateF64::builder().span(30).build();
+let mut rate = EventRateF64::builder().span(30).build().unwrap();
 let mut cusum = CusumF64::builder(expected_rate)
     .slack(expected_rate * 0.1)
     .threshold(expected_rate * 2.0)
-    .build();
+    .build().unwrap();
 
 rate.tick(now);
 if let Some(r) = rate.rate() {
     if let Some(shift) = cusum.update(r) {
         match shift {
-            Shift::Upper => log::warn!("rate spike detected"),
-            Shift::Lower => log::warn!("rate drop detected"),
-            Shift::None => {}
+            Direction::Rising => log::warn!("rate spike detected"),
+            Direction::Falling => log::warn!("rate drop detected"),
+            Direction::Neutral => {}
         }
     }
 }

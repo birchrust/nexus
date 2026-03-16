@@ -9,7 +9,7 @@ mean of a streaming process.
 | Memory | ~56 bytes |
 | Types | `CusumF64`, `CusumF32`, `CusumI64`, `CusumI32` |
 | Priming | Configurable via `min_samples` |
-| Output | `Option<Shift>` — `Upper`, `Lower`, or `None` |
+| Output | `Option<Direction>` — `Upper`, `Lower`, or `None` |
 
 ## What It Does
 
@@ -18,8 +18,8 @@ absorbed by a "slack" parameter. When enough deviation accumulates to
 exceed a threshold, a shift is detected.
 
 It tracks both directions independently:
-- **`Shift::Upper`** — the mean has increased (e.g., latency got worse)
-- **`Shift::Lower`** — the mean has decreased (e.g., latency recovered)
+- **`Direction::Rising`** — the mean has increased (e.g., latency got worse)
+- **`Direction::Falling`** — the mean has decreased (e.g., latency recovered)
 
 After detection, call `reset()` to clear the accumulated sum and start
 watching for the next shift.
@@ -121,7 +121,7 @@ let mut cusum = CusumF64::builder(100.0)  // target: baseline mean
     .slack(5.0)                            // sensitivity
     .threshold(50.0)                       // decision boundary
     .min_samples(20)                       // warmup period
-    .build();
+    .build().unwrap();
 ```
 
 ### Parameters
@@ -143,7 +143,7 @@ let cusum = CusumF64::builder(100.0)
     .slack_lower(10.0)    // tolerant of decreases
     .threshold_upper(20.0)  // trigger fast on degradation
     .threshold_lower(200.0) // trigger slow on recovery
-    .build();
+    .build().unwrap();
 ```
 
 This is useful when upward shifts (degradation) need fast detection but
@@ -159,7 +159,7 @@ let cusum = CusumF64::builder(100.0)
     .threshold(50.0)
     .seed_upper(0.0)  // start with zero accumulated evidence
     .seed_lower(0.0)
-    .build();
+    .build().unwrap();
 ```
 
 ### Integer Variant
@@ -170,7 +170,7 @@ For duration/tick-based measurements without floating point:
 let mut cusum = CusumI64::builder(1000)  // target: 1000 nanoseconds
     .slack(50)
     .threshold(500)
-    .build();
+    .build().unwrap();
 ```
 
 Note: for small integer targets, default slack uses `max(1, target / 20)`
@@ -186,15 +186,15 @@ let mut ack_monitor = CusumF64::builder(200.0)
     .slack(25.0)      // half of 50μs minimum shift
     .threshold(200.0) // ~8 samples of sustained shift
     .min_samples(100) // warmup after connect
-    .build();
+    .build().unwrap();
 
 // On each ack:
 match ack_monitor.update(ack_latency_us) {
-    Some(Shift::Upper) => {
+    Some(Direction::Rising) => {
         log::warn!("exchange ack latency degraded");
         ack_monitor.reset();  // start watching for next shift
     }
-    Some(Shift::Lower) => {
+    Some(Direction::Falling) => {
         log::info!("exchange ack latency recovered");
         ack_monitor.reset();
     }
@@ -209,7 +209,7 @@ match ack_monitor.update(ack_latency_us) {
 let mut rtt_monitor = CusumI64::builder(rtt_baseline_ns)
     .slack(rtt_baseline_ns / 10)   // 10% tolerance
     .threshold(rtt_baseline_ns * 5) // significant evidence
-    .build();
+    .build().unwrap();
 ```
 
 ### IoT / Industrial — Sensor Drift
@@ -220,7 +220,7 @@ let mut temp_monitor = CusumF64::builder(22.0)
     .slack(0.1)       // 0.1°C noise tolerance
     .threshold(2.0)   // 2°C accumulated drift
     .min_samples(60)  // 1 minute warmup at 1 sample/sec
-    .build();
+    .build().unwrap();
 ```
 
 ### Gaming — Frame Time Shift
@@ -230,7 +230,7 @@ let mut temp_monitor = CusumF64::builder(22.0)
 let mut frame_monitor = CusumF64::builder(16.67)
     .slack(1.0)       // 1ms tolerance
     .threshold(10.0)  // sustained shift evidence
-    .build();
+    .build().unwrap();
 ```
 
 ### SRE — Response Time Monitoring
@@ -240,7 +240,7 @@ let mut frame_monitor = CusumF64::builder(16.67)
 let mut svc_monitor = CusumF64::builder(50.0)
     .slack(5.0)
     .threshold(50.0)
-    .build();
+    .build().unwrap();
 
 // Alert when: the mean has shifted, not just individual slow requests
 ```
@@ -252,8 +252,8 @@ let mut svc_monitor = CusumF64::builder(50.0)
 "Detect both degradation and death":
 
 ```rust
-let mut cusum = CusumF64::builder(baseline).slack(k).threshold(h).build();
-let mut liveness = LivenessF64::builder().span(20).deadline_multiple(5.0).build();
+let mut cusum = CusumF64::builder(baseline).slack(k).threshold(h).build().unwrap();
+let mut liveness = LivenessF64::builder().span(20).deadline_multiple(5.0).build().unwrap();
 
 // On each event:
 liveness.record(now);
@@ -272,16 +272,16 @@ if !liveness.check(now) {
 "Detect shift AND diagnose if it's getting worse":
 
 ```rust
-let mut cusum = CusumF64::builder(baseline).build();
+let mut cusum = CusumF64::builder(baseline).build().unwrap();
 let mut trend = TrendAlertF64::builder().alpha(0.3).beta(0.1)
-    .trend_threshold(0.5).build();
+    .trend_threshold(0.5).build().unwrap();
 
 match cusum.update(sample) {
-    Some(Shift::Upper) => {
+    Some(Direction::Rising) => {
         // Shift detected — is it stable or worsening?
         match trend.update(sample) {
-            Some(Trend::Rising) => log::error!("degrading and getting worse"),
-            Some(Trend::Stable) => log::warn!("degraded but stable"),
+            Some(Direction::Rising) => log::error!("degrading and getting worse"),
+            Some(Direction::Neutral) => log::warn!("degraded but stable"),
             _ => {}
         }
     }
@@ -297,7 +297,7 @@ Use CUSUM to detect the shift. Once confirmed, reset CUSUM with the new
 baseline (computed from the WindowedMedian of recent samples):
 
 ```rust
-if let Some(Shift::Upper) = cusum.update(sample) {
+if let Some(Direction::Rising) = cusum.update(sample) {
     // Shift detected — compute new baseline from recent data
     if let Some(new_baseline) = median.median() {
         cusum.reset_with_target(new_baseline);

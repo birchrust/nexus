@@ -37,7 +37,7 @@ fades away.
 ## Configuration
 
 ```rust
-let mut ev = EwmaVarF64::builder().span(30).min_samples(10).build();
+let mut ev = EwmaVarF64::builder().span(30).min_samples(10).build().unwrap();
 
 if let Some((mean, var)) = ev.update(sample) {
     let threshold = mean + 3.0 * var.sqrt();

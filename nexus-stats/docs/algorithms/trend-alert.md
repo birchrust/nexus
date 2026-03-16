@@ -8,7 +8,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
 | Update cost | ~12 cycles |
 | Memory | ~40 bytes |
 | Types | `TrendAlertF64`, `TrendAlertF32` |
-| Output | `Option<Trend>` — `Stable`, `Rising`, or `Falling` |
+| Output | `Option<Direction>` — `Stable`, `Rising`, or `Falling` |
 
 ## What It Does
 
@@ -19,7 +19,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
   150 ┤                        ·  · ·
   130 ┤                  ·  ·
   110 ┤            ·  ·               trend > threshold
-   90 ┤      ·  ·                     → Trend::Rising
+   90 ┤      ·  ·                     → Direction::Rising
    70 ┤  ·
       └──────────────────────────────── t
 
@@ -28,7 +28,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
   Value
   110 ┤  ·     ·     ·     ·
   100 ┤     ·     ·     ·     ·       trend ≈ 0
-   90 ┤  ·     ·     ·     ·         → Trend::Stable
+   90 ┤  ·     ·     ·     ·         → Direction::Neutral
       └──────────────────────────────── t
 ```
 
@@ -45,11 +45,11 @@ let mut ta = TrendAlertF64::builder()
     .beta(0.1)
     .trend_threshold(0.5)            // absolute: trend > 0.5 per sample
     // or: .trend_threshold_relative(0.02)  // relative: |trend/level| > 2%
-    .build();
+    .build().unwrap();
 
 match ta.update(sample) {
-    Some(Trend::Rising) => { /* getting worse */ }
-    Some(Trend::Falling) => { /* improving */ }
+    Some(Direction::Rising) => { /* getting worse */ }
+    Some(Direction::Falling) => { /* improving */ }
     _ => {}
 }
 ```

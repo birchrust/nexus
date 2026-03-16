@@ -40,7 +40,7 @@ let mut live = LivenessF64::builder()
     .span(20)                  // EMA smoothing of intervals
     .deadline_multiple(5.0)    // dead if gap > 5× smoothed interval
     .min_samples(5)
-    .build();
+    .build().unwrap();
 
 // On each event:
 live.record(now);
@@ -63,7 +63,7 @@ if !live.check(now) {
 let mut feed = LivenessI64::builder()
     .span(15)
     .deadline_multiple(5.0)
-    .build();
+    .build().unwrap();
 
 // On each market data message:
 feed.record(now_ns);
@@ -78,7 +78,7 @@ if !feed.check(now_ns) {
 ```rust
 let mut heartbeat = LivenessF64::builder()
     .deadline_absolute(30.0)  // 30 seconds absolute timeout
-    .build();
+    .build().unwrap();
 ```
 
 ## Performance

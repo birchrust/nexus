@@ -27,7 +27,7 @@ jitter / mean (context-relative: is 5μs jitter a lot? depends on mean).
 ## Configuration
 
 ```rust
-let mut j = JitterF64::builder().span(20).build();
+let mut j = JitterF64::builder().span(20).build().unwrap();
 
 if let Some(jitter) = j.update(latency) {
     if let Some(ratio) = j.jitter_ratio() {

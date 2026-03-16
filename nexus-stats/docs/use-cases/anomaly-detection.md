@@ -23,7 +23,7 @@ let mut gate = MultiGateF64::builder()
     .suspect_z(5.0)           // 5σ = suspect
     .unusual_spread_mult(3.0) // 3× spread = unusual
     .min_samples(50)
-    .build();
+    .build().unwrap();
 
 // Only update downstream stats with clean data
 let mut stats = WelfordF64::new();
@@ -64,7 +64,7 @@ let mut rz = RobustZScoreF64::builder()
     .span(100)
     .reject_threshold(5.0)  // freeze baseline when z > 5
     .min_samples(30)
-    .build();
+    .build().unwrap();
 
 if let Some(z) = rz.update(sample) {
     if z.abs() > 5.0 { /* almost certainly bad */ }
@@ -82,10 +82,10 @@ the process. How to tell them apart:
 use nexus_stats::*;
 
 let mut gate = MultiGateF64::builder().alpha(0.05).suspect_z(5.0)
-    .hard_limit_pct(0.30).min_samples(50).build();
+    .hard_limit_pct(0.30).min_samples(50).build().unwrap();
 
 let mut cusum = CusumF64::builder(baseline)
-    .slack(slack).threshold(threshold).build();
+    .slack(slack).threshold(threshold).build().unwrap();
 
 // On each sample:
 let verdict = gate.update(sample);
@@ -95,12 +95,12 @@ match (verdict, shift) {
     (Some(Verdict::Reject), _) => {
         // Clearly bad data — reject regardless of CUSUM
     }
-    (Some(Verdict::Suspect), Some(Shift::Upper)) => {
+    (Some(Verdict::Suspect), Some(Direction::Rising)) => {
         // Extreme sample + mean has shifted = might be legitimate regime change
         // Don't reject — investigate
         log_possible_regime_change(sample);
     }
-    (Some(Verdict::Suspect), Some(Shift::None)) => {
+    (Some(Verdict::Suspect), Some(Direction::Neutral)) => {
         // Extreme sample but no shift = isolated outlier
         quarantine(sample);
     }

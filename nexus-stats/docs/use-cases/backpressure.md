@@ -23,17 +23,17 @@ let mut qd = QueueDelayI64::builder()
     .target(10_000)          // 10μs acceptable queue wait
     .window(100_000_000)     // 100ms observation window
     .min_samples(20)
-    .build();
+    .build().unwrap();
 
 // At dequeue time, measure how long the item waited:
 let sojourn_ns = now_ns - item.enqueue_timestamp;
 
 match qd.update(now_ns as u64, sojourn_ns) {
-    Some(QueuePressure::Elevated) => {
+    Some(Condition::Degraded) => {
         // Standing queue detected — even the fastest items are waiting too long
         slow_down_producers();
     }
-    Some(QueuePressure::Normal) => {
+    Some(QueueCondition::Normal) => {
         // Queue is healthy
     }
     None => {} // not primed
@@ -48,13 +48,13 @@ Combine queue delay with resource saturation for comprehensive monitoring:
 use nexus_stats::*;
 
 let mut queue_health = QueueDelayI64::builder()
-    .target(10_000).window(100_000_000).build();
+    .target(10_000).window(100_000_000).build().unwrap();
 
 let mut cpu_sat = SaturationF64::builder()
-    .span(20).threshold(0.85).build();
+    .span(20).threshold(0.85).build().unwrap();
 
 let mut latency_trend = TrendAlertF64::builder()
-    .alpha(0.3).beta(0.1).trend_threshold(1.0).build();
+    .alpha(0.3).beta(0.1).trend_threshold(1.0).build().unwrap();
 
 // Composite pressure assessment:
 let queue_pressure = queue_health.update(now, sojourn);
@@ -63,9 +63,9 @@ let trend = latency_trend.update(processing_time);
 
 let should_throttle = matches!(
     (&queue_pressure, &cpu_pressure, &trend),
-    (Some(QueuePressure::Elevated), _, _) |       // queue backing up
-    (_, Some(Pressure::Saturated), _) |            // CPU maxed
-    (_, _, Some(Trend::Rising))                    // getting worse
+    (Some(Condition::Degraded), _, _) |       // queue backing up
+    (_, Some(Condition::Degraded), _) |            // CPU maxed
+    (_, _, Some(Direction::Rising))                    // getting worse
 );
 
 if should_throttle {
@@ -82,14 +82,14 @@ use nexus_stats::*;
 let mut buf_sat = SaturationF64::builder()
     .span(50)
     .threshold(0.70)  // start worrying at 70% full
-    .build();
+    .build().unwrap();
 
 // Track publication latency with asymmetric EMA
 // (react fast to increases, slow to decreases)
 let mut pub_latency = AsymEmaF64::builder()
     .alpha_up(0.3)    // fast reaction to degradation
     .alpha_down(0.05) // slow to declare recovery
-    .build();
+    .build().unwrap();
 
 // On each publication:
 let buf_utilization = aeron_pub.buffer_used() as f64 / aeron_pub.buffer_capacity() as f64;

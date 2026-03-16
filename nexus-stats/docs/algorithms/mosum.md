@@ -11,7 +11,7 @@ automatically when they leave the window.
 | Types | `MosumF64`, `MosumF32`, `MosumI64`, `MosumI32` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples (window full) |
-| Output | `Option<Shift>` — same as CUSUM |
+| Output | `Option<Direction>` — same as CUSUM |
 
 ## What It Does
 
@@ -61,7 +61,7 @@ let mut mosum = MosumF64::builder(100.0)  // target
     .window_size(64)                       // window size
     .threshold(200.0)
     .min_samples(64)  // primes after window fills
-    .build();
+    .build().unwrap();
 ```
 
 ## Examples
@@ -72,7 +72,7 @@ let mut mosum = MosumF64::builder(100.0)  // target
 let mut spike = MosumF64::builder(baseline_latency)
     .window_size(10)
     .threshold(spike_threshold)
-    .build();
+    .build().unwrap();
 ```
 
 ### Networking — Burst Detection
@@ -81,7 +81,7 @@ let mut spike = MosumF64::builder(baseline_latency)
 let mut burst = MosumI64::builder(normal_rate)
     .window_size(32)
     .threshold(burst_threshold)
-    .build();
+    .build().unwrap();
 ```
 
 ## Performance

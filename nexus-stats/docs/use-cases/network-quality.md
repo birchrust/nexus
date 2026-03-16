@@ -13,10 +13,10 @@ use nexus_stats::*;
 let mut srtt = AsymEmaF64::builder()
     .alpha_up(0.25)    // fast response to degradation (1/4)
     .alpha_down(0.125) // slow response to improvement (1/8)
-    .build();
+    .build().unwrap();
 
 // RTT variance for timeout calculation
-let mut rttvar = EwmaVarF64::builder().span(7).build();
+let mut rttvar = EwmaVarF64::builder().span(7).build().unwrap();
 
 // Min RTT baseline (BBR-style)
 let mut min_rtt = WindowedMinF64::new(10_000_000_000); // 10s window
@@ -38,7 +38,7 @@ if let Some(smoothed) = srtt.update(rtt_ms) {
 ```rust
 use nexus_stats::*;
 
-let mut jitter = JitterF64::builder().span(16).build(); // RFC 3550: alpha=1/16
+let mut jitter = JitterF64::builder().span(16).build().unwrap(); // RFC 3550: alpha=1/16
 
 // On each packet:
 let transit = arrival_time - send_time;

@@ -62,7 +62,7 @@ let mut kf = Kalman1dF64::builder()
     .process_noise(0.01)       // expected change per sample
     .measurement_noise(1.0)    // measurement uncertainty
     .min_samples(1)
-    .build();
+    .build().unwrap();
 
 if let Some((pos, vel)) = kf.update(measurement) {
     println!("estimated value: {pos}, trend: {vel}/sample");
@@ -84,7 +84,7 @@ let kf = Kalman1dF64::builder()
     .process_noise(0.01)
     .measurement_noise(1.0)
     .seed(100.0, 0.5)  // initial position=100, velocity=0.5
-    .build();
+    .build().unwrap();
 ```
 
 ## Examples
@@ -96,7 +96,7 @@ let kf = Kalman1dF64::builder()
 let mut throughput = Kalman1dF64::builder()
     .process_noise(100.0)     // throughput can change significantly
     .measurement_noise(500.0) // measurements are noisy
-    .build();
+    .build().unwrap();
 
 if let Some((current, trend)) = throughput.update(msgs_per_sec) {
     if trend < -10.0 {
@@ -110,7 +110,7 @@ if let Some((current, trend)) = throughput.update(msgs_per_sec) {
 let mut load = Kalman1dF64::builder()
     .process_noise(0.1)
     .measurement_noise(5.0)
-    .build();
+    .build().unwrap();
 
 if let Some((current, trend)) = load.update(cpu_percent) {
     let predicted_5min = current + trend * 300.0; // 300 samples ahead
