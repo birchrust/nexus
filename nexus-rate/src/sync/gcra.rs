@@ -81,11 +81,20 @@ impl Gcra {
     /// concurrent `try_acquire` may briefly see an inconsistent pair
     /// (new emission_interval with old tau). This is benign — at most
     /// one or two calls will see slightly wrong burst tolerance.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if rate or period is zero, or if
+    /// `period / rate` rounds to zero.
     #[inline]
-    pub fn reconfigure(&self, rate: u64, period: u64, burst: u64) {
+    pub fn reconfigure(&self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
+        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
+        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
         let ei = period / rate;
+        if ei == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
         self.emission_interval.store(ei, Ordering::Release);
-        self.tau.store(ei * (burst + 1), Ordering::Release);
+        self.tau.store(ei.saturating_mul(burst.saturating_add(1)), Ordering::Release);
+        Ok(())
     }
 
     /// Resets the TAT.
@@ -144,7 +153,8 @@ impl GcraBuilder {
         if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
 
         let ei = period / rate;
-        let tau = ei * (self.burst + 1);
+        if ei == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+        let tau = ei.saturating_mul(self.burst.saturating_add(1));
 
         Ok(Gcra {
             tat: AtomicU64::new(0),
@@ -236,7 +246,7 @@ mod tests {
         assert!(!g.try_acquire(1, 0));
 
         // Reconfigure to much higher rate and reset TAT
-        g.reconfigure(1000, 1000, 10);
+        g.reconfigure(1000, 1000, 10).unwrap();
         g.reset();
         // Now: emission_interval=1, tau=11, TAT=0
         // At now=1: new_tat=max(0,1)+1=2, excess=1, tau=11 → allowed

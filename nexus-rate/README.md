@@ -30,7 +30,7 @@ if limiter.try_acquire(1, now_ns) {
 
 | Algorithm | What It Does | State | Allowed (p50) |
 |-----------|-------------|-------|--------------|
-| **GCRA** | Virtual scheduling. No multiply on hot path. | 8 bytes | 2 cycles |
+| **GCRA** | Virtual scheduling. One multiply with precomputed interval. No division. | 8 bytes | 2 cycles |
 | **TokenBucket** | Lazy token computation. Burst-tolerant. | 8 bytes + config | 2 cycles |
 | **SlidingWindow** | Exact count over rolling time window. | N×8 bytes | 4 cycles |
 

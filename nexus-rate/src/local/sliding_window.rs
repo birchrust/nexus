@@ -88,7 +88,7 @@ impl SlidingWindow {
     pub fn try_acquire(&mut self, cost: u64, now: u64) -> bool {
         self.advance_time(now);
 
-        if self.total + cost <= self.limit {
+        if self.limit.saturating_sub(self.total) >= cost {
             let idx = self.current_bucket;
             self.ring_mut()[idx] += cost;
             self.total += cost;
@@ -113,9 +113,15 @@ impl SlidingWindow {
     }
 
     /// Reconfigure the limit at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if `new_limit` is zero.
     #[inline]
-    pub fn reconfigure(&mut self, new_limit: u64) {
+    pub fn reconfigure(&mut self, new_limit: u64) -> Result<(), crate::ConfigError> {
+        if new_limit == 0 { return Err(crate::ConfigError::Invalid("limit must be > 0")); }
         self.limit = new_limit;
+        Ok(())
     }
 
     /// Resets all buckets and the running total.
@@ -274,7 +280,7 @@ mod tests {
         }
         assert!(!sw.try_acquire(1, 0));
 
-        sw.reconfigure(200);
+        sw.reconfigure(200).unwrap();
         assert!(sw.try_acquire(1, 0)); // now under new limit
     }
 

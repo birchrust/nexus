@@ -47,14 +47,14 @@ impl TokenBucket {
         loop {
             let zero_time = self.zero_time.load(Ordering::Relaxed);
             let elapsed = now.saturating_sub(zero_time);
-            let available = ((elapsed as u128 * self.rate as u128 / self.period as u128) as u64)
-                .min(self.burst);
+            let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
+            let available = tokens.min(self.burst as u128) as u64;
 
             if available < cost {
                 return false;
             }
 
-            let consume_ticks = (cost as u128 * self.period as u128 / self.rate as u128) as u64;
+            let consume_ticks = (cost as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
             let new_zero_time = zero_time + consume_ticks;
 
             if self.zero_time.compare_exchange_weak(
@@ -74,15 +74,25 @@ impl TokenBucket {
     pub fn available(&self, now: u64) -> u64 {
         let zero_time = self.zero_time.load(Ordering::Relaxed);
         let elapsed = now.saturating_sub(zero_time);
-        ((elapsed as u128 * self.rate as u128 / self.period as u128) as u64).min(self.burst)
+        let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
+        tokens.min(self.burst as u128) as u64
     }
 
     /// Reconfigure rate and burst. Control-plane operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if rate or period is zero, or if
+    /// `period / rate` rounds to zero.
     #[inline]
-    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) {
+    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
+        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
+        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        if period / rate == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
         self.rate = rate;
         self.period = period;
         self.burst = burst;
+        Ok(())
     }
 
     /// Resets to fresh state at the given timestamp.
@@ -150,6 +160,7 @@ impl TokenBucketBuilder {
         let now = self.now.ok_or(crate::ConfigError::Missing("now"))?;
         if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
         if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        if period / rate == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
 
         Ok(TokenBucket {
             zero_time: AtomicU64::new(now),

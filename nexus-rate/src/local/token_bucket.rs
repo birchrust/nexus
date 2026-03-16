@@ -42,8 +42,8 @@ impl TokenBucket {
     fn compute_available(&self, now: u64) -> u64 {
         let elapsed = now.saturating_sub(self.zero_time);
         // Use u128 to avoid overflow: elapsed * rate can exceed u64
-        let tokens = (elapsed as u128 * self.rate as u128 / self.period as u128) as u64;
-        tokens.min(self.burst)
+        let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
+        tokens.min(self.burst as u128) as u64
     }
 
     /// Attempts to consume `cost` tokens.
@@ -56,9 +56,9 @@ impl TokenBucket {
     pub fn try_acquire(&mut self, cost: u64, now: u64) -> bool {
         let available = self.compute_available(now);
         if available >= cost {
-            // Consume by advancing zero_time
-            // cost * period / rate = ticks consumed
-            self.zero_time += (cost as u128 * self.period as u128 / self.rate as u128) as u64;
+            // Consume by advancing zero_time (ceiling division to avoid fractional drift)
+            let consume_ticks = (cost as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
+            self.zero_time += consume_ticks;
             true
         } else {
             false
@@ -73,11 +73,20 @@ impl TokenBucket {
     }
 
     /// Reconfigure rate and burst at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if rate or period is zero, or if
+    /// `period / rate` rounds to zero.
     #[inline]
-    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) {
+    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
+        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
+        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        if period / rate == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
         self.rate = rate;
         self.period = period;
         self.burst = burst;
+        Ok(())
     }
 
     /// Resets to a fresh state at the given timestamp.
@@ -134,6 +143,7 @@ impl TokenBucketBuilder {
         let now = self.now.ok_or(crate::ConfigError::Missing("now"))?;
         if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
         if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        if period / rate == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
 
         Ok(TokenBucket {
             zero_time: now,
@@ -218,7 +228,7 @@ mod tests {
     fn reconfigure() {
         let mut tb = make_bucket();
         // Double the rate
-        tb.reconfigure(20, 1000, 40);
+        tb.reconfigure(20, 1000, 40).unwrap();
         // Now 20 tokens per 1000 ticks
         assert_eq!(tb.available(1000), 20);
     }

@@ -1,7 +1,8 @@
 //! Thread-safe rate limiters using atomics.
 //!
-//! All types use `&self` — safe to share across threads via `Arc` or
-//! static references. Uses CAS loops for lock-free operation.
+//! Hot-path methods (`try_acquire`, `available`) use `&self`. Control-plane
+//! methods (`reconfigure`) may require `&mut self`. Uses CAS loops for
+//! lock-free operation on hot paths.
 
 mod gcra;
 mod token_bucket;

@@ -62,9 +62,14 @@ impl Gcra {
 
     /// Reconfigure rate and burst at runtime. Takes effect immediately.
     #[inline]
-    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) {
-        self.emission_interval = period / rate;
-        self.tau = self.emission_interval * (burst + 1);
+    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
+        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
+        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        let ei = period / rate;
+        if ei == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+        self.emission_interval = ei;
+        self.tau = ei.saturating_mul(burst.saturating_add(1));
+        Ok(())
     }
 
     /// Resets the limiter (clears TAT).
@@ -113,7 +118,8 @@ impl GcraBuilder {
         if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
 
         let emission_interval = period / rate;
-        let tau = emission_interval * (self.burst + 1);
+        if emission_interval == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0 (rate too high for period)")); }
+        let tau = emission_interval.saturating_mul(self.burst.saturating_add(1));
 
         Ok(Gcra {
             tat: 0,
@@ -211,7 +217,7 @@ mod tests {
         assert!(!g.try_acquire(1, 0));
 
         // Double the rate — emission_interval halves, more burst
-        g.reconfigure(20, 1000, 10);
+        g.reconfigure(20, 1000, 10).unwrap();
         // Need enough time for new config to allow: TAT=600, new tau=50*11=550
         // At now=100: new_tat=max(600,100)+50=650, excess=550, tau=550 → allowed
         assert!(g.try_acquire(1, 100));
