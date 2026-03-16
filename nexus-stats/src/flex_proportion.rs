@@ -49,14 +49,15 @@ impl FlexProportionGlobal {
     /// `half_life_events` is the number of global events after which old
     /// contributions decay by half.
     #[inline]
-    #[must_use]
-    pub fn new(half_life_events: u64) -> Self {
-        assert!(half_life_events > 0, "half_life_events must be positive");
-        Self {
+    pub fn new(half_life_events: u64) -> Result<Self, crate::ConfigError> {
+        if half_life_events == 0 {
+            return Err(crate::ConfigError::Invalid("half_life_events must be positive"));
+        }
+        Ok(Self {
             total: 0,
             half_life: half_life_events,
             period: 0,
-        }
+        })
     }
 
     /// Records a global event. Call this once per event, before recording
@@ -158,7 +159,7 @@ mod tests {
 
     #[test]
     fn single_entity_full_share() {
-        let mut global = FlexProportionGlobal::new(100);
+        let mut global = FlexProportionGlobal::new(100).unwrap();
         let mut entity = FlexProportionEntity::new();
 
         for _ in 0..50 {
@@ -172,7 +173,7 @@ mod tests {
 
     #[test]
     fn equal_entities_equal_share() {
-        let mut global = FlexProportionGlobal::new(1000);
+        let mut global = FlexProportionGlobal::new(1000).unwrap();
         let mut e1 = FlexProportionEntity::new();
         let mut e2 = FlexProportionEntity::new();
 
@@ -190,7 +191,7 @@ mod tests {
 
     #[test]
     fn new_entity_ramps_up() {
-        let mut global = FlexProportionGlobal::new(100);
+        let mut global = FlexProportionGlobal::new(100).unwrap();
         let mut old = FlexProportionEntity::new();
 
         for _ in 0..50 {
@@ -211,14 +212,14 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn empty_global() {
-        let global = FlexProportionGlobal::new(100);
+        let global = FlexProportionGlobal::new(100).unwrap();
         let entity = FlexProportionEntity::new();
         assert_eq!(entity.fraction(global.total(), global.period()), 0.0);
     }
 
     #[test]
     fn reset_entity() {
-        let mut global = FlexProportionGlobal::new(100);
+        let mut global = FlexProportionGlobal::new(100).unwrap();
         let mut entity = FlexProportionEntity::new();
 
         for _ in 0..20 {
@@ -236,8 +237,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "half_life_events must be positive")]
-    fn panics_on_zero_half_life() {
-        let _ = FlexProportionGlobal::new(0);
+    fn rejects_zero_half_life() {
+        assert!(matches!(FlexProportionGlobal::new(0), Err(crate::ConfigError::Invalid(_))));
     }
 }

@@ -24,15 +24,17 @@ macro_rules! impl_spring {
             /// `smooth_time` controls how quickly the spring converges.
             /// Larger = slower, smoother. Smaller = faster, more reactive.
             #[inline]
-            #[must_use]
-            pub fn new(smooth_time: $ty) -> Self {
-                assert!(smooth_time > 0.0 as $ty, "smooth_time must be positive");
-                Self {
+            pub fn new(smooth_time: $ty) -> Result<Self, crate::ConfigError> {
+                #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                if !(smooth_time > 0.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("smooth_time must be positive"));
+                }
+                Ok(Self {
                     smooth_time,
                     value: 0.0 as $ty,
                     velocity: 0.0 as $ty,
                     initialized: false,
-                }
+                })
             }
 
             /// Updates toward the target. Returns the new value.
@@ -101,7 +103,7 @@ mod tests {
 
     #[test]
     fn converges_to_target() {
-        let mut s = SpringF64::new(0.5);
+        let mut s = SpringF64::new(0.5).unwrap();
         let target = 100.0;
 
         for _ in 0..200 {
@@ -114,7 +116,7 @@ mod tests {
 
     #[test]
     fn no_overshoot() {
-        let mut s = SpringF64::new(0.5);
+        let mut s = SpringF64::new(0.5).unwrap();
         let target = 100.0;
         let _ = s.update(0.0, 0.016); // initialize at 0
 
@@ -132,7 +134,7 @@ mod tests {
 
     #[test]
     fn variable_dt_stable() {
-        let mut s = SpringF64::new(1.0);
+        let mut s = SpringF64::new(1.0).unwrap();
         let target = 50.0;
 
         // Large dt steps shouldn't explode
@@ -147,7 +149,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reset_to() {
-        let mut s = SpringF64::new(0.5);
+        let mut s = SpringF64::new(0.5).unwrap();
         let _ = s.update(100.0, 0.016);
 
         s.reset_to(50.0);
@@ -157,14 +159,13 @@ mod tests {
 
     #[test]
     fn f32_basic() {
-        let mut s = SpringF32::new(0.5);
+        let mut s = SpringF32::new(0.5).unwrap();
         let v = s.update(100.0, 0.016);
         assert!((v - 100.0).abs() < 0.01);
     }
 
     #[test]
-    #[should_panic(expected = "smooth_time must be positive")]
-    fn panics_on_zero_smooth_time() {
-        let _ = SpringF64::new(0.0);
+    fn rejects_zero_smooth_time() {
+        assert!(matches!(SpringF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
     }
 }

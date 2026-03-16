@@ -39,17 +39,15 @@ impl BoolWindow {
     }
 
     /// Creates a new empty window with the given sample capacity.
-    ///
-    /// # Panics
-    ///
-    /// Capacity must be > 0.
     #[inline]
-    pub fn new(sample_count: usize) -> Self {
-        assert!(sample_count > 0, "BoolWindow capacity must be > 0");
+    pub fn new(sample_count: usize) -> Result<Self, crate::ConfigError> {
+        if sample_count == 0 {
+            return Err(crate::ConfigError::Invalid("BoolWindow capacity must be > 0"));
+        }
         let words = sample_count.div_ceil(64);
         let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0u64; words]);
         let bits = vec.as_mut_ptr();
-        Self { bits, words, capacity: sample_count, head: 0, count: 0, failures: 0 }
+        Ok(Self { bits, words, capacity: sample_count, head: 0, count: 0, failures: 0 })
     }
 
     /// Total capacity of the window in samples.
@@ -169,7 +167,7 @@ mod tests {
 
     #[test]
     fn empty() {
-        let bw = BoolWindow::new(64);
+        let bw = BoolWindow::new(64).unwrap();
         assert_eq!(bw.count(), 0);
         assert_eq!(bw.capacity(), 64);
         assert_eq!(bw.failure_rate(), 0.0);
@@ -178,7 +176,7 @@ mod tests {
 
     #[test]
     fn all_success() {
-        let mut bw = BoolWindow::new(64);
+        let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
             bw.record(true);
         }
@@ -188,7 +186,7 @@ mod tests {
 
     #[test]
     fn all_failure() {
-        let mut bw = BoolWindow::new(64);
+        let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
             bw.record(false);
         }
@@ -198,7 +196,7 @@ mod tests {
 
     #[test]
     fn half_and_half() {
-        let mut bw = BoolWindow::new(64);
+        let mut bw = BoolWindow::new(64).unwrap();
         for i in 0..64 {
             bw.record(i % 2 == 0);
         }
@@ -207,7 +205,7 @@ mod tests {
 
     #[test]
     fn window_rolls() {
-        let mut bw = BoolWindow::new(64);
+        let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
             bw.record(false);
         }
@@ -221,7 +219,7 @@ mod tests {
 
     #[test]
     fn arbitrary_size() {
-        let mut bw = BoolWindow::new(100);
+        let mut bw = BoolWindow::new(100).unwrap();
         assert_eq!(bw.capacity(), 100);
 
         for _ in 0..100 {
@@ -238,7 +236,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut bw = BoolWindow::new(64);
+        let mut bw = BoolWindow::new(64).unwrap();
         bw.record(false);
         assert_eq!(bw.count(), 1);
         assert!(!bw.is_full());
@@ -247,12 +245,17 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut bw = BoolWindow::new(64);
+        let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
             bw.record(false);
         }
         bw.reset();
         assert_eq!(bw.count(), 0);
         assert_eq!(bw.failures(), 0);
+    }
+
+    #[test]
+    fn rejects_zero_capacity() {
+        assert!(matches!(BoolWindow::new(0), Err(crate::ConfigError::Invalid(_))));
     }
 }

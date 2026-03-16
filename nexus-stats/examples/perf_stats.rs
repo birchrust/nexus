@@ -186,7 +186,7 @@ fn bench_drawdown_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_max_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMaxF64::new(1000);
+    let mut wm = WindowedMaxF64::new(1000).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
         let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
@@ -205,7 +205,7 @@ fn bench_windowed_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_min_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMinF64::new(1000);
+    let mut wm = WindowedMinF64::new(1000).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
         let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
@@ -508,7 +508,7 @@ fn bench_robust_z_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_spring_f64(samples: &mut [u64]) {
-    let mut sp = SpringF64::new(0.5);
+    let mut sp = SpringF64::new(0.5).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = sp.update(90.0 + (next_val(&mut rng) % 20) as f64, 0.016);
@@ -599,7 +599,7 @@ fn bench_kalman1d_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_slew_f64(samples: &mut [u64]) {
-    let mut sl = SlewF64::new(5.0);
+    let mut sl = SlewF64::new(5.0).unwrap();
     let mut rng = 12345u64;
     let _ = sl.update(100.0);
     for _ in 0..WARMUP {
@@ -617,7 +617,7 @@ fn bench_slew_f64(samples: &mut [u64]) {
 }
 
 fn bench_bool_window(samples: &mut [u64]) {
-    let mut bw = BoolWindow::new(64);
+    let mut bw = BoolWindow::new(64).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         bw.record(next_val(&mut rng) % 10 > 0);
@@ -634,7 +634,7 @@ fn bench_bool_window(samples: &mut [u64]) {
 }
 
 fn bench_hysteresis_f64(samples: &mut [u64]) {
-    let mut hy = HysteresisF64::new(40.0, 60.0);
+    let mut hy = HysteresisF64::new(40.0, 60.0).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = hy.update((next_val(&mut rng) % 100) as f64);

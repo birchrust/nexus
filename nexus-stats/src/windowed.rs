@@ -38,15 +38,16 @@ macro_rules! impl_windowed_max {
             /// `window` is the size of the sliding window in timestamp units.
             /// The caller defines the timestamp semantics (nanoseconds, ticks, etc.).
             #[inline]
-            #[must_use]
-            pub fn new(window: u64) -> Self {
-                assert!(window > 0, "window must be positive");
+            pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
+                if window == 0 {
+                    return Err(crate::ConfigError::Invalid("window must be positive"));
+                }
                 let init = Sample { timestamp: 0, value: $init };
-                Self {
+                Ok(Self {
                     window,
                     samples: [init; 3],
                     count: 0,
-                }
+                })
             }
 
             /// Feeds a sample at the given timestamp. Returns current window max.
@@ -154,15 +155,16 @@ macro_rules! impl_windowed_min {
         impl $name {
             /// Creates a new windowed min tracker.
             #[inline]
-            #[must_use]
-            pub fn new(window: u64) -> Self {
-                assert!(window > 0, "window must be positive");
+            pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
+                if window == 0 {
+                    return Err(crate::ConfigError::Invalid("window must be positive"));
+                }
                 let init = Sample { timestamp: 0, value: $init };
-                Self {
+                Ok(Self {
                     window,
                     samples: [init; 3],
                     count: 0,
-                }
+                })
             }
 
             /// Feeds a sample at the given timestamp. Returns current window min.
@@ -264,7 +266,7 @@ mod tests {
 
     #[test]
     fn max_empty() {
-        let wm = WindowedMaxF64::new(100);
+        let wm = WindowedMaxF64::new(100).unwrap();
         assert!(wm.max().is_none());
         assert_eq!(wm.count(), 0);
     }
@@ -272,7 +274,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn max_single_sample() {
-        let mut wm = WindowedMaxF64::new(100);
+        let mut wm = WindowedMaxF64::new(100).unwrap();
         assert_eq!(wm.update(0, 42.0), 42.0);
         assert_eq!(wm.max(), Some(42.0));
     }
@@ -280,7 +282,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn max_new_peak_replaces() {
-        let mut wm = WindowedMaxF64::new(100);
+        let mut wm = WindowedMaxF64::new(100).unwrap();
         let _ = wm.update(0, 10.0);
         let _ = wm.update(1, 20.0);
         assert_eq!(wm.update(2, 30.0), 30.0);
@@ -288,7 +290,7 @@ mod tests {
 
     #[test]
     fn max_expires_after_window() {
-        let mut wm = WindowedMaxF64::new(10);
+        let mut wm = WindowedMaxF64::new(10).unwrap();
         let _ = wm.update(0, 100.0); // peak at t=0
         let _ = wm.update(5, 50.0);
 
@@ -299,7 +301,7 @@ mod tests {
 
     #[test]
     fn max_reset() {
-        let mut wm = WindowedMaxF64::new(100);
+        let mut wm = WindowedMaxF64::new(100).unwrap();
         let _ = wm.update(0, 42.0);
         wm.reset();
         assert!(wm.max().is_none());
@@ -308,7 +310,7 @@ mod tests {
 
     #[test]
     fn max_i64_basic() {
-        let mut wm = WindowedMaxI64::new(10);
+        let mut wm = WindowedMaxI64::new(10).unwrap();
         assert_eq!(wm.update(0, 100), 100);
         assert_eq!(wm.update(1, 200), 200);
         assert_eq!(wm.update(2, 150), 200);
@@ -316,7 +318,7 @@ mod tests {
 
     #[test]
     fn max_monotonic_decreasing_tracks_recent() {
-        let mut wm = WindowedMaxF64::new(10);
+        let mut wm = WindowedMaxF64::new(10).unwrap();
         // Decreasing values — max should eventually drop as window slides
         for t in 0..20u64 {
             let v = 100.0 - t as f64;
@@ -333,14 +335,14 @@ mod tests {
 
     #[test]
     fn min_empty() {
-        let wm = WindowedMinF64::new(100);
+        let wm = WindowedMinF64::new(100).unwrap();
         assert!(wm.min().is_none());
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn min_single_sample() {
-        let mut wm = WindowedMinF64::new(100);
+        let mut wm = WindowedMinF64::new(100).unwrap();
         assert_eq!(wm.update(0, 42.0), 42.0);
         assert_eq!(wm.min(), Some(42.0));
     }
@@ -348,7 +350,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn min_new_low_replaces() {
-        let mut wm = WindowedMinF64::new(100);
+        let mut wm = WindowedMinF64::new(100).unwrap();
         let _ = wm.update(0, 30.0);
         let _ = wm.update(1, 20.0);
         assert_eq!(wm.update(2, 10.0), 10.0);
@@ -356,7 +358,7 @@ mod tests {
 
     #[test]
     fn min_expires_after_window() {
-        let mut wm = WindowedMinF64::new(10);
+        let mut wm = WindowedMinF64::new(10).unwrap();
         let _ = wm.update(0, 10.0); // min at t=0
         let _ = wm.update(5, 50.0);
 
@@ -368,7 +370,7 @@ mod tests {
     #[test]
     fn min_rtt_tracking() {
         // Simulating BBR min RTT tracking
-        let mut min_rtt = WindowedMinI64::new(100);
+        let mut min_rtt = WindowedMinI64::new(100).unwrap();
 
         // Normal RTTs around 50
         for t in 0..50 {
@@ -384,7 +386,7 @@ mod tests {
 
     #[test]
     fn min_reset() {
-        let mut wm = WindowedMinF64::new(100);
+        let mut wm = WindowedMinF64::new(100).unwrap();
         let _ = wm.update(0, 42.0);
         wm.reset();
         assert!(wm.min().is_none());
@@ -393,7 +395,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn min_f32_basic() {
-        let mut wm = WindowedMinF32::new(10);
+        let mut wm = WindowedMinF32::new(10).unwrap();
         assert_eq!(wm.update(0, 50.0), 50.0);
         assert_eq!(wm.update(1, 30.0), 30.0);
         assert_eq!(wm.update(2, 40.0), 30.0);
@@ -401,21 +403,19 @@ mod tests {
 
     #[test]
     fn min_i32_basic() {
-        let mut wm = WindowedMinI32::new(10);
+        let mut wm = WindowedMinI32::new(10).unwrap();
         assert_eq!(wm.update(0, 100), 100);
         assert_eq!(wm.update(1, 50), 50);
         assert_eq!(wm.update(2, 75), 50);
     }
 
     #[test]
-    #[should_panic(expected = "window must be positive")]
-    fn max_panics_on_zero_window() {
-        let _ = WindowedMaxF64::new(0);
+    fn max_rejects_zero_window() {
+        assert!(matches!(WindowedMaxF64::new(0), Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
-    #[should_panic(expected = "window must be positive")]
-    fn min_panics_on_zero_window() {
-        let _ = WindowedMinF64::new(0);
+    fn min_rejects_zero_window() {
+        assert!(matches!(WindowedMinF64::new(0), Err(crate::ConfigError::Invalid(_))));
     }
 }

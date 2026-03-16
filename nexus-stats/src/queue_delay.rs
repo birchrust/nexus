@@ -141,7 +141,7 @@ macro_rules! impl_queue_delay {
                 }
 
                 Ok($name {
-                    windowed_min: <$windowed_min>::new(window),
+                    windowed_min: <$windowed_min>::new(window)?,
                     target,
                     min_samples: self.min_samples,
                 })

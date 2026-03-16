@@ -21,9 +21,11 @@ macro_rules! impl_debounce {
             /// `threshold` is the number of consecutive active samples required
             /// to trigger (return `true`).
             #[inline]
-            #[must_use]
-            pub fn new(threshold: $ty) -> Self {
-                Self { threshold, consecutive: 0 }
+            pub fn new(threshold: $ty) -> Result<Self, crate::ConfigError> {
+                if threshold == 0 {
+                    return Err(crate::ConfigError::Invalid("threshold must be positive"));
+                }
+                Ok(Self { threshold, consecutive: 0 })
             }
 
             /// Feeds a boolean signal. Returns `true` once the threshold of
@@ -60,7 +62,7 @@ mod tests {
 
     #[test]
     fn triggers_after_threshold() {
-        let mut d = DebounceU32::new(3);
+        let mut d = DebounceU32::new(3).unwrap();
         assert!(!d.update(true));
         assert!(!d.update(true));
         assert!(d.update(true)); // 3rd consecutive
@@ -68,7 +70,7 @@ mod tests {
 
     #[test]
     fn resets_on_false() {
-        let mut d = DebounceU32::new(3);
+        let mut d = DebounceU32::new(3).unwrap();
         assert!(!d.update(true));
         assert!(!d.update(true));
         assert!(!d.update(false)); // reset
@@ -79,7 +81,7 @@ mod tests {
 
     #[test]
     fn no_false_trigger_at_threshold_minus_one() {
-        let mut d = DebounceU32::new(5);
+        let mut d = DebounceU32::new(5).unwrap();
         for _ in 0..4 {
             assert!(!d.update(true));
         }
@@ -89,7 +91,7 @@ mod tests {
 
     #[test]
     fn stays_triggered() {
-        let mut d = DebounceU32::new(2);
+        let mut d = DebounceU32::new(2).unwrap();
         assert!(!d.update(true));
         assert!(d.update(true));
         assert!(d.update(true)); // stays triggered
@@ -97,16 +99,22 @@ mod tests {
 
     #[test]
     fn u64_basic() {
-        let mut d = DebounceU64::new(2);
+        let mut d = DebounceU64::new(2).unwrap();
         assert!(!d.update(true));
         assert!(d.update(true));
     }
 
     #[test]
     fn reset() {
-        let mut d = DebounceU32::new(2);
+        let mut d = DebounceU32::new(2).unwrap();
         let _ = d.update(true);
         d.reset();
         assert_eq!(d.count(), 0);
+    }
+
+    #[test]
+    fn rejects_zero_threshold() {
+        assert!(matches!(DebounceU32::new(0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(DebounceU64::new(0), Err(crate::ConfigError::Invalid(_))));
     }
 }
