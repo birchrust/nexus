@@ -36,7 +36,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ptr;
 
-use nexus_slab::{Alloc, BoundedAlloc, Full, Slot, SlotCell, UnboundedAlloc};
+use nexus_slab::{Alloc, BoundedAlloc, Full, RawSlot, SlotCell, UnboundedAlloc};
 
 use crate::compare::{Compare, Natural};
 
@@ -154,9 +154,7 @@ fn set_parent_color<K, V>(ptr: NodePtr<K, V>, parent: NodePtr<K, V>, color: usiz
 /// - `ptr` must be non-null and point to an occupied `SlotCell`.
 unsafe fn node_deref<K, V>(ptr: NodePtr<K, V>) -> *const RbNode<K, V> {
     // SAFETY: Caller guarantees ptr is non-null and points to an occupied slot.
-    // Use addr_of! to avoid creating an intermediate reference.
-    // ManuallyDrop<MaybeUninit<T>> has the same layout as T.
-    unsafe { std::ptr::addr_of!((*ptr).value).cast() }
+    unsafe { (*ptr).value_ptr() }
 }
 
 /// Dereferences a `NodePtr<K, V>` to `*mut RbNode<K, V>`.
@@ -167,9 +165,7 @@ unsafe fn node_deref<K, V>(ptr: NodePtr<K, V>) -> *const RbNode<K, V> {
 /// - The caller must ensure no other reference to the same node exists.
 unsafe fn node_deref_mut<K, V>(ptr: NodePtr<K, V>) -> *mut RbNode<K, V> {
     // SAFETY: Caller guarantees ptr is non-null, occupied, and unaliased.
-    // Use addr_of_mut! to avoid implicit DerefMut on ManuallyDrop union field.
-    // ManuallyDrop<MaybeUninit<T>> has the same layout as T.
-    unsafe { std::ptr::addr_of_mut!((*ptr).value).cast() }
+    unsafe { (*ptr).value_ptr().cast_mut() }
 }
 
 // =============================================================================
@@ -646,11 +642,11 @@ impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, C> {
     #[allow(clippy::needless_pass_by_value)]
     unsafe fn link_vacant(
         &mut self,
-        slot: Slot<RbNode<K, V>>,
+        slot: RawSlot<RbNode<K, V>>,
         parent: NodePtr<K, V>,
         is_left: bool,
     ) -> *mut V {
-        let ptr = slot.as_ptr();
+        let ptr = slot.into_ptr();
         self.link_new_node(ptr, parent, is_left);
         // SAFETY: ptr was just linked into the tree.
         unsafe { std::ptr::addr_of_mut!((*node_deref_mut(ptr)).value) }
@@ -820,7 +816,7 @@ impl<K, V, A: Alloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, C> {
         self.rightmost = new_rightmost;
 
         // SAFETY: ptr was in the tree, now unlinked.
-        let slot = unsafe { Slot::from_ptr(ptr) };
+        let slot = unsafe { RawSlot::from_ptr(ptr) };
         let node = unsafe { A::take(slot) };
         node.into_data()
     }
@@ -1341,7 +1337,7 @@ impl<K, V, A: BoundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A, 
 
         match A::try_alloc(RbNode::new(key, value)) {
             Ok(slot) => {
-                let ptr = slot.as_ptr();
+                let ptr = slot.into_ptr();
                 self.link_new_node(ptr, parent, is_left);
                 Ok(None)
             }
@@ -1387,7 +1383,7 @@ impl<K, V, A: UnboundedAlloc<Item = RbNode<K, V>>, C: Compare<K>> RbTree<K, V, A
         }
 
         let slot = A::alloc(RbNode::new(key, value));
-        let ptr = slot.as_ptr();
+        let ptr = slot.into_ptr();
         self.link_new_node(ptr, parent, is_left);
         None
     }
@@ -1491,7 +1487,7 @@ impl<K, V, A: Alloc<Item = RbNode<K, V>>, C> RbTree<K, V, A, C> {
             } else {
                 // Leaf: read parent before freeing.
                 let parent = get_parent(current);
-                let slot = unsafe { Slot::from_ptr(current) };
+                let slot = unsafe { RawSlot::from_ptr(current) };
                 unsafe { A::free(slot) };
                 current = parent;
             }

@@ -35,7 +35,7 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
 
-use nexus_slab::{Alloc, BoundedAlloc, Full, Slot, SlotCell, UnboundedAlloc};
+use nexus_slab::{Alloc, BoundedAlloc, Full, RawSlot, SlotCell, UnboundedAlloc};
 
 use crate::compare::{Compare, Natural};
 
@@ -107,8 +107,7 @@ impl<K, V, const B: usize> BTreeNode<K, V, B> {
 /// `ptr` must be non-null and point to an occupied `SlotCell`.
 unsafe fn node_deref<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *const BTreeNode<K, V, B> {
     // SAFETY: Caller guarantees ptr is non-null and occupied.
-    // ManuallyDrop<MaybeUninit<T>> has the same layout as T.
-    unsafe { std::ptr::addr_of!((*ptr).value).cast() }
+    unsafe { (*ptr).value_ptr() }
 }
 
 /// Dereferences a `NodePtr` to `*mut BTreeNode`.
@@ -118,7 +117,7 @@ unsafe fn node_deref<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *const BTre
 /// `ptr` must be non-null, occupied, and unaliased.
 unsafe fn node_deref_mut<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *mut BTreeNode<K, V, B> {
     // SAFETY: Caller guarantees ptr is non-null, occupied, and unaliased.
-    unsafe { std::ptr::addr_of_mut!((*ptr).value).cast() }
+    unsafe { (*ptr).value_ptr().cast_mut() }
 }
 
 // =============================================================================
@@ -293,7 +292,7 @@ unsafe fn free_node<K, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize>(
         }
     }
     // SAFETY: ptr is a valid occupied slot.
-    let slot = unsafe { Slot::from_ptr(ptr) };
+    let slot = unsafe { RawSlot::from_ptr(ptr) };
     unsafe { A::free(slot) };
 }
 
@@ -1118,7 +1117,7 @@ impl<K, V, A: Alloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Compare<K>>
         // `left` via ptr::copy_nonoverlapping above. The remaining slots are
         // MaybeUninit and won't run Drop. `right` is a valid slab pointer
         // obtained from A::try_alloc/alloc, so Slot::from_ptr is sound.
-        let slot = unsafe { Slot::from_ptr(right) };
+        let slot = unsafe { RawSlot::from_ptr(right) };
         unsafe { A::free(slot) };
 
         // Remove separator and right child pointer from parent.
@@ -1362,7 +1361,7 @@ impl<K, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Compar
             leaf.len = 1;
             match A::try_alloc(leaf) {
                 Ok(slot) => {
-                    let ptr = slot.as_ptr();
+                    let ptr = slot.into_ptr();
                     self.root = ptr;
                     self.len += 1;
                     self.depth = 0;
@@ -1382,7 +1381,7 @@ impl<K, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Compar
         // If root is full, split it.
         if unsafe { node_len(self.root) } == B - 1 {
             let new_root = match A::try_alloc(BTreeNode::new_internal()) {
-                Ok(slot) => slot.as_ptr(),
+                Ok(slot) => slot.into_ptr(),
                 Err(_) => return Err(Full((key, value))),
             };
             unsafe { (*node_deref_mut(new_root)).children[0] = self.root };
@@ -1396,11 +1395,11 @@ impl<K, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Compar
                 BTreeNode::new_internal()
             };
             let right = if let Ok(slot) = A::try_alloc(right_node) {
-                slot.as_ptr()
+                slot.into_ptr()
             } else {
                 // Undo: restore old root, free new root.
                 self.root = old_root;
-                let slot = unsafe { Slot::from_ptr(new_root) };
+                let slot = unsafe { RawSlot::from_ptr(new_root) };
                 unsafe { A::free(slot) };
                 return Err(Full((key, value)));
             };
@@ -1444,7 +1443,7 @@ impl<K, V, A: BoundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Compar
                 } else {
                     BTreeNode::new_internal()
                 }) {
-                    Ok(slot) => slot.as_ptr(),
+                    Ok(slot) => slot.into_ptr(),
                     Err(_) => return Err(Full((key, value))),
                 };
                 unsafe { split_child_core(current, child_idx, right) };
@@ -1489,7 +1488,7 @@ impl<K, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Comp
             leaf.values[0] = MaybeUninit::new(value);
             leaf.len = 1;
             let slot = A::alloc(leaf);
-            let ptr = slot.as_ptr();
+            let ptr = slot.into_ptr();
             self.root = ptr;
             self.len += 1;
             self.depth = 0;
@@ -1499,7 +1498,7 @@ impl<K, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Comp
 
         // Split root if full.
         if unsafe { node_len(self.root) } == B - 1 {
-            let new_root = A::alloc(BTreeNode::new_internal()).as_ptr();
+            let new_root = A::alloc(BTreeNode::new_internal()).into_ptr();
             unsafe { (*node_deref_mut(new_root)).children[0] = self.root };
             let old_root = self.root;
             self.root = new_root;
@@ -1509,7 +1508,7 @@ impl<K, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Comp
             } else {
                 BTreeNode::new_internal()
             })
-            .as_ptr();
+            .into_ptr();
             unsafe { split_child_core(new_root, 0, right) };
             self.depth += 1;
         }
@@ -1544,7 +1543,7 @@ impl<K, V, A: UnboundedAlloc<Item = BTreeNode<K, V, B>>, const B: usize, C: Comp
                 } else {
                     BTreeNode::new_internal()
                 })
-                .as_ptr();
+                .into_ptr();
                 unsafe { split_child_core(current, child_idx, right) };
 
                 let median = unsafe { key_at(current, child_idx) };
