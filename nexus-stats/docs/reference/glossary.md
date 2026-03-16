@@ -8,7 +8,7 @@ ARL₀ = samples before false alarm (want high). ARL₁ = samples to detect
 a real change (want low). Used to tune CUSUM and control chart parameters.
 
 **CoDel (Controlled Delay)** — Network algorithm that detects standing queues
-by monitoring the minimum sojourn time. QueueDelay implements the measurement
+by monitoring the minimum sojourn time. CoDel implements the measurement
 layer.
 
 **CUSUM** — Cumulative Sum. Sequential test that accumulates deviations from
@@ -62,7 +62,7 @@ EWMA Variance implements this pattern.
 Typically set to half the minimum shift to detect.
 
 **Sojourn Time** — Time an item spends in a queue (from enqueue to dequeue).
-CoDel and QueueDelay operate on this metric.
+CoDel operates on this metric.
 
 **Span** — EMA parameter equivalent to window size. `α = 2/(span + 1)`.
 The "center of mass" interpretation from pandas/finance.

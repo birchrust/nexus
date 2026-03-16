@@ -39,7 +39,7 @@ use nexus_stats::*;
 // Per resource (CPU, memory, disk, network):
 struct ResourceMonitor {
     utilization: SaturationF64,     // U: how busy
-    queue_delay: QueueDelayI64,     // S: how queued (if applicable)
+    codel: CoDelI64,     // S: how queued (if applicable)
     error_rate: ErrorRateF64,       // E: how broken
 }
 
@@ -48,7 +48,7 @@ impl ResourceMonitor {
         ResourceMonitor {
             utilization: SaturationF64::builder()
                 .span(20).threshold(0.80).build(),
-            queue_delay: QueueDelayI64::builder()
+            codel: CoDelI64::builder()
                 .target(10_000).window(1_000_000_000).build(),
             error_rate: ErrorRateF64::builder()
                 .span(100).threshold(0.01).build(),
@@ -98,7 +98,7 @@ if is_confirmed_down {
 | [ErrorRate](../algorithms/error-rate.md) | SLO / error budget tracking |
 | [BoolWindow](../algorithms/bool-window.md) | Exact failure rate over last N |
 | [Saturation](../algorithms/saturation.md) | Utilization (USE method) |
-| [QueueDelay](../algorithms/queue-delay.md) | Saturation / queueing (USE method) |
+| [CoDel](../algorithms/codel.md) | Saturation / queueing (USE method) |
 | [CUSUM](../algorithms/cusum.md) | Latency degradation detection |
 | [Debounce](../algorithms/debounce.md) | Confirm outage (N consecutive failures) |
 | [MaxGauge](../algorithms/max-gauge.md) | Worst-case per scrape interval |

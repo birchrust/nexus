@@ -19,7 +19,7 @@ room to act.
 use nexus_stats::*;
 
 // Detect standing queues via sojourn time
-let mut qd = QueueDelayI64::builder()
+let mut qd = CoDelI64::builder()
     .target(10_000)          // 10μs acceptable queue wait
     .window(100_000_000)     // 100ms observation window
     .min_samples(20)
@@ -33,7 +33,7 @@ match qd.update(now_ns as u64, sojourn_ns) {
         // Standing queue detected — even the fastest items are waiting too long
         slow_down_producers();
     }
-    Some(QueueCondition::Normal) => {
+    Some(Condition::Normal) => {
         // Queue is healthy
     }
     None => {} // not primed
@@ -47,7 +47,7 @@ Combine queue delay with resource saturation for comprehensive monitoring:
 ```rust
 use nexus_stats::*;
 
-let mut queue_health = QueueDelayI64::builder()
+let mut queue_health = CoDelI64::builder()
     .target(10_000).window(100_000_000).build().unwrap();
 
 let mut cpu_sat = SaturationF64::builder()
@@ -104,7 +104,7 @@ if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64) {
 
 | Primitive | Role |
 |-----------|------|
-| [QueueDelay](../algorithms/queue-delay.md) | Standing queue detection (CoDel) |
+| [CoDel](../algorithms/codel.md) | Standing queue detection (CoDel) |
 | [Saturation](../algorithms/saturation.md) | Resource utilization threshold |
 | [TrendAlert](../algorithms/trend-alert.md) | "Getting worse" detection |
 | [AsymmetricEMA](../algorithms/asym-ema.md) | Fast-rise/slow-fall tracking |
@@ -114,7 +114,7 @@ if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64) {
 
 - **Measure sojourn time, not queue depth.** A deep queue that drains
   fast is fine. A shallow queue where every item waits 50ms is not.
-  QueueDelay measures what matters.
+  CoDel measures what matters.
 
 - **Use asymmetric response.** React fast to degradation (alpha_up=0.3),
   recover slowly (alpha_down=0.05). This prevents oscillation where you

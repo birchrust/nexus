@@ -1,12 +1,12 @@
 use crate::Condition;
 use crate::windowed::{WindowedMinI32, WindowedMinI64, WindowedMinI128};
 
-macro_rules! impl_queue_delay {
+macro_rules! impl_codel {
     ($name:ident, $builder:ident, $ty:ty, $windowed_min:ty) => {
-        /// CoDel-inspired sojourn time monitor.
+        /// CoDel — Controlled Delay queue monitor (Nichols & Jacobson, 2012).
         ///
         /// Composes a windowed minimum of sojourn times with a threshold.
-        /// Reports `Elevated` when even the minimum sojourn time in the
+        /// Reports `Degraded` when even the minimum sojourn time in the
         /// observation window exceeds the target — indicating a standing
         /// queue rather than a transient burst.
         ///
@@ -126,7 +126,7 @@ macro_rules! impl_queue_delay {
                 self
             }
 
-            /// Builds the queue delay monitor.
+            /// Builds the CoDel monitor.
             ///
             /// # Errors
             ///
@@ -137,7 +137,7 @@ macro_rules! impl_queue_delay {
                 let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
                 let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
                 if window == 0 {
-                    return Err(crate::ConfigError::Invalid("QueueDelay window must be positive"));
+                    return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
                 }
 
                 Ok($name {
@@ -150,9 +150,9 @@ macro_rules! impl_queue_delay {
     };
 }
 
-impl_queue_delay!(QueueDelayI64, QueueDelayI64Builder, i64, WindowedMinI64);
-impl_queue_delay!(QueueDelayI32, QueueDelayI32Builder, i32, WindowedMinI32);
-impl_queue_delay!(QueueDelayI128, QueueDelayI128Builder, i128, WindowedMinI128);
+impl_codel!(CoDelI64, CoDelI64Builder, i64, WindowedMinI64);
+impl_codel!(CoDelI32, CoDelI32Builder, i32, WindowedMinI32);
+impl_codel!(CoDelI128, CoDelI128Builder, i128, WindowedMinI128);
 
 #[cfg(test)]
 mod tests {
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn healthy_queue() {
-        let mut qd = QueueDelayI64::builder()
+        let mut qd = CoDelI64::builder()
             .target(100)
             .window(1000)
             .build().unwrap();
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn elevated_detection() {
-        let mut qd = QueueDelayI64::builder()
+        let mut qd = CoDelI64::builder()
             .target(100)
             .window(1000)
             .build().unwrap();
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn recovery_after_drain() {
-        let mut qd = QueueDelayI64::builder()
+        let mut qd = CoDelI64::builder()
             .target(100)
             .window(10)
             .build().unwrap();
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn burst_vs_standing_queue() {
-        let mut qd = QueueDelayI64::builder()
+        let mut qd = CoDelI64::builder()
             .target(100)
             .window(10)
             .build().unwrap();
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut qd = QueueDelayI64::builder()
+        let mut qd = CoDelI64::builder()
             .target(100)
             .window(1000)
             .min_samples(5)
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut qd = QueueDelayI64::builder()
+        let mut qd = CoDelI64::builder()
             .target(100)
             .window(1000)
             .build().unwrap();
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn i32_basic() {
-        let mut qd = QueueDelayI32::builder()
+        let mut qd = CoDelI32::builder()
             .target(50)
             .window(100)
             .build().unwrap();
@@ -264,19 +264,19 @@ mod tests {
 
     #[test]
     fn errors_without_target() {
-        let result = QueueDelayI64::builder().window(100).build();
+        let result = CoDelI64::builder().window(100).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("target"))));
     }
 
     #[test]
     fn errors_without_window() {
-        let result = QueueDelayI64::builder().target(100).build();
+        let result = CoDelI64::builder().target(100).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("window"))));
     }
 
     #[test]
     fn i128_basic() {
-        let mut qd = QueueDelayI128::builder()
+        let mut qd = CoDelI128::builder()
             .target(50)
             .window(100)
             .build()

@@ -1,4 +1,4 @@
-# QueueDelay — Queue Sojourn Time Monitor
+# CoDel — Controlled Delay Queue Monitor
 
 **CoDel-inspired backpressure detection.** Detects standing queues before
 buffers fill by tracking the minimum time items spend waiting.
@@ -7,9 +7,9 @@ buffers fill by tracking the minimum time items spend waiting.
 |----------|-------|
 | Update cost | ~7 cycles |
 | Memory | ~80 bytes |
-| Types | `QueueDelayI64`, `QueueDelayI32` |
+| Types | `CoDelI64`, `CoDelI32` |
 | Priming | Configurable via `min_samples` |
-| Output | `Option<Condition>` — `Normal` or `Elevated` |
+| Output | `Option<Condition>` — `Normal` or `Degraded` |
 
 ## What It Does
 
@@ -50,12 +50,12 @@ queue means *every* item waits too long.
 
 ## When to Use It
 
-**Use QueueDelay when:**
+**Use CoDel when:**
 - You have a producer-consumer queue and want early warning
 - You want to detect congestion before buffers fill and you hit hard backpressure
 - You can timestamp items at enqueue time
 
-**Don't use QueueDelay when:**
+**Don't use CoDel when:**
 - You don't have timestamps on queued items → use [Saturation](saturation.md) with queue depth instead
 - You want to detect individual slow items → use [AdaptiveThreshold](adaptive-threshold.md) on sojourn times
 - You want to detect mean shifts in processing time → use [CUSUM](cusum.md)
@@ -63,23 +63,23 @@ queue means *every* item waits too long.
 ## How It Works
 
 On each dequeue, compute `sojourn = now - enqueue_time` and feed it to
-QueueDelay along with the current timestamp.
+CoDel along with the current timestamp.
 
 Internally:
 1. **WindowedMin** (Nichols' algorithm) tracks the minimum sojourn
    time over the observation window
 2. If the windowed minimum exceeds the target for an entire window
    duration → `Condition::Degraded`
-3. When the minimum drops below target → `QueueCondition::Normal`
+3. When the minimum drops below target → `Condition::Normal`
 
 This is the **measurement layer** of CoDel. CoDel itself is a *policy*
-(drop packets when congested). QueueDelay gives you the signal — you
+(drop packets when congested). CoDel gives you the signal — you
 decide the response (slow producers, shed load, alert, etc.).
 
 ## Configuration
 
 ```rust
-let mut qd = QueueDelayI64::builder()
+let mut qd = CoDelI64::builder()
     .target(100_000)       // 100μs target sojourn time
     .window(1_000_000_000) // 1 second observation window (in nanoseconds)
     .min_samples(10)
@@ -108,7 +108,7 @@ more confident, slower response. 100ms-1s is typical.
 
 ```rust
 // Detect backpressure before Aeron buffers fill
-let mut qd = QueueDelayI64::builder()
+let mut qd = CoDelI64::builder()
     .target(10_000)         // 10μs max queue wait
     .window(100_000_000)    // 100ms observation window
     .min_samples(20)
@@ -121,7 +121,7 @@ match qd.update(now_ns as u64, sojourn_ns) {
         // Standing queue detected — slow down strategies
         throttle_strategies();
     }
-    Some(QueueCondition::Normal) => {
+    Some(Condition::Normal) => {
         // Queue is healthy
     }
     None => {} // not primed yet
@@ -132,7 +132,7 @@ match qd.update(now_ns as u64, sojourn_ns) {
 
 ```rust
 // Web server request queue monitoring
-let mut qd = QueueDelayI64::builder()
+let mut qd = CoDelI64::builder()
     .target(5_000_000)       // 5ms max queue wait
     .window(10_000_000_000)  // 10s window
     .build().unwrap();
@@ -148,7 +148,7 @@ if let Some(Condition::Degraded) = qd.update(now_ns, wait_ms) {
 
 ```rust
 // Detect when the render command queue backs up
-let mut qd = QueueDelayI64::builder()
+let mut qd = CoDelI64::builder()
     .target(2_000)           // 2ms max command wait
     .window(100_000_000)     // 100ms window
     .build().unwrap();
@@ -156,14 +156,14 @@ let mut qd = QueueDelayI64::builder()
 
 ## Composition Patterns
 
-### QueueDelay + Saturation
+### CoDel + Saturation
 
 "Comprehensive resource monitoring":
 
 ```rust
-// QueueDelay catches standing queues (latency-based)
+// CoDel catches standing queues (latency-based)
 // Saturation catches high utilization (throughput-based)
-let mut qd = QueueDelayI64::builder().target(t).window(w).build().unwrap();
+let mut qd = CoDelI64::builder().target(t).window(w).build().unwrap();
 let mut sat = SaturationF64::builder().alpha(0.1).threshold(0.8).build().unwrap();
 
 // On dequeue:
@@ -178,18 +178,18 @@ match (queue_pressure, util_pressure) {
 }
 ```
 
-### QueueDelay + CUSUM
+### CoDel + CUSUM
 
 "Detect both transient backpressure and permanent degradation":
 
-QueueDelay catches standing queues. CUSUM on the sojourn time detects
+CoDel catches standing queues. CUSUM on the sojourn time detects
 when the mean processing time has shifted (e.g., downstream got slower).
 
 ## Performance
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `QueueDelayI64::update` | 7 cycles | 10 cycles |
+| `CoDelI64::update` | 7 cycles | 10 cycles |
 
 Internally uses WindowedMin (Nichols' algorithm) — 3 samples, O(1)
 amortized. The integer path avoids float conversion entirely.
@@ -201,7 +201,7 @@ Jacobson in 2012 for active queue management in network routers. The
 key insight: **good queues** (transient bursts) have low minimum delay,
 while **bad queues** (standing backlog) have high minimum delay.
 
-CoDel's policy is to drop packets when the queue is "bad." QueueDelay
+CoDel's policy is to drop packets when the queue is "bad." CoDel
 provides the measurement without imposing a policy — your system decides
 what to do when pressure is elevated.
 

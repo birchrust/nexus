@@ -94,9 +94,9 @@ if !live.check(now_ns) {
 ## Track Queue Health
 
 ```rust
-use nexus_stats::{QueueDelayI64, QueuePressure};
+use nexus_stats::{CoDelI64, Condition};
 
-let mut qd = QueueDelayI64::builder()
+let mut qd = CoDelI64::builder()
     .target(10_000)       // 10μs max wait
     .window(100_000_000)  // 100ms observation
     .build().unwrap();

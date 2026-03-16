@@ -35,7 +35,7 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 | MaxGauge | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Liveness | ✓ | ✓ | ✓ | ✓ | — |
 | EventRate | ✓ | ✓ | ✓ | ✓ | — |
-| QueueDelay | — | — | ✓ | ✓ | ✓ |
+| CoDel | — | — | ✓ | ✓ | ✓ |
 | Saturation | ✓ | ✓ | — | — | — |
 | ErrorRate | ✓ | ✓ | — | — | — |
 | TrendAlert | ✓ | ✓ | — | — | — |

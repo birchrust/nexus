@@ -27,7 +27,7 @@
 //! - [`RunningMinF64`] / [`RunningMaxF64`] — All-time min/max tracking.
 //! - [`LivenessF64`] — EMA of inter-arrival times with deadline.
 //! - [`EventRateF64`] — Smoothed event rate (events per unit time).
-//! - [`QueueDelayI64`] — Queue sojourn time monitor (CoDel-inspired backpressure detection).
+//! - [`CoDelI64`] — Controlled Delay queue monitor (Nichols & Jacobson, 2012).
 //!
 //! **Frequency:**
 //! - [`TopK`] — Space-Saving top-K frequent items.
@@ -71,7 +71,7 @@ mod mosum;
 mod multi_gate;
 mod peak_detector;
 mod peak_hold;
-mod queue_delay;
+mod codel;
 mod robust_z;
 mod running;
 mod saturation;
@@ -147,7 +147,7 @@ pub use peak_hold::{
     PeakHoldI32Builder, PeakHoldI64, PeakHoldI64Builder, PeakHoldI128, PeakHoldI128Builder,
 };
 pub use robust_z::{RobustZScoreF32, RobustZScoreF32Builder, RobustZScoreF64, RobustZScoreF64Builder};
-pub use queue_delay::{QueueDelayI32, QueueDelayI32Builder, QueueDelayI64, QueueDelayI64Builder, QueueDelayI128, QueueDelayI128Builder};
+pub use codel::{CoDelI32, CoDelI32Builder, CoDelI64, CoDelI64Builder, CoDelI128, CoDelI128Builder};
 pub use saturation::{SaturationF32, SaturationF32Builder, SaturationF64, SaturationF64Builder};
 pub use running::{
     RunningMaxF32, RunningMaxF64, RunningMaxI32, RunningMaxI64, RunningMaxI128, RunningMinF32,

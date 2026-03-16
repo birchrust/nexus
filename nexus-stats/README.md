@@ -93,7 +93,7 @@ for deep-dives on each algorithm.
 | `MaxGaugeF64` | Reset-on-read maximum (Netflix pattern) | 5 |
 | `LivenessF64` | Source alive/dead detection | 6 |
 | `EventRateF64` | Smoothed events per unit time | 6 |
-| `QueueDelayI64` | Queue backpressure detection (CoDel-inspired) | 7 |
+| `CoDelI64` | Queue backpressure detection (CoDel-inspired) | 7 |
 | `SaturationF64` | Resource utilization threshold (USE method) | 6 |
 | `ErrorRateF64` | Failure rate with weighted severity | 6 |
 | `TrendAlertF64` | Trend direction (Stable/Rising/Falling) | 12 |
@@ -132,7 +132,7 @@ intrinsics; integer types use bit-shift arithmetic.
 | SlewLimiter, DeadBand, Hysteresis | ✓ | ✓ | ✓ | ✓ | ✓ |
 | PeakHold, PeakDetector, LevelCrossing | ✓ | ✓ | ✓ | ✓ | ✓ |
 | FirstDiff, SecondDiff, MOSUM | ✓ | ✓ | ✓ | ✓ | ✓ |
-| MaxGauge, QueueDelay | | | ✓ | ✓ | ✓ |
+| MaxGauge, CoDel | | | ✓ | ✓ | ✓ |
 | EMA, Jitter, AsymEMA | ✓ | ✓ | ✓ | ✓ | |
 | Liveness, EventRate | ✓ | ✓ | ✓ | ✓ | |
 | Welford, EwmaVar, Covariance, HarmonicMean | ✓ | ✓ | | | |

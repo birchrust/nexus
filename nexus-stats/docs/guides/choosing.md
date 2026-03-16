@@ -62,7 +62,7 @@ Start with your problem. Follow the tree to find the right primitive.
 
 - Is a data source alive? → [**Liveness**](../algorithms/liveness.md)
   - EMA of inter-arrival times + deadline. Call `check(now)` periodically.
-- Is a queue building up? → [**QueueDelay**](../algorithms/queue-delay.md)
+- Is a queue building up? → [**CoDel**](../algorithms/codel.md)
   - CoDel-inspired. Detects standing queues before buffers fill.
 - Is a resource running hot? → [**Saturation**](../algorithms/saturation.md)
   - EMA of utilization + threshold. `Normal` / `Saturated`.
@@ -129,7 +129,7 @@ Common combinations:
 | "Is latency degrading?" | CUSUM on latency samples |
 | "Is latency degrading AND getting worse?" | CUSUM + TrendAlert |
 | "Filter bad ticks, track stats on good ones" | MultiGate → Welford (only on Accept) |
-| "Monitor queue health with early warning" | QueueDelay + Saturation |
+| "Monitor queue health with early warning" | CoDel + Saturation |
 | "Smooth a signal, detect when it goes anomalous" | EMA for smoothing, AdaptiveThreshold for detection |
 | "Track failure rate, trip a circuit breaker" | ErrorRate or BoolWindow → Debounce |
 | "Load-balance across shards" | FlexibleProportions per shard |

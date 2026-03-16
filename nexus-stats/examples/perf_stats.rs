@@ -370,7 +370,7 @@ fn bench_topk(samples: &mut [u64]) {
 }
 
 // ============================================================================
-// New types: RunningMin/Max, EventRate, QueueDelay
+// New types: RunningMin/Max, EventRate, CoDel
 // ============================================================================
 
 fn bench_running_min_f64(samples: &mut [u64]) {
@@ -427,8 +427,8 @@ fn bench_event_rate_f64(samples: &mut [u64]) {
     }
 }
 
-fn bench_queue_delay_i64(samples: &mut [u64]) {
-    let mut qd = QueueDelayI64::builder().target(100).window(1000).build().unwrap();
+fn bench_codel_i64(samples: &mut [u64]) {
+    let mut qd = CoDelI64::builder().target(100).window(1000).build().unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
         let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
@@ -705,8 +705,8 @@ fn main() {
     print_row("RunningMaxF64::update", &mut buf);
     bench_event_rate_f64(&mut buf);
     print_row("EventRateF64::tick", &mut buf);
-    bench_queue_delay_i64(&mut buf);
-    print_row("QueueDelayI64::update", &mut buf);
+    bench_codel_i64(&mut buf);
+    print_row("CoDelI64::update", &mut buf);
 
     section("Anomaly Detection");
     print_header();
