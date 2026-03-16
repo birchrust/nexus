@@ -41,7 +41,7 @@ let mut ema = AsymEmaF64::builder()
     .alpha_up(0.3)     // fast response to increases
     .alpha_down(0.05)  // slow response to decreases
     .min_samples(5)
-    .build();
+    .build().unwrap();
 ```
 
 Or using spans:
@@ -49,7 +49,7 @@ Or using spans:
 let mut ema = AsymEmaF64::builder()
     .span_up(5)    // ~5-sample response on increases
     .span_down(40) // ~40-sample response on decreases
-    .build();
+    .build().unwrap();
 ```
 
 ## Performance

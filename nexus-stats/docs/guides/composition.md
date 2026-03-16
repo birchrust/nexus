@@ -59,8 +59,8 @@ Two EMAs at different speeds detect trend changes when the fast one
 crosses the slow one.
 
 ```rust
-let mut fast = EmaF64::builder().span(5).build();
-let mut slow = EmaF64::builder().span(50).build();
+let mut fast = EmaF64::builder().span(5).build().unwrap();
+let mut slow = EmaF64::builder().span(50).build().unwrap();
 
 if let (Some(f), Some(s)) = (fast.update(x), slow.update(x)) {
     if f > s { /* uptrend */ }
@@ -74,7 +74,7 @@ When CUSUM detects a shift, use WindowedMedian to compute the new
 baseline, then reset CUSUM:
 
 ```rust
-if let Some(Shift::Upper) = cusum.update(sample) {
+if let Some(Direction::Rising) = cusum.update(sample) {
     if let Some(new_base) = median.median() {
         cusum.reset_with_target(new_base);
     }
@@ -87,8 +87,8 @@ Combine several bool-returning monitors into a composite:
 
 ```rust
 let alive = liveness.check(now);
-let queue_ok = !matches!(qd.update(now, sojourn), Some(QueuePressure::Elevated));
-let errors_ok = !matches!(error_rate.record(ok), Some(Health::Degraded));
+let queue_ok = !matches!(qd.update(now, sojourn), Some(Condition::Degraded));
+let errors_ok = !matches!(error_rate.record(ok), Some(Condition::Degraded));
 
 let health_score = [alive, queue_ok, errors_ok]
     .iter().filter(|&&b| b).count();

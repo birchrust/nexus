@@ -1,12 +1,5 @@
+use crate::Condition;
 use crate::math::MulAdd;
-/// Resource pressure state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pressure {
-    /// Utilization below threshold.
-    Normal,
-    /// Smoothed utilization exceeds threshold.
-    Saturated,
-}
 
 macro_rules! impl_saturation {
     ($name:ident, $builder:ident, $ty:ty) => {
@@ -54,7 +47,7 @@ macro_rules! impl_saturation {
             /// Feeds a utilization sample. Returns pressure state once primed.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, utilization: $ty) -> Option<Pressure> {
+            pub fn update(&mut self, utilization: $ty) -> Option<Condition> {
                 self.count += 1;
 
                 if self.count == 1 {
@@ -68,9 +61,9 @@ macro_rules! impl_saturation {
                 }
 
                 if self.value > self.threshold {
-                    Option::Some(Pressure::Saturated)
+                    Option::Some(Condition::Degraded)
                 } else {
-                    Option::Some(Pressure::Normal)
+                    Option::Some(Condition::Normal)
                 }
             }
 
@@ -100,6 +93,12 @@ macro_rules! impl_saturation {
             pub fn reset(&mut self) {
                 self.value = 0.0 as $ty;
                 self.count = 0;
+            }
+
+            /// Updates the saturation threshold without resetting state.
+            #[inline]
+            pub fn reconfigure_threshold(&mut self, threshold: $ty) {
+                self.threshold = threshold;
             }
         }
 
@@ -148,25 +147,26 @@ macro_rules! impl_saturation {
 
             /// Builds the saturation detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha and threshold must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("Saturation alpha must be set");
-                let threshold = self.threshold.expect("Saturation threshold must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "alpha must be in (0, 1)");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     value: 0.0 as $ty,
                     threshold,
                     count: 0,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -184,10 +184,10 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build();
+            .build().unwrap();
 
         for _ in 0..50 {
-            assert_eq!(s.update(0.5), Some(Pressure::Normal));
+            assert_eq!(s.update(0.5), Some(Condition::Normal));
         }
     }
 
@@ -196,12 +196,12 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build();
+            .build().unwrap();
 
         for _ in 0..50 {
             let _ = s.update(0.95);
         }
-        assert_eq!(s.update(0.95), Some(Pressure::Saturated));
+        assert_eq!(s.update(0.95), Some(Condition::Degraded));
     }
 
     #[test]
@@ -209,19 +209,19 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.5)
             .threshold(0.8)
-            .build();
+            .build().unwrap();
 
         // Drive up
         for _ in 0..50 {
             let _ = s.update(0.95);
         }
-        assert_eq!(s.update(0.95), Some(Pressure::Saturated));
+        assert_eq!(s.update(0.95), Some(Condition::Degraded));
 
         // Drive down
         for _ in 0..50 {
             let _ = s.update(0.3);
         }
-        assert_eq!(s.update(0.3), Some(Pressure::Normal));
+        assert_eq!(s.update(0.3), Some(Condition::Normal));
     }
 
     #[test]
@@ -230,7 +230,7 @@ mod tests {
             .alpha(0.3)
             .threshold(0.8)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..4 {
             assert!(s.update(0.95).is_none());
@@ -243,7 +243,7 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = s.update(0.95);
@@ -258,14 +258,32 @@ mod tests {
         let mut s = SaturationF32::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build();
+            .build().unwrap();
 
-        assert_eq!(s.update(0.5), Some(Pressure::Normal));
+        assert_eq!(s.update(0.5), Some(Condition::Normal));
     }
 
     #[test]
-    #[should_panic(expected = "threshold must be set")]
-    fn panics_without_threshold() {
-        let _ = SaturationF64::builder().alpha(0.3).build();
+    #[allow(clippy::float_cmp)]
+    fn reconfigure_threshold_changes_behavior() {
+        let mut s = SaturationF64::builder()
+            .alpha(0.3)
+            .threshold(0.8)
+            .build().unwrap();
+
+        for _ in 0..50 {
+            let _ = s.update(0.75);
+        }
+        assert_eq!(s.update(0.75), Some(Condition::Normal));
+
+        // Lower the threshold — same value should now be degraded
+        s.reconfigure_threshold(0.7);
+        assert_eq!(s.update(0.75), Some(Condition::Degraded));
+    }
+
+    #[test]
+    fn errors_without_threshold() {
+        let result = SaturationF64::builder().alpha(0.3).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
     }
 }

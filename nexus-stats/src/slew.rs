@@ -19,9 +19,12 @@ macro_rules! impl_slew {
         impl $name {
             /// Creates a new slew limiter with the given maximum change per sample.
             #[inline]
-            #[must_use]
-            pub fn new(max_rate: $ty) -> Self {
-                Self { max_rate, value: $zero, initialized: false }
+            pub fn new(max_rate: $ty) -> Result<Self, crate::ConfigError> {
+                #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                if !(max_rate > $zero) {
+                    return Err(crate::ConfigError::Invalid("max_rate must be positive"));
+                }
+                Ok(Self { max_rate, value: $zero, initialized: false })
             }
 
             /// Feeds a sample. Returns the rate-limited output.
@@ -65,7 +68,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn spike_clamped() {
-        let mut s = SlewF64::new(10.0);
+        let mut s = SlewF64::new(10.0).unwrap();
         assert_eq!(s.update(100.0), 100.0); // first sample, pass through
         assert_eq!(s.update(200.0), 110.0); // clamped: 100 + 10
         assert_eq!(s.update(200.0), 120.0); // clamped: 110 + 10
@@ -74,7 +77,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn gradual_passes_through() {
-        let mut s = SlewF64::new(10.0);
+        let mut s = SlewF64::new(10.0).unwrap();
         assert_eq!(s.update(100.0), 100.0);
         assert_eq!(s.update(105.0), 105.0); // within rate, passes through
     }
@@ -82,14 +85,14 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn negative_clamped() {
-        let mut s = SlewF64::new(10.0);
+        let mut s = SlewF64::new(10.0).unwrap();
         assert_eq!(s.update(100.0), 100.0);
         assert_eq!(s.update(50.0), 90.0); // clamped: 100 - 10
     }
 
     #[test]
     fn i64_basic() {
-        let mut s = SlewI64::new(5);
+        let mut s = SlewI64::new(5).unwrap();
         assert_eq!(s.update(100), 100);
         assert_eq!(s.update(200), 105);
     }
@@ -97,9 +100,15 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reset() {
-        let mut s = SlewF64::new(10.0);
+        let mut s = SlewF64::new(10.0).unwrap();
         let _ = s.update(100.0);
         s.reset();
         assert_eq!(s.update(50.0), 50.0); // re-initialized
+    }
+
+    #[test]
+    fn rejects_zero_max_rate() {
+        assert!(matches!(SlewF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(SlewI64::new(0), Err(crate::ConfigError::Invalid(_))));
     }
 }

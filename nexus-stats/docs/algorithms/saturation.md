@@ -7,7 +7,7 @@
 | Update cost | ~6 cycles |
 | Memory | ~24 bytes |
 | Types | `SaturationF64`, `SaturationF32` |
-| Output | `Option<Pressure>` — `Normal` or `Saturated` |
+| Output | `Option<Condition>` — `Normal` or `Saturated` |
 
 ## What It Does
 
@@ -34,10 +34,10 @@ exceeds a threshold. Prevents flapping from momentary spikes.
 let mut sat = SaturationF64::builder()
     .span(20)
     .threshold(0.80)  // saturated above 80%
-    .build();
+    .build().unwrap();
 
 match sat.update(cpu_utilization) {
-    Some(Pressure::Saturated) => shed_load(),
+    Some(Condition::Degraded) => shed_load(),
     _ => {}
 }
 ```

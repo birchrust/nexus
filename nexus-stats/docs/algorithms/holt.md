@@ -48,7 +48,7 @@ trend = beta × (level - prev_level) + (1 - beta) × trend
 let mut holt = HoltF64::builder()
     .alpha(0.3)    // level smoothing
     .beta(0.1)     // trend smoothing
-    .build();
+    .build().unwrap();
 
 if let Some((level, trend)) = holt.update(sample) {
     let forecast_10 = holt.forecast(10).unwrap();

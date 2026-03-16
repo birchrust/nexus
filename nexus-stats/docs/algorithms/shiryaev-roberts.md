@@ -43,7 +43,7 @@ let mut sr = ShiryaevRobertsF64::builder()
     .variance(25.0)
     .threshold(100.0)
     .min_samples(10)
-    .build();
+    .build().unwrap();
 ```
 
 Currently assumes normal distribution for the likelihood ratio.

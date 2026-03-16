@@ -220,18 +220,19 @@ macro_rules! impl_multi_gate {
 
             /// Builds the multi-gate filter.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha, hard_limit, and suspect_z must have been set.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("MultiGate alpha must be set");
-                let hard_limit = self.hard_limit_pct.expect("MultiGate hard_limit must be set");
-                let suspect_z = self.suspect_z.expect("MultiGate suspect_z must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "alpha must be in (0, 1)");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let hard_limit = self.hard_limit_pct.ok_or(crate::ConfigError::Missing("hard_limit"))?;
+                let suspect_z = self.suspect_z.ok_or(crate::ConfigError::Missing("suspect_z"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     ema_value: 0.0 as $ty,
@@ -242,7 +243,7 @@ macro_rules! impl_multi_gate {
                     count: 0,
                     min_samples: self.min_samples,
                     initialized: false,
-                }
+                })
             }
         }
     };
@@ -263,6 +264,7 @@ mod tests {
             .unusual_spread_multiple(3.0)
             .min_samples(5)
             .build()
+            .unwrap()
     }
 
     #[test]
@@ -309,7 +311,7 @@ mod tests {
             .hard_limit(1.0)    // very high hard limit
             .suspect_z(3.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         // Build up baseline with small movements
         for i in 0..20 {
@@ -350,7 +352,7 @@ mod tests {
             .hard_limit(0.5)
             .suspect_z(5.0)
             .min_samples(3)
-            .build();
+            .build().unwrap();
 
         for _ in 0..5 {
             let _ = mg.update(100.0);
@@ -359,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "hard_limit must be set")]
-    fn panics_without_hard_limit() {
-        let _ = MultiGateF64::builder().alpha(0.1).suspect_z(3.0).build();
+    fn errors_without_hard_limit() {
+        let result = MultiGateF64::builder().alpha(0.1).suspect_z(3.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("hard_limit"))));
     }
 }

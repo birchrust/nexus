@@ -21,15 +21,17 @@ impl DecayAccumF64 {
     /// `half_life` is in the same time units as the timestamps passed to
     /// `accumulate()` and `score()`.
     #[inline]
-    #[must_use]
-    pub fn new(half_life: f64) -> Self {
-        assert!(half_life > 0.0, "half_life must be positive");
-        Self {
+    pub fn new(half_life: f64) -> Result<Self, crate::ConfigError> {
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(half_life > 0.0) {
+            return Err(crate::ConfigError::Invalid("half_life must be positive"));
+        }
+        Ok(Self {
             score: 0.0,
             last_time: 0.0,
             decay_constant: core::f64::consts::LN_2 / half_life,
             initialized: false,
-        }
+        })
     }
 
     /// Adds weight at the given timestamp.
@@ -78,7 +80,7 @@ mod tests {
 
     #[test]
     fn accumulates() {
-        let mut da = DecayAccumF64::new(10.0);
+        let mut da = DecayAccumF64::new(10.0).unwrap();
         da.accumulate(0.0, 1.0);
         da.accumulate(0.0, 1.0);
         let s = da.score(0.0);
@@ -87,7 +89,7 @@ mod tests {
 
     #[test]
     fn decays_over_time() {
-        let mut da = DecayAccumF64::new(10.0);
+        let mut da = DecayAccumF64::new(10.0).unwrap();
         da.accumulate(0.0, 100.0);
 
         let s = da.score(10.0); // one half-life
@@ -99,7 +101,7 @@ mod tests {
 
     #[test]
     fn lazy_evaluation() {
-        let mut da = DecayAccumF64::new(10.0);
+        let mut da = DecayAccumF64::new(10.0).unwrap();
         da.accumulate(0.0, 100.0);
         // No work done between calls
         da.accumulate(5.0, 50.0); // decays 100 by 5 time units, adds 50
@@ -111,7 +113,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut da = DecayAccumF64::new(10.0);
+        let mut da = DecayAccumF64::new(10.0).unwrap();
         da.accumulate(0.0, 100.0);
         da.reset();
         let s = da.score(0.0);
@@ -119,8 +121,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "half_life must be positive")]
-    fn panics_on_zero_half_life() {
-        let _ = DecayAccumF64::new(0.0);
+    fn rejects_zero_half_life() {
+        assert!(matches!(DecayAccumF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
     }
 }

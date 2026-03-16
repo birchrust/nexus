@@ -29,6 +29,8 @@ macro_rules! impl_jitter_float {
         pub struct $builder {
             alpha: Option<$ty>,
             min_samples: u64,
+            seed_value: Option<$ty>,
+            seed_jitter: Option<$ty>,
         }
 
         impl $name {
@@ -39,6 +41,8 @@ macro_rules! impl_jitter_float {
                 $builder {
                     alpha: Option::None,
                     min_samples: 2,
+                    seed_value: Option::None,
+                    seed_jitter: Option::None,
                 }
             }
 
@@ -168,28 +172,46 @@ macro_rules! impl_jitter_float {
                 self
             }
 
+            /// Pre-loads the last sample value and smoothed jitter from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately and the
+            /// next `update()` computes a deviation against `value`.
+            #[inline]
+            #[must_use]
+            pub fn seed(mut self, value: $ty, jitter: $ty) -> Self {
+                self.seed_value = Option::Some(value);
+                self.seed_jitter = Option::Some(jitter);
+                self
+            }
+
             /// Builds the jitter tracker.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("Jitter alpha must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "Jitter alpha must be in (0, 1)");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("Jitter alpha must be in (0, 1)"));
+                }
 
-                $name {
+                let (last_sample, jitter, mean, count) = match (self.seed_value, self.seed_jitter) {
+                    (Some(v), Some(j)) => (v, j, v, self.min_samples),
+                    _ => (0.0 as $ty, 0.0 as $ty, 0.0 as $ty, 0),
+                };
+
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
-                    jitter: 0.0 as $ty,
-                    mean: 0.0 as $ty,
-                    last_sample: 0.0 as $ty,
+                    jitter,
+                    mean,
+                    last_sample,
                     last_deviation: 0.0 as $ty,
-                    count: 0,
+                    count,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -333,19 +355,20 @@ macro_rules! impl_jitter_int {
 
             /// Builds the jitter tracker.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Span must have been set and >= 1.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let requested = self.span.expect("Jitter span must be set");
-                assert!(requested >= 1, "Jitter span must be >= 1");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
+                if requested < 1 {
+                    return Err(crate::ConfigError::Invalid("Jitter span must be >= 1"));
+                }
 
                 let effective = crate::ema::next_power_of_two_minus_one(requested);
                 let shift = crate::ema::log2_of_span_plus_one(effective);
 
-                $name {
+                Ok($name {
                     acc: 0,
                     shift,
                     span: effective,
@@ -354,7 +377,7 @@ macro_rules! impl_jitter_int {
                     count: 0,
                     min_samples: self.min_samples,
                     initialized: false,
-                }
+                })
             }
         }
     };
@@ -370,7 +393,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn constant_input_zero_jitter() {
-        let mut j = JitterF64::builder().alpha(0.3).build();
+        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
         for _ in 0..100 {
             let _ = j.update(100.0);
         }
@@ -380,7 +403,7 @@ mod tests {
 
     #[test]
     fn alternating_input_high_jitter() {
-        let mut j = JitterF64::builder().alpha(0.5).build();
+        let mut j = JitterF64::builder().alpha(0.5).build().unwrap();
         for i in 0..50 {
             let _ = j.update(if i % 2 == 0 { 100.0 } else { 200.0 });
         }
@@ -390,7 +413,7 @@ mod tests {
 
     #[test]
     fn jitter_ratio_correctness() {
-        let mut j = JitterF64::builder().alpha(0.3).build();
+        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
         for i in 0..100 {
             let _ = j.update(100.0 + (i % 10) as f64);
         }
@@ -400,7 +423,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut j = JitterF64::builder().alpha(0.3).min_samples(5).build();
+        let mut j = JitterF64::builder().alpha(0.3).min_samples(5).build().unwrap();
         for _ in 0..4 {
             assert!(j.update(100.0).is_none());
         }
@@ -409,7 +432,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut j = JitterF64::builder().alpha(0.3).build();
+        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
         for _ in 0..10 {
             let _ = j.update(100.0);
         }
@@ -420,7 +443,7 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut j = JitterI64::builder().span(7).build();
+        let mut j = JitterI64::builder().span(7).build().unwrap();
         let _ = j.update(100);
         let _ = j.update(110);
         let _ = j.update(105);
@@ -429,7 +452,7 @@ mod tests {
 
     #[test]
     fn i32_basic() {
-        let mut j = JitterI32::builder().span(3).build();
+        let mut j = JitterI32::builder().span(3).build().unwrap();
         let _ = j.update(50);
         let _ = j.update(60);
         assert!(j.jitter().is_some());
@@ -438,15 +461,41 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn f32_basic() {
-        let mut j = JitterF32::builder().alpha(0.5).build();
+        let mut j = JitterF32::builder().alpha(0.5).build().unwrap();
         let _ = j.update(100.0);
         let _ = j.update(110.0);
         assert_eq!(j.last_deviation(), Some(10.0));
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = JitterF64::builder().build();
+    fn seeded_is_primed() {
+        let j = JitterF64::builder()
+            .alpha(0.3)
+            .seed(100.0, 5.0)
+            .build().unwrap();
+
+        assert!(j.is_primed());
+        assert!((j.jitter().unwrap() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn seeded_next_update_uses_seed_value() {
+        let mut j = JitterF64::builder()
+            .alpha(0.3)
+            .seed(100.0, 5.0)
+            .build().unwrap();
+
+        // Next update should compute deviation from seeded last_sample=100
+        let result = j.update(110.0);
+        assert!(result.is_some());
+        // Deviation is |110-100|=10, smoothed jitter = 0.3*10 + 0.7*5 = 6.5
+        let jitter = result.unwrap();
+        assert!((jitter - 6.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn errors_without_alpha() {
+        let result = JitterF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 }

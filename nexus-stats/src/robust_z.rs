@@ -180,18 +180,21 @@ macro_rules! impl_robust_z {
 
             /// Builds the robust z-score detector.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha and reject_threshold must have been set.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("RobustZScore alpha must be set");
-                let reject = self.reject_threshold.expect("RobustZScore reject_threshold must be set");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "alpha must be in (0, 1)");
-                assert!(reject > 0.0 as $ty, "reject_threshold must be positive");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                let reject = self.reject_threshold.ok_or(crate::ConfigError::Missing("reject_threshold"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
+                if reject <= 0.0 as $ty {
+                    return Err(crate::ConfigError::Invalid("reject_threshold must be positive"));
+                }
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     ema: 0.0 as $ty,
@@ -201,7 +204,7 @@ macro_rules! impl_robust_z {
                     count: 0,
                     min_samples: self.min_samples,
                     initialized: false,
-                }
+                })
             }
         }
     };
@@ -220,7 +223,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(10.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = rz.update(100.0);
@@ -236,7 +239,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(10.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         // Build baseline around 100 with small variation
         for i in 0..20 {
@@ -254,7 +257,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(3.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for i in 0..20 {
             let _ = rz.update(100.0 + (i % 2) as f64);
@@ -278,7 +281,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = rz.update(100.0);
@@ -300,7 +303,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(10)
-            .build();
+            .build().unwrap();
 
         for _ in 0..9 {
             assert!(rz.update(100.0).is_none());
@@ -314,7 +317,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = rz.update(100.0);
@@ -329,7 +332,7 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..10 {
             let _ = rz.update(100.0);
@@ -338,8 +341,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "reject_threshold must be set")]
-    fn panics_without_reject_threshold() {
-        let _ = RobustZScoreF64::builder().alpha(0.1).build();
+    fn errors_without_reject_threshold() {
+        let result = RobustZScoreF64::builder().alpha(0.1).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("reject_threshold"))));
     }
 }

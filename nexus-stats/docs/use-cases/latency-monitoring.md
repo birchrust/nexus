@@ -20,7 +20,7 @@ durations, queue wait times). You need to:
 use nexus_stats::*;
 
 // Smooth display value
-let mut ema = EmaF64::builder().span(20).min_samples(5).build();
+let mut ema = EmaF64::builder().span(20).min_samples(5).build().unwrap();
 
 // Running statistics
 let mut stats = WelfordF64::new();
@@ -29,7 +29,7 @@ let mut stats = WelfordF64::new();
 let mut peak = PeakHoldF64::builder()
     .hold_samples(50)
     .decay_rate(0.98)
-    .build();
+    .build().unwrap();
 
 // On each latency measurement:
 fn on_measurement(latency_us: f64,
@@ -60,25 +60,25 @@ let mut cusum = CusumF64::builder(baseline_us)
     .slack(10.0)       // 10μs noise tolerance
     .threshold(100.0)  // 100μs accumulated evidence
     .min_samples(50)
-    .build();
+    .build().unwrap();
 
 // Detect trend (getting worse over time, not just high)
 let mut trend = TrendAlertF64::builder()
     .alpha(0.3)
     .beta(0.1)
     .trend_threshold(0.5)  // 0.5μs/sample increase rate
-    .build();
+    .build().unwrap();
 
 // On each measurement:
 match cusum.update(latency_us) {
-    Some(Shift::Upper) => {
+    Some(Direction::Rising) => {
         // Latency degraded — check if stable or worsening
         match trend.update(latency_us) {
-            Some(Trend::Rising) => {
+            Some(Direction::Rising) => {
                 // Getting worse — escalate
                 alert_escalate("latency degrading and trending up");
             }
-            Some(Trend::Stable) => {
+            Some(Direction::Neutral) => {
                 // Degraded but stable — shifted to new level
                 alert_warn("latency shifted up, stable at new level");
             }
@@ -86,7 +86,7 @@ match cusum.update(latency_us) {
         }
         cusum.reset();
     }
-    Some(Shift::Lower) => {
+    Some(Direction::Falling) => {
         alert_info("latency recovered");
         cusum.reset();
     }
@@ -99,7 +99,7 @@ match cusum.update(latency_us) {
 ```rust
 use nexus_stats::*;
 
-let mut jitter = JitterF64::builder().span(30).build();
+let mut jitter = JitterF64::builder().span(30).build().unwrap();
 
 // On each measurement:
 if let Some(j) = jitter.update(latency_us) {
@@ -123,7 +123,7 @@ let mut gate = MultiGateF64::builder()
     .hard_limit_pct(0.50)  // reject >50% jumps
     .suspect_z(5.0)        // flag >5σ jumps
     .min_samples(50)
-    .build();
+    .build().unwrap();
 
 // Only feed good data to downstream stats
 let mut stats = WelfordF64::new();
@@ -166,5 +166,5 @@ match gate.update(latency_us) {
 - **Filter before tracking.** Bad measurements corrupt your statistics.
   Use MultiGate first, then feed only accepted data to Welford/EMA.
 
-- **Detect recovery, not just degradation.** `Shift::Lower` tells you
+- **Detect recovery, not just degradation.** `Direction::Falling` tells you
   when a problem is fixed — useful for auto-closing alerts.

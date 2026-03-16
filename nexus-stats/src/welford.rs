@@ -30,6 +30,16 @@ macro_rules! impl_welford {
                 }
             }
 
+            /// Creates an accumulator pre-loaded from known statistics.
+            ///
+            /// `m2` is the sum of squared deviations from the mean
+            /// (`variance * (count - 1)` for sample variance).
+            #[inline]
+            #[must_use]
+            pub const fn from_parts(count: u64, mean: $ty, m2: $ty) -> Self {
+                Self { count, mean, m2 }
+            }
+
             /// Feeds a sample.
             #[inline]
             pub fn update(&mut self, sample: $ty) {
@@ -349,6 +359,28 @@ mod tests {
     // =========================================================================
     // f32 variant
     // =========================================================================
+
+    // =========================================================================
+    // from_parts
+    // =========================================================================
+
+    #[test]
+    fn from_parts_round_trip() {
+        let mut w = WelfordF64::new();
+        for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
+            w.update(x);
+        }
+
+        let count = w.count();
+        let mean = w.mean().unwrap();
+        // m2 = variance * (count - 1)
+        let m2 = w.variance().unwrap() * (count - 1) as f64;
+
+        let w2 = WelfordF64::from_parts(count, mean, m2);
+        assert_eq!(w2.count(), count);
+        assert!((w2.mean().unwrap() - mean).abs() < 1e-10);
+        assert!((w2.variance().unwrap() - w.variance().unwrap()).abs() < 1e-10);
+    }
 
     #[test]
     fn f32_basic() {

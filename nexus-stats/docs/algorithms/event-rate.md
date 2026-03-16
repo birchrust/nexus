@@ -12,7 +12,7 @@ per second is this source producing?"
 ## API
 
 ```rust
-let mut rate = EventRateF64::builder().span(20).build();
+let mut rate = EventRateF64::builder().span(20).build().unwrap();
 
 rate.tick(timestamp);  // record an event
 if let Some(r) = rate.rate() {

@@ -204,17 +204,20 @@ macro_rules! impl_kalman1d {
 
             /// Builds the Kalman filter.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - process_noise and measurement_noise must have been set.
             /// - Both must be positive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let q = self.q.expect("Kalman process_noise must be set");
-                let r = self.r.expect("Kalman measurement_noise must be set");
-                assert!(q > 0.0 as $ty, "process_noise must be positive");
-                assert!(r > 0.0 as $ty, "measurement_noise must be positive");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let q = self.q.ok_or(crate::ConfigError::Missing("process_noise"))?;
+                let r = self.r.ok_or(crate::ConfigError::Missing("measurement_noise"))?;
+                if q <= 0.0 as $ty {
+                    return Err(crate::ConfigError::Invalid("process_noise must be positive"));
+                }
+                if r <= 0.0 as $ty {
+                    return Err(crate::ConfigError::Invalid("measurement_noise must be positive"));
+                }
 
                 let (x0, x1, count, initialized) = if let (Some(pos), Some(vel)) = (self.seed_pos, self.seed_vel) {
                     (pos, vel, self.min_samples, true)
@@ -222,7 +225,7 @@ macro_rules! impl_kalman1d {
                     (0.0 as $ty, 0.0 as $ty, 0, false)
                 };
 
-                $name {
+                Ok($name {
                     x0, x1,
                     p00: 1.0 as $ty,
                     p01: 0.0 as $ty,
@@ -231,7 +234,7 @@ macro_rules! impl_kalman1d {
                     count,
                     min_samples: self.min_samples,
                     initialized,
-                }
+                })
             }
         }
     };
@@ -249,7 +252,7 @@ mod tests {
         let mut kf = Kalman1dF64::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..100 {
             let _ = kf.update(50.0);
@@ -264,7 +267,7 @@ mod tests {
         let mut kf = Kalman1dF64::builder()
             .process_noise(0.1)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
 
         for i in 0..100 {
             let _ = kf.update(i as f64 * 10.0);
@@ -279,11 +282,11 @@ mod tests {
         let mut reactive = Kalman1dF64::builder()
             .process_noise(10.0)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
         let mut smooth = Kalman1dF64::builder()
             .process_noise(0.001)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..20 {
             let _ = reactive.update(100.0);
@@ -303,7 +306,7 @@ mod tests {
         let mut kf = Kalman1dF64::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
 
         let _ = kf.update(50.0);
         let u1 = kf.uncertainty();
@@ -322,7 +325,7 @@ mod tests {
             .process_noise(0.01)
             .measurement_noise(1.0)
             .seed(100.0, 5.0)
-            .build();
+            .build().unwrap();
 
         assert!(kf.is_primed());
         let pos = kf.position().unwrap();
@@ -334,7 +337,7 @@ mod tests {
         let mut kf = Kalman1dF64::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
 
         for _ in 0..50 {
             let _ = kf.update(100.0);
@@ -348,7 +351,7 @@ mod tests {
         let mut kf = Kalman1dF32::builder()
             .process_noise(0.1)
             .measurement_noise(1.0)
-            .build();
+            .build().unwrap();
 
         let _ = kf.update(50.0);
         assert!(kf.position().is_some());
@@ -360,7 +363,7 @@ mod tests {
             .process_noise(0.01)
             .measurement_noise(1.0)
             .seed(0.0, 0.0)
-            .build();
+            .build().unwrap();
 
         assert!(kf.is_primed());
         // First update should apply predict+update, not re-initialize
@@ -369,8 +372,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "process_noise must be set")]
-    fn panics_without_process_noise() {
-        let _ = Kalman1dF64::builder().measurement_noise(1.0).build();
+    fn errors_without_process_noise() {
+        let result = Kalman1dF64::builder().measurement_noise(1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("process_noise"))));
     }
 }

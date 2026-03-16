@@ -32,7 +32,7 @@ Start with your problem. Follow the tree to find the right primitive.
 
 - Mean shifted up or down permanently → [**CUSUM**](../algorithms/cusum.md)
   - "Exchange latency increased 20μs and stayed there"
-  - Reports direction: `Shift::Upper` or `Shift::Lower`
+  - Reports direction: `Direction::Rising` or `Direction::Falling`
 - Temporary spike, then back to normal → [**MOSUM**](../algorithms/mosum.md)
   - "Latency spiked for 10 seconds, then recovered"
   - Windowed — forgets the spike after the window passes

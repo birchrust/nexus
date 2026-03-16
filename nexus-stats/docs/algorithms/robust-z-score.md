@@ -41,7 +41,7 @@ let mut rz = RobustZScoreF64::builder()
     .span(50)               // EMA smoothing
     .reject_threshold(5.0)  // freeze EMA when z > 5
     .min_samples(20)
-    .build();
+    .build().unwrap();
 
 if let Some(z) = rz.update(sample) {
     if z.abs() > 3.5 {

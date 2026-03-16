@@ -9,7 +9,7 @@ combines EMA (baseline) + Welford (std dev) to compute z-scores.
 | Memory | ~56 bytes |
 | Types | `AdaptiveThresholdF64`, `AdaptiveThresholdF32` |
 | Priming | Default: 20 samples (needs enough data for std_dev) |
-| Output | `Option<Anomaly>` — `Normal`, `High`, or `Low` |
+| Output | `Option<Direction>` — `Normal`, `High`, or `Low` |
 
 ## What It Does
 
@@ -17,7 +17,7 @@ combines EMA (baseline) + Welford (std dev) to compute z-scores.
   z-score = (sample - baseline) / std_dev
 
   Value
-  130 ┤                              ·  ← z > 3 → Anomaly::High
+  130 ┤                              ·  ← z > 3 → Direction::Rising
       ┤ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  +3σ
   115 ┤
   110 ┤     ·  ·     ·
@@ -25,7 +25,7 @@ combines EMA (baseline) + Welford (std dev) to compute z-scores.
   100 ┤──────────────────────────────────  baseline (EMA)
    95 ┤  ·     ·        ·
       ┤ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  -3σ
-   70 ┤        ·                          ← z < -3 → Anomaly::Low
+   70 ┤        ·                          ← z < -3 → Direction::Falling
       └──────────────────────────────────── t
 ```
 
@@ -50,14 +50,14 @@ let mut at = AdaptiveThresholdF64::builder()
     .span(50)            // EMA baseline smoothing
     .z_threshold(3.0)    // standard 3-sigma threshold
     .min_samples(20)     // warmup for std_dev
-    .build();
+    .build().unwrap();
 
 // Or seed from known baseline:
 let at = AdaptiveThresholdF64::builder()
     .span(50)
     .z_threshold(3.0)
     .seed(100.0, 5.0)  // baseline_mean=100, baseline_std=5
-    .build();
+    .build().unwrap();
 ```
 
 ## Performance

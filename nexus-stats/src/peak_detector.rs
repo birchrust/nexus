@@ -31,14 +31,17 @@ macro_rules! impl_peak_detector {
             ///
             /// A reversal must exceed `prominence` to qualify as a peak.
             #[inline]
-            #[must_use]
-            pub fn new(prominence: $ty) -> Self {
-                Self {
+            pub fn new(prominence: $ty) -> Result<Self, crate::ConfigError> {
+                #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                if !(prominence >= $zero) {
+                    return Err(crate::ConfigError::Invalid("prominence must be non-negative"));
+                }
+                Ok(Self {
                     prominence,
                     extreme: $zero,
                     rising: true,
                     count: 0,
-                }
+                })
             }
 
             /// Feeds a sample. Returns `Some(Peak)` when a peak is detected.
@@ -99,7 +102,7 @@ mod tests {
 
     #[test]
     fn detects_maximum() {
-        let mut pd = PeakDetectorF64::new(5.0);
+        let mut pd = PeakDetectorF64::new(5.0).unwrap();
         let _ = pd.update(10.0);
         let _ = pd.update(20.0);
         let _ = pd.update(30.0); // rising
@@ -109,14 +112,14 @@ mod tests {
 
     #[test]
     fn detects_minimum() {
-        let mut pd = PeakDetectorF64::new(5.0);
+        let mut pd = PeakDetectorF64::new(5.0).unwrap();
         let _ = pd.update(30.0);
         let _ = pd.update(20.0);
         let _ = pd.update(10.0); // found max at 30, now falling
         // need to trigger the max detection first
         let _ = pd.update(20.0); // reversal from 10 by 10 > 5, minimum at 10
 
-        let mut pd2 = PeakDetectorF64::new(5.0);
+        let mut pd2 = PeakDetectorF64::new(5.0).unwrap();
         let _ = pd2.update(10.0);
         let _ = pd2.update(20.0); // rising
         let _ = pd2.update(10.0); // max at 20, reversal
@@ -127,7 +130,7 @@ mod tests {
 
     #[test]
     fn small_oscillation_filtered() {
-        let mut pd = PeakDetectorF64::new(10.0);
+        let mut pd = PeakDetectorF64::new(10.0).unwrap();
         let _ = pd.update(100.0);
         let _ = pd.update(105.0);
         assert!(pd.update(102.0).is_none()); // only dropped 3, < prominence 10
@@ -135,7 +138,7 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut pd = PeakDetectorI64::new(10);
+        let mut pd = PeakDetectorI64::new(10).unwrap();
         let _ = pd.update(0);
         let _ = pd.update(50);
         let peak = pd.update(30); // dropped 20 > 10
@@ -144,9 +147,14 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut pd = PeakDetectorF64::new(5.0);
+        let mut pd = PeakDetectorF64::new(5.0).unwrap();
         let _ = pd.update(100.0);
         pd.reset();
         assert!(pd.update(50.0).is_none()); // re-initialized
+    }
+
+    #[test]
+    fn rejects_negative_prominence() {
+        assert!(matches!(PeakDetectorF64::new(-1.0), Err(crate::ConfigError::Invalid(_))));
     }
 }

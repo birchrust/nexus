@@ -13,7 +13,7 @@ let mut slew = SlewF64::new(10.0);  // max 10°C change per sample
 
 // Statistical outlier detection
 let mut robust = RobustZScoreF64::builder()
-    .span(100).reject_threshold(5.0).build();
+    .span(100).reject_threshold(5.0).build().unwrap();
 
 // Stuck sensor detection
 let mut dead_band = DeadBandF64::new(0.01);  // report if > 0.01°C change
@@ -41,13 +41,13 @@ use nexus_stats::*;
 let mut drift = CusumF64::builder(setpoint)
     .slack(tolerance * 0.5)
     .threshold(tolerance * 5.0)
-    .build();
+    .build().unwrap();
 
 // Debounce for confirmed out-of-spec
 let mut confirmed = DebounceU32::new(5);
 
 if let Some(shift) = drift.update(measurement) {
-    if matches!(shift, Shift::Upper | Shift::Lower) {
+    if matches!(shift, Direction::Rising | Direction::Falling) {
         if confirmed.update(true) {
             alert_process_drift(shift);
         }

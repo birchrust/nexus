@@ -111,6 +111,21 @@ macro_rules! impl_ema_float {
                 self.value = 0.0 as $ty;
                 self.count = 0;
             }
+
+            /// Updates the smoothing factor without resetting state.
+            ///
+            /// # Errors
+            ///
+            /// Alpha must be in (0, 1) exclusive.
+            #[inline]
+            pub fn reconfigure_alpha(&mut self, alpha: $ty) -> Result<(), crate::ConfigError> {
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
+                }
+                self.alpha = alpha;
+                self.one_minus_alpha = 1.0 as $ty - alpha;
+                Ok(())
+            }
         }
 
         impl $builder {
@@ -167,15 +182,16 @@ macro_rules! impl_ema_float {
 
             /// Builds the EMA.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha must have been set (via `alpha`, `halflife`, or `span`).
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("EMA alpha must be set (use .alpha(), .halflife(), or .span())");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "EMA alpha must be in (0, 1), got {alpha}");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
+                }
 
                 let (value, count) = if let Some(seed_val) = self.seed {
                     (seed_val, self.min_samples)
@@ -183,13 +199,13 @@ macro_rules! impl_ema_float {
                     (0.0 as $ty, 0)
                 };
 
-                $name {
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
                     value,
                     count,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -341,6 +357,37 @@ macro_rules! impl_ema_int {
                 self.count = 0;
                 self.initialized = false;
             }
+
+            /// Updates the span without resetting state.
+            ///
+            /// Unshifts the accumulator with the old shift and reshifts with the
+            /// new one, preserving the smoothed value.
+            ///
+            /// # Errors
+            ///
+            /// Span must be >= 1.
+            #[inline]
+            pub fn reconfigure_span(&mut self, span: u64) -> Result<(), crate::ConfigError> {
+                if span < 1 {
+                    return Err(crate::ConfigError::Invalid("EMA span must be >= 1"));
+                }
+                let effective = next_power_of_two_minus_one(span);
+                let new_shift = log2_of_span_plus_one(effective);
+
+                // Rescale accumulator directly to preserve fixed-point precision.
+                // Only loses bits when shifting down (smaller span), which is unavoidable.
+                if self.initialized {
+                    if new_shift > self.shift {
+                        self.acc <<= new_shift - self.shift;
+                    } else {
+                        self.acc >>= self.shift - new_shift;
+                    }
+                }
+
+                self.shift = new_shift;
+                self.span = effective;
+                Ok(())
+            }
         }
 
         impl $builder {
@@ -376,15 +423,16 @@ macro_rules! impl_ema_int {
 
             /// Builds the EMA.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Span must have been set.
             /// - Span must be >= 1.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let requested = self.span.expect("EMA span must be set (use .span())");
-                assert!(requested >= 1, "EMA span must be >= 1");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
+                if requested < 1 {
+                    return Err(crate::ConfigError::Invalid("EMA span must be >= 1"));
+                }
 
                 let effective = next_power_of_two_minus_one(requested);
                 let shift = log2_of_span_plus_one(effective);
@@ -395,14 +443,14 @@ macro_rules! impl_ema_int {
                     (0, 0, false)
                 };
 
-                $name {
+                Ok($name {
                     acc,
                     shift,
                     span: effective,
                     count,
                     min_samples: self.min_samples,
                     initialized,
-                }
+                })
             }
         }
     };
@@ -421,14 +469,14 @@ mod tests {
 
     #[test]
     fn first_sample_initializes() {
-        let mut ema = EmaF64::builder().alpha(0.5).build();
+        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
         assert_eq!(ema.update(100.0), Some(100.0));
         assert_eq!(ema.value(), Some(100.0));
     }
 
     #[test]
     fn convergence_toward_constant() {
-        let mut ema = EmaF64::builder().alpha(0.1).build();
+        let mut ema = EmaF64::builder().alpha(0.1).build().unwrap();
 
         // Initialize with 0
         let _ = ema.update(0.0);
@@ -444,8 +492,8 @@ mod tests {
 
     #[test]
     fn higher_alpha_reacts_faster() {
-        let mut fast = EmaF64::builder().alpha(0.9).build();
-        let mut slow = EmaF64::builder().alpha(0.1).build();
+        let mut fast = EmaF64::builder().alpha(0.9).build().unwrap();
+        let mut slow = EmaF64::builder().alpha(0.1).build().unwrap();
 
         let _ = fast.update(0.0);
         let _ = slow.update(0.0);
@@ -465,7 +513,7 @@ mod tests {
         let mut ema = EmaF64::builder()
             .alpha(0.5)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for i in 1..5 {
             assert_eq!(ema.update(100.0), None, "sample {i} should not be primed");
@@ -478,7 +526,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut ema = EmaF64::builder().alpha(0.5).build();
+        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
         let _ = ema.update(100.0);
         let _ = ema.update(200.0);
 
@@ -492,39 +540,39 @@ mod tests {
 
     #[test]
     fn span_computes_alpha() {
-        let ema = EmaF64::builder().span(19).build();
+        let ema = EmaF64::builder().span(19).build().unwrap();
         // alpha = 2 / (19 + 1) = 0.1
         assert!((ema.alpha() - 0.1).abs() < 1e-10);
     }
 
     #[test]
     fn halflife_computes_alpha() {
-        let ema = EmaF64::builder().halflife(1.0).build();
+        let ema = EmaF64::builder().halflife(1.0).build().unwrap();
         // halflife=1: alpha = 1 - exp(-ln2) = 1 - 0.5 = 0.5
         assert!((ema.alpha() - 0.5).abs() < 1e-10);
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = EmaF64::builder().build();
+    fn errors_without_alpha() {
+        let result = EmaF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be in (0, 1)")]
-    fn panics_on_alpha_zero() {
-        let _ = EmaF64::builder().alpha(0.0).build();
+    fn errors_on_alpha_zero() {
+        let result = EmaF64::builder().alpha(0.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be in (0, 1)")]
-    fn panics_on_alpha_one() {
-        let _ = EmaF64::builder().alpha(1.0).build();
+    fn errors_on_alpha_one() {
+        let result = EmaF64::builder().alpha(1.0).build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
     fn f32_basic() {
-        let mut ema = EmaF32::builder().alpha(0.5).build();
+        let mut ema = EmaF32::builder().alpha(0.5).build().unwrap();
         assert_eq!(ema.update(100.0), Some(100.0));
         let v = ema.update(200.0).unwrap();
         assert!((v - 150.0).abs() < 0.01);
@@ -537,39 +585,39 @@ mod tests {
     #[test]
     fn span_rounding() {
         // 1 → 1 (2^1 - 1)
-        let ema = EmaI64::builder().span(1).build();
+        let ema = EmaI64::builder().span(1).build().unwrap();
         assert_eq!(ema.effective_span(), 1);
 
         // 2 → 3 (2^2 - 1)
-        let ema = EmaI64::builder().span(2).build();
+        let ema = EmaI64::builder().span(2).build().unwrap();
         assert_eq!(ema.effective_span(), 3);
 
         // 3 → 3
-        let ema = EmaI64::builder().span(3).build();
+        let ema = EmaI64::builder().span(3).build().unwrap();
         assert_eq!(ema.effective_span(), 3);
 
         // 7 → 7 (2^3 - 1, exact)
-        let ema = EmaI64::builder().span(7).build();
+        let ema = EmaI64::builder().span(7).build().unwrap();
         assert_eq!(ema.effective_span(), 7);
 
         // 10 → 15 (2^4 - 1)
-        let ema = EmaI64::builder().span(10).build();
+        let ema = EmaI64::builder().span(10).build().unwrap();
         assert_eq!(ema.effective_span(), 15);
 
         // 20 → 31 (2^5 - 1)
-        let ema = EmaI64::builder().span(20).build();
+        let ema = EmaI64::builder().span(20).build().unwrap();
         assert_eq!(ema.effective_span(), 31);
     }
 
     #[test]
     fn int_first_sample_initializes() {
-        let mut ema = EmaI64::builder().span(7).build();
+        let mut ema = EmaI64::builder().span(7).build().unwrap();
         assert_eq!(ema.update(1000), Some(1000));
     }
 
     #[test]
     fn int_convergence() {
-        let mut ema = EmaI64::builder().span(7).build();
+        let mut ema = EmaI64::builder().span(7).build().unwrap();
 
         let _ = ema.update(0);
         for _ in 0..10_000 {
@@ -583,7 +631,7 @@ mod tests {
 
     #[test]
     fn int_no_drift_over_many_samples() {
-        let mut ema = EmaI64::builder().span(15).build();
+        let mut ema = EmaI64::builder().span(15).build().unwrap();
 
         // Feed constant value — should not drift
         for _ in 0..100_000 {
@@ -599,7 +647,7 @@ mod tests {
         let mut ema = EmaI64::builder()
             .span(7)
             .min_samples(5)
-            .build();
+            .build().unwrap();
 
         for _ in 0..4 {
             assert_eq!(ema.update(100), None);
@@ -609,7 +657,7 @@ mod tests {
 
     #[test]
     fn int_reset() {
-        let mut ema = EmaI64::builder().span(7).build();
+        let mut ema = EmaI64::builder().span(7).build().unwrap();
         let _ = ema.update(1000);
         let _ = ema.update(2000);
 
@@ -620,21 +668,71 @@ mod tests {
 
     #[test]
     fn i32_basic() {
-        let mut ema = EmaI32::builder().span(3).build();
+        let mut ema = EmaI32::builder().span(3).build().unwrap();
         assert_eq!(ema.update(100), Some(100));
     }
 
     #[test]
-    #[should_panic(expected = "span must be set")]
-    fn int_panics_without_span() {
-        let _ = EmaI64::builder().build();
+    fn int_errors_without_span() {
+        let result = EmaI64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("span"))));
+    }
+
+    // =========================================================================
+    // Reconfigure
+    // =========================================================================
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn float_reconfigure_alpha_preserves_value() {
+        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        let _ = ema.update(100.0);
+        let _ = ema.update(200.0);
+        let val_before = ema.value().unwrap();
+        let count_before = ema.count();
+
+        ema.reconfigure_alpha(0.9).unwrap();
+
+        assert!((ema.alpha() - 0.9).abs() < 1e-10);
+        assert_eq!(ema.value().unwrap(), val_before);
+        assert_eq!(ema.count(), count_before);
+    }
+
+    #[test]
+    fn float_reconfigure_alpha_validates() {
+        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        assert!(ema.reconfigure_alpha(0.0).is_err());
+        assert!(ema.reconfigure_alpha(1.0).is_err());
+        assert!(ema.reconfigure_alpha(-0.1).is_err());
+    }
+
+    #[test]
+    fn int_reconfigure_span_preserves_value() {
+        let mut ema = EmaI64::builder().span(7).build().unwrap();
+        for _ in 0..100 {
+            let _ = ema.update(500);
+        }
+        let val_before = ema.value().unwrap();
+        let count_before = ema.count();
+
+        ema.reconfigure_span(15).unwrap();
+
+        assert_eq!(ema.effective_span(), 15);
+        assert_eq!(ema.value().unwrap(), val_before);
+        assert_eq!(ema.count(), count_before);
+    }
+
+    #[test]
+    fn int_reconfigure_span_validates() {
+        let mut ema = EmaI64::builder().span(7).build().unwrap();
+        assert!(ema.reconfigure_span(0).is_err());
     }
 
     #[test]
     fn int_vs_float_comparison() {
         // Both should produce similar results on the same input
-        let mut int_ema = EmaI64::builder().span(15).build();
-        let mut float_ema = EmaF64::builder().span(15).build();
+        let mut int_ema = EmaI64::builder().span(15).build().unwrap();
+        let mut float_ema = EmaF64::builder().span(15).build().unwrap();
 
         let samples = [100, 110, 95, 105, 120, 90, 100, 115, 85, 100];
 

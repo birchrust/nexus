@@ -21,15 +21,13 @@ macro_rules! impl_hysteresis {
             /// Creates a new hysteresis filter.
             ///
             /// `low_threshold` must be less than `high_threshold`.
-            ///
-            /// # Panics
-            ///
-            /// Panics if `low >= high`.
             #[inline]
-            #[must_use]
-            pub fn new(low_threshold: $ty, high_threshold: $ty) -> Self {
-                assert!(low_threshold < high_threshold, "low threshold must be less than high");
-                Self { low: low_threshold, high: high_threshold, state: false }
+            pub fn new(low_threshold: $ty, high_threshold: $ty) -> Result<Self, crate::ConfigError> {
+                #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                if !(low_threshold < high_threshold) {
+                    return Err(crate::ConfigError::Invalid("low threshold must be less than high"));
+                }
+                Ok(Self { low: low_threshold, high: high_threshold, state: false })
             }
 
             /// Feeds a sample. Returns the current state.
@@ -67,14 +65,14 @@ mod tests {
 
     #[test]
     fn rising_crosses_high() {
-        let mut h = HysteresisF64::new(30.0, 70.0);
+        let mut h = HysteresisF64::new(30.0, 70.0).unwrap();
         assert!(!h.update(50.0)); // between thresholds, starts false
         assert!(h.update(80.0));  // crosses high
     }
 
     #[test]
     fn falling_crosses_low() {
-        let mut h = HysteresisF64::new(30.0, 70.0);
+        let mut h = HysteresisF64::new(30.0, 70.0).unwrap();
         let _ = h.update(80.0); // true
         assert!(h.update(50.0)); // between, stays true
         assert!(!h.update(20.0)); // crosses low
@@ -82,7 +80,7 @@ mod tests {
 
     #[test]
     fn no_oscillation_at_boundary() {
-        let mut h = HysteresisF64::new(30.0, 70.0);
+        let mut h = HysteresisF64::new(30.0, 70.0).unwrap();
         let _ = h.update(80.0); // true
 
         // Oscillate between thresholds — state should not change
@@ -95,7 +93,7 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut h = HysteresisI64::new(30, 70);
+        let mut h = HysteresisI64::new(30, 70).unwrap();
         assert!(!h.update(50));
         assert!(h.update(75));
         assert!(h.update(50)); // between, stays true
@@ -104,15 +102,14 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut h = HysteresisF64::new(30.0, 70.0);
+        let mut h = HysteresisF64::new(30.0, 70.0).unwrap();
         let _ = h.update(80.0);
         h.reset();
         assert!(!h.state());
     }
 
     #[test]
-    #[should_panic(expected = "low threshold must be less than high")]
-    fn panics_on_invalid_thresholds() {
-        let _ = HysteresisF64::new(70.0, 30.0);
+    fn rejects_invalid_thresholds() {
+        assert!(matches!(HysteresisF64::new(70.0, 30.0), Err(crate::ConfigError::Invalid(_))));
     }
 }

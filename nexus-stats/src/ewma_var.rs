@@ -27,6 +27,8 @@ macro_rules! impl_ewma_var {
         pub struct $builder {
             alpha: Option<$ty>,
             min_samples: u64,
+            seed_mean: Option<$ty>,
+            seed_variance: Option<$ty>,
         }
 
         impl $name {
@@ -37,6 +39,8 @@ macro_rules! impl_ewma_var {
                 $builder {
                     alpha: Option::None,
                     min_samples: 2,
+                    seed_mean: Option::None,
+                    seed_variance: Option::None,
                 }
             }
 
@@ -163,26 +167,43 @@ macro_rules! impl_ewma_var {
                 self
             }
 
+            /// Pre-loads the mean and variance from calibration data.
+            ///
+            /// When seeded, `is_primed()` returns true immediately.
+            #[inline]
+            #[must_use]
+            pub fn seed(mut self, mean: $ty, variance: $ty) -> Self {
+                self.seed_mean = Option::Some(mean);
+                self.seed_variance = Option::Some(variance);
+                self
+            }
+
             /// Builds the EWMA variance tracker.
             ///
-            /// # Panics
+            /// # Errors
             ///
             /// - Alpha must have been set.
             /// - Alpha must be in (0, 1) exclusive.
             #[inline]
-            #[must_use]
-            pub fn build(self) -> $name {
-                let alpha = self.alpha.expect("EWMA variance alpha must be set (use .alpha(), .halflife(), or .span())");
-                assert!(alpha > 0.0 as $ty && alpha < 1.0 as $ty, "EWMA variance alpha must be in (0, 1), got {alpha}");
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
+                    return Err(crate::ConfigError::Invalid("EWMA variance alpha must be in (0, 1)"));
+                }
 
-                $name {
+                let (mean, variance, count) = match (self.seed_mean, self.seed_variance) {
+                    (Some(m), Some(v)) => (m, v, self.min_samples),
+                    _ => (0.0 as $ty, 0.0 as $ty, 0),
+                };
+
+                Ok($name {
                     alpha,
                     one_minus_alpha: 1.0 as $ty - alpha,
-                    mean: 0.0 as $ty,
-                    variance: 0.0 as $ty,
-                    count: 0,
+                    mean,
+                    variance,
+                    count,
                     min_samples: self.min_samples,
-                }
+                })
             }
         }
     };
@@ -197,7 +218,7 @@ mod tests {
 
     #[test]
     fn constant_input_zero_variance() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
 
         for _ in 0..100 {
             let _ = ev.update(100.0);
@@ -209,7 +230,7 @@ mod tests {
 
     #[test]
     fn variance_positive_for_varying_input() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
 
         for i in 0..100 {
             let _ = ev.update(if i % 2 == 0 { 100.0 } else { 110.0 });
@@ -221,7 +242,7 @@ mod tests {
 
     #[test]
     fn priming_behavior() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).min_samples(5).build();
+        let mut ev = EwmaVarF64::builder().alpha(0.1).min_samples(5).build().unwrap();
 
         for _ in 0..4 {
             assert!(ev.update(100.0).is_none());
@@ -232,7 +253,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build();
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
         for i in 0..50 {
             let _ = ev.update(i as f64);
         }
@@ -245,7 +266,7 @@ mod tests {
 
     #[test]
     fn std_dev_is_sqrt_of_variance() {
-        let mut ev = EwmaVarF64::builder().alpha(0.3).build();
+        let mut ev = EwmaVarF64::builder().alpha(0.3).build().unwrap();
         for i in 0..50 {
             let _ = ev.update(100.0 + (i % 10) as f64);
         }
@@ -258,15 +279,27 @@ mod tests {
 
     #[test]
     fn f32_basic() {
-        let mut ev = EwmaVarF32::builder().alpha(0.1).build();
+        let mut ev = EwmaVarF32::builder().alpha(0.1).build().unwrap();
         let _ = ev.update(100.0);
         let _ = ev.update(110.0);
         assert!(ev.variance().is_some());
     }
 
     #[test]
-    #[should_panic(expected = "alpha must be set")]
-    fn panics_without_alpha() {
-        let _ = EwmaVarF64::builder().build();
+    fn seeded_is_primed() {
+        let ev = EwmaVarF64::builder()
+            .alpha(0.1)
+            .seed(100.0, 25.0)
+            .build().unwrap();
+
+        assert!(ev.is_primed());
+        assert!((ev.mean().unwrap() - 100.0).abs() < 1e-10);
+        assert!((ev.variance().unwrap() - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn errors_without_alpha() {
+        let result = EwmaVarF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 }
