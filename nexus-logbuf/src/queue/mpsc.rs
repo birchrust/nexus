@@ -31,6 +31,7 @@
 //! Same as SPSC - see [`crate::spsc`] for details.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::Arc;
@@ -75,10 +76,13 @@ pub fn new(capacity: usize) -> (Producer, Consumer) {
 
     (
         Producer {
-            cached_head: 0,
+            cached_head: Cell::new(0),
             shared: Arc::clone(&shared),
         },
-        Consumer { head: 0, shared },
+        Consumer {
+            head: Cell::new(0),
+            shared,
+        },
     )
 }
 
@@ -120,7 +124,7 @@ impl Drop for Shared {
 #[derive(Clone)]
 pub struct Producer {
     /// Cached head position (Rigtorp-style optimization, per-producer).
-    cached_head: usize,
+    cached_head: Cell<usize>,
     /// Shared state.
     shared: Arc<Shared>,
 }
@@ -157,15 +161,15 @@ impl Producer {
 
             // Calculate used space. If cached_head is stale, used can exceed capacity.
             // saturating_sub handles this gracefully (returns 0 if stale).
-            let used = tail.wrapping_sub(self.cached_head);
+            let used = tail.wrapping_sub(self.cached_head.get());
             let available = self.shared.capacity.saturating_sub(used);
 
             if available < record_size {
                 // Reload head from shared state
-                self.cached_head = self.shared.head.load(Ordering::Relaxed);
+                self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
                 fence(Ordering::Acquire);
 
-                let used = tail.wrapping_sub(self.cached_head);
+                let used = tail.wrapping_sub(self.cached_head.get());
                 if used > self.shared.capacity || self.shared.capacity - used < record_size {
                     return Err(TryClaimError::Full);
                 }
@@ -179,15 +183,15 @@ impl Producer {
                 // Need to wrap. Check if we have space for padding + record at start.
                 let total_needed = space_to_end + record_size;
 
-                let used = tail.wrapping_sub(self.cached_head);
+                let used = tail.wrapping_sub(self.cached_head.get());
                 let available = self.shared.capacity.saturating_sub(used);
 
                 if available < total_needed {
                     // Reload and recheck
-                    self.cached_head = self.shared.head.load(Ordering::Relaxed);
+                    self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
                     fence(Ordering::Acquire);
 
-                    let used = tail.wrapping_sub(self.cached_head);
+                    let used = tail.wrapping_sub(self.cached_head.get());
                     if used > self.shared.capacity || self.shared.capacity - used < total_needed {
                         return Err(TryClaimError::Full);
                     }
@@ -359,7 +363,7 @@ impl Drop for WriteClaim<'_> {
 /// This type is NOT `Clone` - only one consumer is allowed.
 pub struct Consumer {
     /// Local head position (free-running).
-    head: usize,
+    head: Cell<usize>,
     /// Shared state.
     shared: Arc<Shared>,
 }
@@ -380,7 +384,7 @@ impl Consumer {
         let buffer = self.shared.buffer;
 
         loop {
-            let offset = self.head & self.shared.mask;
+            let offset = self.head.get() & self.shared.mask;
             let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicUsize>();
 
             // Relaxed atomic load, then Acquire fence for payload visibility
@@ -409,11 +413,11 @@ impl Consumer {
                 fence(Ordering::Release);
                 unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
-                self.head = self.head.wrapping_add(skip_size);
+                self.head.set(self.head.get().wrapping_add(skip_size));
 
                 // Ensure stamp clear completes before head advance
                 fence(Ordering::Release);
-                self.shared.head.store(self.head, Ordering::Relaxed);
+                self.shared.head.store(self.head.get(), Ordering::Relaxed);
 
                 // Continue to check next position
                 continue;
@@ -513,14 +517,12 @@ impl Drop for ReadClaim<'_> {
         unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
         // Advance head
-        self.consumer.head = self.consumer.head.wrapping_add(self.record_size);
+        let new_head = self.consumer.head.get().wrapping_add(self.record_size);
+        self.consumer.head.set(new_head);
 
         // Ensure stamp clear completes before head advance
         fence(Ordering::Release);
-        self.consumer
-            .shared
-            .head
-            .store(self.consumer.head, Ordering::Relaxed);
+        self.consumer.shared.head.store(new_head, Ordering::Relaxed);
     }
 }
 

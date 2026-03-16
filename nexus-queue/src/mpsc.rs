@@ -40,9 +40,9 @@
 //! use nexus_queue::mpsc;
 //! use std::thread;
 //!
-//! let (mut tx, mut rx) = mpsc::bounded::<u64>(1024);
+//! let (tx, rx) = mpsc::bounded::<u64>(1024);
 //!
-//! let mut tx2 = tx.clone();
+//! let tx2 = tx.clone();
 //! let h1 = thread::spawn(move || {
 //!     for i in 0..100 {
 //!         while tx.push(i).is_err() { std::hint::spin_loop(); }
@@ -63,7 +63,7 @@
 //! h2.join().unwrap();
 //! ```
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::fmt;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -108,7 +108,7 @@ pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
 
     (
         Producer {
-            cached_head: 0,
+            cached_head: Cell::new(0),
             slots,
             mask,
             capacity,
@@ -116,7 +116,7 @@ pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             shared: Arc::clone(&shared),
         },
         Consumer {
-            local_head: 0,
+            local_head: Cell::new(0),
             slots,
             mask,
             shift,
@@ -195,7 +195,7 @@ impl<T> Drop for Shared<T> {
 #[repr(C)]
 pub struct Producer<T> {
     /// Cached head for fast full-check. Only refreshed when cache indicates full.
-    cached_head: usize,
+    cached_head: Cell<usize>,
     /// Cached slots pointer (avoids Arc deref on hot path).
     slots: *mut Slot<T>,
     /// Cached mask (avoids Arc deref on hot path).
@@ -211,7 +211,7 @@ impl<T> Clone for Producer<T> {
     fn clone(&self) -> Self {
         Producer {
             // Fresh cache - will be populated on first push
-            cached_head: self.shared.head.load(Ordering::Relaxed),
+            cached_head: Cell::new(self.shared.head.load(Ordering::Relaxed)),
             slots: self.slots,
             mask: self.mask,
             capacity: self.capacity,
@@ -235,19 +235,19 @@ impl<T> Producer<T> {
     /// when the queue is actually full.
     #[inline]
     #[must_use = "push returns Err if full, which should be handled"]
-    pub fn push(&mut self, value: T) -> Result<(), Full<T>> {
+    pub fn push(&self, value: T) -> Result<(), Full<T>> {
         let mut spin_count = 0u32;
 
         loop {
             let tail = self.shared.tail.load(Ordering::Relaxed);
 
             // Check against cached head (avoids atomic load most of the time)
-            if tail.wrapping_sub(self.cached_head) >= self.capacity {
+            if tail.wrapping_sub(self.cached_head.get()) >= self.capacity {
                 // Cache miss: refresh from shared head
-                self.cached_head = self.shared.head.load(Ordering::Acquire);
+                self.cached_head.set(self.shared.head.load(Ordering::Acquire));
 
                 // Re-check with fresh head - if still full, return error
-                if tail.wrapping_sub(self.cached_head) >= self.capacity {
+                if tail.wrapping_sub(self.cached_head.get()) >= self.capacity {
                     return Err(Full(value));
                 }
             }
@@ -324,7 +324,7 @@ impl<T> fmt::Debug for Producer<T> {
 #[repr(C)]
 pub struct Consumer<T> {
     /// Local head index - only this thread reads/writes.
-    local_head: usize,
+    local_head: Cell<usize>,
     /// Cached slots pointer (avoids Arc deref on hot path).
     slots: *mut Slot<T>,
     /// Cached mask (avoids Arc deref on hot path).
@@ -343,8 +343,8 @@ impl<T> Consumer<T> {
     ///
     /// Returns `None` if the queue is empty.
     #[inline]
-    pub fn pop(&mut self) -> Option<T> {
-        let head = self.local_head;
+    pub fn pop(&self) -> Option<T> {
+        let head = self.local_head.get();
         // SAFETY: slots pointer is valid for the lifetime of shared.
         let slot = unsafe { &*self.slots.add(head & self.mask) };
         let turn = head >> self.shift;
@@ -361,8 +361,9 @@ impl<T> Consumer<T> {
         slot.turn.store((turn + 1) * 2, Ordering::Release);
 
         // Advance head and publish for producers' capacity check
-        self.local_head = head.wrapping_add(1);
-        self.shared.head.store(self.local_head, Ordering::Release);
+        let new_head = head.wrapping_add(1);
+        self.local_head.set(new_head);
+        self.shared.head.store(new_head, Ordering::Release);
 
         Some(value)
     }
@@ -398,7 +399,7 @@ mod tests {
 
     #[test]
     fn basic_push_pop() {
-        let (mut tx, mut rx) = bounded::<u64>(4);
+        let (tx, rx) = bounded::<u64>(4);
 
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_ok());
@@ -412,14 +413,14 @@ mod tests {
 
     #[test]
     fn empty_pop_returns_none() {
-        let (_, mut rx) = bounded::<u64>(4);
+        let (_, rx) = bounded::<u64>(4);
         assert_eq!(rx.pop(), None);
         assert_eq!(rx.pop(), None);
     }
 
     #[test]
     fn fill_then_drain() {
-        let (mut tx, mut rx) = bounded::<u64>(4);
+        let (tx, rx) = bounded::<u64>(4);
 
         for i in 0..4 {
             assert!(tx.push(i).is_ok());
@@ -434,7 +435,7 @@ mod tests {
 
     #[test]
     fn push_returns_error_when_full() {
-        let (mut tx, _rx) = bounded::<u64>(4);
+        let (tx, _rx) = bounded::<u64>(4);
 
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_ok());
@@ -451,7 +452,7 @@ mod tests {
 
     #[test]
     fn interleaved_single_producer() {
-        let (mut tx, mut rx) = bounded::<u64>(8);
+        let (tx, rx) = bounded::<u64>(8);
 
         for i in 0..1000 {
             assert!(tx.push(i).is_ok());
@@ -461,7 +462,7 @@ mod tests {
 
     #[test]
     fn partial_fill_drain_cycles() {
-        let (mut tx, mut rx) = bounded::<u64>(8);
+        let (tx, rx) = bounded::<u64>(8);
 
         for round in 0..100 {
             for i in 0..4 {
@@ -482,8 +483,8 @@ mod tests {
     fn two_producers_single_consumer() {
         use std::thread;
 
-        let (mut tx, mut rx) = bounded::<u64>(64);
-        let mut tx2 = tx.clone();
+        let (tx, rx) = bounded::<u64>(64);
+        let tx2 = tx.clone();
 
         let h1 = thread::spawn(move || {
             for i in 0..1000 {
@@ -522,11 +523,11 @@ mod tests {
     fn four_producers_single_consumer() {
         use std::thread;
 
-        let (tx, mut rx) = bounded::<u64>(256);
+        let (tx, rx) = bounded::<u64>(256);
 
         let handles: Vec<_> = (0..4)
             .map(|p| {
-                let mut tx = tx.clone();
+                let tx = tx.clone();
                 thread::spawn(move || {
                     for i in 0..1000 {
                         let val = p * 1000 + i;
@@ -571,7 +572,7 @@ mod tests {
 
     #[test]
     fn single_slot_bounded() {
-        let (mut tx, mut rx) = bounded::<u64>(1);
+        let (tx, rx) = bounded::<u64>(1);
 
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_err());
@@ -633,7 +634,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let (mut tx, rx) = bounded::<DropCounter>(4);
+        let (tx, rx) = bounded::<DropCounter>(4);
 
         let _ = tx.push(DropCounter);
         let _ = tx.push(DropCounter);
@@ -653,7 +654,7 @@ mod tests {
 
     #[test]
     fn zero_sized_type() {
-        let (mut tx, mut rx) = bounded::<()>(8);
+        let (tx, rx) = bounded::<()>(8);
 
         let _ = tx.push(());
         let _ = tx.push(());
@@ -665,7 +666,7 @@ mod tests {
 
     #[test]
     fn string_type() {
-        let (mut tx, mut rx) = bounded::<String>(4);
+        let (tx, rx) = bounded::<String>(4);
 
         let _ = tx.push("hello".to_string());
         let _ = tx.push("world".to_string());
@@ -687,7 +688,7 @@ mod tests {
             data: [u8; 256],
         }
 
-        let (mut tx, mut rx) = bounded::<LargeMessage>(8);
+        let (tx, rx) = bounded::<LargeMessage>(8);
 
         let msg = LargeMessage { data: [42u8; 256] };
         assert!(tx.push(msg).is_ok());
@@ -699,7 +700,7 @@ mod tests {
 
     #[test]
     fn multiple_laps() {
-        let (mut tx, mut rx) = bounded::<u64>(4);
+        let (tx, rx) = bounded::<u64>(4);
 
         // 10 full laps through 4-slot buffer
         for i in 0..40 {
@@ -727,7 +728,7 @@ mod tests {
 
         const COUNT: u64 = 100_000;
 
-        let (mut tx, mut rx) = bounded::<u64>(1024);
+        let (tx, rx) = bounded::<u64>(1024);
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
@@ -764,11 +765,11 @@ mod tests {
         const PER_PRODUCER: u64 = 25_000;
         const TOTAL: u64 = PRODUCERS * PER_PRODUCER;
 
-        let (tx, mut rx) = bounded::<u64>(1024);
+        let (tx, rx) = bounded::<u64>(1024);
 
         let handles: Vec<_> = (0..PRODUCERS)
             .map(|_| {
-                let mut tx = tx.clone();
+                let tx = tx.clone();
                 thread::spawn(move || {
                     for i in 0..PER_PRODUCER {
                         while tx.push(i).is_err() {

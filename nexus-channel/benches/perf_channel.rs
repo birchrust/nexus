@@ -30,7 +30,7 @@ impl Message {
 }
 
 fn main() {
-    let (mut tx, mut rx) = channel::<Message>(CAPACITY);
+    let (tx, rx) = channel::<Message>(CAPACITY);
 
     let producer = thread::spawn(move || {
         for i in 0..COUNT {
