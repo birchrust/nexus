@@ -374,9 +374,14 @@ macro_rules! impl_ema_int {
                 let effective = next_power_of_two_minus_one(span);
                 let new_shift = log2_of_span_plus_one(effective);
 
+                // Rescale accumulator directly to preserve fixed-point precision.
+                // Only loses bits when shifting down (smaller span), which is unavoidable.
                 if self.initialized {
-                    let value = (self.acc >> self.shift) as $ty;
-                    self.acc = (value as $acc_ty) << new_shift;
+                    if new_shift > self.shift {
+                        self.acc <<= new_shift - self.shift;
+                    } else {
+                        self.acc >>= self.shift - new_shift;
+                    }
                 }
 
                 self.shift = new_shift;
