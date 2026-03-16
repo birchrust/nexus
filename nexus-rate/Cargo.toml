@@ -1,6 +1,8 @@
 [package]
 name = "nexus-rate"
-version = "0.1.0"
+version = "1.0.0"
+description = "Rate limiting and flow control primitives for real-time systems"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -8,7 +10,16 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
+
 [dependencies]
+
+[[example]]
+name = "perf_rate"
+required-features = ["std"]
 
 [lints]
 workspace = true
