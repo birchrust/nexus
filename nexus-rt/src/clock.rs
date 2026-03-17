@@ -4,8 +4,30 @@
 //! - [`RealtimeClock`] — production, calibrated UTC from monotonic clock
 //! - [`TestClock`] — deterministic, manually controlled
 //! - [`HistoricalClock`] — replay, auto-advances per stamp
+//!
+//! The [`RealtimeClock`] calibration design is inspired by Agrona's
+//! [`OffsetEpochNanoClock`](https://github.com/real-logic/agrona)
+//! (Real Logic), which uses bracketed sampling with midpoint estimation
+//! to achieve high-accuracy monotonic-to-UTC offset calibration.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Configuration error from clock construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigError {
+    /// A parameter value is invalid.
+    Invalid(&'static str),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(msg) => write!(f, "clock configuration error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 /// Clock trait for stamping time in poll loops.
 ///
@@ -80,13 +102,21 @@ impl RealtimeClock {
 
     /// Force recalibration of the monotonic-to-UTC offset.
     pub fn resync(&mut self) {
-        let (base_instant, base_nanos, gap) =
+        self.resync_at(Instant::now());
+    }
+
+    /// Internal resync anchored to the caller's instant.
+    ///
+    /// Anchors `base_instant` to `now` so that subsequent
+    /// `now.duration_since(self.base_instant)` in `stamp()` cannot panic.
+    fn resync_at(&mut self, now: Instant) {
+        let (_, base_nanos, gap) =
             Self::calibrate(self.threshold, self.max_retries);
-        self.base_instant = base_instant;
+        self.base_instant = now;
         self.base_nanos = base_nanos;
         self.calibration_gap = gap;
         self.accurate = gap <= self.threshold;
-        self.last_resync = Instant::now();
+        self.last_resync = now;
     }
 
     /// Whether calibration achieved the configured threshold.
@@ -118,10 +148,11 @@ impl RealtimeClock {
             if gap < best_gap {
                 best_gap = gap;
                 best_instant = before + gap / 2;
-                best_nanos = wall
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as i128;
+                best_nanos = match wall.duration_since(UNIX_EPOCH) {
+                    Ok(d) => d.as_nanos() as i128,
+                    // Pre-epoch: represent as negative nanos
+                    Err(e) => -(e.duration().as_nanos() as i128),
+                };
             }
 
             if gap <= threshold {
@@ -135,7 +166,7 @@ impl RealtimeClock {
 
 impl Default for RealtimeClock {
     fn default() -> Self {
-        Self::builder().build()
+        Self::builder().build().expect("default RealtimeClock config is always valid")
     }
 }
 
@@ -143,7 +174,7 @@ impl Clock for RealtimeClock {
     #[inline]
     fn stamp(&mut self, now: Instant) {
         if now.duration_since(self.last_resync) >= self.resync_interval {
-            self.resync();
+            self.resync_at(now);
         }
 
         let elapsed = now.duration_since(self.base_instant);
@@ -177,9 +208,10 @@ impl std::fmt::Debug for RealtimeClock {
 
 impl RealtimeClockBuilder {
     /// Target accuracy threshold. Calibration stops early if the bracket
-    /// gap is under this value.
+    /// gap is under this value. Clamped to platform minimum (100ns release,
+    /// 1μs debug).
     ///
-    /// Release default: 100ns. Debug default: 1μs.
+    /// Release default: 250ns. Debug default: 1μs.
     #[must_use]
     pub fn threshold(mut self, threshold: Duration) -> Self {
         self.threshold = threshold.max(MIN_THRESHOLD);
@@ -204,15 +236,22 @@ impl RealtimeClockBuilder {
 
     /// Builds and calibrates the clock.
     ///
-    /// Always succeeds — uses best measurement even if threshold not met.
-    /// Check [`RealtimeClock::is_accurate()`] after construction.
-    #[must_use]
-    pub fn build(self) -> RealtimeClock {
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if `max_retries` is 0.
+    ///
+    /// Calibration always uses best-effort — check [`RealtimeClock::is_accurate()`]
+    /// to see if the threshold was achieved.
+    pub fn build(self) -> Result<RealtimeClock, ConfigError> {
+        if self.max_retries == 0 {
+            return Err(ConfigError::Invalid("max_retries must be > 0"));
+        }
+
         let (base_instant, base_nanos, gap) =
             RealtimeClock::calibrate(self.threshold, self.max_retries);
         let accurate = gap <= self.threshold;
 
-        RealtimeClock {
+        Ok(RealtimeClock {
             base_instant,
             base_nanos,
             last_resync: base_instant,
@@ -223,7 +262,7 @@ impl RealtimeClockBuilder {
             max_retries: self.max_retries,
             calibration_gap: gap,
             accurate,
-        }
+        })
     }
 }
 
@@ -254,16 +293,16 @@ impl std::fmt::Debug for RealtimeClockBuilder {
 /// Deterministic clock for testing — manually controlled.
 ///
 /// Time does not advance automatically. Use `advance()` or `set_elapsed()`
-/// to control time progression. `stamp()` is a no-op — it does NOT
-/// auto-advance.
+/// to control time progression. `stamp()` stores the passed Instant but
+/// does NOT auto-advance the elapsed time.
 ///
 /// Can be registered as a World resource for handler access via
 /// `Res<TestClock>` / `ResMut<TestClock>`.
 #[derive(Debug, Clone)]
 pub struct TestClock {
-    base_instant: Instant,
     elapsed: Duration,
     base_nanos: i128,
+    cached_instant: Instant,
 }
 
 impl TestClock {
@@ -271,9 +310,9 @@ impl TestClock {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            base_instant: Instant::now(),
             elapsed: Duration::ZERO,
             base_nanos: 0,
+            cached_instant: Instant::now(),
         }
     }
 
@@ -281,9 +320,9 @@ impl TestClock {
     #[must_use]
     pub fn starting_at(nanos: i128) -> Self {
         Self {
-            base_instant: Instant::now(),
             elapsed: Duration::ZERO,
             base_nanos: nanos,
+            cached_instant: Instant::now(),
         }
     }
 
@@ -328,8 +367,10 @@ impl Default for TestClock {
 
 impl Clock for TestClock {
     #[inline]
-    fn stamp(&mut self, _now: Instant) {
-        // TestClock ignores the real Instant — uses manually set elapsed
+    fn stamp(&mut self, now: Instant) {
+        // Store the passed Instant for consistency with callers who
+        // pass clock.instant() for deterministic testing.
+        self.cached_instant = now;
     }
 
     #[inline]
@@ -339,7 +380,7 @@ impl Clock for TestClock {
 
     #[inline]
     fn instant(&self) -> Instant {
-        self.base_instant + self.elapsed
+        self.cached_instant
     }
 }
 
@@ -351,7 +392,8 @@ impl Clock for TestClock {
 ///
 /// Used for backtesting and replay. Starts at `start_nanos`, advances by
 /// `step` on every `stamp()` call, and becomes exhausted when it reaches
-/// `end_nanos`.
+/// `end_nanos`. Ignores the passed Instant — stores a synthetic instant
+/// derived from the replay position.
 #[derive(Debug, Clone)]
 pub struct HistoricalClock {
     start_nanos: i128,
@@ -369,16 +411,27 @@ impl HistoricalClock {
     /// - `start_nanos` — UTC nanos at replay start
     /// - `end_nanos` — UTC nanos at replay end
     /// - `step` — duration to advance per `stamp()` call
-    #[must_use]
-    pub fn new(start_nanos: i128, end_nanos: i128, step: Duration) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if `start_nanos >= end_nanos` or
+    /// `step` is zero.
+    pub fn new(start_nanos: i128, end_nanos: i128, step: Duration) -> Result<Self, ConfigError> {
+        if start_nanos >= end_nanos {
+            return Err(ConfigError::Invalid("start_nanos must be < end_nanos"));
+        }
+        if step.is_zero() {
+            return Err(ConfigError::Invalid("step must be > 0"));
+        }
+
+        Ok(Self {
             start_nanos,
             end_nanos,
             current_nanos: start_nanos,
             step_nanos: step.as_nanos() as i128,
             base_instant: Instant::now(),
             exhausted: false,
-        }
+        })
     }
 
     /// Whether the replay has reached or passed `end_nanos`.
@@ -447,8 +500,13 @@ mod tests {
         let now = Instant::now();
         clock.stamp(now);
         let n = clock.nanos();
-        let year_2020_nanos: i128 = 1_577_836_800_000_000_000;
-        assert!(n > year_2020_nanos, "nanos should be after 2020, got {n}");
+        // Verify nanos is a reasonable UTC timestamp — compare against current time
+        let expected = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i128;
+        let diff = (n - expected).unsigned_abs();
+        assert!(diff < 1_000_000_000, "nanos should be close to current time, diff={diff}ns");
     }
 
     #[test]
@@ -476,7 +534,8 @@ mod tests {
             .threshold(Duration::from_micros(10))
             .max_retries(5)
             .resync_interval(Duration::from_secs(60))
-            .build();
+            .build()
+            .unwrap();
         assert!(clock.nanos() > 0);
     }
 
@@ -484,29 +543,45 @@ mod tests {
     fn realtime_calibration_gap_reported() {
         let clock = RealtimeClock::default();
         let gap = clock.calibration_gap();
-        // Gap should be finite and reasonable (< 1 second)
         assert!(gap < Duration::from_secs(1), "gap too large: {gap:?}");
     }
 
     #[test]
     fn realtime_resync() {
         let mut clock = RealtimeClock::default();
-        let gap_before = clock.calibration_gap();
         clock.resync();
-        let gap_after = clock.calibration_gap();
-        // Both should be finite
-        assert!(gap_before < Duration::from_secs(1));
-        assert!(gap_after < Duration::from_secs(1));
+        assert!(clock.calibration_gap() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn realtime_stamp_after_resync_no_panic() {
+        // Capture instant BEFORE resync, then stamp with it after.
+        // Previously this panicked because resync set base_instant to
+        // a fresh Instant::now() that was after the captured `now`.
+        let mut clock = RealtimeClock::builder()
+            .resync_interval(Duration::ZERO) // force resync on every stamp
+            .build()
+            .unwrap();
+
+        let now = Instant::now();
+        // This should not panic — resync_at anchors to `now`
+        clock.stamp(now);
+        assert!(clock.nanos() > 0);
     }
 
     #[test]
     fn realtime_threshold_clamped_to_minimum() {
-        // Setting threshold below minimum should be clamped
         let clock = RealtimeClock::builder()
-            .threshold(Duration::from_nanos(1)) // below minimum
-            .build();
-        // Should still work — just uses the minimum
+            .threshold(Duration::from_nanos(1))
+            .build()
+            .unwrap();
         assert!(clock.nanos() > 0);
+    }
+
+    #[test]
+    fn realtime_zero_retries_rejected() {
+        let result = RealtimeClock::builder().max_retries(0).build();
+        assert!(matches!(result, Err(ConfigError::Invalid(_))));
     }
 
     // =========================================================================
@@ -560,20 +635,13 @@ mod tests {
     }
 
     #[test]
-    fn test_clock_stamp_does_not_advance() {
+    fn test_clock_stamp_stores_instant() {
         let mut clock = TestClock::new();
-        clock.stamp(Instant::now());
+        let now = Instant::now();
+        clock.stamp(now);
+        assert_eq!(clock.instant(), now);
+        // But nanos don't change — stamp doesn't advance
         assert_eq!(clock.nanos(), 0);
-    }
-
-    #[test]
-    fn test_clock_instant_consistent() {
-        let mut clock = TestClock::new();
-        let i1 = clock.instant();
-        clock.advance(Duration::from_millis(100));
-        let i2 = clock.instant();
-        assert!(i2 > i1);
-        assert_eq!(i2.duration_since(i1), Duration::from_millis(100));
     }
 
     #[test]
@@ -588,14 +656,14 @@ mod tests {
 
     #[test]
     fn historical_starts_at_start() {
-        let clock = HistoricalClock::new(1000, 2000, Duration::from_nanos(100));
+        let clock = HistoricalClock::new(1000, 2000, Duration::from_nanos(100)).unwrap();
         assert_eq!(clock.current_nanos(), 1000);
         assert!(!clock.is_exhausted());
     }
 
     #[test]
     fn historical_advances_on_stamp() {
-        let mut clock = HistoricalClock::new(0, 1000, Duration::from_nanos(100));
+        let mut clock = HistoricalClock::new(0, 1000, Duration::from_nanos(100)).unwrap();
         clock.stamp(Instant::now());
         assert_eq!(clock.current_nanos(), 100);
         clock.stamp(Instant::now());
@@ -604,7 +672,7 @@ mod tests {
 
     #[test]
     fn historical_exhausts() {
-        let mut clock = HistoricalClock::new(0, 300, Duration::from_nanos(100));
+        let mut clock = HistoricalClock::new(0, 300, Duration::from_nanos(100)).unwrap();
         clock.stamp(Instant::now());
         clock.stamp(Instant::now());
         clock.stamp(Instant::now());
@@ -616,7 +684,7 @@ mod tests {
 
     #[test]
     fn historical_reset() {
-        let mut clock = HistoricalClock::new(100, 500, Duration::from_nanos(100));
+        let mut clock = HistoricalClock::new(100, 500, Duration::from_nanos(100)).unwrap();
         for _ in 0..10 {
             clock.stamp(Instant::now());
         }
@@ -628,18 +696,33 @@ mod tests {
 
     #[test]
     fn historical_nanos_via_trait() {
-        let mut clock = HistoricalClock::new(1000, 2000, Duration::from_nanos(50));
+        let mut clock = HistoricalClock::new(1000, 2000, Duration::from_nanos(50)).unwrap();
         clock.stamp(Instant::now());
         assert_eq!(clock.nanos(), 1050);
     }
 
     #[test]
     fn historical_instant_advances() {
-        let mut clock = HistoricalClock::new(0, 1_000_000, Duration::from_nanos(1000));
+        let mut clock = HistoricalClock::new(0, 1_000_000, Duration::from_nanos(1000)).unwrap();
         let i1 = clock.instant();
         clock.stamp(Instant::now());
         let i2 = clock.instant();
         assert!(i2 > i1);
+    }
+
+    #[test]
+    fn historical_rejects_start_ge_end() {
+        let result = HistoricalClock::new(1000, 1000, Duration::from_nanos(100));
+        assert!(matches!(result, Err(ConfigError::Invalid(_))));
+
+        let result = HistoricalClock::new(2000, 1000, Duration::from_nanos(100));
+        assert!(matches!(result, Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn historical_rejects_zero_step() {
+        let result = HistoricalClock::new(0, 1000, Duration::ZERO);
+        assert!(matches!(result, Err(ConfigError::Invalid(_))));
     }
 
     // =========================================================================
@@ -656,7 +739,7 @@ mod tests {
 
         let mut rt = RealtimeClock::default();
         let mut tc = TestClock::new();
-        let mut hc = HistoricalClock::new(0, 1000, Duration::from_nanos(100));
+        let mut hc = HistoricalClock::new(0, 1000, Duration::from_nanos(100)).unwrap();
 
         use_clock(&mut rt);
         use_clock(&mut tc);
