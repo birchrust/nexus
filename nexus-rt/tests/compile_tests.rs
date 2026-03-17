@@ -3478,7 +3478,6 @@ fn run_startup_bool_returning_also_works() {
     assert_eq!(*world.resource::<u64>(), 123);
 }
 
-
 // =========================================================================
 // Resolved — comprehensive coverage
 // =========================================================================
@@ -3487,33 +3486,46 @@ fn run_startup_bool_returning_also_works() {
 
 #[test]
 fn resolved_res_param() {
-    fn read_val(val: Res<u32>, mut out: ResMut<u64>, _e: ()) { *out = *val as u64; }
+    fn read_val(val: Res<u32>, mut out: ResMut<u64>, _e: ()) {
+        *out = *val as u64;
+    }
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(42); wb.register::<u64>(0);
+    wb.register::<u32>(42);
+    wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = read_val.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = read_val
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, ());
     assert_eq!(*world.resource::<u64>(), 42);
 }
 
 #[test]
 fn resolved_seq_param() {
-    fn use_seq(_s: Seq, mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn use_seq(_s: Seq, mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = use_seq.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = use_seq
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, 77);
     assert_eq!(*world.resource::<u64>(), 77);
 }
 
 #[test]
 fn resolved_seq_mut_param() {
-    fn use_seq(_s: SeqMut<'_>, mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn use_seq(_s: SeqMut<'_>, mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = use_seq.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = use_seq
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, 99);
     assert_eq!(*world.resource::<u64>(), 99);
 }
@@ -3521,12 +3533,17 @@ fn resolved_seq_mut_param() {
 #[test]
 fn resolved_optional_res() {
     fn maybe(v: Option<Res<u32>>, mut out: ResMut<u64>, _e: ()) {
-        if let Some(v) = v { *out = *v as u64; }
+        if let Some(v) = v {
+            *out = *v as u64;
+        }
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(55); wb.register::<u64>(0);
+    wb.register::<u32>(55);
+    wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = maybe.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = maybe
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, ());
     assert_eq!(*world.resource::<u64>(), 55);
 }
@@ -3534,24 +3551,35 @@ fn resolved_optional_res() {
 #[test]
 fn resolved_optional_resmut() {
     fn maybe(mut v: Option<ResMut<u64>>, e: u64) {
-        if let Some(ref mut v) = v { **v = e; }
+        if let Some(ref mut v) = v {
+            **v = e;
+        }
     }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = maybe.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = maybe
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, 88);
     assert_eq!(*world.resource::<u64>(), 88);
 }
 
 #[test]
 fn resolved_local_preserves_state() {
-    fn counter(mut l: Local<u64>, mut out: ResMut<u64>, _e: ()) { *l += 1; *out = *l; }
+    fn counter(mut l: Local<u64>, mut out: ResMut<u64>, _e: ()) {
+        *l += 1;
+        *out = *l;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = counter.into_handler(world.registry()).into_handler(world.registry());
-    h.run(&mut world, ()); h.run(&mut world, ()); h.run(&mut world, ());
+    let mut h = counter
+        .into_handler(world.registry())
+        .into_handler(world.registry());
+    h.run(&mut world, ());
+    h.run(&mut world, ());
+    h.run(&mut world, ());
     assert_eq!(*world.resource::<u64>(), 3);
 }
 
@@ -3559,22 +3587,30 @@ fn resolved_local_preserves_state() {
 
 #[test]
 fn resolved_slice_event() {
-    fn handle(mut out: ResMut<u64>, e: &[u8]) { *out = e.len() as u64; }
+    fn handle(mut out: ResMut<u64>, e: &[u8]) {
+        *out = e.len() as u64;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = handle.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = handle
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, &[1u8, 2, 3, 4, 5][..]);
     assert_eq!(*world.resource::<u64>(), 5);
 }
 
 #[test]
 fn resolved_str_event() {
-    fn handle(mut out: ResMut<u64>, e: &str) { *out = e.len() as u64; }
+    fn handle(mut out: ResMut<u64>, e: &str) {
+        *out = e.len() as u64;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = handle.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = handle
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, "hello");
     assert_eq!(*world.resource::<u64>(), 5);
 }
@@ -3582,25 +3618,49 @@ fn resolved_str_event() {
 #[test]
 fn resolved_borrowed_struct_event() {
     #[derive(Debug)]
-    struct Message<'a> { payload: &'a [u8], seq: u64 }
-    fn handle(mut out: ResMut<u64>, m: Message<'_>) { *out = m.seq + m.payload.len() as u64; }
+    struct Message<'a> {
+        payload: &'a [u8],
+        seq: u64,
+    }
+    fn handle(mut out: ResMut<u64>, m: Message<'_>) {
+        *out = m.seq + m.payload.len() as u64;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = handle.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = handle
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     let data = [1u8, 2, 3];
-    h.run(&mut world, Message { payload: &data, seq: 100 });
+    h.run(
+        &mut world,
+        Message {
+            payload: &data,
+            seq: 100,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 103);
 }
 
 #[test]
 fn resolved_ref_struct_event() {
-    fn handle(mut out: ResMut<u64>, o: &Order) { *out = o.id; }
+    fn handle(mut out: ResMut<u64>, o: &Order) {
+        *out = o.id;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = handle.into_handler(world.registry()).into_handler(world.registry());
-    h.run(&mut world, &Order { id: 42, price: 100.0, size: 10 });
+    let mut h = handle
+        .into_handler(world.registry())
+        .into_handler(world.registry());
+    h.run(
+        &mut world,
+        &Order {
+            id: 42,
+            price: 100.0,
+            size: 10,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 42);
 }
 
@@ -3608,14 +3668,21 @@ fn resolved_ref_struct_event() {
 
 #[test]
 fn resolved_pipeline() {
-    fn double(x: u64) -> u64 { x * 2 }
-    fn sink(mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn double(x: u64) -> u64 {
+        x * 2
+    }
+    fn sink(mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
     let r = world.registry();
     let s = sink.into_handler(r);
-    let p = PipelineBuilder::<u64>::new().then(double, r).dispatch(s).build();
+    let p = PipelineBuilder::<u64>::new()
+        .then(double, r)
+        .dispatch(s)
+        .build();
     let mut h = p.into_handler(r);
     drop(r);
     h.run(&mut world, 5);
@@ -3624,8 +3691,12 @@ fn resolved_pipeline() {
 
 #[test]
 fn resolved_dag() {
-    fn root(x: u32) -> u64 { x as u64 * 10 }
-    fn sink(mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn root(x: u32) -> u64 {
+        x as u64 * 10
+    }
+    fn sink(mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
@@ -3641,8 +3712,13 @@ fn resolved_dag() {
 #[test]
 fn resolved_callback() {
     use nexus_rt::IntoCallback;
-    struct Acc { total: u64 }
-    fn acc(ctx: &mut Acc, mut out: ResMut<u64>, e: u64) { ctx.total += e; *out = ctx.total; }
+    struct Acc {
+        total: u64,
+    }
+    fn acc(ctx: &mut Acc, mut out: ResMut<u64>, e: u64) {
+        ctx.total += e;
+        *out = ctx.total;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
@@ -3650,7 +3726,8 @@ fn resolved_callback() {
     let cb = acc.into_callback(Acc { total: 0 }, r);
     let mut h = cb.into_handler(r);
     drop(r);
-    h.run(&mut world, 10); h.run(&mut world, 20);
+    h.run(&mut world, 10);
+    h.run(&mut world, 20);
     assert_eq!(*world.resource::<u64>(), 30);
 }
 
@@ -3659,19 +3736,27 @@ fn resolved_opaque() {
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let f = |world: &mut World, e: u64| { *world.resource_mut::<u64>() = e; };
-    let mut h = f.into_handler(world.registry()).into_handler(world.registry());
+    let f = |world: &mut World, e: u64| {
+        *world.resource_mut::<u64>() = e;
+    };
+    let mut h = f
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, 42);
     assert_eq!(*world.resource::<u64>(), 42);
 }
 
 #[test]
 fn resolved_arity_zero() {
-    fn add_one(mut out: ResMut<u64>, x: u64) { *out = x + 1; }
+    fn add_one(mut out: ResMut<u64>, x: u64) {
+        *out = x + 1;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = add_one.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = add_one
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, 10);
     assert_eq!(*world.resource::<u64>(), 11);
 }
@@ -3680,16 +3765,17 @@ fn resolved_arity_zero() {
 
 #[test]
 fn resolved_all_params_borrowed_event() {
-    fn everything(
-        val: Res<u32>, mut out: ResMut<u64>, mut ctr: Local<u64>, _s: Seq, e: &[u8],
-    ) {
+    fn everything(val: Res<u32>, mut out: ResMut<u64>, mut ctr: Local<u64>, _s: Seq, e: &[u8]) {
         *ctr += 1;
         *out = *val as u64 + e.len() as u64 + *ctr;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(100); wb.register::<u64>(0);
+    wb.register::<u32>(100);
+    wb.register::<u64>(0);
     let mut world = wb.build();
-    let mut h = everything.into_handler(world.registry()).into_handler(world.registry());
+    let mut h = everything
+        .into_handler(world.registry())
+        .into_handler(world.registry());
     h.run(&mut world, &[1u8, 2, 3][..]);
     assert_eq!(*world.resource::<u64>(), 104);
 }
@@ -3706,7 +3792,9 @@ fn resolved_install_handler_pattern() {
     }
 
     // Named function through install_handler
-    fn tick(mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn tick(mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
@@ -3719,7 +3807,9 @@ fn resolved_install_handler_pattern() {
 
 #[test]
 fn resolved_box_passthrough() {
-    fn tick(mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn tick(mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
@@ -3743,13 +3833,10 @@ struct Msg<'a> {
     seq: u64,
 }
 
-/// Simulates the FLARECS driver register pattern:
+/// Simulates the zero copy driver register pattern:
 /// - IntoHandler resolves at 'static for type inference
 /// - Output handler must work at ANY lifetime (driver manufactures events)
-fn register_handler<F, P>(
-    handler: F,
-    registry: &Registry,
-) -> Box<dyn for<'a> Handler<Msg<'a>>>
+fn register_handler<F, P>(handler: F, registry: &Registry) -> Box<dyn for<'a> Handler<Msg<'a>>>
 where
     F: IntoHandler<Msg<'static>, P>,
     F::Handler: for<'a> Handler<Msg<'a>>,
@@ -3767,14 +3854,23 @@ fn hrtb_named_function() {
     let mut world = wb.build();
     let mut h = register_handler(on_msg, world.registry());
     let data = [1u8, 2, 3];
-    h.run(&mut world, Msg { payload: &data, seq: 42 });
+    h.run(
+        &mut world,
+        Msg {
+            payload: &data,
+            seq: 42,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 42);
 }
 
 #[test]
 fn hrtb_pipeline() {
     fn double_seq(msg: Msg<'_>) -> Msg<'_> {
-        Msg { payload: msg.payload, seq: msg.seq * 2 }
+        Msg {
+            payload: msg.payload,
+            seq: msg.seq * 2,
+        }
     }
     fn sink(mut out: ResMut<u64>, msg: Msg<'_>) {
         *out = msg.seq;
@@ -3789,30 +3885,51 @@ fn hrtb_pipeline() {
         .build();
     let mut h = register_handler(pipeline, r);
     drop(r);
-    h.run(&mut world, Msg { payload: &[1, 2, 3], seq: 5 });
+    h.run(
+        &mut world,
+        Msg {
+            payload: &[1, 2, 3],
+            seq: 5,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 10);
 }
 
 #[test]
 fn hrtb_dag() {
-    fn root(msg: Msg<'_>) -> u64 { msg.seq * 10 }
-    fn sink(mut out: ResMut<u64>, e: u64) { *out = e; }
+    fn root(msg: Msg<'_>) -> u64 {
+        msg.seq * 10
+    }
+    fn sink(mut out: ResMut<u64>, e: u64) {
+        *out = e;
+    }
     let mut wb = WorldBuilder::new();
     wb.register::<u64>(0);
     let mut world = wb.build();
     let r = world.registry();
     let s = sink.into_handler(r);
-    let dag = DagBuilder::<Msg<'static>>::new().root(root, r).dispatch(s).build();
+    let dag = DagBuilder::<Msg<'static>>::new()
+        .root(root, r)
+        .dispatch(s)
+        .build();
     let mut h = register_handler(dag, r);
     drop(r);
-    h.run(&mut world, Msg { payload: &[1], seq: 3 });
+    h.run(
+        &mut world,
+        Msg {
+            payload: &[1],
+            seq: 3,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 30);
 }
 
 #[test]
 fn hrtb_callback() {
     use nexus_rt::IntoCallback;
-    struct Logger { count: u64 }
+    struct Logger {
+        count: u64,
+    }
     fn log_msg(ctx: &mut Logger, mut out: ResMut<u64>, msg: Msg<'_>) {
         ctx.count += 1;
         *out = msg.seq + ctx.count;
@@ -3824,12 +3941,23 @@ fn hrtb_callback() {
     let cb = log_msg.into_callback(Logger { count: 0 }, r);
     let mut h = register_handler(cb, r);
     drop(r);
-    h.run(&mut world, Msg { payload: &[], seq: 10 });
+    h.run(
+        &mut world,
+        Msg {
+            payload: &[],
+            seq: 10,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 11);
-    h.run(&mut world, Msg { payload: &[], seq: 20 });
+    h.run(
+        &mut world,
+        Msg {
+            payload: &[],
+            seq: 20,
+        },
+    );
     assert_eq!(*world.resource::<u64>(), 22);
 }
-
 
 // NOTE: Box<dyn for<'a> Handler<Msg<'a>>> does NOT satisfy
 // IntoHandler<Msg<'static>, Resolved>.
