@@ -103,6 +103,8 @@
 mod adapt;
 mod callback;
 mod catch_unwind;
+/// Clock abstractions for event-driven runtimes.
+pub mod clock;
 mod combinator;
 pub mod dag;
 mod driver;
