@@ -578,12 +578,6 @@ impl std::fmt::Debug for HistoricalClockPoller {
 mod tests {
     use super::*;
 
-    fn make_world() -> (WorldBuilder, World) {
-        let wb = WorldBuilder::new();
-        let world = wb.build();
-        (WorldBuilder::new(), world)
-    }
-
     // =========================================================================
     // Clock struct
     // =========================================================================
@@ -661,7 +655,7 @@ mod tests {
     #[test]
     fn test_clock_install_and_sync() {
         let mut wb = WorldBuilder::new();
-        let mut poller = wb.install_driver(TestClockInstaller::new());
+        let poller = wb.install_driver(TestClockInstaller::new());
         let mut world = wb.build();
 
         poller.sync(&mut world);

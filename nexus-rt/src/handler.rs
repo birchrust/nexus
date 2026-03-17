@@ -437,6 +437,16 @@ pub trait Handler<E>: Send {
     }
 }
 
+impl<E> Handler<E> for Box<dyn Handler<E>> {
+    fn run(&mut self, world: &mut World, event: E) {
+        (**self).run(world, event);
+    }
+
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+}
+
 // =============================================================================
 // CtxFree<F> — coherence wrapper for context-free handlers
 // =============================================================================
@@ -653,6 +663,23 @@ all_tuples!(impl_into_handler);
 /// }, &reg)
 /// ```
 pub struct Opaque;
+
+/// Marker type for handlers whose parameters are already resolved.
+///
+/// Used by the blanket [`IntoHandler`] impl for any [`Handler<E>`].
+/// Enables passing already-built pipelines, templates, callbacks, and
+/// `Box<dyn Handler<E>>` where `IntoHandler` is expected.
+///
+/// Users never need to name this type — it's inferred automatically.
+pub struct Resolved;
+
+impl<E, H: Handler<E> + 'static> IntoHandler<E, Resolved> for H {
+    type Handler = H;
+
+    fn into_handler(self, _registry: &Registry) -> H {
+        self
+    }
+}
 
 // =============================================================================
 // OpaqueHandler — Handler<E> for FnMut(&mut World, E) closures
@@ -1301,5 +1328,47 @@ mod tests {
         h.run(&mut world, ());
         assert_eq!(*world.resource::<Vec<i64>>(), vec![1, 2, 3]);
         assert_eq!(world.current_sequence(), Sequence(3));
+    }
+
+    // =========================================================================
+    // Resolved — blanket IntoHandler for Handler<E>
+    // =========================================================================
+
+    #[test]
+    fn concrete_handler_satisfies_into_handler() {
+        // A concrete Handler<E> type should satisfy IntoHandler<E, Resolved>
+        fn accept_into_handler<E, P>(h: impl IntoHandler<E, P>, reg: &Registry) -> impl Handler<E> {
+            h.into_handler(reg)
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let world = builder.build();
+
+        fn bump(mut val: ResMut<u64>, event: u64) {
+            *val += event;
+        }
+
+        // Build a concrete handler, pass it where IntoHandler is expected
+        let handler = bump.into_handler(world.registry());
+        let _resolved = accept_into_handler(handler, world.registry());
+    }
+
+    #[test]
+    fn handler_impl_into_handler_dispatches() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+
+        fn add_event(mut val: ResMut<u64>, event: u64) {
+            *val += event;
+        }
+
+        // Build handler from function, then re-pass as IntoHandler via Resolved
+        let handler = add_event.into_handler(builder.registry());
+        let mut resolved = handler.into_handler(builder.registry());
+        let mut world = builder.build();
+
+        resolved.run(&mut world, 42);
+        assert_eq!(*world.resource::<u64>(), 42);
     }
 }

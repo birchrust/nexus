@@ -27,29 +27,29 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Applications                          │
-│            (Trading systems, event loops)                │
+│                    Applications                         │
+│            (Trading systems, event loops)               │
 └──────────────────────┬──────────────────────────────────┘
                        │
-         ┌─────────────┴──────────────┐
-         ▼                            ▼
-┌─────────────────┐          ┌─────────────────┐
+         ┌─────────────┴────────────────┐
+         ▼                              ▼
+┌──────────────────┐          ┌──────────────────┐
 │    nexus-rt      │          │ nexus-stats      │
 │  (runtime)       │          │ nexus-rate       │
 │                  │          │ (monitoring &    │
 │  World, Handlers │          │  flow control)   │
 │  Pipelines, DAGs │          │                  │
 │  Drivers, Clock  │          │                  │
-└────────┬─────────┘          └─────────────────┘
+└────────┬─────────┘          └──────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
-│                     Primitives                           │
-│                                                          │
-│  nexus-queue    nexus-slab     nexus-id    nexus-bits    │
-│  nexus-channel  nexus-pool     nexus-ascii               │
-│  nexus-slot     nexus-timer    nexus-logbuf              │
-│  nexus-collections                                       │
+│                     Primitives                          │
+│                                                         │
+│  nexus-queue    nexus-slab     nexus-id    nexus-bits   │
+│  nexus-channel  nexus-pool     nexus-ascii              │
+│  nexus-slot     nexus-timer    nexus-logbuf             │
+│  nexus-collections                                      │
 └─────────────────────────────────────────────────────────┘
 ```
 
