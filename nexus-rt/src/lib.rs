@@ -134,6 +134,7 @@ pub use dag::{BatchDag, Dag, DagBuilder, resolve_arm};
 pub use driver::Installer;
 pub use handler::{
     CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
+    Resolved,
 };
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
