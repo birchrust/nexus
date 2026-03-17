@@ -1,15 +1,22 @@
 //! Clock abstractions for event-driven runtimes.
 //!
-//! [`Clock`] is a pure data struct registered as a World resource. Handlers
-//! read it via `Res<Clock>`. Sync sources ([`RealtimeClock`], [`TestClock`],
-//! [`HistoricalClock`]) write into it once per poll loop iteration.
+//! [`Clock`] is a resource registered in the World. Handlers read it via
+//! `Res<Clock>`. Sync sources install into the World via the [`Installer`]
+//! trait and return pollers that sync the clock each poll loop iteration.
 //!
-//! The calibration design for [`RealtimeClock`] is inspired by Agrona's
-//! [`OffsetEpochNanoClock`](https://github.com/real-logic/agrona)
-//! (Real Logic), which uses bracketed sampling with midpoint estimation
-//! to achieve high-accuracy monotonic-to-UTC offset calibration.
+//! Three sync sources:
+//! - [`RealtimeClockInstaller`] → [`RealtimeClockPoller`] — production
+//! - [`TestClockInstaller`] → [`TestClockPoller`] — deterministic testing
+//! - [`HistoricalClockInstaller`] → [`HistoricalClockPoller`] — replay
+//!
+//! The [`RealtimeClockPoller`] calibration design is inspired by Agrona's
+//! [`OffsetEpochNanoClock`](https://github.com/real-logic/agrona).
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::driver::Installer;
+use crate::world::{ResourceId, WorldBuilder};
+use crate::World;
 
 /// Configuration error from clock construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,23 +41,37 @@ impl std::error::Error for ConfigError {}
 
 /// The current time — registered as a World resource.
 ///
-/// Synced once per poll loop iteration by a sync source. Handlers read
-/// via `Res<Clock>`. Fields are public for direct access.
+/// Synced once per poll loop iteration by a clock poller. Handlers read
+/// via `Res<Clock>`.
 ///
 /// # Example
 ///
 /// ```ignore
 /// fn on_event(clock: Res<Clock>, event: SomeEvent) {
-///     let timestamp = clock.unix_nanos;
-///     let when = clock.instant;
+///     let timestamp = clock.unix_nanos();
+///     let when = clock.instant();
 /// }
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Clock {
+    instant: Instant,
+    unix_nanos: i128,
+}
+
+impl Clock {
     /// Monotonic instant from this poll iteration.
-    pub instant: Instant,
+    #[inline]
+    #[must_use]
+    pub fn instant(&self) -> Instant {
+        self.instant
+    }
+
     /// UTC nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC).
-    pub unix_nanos: i128,
+    #[inline]
+    #[must_use]
+    pub fn unix_nanos(&self) -> i128 {
+        self.unix_nanos
+    }
 }
 
 impl Default for Clock {
@@ -63,41 +84,106 @@ impl Default for Clock {
 }
 
 // =============================================================================
-// RealtimeClock — sync source
+// RealtimeClock — installer + poller
 // =============================================================================
 
-/// Default calibration accuracy threshold.
-///
-/// Release: 250ns — matches Agrona's `DEFAULT_MEASUREMENT_THRESHOLD_NS`.
-/// Debug: 1μs — relaxed for unoptimized builds.
 #[cfg(debug_assertions)]
 const DEFAULT_THRESHOLD: Duration = Duration::from_micros(1);
 #[cfg(not(debug_assertions))]
 const DEFAULT_THRESHOLD: Duration = Duration::from_nanos(250);
 
-/// Minimum allowed threshold.
 #[cfg(debug_assertions)]
 const MIN_THRESHOLD: Duration = Duration::from_micros(1);
 #[cfg(not(debug_assertions))]
 const MIN_THRESHOLD: Duration = Duration::from_nanos(100);
 
-/// Production sync source — calibrated UTC from monotonic clock.
+/// Installer for the realtime clock. Consumed at setup.
 ///
-/// Uses Agrona-style offset calibration: brackets `SystemTime::now()` with
-/// two `Instant::now()` reads, takes the midpoint. Periodically resyncs
-/// to correct for NTP drift.
+/// Registers a [`Clock`] resource in the World, calibrates the
+/// monotonic-to-UTC offset, and returns a [`RealtimeClockPoller`].
 ///
-/// # Usage
+/// # Example
 ///
 /// ```ignore
-/// let mut realtime = RealtimeClock::default();
-/// let mut clock = Clock::default();
+/// let mut wb = WorldBuilder::new();
+/// let mut clock_poller = wb.install_driver(
+///     RealtimeClockInstaller::builder().build().unwrap()
+/// );
+/// let mut world = wb.build();
 ///
-/// // Poll loop:
-/// let now = Instant::now();
-/// realtime.sync(&mut clock, now);
+/// loop {
+///     let now = Instant::now();
+///     clock_poller.sync(&mut world, now);
+///     // ...
+/// }
 /// ```
-pub struct RealtimeClock {
+pub struct RealtimeClockInstaller {
+    threshold: Duration,
+    max_retries: u32,
+    resync_interval: Duration,
+}
+
+/// Builder for [`RealtimeClockInstaller`].
+pub struct RealtimeClockInstallerBuilder {
+    threshold: Duration,
+    max_retries: u32,
+    resync_interval: Duration,
+}
+
+impl RealtimeClockInstaller {
+    /// Creates a builder with sensible defaults.
+    #[must_use]
+    pub fn builder() -> RealtimeClockInstallerBuilder {
+        RealtimeClockInstallerBuilder::default()
+    }
+}
+
+impl Installer for RealtimeClockInstaller {
+    type Poller = RealtimeClockPoller;
+
+    fn install(self, world: &mut WorldBuilder) -> RealtimeClockPoller {
+        let clock_id = world.register(Clock::default());
+
+        let (base_instant, base_nanos, gap) =
+            RealtimeClockPoller::calibrate(self.threshold, self.max_retries);
+        let accurate = gap <= self.threshold;
+
+        RealtimeClockPoller {
+            clock_id,
+            base_instant,
+            base_nanos,
+            last_resync: base_instant,
+            resync_interval: self.resync_interval,
+            threshold: self.threshold,
+            max_retries: self.max_retries,
+            calibration_gap: gap,
+            accurate,
+        }
+    }
+}
+
+impl Default for RealtimeClockInstaller {
+    fn default() -> Self {
+        Self::builder().build().expect("default config is always valid")
+    }
+}
+
+impl std::fmt::Debug for RealtimeClockInstaller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealtimeClockInstaller")
+            .field("threshold", &self.threshold)
+            .field("max_retries", &self.max_retries)
+            .field("resync_interval", &self.resync_interval)
+            .finish()
+    }
+}
+
+/// Runtime poller for the realtime clock.
+///
+/// Holds a pre-resolved `ResourceId` for the `Clock` resource and
+/// calibration state. Call `sync()` once per poll loop iteration.
+pub struct RealtimeClockPoller {
+    clock_id: ResourceId,
     base_instant: Instant,
     base_nanos: i128,
     last_resync: Instant,
@@ -108,34 +194,21 @@ pub struct RealtimeClock {
     accurate: bool,
 }
 
-/// Builder for [`RealtimeClock`].
-pub struct RealtimeClockBuilder {
-    threshold: Duration,
-    max_retries: u32,
-    resync_interval: Duration,
-}
-
-impl RealtimeClock {
-    /// Creates a builder with sensible defaults.
-    #[must_use]
-    pub fn builder() -> RealtimeClockBuilder {
-        RealtimeClockBuilder::default()
-    }
-
-    /// Syncs the clock resource with the current time.
-    ///
-    /// Computes UTC nanos from the calibrated offset and writes both
-    /// the instant and nanos into the `Clock` resource. Triggers resync
-    /// if the resync interval has elapsed.
+impl RealtimeClockPoller {
+    /// Sync the Clock resource with the current time.
     #[inline]
-    pub fn sync(&mut self, clock: &mut Clock, now: Instant) {
+    pub fn sync(&mut self, world: &mut World, now: Instant) {
         if now.saturating_duration_since(self.last_resync) >= self.resync_interval {
             self.resync_at(now);
         }
 
         let elapsed = now.saturating_duration_since(self.base_instant);
+        let nanos = self.base_nanos + elapsed.as_nanos() as i128;
+
+        // SAFETY: clock_id was returned by register() during install()
+        let clock = unsafe { world.get_mut::<Clock>(self.clock_id) };
         clock.instant = now;
-        clock.unix_nanos = self.base_nanos + elapsed.as_nanos() as i128;
+        clock.unix_nanos = nanos;
     }
 
     /// Force recalibration.
@@ -197,26 +270,19 @@ impl RealtimeClock {
     }
 }
 
-impl Default for RealtimeClock {
-    fn default() -> Self {
-        Self::builder().build().expect("default RealtimeClock config is always valid")
-    }
-}
-
-impl std::fmt::Debug for RealtimeClock {
+impl std::fmt::Debug for RealtimeClockPoller {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RealtimeClock")
+        f.debug_struct("RealtimeClockPoller")
             .field("calibration_gap", &self.calibration_gap)
             .field("accurate", &self.accurate)
-            .field("resync_interval", &self.resync_interval)
             .finish()
     }
 }
 
-impl RealtimeClockBuilder {
-    /// Target accuracy threshold. Clamped to platform minimum (100ns release, 1μs debug).
-    ///
-    /// Release default: 250ns. Debug default: 1μs.
+// -- Builder --
+
+impl RealtimeClockInstallerBuilder {
+    /// Target accuracy threshold. Clamped to platform minimum.
     #[must_use]
     pub fn threshold(mut self, threshold: Duration) -> Self {
         self.threshold = threshold.max(MIN_THRESHOLD);
@@ -237,34 +303,24 @@ impl RealtimeClockBuilder {
         self
     }
 
-    /// Builds and calibrates the clock.
+    /// Builds the installer.
     ///
     /// # Errors
     ///
     /// Returns `ConfigError::Invalid` if `max_retries` is 0.
-    pub fn build(self) -> Result<RealtimeClock, ConfigError> {
+    pub fn build(self) -> Result<RealtimeClockInstaller, ConfigError> {
         if self.max_retries == 0 {
             return Err(ConfigError::Invalid("max_retries must be > 0"));
         }
-
-        let (base_instant, base_nanos, gap) =
-            RealtimeClock::calibrate(self.threshold, self.max_retries);
-        let accurate = gap <= self.threshold;
-
-        Ok(RealtimeClock {
-            base_instant,
-            base_nanos,
-            last_resync: base_instant,
-            resync_interval: self.resync_interval,
+        Ok(RealtimeClockInstaller {
             threshold: self.threshold,
             max_retries: self.max_retries,
-            calibration_gap: gap,
-            accurate,
+            resync_interval: self.resync_interval,
         })
     }
 }
 
-impl Default for RealtimeClockBuilder {
+impl Default for RealtimeClockInstallerBuilder {
     fn default() -> Self {
         Self {
             threshold: DEFAULT_THRESHOLD,
@@ -274,66 +330,69 @@ impl Default for RealtimeClockBuilder {
     }
 }
 
-impl std::fmt::Debug for RealtimeClockBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RealtimeClockBuilder")
-            .field("threshold", &self.threshold)
-            .field("max_retries", &self.max_retries)
-            .field("resync_interval", &self.resync_interval)
-            .finish()
+// =============================================================================
+// TestClock — installer + poller
+// =============================================================================
+
+/// Installer for the test clock.
+///
+/// Registers a [`Clock`] resource and returns a [`TestClockPoller`].
+#[derive(Debug)]
+pub struct TestClockInstaller {
+    base_nanos: i128,
+}
+
+impl TestClockInstaller {
+    /// Creates an installer starting at epoch (nanos = 0).
+    #[must_use]
+    pub fn new() -> Self {
+        Self { base_nanos: 0 }
+    }
+
+    /// Creates an installer starting at the given UTC nanos.
+    #[must_use]
+    pub fn starting_at(nanos: i128) -> Self {
+        Self { base_nanos: nanos }
     }
 }
 
-// =============================================================================
-// TestClock — sync source
-// =============================================================================
+impl Default for TestClockInstaller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-/// Deterministic sync source for testing — manually controlled.
+impl Installer for TestClockInstaller {
+    type Poller = TestClockPoller;
+
+    fn install(self, world: &mut WorldBuilder) -> TestClockPoller {
+        let clock_id = world.register(Clock::default());
+        TestClockPoller {
+            clock_id,
+            elapsed: Duration::ZERO,
+            base_nanos: self.base_nanos,
+            base_instant: Instant::now(),
+        }
+    }
+}
+
+/// Runtime poller for the test clock — manually controlled.
 ///
-/// Use `advance()` to move time forward, then `sync()` to write into the
-/// `Clock` resource. For simple tests, write `Clock` fields directly.
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut test_clock = TestClock::new();
-/// let mut clock = Clock::default();
-///
-/// test_clock.advance(Duration::from_secs(1));
-/// test_clock.sync(&mut clock);
-/// assert_eq!(clock.unix_nanos, 1_000_000_000);
-/// ```
-#[derive(Debug, Clone)]
-pub struct TestClock {
+/// Use `advance()` to move time forward, then `sync()` to write into
+/// the `Clock` resource.
+pub struct TestClockPoller {
+    clock_id: ResourceId,
     elapsed: Duration,
     base_nanos: i128,
     base_instant: Instant,
 }
 
-impl TestClock {
-    /// Creates a new test clock starting at epoch (nanos = 0).
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            elapsed: Duration::ZERO,
-            base_nanos: 0,
-            base_instant: Instant::now(),
-        }
-    }
-
-    /// Creates a new test clock starting at the given UTC nanos.
-    #[must_use]
-    pub fn starting_at(nanos: i128) -> Self {
-        Self {
-            elapsed: Duration::ZERO,
-            base_nanos: nanos,
-            base_instant: Instant::now(),
-        }
-    }
-
-    /// Syncs the clock resource with the test clock's current state.
+impl TestClockPoller {
+    /// Sync the Clock resource with the test clock's current state.
     #[inline]
-    pub fn sync(&self, clock: &mut Clock) {
+    pub fn sync(&self, world: &mut World) {
+        // SAFETY: clock_id was returned by register() during install()
+        let clock = unsafe { world.get_mut::<Clock>(self.clock_id) };
         clock.instant = self.base_instant + self.elapsed;
         clock.unix_nanos = self.base_nanos + self.elapsed.as_nanos() as i128;
     }
@@ -371,34 +430,84 @@ impl TestClock {
     }
 }
 
-impl Default for TestClock {
-    fn default() -> Self {
-        Self::new()
+impl std::fmt::Debug for TestClockPoller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestClockPoller")
+            .field("elapsed", &self.elapsed)
+            .field("base_nanos", &self.base_nanos)
+            .finish()
     }
 }
 
 // =============================================================================
-// HistoricalClock — sync source
+// HistoricalClock — installer + poller
 // =============================================================================
 
-/// Replay sync source — auto-advances by step on each `sync()`.
+/// Installer for the historical (replay) clock.
 ///
-/// Starts at `start_nanos`, advances by `step` on every `sync()` call,
-/// and becomes exhausted when it reaches `end_nanos`.
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut historical = HistoricalClock::new(start, end, step).unwrap();
-/// let mut clock = Clock::default();
-///
-/// while !historical.is_exhausted() {
-///     historical.sync(&mut clock);
-///     // process at clock.unix_nanos
-/// }
-/// ```
-#[derive(Debug, Clone)]
-pub struct HistoricalClock {
+/// Registers a [`Clock`] resource and returns a [`HistoricalClockPoller`].
+pub struct HistoricalClockInstaller {
+    start_nanos: i128,
+    end_nanos: i128,
+    step: Duration,
+}
+
+impl HistoricalClockInstaller {
+    /// Creates an installer for replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if `start_nanos >= end_nanos` or
+    /// `step` is zero.
+    pub fn new(
+        start_nanos: i128,
+        end_nanos: i128,
+        step: Duration,
+    ) -> Result<Self, ConfigError> {
+        if start_nanos >= end_nanos {
+            return Err(ConfigError::Invalid("start_nanos must be < end_nanos"));
+        }
+        if step.is_zero() {
+            return Err(ConfigError::Invalid("step must be > 0"));
+        }
+        Ok(Self {
+            start_nanos,
+            end_nanos,
+            step,
+        })
+    }
+}
+
+impl std::fmt::Debug for HistoricalClockInstaller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoricalClockInstaller")
+            .field("start_nanos", &self.start_nanos)
+            .field("end_nanos", &self.end_nanos)
+            .field("step", &self.step)
+            .finish()
+    }
+}
+
+impl Installer for HistoricalClockInstaller {
+    type Poller = HistoricalClockPoller;
+
+    fn install(self, world: &mut WorldBuilder) -> HistoricalClockPoller {
+        let clock_id = world.register(Clock::default());
+        HistoricalClockPoller {
+            clock_id,
+            start_nanos: self.start_nanos,
+            end_nanos: self.end_nanos,
+            current_nanos: self.start_nanos,
+            step_nanos: self.step.as_nanos() as i128,
+            base_instant: Instant::now(),
+            exhausted: false,
+        }
+    }
+}
+
+/// Runtime poller for historical (replay) clock — auto-advances per sync.
+pub struct HistoricalClockPoller {
+    clock_id: ResourceId,
     start_nanos: i128,
     end_nanos: i128,
     current_nanos: i128,
@@ -407,39 +516,17 @@ pub struct HistoricalClock {
     exhausted: bool,
 }
 
-impl HistoricalClock {
-    /// Creates a new historical clock.
+impl HistoricalClockPoller {
+    /// Sync the Clock resource and auto-advance the replay position.
     ///
-    /// # Errors
-    ///
-    /// Returns `ConfigError::Invalid` if `start_nanos >= end_nanos` or
-    /// `step` is zero.
-    pub fn new(start_nanos: i128, end_nanos: i128, step: Duration) -> Result<Self, ConfigError> {
-        if start_nanos >= end_nanos {
-            return Err(ConfigError::Invalid("start_nanos must be < end_nanos"));
-        }
-        if step.is_zero() {
-            return Err(ConfigError::Invalid("step must be > 0"));
-        }
-
-        Ok(Self {
-            start_nanos,
-            end_nanos,
-            current_nanos: start_nanos,
-            step_nanos: step.as_nanos() as i128,
-            base_instant: Instant::now(),
-            exhausted: false,
-        })
-    }
-
-    /// Syncs the clock resource and auto-advances the replay position.
-    ///
-    /// Writes current position into `clock`, then advances by one step.
-    /// After exhaustion, writes `end_nanos` and stops advancing.
+    /// Writes current position into Clock, then advances by one step.
     #[inline]
-    pub fn sync(&mut self, clock: &mut Clock) {
+    pub fn sync(&mut self, world: &mut World) {
         let elapsed = (self.current_nanos - self.start_nanos).max(0);
         let elapsed_nanos = u64::try_from(elapsed).unwrap_or(u64::MAX);
+
+        // SAFETY: clock_id was returned by register() during install()
+        let clock = unsafe { world.get_mut::<Clock>(self.clock_id) };
         clock.instant = self.base_instant + Duration::from_nanos(elapsed_nanos);
         clock.unix_nanos = self.current_nanos;
 
@@ -474,6 +561,15 @@ impl HistoricalClock {
     }
 }
 
+impl std::fmt::Debug for HistoricalClockPoller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoricalClockPoller")
+            .field("current_nanos", &self.current_nanos)
+            .field("exhausted", &self.exhausted)
+            .finish()
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -482,6 +578,12 @@ impl HistoricalClock {
 mod tests {
     use super::*;
 
+    fn make_world() -> (WorldBuilder, World) {
+        let wb = WorldBuilder::new();
+        let world = wb.build();
+        (WorldBuilder::new(), world)
+    }
+
     // =========================================================================
     // Clock struct
     // =========================================================================
@@ -489,15 +591,7 @@ mod tests {
     #[test]
     fn clock_default() {
         let clock = Clock::default();
-        assert_eq!(clock.unix_nanos, 0);
-    }
-
-    #[test]
-    fn clock_fields_writable() {
-        let mut clock = Clock::default();
-        clock.unix_nanos = 42;
-        clock.instant = Instant::now();
-        assert_eq!(clock.unix_nanos, 42);
+        assert_eq!(clock.unix_nanos(), 0);
     }
 
     // =========================================================================
@@ -505,65 +599,58 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn realtime_sync_produces_valid_nanos() {
-        let mut rt = RealtimeClock::default();
-        let mut clock = Clock::default();
-        rt.sync(&mut clock, Instant::now());
+    fn realtime_install_and_sync() {
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(RealtimeClockInstaller::default());
+        let mut world = wb.build();
+
+        let now = Instant::now();
+        poller.sync(&mut world, now);
+
+        let clock = world.resource::<Clock>();
+        assert_eq!(clock.instant(), now);
 
         let expected = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as i128;
-        let diff = (clock.unix_nanos - expected).unsigned_abs();
-        assert!(diff < 1_000_000_000, "nanos should be close to now, diff={diff}ns");
-    }
-
-    #[test]
-    fn realtime_sync_sets_instant() {
-        let mut rt = RealtimeClock::default();
-        let mut clock = Clock::default();
-        let now = Instant::now();
-        rt.sync(&mut clock, now);
-        assert_eq!(clock.instant, now);
+        let diff = (clock.unix_nanos() - expected).unsigned_abs();
+        assert!(diff < 1_000_000_000, "nanos off by {diff}ns");
     }
 
     #[test]
     fn realtime_nanos_increase() {
-        let mut rt = RealtimeClock::default();
-        let mut clock = Clock::default();
-        rt.sync(&mut clock, Instant::now());
-        let n1 = clock.unix_nanos;
-        std::thread::sleep(Duration::from_millis(1));
-        rt.sync(&mut clock, Instant::now());
-        assert!(clock.unix_nanos > n1);
-    }
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(RealtimeClockInstaller::default());
+        let mut world = wb.build();
 
-    #[test]
-    fn realtime_builder() {
-        let rt = RealtimeClock::builder()
-            .threshold(Duration::from_micros(10))
-            .max_retries(5)
-            .resync_interval(Duration::from_secs(60))
-            .build()
-            .unwrap();
-        assert!(rt.calibration_gap() < Duration::from_secs(1));
+        poller.sync(&mut world, Instant::now());
+        let n1 = world.resource::<Clock>().unix_nanos();
+
+        std::thread::sleep(Duration::from_millis(1));
+        poller.sync(&mut world, Instant::now());
+        let n2 = world.resource::<Clock>().unix_nanos();
+
+        assert!(n2 > n1);
     }
 
     #[test]
     fn realtime_resync_no_panic() {
-        let mut rt = RealtimeClock::builder()
+        let mut wb = WorldBuilder::new();
+        let installer = RealtimeClockInstaller::builder()
             .resync_interval(Duration::ZERO)
             .build()
             .unwrap();
-        let mut clock = Clock::default();
-        let now = Instant::now();
-        rt.sync(&mut clock, now);
-        assert!(clock.unix_nanos > 0);
+        let mut poller = wb.install_driver(installer);
+        let mut world = wb.build();
+
+        poller.sync(&mut world, Instant::now());
+        assert!(world.resource::<Clock>().unix_nanos() > 0);
     }
 
     #[test]
     fn realtime_zero_retries_rejected() {
-        let result = RealtimeClock::builder().max_retries(0).build();
+        let result = RealtimeClockInstaller::builder().max_retries(0).build();
         assert!(matches!(result, Err(ConfigError::Invalid(_))));
     }
 
@@ -572,65 +659,73 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_clock_starts_at_zero() {
-        let tc = TestClock::new();
-        let mut clock = Clock::default();
-        tc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 0);
-    }
+    fn test_clock_install_and_sync() {
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(TestClockInstaller::new());
+        let mut world = wb.build();
 
-    #[test]
-    fn test_clock_starting_at() {
-        let tc = TestClock::starting_at(1_000_000_000);
-        let mut clock = Clock::default();
-        tc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 1_000_000_000);
+        poller.sync(&mut world);
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 0);
     }
 
     #[test]
     fn test_clock_advance() {
-        let mut tc = TestClock::new();
-        let mut clock = Clock::default();
-        tc.advance(Duration::from_millis(100));
-        tc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 100_000_000);
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(TestClockInstaller::new());
+        let mut world = wb.build();
+
+        poller.advance(Duration::from_millis(100));
+        poller.sync(&mut world);
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 100_000_000);
+    }
+
+    #[test]
+    fn test_clock_starting_at() {
+        let mut wb = WorldBuilder::new();
+        let poller = wb.install_driver(TestClockInstaller::starting_at(1_000_000_000));
+        let mut world = wb.build();
+
+        poller.sync(&mut world);
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 1_000_000_000);
     }
 
     #[test]
     fn test_clock_set_nanos() {
-        let mut tc = TestClock::new();
-        let mut clock = Clock::default();
-        tc.set_nanos(42);
-        tc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 42);
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(TestClockInstaller::new());
+        let mut world = wb.build();
+
+        poller.set_nanos(42);
+        poller.sync(&mut world);
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 42);
     }
 
     #[test]
     fn test_clock_reset() {
-        let mut tc = TestClock::new();
-        let mut clock = Clock::default();
-        tc.advance(Duration::from_secs(10));
-        tc.reset();
-        tc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 0);
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(TestClockInstaller::new());
+        let mut world = wb.build();
+
+        poller.advance(Duration::from_secs(10));
+        poller.reset();
+        poller.sync(&mut world);
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 0);
     }
 
     #[test]
     fn test_clock_instant_advances() {
-        let mut tc = TestClock::new();
-        let mut clock = Clock::default();
-        tc.sync(&mut clock);
-        let i1 = clock.instant;
-        tc.advance(Duration::from_millis(100));
-        tc.sync(&mut clock);
-        assert_eq!(clock.instant.duration_since(i1), Duration::from_millis(100));
-    }
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(TestClockInstaller::new());
+        let mut world = wb.build();
 
-    #[test]
-    fn test_clock_direct_write() {
-        let mut clock = Clock::default();
-        clock.unix_nanos = 999;
-        assert_eq!(clock.unix_nanos, 999);
+        poller.sync(&mut world);
+        let i1 = world.resource::<Clock>().instant();
+
+        poller.advance(Duration::from_millis(100));
+        poller.sync(&mut world);
+        let i2 = world.resource::<Clock>().instant();
+
+        assert_eq!(i2.duration_since(i1), Duration::from_millis(100));
     }
 
     // =========================================================================
@@ -638,58 +733,53 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn historical_starts_at_start() {
-        let hc = HistoricalClock::new(1000, 2000, Duration::from_nanos(100)).unwrap();
-        assert_eq!(hc.current_nanos(), 1000);
-        assert!(!hc.is_exhausted());
-    }
+    fn historical_install_and_sync() {
+        let installer = HistoricalClockInstaller::new(1000, 2000, Duration::from_nanos(100)).unwrap();
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(installer);
+        let mut world = wb.build();
 
-    #[test]
-    fn historical_sync_writes_and_advances() {
-        let mut hc = HistoricalClock::new(0, 1000, Duration::from_nanos(100)).unwrap();
-        let mut clock = Clock::default();
-
-        hc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 0); // writes current BEFORE advancing
-        assert_eq!(hc.current_nanos(), 100); // advanced after sync
-
-        hc.sync(&mut clock);
-        assert_eq!(clock.unix_nanos, 100);
-        assert_eq!(hc.current_nanos(), 200);
+        poller.sync(&mut world);
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 1000); // writes before advancing
+        assert_eq!(poller.current_nanos(), 1100); // advanced after sync
     }
 
     #[test]
     fn historical_exhausts() {
-        let mut hc = HistoricalClock::new(0, 200, Duration::from_nanos(100)).unwrap();
-        let mut clock = Clock::default();
+        let installer = HistoricalClockInstaller::new(0, 200, Duration::from_nanos(100)).unwrap();
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(installer);
+        let mut world = wb.build();
 
-        hc.sync(&mut clock); // writes 0, advances to 100
-        hc.sync(&mut clock); // writes 100, advances to 200 → exhausted
+        poller.sync(&mut world); // writes 0, advances to 100
+        poller.sync(&mut world); // writes 100, advances to 200 → exhausted
 
-        assert!(hc.is_exhausted());
-        assert_eq!(hc.current_nanos(), 200);
-
-        hc.sync(&mut clock); // writes 200, no further advance
-        assert_eq!(clock.unix_nanos, 200);
+        assert!(poller.is_exhausted());
+        poller.sync(&mut world); // writes 200, no further advance
+        assert_eq!(world.resource::<Clock>().unix_nanos(), 200);
     }
 
     #[test]
     fn historical_reset() {
-        let mut hc = HistoricalClock::new(100, 500, Duration::from_nanos(100)).unwrap();
-        let mut clock = Clock::default();
+        let installer = HistoricalClockInstaller::new(100, 500, Duration::from_nanos(100)).unwrap();
+        let mut wb = WorldBuilder::new();
+        let mut poller = wb.install_driver(installer);
+        let mut world = wb.build();
+
         for _ in 0..10 {
-            hc.sync(&mut clock);
+            poller.sync(&mut world);
         }
-        assert!(hc.is_exhausted());
-        hc.reset();
-        assert!(!hc.is_exhausted());
-        assert_eq!(hc.current_nanos(), 100);
+        assert!(poller.is_exhausted());
+
+        poller.reset();
+        assert!(!poller.is_exhausted());
+        assert_eq!(poller.current_nanos(), 100);
     }
 
     #[test]
     fn historical_rejects_bad_config() {
-        assert!(HistoricalClock::new(1000, 1000, Duration::from_nanos(100)).is_err());
-        assert!(HistoricalClock::new(2000, 1000, Duration::from_nanos(100)).is_err());
-        assert!(HistoricalClock::new(0, 1000, Duration::ZERO).is_err());
+        assert!(HistoricalClockInstaller::new(1000, 1000, Duration::from_nanos(100)).is_err());
+        assert!(HistoricalClockInstaller::new(2000, 1000, Duration::from_nanos(100)).is_err());
+        assert!(HistoricalClockInstaller::new(0, 1000, Duration::ZERO).is_err());
     }
 }
