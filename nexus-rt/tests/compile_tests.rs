@@ -3747,7 +3747,7 @@ fn resolved_opaque() {
 }
 
 #[test]
-fn resolved_arity_zero() {
+fn resolved_resmut_param() {
     fn add_one(mut out: ResMut<u64>, x: u64) {
         *out = x + 1;
     }
@@ -3759,6 +3759,19 @@ fn resolved_arity_zero() {
         .into_handler(world.registry());
     h.run(&mut world, 10);
     assert_eq!(*world.resource::<u64>(), 11);
+}
+
+#[test]
+fn resolved_arity_zero() {
+    fn event_only(e: u64) {
+        assert!(e > 0);
+    }
+    let mut wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut h = event_only
+        .into_handler(world.registry())
+        .into_handler(world.registry());
+    h.run(&mut world, 42);
 }
 
 // -- Kitchen sink --

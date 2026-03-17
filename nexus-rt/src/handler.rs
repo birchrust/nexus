@@ -670,6 +670,11 @@ pub struct Opaque;
 /// Enables passing already-built pipelines, templates, callbacks, and
 /// `Box<dyn Handler<E>>` where `IntoHandler` is expected.
 ///
+/// The `registry` argument to [`IntoHandler::into_handler`] is ignored —
+/// the handler's parameters were resolved against the registry it was
+/// originally built with. Callers must ensure the handler is run against
+/// the same [`World`] it was resolved for.
+///
 /// Users never need to name this type — it's inferred automatically.
 pub struct Resolved;
 
