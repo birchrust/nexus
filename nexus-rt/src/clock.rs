@@ -110,10 +110,12 @@ impl RealtimeClock {
     /// Anchors `base_instant` to `now` so that subsequent
     /// `now.duration_since(self.base_instant)` in `stamp()` cannot panic.
     fn resync_at(&mut self, now: Instant) {
-        let (_, base_nanos, gap) =
+        let (best_instant, base_nanos, gap) =
             Self::calibrate(self.threshold, self.max_retries);
+        // Adjust nanos for time elapsed between calibration midpoint and `now`
+        let adjustment = now.saturating_duration_since(best_instant);
         self.base_instant = now;
-        self.base_nanos = base_nanos;
+        self.base_nanos = base_nanos + adjustment.as_nanos() as i128;
         self.calibration_gap = gap;
         self.accurate = gap <= self.threshold;
         self.last_resync = now;
@@ -477,7 +479,8 @@ impl Clock for HistoricalClock {
 
     #[inline]
     fn instant(&self) -> Instant {
-        let elapsed_nanos = (self.current_nanos - self.start_nanos).max(0) as u64;
+        let elapsed = (self.current_nanos - self.start_nanos).max(0);
+        let elapsed_nanos = u64::try_from(elapsed).unwrap_or(u64::MAX);
         self.base_instant + Duration::from_nanos(elapsed_nanos)
     }
 }
