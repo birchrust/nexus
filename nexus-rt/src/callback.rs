@@ -27,6 +27,23 @@
 //!
 //! The `ctx` field is `pub`, so drivers can read or mutate it between
 //! dispatches (e.g. to update a deadline or check a counter).
+//!
+//! # Returning callbacks from functions (Rust 2024)
+//!
+//! When a factory function takes `&Registry` and returns `impl Handler<E>`,
+//! Rust 2024 captures the registry borrow. Use `+ use<...>` to exclude it:
+//!
+//! ```ignore
+//! fn build_callback(
+//!     ctx: MyCtx,
+//!     reg: &Registry,
+//! ) -> impl Handler<DataEvent> + use<> {
+//!     on_data.into_callback(ctx, reg)
+//! }
+//! ```
+//!
+//! See the [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
+//! for the full explanation.
 
 use crate::Handler;
 use crate::handler::Param;

@@ -131,6 +131,29 @@
 //! dag.run(&mut world, 5u32);
 //! assert_eq!(*world.resource::<u64>(), 10);
 //! ```
+//!
+//! # Returning DAGs from functions (Rust 2024)
+//!
+//! When a factory function takes `&Registry` and returns `impl Handler<E>`,
+//! Rust 2024 captures the registry borrow in the return type by default.
+//! Use `+ use<...>` to exclude it:
+//!
+//! ```ignore
+//! fn on_tick<C: Config>(
+//!     reg: &Registry,
+//! ) -> impl Handler<Tick> + use<C> {
+//!     DagBuilder::<Tick>::new()
+//!         .root(split::<C>, reg)
+//!         .fork()
+//!         // ...
+//!         .build()
+//! }
+//! ```
+//!
+//! List every type parameter the DAG captures; omit the `&Registry`
+//! lifetime — it's consumed during `.build()`. See the
+//! [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
+//! for the full explanation.
 
 use std::marker::PhantomData;
 

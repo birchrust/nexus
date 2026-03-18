@@ -75,6 +75,38 @@
 //!
 //! User-facing APIs (`resource`, `resource_mut`, `Handler::run`) are fully safe.
 //!
+//! # Returning `impl Handler` from functions (Rust 2024)
+//!
+//! In Rust 2024, `impl Trait` in return position captures **all** in-scope
+//! lifetimes by default. If a function takes `&Registry` and returns
+//! `impl Handler<E>`, the returned type captures the registry borrow —
+//! blocking subsequent `WorldBuilder` calls.
+//!
+//! Add `+ use<...>` to list only the type parameters the return type holds.
+//! The `&Registry` is consumed during build — it is **not** retained:
+//!
+//! ```ignore
+//! use nexus_rt::{Handler, PipelineBuilder, Res, ResMut};
+//! use nexus_rt::world::Registry;
+//!
+//! fn on_order<C: Config>(
+//!     reg: &Registry,
+//! ) -> impl Handler<Order> + use<C> {
+//!     PipelineBuilder::<Order>::new()
+//!         .then(validate::<C>, reg)
+//!         .dispatch(submit::<C>.into_handler(reg))
+//!         .build()
+//! }
+//! ```
+//!
+//! Without `+ use<C>`, the compiler assumes the return type borrows
+//! `reg`, and subsequent `wb.install_driver(...)` / `wb.build()` calls
+//! fail with a borrow conflict.
+//!
+//! This applies to any factory function pattern — pipelines, DAGs,
+//! handlers, callbacks, and templates. List every type parameter the
+//! return type captures; omit the `&Registry` lifetime.
+//!
 //! # Bevy Analogies
 //!
 //! nexus-rt borrows heavily from Bevy ECS's system model. If you know

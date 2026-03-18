@@ -97,6 +97,21 @@ These generate a ZST struct implementing the `Blueprint` (or
 - **Memory efficiency** — parameter state (ResourceIds) is `Copy`, so
   generating is just a memcpy of a few words
 
+### Returning Generated Handlers (Rust 2024)
+
+If you wrap `template.generate()` in a factory function returning
+`impl Handler<E>`, the Rust 2024 `+ use<...>` rule applies:
+
+```rust
+fn make_handler(
+    template: &HandlerTemplate<OnDataBlueprint>,
+) -> impl Handler<DataEvent> + use<> {
+    template.generate()
+}
+```
+
+See [Handlers — Returning from Functions](handlers.md#returning-handlers-from-functions-rust-2024).
+
 ## When NOT to Use Templates
 
 - **One-off handlers** — `into_handler` is simpler and sufficient

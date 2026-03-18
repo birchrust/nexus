@@ -47,6 +47,14 @@
 //!
 //! // Both share pre-resolved state — no redundant registry lookups.
 //! ```
+//!
+//! # Returning templates or generated handlers from functions (Rust 2024)
+//!
+//! When a factory function takes `&Registry` and returns `impl Handler<E>`
+//! (e.g. wrapping `template.generate()`), Rust 2024 captures the registry
+//! borrow. Use `+ use<...>` to exclude it. See the
+//! [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
+//! for details.
 
 use std::marker::PhantomData;
 

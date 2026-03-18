@@ -490,6 +490,24 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 /// limitations with GATs. Use named `fn` items instead. This is the same
 /// limitation as Bevy's system registration.
 ///
+/// # Factory functions and `use<>` (Rust 2024)
+///
+/// If you write a function that takes `&Registry` and returns
+/// `impl Handler<E>`, Rust 2024 captures the registry borrow in the
+/// return type. Add `+ use<...>` listing only the type parameters the
+/// handler actually holds:
+///
+/// ```ignore
+/// fn build_handler<C: Config>(
+///     reg: &Registry,
+/// ) -> impl Handler<Order> + use<C> {
+///     process_order::<C>.into_handler(reg)
+/// }
+/// ```
+///
+/// See the [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
+/// for details.
+///
 /// # Examples
 ///
 /// ```
@@ -674,6 +692,9 @@ pub struct Opaque;
 /// the handler's parameters were resolved against the registry it was
 /// originally built with. Callers must ensure the handler is run against
 /// the same [`World`] it was resolved for.
+///
+/// When returning a resolved handler from a factory function, the Rust
+/// 2024 `+ use<...>` annotation applies — see [`IntoHandler`] docs.
 ///
 /// Users never need to name this type — it's inferred automatically.
 pub struct Resolved;
