@@ -79,6 +79,28 @@
 //! Supported for tuples of 2-5 elements. Beyond 5, define a named
 //! struct — if a combinator stage needs that many arguments, a struct
 //! makes the intent clearer and the code more maintainable.
+//!
+//! # Returning pipelines from functions (Rust 2024)
+//!
+//! When a factory function takes `&Registry` and returns `impl Handler<E>`,
+//! Rust 2024 captures the registry borrow in the return type by default.
+//! Use `+ use<...>` to exclude it:
+//!
+//! ```ignore
+//! fn on_order<C: Config>(
+//!     reg: &Registry,
+//! ) -> impl Handler<Order> + use<C> {
+//!     PipelineBuilder::<Order>::new()
+//!         .then(validate::<C>, reg)
+//!         .dispatch(submit::<C>.into_handler(reg))
+//!         .build()
+//! }
+//! ```
+//!
+//! List every type parameter the pipeline captures; omit the `&Registry`
+//! lifetime — it's consumed during `.build()`. See the
+//! [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
+//! for the full explanation.
 
 use std::marker::PhantomData;
 

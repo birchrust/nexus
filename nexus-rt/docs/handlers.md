@@ -108,6 +108,38 @@ let callback = Callback::new(
 The context is stored inside the callback — not in the World. Each
 callback instance has its own context.
 
+## Returning Handlers from Functions (Rust 2024)
+
+When you write a factory function that takes `&Registry` and returns
+`impl Handler<E>`, Rust 2024's default capture rules hold the registry
+borrow in the return type — blocking subsequent `WorldBuilder` calls.
+
+Add `+ use<...>` listing only the type parameters the return type holds:
+
+```rust
+fn build_handler<C: Config>(
+    reg: &Registry,
+) -> impl Handler<Order> + use<C> {
+    process_order::<C>.into_handler(reg)
+}
+```
+
+The `&Registry` is consumed during `into_handler` — the returned handler
+holds pre-resolved `ResourceId`s, not a reference to the registry. The
+`use<C>` annotation tells the compiler exactly that.
+
+If there are no type parameters to capture, use an empty `use<>`:
+
+```rust
+fn build_handler(reg: &Registry) -> impl Handler<Order> + use<> {
+    process_order.into_handler(reg)
+}
+```
+
+This applies to all handler-producing patterns: `into_handler`,
+`into_callback`, `PipelineBuilder::build()`, `DagBuilder::build()`,
+and `template.generate()`.
+
 ## Why Named Functions?
 
 ```rust

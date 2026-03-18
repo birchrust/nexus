@@ -116,6 +116,42 @@ writing the steps inline — verified by the
 No allocation per dispatch. No vtable lookup. One function call
 that inlines to the sequence of steps.
 
+## Returning Pipelines from Functions (Rust 2024)
+
+Pipeline factory functions are the most common place to hit Rust 2024's
+lifetime capture rules. When a function takes `&Registry` and returns
+`impl Handler<E>`, the return type captures the registry borrow by
+default — blocking subsequent `WorldBuilder` calls.
+
+Add `+ use<...>` listing only the type parameters the pipeline holds:
+
+```rust
+fn on_order<C: Config>(
+    reg: &Registry,
+) -> impl Handler<Order> + use<C> {
+    PipelineBuilder::<Order>::new()
+        .then(validate::<C>, reg)
+        .guard(check_risk::<C>, reg)
+        .dispatch(submit::<C>.into_handler(reg))
+        .build()
+}
+```
+
+The `&Registry` is consumed during `.then()` / `.build()` — the built
+pipeline holds pre-resolved `ResourceId`s, not a reference to the
+registry. Without `+ use<C>`, the compiler assumes the pipeline borrows
+`reg` and the following will fail:
+
+```rust
+let reg = wb.registry();
+let pipeline = on_order::<MyConfig>(reg);   // borrows reg
+let timer = wb.install_driver(timer);       // ERROR: wb still borrowed
+```
+
+With `+ use<C>`, the borrow ends when `on_order` returns.
+
+If there are no type parameters, use `+ use<>`.
+
 ## Tips
 
 - **Steps should be small** — each step does one thing. Compose many

@@ -151,6 +151,37 @@ fn on_timer(data: Res<MarketData>, clock: Res<Clock>) {
 }
 ```
 
+## Registering Handlers in Drivers (Rust 2024)
+
+If your driver accepts handlers via a method that takes `&Registry` and
+stores an `impl Handler<E>`, the Rust 2024 `+ use<...>` capture rule
+applies to any factory function the user passes handlers through.
+
+For example, if a user builds a pipeline in a factory function and
+registers it with your driver:
+
+```rust
+fn on_message<C: Config>(
+    reg: &Registry,
+) -> impl for<'a> Handler<Msg<'a>> + use<C> {
+    PipelineBuilder::<Msg<'_>>::new()
+        .then(decode::<C>, reg)
+        .dispatch(process::<C>.into_handler(reg))
+        .build()
+}
+
+// Usage:
+let handler = on_message::<MyConfig>(wb.registry());
+driver.register(handler);   // works — registry borrow ended
+let world = wb.build();      // works — no outstanding borrows
+```
+
+Without `+ use<C>` on `on_message`, the `wb.registry()` borrow would
+be held, and `wb.build()` would fail. Document this in your driver's
+handler registration examples.
+
+See [Handlers — Returning from Functions](handlers.md#returning-handlers-from-functions-rust-2024).
+
 ## Design Principles
 
 1. **Installer is consumed** — configuration doesn't persist. The poller
