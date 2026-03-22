@@ -10,8 +10,10 @@ use nexus_queue::mpsc;
 /// Opaque handle identifying a notification source.
 ///
 /// Created by the user from their own key space (slab keys, array
-/// indices). The ReadySet never assigns tokens — it only validates
-/// in debug mode.
+/// indices). The event queue never assigns tokens — it treats the
+/// index as an offset into its internal per-token state. Passing a
+/// token whose index exceeds the queue's capacity will panic on use
+/// (e.g., in [`Notifier::notify`]).
 ///
 /// # Examples
 ///

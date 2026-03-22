@@ -48,8 +48,9 @@
 //!   sees `true` (conflated). Never two entries for the same index.
 //!
 //! - **Queue cannot overflow.** The flag ensures at most one entry per
-//!   token. Queue capacity = max tokens. Overflow is an invariant
-//!   violation (logic bug), reported via [`NotifyError`].
+//!   token. The underlying queue is sized to hold at least `max_tokens`
+//!   entries. Overflow is an invariant violation (logic bug), reported
+//!   via [`NotifyError`].
 //!
 //! - **FIFO delivery.** The MPSC ring buffer preserves push order. The
 //!   consumer sees tokens in the order they were first notified.
