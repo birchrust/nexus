@@ -17,6 +17,7 @@ members = [
 	"nexus-smartptr",
 	"nexus-stats",
 	"nexus-rate",
+	"nexus-notify",
 ]
 
 [workspace.package]
