@@ -102,14 +102,15 @@ impl Notifier {
             self.flags.len()
         );
 
-        // Dedup gate: AcqRel is required. The Acquire synchronizes with
-        // the consumer's Release on the flag clear, establishing a
-        // happens-before: the consumer's queue pop (which frees the slot)
-        // is visible to this producer before the push. Without Acquire,
-        // the producer can see flag=false but the queue slot still
-        // occupied (Relaxed flag clear can propagate before the queue's
-        // turn counter Release on weak memory models).
-        if self.flags[idx].swap(true, Ordering::AcqRel) {
+        // Dedup gate: Acquire synchronizes with the consumer's Release
+        // on the flag clear, establishing happens-before: the consumer's
+        // queue pop (which frees the slot) is visible to this producer
+        // before the push. Without Acquire, the producer can see
+        // flag=false but the queue slot still occupied (on weak memory
+        // models the Release flag clear can propagate before the queue's
+        // turn counter store). Release side is not needed — no downstream
+        // consumer reads depend on writes before this swap.
+        if self.flags[idx].swap(true, Ordering::Acquire) {
             return Ok(());
         }
 

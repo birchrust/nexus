@@ -79,7 +79,7 @@
 //!
 //! # Memory Ordering
 //!
-//! The producer's flag swap uses `AcqRel`. The consumer's flag clear
+//! The producer's flag swap uses `Acquire`. The consumer's flag clear
 //! uses `Release`. This establishes a happens-before chain: when the
 //! producer sees the flag cleared (`false`), the queue slot freed by
 //! the consumer's pop is guaranteed to be visible. Without this,

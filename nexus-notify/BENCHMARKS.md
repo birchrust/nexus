@@ -1,7 +1,7 @@
 # nexus-notify Benchmarks
 
 All cycle measurements use `rdtsc` with `lfence`/`rdtscp` serialization.
-Criterion benchmarks provide CI regression tracking with statistical analysis.
+Criterion benchmarks provide detailed statistical analysis of performance.
 
 ## System
 
