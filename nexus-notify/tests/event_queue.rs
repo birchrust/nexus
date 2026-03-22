@@ -89,7 +89,7 @@ fn mpsc_same_token_conflation() {
 
 #[test]
 fn stress_no_lost_tokens() {
-    const ROUNDS: usize = 10_000;
+    const ROUNDS: usize = if cfg!(miri) { 100 } else { 10_000 };
     let (notifier, poller) = event_queue(64);
     let mut events = Events::with_capacity(64);
 
