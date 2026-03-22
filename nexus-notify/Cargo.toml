@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-nexus-queue = { path = "../nexus-queue" }
+nexus-queue = { version = "1.2.0", path = "../nexus-queue" }
 crossbeam-utils.workspace = true
 
 [dev-dependencies]
