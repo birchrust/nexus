@@ -48,8 +48,8 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 │                                                         │
 │  nexus-queue    nexus-slab     nexus-id    nexus-bits   │
 │  nexus-channel  nexus-pool     nexus-ascii              │
-│  nexus-slot     nexus-timer    nexus-logbuf             │
-│  nexus-collections                                      │
+│  nexus-notify   nexus-timer    nexus-logbuf             │
+│  nexus-slot     nexus-collections  nexus-smartptr       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -68,12 +68,13 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | [**nexus-stats**](./nexus-stats) | 45 streaming statistics algorithms. EMA, CUSUM, Welford, Kalman, KAMA, change detection, anomaly filtering, and more. O(1) per update, fixed memory, `no_std`. [Full docs](./nexus-stats/docs/INDEX.md). |
 | [**nexus-rate**](./nexus-rate) | Rate limiting. GCRA, token bucket, sliding window counter. Single-threaded and thread-safe variants. Weighted requests. ~2-4 cycle hot path. |
 
-### Communication
+### Communication & Notification
 
 | Crate | Description |
 |-------|-------------|
 | [**nexus-queue**](./nexus-queue) | Lock-free SPSC, MPSC, and SPMC ring buffers with per-slot lap counters. Index-based (NUMA-friendly) and slot-based (shared-L3 friendly) implementations. |
 | [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. |
+| [**nexus-notify**](./nexus-notify) | Cross-thread event queue with conflation and FIFO delivery. Non-blocking `event_queue` and blocking `event_channel`. Dedup flags + MPSC ring buffer — O(limit) poll, ~5 cycles/token. |
 | [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
 | [**nexus-logbuf**](./nexus-logbuf) | Bounded SPSC and MPSC byte ring buffers. Claim-based API for variable-length messages. The hot-path primitive for getting data off the event loop without syscalls. |
 
@@ -84,6 +85,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | [**nexus-slab**](./nexus-slab) | Pre-allocated slab allocator. Fixed-capacity `BoundedSlab` for deterministic latency, growable `Slab` via independent chunks (no copy on growth). |
 | [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` and thread-safe `sync::Pool` (one acquirer, any returner). |
 | [**nexus-timer**](./nexus-timer) | Hierarchical timer wheel with O(1) insert and cancel. No-cascade design inspired by the Linux kernel. Slab-backed, zero allocation after init. |
+| [**nexus-smartptr**](./nexus-smartptr) | Inline and flexible smart pointers for type-erased storage. `FlatBox` (fixed inline), `FlexBox` (inline or heap). Avoids boxing for small handler types. |
 
 ### Collections
 
