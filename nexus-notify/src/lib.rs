@@ -1,5 +1,14 @@
 //! Cross-thread notification with conflation and FIFO delivery.
 //!
+//! Two primitives:
+//!
+//! - **[`event_queue()`]** → `(Notifier, Poller)` — non-blocking.
+//!   The consumer polls when it chooses.
+//!
+//! - **[`event_channel()`]** → `(Sender, Receiver)` — blocking.
+//!   The consumer blocks when idle and is woken by the producer.
+//!   Wraps the event queue with crossbeam parker/unparker.
+//!
 //! [`event_queue()`] creates a `(Notifier, Poller)` pair for signaling which
 //! items are ready for processing. An IO thread writes data into shared
 //! storage (e.g., a conflation slot) and calls [`Notifier::notify`]. The
@@ -20,8 +29,8 @@
 //!   index into the FIFO queue. The consumer pops and clears the flag,
 //!   re-arming it for future notifications.
 //!
-//! Hot path pointers are cached locally on both [`Notifier`] and
-//! [`Poller`] — no `Arc` dereference per operation.
+//! Both [`Notifier`] and [`Poller`] store the flags as `Arc<[AtomicBool]>` —
+//! a single pointer deref to reach the flag array on every operation.
 //!
 //! # Operations
 //!
@@ -70,12 +79,12 @@
 //!
 //! # Memory Ordering
 //!
-//! Flags use `Relaxed` ordering. The flag is a pure dedup gate — it
-//! carries no data. The MPSC queue provides the happens-before chain
-//! between producer and consumer via its own `Acquire`/`Release` on
-//! turn counters. `swap` is a read-modify-write operation that
-//! participates in the modification order of its atomic location
-//! regardless of the ordering parameter.
+//! The producer's flag swap uses `Acquire`. The consumer's flag clear
+//! uses `Release`. This establishes a happens-before chain: when the
+//! producer sees the flag cleared (`false`), the queue slot freed by
+//! the consumer's pop is guaranteed to be visible. Without this,
+//! the producer could see the flag cleared but the queue slot still
+//! occupied under weak memory models (validated by MIRI).
 //!
 //! # Performance (p50 cycles, measured)
 //!
@@ -136,6 +145,8 @@
 //! assert_eq!(events.len(), 90);
 //! ```
 
+mod event_channel;
 mod event_queue;
 
+pub use event_channel::{Receiver, Sender, event_channel};
 pub use event_queue::{Events, Notifier, NotifyError, Poller, Token, event_queue};

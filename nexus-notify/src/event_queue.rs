@@ -96,13 +96,21 @@ impl Notifier {
     #[inline]
     pub fn notify(&self, token: Token) -> Result<(), NotifyError> {
         let idx = token.0;
-        debug_assert!(idx < self.flags.len(), "token index {idx} exceeds capacity {}", self.flags.len());
+        debug_assert!(
+            idx < self.flags.len(),
+            "token index {idx} exceeds capacity {}",
+            self.flags.len()
+        );
 
-        // Dedup gate: Relaxed is sufficient — flag is a pure dedup gate.
-        // The MPSC queue handles data synchronization via its own
-        // Acquire/Release on turn counters. RMW operations on the same
-        // atomic location form a total order regardless of ordering.
-        if self.flags[idx].swap(true, Ordering::Relaxed) {
+        // Dedup gate: Acquire synchronizes with the consumer's Release
+        // on the flag clear, establishing happens-before: the consumer's
+        // queue pop (which frees the slot) is visible to this producer
+        // before the push. Without Acquire, the producer can see
+        // flag=false but the queue slot still occupied (on weak memory
+        // models the Release flag clear can propagate before the queue's
+        // turn counter store). Release side is not needed — no downstream
+        // consumer reads depend on writes before this swap.
+        if self.flags[idx].swap(true, Ordering::Acquire) {
             return Ok(());
         }
 
@@ -165,7 +173,9 @@ impl Poller {
         for _ in 0..limit {
             match self.rx.pop() {
                 Some(idx) => {
-                    self.flags[idx].store(false, Ordering::Relaxed);
+                    // Release: ensures the queue pop's slot-free writes are
+                    // ordered before this flag clear becomes visible to producers.
+                    self.flags[idx].store(false, Ordering::Release);
                     events.tokens.push(Token(idx));
                 }
                 None => break,
