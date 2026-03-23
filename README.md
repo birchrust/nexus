@@ -46,10 +46,11 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 ┌─────────────────────────────────────────────────────────┐
 │                     Primitives                          │
 │                                                         │
-│  nexus-queue    nexus-slab     nexus-id    nexus-bits   │
-│  nexus-channel  nexus-pool     nexus-ascii              │
-│  nexus-notify   nexus-timer    nexus-logbuf             │
-│  nexus-slot     nexus-collections  nexus-smartptr       │
+│  nexus-queue    nexus-slab     nexus-id       nexus-bits  │
+│  nexus-channel  nexus-pool     nexus-ascii                │
+│  nexus-notify   nexus-timer    nexus-logbuf               │
+│  nexus-slot     nexus-collections  nexus-smartptr         │
+│  nexus-decimal                                            │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -92,6 +93,12 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | Crate | Description |
 |-------|-------------|
 | [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. Internal allocation via `nexus-slab` — user sees keys and values, not nodes. |
+
+### Numeric
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-decimal**](./nexus-decimal) | Fixed-point decimal arithmetic with compile-time precision. `Decimal<i64, 8>` for prices, `Decimal<i128, 12>` for DeFi. Const fn, `no_std`, zero allocation. Financial methods: midpoint, tick rounding, basis points. Chunked magic division avoids `__divti3`. |
 
 ### Identity & Encoding
 
