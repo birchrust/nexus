@@ -15,10 +15,11 @@ macro_rules! impl_decimal_financial {
 
             /// Midpoint of two prices: `(self + other) / 2`.
             ///
-            /// Uses integer division by 2 (compiler optimizes to shift +
-            /// sign-bit adjustment). Truncates toward zero for odd sums.
+            /// Overflow-safe midpoint: `(self + other) / 2`.
             ///
-            /// Returns `None` if the addition overflows.
+            /// Uses the bit-manipulation formula `(a & b) + ((a ^ b) >> 1)`
+            /// which is correct for all representable values without
+            /// intermediate overflow.
             ///
             /// # Examples
             ///
@@ -32,11 +33,13 @@ macro_rules! impl_decimal_financial {
             /// ```
             #[inline(always)]
             pub const fn midpoint(self, other: Self) -> Self {
-                // Overflow-free: a + (b - a) / 2
-                // Works for a > b too: (b - a) is negative, / 2 truncates toward zero.
-                let half_diff = (other.value - self.value) / 2;
+                // Overflow-safe integer average:
+                // avg(a, b) = (a & b) + ((a ^ b) >> 1)
+                // Correct for all values of the backing type, no overflow possible.
+                let a = self.value;
+                let b = other.value;
                 Self {
-                    value: self.value + half_diff,
+                    value: (a & b) + ((a ^ b) >> 1),
                 }
             }
 
@@ -222,7 +225,7 @@ impl_decimal_financial!(i128);
 // --- i32: widen to i64 for percent/bps calculations ---
 
 impl<const D: u8> Decimal<i32, D> {
-    /// Compute `self * percent / 100` with fused rounding.
+    /// Compute `self * percent / 100` via single truncating division.
     ///
     /// `percent` is in percentage points: 50 means 50%.
     #[inline]
@@ -279,7 +282,7 @@ impl<const D: u8> Decimal<i32, D> {
 // --- i64: widen to i128 for percent/bps calculations ---
 
 impl<const D: u8> Decimal<i64, D> {
-    /// Compute `self * percent / 100` with fused rounding.
+    /// Compute `self * percent / 100` via single truncating division.
     ///
     /// `percent` is in percentage points: 50 means 50%.
     #[inline]

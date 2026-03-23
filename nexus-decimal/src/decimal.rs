@@ -68,8 +68,10 @@ macro_rules! impl_decimal_core {
 
             /// Creates a `Decimal` from integer and fractional parts.
             ///
-            /// The fractional part must be non-negative and less than
-            /// `SCALE`. For negative values, negate the integer part:
+            /// The fractional part is combined with the integer part as
+            /// `integer * SCALE + fractional`. For conventional usage,
+            /// pass a non-negative `fractional` less than `SCALE`.
+            /// For negative values, negate the integer part:
             /// `new(-123, 45_000_000)` → `-123.45` (for `DECIMALS=8`).
             ///
             /// # Panics

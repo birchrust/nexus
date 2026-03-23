@@ -1,9 +1,7 @@
 //! Operator trait implementations for `Decimal`.
 //!
-//! Panicking semantics matching std integers: overflow panics in debug,
-//! wraps in release. Use `checked_*` for explicit fallibility.
-//!
-//! Operators panic on overflow, matching std integer behavior.
+//! Operators always panic on overflow in both debug and release builds.
+//! Use `checked_*` methods for explicit fallibility.
 
 use core::ops::{
     Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
@@ -124,7 +122,7 @@ macro_rules! impl_decimal_mul_div_ops {
         impl<const D: u8> Rem for Decimal<$backing, D> {
             type Output = Self;
 
-            /// Remainder after division. `self - (self / rhs) * rhs`.
+            /// Remainder on the raw scaled values (`self.value % rhs.value`).
             #[inline(always)]
             fn rem(self, rhs: Self) -> Self {
                 Self {

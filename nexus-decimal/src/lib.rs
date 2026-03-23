@@ -70,8 +70,8 @@
 //! | `saturating_*` | `Self` | Clamps to `MIN`/`MAX` |
 //! | `wrapping_*` | `Self` | Wraps around |
 //!
-//! Operators (`+`, `-`, `*`, `/`, `%`) panic on overflow, matching
-//! std integer behavior.
+//! Operators (`+`, `-`, `*`, `/`, `%`) always panic on overflow
+//! in both debug and release builds.
 //!
 //! # Error Types
 //!

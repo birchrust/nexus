@@ -105,10 +105,8 @@ fn round_dp_near_max() {
 #[test]
 fn tick_rounding_near_max() {
     let tick = D64::new(1, 0);
-    // MAX rounded to tick=1.0 — may overflow
-    let result = D64::MAX.round_to_tick(tick);
-    // Should be Some (MAX is near an integer) or None, but not panic
-    assert!(result.is_some() || result.is_none());
+    // MAX rounded to tick=1.0 — this used to overflow; test ensures no panic
+    let _ = D64::MAX.round_to_tick(tick);
 }
 
 #[test]
