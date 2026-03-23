@@ -45,19 +45,19 @@ const POW10: [u128; 39] = [
     100_000_000_000_000_000_000_000_000_000_000_000_000, // 10^38
 ];
 
-#[inline]
+#[inline(always)]
 pub(crate) const fn pow10_i32(exp: u8) -> i32 {
     debug_assert!(exp <= 9, "10^exp overflows i32");
     POW10[exp as usize] as i32
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) const fn pow10_i64(exp: u8) -> i64 {
     debug_assert!(exp <= 18, "10^exp overflows i64");
     POW10[exp as usize] as i64
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) const fn pow10_i128(exp: u8) -> i128 {
     debug_assert!(exp <= 38, "10^exp overflows i128");
     POW10[exp as usize] as i128

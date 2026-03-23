@@ -3,12 +3,11 @@
 //! Ported from fixdec. These handle the case where i128 × i128
 //! produces a result wider than 128 bits.
 
-/// Multiply two u128 values, returning a 192-bit result as `(low_128, high_64)`.
+/// Multiply two u128 values, returning a 256-bit result as `(low_128, high_128)`.
 ///
-/// Both inputs should be at most ~96 bits for the result to fit in 192 bits.
-/// For larger inputs the high part may exceed u64 — callers must verify.
+/// Handles the carry from `p1 + p2` overflow correctly.
 #[inline(always)]
-pub(crate) const fn mul_wide(a: u128, b: u128) -> (u128, u64) {
+pub(crate) const fn mul_wide(a: u128, b: u128) -> (u128, u128) {
     let a_lo = a as u64;
     let a_hi = (a >> 64) as u64;
     let b_lo = b as u64;
@@ -19,11 +18,11 @@ pub(crate) const fn mul_wide(a: u128, b: u128) -> (u128, u64) {
     let p2 = a_hi as u128 * b_lo as u128;
     let p3 = a_hi as u128 * b_hi as u128;
 
-    let mid = p1 + p2;
-    let (low, carry) = p0.overflowing_add(mid << 64);
-    let high = p3 + (mid >> 64) + (carry as u128);
+    let (mid, mid_carry) = p1.overflowing_add(p2);
+    let (low, carry0) = p0.overflowing_add(mid << 64);
+    let high = p3 + (mid >> 64) + (carry0 as u128) + ((mid_carry as u128) << 64);
 
-    (low, high as u64)
+    (low, high)
 }
 
 /// Multiply a u128 by a smaller u128 (e.g., SCALE), returning `(low_128, high_128)`.
@@ -43,13 +42,11 @@ pub(crate) const fn mul_u128_by_small(a: u128, b: u128) -> (u128, u128) {
     (low, high)
 }
 
-/// Divide a 192-bit value `(low, high)` by a constant scale factor.
+/// Divide a wide value `(low, high)` by a constant scale factor.
 ///
 /// Returns `None` if the result doesn't fit in u128.
 #[inline(always)]
-pub(crate) const fn div_192_by_const(low: u128, high: u64, scale: u128) -> Option<u128> {
-    let high = high as u128;
-
+pub(crate) const fn div_192_by_const(low: u128, high: u128, scale: u128) -> Option<u128> {
     if high >= scale {
         return None;
     }
@@ -73,10 +70,10 @@ pub(crate) const fn div_192_by_const(low: u128, high: u64, scale: u128) -> Optio
     Some((q_mid << 64) | q_low)
 }
 
-/// Wrapping version of 192-bit division by constant.
+/// Wrapping version of wide division by constant.
 #[inline(always)]
-pub(crate) const fn div_192_by_const_wrapping(low: u128, high: u64, scale: u128) -> u128 {
-    let r_high = (high as u128) % scale;
+pub(crate) const fn div_192_by_const_wrapping(low: u128, high: u128, scale: u128) -> u128 {
+    let r_high = high % scale;
 
     let low_hi = low >> 64;
     let low_lo = low & 0xFFFF_FFFF_FFFF_FFFF;

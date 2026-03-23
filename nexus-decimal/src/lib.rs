@@ -3,35 +3,60 @@
 //! `nexus-decimal` provides [`Decimal<B, DECIMALS>`] — a generic
 //! fixed-point type parameterized by backing integer and decimal
 //! places. Operations are `const fn` where possible, zero-allocation,
-//! and optimized for financial workloads.
+//! and designed for financial workloads.
 //!
-//! # Type Aliases
+//! # Choosing Your Type
 //!
-//! | Alias | Backing | Decimals | Range | Use case |
-//! |-------|---------|----------|-------|----------|
-//! | [`D32`] | `i32` | 4 | ±214K | Embedded, space-constrained |
-//! | [`D64`] | `i64` | 8 | ±92B | Traditional finance |
-//! | [`D96`] | `i128` | 12 | ±39T | Cryptocurrency, DeFi |
-//! | [`D128`] | `i128` | 18 | ±170B | Full i128 precision |
-//!
-//! Custom combinations work too — `Decimal<i64, 2>` for USD cents.
-//!
-//! # Examples
+//! Define aliases that match your domain:
 //!
 //! ```
-//! use nexus_decimal::D64;
+//! use nexus_decimal::Decimal;
 //!
-//! // Compile-time constants
+//! type Price = Decimal<i64, 8>;       // 8dp, range ±92B — traditional finance
+//! type Quantity = Decimal<i64, 4>;    // 4dp, range ±922T
+//! type CryptoPrice = Decimal<i128, 12>; // 12dp, range ±39T — DeFi
+//! type Usd = Decimal<i64, 2>;         // 2dp cents
+//! ```
+//!
+//! | Backing | Max Decimals | Max Range | Use case |
+//! |---------|-------------|-----------|----------|
+//! | `i32` | 9 | ±2.1B / SCALE | Embedded, space-constrained |
+//! | `i64` | 18 | ±9.2e18 / SCALE | Traditional finance |
+//! | `i128` | 38 | ±1.7e38 / SCALE | Cryptocurrency, DeFi |
+//!
+//! # Quick Start
+//!
+//! ```
+//! use nexus_decimal::Decimal;
+//! use core::str::FromStr;
+//!
+//! type D64 = Decimal<i64, 8>;
+//!
+//! let price = D64::from_str("123.45").unwrap();
+//! let qty = D64::from_i32(10).unwrap();
+//!
+//! let notional = price * qty;
+//! assert_eq!(notional.to_string(), "1234.5");
+//!
+//! let bid = D64::from_str("100.00").unwrap();
+//! let ask = D64::from_str("100.50").unwrap();
+//! let mid = bid.midpoint(ask);
+//! assert_eq!(mid.to_string(), "100.25");
+//! ```
+//!
+//! # Compile-Time Constants
+//!
+//! ```
+//! use nexus_decimal::Decimal;
+//!
+//! type D64 = Decimal<i64, 8>;
+//!
 //! const PRICE: D64 = D64::new(100, 50_000_000); // 100.50
 //! const FEE: D64 = D64::from_raw(500_000);       // 0.005
-//!
-//! // Checked arithmetic
-//! let total = PRICE.checked_add(FEE).unwrap();
-//! assert_eq!(total.to_raw(), 10_050_500_000);
-//!
-//! // Rounding
-//! let rounded = D64::new(1, 55_000_000).round(); // 1.55 → 2.0
-//! assert_eq!(rounded.to_raw(), D64::new(2, 0).to_raw());
+//! const TOTAL: D64 = match PRICE.checked_add(FEE) {
+//!     Some(v) => v,
+//!     None => panic!("overflow"),
+//! };
 //! ```
 //!
 //! # Arithmetic Variants
@@ -41,12 +66,55 @@
 //! | Variant | Returns | On overflow |
 //! |---------|---------|-------------|
 //! | `checked_*` | `Option<Self>` | `None` |
-//! | `try_*` | `Result<Self, OverflowError>` | `Err(OverflowError)` |
+//! | `try_*` | `Result<Self, SpecificError>` | Typed error |
 //! | `saturating_*` | `Self` | Clamps to `MIN`/`MAX` |
 //! | `wrapping_*` | `Self` | Wraps around |
 //!
-//! Operators (`+`, `-`, `-x`) panic on overflow, matching std integer
-//! behavior. Use `checked_*` or `try_*` for fallible paths.
+//! Operators (`+`, `-`, `*`, `/`, `%`) panic on overflow, matching
+//! std integer behavior.
+//!
+//! # Error Types
+//!
+//! Errors are scoped per operation — no catch-all enum:
+//!
+//! | Error | Used by | Variants |
+//! |-------|---------|----------|
+//! | [`OverflowError`] | `try_add`, `try_mul`, etc. | (unit struct) |
+//! | [`DivError`] | `try_div` | `Overflow`, `DivisionByZero` |
+//! | [`ParseError`] | `from_str_exact`, `FromStr` | `InvalidFormat`, `Overflow`, `PrecisionLoss` |
+//! | [`ConvertError`] | `from_f64`, `TryFrom` | `Overflow`, `PrecisionLoss` |
+//!
+//! # Feature Flags
+//!
+//! | Feature | Dependencies | Provides |
+//! |---------|-------------|----------|
+//! | `std` (default) | — | `Error` trait impls |
+//! | `serde` | `serde` | Serialize/Deserialize (string for JSON, raw for binary) |
+//! | `num-traits` | `num-traits` | Zero, One, Num, Signed, Bounded, Checked*, ToPrimitive |
+//!
+//! # `no_std` Support
+//!
+//! Disable default features for `no_std`:
+//! ```toml
+//! nexus-decimal = { version = "0.1", default-features = false }
+//! ```
+//!
+//! # Migration from fixdec
+//!
+//! ```ignore
+//! // Before:
+//! use fixdec::D64;
+//!
+//! // After:
+//! use nexus_decimal::Decimal;
+//! type D64 = Decimal<i64, 8>;
+//! ```
+//!
+//! API differences:
+//! - `mul_i64` / `mul_i128` → `mul_int` (takes the backing type)
+//! - `DecimalError` → per-method error types ([`OverflowError`], [`DivError`], etc.)
+//! - No predefined aliases — define your own (`type Price = Decimal<i64, 8>`)
+//! - New: financial methods (`midpoint`, `spread`, `round_to_tick`, etc.)
 
 #![no_std]
 
@@ -57,26 +125,24 @@ pub mod backing;
 pub mod error;
 
 mod arithmetic;
+mod bytes;
 mod constants;
+mod convert;
 mod decimal;
+mod div_by_scale;
+mod financial;
+mod format;
 mod ops;
 mod pow10;
-mod reciprocal;
 mod rounding;
 mod wide;
+
+#[cfg(feature = "serde")]
+mod serde_impl;
+
+#[cfg(feature = "num-traits")]
+mod num_traits_impl;
 
 pub use backing::Backing;
 pub use decimal::Decimal;
 pub use error::{ConvertError, DivError, OverflowError, ParseError};
-
-/// 32-bit decimal with 4 fractional digits. Range: ±214,748.3647
-pub type D32 = Decimal<i32, 4>;
-
-/// 64-bit decimal with 8 fractional digits. Range: ±92,233,720,368.54775807
-pub type D64 = Decimal<i64, 8>;
-
-/// 96-bit decimal with 12 fractional digits. Range: ±39,614,081,257,132.168796771975
-pub type D96 = Decimal<i128, 12>;
-
-/// 128-bit decimal with 18 fractional digits.
-pub type D128 = Decimal<i128, 18>;

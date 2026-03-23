@@ -16,7 +16,8 @@ use crate::backing::Backing;
 /// # Examples
 ///
 /// ```
-/// use nexus_decimal::D64;
+/// use nexus_decimal::Decimal;
+/// type D64 = Decimal<i64, 8>;
 ///
 /// const PRICE: D64 = D64::new(100, 50_000_000); // 100.50
 /// const FEE: D64 = D64::from_raw(500_000);       // 0.005
@@ -25,7 +26,7 @@ use crate::backing::Backing;
 ///     None => panic!("overflow"),
 /// };
 /// ```
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Decimal<B: Backing, const DECIMALS: u8> {
     pub(crate) value: B,
@@ -78,7 +79,8 @@ macro_rules! impl_decimal_core {
             /// # Examples
             ///
             /// ```
-            /// use nexus_decimal::D64;
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
             ///
             /// const PRICE: D64 = D64::new(100, 50_000_000); // 100.50
             /// const NEG: D64 = D64::new(-50, 25_000_000);   // -50.25
@@ -101,6 +103,47 @@ macro_rules! impl_decimal_core {
                 };
 
                 Self { value }
+            }
+
+            /// Construct from integer part, fractional part, and sign.
+            ///
+            /// The fractional part is always positive (represents digits
+            /// after the decimal point). Use `negative` to control sign.
+            ///
+            /// This handles the `-0.5` case that `new()` cannot express
+            /// (because `-0 == 0` for integers).
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
+            ///
+            /// let neg_half = D64::from_parts(0, 50_000_000, true);
+            /// assert_eq!(neg_half.unwrap().to_raw(), -50_000_000);
+            ///
+            /// let pos = D64::from_parts(1, 25_000_000, false);
+            /// assert_eq!(pos.unwrap().to_raw(), 125_000_000);
+            /// ```
+            pub const fn from_parts(
+                integer: $backing,
+                fractional: $backing,
+                negative: bool,
+            ) -> Option<Self> {
+                let Some(scaled) = integer.checked_mul(Self::SCALE) else {
+                    return None;
+                };
+                let Some(abs) = scaled.checked_add(fractional) else {
+                    return None;
+                };
+                if negative {
+                    match abs.checked_neg() {
+                        Some(v) => Some(Self { value: v }),
+                        None => None,
+                    }
+                } else {
+                    Some(Self { value: abs })
+                }
             }
 
             /// Returns `true` if the value is zero.

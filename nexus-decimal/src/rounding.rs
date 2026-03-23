@@ -1,8 +1,6 @@
 //! Rounding operations for `Decimal`.
 //!
 //! All methods are `const fn`, generated per backing type via macro.
-//! Phase 1 uses native division by SCALE. Phase 2 will switch the
-//! i64 path to reciprocal multiplication where cargo-asm shows benefit.
 
 use crate::Decimal;
 
@@ -14,7 +12,8 @@ macro_rules! impl_decimal_rounding {
             /// # Examples
             ///
             /// ```
-            /// use nexus_decimal::D64;
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
             ///
             /// let pos = D64::new(1, 75_000_000); // 1.75
             /// assert_eq!(pos.floor().to_raw(), D64::new(1, 0).to_raw());
@@ -30,8 +29,12 @@ macro_rules! impl_decimal_rounding {
                         value: self.value - remainder,
                     }
                 } else {
-                    Self {
-                        value: self.value - remainder - Self::SCALE,
+                    // self.value - remainder gives next integer toward zero.
+                    // Subtract SCALE to go one step negative. Saturate on underflow.
+                    let toward_zero = self.value - remainder;
+                    match toward_zero.checked_sub(Self::SCALE) {
+                        Some(v) => Self { value: v },
+                        None => Self::MIN,
                     }
                 }
             }
@@ -41,7 +44,8 @@ macro_rules! impl_decimal_rounding {
             /// # Examples
             ///
             /// ```
-            /// use nexus_decimal::D64;
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
             ///
             /// let pos = D64::new(1, 25_000_000); // 1.25
             /// assert_eq!(pos.ceil().to_raw(), D64::new(2, 0).to_raw());
@@ -53,8 +57,10 @@ macro_rules! impl_decimal_rounding {
             pub const fn ceil(self) -> Self {
                 let remainder = self.value % Self::SCALE;
                 if remainder > 0 {
-                    Self {
-                        value: self.value - remainder + Self::SCALE,
+                    let toward_zero = self.value - remainder;
+                    match toward_zero.checked_add(Self::SCALE) {
+                        Some(v) => Self { value: v },
+                        None => Self::MAX,
                     }
                 } else {
                     Self {
@@ -68,7 +74,8 @@ macro_rules! impl_decimal_rounding {
             /// # Examples
             ///
             /// ```
-            /// use nexus_decimal::D64;
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
             ///
             /// let pos = D64::new(1, 99_000_000); // 1.99
             /// assert_eq!(pos.trunc().to_raw(), D64::new(1, 0).to_raw());
@@ -107,7 +114,8 @@ macro_rules! impl_decimal_rounding {
             /// # Examples
             ///
             /// ```
-            /// use nexus_decimal::D64;
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
             ///
             /// // Half rounds to even
             /// let half_even = D64::new(2, 50_000_000); // 2.5
@@ -143,8 +151,15 @@ macro_rules! impl_decimal_rounding {
                     quotient
                 };
 
-                Self {
-                    value: rounded * Self::SCALE,
+                match rounded.checked_mul(Self::SCALE) {
+                    Some(v) => Self { value: v },
+                    None => {
+                        if rounded > 0 {
+                            Self::MAX
+                        } else {
+                            Self::MIN
+                        }
+                    }
                 }
             }
 
@@ -157,12 +172,14 @@ macro_rules! impl_decimal_rounding {
             /// # Examples
             ///
             /// ```
-            /// use nexus_decimal::D64;
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
             ///
             /// let price = D64::new(1, 23_456_789); // 1.23456789
             /// let rounded = price.round_dp(2);       // 1.23
             /// assert_eq!(rounded.to_raw(), D64::new(1, 23_000_000).to_raw());
             /// ```
+            #[inline]
             pub const fn round_dp(self, dp: u8) -> Self {
                 assert!(dp < D, "round_dp: dp must be less than DECIMALS");
 
@@ -191,8 +208,15 @@ macro_rules! impl_decimal_rounding {
                     quotient
                 };
 
-                Self {
-                    value: rounded * sub_scale,
+                match rounded.checked_mul(sub_scale) {
+                    Some(v) => Self { value: v },
+                    None => {
+                        if rounded > 0 {
+                            Self::MAX
+                        } else {
+                            Self::MIN
+                        }
+                    }
                 }
             }
         }

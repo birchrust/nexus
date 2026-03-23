@@ -4,7 +4,6 @@
 //! the struct bound (`Decimal<B: Backing, D>`), not for method dispatch.
 //! The `impl_decimal_*!` macros handle all method generation.
 
-use core::fmt;
 use core::hash::Hash;
 
 mod sealed {
@@ -18,7 +17,7 @@ mod sealed {
 ///
 /// Only `i32`, `i64`, and `i128` implement this trait. It is sealed
 /// and cannot be implemented for external types.
-pub trait Backing: Copy + Eq + Ord + Hash + fmt::Debug + Default + sealed::Sealed {}
+pub trait Backing: Copy + Eq + Ord + Hash + Default + sealed::Sealed {}
 
 impl Backing for i32 {}
 impl Backing for i64 {}

@@ -1,9 +1,14 @@
-//! Phase 1 integration tests — arithmetic, rounding, constants, edge cases.
+//! Arithmetic, rounding, constants, and edge cases.
 //!
-//! Tests run across all backing types (D32, D64, D96, D128) plus
-//! custom precision types like Decimal<i64, 2>.
+//! Covers add, sub, neg, abs, floor, ceil, trunc, round, round_dp
+//! across all backing types (i32, i64, i128) and custom precisions.
 
-use nexus_decimal::{D32, D64, D96, D128, Decimal, OverflowError};
+use nexus_decimal::{Decimal, OverflowError};
+
+type D32 = Decimal<i32, 4>;
+type D64 = Decimal<i64, 8>;
+type D96 = Decimal<i128, 12>;
+type D128 = Decimal<i128, 18>;
 
 // ============================================================================
 // Constants
@@ -465,4 +470,154 @@ fn ordering() {
 fn equality() {
     assert_eq!(D64::from_raw(100), D64::from_raw(100));
     assert_ne!(D64::from_raw(100), D64::from_raw(101));
+}
+
+// ============================================================================
+// D96 (Decimal<i128, 12>) rounding
+// ============================================================================
+
+mod d96_rounding {
+    type D96 = nexus_decimal::Decimal<i128, 12>;
+
+    const SCALE: i128 = 1_000_000_000_000;
+
+    #[test]
+    fn floor_positive() {
+        // 1.75 → 1.0
+        assert_eq!(D96::new(1, 750_000_000_000).floor(), D96::new(1, 0));
+        // Already whole → unchanged
+        assert_eq!(D96::new(3, 0).floor(), D96::new(3, 0));
+        // 0.001 → 0
+        assert_eq!(D96::from_raw(1_000_000_000).floor(), D96::ZERO);
+    }
+
+    #[test]
+    fn floor_negative() {
+        // -1.75 → -2.0
+        assert_eq!(D96::new(-1, 750_000_000_000).floor(), D96::new(-2, 0));
+        // Already whole → unchanged
+        assert_eq!(D96::new(-3, 0).floor(), D96::new(-3, 0));
+        // -0.001 → -1.0
+        assert_eq!(D96::from_raw(-1_000_000_000).floor(), D96::NEG_ONE);
+    }
+
+    #[test]
+    fn ceil_positive() {
+        // 1.25 → 2.0
+        assert_eq!(D96::new(1, 250_000_000_000).ceil(), D96::new(2, 0));
+        // Already whole → unchanged
+        assert_eq!(D96::new(3, 0).ceil(), D96::new(3, 0));
+        // 0.001 → 1.0
+        assert_eq!(D96::from_raw(1_000_000_000).ceil(), D96::ONE);
+    }
+
+    #[test]
+    fn ceil_negative() {
+        // -1.25 → -1.0
+        assert_eq!(D96::new(-1, 250_000_000_000).ceil(), D96::new(-1, 0));
+        // Already whole → unchanged
+        assert_eq!(D96::new(-3, 0).ceil(), D96::new(-3, 0));
+        // -0.001 → 0.0
+        assert_eq!(D96::from_raw(-1_000_000_000).ceil(), D96::ZERO);
+    }
+
+    #[test]
+    fn trunc_positive() {
+        // 1.99 → 1.0
+        assert_eq!(D96::new(1, 990_000_000_000).trunc(), D96::new(1, 0));
+        // 0.999 → 0.0
+        assert_eq!(D96::from_raw(999_000_000_000).trunc(), D96::ZERO);
+    }
+
+    #[test]
+    fn trunc_negative() {
+        // -1.99 → -1.0 (towards zero)
+        assert_eq!(D96::new(-1, 990_000_000_000).trunc(), D96::new(-1, 0));
+        // -0.999 → 0.0
+        assert_eq!(D96::from_raw(-999_000_000_000).trunc(), D96::ZERO);
+    }
+
+    #[test]
+    fn fract_values() {
+        // 1.75 → 0.75
+        let d = D96::new(1, 750_000_000_000);
+        assert_eq!(d.fract().to_raw(), 750_000_000_000);
+
+        // -1.75 → -0.75
+        let d = D96::new(-1, 750_000_000_000);
+        assert_eq!(d.fract().to_raw(), -750_000_000_000);
+
+        // Whole number → 0
+        assert_eq!(D96::new(5, 0).fract(), D96::ZERO);
+
+        // Zero → 0
+        assert_eq!(D96::ZERO.fract(), D96::ZERO);
+    }
+
+    #[test]
+    fn round_bankers_positive() {
+        // 2.5 → 2 (half, even integer → stay)
+        assert_eq!(D96::new(2, 500_000_000_000).round(), D96::new(2, 0));
+        // 3.5 → 4 (half, odd integer → round up)
+        assert_eq!(D96::new(3, 500_000_000_000).round(), D96::new(4, 0));
+        // 1.6 → 2 (above half → round up)
+        assert_eq!(D96::new(1, 600_000_000_000).round(), D96::new(2, 0));
+        // 1.4 → 1 (below half → round down)
+        assert_eq!(D96::new(1, 400_000_000_000).round(), D96::new(1, 0));
+        // 0.5 → 0 (half, 0 is even → stay)
+        assert_eq!(D96::new(0, 500_000_000_000).round(), D96::ZERO);
+        // 1.5 → 2 (half, 1 is odd → round up)
+        assert_eq!(D96::new(1, 500_000_000_000).round(), D96::new(2, 0));
+    }
+
+    #[test]
+    fn round_bankers_negative() {
+        // -2.5 → -2 (half, even → stay)
+        assert_eq!(D96::new(-2, 500_000_000_000).round(), D96::new(-2, 0));
+        // -3.5 → -4 (half, odd → round away)
+        assert_eq!(D96::new(-3, 500_000_000_000).round(), D96::new(-4, 0));
+        // -1.6 → -2 (above half magnitude → round away)
+        assert_eq!(D96::new(-1, 600_000_000_000).round(), D96::new(-2, 0));
+        // -1.4 → -1 (below half → truncate)
+        assert_eq!(D96::new(-1, 400_000_000_000).round(), D96::new(-1, 0));
+    }
+
+    #[test]
+    fn round_dp_basic() {
+        // 1.234567890123 rounded to 2dp → 1.23
+        let d = D96::from_raw(1_234_567_890_123);
+        assert_eq!(d.round_dp(2), D96::from_raw(1_230_000_000_000));
+
+        // 1.235 rounded to 2dp: half, 3 is odd → round up to 1.24
+        let d = D96::from_raw(1_235_000_000_000);
+        assert_eq!(d.round_dp(2), D96::from_raw(1_240_000_000_000));
+
+        // 1.225 rounded to 2dp: half, 2 is even → stay at 1.22
+        let d = D96::from_raw(1_225_000_000_000);
+        assert_eq!(d.round_dp(2), D96::from_raw(1_220_000_000_000));
+
+        // round to 6dp
+        let d = D96::from_raw(1_234_567_890_123); // 1.234567890123
+        assert_eq!(d.round_dp(6), D96::from_raw(1_234_568_000_000)); // 1.234568
+    }
+
+    #[test]
+    fn trunc_plus_fract_identity() {
+        let values = [
+            D96::new(1, 750_000_000_000),
+            D96::new(-1, 750_000_000_000),
+            D96::ZERO,
+            D96::new(99, 999_999_999_999),
+            D96::new(-99, 999_999_999_999),
+            D96::from_raw(1), // smallest positive fraction
+        ];
+        for d in values {
+            assert_eq!(
+                d.trunc() + d.fract(),
+                d,
+                "trunc + fract != self for {:?}",
+                d.to_raw()
+            );
+        }
+    }
 }

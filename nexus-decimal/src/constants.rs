@@ -2,8 +2,7 @@
 //!
 //! Core constants (`ZERO`, `ONE`, `MAX`, `MIN`) are generated for each
 //! backing type. Financial constants (CENT, BASIS_POINT, etc.) are
-//! deferred to Phase 4 (`financial.rs`) since they require SCALE
-//! divisibility checks.
+//! in `financial.rs`.
 
 use crate::Decimal;
 

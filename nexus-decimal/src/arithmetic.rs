@@ -1,9 +1,10 @@
 //! Checked, saturating, wrapping, and try arithmetic for `Decimal`.
 //!
-//! Add/Sub/Neg/Abs are shared via macro (Phase 1).
-//! Mul/Div differ per backing type (Phase 2):
-//! - i32: widen to i64, native division (LLVM optimizes)
-//! - i64: widen to i128, reciprocal division (avoids `__divti3`)
+//! Add/Sub/Neg/Abs are shared via macro.
+//! Mul/Div differ per backing type:
+//! - i32: widen to i64, native division (LLVM magic multiply)
+//! - i64: widen to i128, chunked magic division for SCALE < 2^32
+//!   (3× u64 magic multiplies, ~14 cycles), native fallback otherwise
 //! - i128: 192-bit wide arithmetic (manual limb math)
 
 use crate::Decimal;
@@ -245,9 +246,7 @@ impl<const D: u8> Decimal<i32, D> {
     /// Saturating division.
     #[inline(always)]
     pub const fn saturating_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
+        assert!(rhs.value != 0, "division by zero");
         match self.checked_div(rhs) {
             Some(v) => v,
             None => {
@@ -263,9 +262,7 @@ impl<const D: u8> Decimal<i32, D> {
     /// Wrapping division.
     #[inline(always)]
     pub const fn wrapping_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
+        assert!(rhs.value != 0, "division by zero");
         let a = self.value as i64;
         let b = rhs.value as i64;
         Self {
@@ -321,14 +318,42 @@ impl<const D: u8> Decimal<i32, D> {
 }
 
 // ============================================================================
-// Mul / Div — i64 (widen to i128, native division)
+// Mul / Div — i64 (widen to i128, chunked magic division when SCALE < 2^32)
 // ============================================================================
 //
-// Uses native i128 division (calls __divti3 on x86). Correct for all inputs.
-// Phase 5 will evaluate replacing with a proper 128-bit Barrett reduction
-// (u128 reciprocal with 256-bit intermediate) where cargo-asm shows benefit.
+// When SCALE < 2^32 (covers Decimal<i64, 1..=9>), uses chunked
+// u64 division (~14 cycles, 3 magic multiplies). Otherwise falls back to
+// native i128 division (__divti3 ~25 cycles). The const branch is
+// eliminated by LLVM — zero runtime cost for type selection.
+
+use crate::div_by_scale;
 
 impl<const D: u8> Decimal<i64, D> {
+    /// Whether this (i64, D) combination qualifies for chunked fast path.
+    const USE_CHUNKED: bool = (Self::SCALE as u64) < div_by_scale::CHUNK_THRESHOLD;
+
+    /// Divide an i128 product by SCALE, using the fast path when available.
+    #[inline(always)]
+    const fn div_product_by_scale(product: i128) -> Option<i64> {
+        div_by_scale::div_i128_by_scale(
+            product,
+            Self::SCALE as i128,
+            Self::SCALE as u64,
+            Self::USE_CHUNKED,
+        )
+    }
+
+    /// Wrapping version of SCALE division.
+    #[inline(always)]
+    const fn div_product_by_scale_wrapping(product: i128) -> i64 {
+        div_by_scale::div_i128_by_scale_wrapping(
+            product,
+            Self::SCALE as i128,
+            Self::SCALE as u64,
+            Self::USE_CHUNKED,
+        )
+    }
+
     /// Checked multiplication. Widens to i128, divides by SCALE.
     #[inline(always)]
     pub const fn checked_mul(self, rhs: Self) -> Option<Self> {
@@ -339,18 +364,16 @@ impl<const D: u8> Decimal<i64, D> {
             return None;
         };
 
-        let result = product / (Self::SCALE as i128);
-
-        if result > i64::MAX as i128 || result < i64::MIN as i128 {
-            None
-        } else {
-            Some(Self {
-                value: result as i64,
-            })
+        match Self::div_product_by_scale(product) {
+            Some(result) => Some(Self { value: result }),
+            None => None,
         }
     }
 
     /// Checked division. Returns `None` if `rhs` is zero or result overflows.
+    ///
+    /// Division by a runtime value cannot use the chunked path — the
+    /// divisor isn't a compile-time constant. Uses native i128 division.
     #[inline(always)]
     pub const fn checked_div(self, rhs: Self) -> Option<Self> {
         if rhs.value == 0 {
@@ -373,15 +396,14 @@ impl<const D: u8> Decimal<i64, D> {
     #[inline(always)]
     pub const fn saturating_mul(self, rhs: Self) -> Self {
         let product = (self.value as i128) * (rhs.value as i128);
-        let result = product / (Self::SCALE as i128);
-
-        if result > i64::MAX as i128 {
-            Self::MAX
-        } else if result < i64::MIN as i128 {
-            Self::MIN
-        } else {
-            Self {
-                value: result as i64,
+        match Self::div_product_by_scale(product) {
+            Some(result) => Self { value: result },
+            None => {
+                if product > 0 {
+                    Self::MAX
+                } else {
+                    Self::MIN
+                }
             }
         }
     }
@@ -391,16 +413,14 @@ impl<const D: u8> Decimal<i64, D> {
     pub const fn wrapping_mul(self, rhs: Self) -> Self {
         let product = (self.value as i128).wrapping_mul(rhs.value as i128);
         Self {
-            value: (product / (Self::SCALE as i128)) as i64,
+            value: Self::div_product_by_scale_wrapping(product),
         }
     }
 
     /// Saturating division.
     #[inline(always)]
     pub const fn saturating_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
+        assert!(rhs.value != 0, "division by zero");
         match self.checked_div(rhs) {
             Some(v) => v,
             None => {
@@ -416,9 +436,7 @@ impl<const D: u8> Decimal<i64, D> {
     /// Wrapping division.
     #[inline(always)]
     pub const fn wrapping_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
+        assert!(rhs.value != 0, "division by zero");
         let a = self.value as i128;
         let b = rhs.value as i128;
         Self {
@@ -445,7 +463,10 @@ impl<const D: u8> Decimal<i64, D> {
             return None;
         };
 
-        let rescaled = product / (Self::SCALE as i128);
+        let Some(rescaled) = Self::div_product_by_scale(product) else {
+            return None;
+        };
+        let rescaled = rescaled as i128;
 
         let Some(result) = rescaled.checked_add(add.value as i128) else {
             return None;
@@ -579,9 +600,7 @@ impl<const D: u8> Decimal<i128, D> {
     /// Saturating division.
     #[inline(always)]
     pub fn saturating_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
+        assert!(rhs.value != 0, "division by zero");
         self.checked_div(rhs).unwrap_or({
             if (self.value > 0) == (rhs.value > 0) {
                 Self::MAX
@@ -594,9 +613,7 @@ impl<const D: u8> Decimal<i128, D> {
     /// Wrapping division.
     #[inline(always)]
     pub fn wrapping_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
+        assert!(rhs.value != 0, "division by zero");
 
         let result_negative = (self.value < 0) != (rhs.value < 0);
         let a = self.value.unsigned_abs();

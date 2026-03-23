@@ -1,6 +1,11 @@
-//! Phase 2 integration tests — multiplication, division, edge cases.
+//! Multiplication, division, operators, overflow, and round-trip tests.
 
-use nexus_decimal::{D128, D32, D64, D96, Decimal, DivError, OverflowError};
+use nexus_decimal::{Decimal, DivError, OverflowError};
+
+type D32 = Decimal<i32, 4>;
+type D64 = Decimal<i64, 8>;
+type D96 = Decimal<i128, 12>;
+type D128 = Decimal<i128, 18>;
 
 // ============================================================================
 // Basic multiplication
@@ -189,8 +194,9 @@ fn saturating_div_clamps() {
 }
 
 #[test]
-fn saturating_div_zero_returns_zero() {
-    assert_eq!(D64::ONE.saturating_div(D64::ZERO), D64::ZERO);
+#[should_panic(expected = "division by zero")]
+fn saturating_div_zero_panics() {
+    let _ = D64::ONE.saturating_div(D64::ZERO);
 }
 
 // ============================================================================
