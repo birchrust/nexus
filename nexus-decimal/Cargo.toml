@@ -1,0 +1,19 @@
+[package]
+name = "nexus-decimal"
+version = "0.1.0"
+description = "Fixed-point decimal arithmetic with compile-time precision"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+
+[lints]
+workspace = true
