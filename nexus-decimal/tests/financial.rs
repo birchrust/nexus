@@ -353,3 +353,214 @@ mod num_traits_tests {
         assert_eq!(sum_generic(&values), D64::new(6, 0));
     }
 }
+
+// ============================================================================
+// Midpoint: extreme values (overflow-free formula)
+// ============================================================================
+
+#[test]
+fn midpoint_max_max() {
+    assert_eq!(D64::MAX.midpoint(D64::MAX), D64::MAX);
+}
+
+#[test]
+fn midpoint_min_min() {
+    assert_eq!(D64::MIN.midpoint(D64::MIN), D64::MIN);
+}
+
+#[test]
+fn midpoint_max_min() {
+    // (MAX + MIN) / 2 — should be close to zero (they're symmetric-ish)
+    let mid = D64::MAX.midpoint(D64::MIN);
+    // i64::MAX = 9223372036854775807, i64::MIN = -9223372036854775808
+    // avg = (MAX & MIN) + ((MAX ^ MIN) >> 1) = 0 + (all-bits-set >> 1) = -1
+    // So midpoint of MAX and MIN raw values is -1 (which is -0.00000001 for D64)
+    assert_eq!(mid.to_raw(), -1);
+}
+
+#[test]
+fn midpoint_max_zero() {
+    let mid = D64::MAX.midpoint(D64::ZERO);
+    // Should be approximately MAX / 2
+    let expected = D64::from_raw(D64::MAX.to_raw() / 2);
+    assert_eq!(mid, expected);
+}
+
+#[test]
+fn midpoint_min_zero() {
+    let mid = D64::MIN.midpoint(D64::ZERO);
+    let expected = D64::from_raw(D64::MIN.to_raw() / 2);
+    assert_eq!(mid, expected);
+}
+
+#[test]
+fn midpoint_reversed_order() {
+    // midpoint(a, b) should equal midpoint(b, a)
+    let a = D64::new(100, 0);
+    let b = D64::new(200, 0);
+    assert_eq!(a.midpoint(b), b.midpoint(a));
+}
+
+#[test]
+fn midpoint_i32_extreme() {
+    type D32 = Decimal<i32, 4>;
+    assert_eq!(D32::MAX.midpoint(D32::MAX), D32::MAX);
+    assert_eq!(D32::MIN.midpoint(D32::MIN), D32::MIN);
+    let _ = D32::MAX.midpoint(D32::MIN); // must not panic
+}
+
+#[test]
+fn midpoint_i128_extreme() {
+    assert_eq!(D96::MAX.midpoint(D96::MAX), D96::MAX);
+    assert_eq!(D96::MIN.midpoint(D96::MIN), D96::MIN);
+    let _ = D96::MAX.midpoint(D96::MIN); // must not panic
+}
+
+// ============================================================================
+// from_parts
+// ============================================================================
+
+#[test]
+fn from_parts_positive() {
+    let d = D64::from_parts(1, 25_000_000, false).unwrap();
+    assert_eq!(d, D64::new(1, 25_000_000));
+}
+
+#[test]
+fn from_parts_negative() {
+    // The main reason from_parts exists: constructing -0.5
+    let d = D64::from_parts(0, 50_000_000, true).unwrap();
+    assert_eq!(d.to_raw(), -50_000_000);
+}
+
+#[test]
+fn from_parts_negative_with_integer() {
+    let d = D64::from_parts(1, 75_000_000, true).unwrap();
+    assert_eq!(d, D64::new(-1, 75_000_000));
+}
+
+#[test]
+fn from_parts_zero() {
+    let d = D64::from_parts(0, 0, false).unwrap();
+    assert_eq!(d, D64::ZERO);
+}
+
+#[test]
+fn from_parts_negative_zero() {
+    // -0 should still be 0
+    let d = D64::from_parts(0, 0, true).unwrap();
+    assert_eq!(d, D64::ZERO);
+}
+
+#[test]
+fn from_parts_overflow() {
+    // Integer too large to scale
+    assert!(D64::from_parts(i64::MAX, 0, false).is_none());
+}
+
+#[test]
+fn from_parts_i32() {
+    type D32 = Decimal<i32, 4>;
+    let d = D32::from_parts(0, 5_000, true).unwrap(); // -0.5
+    assert_eq!(d.to_raw(), -5_000);
+}
+
+#[test]
+fn from_parts_i128() {
+    let d = D96::from_parts(0, 500_000_000_000, true).unwrap(); // -0.5
+    assert_eq!(d.to_raw(), -500_000_000_000);
+}
+
+// ============================================================================
+// write_to_buf
+// ============================================================================
+
+#[test]
+fn write_to_buf_basic() {
+    let d = D64::new(123, 45_000_000);
+    let mut buf = [0u8; 64];
+    let len = d.write_to_buf(&mut buf);
+    let s = core::str::from_utf8(&buf[..len]).unwrap();
+    assert_eq!(s, "123.45");
+}
+
+#[test]
+fn write_to_buf_zero() {
+    let mut buf = [0u8; 64];
+    let len = D64::ZERO.write_to_buf(&mut buf);
+    assert_eq!(&buf[..len], b"0");
+}
+
+#[test]
+fn write_to_buf_negative() {
+    let d = D64::new(-42, 50_000_000);
+    let mut buf = [0u8; 64];
+    let len = d.write_to_buf(&mut buf);
+    let s = core::str::from_utf8(&buf[..len]).unwrap();
+    assert_eq!(s, "-42.5");
+}
+
+#[test]
+fn write_to_buf_integer_only() {
+    let d = D64::new(100, 0);
+    let mut buf = [0u8; 64];
+    let len = d.write_to_buf(&mut buf);
+    assert_eq!(&buf[..len], b"100");
+}
+
+#[test]
+fn write_to_buf_matches_display() {
+    use std::string::ToString;
+    let values = [
+        D64::new(0, 0),
+        D64::new(1, 0),
+        D64::new(-1, 0),
+        D64::new(123, 45_000_000),
+        D64::new(-99, 99_000_000),
+        D64::MAX,
+        D64::MIN,
+    ];
+    for d in values {
+        let display_str = d.to_string();
+        let mut buf = [0u8; 64];
+        let len = d.write_to_buf(&mut buf);
+        let buf_str = std::str::from_utf8(&buf[..len]).unwrap();
+        assert_eq!(buf_str, display_str.as_str(), "mismatch for raw={}", d.to_raw());
+    }
+}
+
+// ============================================================================
+// ceil_to_tick (undercovered)
+// ============================================================================
+
+#[test]
+fn ceil_to_tick_basic() {
+    let price = D64::new(1, 23_000_000); // 1.23
+    let tick = D64::new(0, 5_000_000);   // 0.05
+    let result = price.ceil_to_tick(tick).unwrap();
+    assert_eq!(result, D64::new(1, 25_000_000)); // 1.25
+}
+
+#[test]
+fn ceil_to_tick_already_aligned() {
+    let price = D64::new(1, 25_000_000); // 1.25
+    let tick = D64::new(0, 25_000_000);  // 0.25
+    let result = price.ceil_to_tick(tick).unwrap();
+    assert_eq!(result, price);
+}
+
+// ============================================================================
+// div100 (additional coverage)
+// ============================================================================
+
+#[test]
+fn div100_produces_fractional() {
+    let d = D64::new(1, 0);
+    assert_eq!(d.div100(), D64::new(0, 1_000_000)); // 0.01
+}
+
+#[test]
+fn div100_negative() {
+    let d = D64::new(-100, 0);
+    assert_eq!(d.div100(), D64::new(-1, 0));
+}
