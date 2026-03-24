@@ -266,13 +266,27 @@ fn derive_param_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, sy
         }
     };
 
-    // Validate: exactly one lifetime parameter
+    // Validate: exactly one lifetime parameter, no type/const generics
     let lifetimes: Vec<_> = input.generics.lifetimes().collect();
     if lifetimes.len() != 1 {
         return Err(syn::Error::new_spanned(
             &input.generics,
             "derive(Param) requires exactly one lifetime parameter, \
              e.g., `struct MyParam<'w>`",
+        ));
+    }
+    // TODO: support type and const generics by threading them through
+    // the generated State struct and Param impl (e.g., `Buffer<const N: usize>`).
+    // This is straightforward with syn's split_for_impl() but deferred to
+    // avoid the lifetime inference issues Bevy hit with generic SystemParams.
+    if input.generics.type_params().next().is_some()
+        || input.generics.const_params().next().is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "derive(Param) does not yet support type or const generics — \
+             only a single lifetime parameter (e.g., `struct MyParam<'w>`). \
+             Use a concrete type instead (e.g., `Res<'w, Buffer<64>>` not `Res<'w, Buffer<N>>`)",
         ));
     }
     let world_lifetime = &lifetimes[0].lifetime;
@@ -359,10 +373,6 @@ fn derive_param_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, sy
             #(#state_fields,)*
             #(#ignored_state_fields,)*
         }
-
-        // SAFETY: Each field's State is Send (trait bound on Param::State).
-        // The composed struct is therefore Send.
-        unsafe impl Send for #state_name {}
 
         impl ::nexus_rt::Param for #name<'_> {
             type State = #state_name;
