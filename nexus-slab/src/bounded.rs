@@ -123,6 +123,12 @@ pub struct Slab<T> {
     pub(crate) free_head: Cell<*mut SlotCell<T>>,
 }
 
+// SAFETY: Slab is single-owner. The raw pointer (free_head) is an internal
+// freelist implementation detail — no shared aliasing. T: Send ensures the
+// contained values are safe to move across threads.
+#[allow(clippy::non_send_fields_in_send_ty)]
+unsafe impl<T: Send> Send for Slab<T> {}
+
 impl<T> Slab<T> {
     /// Creates an empty, uninitialized slab.
     ///

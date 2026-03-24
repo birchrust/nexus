@@ -36,8 +36,8 @@ pub(crate) fn null_entry<T>() -> EntryPtr<T> {
 ///
 /// `UnsafeCell<Option<T>>` provides interior mutability for `.take()` through
 /// shared references (slab gives `&self` access). `Option<T>` makes Drop safe:
-/// `drop_in_place` on `None` is a no-op. Single-threaded (`!Send`), so
-/// `UnsafeCell` is sound.
+/// `drop_in_place` on `None` is a no-op. Single-threaded at runtime;
+/// `Send` when `T: Send` (for World storage). `UnsafeCell` is sound.
 #[repr(C)]
 pub struct WheelEntry<T> {
     // DLL links — touched every list walk (hot)
@@ -54,6 +54,13 @@ pub struct WheelEntry<T> {
     // Value — read only on fire/cancel (cold relative to links)
     value: UnsafeCell<Option<T>>,
 }
+
+// SAFETY: WheelEntry is single-owner, single-threaded at runtime. The raw
+// pointers (prev/next DLL links) and UnsafeCell are internal implementation
+// details. T: Send ensures the contained value can move across threads
+// (needed because TimerWheel lives in World which is Send).
+#[allow(clippy::non_send_fields_in_send_ty)]
+unsafe impl<T: Send> Send for WheelEntry<T> {}
 
 impl<T> WheelEntry<T> {
     /// Creates a new entry with the given deadline and value.

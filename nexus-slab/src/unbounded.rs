@@ -149,6 +149,12 @@ pub struct Slab<T> {
     head_with_space: Cell<usize>,
 }
 
+// SAFETY: Slab is single-owner. Raw pointers in ChunkEntry are internal
+// freelist plumbing — no shared aliasing. UnsafeCell<Vec<...>> is owned
+// exclusively. T: Send ensures contained values are safe to move.
+#[allow(clippy::non_send_fields_in_send_ty)]
+unsafe impl<T: Send> Send for Slab<T> {}
+
 impl<T> Slab<T> {
     /// Creates an empty, uninitialized slab.
     ///
