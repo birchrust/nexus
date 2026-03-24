@@ -24,21 +24,24 @@
 //! # Examples
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, ResMut, Handler};
+//! use nexus_rt::{WorldBuilder, ResMut, Handler, Resource};
 //! use nexus_rt::template::{Blueprint, HandlerTemplate};
+//!
+//! #[derive(Resource)]
+//! struct Counter(u64);
 //!
 //! struct OnTick;
 //! impl Blueprint for OnTick {
 //!     type Event = u32;
-//!     type Params = (ResMut<'static, u64>,);
+//!     type Params = (ResMut<'static, Counter>,);
 //! }
 //!
-//! fn tick(mut counter: ResMut<u64>, event: u32) {
-//!     *counter += event as u64;
+//! fn tick(mut counter: ResMut<Counter>, event: u32) {
+//!     counter.0 += event as u64;
 //! }
 //!
 //! let mut builder = WorldBuilder::new();
-//! builder.register::<u64>(0);
+//! builder.register(Counter(0));
 //! let world = builder.build();
 //!
 //! let template = HandlerTemplate::<OnTick>::new(tick, world.registry());
@@ -316,21 +319,24 @@ all_tuples!(impl_template_dispatch);
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, Handler};
+/// use nexus_rt::{WorldBuilder, ResMut, Handler, Resource};
 /// use nexus_rt::template::{Blueprint, HandlerTemplate};
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
 ///
 /// struct OnTick;
 /// impl Blueprint for OnTick {
 ///     type Event = u32;
-///     type Params = (ResMut<'static, u64>,);
+///     type Params = (ResMut<'static, Counter>,);
 /// }
 ///
-/// fn tick(mut counter: ResMut<u64>, event: u32) {
-///     *counter += event as u64;
+/// fn tick(mut counter: ResMut<Counter>, event: u32) {
+///     counter.0 += event as u64;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let world = builder.build();
 ///
 /// let template = HandlerTemplate::<OnTick>::new(tick, world.registry());
@@ -454,27 +460,30 @@ type CallbackRunFn<K> = unsafe fn(
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, Handler};
+/// use nexus_rt::{WorldBuilder, ResMut, Handler, Resource};
 /// use nexus_rt::template::{Blueprint, CallbackBlueprint, CallbackTemplate};
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
 ///
 /// struct TimerCtx { order_id: u64, fires: u64 }
 ///
 /// struct OnTimeout;
 /// impl Blueprint for OnTimeout {
 ///     type Event = ();
-///     type Params = (ResMut<'static, u64>,);
+///     type Params = (ResMut<'static, Counter>,);
 /// }
 /// impl CallbackBlueprint for OnTimeout {
 ///     type Context = TimerCtx;
 /// }
 ///
-/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>, _event: ()) {
 ///     ctx.fires += 1;
-///     *counter += ctx.order_id;
+///     counter.0 += ctx.order_id;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let world = builder.build();
 ///
 /// let template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());

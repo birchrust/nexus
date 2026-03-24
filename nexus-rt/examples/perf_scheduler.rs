@@ -12,7 +12,9 @@
 use std::hint::black_box;
 
 use nexus_rt::scheduler::SchedulerInstaller;
-use nexus_rt::{ResMut, WorldBuilder};
+use nexus_rt::{ResMut, WorldBuilder, new_resource};
+
+new_resource!(ResU64(u64));
 
 // =============================================================================
 // Bench infrastructure (inline — no shared utils crate yet)
@@ -81,13 +83,13 @@ fn print_header(title: &str) {
 // Trivial systems — isolate scheduler overhead from system body cost
 // =============================================================================
 
-fn sys_true(mut val: ResMut<u64>) -> bool {
-    *val = val.wrapping_add(1);
+fn sys_true(mut val: ResMut<ResU64>) -> bool {
+    val.0 = val.0.wrapping_add(1);
     true
 }
 
-fn sys_false(mut val: ResMut<u64>) -> bool {
-    *val = val.wrapping_add(1);
+fn sys_false(mut val: ResMut<ResU64>) -> bool {
+    val.0 = val.0.wrapping_add(1);
     false
 }
 
@@ -98,7 +100,7 @@ fn sys_false(mut val: ResMut<u64>) -> bool {
 /// N independent roots (no edges). All always run.
 fn build_flat(n: usize) -> (WorldBuilder, SchedulerInstaller) {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut installer = SchedulerInstaller::new();
     for _ in 0..n {
         installer.add(sys_true, wb.registry());
@@ -109,7 +111,7 @@ fn build_flat(n: usize) -> (WorldBuilder, SchedulerInstaller) {
 /// Linear chain: A → B → C → ... All propagate true.
 fn build_chain(n: usize) -> (WorldBuilder, SchedulerInstaller) {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut installer = SchedulerInstaller::new();
     let mut prev = installer.add(sys_true, wb.registry());
     for _ in 1..n {
@@ -124,7 +126,7 @@ fn build_chain(n: usize) -> (WorldBuilder, SchedulerInstaller) {
 /// Total systems = N + 2.
 fn build_diamond(fan: usize) -> (WorldBuilder, SchedulerInstaller) {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut installer = SchedulerInstaller::new();
     let root = installer.add(sys_true, wb.registry());
     let mut middles = Vec::with_capacity(fan);
@@ -143,7 +145,7 @@ fn build_diamond(fan: usize) -> (WorldBuilder, SchedulerInstaller) {
 /// Chain where root returns false — downstream skipped.
 fn build_chain_skipped(n: usize) -> (WorldBuilder, SchedulerInstaller) {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut installer = SchedulerInstaller::new();
     let mut prev = installer.add(sys_false, wb.registry());
     for _ in 1..n {

@@ -12,7 +12,18 @@
 
 use std::hint::black_box;
 
-use nexus_rt::{IntoCallback, IntoHandler, Local, PipelineBuilder, Res, ResMut, WorldBuilder};
+use nexus_rt::{
+    IntoCallback, IntoHandler, Local, PipelineBuilder, Res, ResMut, WorldBuilder, new_resource,
+};
+
+new_resource!(ResU64(u64));
+new_resource!(ResU32(u32));
+new_resource!(ResBool(bool));
+new_resource!(ResF64(f64));
+new_resource!(ResI64(i64));
+new_resource!(ResI32(i32));
+new_resource!(ResU8(u8));
+new_resource!(ResU16(u16));
 
 // =============================================================================
 // Bench infrastructure (same as perf_pipeline.rs)
@@ -81,45 +92,59 @@ fn print_header(title: &str) {
 // Handler functions at various arities
 // =============================================================================
 
-fn sys_1p(_a: Res<u64>, _e: ()) {}
-fn sys_2p(_a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
-fn sys_4p(_a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
+fn sys_1p(_a: Res<ResU64>, _e: ()) {}
+fn sys_2p(_a: Res<ResU64>, _b: ResMut<ResU32>, _e: ()) {}
+fn sys_4p(_a: Res<ResU64>, _b: ResMut<ResU32>, _c: Res<ResBool>, _d: Res<ResF64>, _e: ()) {}
 
 #[allow(clippy::too_many_arguments)]
 fn sys_8p(
-    _a: Res<u64>,
-    _b: ResMut<u32>,
-    _c: Res<bool>,
-    _d: Res<f64>,
-    _e2: Res<i64>,
-    _f: Res<i32>,
-    _g: Res<u8>,
-    _h: ResMut<u16>,
+    _a: Res<ResU64>,
+    _b: ResMut<ResU32>,
+    _c: Res<ResBool>,
+    _d: Res<ResF64>,
+    _e2: Res<ResI64>,
+    _f: Res<ResI32>,
+    _g: Res<ResU8>,
+    _h: ResMut<ResU16>,
     _e: (),
 ) {
 }
 
 // With Local (no World resource — skipped by check_access)
-fn sys_local(_a: Local<u64>, _b: ResMut<u32>, _e: ()) {}
+fn sys_local(_a: Local<u64>, _b: ResMut<ResU32>, _e: ()) {}
 
 // With Option (try_id path in init)
-fn sys_option(_a: Option<Res<u64>>, _b: ResMut<u32>, _e: ()) {}
+fn sys_option(_a: Option<Res<ResU64>>, _b: ResMut<ResU32>, _e: ()) {}
 
 // =============================================================================
 // Callback functions
 // =============================================================================
 
-fn cb_2p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
-fn cb_4p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
+fn cb_2p(_ctx: &mut u64, _a: Res<ResU64>, _b: ResMut<ResU32>, _e: ()) {}
+fn cb_4p(
+    _ctx: &mut u64,
+    _a: Res<ResU64>,
+    _b: ResMut<ResU32>,
+    _c: Res<ResBool>,
+    _d: Res<ResF64>,
+    _e: (),
+) {
+}
 
 // =============================================================================
 // Step functions
 // =============================================================================
 
-fn stage_2p(_a: Res<u64>, _b: ResMut<u32>, _x: u32) -> u32 {
+fn stage_2p(_a: Res<ResU64>, _b: ResMut<ResU32>, _x: u32) -> u32 {
     0
 }
-fn stage_4p(_a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _x: u32) -> u32 {
+fn stage_4p(
+    _a: Res<ResU64>,
+    _b: ResMut<ResU32>,
+    _c: Res<ResBool>,
+    _d: Res<ResF64>,
+    _x: u32,
+) -> u32 {
     0
 }
 
@@ -130,20 +155,20 @@ fn stage_4p(_a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _x: u32)
 fn main() {
     // Register enough types to exercise the check_access bitset.
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
-    wb.register::<u32>(0);
-    wb.register::<bool>(false);
-    wb.register::<f64>(0.0);
-    wb.register::<i64>(0);
-    wb.register::<i32>(0);
-    wb.register::<u8>(0);
-    wb.register::<u16>(0);
+    wb.register(ResU64(0));
+    wb.register(ResU32(0));
+    wb.register(ResBool(false));
+    wb.register(ResF64(0.0));
+    wb.register(ResI64(0));
+    wb.register(ResI32(0));
+    wb.register(ResU8(0));
+    wb.register(ResU16(0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
     print_header("into_handler Construction (cycles)");
 
-    bench_batched("into_handler  1-param (Res<u64>)", || {
+    bench_batched("into_handler  1-param (Res<ResU64>)", || {
         let _ = black_box(sys_1p.into_handler(r));
         0
     });

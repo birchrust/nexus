@@ -13,8 +13,17 @@ use std::hint::black_box;
 
 use nexus_rt::{
     CallbackTemplate, HandlerTemplate, IntoCallback, IntoHandler, Res, ResMut, WorldBuilder,
-    callback_blueprint, handler_blueprint,
+    callback_blueprint, handler_blueprint, new_resource,
 };
+
+new_resource!(ResU64(u64));
+new_resource!(ResU32(u32));
+new_resource!(ResBool(bool));
+new_resource!(ResF64(f64));
+new_resource!(ResI64(i64));
+new_resource!(ResI32(i32));
+new_resource!(ResU8(u8));
+new_resource!(ResU16(u16));
 
 // =============================================================================
 // Bench infrastructure (same as perf_construction.rs)
@@ -82,20 +91,20 @@ fn print_header(title: &str) {
 // Handler functions at various arities
 // =============================================================================
 
-fn sys_1p(_a: Res<u64>, _e: ()) {}
-fn sys_2p(_a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
-fn sys_4p(_a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
+fn sys_1p(_a: Res<ResU64>, _e: ()) {}
+fn sys_2p(_a: Res<ResU64>, _b: ResMut<ResU32>, _e: ()) {}
+fn sys_4p(_a: Res<ResU64>, _b: ResMut<ResU32>, _c: Res<ResBool>, _d: Res<ResF64>, _e: ()) {}
 
 #[allow(clippy::too_many_arguments)]
 fn sys_8p(
-    _a: Res<u64>,
-    _b: ResMut<u32>,
-    _c: Res<bool>,
-    _d: Res<f64>,
-    _e2: Res<i64>,
-    _f: Res<i32>,
-    _g: Res<u8>,
-    _h: ResMut<u16>,
+    _a: Res<ResU64>,
+    _b: ResMut<ResU32>,
+    _c: Res<ResBool>,
+    _d: Res<ResF64>,
+    _e2: Res<ResI64>,
+    _f: Res<ResI32>,
+    _g: Res<ResU8>,
+    _h: ResMut<ResU16>,
     _e: (),
 ) {
 }
@@ -104,32 +113,40 @@ fn sys_8p(
 // Callback functions
 // =============================================================================
 
-fn cb_2p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
-fn cb_4p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
+fn cb_2p(_ctx: &mut u64, _a: Res<ResU64>, _b: ResMut<ResU32>, _e: ()) {}
+fn cb_4p(
+    _ctx: &mut u64,
+    _a: Res<ResU64>,
+    _b: ResMut<ResU32>,
+    _c: Res<ResBool>,
+    _d: Res<ResF64>,
+    _e: (),
+) {
+}
 
 // =============================================================================
 // Blueprint keys
 // =============================================================================
 
-handler_blueprint!(K1P, Event = (), Params = (Res<'static, u64>,));
-handler_blueprint!(K2P, Event = (), Params = (Res<'static, u64>, ResMut<'static, u32>));
+handler_blueprint!(K1P, Event = (), Params = (Res<'static, ResU64>,));
+handler_blueprint!(K2P, Event = (), Params = (Res<'static, ResU64>, ResMut<'static, ResU32>));
 handler_blueprint!(K4P, Event = (), Params = (
-    Res<'static, u64>, ResMut<'static, u32>,
-    Res<'static, bool>, Res<'static, f64>,
+    Res<'static, ResU64>, ResMut<'static, ResU32>,
+    Res<'static, ResBool>, Res<'static, ResF64>,
 ));
 handler_blueprint!(K8P, Event = (), Params = (
-    Res<'static, u64>, ResMut<'static, u32>,
-    Res<'static, bool>, Res<'static, f64>,
-    Res<'static, i64>, Res<'static, i32>,
-    Res<'static, u8>, ResMut<'static, u16>,
+    Res<'static, ResU64>, ResMut<'static, ResU32>,
+    Res<'static, ResBool>, Res<'static, ResF64>,
+    Res<'static, ResI64>, Res<'static, ResI32>,
+    Res<'static, ResU8>, ResMut<'static, ResU16>,
 ));
 
 callback_blueprint!(KCb2P, Context = u64, Event = (), Params = (
-    Res<'static, u64>, ResMut<'static, u32>,
+    Res<'static, ResU64>, ResMut<'static, ResU32>,
 ));
 callback_blueprint!(KCb4P, Context = u64, Event = (), Params = (
-    Res<'static, u64>, ResMut<'static, u32>,
-    Res<'static, bool>, Res<'static, f64>,
+    Res<'static, ResU64>, ResMut<'static, ResU32>,
+    Res<'static, ResBool>, Res<'static, ResF64>,
 ));
 
 // =============================================================================
@@ -138,14 +155,14 @@ callback_blueprint!(KCb4P, Context = u64, Event = (), Params = (
 
 fn main() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
-    wb.register::<u32>(0);
-    wb.register::<bool>(false);
-    wb.register::<f64>(0.0);
-    wb.register::<i64>(0);
-    wb.register::<i32>(0);
-    wb.register::<u8>(0);
-    wb.register::<u16>(0);
+    wb.register(ResU64(0));
+    wb.register(ResU32(0));
+    wb.register(ResBool(false));
+    wb.register(ResF64(0.0));
+    wb.register(ResI64(0));
+    wb.register(ResI32(0));
+    wb.register(ResU8(0));
+    wb.register(ResU16(0));
     let world = wb.build();
     let r = world.registry();
 

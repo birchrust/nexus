@@ -33,8 +33,11 @@ use crate::world::World;
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Resource};
 /// use nexus_rt::Adapt;
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
 ///
 /// // Wire event — in practice this would be a decoder/buffer type.
 /// struct WireMsg(u32);
@@ -46,12 +49,12 @@ use crate::world::World;
 ///     Some(wire.0 as u64)
 /// }
 ///
-/// fn accumulate(mut counter: ResMut<u64>, event: u64) {
-///     *counter += event;
+/// fn accumulate(mut counter: ResMut<Counter>, event: u64) {
+///     counter.0 += event;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let handler = accumulate.into_handler(world.registry());
@@ -60,7 +63,7 @@ use crate::world::World;
 /// // Wire type is &WireMsg — reference type taken by value.
 /// adapted.run(&mut world, &WireMsg(10));
 /// adapted.run(&mut world, &WireMsg(5));
-/// assert_eq!(*world.resource::<u64>(), 15);
+/// assert_eq!(world.resource::<Counter>().0, 15);
 /// ```
 pub struct Adapt<F, H> {
     decode: F,
@@ -105,20 +108,23 @@ where
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, ByRef};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, ByRef, Resource};
 ///
-/// fn process(mut counter: ResMut<u64>, event: &u32) {
-///     *counter += *event as u64;
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn process(mut counter: ResMut<Counter>, event: &u32) {
+///     counter.0 += *event as u64;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let h = process.into_handler(world.registry());
 /// let mut adapted = ByRef(h);
 /// adapted.run(&mut world, 5u32);
-/// assert_eq!(*world.resource::<u64>(), 5);
+/// assert_eq!(world.resource::<Counter>().0, 5);
 /// ```
 pub struct ByRef<H>(pub H);
 
@@ -152,20 +158,23 @@ where
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Cloned};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Cloned, Resource};
 ///
-/// fn process(mut counter: ResMut<u64>, event: u32) {
-///     *counter += event as u64;
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn process(mut counter: ResMut<Counter>, event: u32) {
+///     counter.0 += event as u64;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let h = process.into_handler(world.registry());
 /// let mut adapted = Cloned(h);
 /// adapted.run(&mut world, &5u32);
-/// assert_eq!(*world.resource::<u64>(), 5);
+/// assert_eq!(world.resource::<Counter>().0, 5);
 /// ```
 pub struct Cloned<H>(pub H);
 
@@ -202,20 +211,23 @@ impl<'e, E: Clone + 'e, H: Handler<E> + Send> Handler<&'e E> for Cloned<H> {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Owned};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Owned, Resource};
 ///
-/// fn process(mut buf: ResMut<String>, event: String) {
-///     buf.push_str(&event);
+/// #[derive(Resource)]
+/// struct Buffer(String);
+///
+/// fn process(mut buf: ResMut<Buffer>, event: String) {
+///     buf.0.push_str(&event);
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<String>(String::new());
+/// builder.register(Buffer(String::new()));
 /// let mut world = builder.build();
 ///
 /// let h = process.into_handler(world.registry());
 /// let mut adapted = Owned::<_, str>::new(h);
 /// adapted.run(&mut world, "hello");
-/// assert_eq!(world.resource::<String>().as_str(), "hello");
+/// assert_eq!(world.resource::<Buffer>().0.as_str(), "hello");
 /// ```
 pub struct Owned<H, E: ?Sized> {
     handler: H,

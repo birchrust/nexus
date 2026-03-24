@@ -112,16 +112,19 @@
 //! # Examples
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, ResMut, Handler};
+//! use nexus_rt::{WorldBuilder, ResMut, Handler, Resource};
 //! use nexus_rt::dag::DagBuilder;
 //!
+//! #[derive(Resource)]
+//! struct Accum(u64);
+//!
 //! let mut wb = WorldBuilder::new();
-//! wb.register::<u64>(0);
+//! wb.register(Accum(0));
 //! let mut world = wb.build();
 //! let reg = world.registry();
 //!
 //! fn double(x: u32) -> u64 { x as u64 * 2 }
-//! fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+//! fn store(mut out: ResMut<Accum>, val: &u64) { out.0 = *val; }
 //!
 //! let mut dag = DagBuilder::<u32>::new()
 //!     .root(double, reg)
@@ -129,7 +132,7 @@
 //!     .build();
 //!
 //! dag.run(&mut world, 5u32);
-//! assert_eq!(*world.resource::<u64>(), 10);
+//! assert_eq!(world.resource::<Accum>().0, 10);
 //! ```
 //!
 //! # Returning DAGs from functions (Rust 2024)
@@ -556,16 +559,19 @@ all_tuples!(impl_merge5_step);
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, Handler};
+/// use nexus_rt::{WorldBuilder, ResMut, Handler, Resource};
 /// use nexus_rt::dag::DagBuilder;
 ///
+/// #[derive(Resource)]
+/// struct Accum(u64);
+///
 /// let mut wb = WorldBuilder::new();
-/// wb.register::<u64>(0);
+/// wb.register(Accum(0));
 /// let mut world = wb.build();
 /// let reg = world.registry();
 ///
 /// fn double(x: u32) -> u64 { x as u64 * 2 }
-/// fn store(mut out: ResMut<u64>, val: &u64) { *out = *val; }
+/// fn store(mut out: ResMut<Accum>, val: &u64) { out.0 = *val; }
 ///
 /// let mut dag = DagBuilder::<u32>::new()
 ///     .root(double, reg)
@@ -573,7 +579,7 @@ all_tuples!(impl_merge5_step);
 ///     .build();
 ///
 /// dag.run(&mut world, 5u32);
-/// assert_eq!(*world.resource::<u64>(), 10);
+/// assert_eq!(world.resource::<Accum>().0, 10);
 /// ```
 #[must_use = "a DAG builder does nothing unless you chain steps and call .build()"]
 pub struct DagBuilder<E>(PhantomData<fn(E)>);
@@ -2155,16 +2161,19 @@ impl<E, Out: crate::PipelineOutput, Chain: ChainCall<E, Out = Out>> DagChain<E, 
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut};
+/// use nexus_rt::{WorldBuilder, ResMut, Resource};
 /// use nexus_rt::dag::DagBuilder;
 ///
+/// #[derive(Resource)]
+/// struct Accum(u64);
+///
 /// let mut wb = WorldBuilder::new();
-/// wb.register::<u64>(0);
+/// wb.register(Accum(0));
 /// let mut world = wb.build();
 /// let reg = world.registry();
 ///
 /// fn double(x: u32) -> u64 { x as u64 * 2 }
-/// fn store(mut out: ResMut<u64>, val: &u64) { *out += *val; }
+/// fn store(mut out: ResMut<Accum>, val: &u64) { out.0 += *val; }
 ///
 /// let mut batch = DagBuilder::<u32>::new()
 ///     .root(double, reg)
@@ -2174,7 +2183,7 @@ impl<E, Out: crate::PipelineOutput, Chain: ChainCall<E, Out = Out>> DagChain<E, 
 /// batch.input_mut().extend([1, 2, 3]);
 /// batch.run(&mut world);
 ///
-/// assert_eq!(*world.resource::<u64>(), 12); // 2 + 4 + 6
+/// assert_eq!(world.resource::<Accum>().0, 12); // 2 + 4 + 6
 /// assert!(batch.input().is_empty());
 /// ```
 pub struct BatchDag<E, F> {

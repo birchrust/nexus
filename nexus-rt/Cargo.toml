@@ -18,6 +18,7 @@ mio = ["dep:mio", "dep:slab"]
 signals = ["dep:signal-hook"]
 
 [dependencies]
+nexus-rt-derive = { version = "0.1", path = "../nexus-rt-derive" }
 rustc-hash = "2"
 nexus-smartptr = { version = "0.1", path = "../nexus-smartptr", optional = true }
 nexus-timer = { version = "1.2", path = "../nexus-timer", optional = true }

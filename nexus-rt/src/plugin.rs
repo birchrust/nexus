@@ -28,3 +28,9 @@ pub trait Plugin {
     /// Register resources into the world.
     fn build(self, world: &mut WorldBuilder);
 }
+
+impl<F: FnOnce(&mut WorldBuilder)> Plugin for F {
+    fn build(self, world: &mut WorldBuilder) {
+        self(world);
+    }
+}

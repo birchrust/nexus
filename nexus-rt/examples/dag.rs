@@ -33,7 +33,10 @@
 //! ```
 
 use nexus_rt::dag::{DagArmSeed, DagBuilder};
-use nexus_rt::{Handler, Res, ResMut, WorldBuilder};
+use nexus_rt::{Handler, Res, ResMut, Resource, WorldBuilder, new_resource};
+
+new_resource!(Spread(f64));
+new_resource!(Counter(u64));
 
 // =============================================================================
 // Domain types
@@ -46,6 +49,7 @@ struct Tick {
     size: u64,
 }
 
+#[derive(Resource)]
 struct PriceCache {
     latest: f64,
     updates: u64,
@@ -60,6 +64,7 @@ impl PriceCache {
     }
 }
 
+#[derive(Resource)]
 struct TradeLog {
     entries: Vec<String>,
 }
@@ -86,8 +91,8 @@ fn extract_price(tick: Tick) -> f64 {
 // =============================================================================
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn apply_spread(spread: Res<f64>, price: &f64) -> f64 {
-    *price * (1.0 + *spread)
+fn apply_spread(spread: Res<Spread>, price: &f64) -> f64 {
+    *price * (1.0 + spread.0)
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
@@ -123,14 +128,14 @@ fn merge_sum(a: &f64, b: &f64) -> f64 {
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn count_update(mut ctr: ResMut<u64>, _val: &u32) {
-    *ctr += 1;
+fn count_update(mut ctr: ResMut<Counter>, _val: &u32) {
+    **ctr += 1;
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn count_and_print(mut ctr: ResMut<u64>, x: &u32) {
+fn count_and_print(mut ctr: ResMut<Counter>, x: &u32) {
     println!("  [guard] passed: {x}");
-    *ctr += 1;
+    **ctr += 1;
 }
 
 // =============================================================================
@@ -144,7 +149,7 @@ fn main() {
 
     let mut wb = WorldBuilder::new();
     wb.register(PriceCache::new());
-    wb.register::<f64>(0.001); // spread
+    wb.register(Spread(0.001)); // spread
     let mut world = wb.build();
     let reg = world.registry();
 
@@ -178,7 +183,7 @@ fn main() {
     println!("=== 2. Diamond (fork/merge) ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<f64>(0.001); // spread
+    wb.register(Spread(0.001)); // spread
     let mut world = wb.build();
     let reg = world.registry();
 
@@ -355,7 +360,7 @@ fn main() {
     println!("\n=== 6. Dedup ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Counter(0));
     let mut world = wb.build();
     let reg = world.registry();
 
@@ -371,7 +376,7 @@ fn main() {
         deduped.run(&mut world, v);
     }
 
-    let count = *world.resource::<u64>();
+    let count = world.resource::<Counter>().0;
     println!("  updates: {count} (4 unique runs from 7 inputs)\n");
     assert_eq!(count, 4);
 
@@ -380,7 +385,7 @@ fn main() {
     println!("=== 7. Guard ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Counter(0));
     let mut world = wb.build();
     let reg = world.registry();
 
@@ -395,7 +400,7 @@ fn main() {
         guarded.run(&mut world, v);
     }
 
-    let count = *world.resource::<u64>();
+    let count = world.resource::<Counter>().0;
     println!("  even count: {count}");
     assert_eq!(count, 3);
 
@@ -405,7 +410,7 @@ fn main() {
 
     let mut wb = WorldBuilder::new();
     wb.register(PriceCache::new());
-    wb.register::<f64>(0.001);
+    wb.register(Spread(0.001));
     let mut world = wb.build();
     let reg = world.registry();
 

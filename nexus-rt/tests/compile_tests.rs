@@ -29,6 +29,35 @@ use nexus_rt::{
 };
 
 // =========================================================================
+// Newtype resource wrappers for primitive types
+// =========================================================================
+
+nexus_rt::new_resource!(
+    #[derive(Debug, PartialEq)]
+    ResU32(u32)
+);
+nexus_rt::new_resource!(
+    #[derive(Debug, PartialEq)]
+    ResU64(u64)
+);
+nexus_rt::new_resource!(
+    #[derive(Debug, PartialEq)]
+    ResI64(i64)
+);
+nexus_rt::new_resource!(
+    #[derive(Debug, PartialEq)]
+    ResF64(f64)
+);
+nexus_rt::new_resource!(
+    #[derive(Debug, PartialEq)]
+    ResBool(bool)
+);
+nexus_rt::new_resource!(
+    #[derive(Debug, PartialEq)]
+    ResString(String)
+);
+
+// =========================================================================
 // Helper types and named functions used across tests
 // =========================================================================
 
@@ -78,33 +107,33 @@ fn triple(x: u32) -> u32 {
     x * 3
 }
 
-fn store_u64(mut out: ResMut<u64>, val: u64) {
-    *out = val;
+fn store_u64(mut out: ResMut<ResU64>, val: u64) {
+    *out = ResU64(val);
 }
 
-fn read_factor_and_multiply(factor: Res<u64>, x: u32) -> u64 {
-    *factor * x as u64
+fn read_factor_and_multiply(factor: Res<ResU64>, x: u32) -> u64 {
+    **factor * x as u64
 }
 
-fn write_and_transform(mut out: ResMut<u64>, x: u32) -> u32 {
-    *out = x as u64;
+fn write_and_transform(mut out: ResMut<ResU64>, x: u32) -> u32 {
+    *out = ResU64(x as u64);
     x * 2
 }
 
-fn read_and_write(config: Res<u64>, mut out: ResMut<String>, x: u32) {
-    *out = format!("{}:{}", *config, x);
+fn read_and_write(config: Res<ResU64>, mut out: ResMut<ResString>, x: u32) {
+    *out = ResString(format!("{}:{}", **config, x));
 }
 
-fn opt_res_step(opt: Option<Res<u64>>, x: u32) -> u32 {
+fn opt_res_step(opt: Option<Res<ResU64>>, x: u32) -> u32 {
     match opt {
-        Some(v) => x + *v as u32,
+        Some(v) => x + **v as u32,
         None => x,
     }
 }
 
-fn opt_res_mut_step(opt: Option<ResMut<String>>, x: u32) -> u32 {
+fn opt_res_mut_step(opt: Option<ResMut<ResString>>, x: u32) -> u32 {
     if let Some(mut s) = opt {
-        *s = x.to_string();
+        *s = ResString(x.to_string());
     }
     x
 }
@@ -142,21 +171,21 @@ fn enrich_order(vo: ValidOrder) -> EnrichedOrder {
     }
 }
 
-fn store_enriched(mut out: ResMut<f64>, eo: EnrichedOrder) {
-    *out = eo.total;
+fn store_enriched(mut out: ResMut<ResF64>, eo: EnrichedOrder) {
+    *out = ResF64(eo.total);
 }
 
 fn guard_positive(x: &u32) -> bool {
     *x > 0
 }
 
-fn guard_positive_with_res(threshold: Res<u32>, x: &u32) -> bool {
-    *x > *threshold
+fn guard_positive_with_res(threshold: Res<ResU32>, x: &u32) -> bool {
+    *x > **threshold
 }
 
 fn tap_log(_x: &u32) {}
 
-fn tap_log_with_res(_counter: Res<u64>, _x: &u32) {}
+fn tap_log_with_res(_counter: Res<ResU64>, _x: &u32) {}
 
 fn filter_even(x: &u32) -> bool {
     *x % 2 == 0
@@ -245,8 +274,8 @@ fn make_quint(x: u32) -> (u32, u32, u32, u32, u32) {
     (x, x + 1, x + 2, x + 3, x + 4)
 }
 
-fn store_u32(mut out: ResMut<u32>, val: u32) {
-    *out = val;
+fn store_u32(mut out: ResMut<ResU32>, val: u32) {
+    *out = ResU32(val);
 }
 
 // -- DAG step functions (takes &T) --
@@ -259,12 +288,12 @@ fn dag_negate(x: &u32) -> i64 {
     -(*x as i64)
 }
 
-fn dag_store_u64(mut out: ResMut<u64>, val: &u64) {
-    *out = *val;
+fn dag_store_u64(mut out: ResMut<ResU64>, val: &u64) {
+    *out = ResU64(*val);
 }
 
-fn dag_store_i64(mut out: ResMut<i64>, val: &i64) {
-    *out = *val;
+fn dag_store_i64(mut out: ResMut<ResI64>, val: &i64) {
+    *out = ResI64(*val);
 }
 
 fn dag_add_one(x: &u64) -> u64 {
@@ -283,8 +312,8 @@ fn dag_merge4(a: &u64, b: &u64, c: &u64, d: &u64) -> u64 {
     *a + *b + *c + *d
 }
 
-fn dag_store_f64(mut out: ResMut<f64>, val: &f64) {
-    *out = *val;
+fn dag_store_f64(mut out: ResMut<ResF64>, val: &f64) {
+    *out = ResF64(*val);
 }
 
 fn dag_guard_positive(x: &u64) -> bool {
@@ -297,8 +326,8 @@ fn dag_id(x: u32) -> u32 {
     x
 }
 
-fn dag_store_u32(mut out: ResMut<u32>, val: &u32) {
-    *out = *val;
+fn dag_store_u32(mut out: ResMut<ResU32>, val: &u32) {
+    *out = ResU32(*val);
 }
 
 fn dag_splat2(a: &u32, b: &u32) -> u32 {
@@ -308,12 +337,12 @@ fn dag_splat2(a: &u32, b: &u32) -> u32 {
 // Helper to build a simple world with common resources
 fn build_world() -> World {
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(0);
-    wb.register::<u64>(0);
-    wb.register::<i64>(0);
-    wb.register::<f64>(0.0);
-    wb.register::<String>(String::new());
-    wb.register::<bool>(false);
+    wb.register(ResU32(0));
+    wb.register(ResU64(0));
+    wb.register(ResI64(0));
+    wb.register(ResF64(0.0));
+    wb.register(ResString(String::new()));
+    wb.register(ResBool(false));
     wb.build()
 }
 
@@ -327,7 +356,7 @@ fn pipeline_single_step() {
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new().then(store_u32, r).build();
     p.run(&mut world, 42);
-    assert_eq!(*world.resource::<u32>(), 42);
+    assert_eq!(**world.resource::<ResU32>(), 42);
 }
 
 #[test]
@@ -340,7 +369,7 @@ fn pipeline_linear_chain_three() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 1);
-    assert_eq!(*world.resource::<u32>(), 33); // (1+10)*3
+    assert_eq!(**world.resource::<ResU32>(), 33); // (1+10)*3
 }
 
 #[test]
@@ -356,7 +385,7 @@ fn pipeline_linear_chain_five() {
         .build();
     p.run(&mut world, 0);
     // 0 -> 0 -> 10 -> 30 -> 40
-    assert_eq!(*world.resource::<u32>(), 40);
+    assert_eq!(**world.resource::<ResU32>(), 40);
 }
 
 #[test]
@@ -371,7 +400,7 @@ fn pipeline_build_batch() {
     batch.input_mut().extend_from_slice(&[1, 2, 3]);
     batch.run(&mut world);
     // last item wins
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
     assert!(batch.input().is_empty());
 }
 
@@ -392,7 +421,7 @@ fn pipeline_run_direct() {
 #[test]
 fn pipeline_with_res() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(10);
+    wb.register(ResU64(10));
     let mut world = wb.build();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new()
@@ -400,7 +429,7 @@ fn pipeline_with_res() {
         .then(store_u64, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 50);
+    assert_eq!(**world.resource::<ResU64>(), 50);
 }
 
 #[test]
@@ -412,28 +441,28 @@ fn pipeline_with_res_mut() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 7);
-    assert_eq!(*world.resource::<u64>(), 7);
-    assert_eq!(*world.resource::<u32>(), 14);
+    assert_eq!(**world.resource::<ResU64>(), 7);
+    assert_eq!(**world.resource::<ResU32>(), 14);
 }
 
 #[test]
 fn pipeline_with_multiple_res_and_res_mut() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(42);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(42));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new()
         .then(read_and_write, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(world.resource::<String>().as_str(), "42:5");
+    assert_eq!(world.resource::<ResString>().as_str(), "42:5");
 }
 
 #[test]
 fn pipeline_with_option_res() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(100);
+    wb.register(ResU64(100));
     let mut world = wb.build();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new().then(opt_res_step, r);
@@ -444,13 +473,13 @@ fn pipeline_with_option_res() {
 #[test]
 fn pipeline_with_option_res_mut() {
     let mut wb = WorldBuilder::new();
-    wb.register::<String>(String::new());
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new().then(opt_res_mut_step, r);
     let result = p.run(&mut world, 7);
     assert_eq!(result, 7);
-    assert_eq!(world.resource::<String>().as_str(), "7");
+    assert_eq!(world.resource::<ResString>().as_str(), "7");
 }
 
 #[test]
@@ -511,11 +540,11 @@ fn pipeline_guard_then_map() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 
     // zero gets guarded out
     p.run(&mut world, 0);
-    assert_eq!(*world.resource::<u32>(), 5); // unchanged
+    assert_eq!(**world.resource::<ResU32>(), 5); // unchanged
 }
 
 #[test]
@@ -529,10 +558,10 @@ fn pipeline_filter() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 4);
-    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
 
     p.run(&mut world, 5); // odd, filtered
-    assert_eq!(*world.resource::<u32>(), 4); // unchanged
+    assert_eq!(**world.resource::<ResU32>(), 4); // unchanged
 }
 
 #[test]
@@ -546,7 +575,7 @@ fn pipeline_inspect_option() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 3);
-    assert_eq!(*world.resource::<u32>(), 3);
+    assert_eq!(**world.resource::<ResU32>(), 3);
 }
 
 #[test]
@@ -559,7 +588,7 @@ fn pipeline_and_then_option() {
         .map(store_u64, r)
         .build();
     p.run(&mut world, 4);
-    assert_eq!(*world.resource::<u64>(), 12);
+    assert_eq!(**world.resource::<ResU64>(), 12);
 }
 
 #[test]
@@ -573,7 +602,7 @@ fn pipeline_on_none() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 0); // guarded, on_none fires
-    assert_eq!(*world.resource::<u32>(), 0); // unchanged, was default
+    assert_eq!(**world.resource::<ResU32>(), 0); // unchanged, was default
 }
 
 #[test]
@@ -589,7 +618,7 @@ fn pipeline_ok_or() {
         .catch(|_err: &str| {}, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -604,10 +633,10 @@ fn pipeline_unwrap_or_option() {
         .build();
 
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 
     p.run(&mut world, 0);
-    assert_eq!(*world.resource::<u32>(), 99);
+    assert_eq!(**world.resource::<ResU32>(), 99);
 }
 
 #[test]
@@ -649,7 +678,7 @@ fn pipeline_result_map() {
         .catch(catch_error, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 #[test]
@@ -663,7 +692,7 @@ fn pipeline_result_and_then() {
         .catch(catch_error, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -676,11 +705,11 @@ fn pipeline_result_catch() {
         .map(store_u64, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 
     // Error case: catch consumes the error, None produced
     p.run(&mut world, 200);
-    assert_eq!(*world.resource::<u64>(), 5); // unchanged
+    assert_eq!(**world.resource::<ResU64>(), 5); // unchanged
 }
 
 #[test]
@@ -695,7 +724,7 @@ fn pipeline_result_map_err() {
         .map(store_u64, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -721,7 +750,7 @@ fn pipeline_result_ok() {
         .map(store_u64, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -734,7 +763,7 @@ fn pipeline_result_unwrap_or() {
         .then(store_u64, r)
         .build();
     p.run(&mut world, 200);
-    assert_eq!(*world.resource::<u64>(), 999);
+    assert_eq!(**world.resource::<ResU64>(), 999);
 }
 
 #[test]
@@ -748,7 +777,7 @@ fn pipeline_result_or_else() {
         .catch(|_err: String| {}, r)
         .build();
     p.run(&mut world, 200); // error -> recovered to Ok(0)
-    assert_eq!(*world.resource::<u64>(), 0);
+    assert_eq!(**world.resource::<ResU64>(), 0);
 }
 
 #[test]
@@ -761,7 +790,7 @@ fn pipeline_result_unwrap_or_else() {
         .then(store_u64, r)
         .build();
     p.run(&mut world, 200);
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
@@ -775,7 +804,7 @@ fn pipeline_result_inspect_ok() {
         .catch(catch_error, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 // =========================================================================
@@ -833,8 +862,8 @@ fn pipeline_bool_xor() {
 #[test]
 fn pipeline_guard_with_res_param() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(5);
-    wb.register::<u64>(0);
+    wb.register(ResU32(5));
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new()
@@ -845,10 +874,10 @@ fn pipeline_guard_with_res_param() {
         .build();
 
     p.run(&mut world, 10); // 10 > 5, passes guard
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 
     p.run(&mut world, 3); // 3 > 5 is false, guarded out
-    assert_eq!(*world.resource::<u64>(), 10); // unchanged
+    assert_eq!(**world.resource::<ResU64>(), 10); // unchanged
 }
 
 #[test]
@@ -862,10 +891,10 @@ fn pipeline_guard_arity0_closure() {
         .build();
 
     p.run(&mut world, 20);
-    assert_eq!(*world.resource::<u32>(), 20);
+    assert_eq!(**world.resource::<ResU32>(), 20);
 
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 20); // unchanged
+    assert_eq!(**world.resource::<ResU32>(), 20); // unchanged
 }
 
 #[test]
@@ -878,7 +907,7 @@ fn pipeline_tap_named_fn() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 7);
-    assert_eq!(*world.resource::<u32>(), 7);
+    assert_eq!(**world.resource::<ResU32>(), 7);
 }
 
 #[test]
@@ -891,7 +920,7 @@ fn pipeline_tap_arity0_closure() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 9);
-    assert_eq!(*world.resource::<u32>(), 9);
+    assert_eq!(**world.resource::<ResU32>(), 9);
 }
 
 #[test]
@@ -909,10 +938,10 @@ fn pipeline_route() {
         .build();
 
     p.run(&mut world, 200);
-    assert_eq!(*world.resource::<u32>(), 2000);
+    assert_eq!(**world.resource::<ResU32>(), 2000);
 
     p.run(&mut world, 50);
-    assert_eq!(*world.resource::<u32>(), 50);
+    assert_eq!(**world.resource::<ResU32>(), 50);
 }
 
 #[test]
@@ -931,8 +960,8 @@ fn pipeline_tee() {
         .build();
 
     p.run(&mut world, 7);
-    assert_eq!(*world.resource::<u32>(), 7);
-    assert_eq!(*world.resource::<u64>(), 7);
+    assert_eq!(**world.resource::<ResU32>(), 7);
+    assert_eq!(**world.resource::<ResU64>(), 7);
 }
 
 #[test]
@@ -946,13 +975,13 @@ fn pipeline_dedup() {
         .build();
 
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 
     p.run(&mut world, 5); // duplicate, suppressed
     // store not called again, stays 5
 
     p.run(&mut world, 10);
-    assert_eq!(*world.resource::<u32>(), 10);
+    assert_eq!(**world.resource::<ResU32>(), 10);
 }
 
 #[test]
@@ -973,13 +1002,13 @@ fn pipeline_scan() {
         .build();
 
     p.run(&mut world, 1);
-    assert_eq!(*world.resource::<u64>(), 1);
+    assert_eq!(**world.resource::<ResU64>(), 1);
 
     p.run(&mut world, 2);
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 
     p.run(&mut world, 3);
-    assert_eq!(*world.resource::<u64>(), 6);
+    assert_eq!(**world.resource::<ResU64>(), 6);
 }
 
 #[test]
@@ -987,8 +1016,8 @@ fn pipeline_dispatch_to_handler() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn sink(mut out: ResMut<u64>, val: u64) {
-        *out = val;
+    fn sink(mut out: ResMut<ResU64>, val: u64) {
+        **out = val;
     }
     let handler = sink.into_handler(r);
 
@@ -998,7 +1027,7 @@ fn pipeline_dispatch_to_handler() {
         .build();
 
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 // =========================================================================
@@ -1016,7 +1045,7 @@ fn pipeline_splat2() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 11); // 5 + 6
+    assert_eq!(**world.resource::<ResU32>(), 11); // 5 + 6
 }
 
 #[test]
@@ -1030,7 +1059,7 @@ fn pipeline_splat3() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 18); // 5+6+7
+    assert_eq!(**world.resource::<ResU32>(), 18); // 5+6+7
 }
 
 #[test]
@@ -1044,7 +1073,7 @@ fn pipeline_splat4() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 1);
-    assert_eq!(*world.resource::<u32>(), 10); // 1+2+3+4
+    assert_eq!(**world.resource::<ResU32>(), 10); // 1+2+3+4
 }
 
 #[test]
@@ -1058,7 +1087,7 @@ fn pipeline_splat5() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 0);
-    assert_eq!(*world.resource::<u32>(), 10); // 0+1+2+3+4
+    assert_eq!(**world.resource::<ResU32>(), 10); // 0+1+2+3+4
 }
 
 #[test]
@@ -1071,7 +1100,7 @@ fn pipeline_splat_at_start() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, (3, 4));
-    assert_eq!(*world.resource::<u32>(), 7);
+    assert_eq!(**world.resource::<ResU32>(), 7);
 }
 
 // =========================================================================
@@ -1088,9 +1117,9 @@ fn pipeline_guard_opaque() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 10);
-    assert_eq!(*world.resource::<u32>(), 10);
+    assert_eq!(**world.resource::<ResU32>(), 10);
     p.run(&mut world, 3);
-    assert_eq!(*world.resource::<u32>(), 10); // unchanged
+    assert_eq!(**world.resource::<ResU32>(), 10); // unchanged
 }
 
 #[test]
@@ -1103,7 +1132,7 @@ fn pipeline_tap_opaque() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -1126,13 +1155,13 @@ fn pipeline_then_opaque() {
     let mut p = PipelineBuilder::<u32>::new()
         .then(
             |w: &mut World, x: u32| {
-                *w.resource_mut::<u64>() = x as u64;
+                **w.resource_mut::<ResU64>() = x as u64;
             },
             r,
         )
         .build();
     p.run(&mut world, 42);
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 // =========================================================================
@@ -1150,7 +1179,7 @@ fn pipeline_option_unit_terminal() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -1164,7 +1193,7 @@ fn pipeline_filter_then_map_sink() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 4);
-    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
 }
 
 // =========================================================================
@@ -1187,7 +1216,7 @@ fn pipeline_borrowed_slice() {
         .build();
 
     p.run(&mut world, &data);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -1206,7 +1235,7 @@ fn pipeline_borrowed_str() {
         .build();
 
     p.run(&mut world, msg.as_str());
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -1226,7 +1255,7 @@ fn pipeline_borrowed_option_unit_terminal() {
         .build();
 
     p.run(&mut world, &data);
-    assert_eq!(*world.resource::<u32>(), 3);
+    assert_eq!(**world.resource::<ResU32>(), 3);
 }
 
 #[test]
@@ -1247,7 +1276,7 @@ fn pipeline_borrowed_through_guard() {
 
     // &str literal has 'static lifetime, no drop ordering issue
     p.run(&mut world, "abcd"); // len=4, positive, even
-    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
 }
 
 #[test]
@@ -1275,7 +1304,7 @@ fn pipeline_to_boxed_handler() {
 
     let mut boxed: Virtual<u32> = Box::new(p);
     boxed.run(&mut world, 77);
-    assert_eq!(*world.resource::<u32>(), 77);
+    assert_eq!(**world.resource::<ResU32>(), 77);
 }
 
 // =========================================================================
@@ -1291,7 +1320,7 @@ fn dag_root_then_build() {
         .then(dag_store_u32, r)
         .build();
     d.run(&mut world, 42);
-    assert_eq!(*world.resource::<u32>(), 42);
+    assert_eq!(**world.resource::<ResU32>(), 42);
 }
 
 #[test]
@@ -1309,7 +1338,7 @@ fn dag_root_then_then_build() {
         .then(dag_store_u64, r)
         .build();
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 6);
+    assert_eq!(**world.resource::<ResU64>(), 6);
 }
 
 #[test]
@@ -1347,7 +1376,7 @@ fn dag_fork_merge_2arm() {
 
     d.run(&mut world, 10);
     // arm0: 10*2=20, arm1: -10, merge: 20+(-10)=10.0
-    assert_eq!(*world.resource::<f64>(), 10.0);
+    assert_eq!(**world.resource::<ResF64>(), 10.0);
 }
 
 #[test]
@@ -1368,8 +1397,8 @@ fn dag_fork_join_2arm() {
         .build();
 
     d.run(&mut world, 7);
-    assert_eq!(*world.resource::<u64>(), 7);
-    assert_eq!(*world.resource::<i64>(), -7);
+    assert_eq!(**world.resource::<ResU64>(), 7);
+    assert_eq!(**world.resource::<ResI64>(), -7);
 }
 
 #[test]
@@ -1380,8 +1409,8 @@ fn dag_build_batch() {
     fn root(x: u32) -> u64 {
         x as u64
     }
-    fn accumulate(mut sum: ResMut<u64>, val: &u64) {
-        *sum += *val;
+    fn accumulate(mut sum: ResMut<ResU64>, val: &u64) {
+        **sum += *val;
     }
 
     let mut batch = DagBuilder::<u32>::new()
@@ -1391,7 +1420,7 @@ fn dag_build_batch() {
 
     batch.input_mut().extend([1, 2, 3]);
     batch.run(&mut world);
-    assert_eq!(*world.resource::<u64>(), 6); // 1+2+3
+    assert_eq!(**world.resource::<ResU64>(), 6); // 1+2+3
     assert!(batch.input().is_empty());
 }
 
@@ -1421,7 +1450,7 @@ fn dag_fork_merge_3arm() {
     d.run(&mut world, 10);
     // arm0: 20, arm1: -10, arm2: 5.0
     // merge: 20 + (-10) + 5.0 = 15.0
-    assert_eq!(*world.resource::<f64>(), 15.0);
+    assert_eq!(**world.resource::<ResF64>(), 15.0);
 }
 
 #[test]
@@ -1448,7 +1477,7 @@ fn dag_fork_merge_4arm() {
         .build();
 
     d.run(&mut world, 3);
-    assert_eq!(*world.resource::<u64>(), 12); // 3*4
+    assert_eq!(**world.resource::<ResU64>(), 12); // 3*4
 }
 
 #[test]
@@ -1473,7 +1502,7 @@ fn dag_fork_arms_with_multiple_steps() {
     // arm0: double=10, add_one=11
     // arm1: negate=-5
     // merge: 11 + (-5) = 6.0
-    assert_eq!(*world.resource::<f64>(), 6.0);
+    assert_eq!(**world.resource::<ResF64>(), 6.0);
 }
 
 #[test]
@@ -1499,7 +1528,7 @@ fn dag_fork_arm_with_guard() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 110); // 5 + 105
+    assert_eq!(**world.resource::<ResU64>(), 110); // 5 + 105
 }
 
 #[test]
@@ -1530,7 +1559,7 @@ fn dag_nested_fork() {
     // inner arm0: 2*2=4, inner arm1: 2*3=6, inner merge: 10.0
     // outer arm1: 2*10=20.0
     // outer merge: 10.0 + 20.0 = 30.0
-    assert_eq!(*world.resource::<f64>(), 30.0);
+    assert_eq!(**world.resource::<ResF64>(), 30.0);
 }
 
 // =========================================================================
@@ -1554,7 +1583,7 @@ fn dag_splat_chain() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 11); // 5 + 6
+    assert_eq!(**world.resource::<ResU32>(), 11); // 5 + 6
 }
 
 #[test]
@@ -1583,7 +1612,7 @@ fn dag_splat_inside_arm() {
     // arm0: splat(3,4) -> 7
     // arm1: 30
     // merge: 37
-    assert_eq!(*world.resource::<u64>(), 37);
+    assert_eq!(**world.resource::<ResU64>(), 37);
 }
 
 // =========================================================================
@@ -1606,7 +1635,7 @@ fn dag_borrowed_slice() {
         .build();
 
     d.run(&mut world, &data);
-    assert_eq!(*world.resource::<u32>(), 3);
+    assert_eq!(**world.resource::<ResU32>(), 3);
 }
 
 #[test]
@@ -1628,8 +1657,8 @@ fn dag_borrowed_through_fork() {
         .build();
 
     d.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 10); // 5 * 2
-    assert_eq!(*world.resource::<i64>(), -5);
+    assert_eq!(**world.resource::<ResU64>(), 10); // 5 * 2
+    assert_eq!(**world.resource::<ResI64>(), -5);
 }
 
 #[test]
@@ -1651,10 +1680,10 @@ fn dag_borrowed_with_guard() {
         .build();
 
     d.run(&mut world, &data);
-    assert_eq!(*world.resource::<u32>(), 3);
+    assert_eq!(**world.resource::<ResU32>(), 3);
 
     d.run(&mut world, &short);
-    assert_eq!(*world.resource::<u32>(), 0); // guarded, unwrap_or
+    assert_eq!(**world.resource::<ResU32>(), 0); // guarded, unwrap_or
 }
 
 // =========================================================================
@@ -1677,7 +1706,7 @@ fn dag_option_unit_terminal() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 // =========================================================================
@@ -1703,10 +1732,10 @@ fn dag_route() {
         .build();
 
     d.run(&mut world, 20);
-    assert_eq!(*world.resource::<u64>(), 2000);
+    assert_eq!(**world.resource::<ResU64>(), 2000);
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 // =========================================================================
@@ -1718,8 +1747,8 @@ fn pipeline_dispatch_handler_interop() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn handler_fn(mut out: ResMut<u64>, event: u64) {
-        *out = event * 10;
+    fn handler_fn(mut out: ResMut<ResU64>, event: u64) {
+        **out = event * 10;
     }
     let handler = handler_fn.into_handler(r);
 
@@ -1728,7 +1757,7 @@ fn pipeline_dispatch_handler_interop() {
         .dispatch(handler)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 100); // 5*2=10, handler: 10*10=100
+    assert_eq!(**world.resource::<ResU64>(), 100); // 5*2=10, handler: 10*10=100
 }
 
 #[test]
@@ -1742,7 +1771,7 @@ fn pipeline_result_catch_then() {
         .build();
 
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -1759,16 +1788,16 @@ fn pipeline_guard_unwrap_then() {
         .build();
 
     p.run(&mut world, 10);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 
     p.run(&mut world, 0);
-    assert_eq!(*world.resource::<u64>(), 0);
+    assert_eq!(**world.resource::<ResU64>(), 0);
 }
 
 #[test]
 fn pipeline_realistic_decode_validate_enrich_store() {
     let mut wb = WorldBuilder::new();
-    wb.register::<f64>(0.0);
+    wb.register(ResF64(0.0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
@@ -1782,19 +1811,19 @@ fn pipeline_realistic_decode_validate_enrich_store() {
         .build();
 
     p.run(&mut world, Order::new(1, 10.0, 100));
-    assert_eq!(*world.resource::<f64>(), 20.0);
+    assert_eq!(**world.resource::<ResF64>(), 20.0);
 
     // Invalid order (price=0) gets None from validate, skipped
     p.run(&mut world, Order::new(2, 0.0, 50));
-    assert_eq!(*world.resource::<f64>(), 20.0); // unchanged
+    assert_eq!(**world.resource::<ResF64>(), 20.0); // unchanged
 }
 
 #[test]
 fn pipeline_long_realistic() {
     // decode -> validate -> enrich -> route -> sink
     let mut wb = WorldBuilder::new();
-    wb.register::<f64>(0.0);
-    wb.register::<u64>(0);
+    wb.register(ResF64(0.0));
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
@@ -1812,8 +1841,8 @@ fn pipeline_long_realistic() {
 
     fn log_error(_err: MyError) {}
 
-    fn store_price(mut out: ResMut<f64>, order: Order) {
-        *out = order.price;
+    fn store_price(mut out: ResMut<ResF64>, order: Order) {
+        **out = order.price;
     }
 
     let mut p = PipelineBuilder::<u32>::new()
@@ -1824,7 +1853,7 @@ fn pipeline_long_realistic() {
         .build();
 
     p.run(&mut world, 42);
-    assert_eq!(*world.resource::<f64>(), 42.0);
+    assert_eq!(**world.resource::<ResF64>(), 42.0);
 }
 
 // =========================================================================
@@ -1840,7 +1869,7 @@ fn pipeline_build_into_virtual() {
 
     let mut v: Virtual<u32> = Box::new(pipeline);
     v.run(&mut world, 99);
-    assert_eq!(*world.resource::<u32>(), 99);
+    assert_eq!(**world.resource::<ResU32>(), 99);
 }
 
 #[test]
@@ -1855,7 +1884,7 @@ fn dag_build_into_virtual() {
 
     let mut v: Virtual<u32> = Box::new(dag);
     v.run(&mut world, 88);
-    assert_eq!(*world.resource::<u32>(), 88);
+    assert_eq!(**world.resource::<ResU32>(), 88);
 }
 
 // =========================================================================
@@ -1924,8 +1953,8 @@ fn batch_pipeline_fill_run_check() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn accumulate(mut sum: ResMut<u64>, x: u32) {
-        *sum += x as u64;
+    fn accumulate(mut sum: ResMut<ResU64>, x: u32) {
+        **sum += x as u64;
     }
 
     let mut batch = PipelineBuilder::<u32>::new()
@@ -1937,7 +1966,7 @@ fn batch_pipeline_fill_run_check() {
     assert_eq!(batch.input().len(), 3);
     batch.run(&mut world);
     assert!(batch.input().is_empty());
-    assert_eq!(*world.resource::<u64>(), 60);
+    assert_eq!(**world.resource::<ResU64>(), 60);
 }
 
 #[test]
@@ -1948,8 +1977,8 @@ fn batch_dag_fill_run_check() {
     fn root(x: u32) -> u64 {
         x as u64
     }
-    fn accumulate(mut sum: ResMut<u64>, val: &u64) {
-        *sum += *val;
+    fn accumulate(mut sum: ResMut<ResU64>, val: &u64) {
+        **sum += *val;
     }
 
     let mut batch = DagBuilder::<u32>::new()
@@ -1962,7 +1991,7 @@ fn batch_dag_fill_run_check() {
     assert_eq!(batch.input().len(), 3);
     batch.run(&mut world);
     assert!(batch.input().is_empty());
-    assert_eq!(*world.resource::<u64>(), 30);
+    assert_eq!(**world.resource::<ResU64>(), 30);
 }
 
 // =========================================================================
@@ -1987,9 +2016,9 @@ fn pipeline_scan_at_start() {
         .build();
 
     p.run(&mut world, 1);
-    assert_eq!(*world.resource::<u64>(), 1);
+    assert_eq!(**world.resource::<ResU64>(), 1);
     p.run(&mut world, 2);
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 }
 
 #[test]
@@ -2015,9 +2044,9 @@ fn dag_scan() {
         .build();
 
     d.run(&mut world, 10);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 15);
+    assert_eq!(**world.resource::<ResU64>(), 15);
 }
 
 #[test]
@@ -2036,11 +2065,11 @@ fn dag_dedup() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 
     d.run(&mut world, 5); // duplicate, suppressed
     d.run(&mut world, 10);
-    assert_eq!(*world.resource::<u32>(), 10);
+    assert_eq!(**world.resource::<ResU32>(), 10);
 }
 
 #[test]
@@ -2051,8 +2080,8 @@ fn dag_bool_not_and() {
     fn root(x: u32) -> bool {
         x > 5
     }
-    fn store_bool(mut out: ResMut<bool>, val: &bool) {
-        *out = *val;
+    fn store_bool(mut out: ResMut<ResBool>, val: &bool) {
+        **out = *val;
     }
 
     // Test: !root && produce_true — store the result
@@ -2064,10 +2093,10 @@ fn dag_bool_not_and() {
         .build();
 
     d.run(&mut world, 3); // 3>5=false, !false=true, true&&true
-    assert!(*world.resource::<bool>());
+    assert!(**world.resource::<ResBool>());
 
     d.run(&mut world, 10); // 10>5=true, !true=false, false&&true (short-circuits)
-    assert!(!*world.resource::<bool>());
+    assert!(!**world.resource::<ResBool>());
 }
 
 #[test]
@@ -2086,7 +2115,7 @@ fn dag_tap() {
         .build();
 
     d.run(&mut world, 7);
-    assert_eq!(*world.resource::<u64>(), 7);
+    assert_eq!(**world.resource::<ResU64>(), 7);
 }
 
 #[test]
@@ -2109,8 +2138,8 @@ fn dag_tee() {
         .build();
 
     d.run(&mut world, 9);
-    assert_eq!(*world.resource::<u32>(), 9);
-    assert_eq!(*world.resource::<u64>(), 9);
+    assert_eq!(**world.resource::<ResU32>(), 9);
+    assert_eq!(**world.resource::<ResU64>(), 9);
 }
 
 #[test]
@@ -2134,10 +2163,10 @@ fn dag_result_combinators() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 
     d.run(&mut world, 200); // error path
-    assert_eq!(*world.resource::<u64>(), 10); // unchanged
+    assert_eq!(**world.resource::<ResU64>(), 10); // unchanged
 }
 
 #[test]
@@ -2158,13 +2187,13 @@ fn dag_option_combinators() {
         .build();
 
     d.run(&mut world, 4);
-    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
 
     d.run(&mut world, 3); // odd, filtered
-    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
 
     d.run(&mut world, 0); // guarded
-    assert_eq!(*world.resource::<u32>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
 }
 
 #[test]
@@ -2185,7 +2214,7 @@ fn dag_option_ok_or() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -2205,10 +2234,10 @@ fn dag_option_unwrap_or() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 
     d.run(&mut world, 0);
-    assert_eq!(*world.resource::<u32>(), 99);
+    assert_eq!(**world.resource::<ResU32>(), 99);
 }
 
 #[test]
@@ -2231,7 +2260,7 @@ fn dag_result_ok() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -2254,7 +2283,7 @@ fn dag_result_unwrap_or() {
         .build();
 
     d.run(&mut world, 0);
-    assert_eq!(*world.resource::<u64>(), 999);
+    assert_eq!(**world.resource::<ResU64>(), 999);
 }
 
 #[test]
@@ -2278,7 +2307,7 @@ fn dag_result_map_err() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -2302,7 +2331,7 @@ fn dag_result_inspect_err() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -2326,7 +2355,7 @@ fn dag_result_or_else() {
         .build();
 
     d.run(&mut world, 0);
-    assert_eq!(*world.resource::<u64>(), 0);
+    assert_eq!(**world.resource::<ResU64>(), 0);
 }
 
 #[test]
@@ -2334,8 +2363,8 @@ fn dag_dispatch() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn handler_fn(mut out: ResMut<u64>, event: u64) {
-        *out = event;
+    fn handler_fn(mut out: ResMut<ResU64>, event: u64) {
+        **out = event;
     }
     let handler = handler_fn.into_handler(r);
 
@@ -2349,7 +2378,7 @@ fn dag_dispatch() {
         .build();
 
     d.run(&mut world, 7);
-    assert_eq!(*world.resource::<u64>(), 21);
+    assert_eq!(**world.resource::<ResU64>(), 21);
 }
 
 #[test]
@@ -2364,7 +2393,7 @@ fn pipeline_ok_or_else() {
         .map(store_u32, r)
         .build();
     p.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -2379,10 +2408,10 @@ fn pipeline_unwrap_or_else_option() {
         .build();
 
     p.run(&mut world, 0);
-    assert_eq!(*world.resource::<u32>(), 42);
+    assert_eq!(**world.resource::<ResU32>(), 42);
 
     p.run(&mut world, 7);
-    assert_eq!(*world.resource::<u32>(), 7);
+    assert_eq!(**world.resource::<ResU32>(), 7);
 }
 
 #[test]
@@ -2402,7 +2431,7 @@ fn dag_option_on_none() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -2423,7 +2452,7 @@ fn dag_option_ok_or_else() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u32>(), 5);
+    assert_eq!(**world.resource::<ResU32>(), 5);
 }
 
 #[test]
@@ -2443,7 +2472,7 @@ fn dag_option_unwrap_or_else() {
         .build();
 
     d.run(&mut world, 0);
-    assert_eq!(*world.resource::<u32>(), 42);
+    assert_eq!(**world.resource::<ResU32>(), 42);
 }
 
 #[test]
@@ -2466,7 +2495,7 @@ fn dag_result_unwrap_or_else() {
         .build();
 
     d.run(&mut world, 0);
-    assert_eq!(*world.resource::<u64>(), 999);
+    assert_eq!(**world.resource::<ResU64>(), 999);
 }
 
 #[test]
@@ -2498,7 +2527,7 @@ fn dag_result_and_then() {
         .build();
 
     d.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 #[test]
@@ -2509,8 +2538,8 @@ fn dag_bool_or() {
     fn root(x: u32) -> bool {
         x > 5
     }
-    fn store_bool(mut out: ResMut<bool>, val: &bool) {
-        *out = *val;
+    fn store_bool(mut out: ResMut<ResBool>, val: &bool) {
+        **out = *val;
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2520,10 +2549,10 @@ fn dag_bool_or() {
         .build();
 
     d.run(&mut world, 10); // true || false
-    assert!(*world.resource::<bool>());
+    assert!(**world.resource::<ResBool>());
 
     d.run(&mut world, 3); // false || false
-    assert!(!*world.resource::<bool>());
+    assert!(!**world.resource::<ResBool>());
 }
 
 #[test]
@@ -2534,8 +2563,8 @@ fn dag_bool_xor() {
     fn root(x: u32) -> bool {
         x > 5
     }
-    fn store_bool(mut out: ResMut<bool>, val: &bool) {
-        *out = *val;
+    fn store_bool(mut out: ResMut<ResBool>, val: &bool) {
+        **out = *val;
     }
 
     let mut d = DagBuilder::<u32>::new()
@@ -2545,10 +2574,10 @@ fn dag_bool_xor() {
         .build();
 
     d.run(&mut world, 10); // true ^ true = false
-    assert!(!*world.resource::<bool>());
+    assert!(!**world.resource::<ResBool>());
 
     d.run(&mut world, 3); // false ^ true = true
-    assert!(*world.resource::<bool>());
+    assert!(**world.resource::<ResBool>());
 }
 
 #[test]
@@ -2556,8 +2585,8 @@ fn batch_pipeline_option_terminal() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn accumulate(mut sum: ResMut<u64>, x: u32) {
-        *sum += x as u64;
+    fn accumulate(mut sum: ResMut<ResU64>, x: u32) {
+        **sum += x as u64;
     }
 
     let mut batch = PipelineBuilder::<u32>::new()
@@ -2569,7 +2598,7 @@ fn batch_pipeline_option_terminal() {
     batch.input_mut().extend_from_slice(&[0, 1, 2, 3]);
     batch.run(&mut world);
     // 0 is guarded out, 1+2+3 = 6
-    assert_eq!(*world.resource::<u64>(), 6);
+    assert_eq!(**world.resource::<ResU64>(), 6);
 }
 
 #[test]
@@ -2580,8 +2609,8 @@ fn dag_batch_option_terminal() {
     fn root(x: u32) -> u32 {
         x
     }
-    fn accumulate(mut sum: ResMut<u64>, x: &u32) {
-        *sum += *x as u64;
+    fn accumulate(mut sum: ResMut<ResU64>, x: &u32) {
+        **sum += *x as u64;
     }
 
     let mut batch = DagBuilder::<u32>::new()
@@ -2592,7 +2621,7 @@ fn dag_batch_option_terminal() {
 
     batch.input_mut().extend([0, 1, 2, 3]);
     batch.run(&mut world);
-    assert_eq!(*world.resource::<u64>(), 6);
+    assert_eq!(**world.resource::<ResU64>(), 6);
 }
 
 #[test]
@@ -2628,7 +2657,7 @@ fn dag_join_3arm() {
         .build();
 
     d.run(&mut world, 11);
-    assert_eq!(*world.resource::<u32>(), 11);
+    assert_eq!(**world.resource::<ResU32>(), 11);
 }
 
 #[test]
@@ -2672,14 +2701,14 @@ fn dag_join_4arm() {
         .build();
 
     d.run(&mut world, 22);
-    assert_eq!(*world.resource::<u32>(), 22);
+    assert_eq!(**world.resource::<ResU32>(), 22);
 }
 
 #[test]
 fn pipeline_tap_with_res() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
-    wb.register::<u32>(0);
+    wb.register(ResU64(0));
+    wb.register(ResU32(0));
     let mut world = wb.build();
     let r = world.registry_mut();
     let mut p = PipelineBuilder::<u32>::new()
@@ -2688,7 +2717,7 @@ fn pipeline_tap_with_res() {
         .then(store_u32, r)
         .build();
     p.run(&mut world, 3);
-    assert_eq!(*world.resource::<u32>(), 3);
+    assert_eq!(**world.resource::<ResU32>(), 3);
 }
 
 #[test]
@@ -2712,7 +2741,7 @@ fn dag_option_and_then() {
         .build();
 
     d.run(&mut world, 10);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 #[test]
@@ -2720,8 +2749,8 @@ fn pipeline_multiple_batch_runs() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn accumulate(mut sum: ResMut<u64>, x: u32) {
-        *sum += x as u64;
+    fn accumulate(mut sum: ResMut<ResU64>, x: u32) {
+        **sum += x as u64;
     }
 
     let mut batch = PipelineBuilder::<u32>::new()
@@ -2730,11 +2759,11 @@ fn pipeline_multiple_batch_runs() {
 
     batch.input_mut().extend_from_slice(&[1, 2, 3]);
     batch.run(&mut world);
-    assert_eq!(*world.resource::<u64>(), 6);
+    assert_eq!(**world.resource::<ResU64>(), 6);
 
     batch.input_mut().extend_from_slice(&[4, 5]);
     batch.run(&mut world);
-    assert_eq!(*world.resource::<u64>(), 15);
+    assert_eq!(**world.resource::<ResU64>(), 15);
 }
 
 // =========================================================================
@@ -2764,8 +2793,8 @@ struct Message<'a> {
 fn slice_len(data: &[u8]) -> usize {
     data.len()
 }
-fn store_len(mut out: ResMut<u64>, len: usize) {
-    *out = len as u64;
+fn store_len(mut out: ResMut<ResU64>, len: usize) {
+    **out = len as u64;
 }
 
 fn msg_payload_len(msg: Message<'_>) -> usize {
@@ -2775,8 +2804,8 @@ fn msg_payload_len(msg: Message<'_>) -> usize {
 fn hrtb_dag_double_len(len: &usize) -> usize {
     *len * 2
 }
-fn hrtb_dag_store_len(mut out: ResMut<u64>, len: &usize) {
-    *out = *len as u64;
+fn hrtb_dag_store_len(mut out: ResMut<ResU64>, len: &usize) {
+    **out = *len as u64;
 }
 fn hrtb_dag_add_lens(a: &usize, b: &usize) -> usize {
     *a + *b
@@ -2796,7 +2825,7 @@ fn hrtb_pipeline_basic() {
 
     let data = vec![1u8, 2, 3, 4, 5];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -2814,12 +2843,12 @@ fn hrtb_pipeline_with_guard() {
 
     let data = vec![1u8, 2, 3];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 
     // Short slice — guard filters, store_len not called, value unchanged
     let short = vec![1u8];
     boxed.run(&mut world, &short);
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 }
 
 #[test]
@@ -2827,8 +2856,8 @@ fn hrtb_pipeline_with_option_chain() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn mark_none(mut flag: ResMut<bool>) {
-        *flag = true;
+    fn mark_none(mut flag: ResMut<ResBool>) {
+        **flag = true;
     }
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
@@ -2842,14 +2871,14 @@ fn hrtb_pipeline_with_option_chain() {
 
     let data = vec![10u8, 20, 30];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 3);
-    assert!(!*world.resource::<bool>()); // on_none did NOT fire
+    assert_eq!(**world.resource::<ResU64>(), 3);
+    assert!(!**world.resource::<ResBool>()); // on_none did NOT fire
 
     // Empty — guard rejects, on_none fires, store not called
     let empty: Vec<u8> = vec![];
     boxed.run(&mut world, &empty);
-    assert_eq!(*world.resource::<u64>(), 3); // unchanged
-    assert!(*world.resource::<bool>()); // on_none DID fire
+    assert_eq!(**world.resource::<ResU64>(), 3); // unchanged
+    assert!(**world.resource::<ResBool>()); // on_none DID fire
 }
 
 #[test]
@@ -2890,7 +2919,7 @@ fn hrtb_dag_basic() {
 
     let data = vec![1u8, 2, 3];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 }
 
 #[test]
@@ -2912,7 +2941,7 @@ fn hrtb_dag_fork_merge() {
     let data = vec![1u8, 2, 3, 4, 5]; // len=5
     boxed.run(&mut world, &data);
     // arm0: 5*2=10, arm1: 5+10=15, merge: 10+15=25
-    assert_eq!(*world.resource::<u64>(), 25);
+    assert_eq!(**world.resource::<ResU64>(), 25);
 }
 
 #[test]
@@ -2920,11 +2949,11 @@ fn hrtb_dag_fork_join() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn store_len_u32(mut out: ResMut<u32>, len: &usize) {
-        *out = *len as u32;
+    fn store_len_u32(mut out: ResMut<ResU32>, len: &usize) {
+        **out = *len as u32;
     }
-    fn store_len_i64(mut out: ResMut<i64>, len: &usize) {
-        *out = *len as i64;
+    fn store_len_i64(mut out: ResMut<ResI64>, len: &usize) {
+        **out = *len as i64;
     }
 
     let dag = DagBuilder::<&[u8]>::new()
@@ -2939,8 +2968,8 @@ fn hrtb_dag_fork_join() {
 
     let data = vec![1u8, 2, 3, 4];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u32>(), 4);
-    assert_eq!(*world.resource::<i64>(), 4);
+    assert_eq!(**world.resource::<ResU32>(), 4);
+    assert_eq!(**world.resource::<ResI64>(), 4);
 }
 
 #[test]
@@ -2961,7 +2990,7 @@ fn hrtb_borrowed_struct_event() {
         payload: &payload,
     };
     boxed.run(&mut world, msg);
-    assert_eq!(*world.resource::<u64>(), 4);
+    assert_eq!(**world.resource::<ResU64>(), 4);
 }
 
 #[test]
@@ -2969,8 +2998,8 @@ fn hrtb_dispatch_map() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn store_len_u32(mut out: ResMut<u32>, len: usize) {
-        *out = len as u32;
+    fn store_len_u32(mut out: ResMut<ResU32>, len: usize) {
+        **out = len as u32;
     }
 
     let p1 = PipelineBuilder::<&[u8]>::new()
@@ -2990,11 +3019,11 @@ fn hrtb_dispatch_map() {
 
     let data = vec![1u8, 2, 3];
     map.get_mut(&0).unwrap().run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 
     let data2 = vec![10u8, 20];
     map.get_mut(&1).unwrap().run(&mut world, &data2);
-    assert_eq!(*world.resource::<u32>(), 2);
+    assert_eq!(**world.resource::<ResU32>(), 2);
 }
 
 #[test]
@@ -3009,7 +3038,7 @@ fn hrtb_direct_run_no_boxing() {
 
     let data = vec![1u8, 2, 3, 4, 5, 6];
     pipeline.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 6);
+    assert_eq!(**world.resource::<ResU64>(), 6);
 }
 
 #[test]
@@ -3025,7 +3054,7 @@ fn hrtb_dag_direct_run_no_boxing() {
 
     let data = vec![1u8, 2, 3];
     dag.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 6); // 3 * 2
+    assert_eq!(**world.resource::<ResU64>(), 6); // 3 * 2
 }
 
 #[test]
@@ -3051,11 +3080,11 @@ fn hrtb_pipeline_and_dag_in_same_map() {
 
     let data = vec![1u8, 2, 3, 4];
     map.get_mut(&0).unwrap().run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 4);
+    assert_eq!(**world.resource::<ResU64>(), 4);
 
     let data2 = vec![10u8, 20, 30];
     map.get_mut(&1).unwrap().run(&mut world, &data2);
-    assert_eq!(*world.resource::<u64>(), 6); // 3 * 2
+    assert_eq!(**world.resource::<ResU64>(), 6); // 3 * 2
 }
 
 #[test]
@@ -3074,7 +3103,7 @@ fn hrtb_disjoint_lifetimes() {
     {
         let data = vec![1u8, 2, 3];
         boxed.run(&mut world, &data);
-        assert_eq!(*world.resource::<u64>(), 3);
+        assert_eq!(**world.resource::<ResU64>(), 3);
     }
     // data is dropped — if the handler held a reference, this would be UB
 
@@ -3082,7 +3111,7 @@ fn hrtb_disjoint_lifetimes() {
     {
         let other = [10u8, 20, 30, 40, 50];
         boxed.run(&mut world, &other);
-        assert_eq!(*world.resource::<u64>(), 5);
+        assert_eq!(**world.resource::<ResU64>(), 5);
     }
 }
 
@@ -3095,7 +3124,7 @@ fn hrtb_pipeline_opaque_closure() {
         .then(slice_len, r)
         .then(
             |w: &mut World, len: usize| {
-                *w.resource_mut::<u64>() = len as u64;
+                **w.resource_mut::<ResU64>() = len as u64;
             },
             r,
         )
@@ -3105,7 +3134,7 @@ fn hrtb_pipeline_opaque_closure() {
 
     let data = vec![1u8, 2, 3, 4];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 4);
+    assert_eq!(**world.resource::<ResU64>(), 4);
 }
 
 #[test]
@@ -3113,8 +3142,8 @@ fn hrtb_pipeline_tee() {
     let mut world = build_world();
     let r = world.registry_mut();
 
-    fn store_len_u32(mut out: ResMut<u32>, len: &usize) {
-        *out = *len as u32;
+    fn store_len_u32(mut out: ResMut<ResU32>, len: &usize) {
+        **out = *len as u32;
     }
 
     // Side arm observes &usize (nested HRTB: C: for<'a> ChainCall<&'a usize>)
@@ -3130,8 +3159,8 @@ fn hrtb_pipeline_tee() {
 
     let data = vec![1u8, 2, 3, 4, 5];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 5); // main path stored len
-    assert_eq!(*world.resource::<u32>(), 5); // side arm also observed len
+    assert_eq!(**world.resource::<ResU64>(), 5); // main path stored len
+    assert_eq!(**world.resource::<ResU32>(), 5); // side arm also observed len
 }
 
 #[test]
@@ -3147,9 +3176,9 @@ fn hrtb_pipeline_local() {
     let r = world.registry_mut();
 
     // Local<u64> persists across dispatches — counts invocations
-    fn count_and_store(mut count: Local<u64>, mut out: ResMut<u64>, data: &[u8]) {
+    fn count_and_store(mut count: Local<u64>, mut out: ResMut<ResU64>, data: &[u8]) {
         *count += 1;
-        *out = data.len() as u64 * 100 + *count;
+        **out = data.len() as u64 * 100 + *count;
     }
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
@@ -3160,26 +3189,26 @@ fn hrtb_pipeline_local() {
 
     let data = vec![1u8, 2, 3];
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 301); // len=3, count=1
+    assert_eq!(**world.resource::<ResU64>(), 301); // len=3, count=1
 
     let data2 = vec![10u8, 20];
     boxed.run(&mut world, &data2);
-    assert_eq!(*world.resource::<u64>(), 202); // len=2, count=2
+    assert_eq!(**world.resource::<ResU64>(), 202); // len=2, count=2
 
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 303); // len=3, count=3
+    assert_eq!(**world.resource::<ResU64>(), 303); // len=3, count=3
 }
 
 #[test]
 fn hrtb_pipeline_multi_param() {
     let mut wb = WorldBuilder::new();
-    wb.register::<f64>(2.5);
-    wb.register::<u64>(0);
+    wb.register(ResF64(2.5));
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
-    fn scaled_store(factor: Res<f64>, mut out: ResMut<u64>, data: &[u8]) {
-        *out = (data.len() as f64 * *factor) as u64;
+    fn scaled_store(factor: Res<ResF64>, mut out: ResMut<ResU64>, data: &[u8]) {
+        **out = (data.len() as f64 * **factor) as u64;
     }
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
@@ -3190,7 +3219,7 @@ fn hrtb_pipeline_multi_param() {
 
     let data = vec![1u8, 2, 3, 4]; // len=4, factor=2.5 → 10
     boxed.run(&mut world, &data);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 // =========================================================================
@@ -3201,49 +3230,49 @@ fn hrtb_pipeline_multi_param() {
 
 fn void_noop() {}
 
-fn void_write_u64(mut v: ResMut<u64>) {
-    *v = 42;
+fn void_write_u64(mut v: ResMut<ResU64>) {
+    **v = 42;
 }
 
-fn void_read_and_write(factor: Res<u64>, mut out: ResMut<String>) {
-    *out = format!("value={}", *factor);
+fn void_read_and_write(factor: Res<ResU64>, mut out: ResMut<ResString>) {
+    **out = format!("value={}", **factor);
 }
 
-fn void_three_params(a: Res<u64>, mut b: ResMut<bool>, mut c: ResMut<String>) {
-    if *a > 10 {
-        *b = true;
-        *c = "big".into();
+fn void_three_params(a: Res<ResU64>, mut b: ResMut<ResBool>, mut c: ResMut<ResString>) {
+    if **a > 10 {
+        **b = true;
+        **c = "big".into();
     }
 }
 
-fn void_with_local(mut count: Local<u64>, mut out: ResMut<u64>) {
+fn void_with_local(mut count: Local<u64>, mut out: ResMut<ResU64>) {
     *count += 1;
-    *out = *count;
+    **out = *count;
 }
 
-fn void_with_optional(opt: Option<Res<u64>>, mut out: ResMut<String>) {
+fn void_with_optional(opt: Option<Res<ResU64>>, mut out: ResMut<ResString>) {
     match opt {
-        Some(v) => *out = format!("found={}", *v),
-        None => *out = "missing".into(),
+        Some(v) => **out = format!("found={}", **v),
+        None => **out = "missing".into(),
     }
 }
 
-fn void_with_seq(seq: Seq, mut out: ResMut<u64>) {
+fn void_with_seq(seq: Seq, mut out: ResMut<ResU64>) {
     let _ = seq.get();
-    *out = 1;
+    **out = 1;
 }
 
-fn void_with_seq_mut(mut seq: SeqMut, mut out: ResMut<u64>) {
+fn void_with_seq_mut(mut seq: SeqMut, mut out: ResMut<ResU64>) {
     seq.advance();
-    *out = 1;
+    **out = 1;
 }
 
 fn void_with_shutdown(shutdown: Shutdown) {
     shutdown.trigger();
 }
 
-fn bool_system_still_works(val: Res<u64>) -> bool {
-    *val > 10
+fn bool_system_still_works(val: Res<ResU64>) -> bool {
+    **val > 10
 }
 
 // -- Void IntoSystem compile tests --
@@ -3258,104 +3287,104 @@ fn void_system_arity0() {
 #[test]
 fn void_system_single_res_mut() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut sys = void_write_u64.into_system(world.registry());
     assert!(sys.run(&mut world));
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
 fn void_system_two_params() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(100);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(100));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     let mut sys = void_read_and_write.into_system(world.registry());
     assert!(sys.run(&mut world));
-    assert_eq!(world.resource::<String>().as_str(), "value=100");
+    assert_eq!(world.resource::<ResString>().as_str(), "value=100");
 }
 
 #[test]
 fn void_system_three_params() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(42);
-    wb.register::<bool>(false);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(42));
+    wb.register(ResBool(false));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     let mut sys = void_three_params.into_system(world.registry());
     assert!(sys.run(&mut world));
-    assert!(*world.resource::<bool>());
-    assert_eq!(world.resource::<String>().as_str(), "big");
+    assert!(**world.resource::<ResBool>());
+    assert_eq!(world.resource::<ResString>().as_str(), "big");
 }
 
 #[test]
 fn void_system_with_local() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut sys = void_with_local.into_system(world.registry());
     sys.run(&mut world);
-    assert_eq!(*world.resource::<u64>(), 1);
+    assert_eq!(**world.resource::<ResU64>(), 1);
     sys.run(&mut world);
-    assert_eq!(*world.resource::<u64>(), 2);
+    assert_eq!(**world.resource::<ResU64>(), 2);
 }
 
 #[test]
 fn void_system_with_optional_present() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(99);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(99));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     let mut sys = void_with_optional.into_system(world.registry());
     sys.run(&mut world);
-    assert_eq!(world.resource::<String>().as_str(), "found=99");
+    assert_eq!(world.resource::<ResString>().as_str(), "found=99");
 }
 
 #[test]
 fn void_system_with_optional_missing() {
     let mut wb = WorldBuilder::new();
-    wb.register::<String>(String::new());
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     let mut sys = void_with_optional.into_system(world.registry());
     sys.run(&mut world);
-    assert_eq!(world.resource::<String>().as_str(), "missing");
+    assert_eq!(world.resource::<ResString>().as_str(), "missing");
 }
 
 #[test]
 fn void_system_with_seq() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut sys = void_with_seq.into_system(world.registry());
     assert!(sys.run(&mut world));
-    assert_eq!(*world.resource::<u64>(), 1);
+    assert_eq!(**world.resource::<ResU64>(), 1);
 }
 
 #[test]
 fn void_system_with_seq_mut() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut sys = void_with_seq_mut.into_system(world.registry());
     assert!(sys.run(&mut world));
-    assert_eq!(*world.resource::<u64>(), 1);
+    assert_eq!(**world.resource::<ResU64>(), 1);
 }
 
 #[test]
 fn void_system_boxed() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut boxed: Box<dyn System> = Box::new(void_write_u64.into_system(world.registry()));
     assert!(boxed.run(&mut world));
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
 fn bool_system_regression() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(42);
+    wb.register(ResU64(42));
     let mut world = wb.build();
     let mut sys = bool_system_still_works.into_system(world.registry());
     assert!(sys.run(&mut world));
@@ -3372,88 +3401,88 @@ fn run_startup_void_no_params() {
 #[test]
 fn run_startup_void_single_param() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     world.run_startup(void_write_u64);
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
 fn run_startup_void_two_params() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(100);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(100));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     world.run_startup(void_read_and_write);
-    assert_eq!(world.resource::<String>().as_str(), "value=100");
+    assert_eq!(world.resource::<ResString>().as_str(), "value=100");
 }
 
 #[test]
 fn run_startup_void_three_params() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(42);
-    wb.register::<bool>(false);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(42));
+    wb.register(ResBool(false));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     world.run_startup(void_three_params);
-    assert!(*world.resource::<bool>());
-    assert_eq!(world.resource::<String>().as_str(), "big");
+    assert!(**world.resource::<ResBool>());
+    assert_eq!(world.resource::<ResString>().as_str(), "big");
 }
 
 #[test]
 fn run_startup_phased() {
-    fn phase1(mut v: ResMut<u64>) {
-        *v += 10;
+    fn phase1(mut v: ResMut<ResU64>) {
+        **v += 10;
     }
-    fn phase2(mut v: ResMut<u64>) {
-        *v += 5;
+    fn phase2(mut v: ResMut<ResU64>) {
+        **v += 5;
     }
-    fn phase3(val: Res<u64>, mut out: ResMut<String>) {
-        *out = format!("total={}", *val);
+    fn phase3(val: Res<ResU64>, mut out: ResMut<ResString>) {
+        **out = format!("total={}", **val);
     }
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(0));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     world.run_startup(phase1);
     world.run_startup(phase2);
     world.run_startup(phase3);
-    assert_eq!(*world.resource::<u64>(), 15);
-    assert_eq!(world.resource::<String>().as_str(), "total=15");
+    assert_eq!(**world.resource::<ResU64>(), 15);
+    assert_eq!(world.resource::<ResString>().as_str(), "total=15");
 }
 
 #[test]
 fn run_startup_with_local() {
     // Local should work but state is discarded after startup runs.
-    fn init(mut count: Local<u64>, mut out: ResMut<u64>) {
+    fn init(mut count: Local<u64>, mut out: ResMut<ResU64>) {
         *count += 1;
-        *out = *count;
+        **out = *count;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     world.run_startup(init);
-    assert_eq!(*world.resource::<u64>(), 1);
+    assert_eq!(**world.resource::<ResU64>(), 1);
 }
 
 #[test]
 fn run_startup_with_optional_present() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(99);
-    wb.register::<String>(String::new());
+    wb.register(ResU64(99));
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     world.run_startup(void_with_optional);
-    assert_eq!(world.resource::<String>().as_str(), "found=99");
+    assert_eq!(world.resource::<ResString>().as_str(), "found=99");
 }
 
 #[test]
 fn run_startup_with_optional_missing() {
     let mut wb = WorldBuilder::new();
-    wb.register::<String>(String::new());
+    wb.register(ResString(String::new()));
     let mut world = wb.build();
     world.run_startup(void_with_optional);
-    assert_eq!(world.resource::<String>().as_str(), "missing");
+    assert_eq!(world.resource::<ResString>().as_str(), "missing");
 }
 
 #[test]
@@ -3467,15 +3496,15 @@ fn run_startup_with_shutdown() {
 
 #[test]
 fn run_startup_bool_returning_also_works() {
-    fn init_bool(mut v: ResMut<u64>) -> bool {
-        *v = 123;
+    fn init_bool(mut v: ResMut<ResU64>) -> bool {
+        **v = 123;
         true
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     world.run_startup(init_bool);
-    assert_eq!(*world.resource::<u64>(), 123);
+    assert_eq!(**world.resource::<ResU64>(), 123);
 }
 
 // =========================================================================
@@ -3486,93 +3515,93 @@ fn run_startup_bool_returning_also_works() {
 
 #[test]
 fn resolved_res_param() {
-    fn read_val(val: Res<u32>, mut out: ResMut<u64>, _e: ()) {
-        *out = *val as u64;
+    fn read_val(val: Res<ResU32>, mut out: ResMut<ResU64>, _e: ()) {
+        **out = **val as u64;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(42);
-    wb.register::<u64>(0);
+    wb.register(ResU32(42));
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = read_val
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, ());
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
 fn resolved_seq_param() {
-    fn use_seq(_s: Seq, mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn use_seq(_s: Seq, mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = use_seq
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, 77);
-    assert_eq!(*world.resource::<u64>(), 77);
+    assert_eq!(**world.resource::<ResU64>(), 77);
 }
 
 #[test]
 fn resolved_seq_mut_param() {
-    fn use_seq(_s: SeqMut<'_>, mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn use_seq(_s: SeqMut<'_>, mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = use_seq
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, 99);
-    assert_eq!(*world.resource::<u64>(), 99);
+    assert_eq!(**world.resource::<ResU64>(), 99);
 }
 
 #[test]
 fn resolved_optional_res() {
-    fn maybe(v: Option<Res<u32>>, mut out: ResMut<u64>, _e: ()) {
+    fn maybe(v: Option<Res<ResU32>>, mut out: ResMut<ResU64>, _e: ()) {
         if let Some(v) = v {
-            *out = *v as u64;
+            **out = **v as u64;
         }
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(55);
-    wb.register::<u64>(0);
+    wb.register(ResU32(55));
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = maybe
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, ());
-    assert_eq!(*world.resource::<u64>(), 55);
+    assert_eq!(**world.resource::<ResU64>(), 55);
 }
 
 #[test]
 fn resolved_optional_resmut() {
-    fn maybe(mut v: Option<ResMut<u64>>, e: u64) {
+    fn maybe(mut v: Option<ResMut<ResU64>>, e: u64) {
         if let Some(ref mut v) = v {
-            **v = e;
+            ***v = e;
         }
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = maybe
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, 88);
-    assert_eq!(*world.resource::<u64>(), 88);
+    assert_eq!(**world.resource::<ResU64>(), 88);
 }
 
 #[test]
 fn resolved_local_preserves_state() {
-    fn counter(mut l: Local<u64>, mut out: ResMut<u64>, _e: ()) {
+    fn counter(mut l: Local<u64>, mut out: ResMut<ResU64>, _e: ()) {
         *l += 1;
-        *out = *l;
+        **out = *l;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = counter
         .into_handler(world.registry())
@@ -3580,39 +3609,39 @@ fn resolved_local_preserves_state() {
     h.run(&mut world, ());
     h.run(&mut world, ());
     h.run(&mut world, ());
-    assert_eq!(*world.resource::<u64>(), 3);
+    assert_eq!(**world.resource::<ResU64>(), 3);
 }
 
 // -- Borrowed / zero-copy event types --
 
 #[test]
 fn resolved_slice_event() {
-    fn handle(mut out: ResMut<u64>, e: &[u8]) {
-        *out = e.len() as u64;
+    fn handle(mut out: ResMut<ResU64>, e: &[u8]) {
+        **out = e.len() as u64;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = handle
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, &[1u8, 2, 3, 4, 5][..]);
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
 fn resolved_str_event() {
-    fn handle(mut out: ResMut<u64>, e: &str) {
-        *out = e.len() as u64;
+    fn handle(mut out: ResMut<ResU64>, e: &str) {
+        **out = e.len() as u64;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = handle
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, "hello");
-    assert_eq!(*world.resource::<u64>(), 5);
+    assert_eq!(**world.resource::<ResU64>(), 5);
 }
 
 #[test]
@@ -3622,11 +3651,11 @@ fn resolved_borrowed_struct_event() {
         payload: &'a [u8],
         seq: u64,
     }
-    fn handle(mut out: ResMut<u64>, m: Message<'_>) {
-        *out = m.seq + m.payload.len() as u64;
+    fn handle(mut out: ResMut<ResU64>, m: Message<'_>) {
+        **out = m.seq + m.payload.len() as u64;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = handle
         .into_handler(world.registry())
@@ -3639,16 +3668,16 @@ fn resolved_borrowed_struct_event() {
             seq: 100,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 103);
+    assert_eq!(**world.resource::<ResU64>(), 103);
 }
 
 #[test]
 fn resolved_ref_struct_event() {
-    fn handle(mut out: ResMut<u64>, o: &Order) {
-        *out = o.id;
+    fn handle(mut out: ResMut<ResU64>, o: &Order) {
+        **out = o.id;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = handle
         .into_handler(world.registry())
@@ -3661,7 +3690,7 @@ fn resolved_ref_struct_event() {
             size: 10,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 // -- All Handler producers --
@@ -3671,11 +3700,11 @@ fn resolved_pipeline() {
     fn double(x: u64) -> u64 {
         x * 2
     }
-    fn sink(mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn sink(mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let s = sink.into_handler(r);
@@ -3686,7 +3715,7 @@ fn resolved_pipeline() {
     let mut h = p.into_handler(r);
     drop(r);
     h.run(&mut world, 5);
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 #[test]
@@ -3694,11 +3723,11 @@ fn resolved_dag() {
     fn root(x: u32) -> u64 {
         x as u64 * 10
     }
-    fn sink(mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn sink(mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let s = sink.into_handler(r);
@@ -3706,7 +3735,7 @@ fn resolved_dag() {
     let mut h = d.into_handler(r);
     drop(r);
     h.run(&mut world, 3);
-    assert_eq!(*world.resource::<u64>(), 30);
+    assert_eq!(**world.resource::<ResU64>(), 30);
 }
 
 #[test]
@@ -3715,12 +3744,12 @@ fn resolved_callback() {
     struct Acc {
         total: u64,
     }
-    fn acc(ctx: &mut Acc, mut out: ResMut<u64>, e: u64) {
+    fn acc(ctx: &mut Acc, mut out: ResMut<ResU64>, e: u64) {
         ctx.total += e;
-        *out = ctx.total;
+        **out = ctx.total;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let cb = acc.into_callback(Acc { total: 0 }, r);
@@ -3728,37 +3757,37 @@ fn resolved_callback() {
     drop(r);
     h.run(&mut world, 10);
     h.run(&mut world, 20);
-    assert_eq!(*world.resource::<u64>(), 30);
+    assert_eq!(**world.resource::<ResU64>(), 30);
 }
 
 #[test]
 fn resolved_opaque() {
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let f = |world: &mut World, e: u64| {
-        *world.resource_mut::<u64>() = e;
+        **world.resource_mut::<ResU64>() = e;
     };
     let mut h = f
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, 42);
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
 fn resolved_resmut_param() {
-    fn add_one(mut out: ResMut<u64>, x: u64) {
-        *out = x + 1;
+    fn add_one(mut out: ResMut<ResU64>, x: u64) {
+        **out = x + 1;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = add_one
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, 10);
-    assert_eq!(*world.resource::<u64>(), 11);
+    assert_eq!(**world.resource::<ResU64>(), 11);
 }
 
 #[test]
@@ -3778,19 +3807,25 @@ fn resolved_arity_zero() {
 
 #[test]
 fn resolved_all_params_borrowed_event() {
-    fn everything(val: Res<u32>, mut out: ResMut<u64>, mut ctr: Local<u64>, _s: Seq, e: &[u8]) {
+    fn everything(
+        val: Res<ResU32>,
+        mut out: ResMut<ResU64>,
+        mut ctr: Local<u64>,
+        _s: Seq,
+        e: &[u8],
+    ) {
         *ctr += 1;
-        *out = *val as u64 + e.len() as u64 + *ctr;
+        **out = **val as u64 + e.len() as u64 + *ctr;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(100);
-    wb.register::<u64>(0);
+    wb.register(ResU32(100));
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = everything
         .into_handler(world.registry())
         .into_handler(world.registry());
     h.run(&mut world, &[1u8, 2, 3][..]);
-    assert_eq!(*world.resource::<u64>(), 104);
+    assert_eq!(**world.resource::<ResU64>(), 104);
 }
 
 // -- Driver-style acceptance (the actual use case) --
@@ -3805,26 +3840,26 @@ fn resolved_install_handler_pattern() {
     }
 
     // Named function through install_handler
-    fn tick(mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn tick(mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let mut h = install_handler(tick, r);
     drop(r);
     h.run(&mut world, 42);
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
 fn resolved_box_passthrough() {
-    fn tick(mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn tick(mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let handler = tick.into_handler(r);
@@ -3833,7 +3868,7 @@ fn resolved_box_passthrough() {
     let mut h = boxed.into_handler(r);
     drop(r);
     h.run(&mut world, 99);
-    assert_eq!(*world.resource::<u64>(), 99);
+    assert_eq!(**world.resource::<ResU64>(), 99);
 }
 
 // =========================================================================
@@ -3859,11 +3894,11 @@ where
 
 #[test]
 fn hrtb_named_function() {
-    fn on_msg(mut counter: ResMut<u64>, msg: Msg<'_>) {
-        *counter += msg.seq;
+    fn on_msg(mut counter: ResMut<ResU64>, msg: Msg<'_>) {
+        **counter += msg.seq;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let mut h = register_handler(on_msg, world.registry());
     let data = [1u8, 2, 3];
@@ -3874,7 +3909,7 @@ fn hrtb_named_function() {
             seq: 42,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 42);
+    assert_eq!(**world.resource::<ResU64>(), 42);
 }
 
 #[test]
@@ -3885,11 +3920,11 @@ fn hrtb_pipeline() {
             seq: msg.seq * 2,
         }
     }
-    fn sink(mut out: ResMut<u64>, msg: Msg<'_>) {
-        *out = msg.seq;
+    fn sink(mut out: ResMut<ResU64>, msg: Msg<'_>) {
+        **out = msg.seq;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let pipeline = PipelineBuilder::<Msg<'static>>::new()
@@ -3905,7 +3940,7 @@ fn hrtb_pipeline() {
             seq: 5,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 10);
+    assert_eq!(**world.resource::<ResU64>(), 10);
 }
 
 #[test]
@@ -3913,11 +3948,11 @@ fn hrtb_dag() {
     fn root(msg: Msg<'_>) -> u64 {
         msg.seq * 10
     }
-    fn sink(mut out: ResMut<u64>, e: u64) {
-        *out = e;
+    fn sink(mut out: ResMut<ResU64>, e: u64) {
+        **out = e;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let s = sink.into_handler(r);
@@ -3934,7 +3969,7 @@ fn hrtb_dag() {
             seq: 3,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 30);
+    assert_eq!(**world.resource::<ResU64>(), 30);
 }
 
 #[test]
@@ -3943,12 +3978,12 @@ fn hrtb_callback() {
     struct Logger {
         count: u64,
     }
-    fn log_msg(ctx: &mut Logger, mut out: ResMut<u64>, msg: Msg<'_>) {
+    fn log_msg(ctx: &mut Logger, mut out: ResMut<ResU64>, msg: Msg<'_>) {
         ctx.count += 1;
-        *out = msg.seq + ctx.count;
+        **out = msg.seq + ctx.count;
     }
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(ResU64(0));
     let mut world = wb.build();
     let r = world.registry();
     let cb = log_msg.into_callback(Logger { count: 0 }, r);
@@ -3961,7 +3996,7 @@ fn hrtb_callback() {
             seq: 10,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 11);
+    assert_eq!(**world.resource::<ResU64>(), 11);
     h.run(
         &mut world,
         Msg {
@@ -3969,7 +4004,7 @@ fn hrtb_callback() {
             seq: 20,
         },
     );
-    assert_eq!(*world.resource::<u64>(), 22);
+    assert_eq!(**world.resource::<ResU64>(), 22);
 }
 
 // NOTE: Box<dyn for<'a> Handler<Msg<'a>>> does NOT satisfy

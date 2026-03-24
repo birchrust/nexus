@@ -1,3 +1,273 @@
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:26:17
+   |
+26 |     wb.register(R0); wb.register(R1); wb.register(R2); wb.register(R3);
+   |        -------- ^^ unsatisfied trait bound
+   |        |
+   |        required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R0`
+  --> tests/ui/handler_too_many_params.rs:6:1
+   |
+ 6 | struct R0;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:26:34
+   |
+26 |     wb.register(R0); wb.register(R1); wb.register(R2); wb.register(R3);
+   |                         -------- ^^ unsatisfied trait bound
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R1`
+  --> tests/ui/handler_too_many_params.rs:7:1
+   |
+ 7 | struct R1;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:26:51
+   |
+26 |     wb.register(R0); wb.register(R1); wb.register(R2); wb.register(R3);
+   |                                          -------- ^^ unsatisfied trait bound
+   |                                          |
+   |                                          required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R2`
+  --> tests/ui/handler_too_many_params.rs:8:1
+   |
+ 8 | struct R2;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:26:68
+   |
+26 |     wb.register(R0); wb.register(R1); wb.register(R2); wb.register(R3);
+   |                                                           -------- ^^ unsatisfied trait bound
+   |                                                           |
+   |                                                           required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R3`
+  --> tests/ui/handler_too_many_params.rs:9:1
+   |
+ 9 | struct R3;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:27:17
+   |
+27 |     wb.register(R4); wb.register(R5); wb.register(R6); wb.register(R7);
+   |        -------- ^^ unsatisfied trait bound
+   |        |
+   |        required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R4`
+  --> tests/ui/handler_too_many_params.rs:10:1
+   |
+10 | struct R4;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:27:34
+   |
+27 |     wb.register(R4); wb.register(R5); wb.register(R6); wb.register(R7);
+   |                         -------- ^^ unsatisfied trait bound
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R5`
+  --> tests/ui/handler_too_many_params.rs:11:1
+   |
+11 | struct R5;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:27:51
+   |
+27 |     wb.register(R4); wb.register(R5); wb.register(R6); wb.register(R7);
+   |                                          -------- ^^ unsatisfied trait bound
+   |                                          |
+   |                                          required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R6`
+  --> tests/ui/handler_too_many_params.rs:12:1
+   |
+12 | struct R6;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:27:68
+   |
+27 |     wb.register(R4); wb.register(R5); wb.register(R6); wb.register(R7);
+   |                                                           -------- ^^ unsatisfied trait bound
+   |                                                           |
+   |                                                           required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R7`
+  --> tests/ui/handler_too_many_params.rs:13:1
+   |
+13 | struct R7;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
+error[E0277]: this type cannot be stored as a resource in the World
+  --> tests/ui/handler_too_many_params.rs:28:17
+   |
+28 |     wb.register(R8);
+   |        -------- ^^ unsatisfied trait bound
+   |        |
+   |        required by a bound introduced by this call
+   |
+help: the trait `Resource` is not implemented for `R8`
+  --> tests/ui/handler_too_many_params.rs:14:1
+   |
+14 | struct R8;
+   | ^^^^^^^^^
+   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+  --> src/scheduler.rs
+   |
+   | impl crate::world::Resource for SchedulerTick {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+   |
+  ::: src/clock.rs
+   |
+   | impl crate::world::Resource for Clock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+
 error[E0599]: no method named `into_handler` found for fn item `for<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i> fn(Res<'a, R0>, Res<'b, R1>, Res<'c, R2>, Res<'d, R3>, Res<'e, R4>, Res<'f, R5>, Res<'g, R6>, Res<'h, R7>, Res<'i, R8>, u32) {too_many}` in the current scope
   --> tests/ui/handler_too_many_params.rs:32:29
    |

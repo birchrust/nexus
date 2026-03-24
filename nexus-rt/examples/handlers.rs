@@ -24,32 +24,35 @@
 
 use nexus_rt::{
     Broadcast, Cloned, Handler, IntoCallback, IntoHandler, ResMut, Virtual, WorldBuilder, fan_out,
+    new_resource,
 };
+
+new_resource!(Total(u64));
 
 // =============================================================================
 // Step functions
 // =============================================================================
 
-fn add_to_total(mut total: ResMut<u64>, event: u32) {
-    *total += event as u64;
+fn add_to_total(mut total: ResMut<Total>, event: u32) {
+    **total += event as u64;
 }
 
-fn add_to_total_ref(mut total: ResMut<u64>, event: &u32) {
-    *total += *event as u64;
+fn add_to_total_ref(mut total: ResMut<Total>, event: &u32) {
+    **total += *event as u64;
 }
 
-fn multiply_total(mut total: ResMut<u64>, event: u32) {
-    *total *= event as u64;
+fn multiply_total(mut total: ResMut<Total>, event: u32) {
+    **total *= event as u64;
 }
 
-fn multiply_total_ref(mut total: ResMut<u64>, event: &u32) {
-    *total *= *event as u64;
+fn multiply_total_ref(mut total: ResMut<Total>, event: &u32) {
+    **total *= *event as u64;
 }
 
 // Callback: context first, params in the middle, event last
-fn on_tick(ctx: &mut TickCtx, mut total: ResMut<u64>, event: u32) {
+fn on_tick(ctx: &mut TickCtx, mut total: ResMut<Total>, event: u32) {
     ctx.calls += 1;
-    *total += event as u64 * ctx.multiplier;
+    **total += event as u64 * ctx.multiplier;
 }
 
 struct TickCtx {
@@ -63,22 +66,22 @@ fn main() {
     println!("=== 1. IntoHandler ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Total(0));
     let mut world = wb.build();
 
     let mut handler = add_to_total.into_handler(world.registry());
     handler.run(&mut world, 10u32);
     handler.run(&mut world, 20u32);
 
-    println!("  total after add 10+20: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 30);
+    println!("  total after add 10+20: {}", world.resource::<Total>().0);
+    assert_eq!(world.resource::<Total>().0, 30);
 
     // --- 2. Callback with per-instance context ---
 
     println!("\n=== 2. Callback ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Total(0));
     let mut world = wb.build();
 
     let mut cb = on_tick.into_callback(
@@ -92,9 +95,9 @@ fn main() {
     cb.run(&mut world, 10u32);
 
     // Context is pub — accessible outside dispatch
-    println!("  total: {}", world.resource::<u64>());
+    println!("  total: {}", world.resource::<Total>().0);
     println!("  callback calls: {}", cb.ctx.calls);
-    assert_eq!(*world.resource::<u64>(), 45); // 5*3 + 10*3
+    assert_eq!(world.resource::<Total>().0, 45); // 5*3 + 10*3
     assert_eq!(cb.ctx.calls, 2);
 
     // --- 3. Boxing into Virtual<E> ---
@@ -105,15 +108,15 @@ fn main() {
     println!("\n=== 3. Boxing (Virtual<E>) ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Total(0));
     let mut world = wb.build();
 
     let h = add_to_total.into_handler(world.registry());
     let mut boxed: Virtual<u32> = Box::new(h);
 
     boxed.run(&mut world, 42u32);
-    println!("  boxed handler result: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 42);
+    println!("  boxed handler result: {}", world.resource::<Total>().0);
+    assert_eq!(world.resource::<Total>().0, 42);
 
     // --- 4. FanOut (static fan-out) ---
     //
@@ -122,7 +125,7 @@ fn main() {
     println!("\n=== 4. FanOut ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(1);
+    wb.register(Total(1));
     let mut world = wb.build();
 
     let h1 = add_to_total_ref.into_handler(world.registry());
@@ -133,16 +136,16 @@ fn main() {
     fan.run(&mut world, 5u32);
     println!(
         "  after fan_out(add, mul) with 5: {}",
-        world.resource::<u64>()
+        world.resource::<Total>().0
     );
-    assert_eq!(*world.resource::<u64>(), 30); // (1+5)*5
+    assert_eq!(world.resource::<Total>().0, 30); // (1+5)*5
 
     // --- 5. Broadcast (dynamic fan-out) ---
 
     println!("\n=== 5. Broadcast ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Total(0));
     let mut world = wb.build();
 
     let h1 = add_to_total_ref.into_handler(world.registry());
@@ -152,8 +155,8 @@ fn main() {
     bcast.add(h2);
 
     bcast.run(&mut world, 7u32);
-    println!("  broadcast 2x add with 7: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 14); // 7+7
+    println!("  broadcast 2x add with 7: {}", world.resource::<Total>().0);
+    assert_eq!(world.resource::<Total>().0, 14); // 7+7
 
     // --- 6. Cloned adapter ---
     //
@@ -163,7 +166,7 @@ fn main() {
     println!("\n=== 6. Cloned adapter ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Total(0));
     let mut world = wb.build();
 
     let owned_handler = add_to_total.into_handler(world.registry());
@@ -172,27 +175,33 @@ fn main() {
     let mut fan = fan_out!(Cloned(owned_handler), ref_handler);
 
     fan.run(&mut world, 10u32);
-    println!("  fan_out with Cloned adapter: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 20); // 10+10
+    println!(
+        "  fan_out with Cloned adapter: {}",
+        world.resource::<Total>().0
+    );
+    assert_eq!(world.resource::<Total>().0, 20); // 10+10
 
     // --- 7. Heterogeneous handler Vec ---
 
     println!("\n=== 7. Heterogeneous Vec<Virtual<E>> ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Total(0));
     let mut world = wb.build();
 
     let h1: Virtual<u32> = Box::new(add_to_total.into_handler(world.registry()));
     let h2: Virtual<u32> = Box::new(multiply_total.into_handler(world.registry()));
     let mut handlers: Vec<Virtual<u32>> = vec![h1, h2];
 
-    *world.resource_mut::<u64>() = 5;
+    *world.resource_mut::<Total>() = Total(5);
     for h in &mut handlers {
         h.run(&mut world, 3u32);
     }
-    println!("  after add then mul with 3: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 24); // (5+3)*3
+    println!(
+        "  after add then mul with 3: {}",
+        world.resource::<Total>().0
+    );
+    assert_eq!(world.resource::<Total>().0, 24); // (5+3)*3
 
     println!("\nDone.");
 }

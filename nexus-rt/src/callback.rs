@@ -66,24 +66,27 @@ use crate::world::{Registry, World};
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource};
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
 ///
 /// struct Ctx { count: u64 }
 ///
-/// fn handler(ctx: &mut Ctx, mut val: ResMut<u64>, event: u32) {
-///     *val += event as u64;
+/// fn handler(ctx: &mut Ctx, mut val: ResMut<Counter>, event: u32) {
+///     val.0 += event as u64;
 ///     ctx.count += 1;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let mut cb = handler.into_callback(Ctx { count: 0 }, world.registry());
 /// cb.run(&mut world, 10u32);
 ///
 /// assert_eq!(cb.ctx.count, 1);
-/// assert_eq!(*world.resource::<u64>(), 10);
+/// assert_eq!(world.resource::<Counter>().0, 10);
 /// ```
 pub struct Callback<C, F, Params: Param> {
     /// Per-callback owned state. Accessible outside dispatch.
@@ -116,17 +119,20 @@ pub struct Callback<C, F, Params: Param> {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource};
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
 ///
 /// struct TimerCtx { order_id: u64, fires: u64 }
 ///
-/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>, _event: ()) {
 ///     ctx.fires += 1;
-///     *counter += ctx.order_id;
+///     counter.0 += ctx.order_id;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let mut cb = on_timeout.into_callback(
@@ -136,7 +142,7 @@ pub struct Callback<C, F, Params: Param> {
 /// cb.run(&mut world, ());
 ///
 /// assert_eq!(cb.ctx.fires, 1);
-/// assert_eq!(*world.resource::<u64>(), 42);
+/// assert_eq!(world.resource::<Counter>().0, 42);
 /// ```
 ///
 /// # Panics
@@ -287,6 +293,7 @@ mod tests {
     struct OrderCache {
         expired: Vec<u64>,
     }
+    impl crate::world::Resource for OrderCache {}
 
     // -- Core dispatch --------------------------------------------------------
 

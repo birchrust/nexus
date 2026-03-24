@@ -11,6 +11,7 @@ members = [
 	"nexus-pool",
 	"nexus-queue",
 	"nexus-rt",
+	"nexus-rt-derive",
 	"nexus-slab",
 	"nexus-timer",
 	"nexus-slot",

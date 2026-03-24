@@ -423,20 +423,66 @@ impl Drop for Storage {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::WorldBuilder;
+/// use nexus_rt::{WorldBuilder, Resource};
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
+/// #[derive(Resource)]
+/// struct Flag(bool);
 ///
 /// let mut builder = WorldBuilder::new();
-/// let id = builder.register::<u64>(42);
-/// builder.register::<bool>(true);
+/// let id = builder.register(Counter(42));
+/// builder.register(Flag(true));
 /// let world = builder.build();
 ///
 /// unsafe {
-///     assert_eq!(*world.get::<u64>(id), 42);
+///     assert_eq!(world.get::<Counter>(id).0, 42);
 /// }
 /// ```
 pub struct WorldBuilder {
     registry: Registry,
     storage: Storage,
+}
+
+/// Marker trait for types that can be stored in a [`World`].
+///
+/// Requires `Send + 'static`. Use `#[derive(Resource)]` to implement,
+/// or [`new_resource!`](crate::new_resource) for newtype wrappers.
+///
+/// ```
+/// use nexus_rt::Resource;
+///
+/// #[derive(Resource)]
+/// struct OrderBook {
+///     bids: Vec<(f64, f64)>,
+///     asks: Vec<(f64, f64)>,
+/// }
+/// ```
+///
+/// # Why not just `Send + 'static`?
+///
+/// Without the marker trait, two modules can independently register
+/// `u64` and silently collide. The `Resource` bound forces a newtype,
+/// making collisions a compile error.
+#[diagnostic::on_unimplemented(
+    message = "this type cannot be stored as a resource in the World",
+    note = "add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper"
+)]
+pub trait Resource: Send + 'static {}
+
+// Test-only impls for primitive types used in unit tests within this crate.
+// NOT available to external crates — they should use #[derive(Resource)] or new_resource!.
+#[cfg(test)]
+mod resource_test_impls {
+    use super::Resource;
+    impl Resource for bool {}
+    impl Resource for u32 {}
+    impl Resource for u64 {}
+    impl Resource for i64 {}
+    impl Resource for f64 {}
+    impl Resource for String {}
+    impl<T: Send + 'static> Resource for Vec<T> {}
+    impl<T: Send + Sync + 'static> Resource for std::sync::Arc<T> {}
 }
 
 impl WorldBuilder {
@@ -458,7 +504,7 @@ impl WorldBuilder {
     ///
     /// Panics if a resource of the same type is already registered.
     #[cold]
-    pub fn register<T: Send + 'static>(&mut self, value: T) -> ResourceId {
+    pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
         let type_id = TypeId::of::<T>();
         assert!(
             !self.registry.indices.contains_key(&type_id),
@@ -487,7 +533,7 @@ impl WorldBuilder {
     ///
     /// Equivalent to `self.register::<T>(T::default())`.
     #[cold]
-    pub fn register_default<T: Default + Send + 'static>(&mut self) -> ResourceId {
+    pub fn register_default<T: Default + Resource>(&mut self) -> ResourceId {
         self.register(T::default())
     }
 
@@ -500,7 +546,7 @@ impl WorldBuilder {
     /// bug that should panic. Use `ensure` when multiple plugins or
     /// drivers may independently need the same resource type.
     #[cold]
-    pub fn ensure<T: Send + 'static>(&mut self, value: T) -> ResourceId {
+    pub fn ensure<T: Resource>(&mut self, value: T) -> ResourceId {
         if let Some(id) = self.registry.try_id::<T>() {
             return id;
         }
@@ -513,7 +559,7 @@ impl WorldBuilder {
     /// If the type is already registered, returns the existing ID.
     /// If not, registers `T::default()` and returns the new ID.
     #[cold]
-    pub fn ensure_default<T: Default + Send + 'static>(&mut self) -> ResourceId {
+    pub fn ensure_default<T: Default + Resource>(&mut self) -> ResourceId {
         if let Some(id) = self.registry.try_id::<T>() {
             return id;
         }
@@ -982,14 +1028,17 @@ mod tests {
     struct Price {
         value: f64,
     }
+    impl Resource for Price {}
 
     struct Venue {
         name: &'static str,
     }
+    impl Resource for Venue {}
 
     struct Config {
         max_orders: usize,
     }
+    impl Resource for Config {}
 
     #[test]
     fn register_and_build() {

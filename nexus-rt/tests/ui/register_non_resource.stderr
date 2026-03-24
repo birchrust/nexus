@@ -1,0 +1,24 @@
+error[E0277]: this type cannot be stored as a resource in the World
+ --> tests/ui/register_non_resource.rs:6:19
+  |
+6 |     wb.register::<u64>(42);
+  |        --------   ^^^ the trait `Resource` is not implemented for `u64`
+  |        |
+  |        required by a bound introduced by this call
+  |
+  = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
+help: the following other types implement trait `Resource`
+ --> src/scheduler.rs
+  |
+  | impl crate::world::Resource for SchedulerTick {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
+  |
+ ::: src/clock.rs
+  |
+  | impl crate::world::Resource for Clock {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
+note: required by a bound in `WorldBuilder::register`
+ --> src/world.rs
+  |
+  |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+  |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`

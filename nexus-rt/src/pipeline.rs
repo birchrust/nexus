@@ -2283,18 +2283,23 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder, Handler};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder, Handler, Resource};
+///
+/// #[derive(Resource)]
+/// struct Factor(u64);
+/// #[derive(Resource)]
+/// struct Output(String);
 ///
 /// let mut wb = WorldBuilder::new();
-/// wb.register::<u64>(10);
-/// wb.register::<String>(String::new());
+/// wb.register(Factor(10));
+/// wb.register(Output(String::new()));
 /// let mut world = wb.build();
 ///
-/// fn double(factor: Res<u64>, x: u32) -> u64 {
-///     (*factor) * x as u64
+/// fn double(factor: Res<Factor>, x: u32) -> u64 {
+///     factor.0 * x as u64
 /// }
-/// fn store(mut out: ResMut<String>, val: u64) {
-///     *out = val.to_string();
+/// fn store(mut out: ResMut<Output>, val: u64) {
+///     out.0 = val.to_string();
 /// }
 ///
 /// let r = world.registry_mut();
@@ -2304,7 +2309,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 ///     .build();
 ///
 /// pipeline.run(&mut world, 5);
-/// assert_eq!(world.resource::<String>().as_str(), "50");
+/// assert_eq!(world.resource::<Output>().0.as_str(), "50");
 /// ```
 #[must_use = "a pipeline builder does nothing unless you chain steps and call .build()"]
 pub struct PipelineBuilder<In>(PhantomData<fn(In)>);
@@ -3321,14 +3326,17 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, PipelineBuilder};
+/// use nexus_rt::{WorldBuilder, ResMut, PipelineBuilder, Resource};
+///
+/// #[derive(Resource)]
+/// struct Accum(u64);
 ///
 /// let mut wb = WorldBuilder::new();
-/// wb.register::<u64>(0);
+/// wb.register(Accum(0));
 /// let mut world = wb.build();
 ///
-/// fn accumulate(mut sum: ResMut<u64>, x: u32) {
-///     *sum += x as u64;
+/// fn accumulate(mut sum: ResMut<Accum>, x: u32) {
+///     sum.0 += x as u64;
 /// }
 ///
 /// let r = world.registry_mut();
@@ -3339,7 +3347,7 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 /// batch.input_mut().extend_from_slice(&[1, 2, 3, 4, 5]);
 /// batch.run(&mut world);
 ///
-/// assert_eq!(*world.resource::<u64>(), 15);
+/// assert_eq!(world.resource::<Accum>().0, 15);
 /// assert!(batch.input().is_empty());
 /// ```
 pub struct BatchPipeline<In, F> {

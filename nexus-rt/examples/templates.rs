@@ -18,7 +18,9 @@
 //! ```
 
 use nexus_rt::template::{Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate};
-use nexus_rt::{Handler, ResMut, WorldBuilder, handler_blueprint};
+use nexus_rt::{Handler, ResMut, WorldBuilder, handler_blueprint, new_resource};
+
+new_resource!(Counter(u64));
 
 // =============================================================================
 // Blueprint definitions
@@ -27,13 +29,13 @@ use nexus_rt::{Handler, ResMut, WorldBuilder, handler_blueprint};
 struct OnTick;
 impl Blueprint for OnTick {
     type Event = u32;
-    type Params = (ResMut<'static, u64>,);
+    type Params = (ResMut<'static, Counter>,);
 }
 
 struct OnTimeout;
 impl Blueprint for OnTimeout {
     type Event = ();
-    type Params = (ResMut<'static, u64>,);
+    type Params = (ResMut<'static, Counter>,);
 }
 impl CallbackBlueprint for OnTimeout {
     type Context = TimerCtx;
@@ -45,23 +47,23 @@ struct TimerCtx {
 }
 
 // Using the macro shorthand
-handler_blueprint!(OnEvent, Event = u64, Params = (ResMut<'static, u64>,));
+handler_blueprint!(OnEvent, Event = u64, Params = (ResMut<'static, Counter>,));
 
 // =============================================================================
 // Handler functions
 // =============================================================================
 
-fn tick(mut counter: ResMut<u64>, event: u32) {
-    *counter += event as u64;
+fn tick(mut counter: ResMut<Counter>, event: u32) {
+    **counter += event as u64;
 }
 
-fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<Counter>, _event: ()) {
     ctx.fires += 1;
-    *counter += ctx.order_id;
+    **counter += ctx.order_id;
 }
 
-fn on_event(mut counter: ResMut<u64>, event: u64) {
-    *counter += event;
+fn on_event(mut counter: ResMut<Counter>, event: u64) {
+    **counter += event;
 }
 
 fn main() {
@@ -70,7 +72,7 @@ fn main() {
     println!("=== 1. HandlerTemplate ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Counter(0));
     let mut world = wb.build();
 
     // Resolve params once
@@ -85,15 +87,15 @@ fn main() {
     h2.run(&mut world, 20u32);
     h3.run(&mut world, 30u32);
 
-    println!("  3 handlers, total: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 60);
+    println!("  3 handlers, total: {}", world.resource::<Counter>().0);
+    assert_eq!(world.resource::<Counter>().0, 60);
 
     // --- 2. CallbackTemplate with per-instance context ---
 
     println!("\n=== 2. CallbackTemplate ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Counter(0));
     let mut world = wb.build();
 
     let cb_template = CallbackTemplate::<OnTimeout>::new(on_timeout, world.registry());
@@ -114,17 +116,17 @@ fn main() {
 
     println!("  cb1 fires: {}", cb1.ctx().fires);
     println!("  cb2 fires: {}", cb2.ctx().fires);
-    println!("  total: {}", world.resource::<u64>());
+    println!("  total: {}", world.resource::<Counter>().0);
     assert_eq!(cb1.ctx().fires, 2);
     assert_eq!(cb2.ctx().fires, 1);
-    assert_eq!(*world.resource::<u64>(), 400); // 100+100+200
+    assert_eq!(world.resource::<Counter>().0, 400); // 100+100+200
 
     // --- 3. handler_blueprint! macro ---
 
     println!("\n=== 3. handler_blueprint! macro ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Counter(0));
     let mut world = wb.build();
 
     // OnEvent was defined with the macro — same usage pattern
@@ -132,8 +134,8 @@ fn main() {
     let mut h = template.generate();
 
     h.run(&mut world, 42u64);
-    println!("  result: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 42);
+    println!("  result: {}", world.resource::<Counter>().0);
+    assert_eq!(world.resource::<Counter>().0, 42);
 
     // --- 4. Move-out-fire pattern ---
     //
@@ -150,7 +152,7 @@ fn main() {
     println!("\n=== 4. Move-out-fire pattern ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Counter(0));
     let mut world = wb.build();
 
     let template = HandlerTemplate::<OnTick>::new(tick, world.registry());
@@ -164,8 +166,8 @@ fn main() {
         handler = template.generate();
     }
 
-    println!("  after 5 rounds: {}", world.resource::<u64>());
-    assert_eq!(*world.resource::<u64>(), 15); // 1+2+3+4+5
+    println!("  after 5 rounds: {}", world.resource::<Counter>().0);
+    assert_eq!(world.resource::<Counter>().0, 15); // 1+2+3+4+5
 
     println!("\nDone.");
 }

@@ -20,20 +20,25 @@
 //! # Examples
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
+//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Resource};
 //! use nexus_rt::{fan_out, Broadcast, Cloned};
 //!
-//! fn write_a(mut sink: ResMut<u64>, event: &u32) {
-//!     *sink += *event as u64;
+//! #[derive(Resource)]
+//! struct SinkA(u64);
+//! #[derive(Resource)]
+//! struct SinkB(i64);
+//!
+//! fn write_a(mut sink: ResMut<SinkA>, event: &u32) {
+//!     sink.0 += *event as u64;
 //! }
 //!
-//! fn write_b(mut sink: ResMut<i64>, event: &u32) {
-//!     *sink += *event as i64;
+//! fn write_b(mut sink: ResMut<SinkB>, event: &u32) {
+//!     sink.0 += *event as i64;
 //! }
 //!
 //! let mut builder = WorldBuilder::new();
-//! builder.register::<u64>(0);
-//! builder.register::<i64>(0);
+//! builder.register(SinkA(0));
+//! builder.register(SinkB(0));
 //! let mut world = builder.build();
 //!
 //! // Static 2-way fan-out
@@ -41,8 +46,8 @@
 //! let h2 = write_b.into_handler(world.registry());
 //! let mut fan = fan_out!(h1, h2);
 //! fan.run(&mut world, 5u32);
-//! assert_eq!(*world.resource::<u64>(), 5);
-//! assert_eq!(*world.resource::<i64>(), 5);
+//! assert_eq!(world.resource::<SinkA>().0, 5);
+//! assert_eq!(world.resource::<SinkB>().0, 5);
 //! ```
 
 use crate::Handler;
@@ -60,19 +65,22 @@ use crate::world::World;
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, fan_out};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, fan_out, Resource};
 ///
-/// fn inc(mut n: ResMut<u64>, event: &u32) { *n += *event as u64; }
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn inc(mut n: ResMut<Counter>, event: &u32) { n.0 += *event as u64; }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let h1 = inc.into_handler(world.registry());
 /// let h2 = inc.into_handler(world.registry());
 /// let mut fan = fan_out!(h1, h2);
 /// fan.run(&mut world, 1u32);
-/// assert_eq!(*world.resource::<u64>(), 2);
+/// assert_eq!(world.resource::<Counter>().0, 2);
 /// ```
 #[macro_export]
 macro_rules! fan_out {
@@ -108,18 +116,21 @@ macro_rules! fan_out {
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, FanOut, Cloned};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, FanOut, Cloned, Resource};
 ///
-/// fn ref_handler(mut sink: ResMut<u64>, event: &u32) {
-///     *sink += *event as u64;
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn ref_handler(mut sink: ResMut<Counter>, event: &u32) {
+///     sink.0 += *event as u64;
 /// }
 ///
-/// fn owned_handler(mut sink: ResMut<u64>, event: u32) {
-///     *sink += event as u64 * 10;
+/// fn owned_handler(mut sink: ResMut<Counter>, event: u32) {
+///     sink.0 += event as u64 * 10;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// // Mix ref and owned handlers via Cloned adapter
@@ -127,7 +138,7 @@ macro_rules! fan_out {
 /// let h2 = owned_handler.into_handler(world.registry());
 /// let mut fan = FanOut((h1, Cloned(h2)));
 /// fan.run(&mut world, 3u32);
-/// assert_eq!(*world.resource::<u64>(), 33); // 3 + 30
+/// assert_eq!(world.resource::<Counter>().0, 33); // 3 + 30
 /// ```
 pub struct FanOut<T>(pub T);
 
@@ -200,21 +211,24 @@ where
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Broadcast};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Broadcast, Resource};
 ///
-/// fn write_a(mut sink: ResMut<u64>, event: &u32) {
-///     *sink += *event as u64;
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn write_a(mut sink: ResMut<Counter>, event: &u32) {
+///     sink.0 += *event as u64;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let mut broadcast: Broadcast<u32> = Broadcast::new();
 /// broadcast.add(write_a.into_handler(world.registry()));
 /// broadcast.add(write_a.into_handler(world.registry()));
 /// broadcast.run(&mut world, 5u32);
-/// assert_eq!(*world.resource::<u64>(), 10);
+/// assert_eq!(world.resource::<Counter>().0, 10);
 /// ```
 pub struct Broadcast<E> {
     handlers: Vec<Box<dyn RefHandler<E>>>,
