@@ -1,0 +1,5 @@
+error[E0599]: no method named `into_handler` found for fn item `for<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i> fn(Res<'a, R0>, Res<'b, R1>, Res<'c, R2>, Res<'d, R3>, Res<'e, R4>, Res<'f, R5>, Res<'g, R6>, Res<'h, R7>, Res<'i, R8>, u32) {too_many}` in the current scope
+  --> tests/ui/handler_too_many_params.rs:32:29
+   |
+32 |     let _handler = too_many.into_handler(&reg);
+   |                             ^^^^^^^^^^^^ method not found in `for<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i> fn(Res<'a, R0>, Res<'b, R1>, Res<'c, R2>, Res<'d, R3>, Res<'e, R4>, Res<'f, R5>, Res<'g, R6>, Res<'h, R7>, Res<'i, R8>, u32) {too_many}`

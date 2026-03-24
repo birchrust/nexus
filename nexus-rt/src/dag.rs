@@ -192,6 +192,11 @@ pub trait MergeStepCall<Inputs, Out> {
 /// fn check(config: Res<Config>, ob: &ObResult, risk: &RiskResult) -> Decision { .. }
 /// ```
 #[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as a merge step",
+    note = "merge steps take reference tuple inputs from the fork arms",
+    note = "closures with resource parameters are not supported — use a named `fn`"
+)]
 pub trait IntoMergeStep<Inputs, Out, Params> {
     /// The concrete resolved merge step type.
     type Step: MergeStepCall<Inputs, Out>;
@@ -570,6 +575,7 @@ all_tuples!(impl_merge5_step);
 /// dag.run(&mut world, 5u32);
 /// assert_eq!(*world.resource::<u64>(), 10);
 /// ```
+#[must_use = "a DAG builder does nothing unless you chain steps and call .build()"]
 pub struct DagBuilder<E>(PhantomData<fn(E)>);
 
 impl<E> DagBuilder<E> {
@@ -608,6 +614,7 @@ impl<E> Default for DagBuilder<E> {
 ///
 /// `Chain` implements [`ChainCall<E, Out = Out>`] — a named node type
 /// representing all steps composed so far. No closures, no `use<>`.
+#[must_use = "DAG chain does nothing until .build() is called"]
 pub struct DagChain<E, Out, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(E) -> Out>,
@@ -633,6 +640,7 @@ where
     /// Only available when the chain ends with `()` or `Option<()>`.
     /// If your DAG produces a value, add a final `.then()` that consumes
     /// the output.
+    #[must_use = "building a DAG without storing it does nothing"]
     pub fn build(self) -> Dag<Chain> {
         Dag { chain: self.chain }
     }
@@ -646,6 +654,7 @@ where
     ///
     /// DAGs ending with `Option<()>` produce the same [`Dag`] as those
     /// ending with `()`.
+    #[must_use = "building a DAG without storing it does nothing"]
     pub fn build(self) -> Dag<DiscardOptionNode<Chain>> {
         Dag {
             chain: DiscardOptionNode { prev: self.chain },
@@ -2119,6 +2128,7 @@ impl<E, Out: crate::PipelineOutput, Chain: ChainCall<E, Out = Out>> DagChain<E, 
     ///
     /// `capacity` is the initial allocation — the buffer can grow if needed,
     /// but sizing it for the expected batch size avoids reallocation.
+    #[must_use = "building a DAG without storing it does nothing"]
     pub fn build_batch(self, capacity: usize) -> BatchDag<E, Chain> {
         BatchDag {
             input: Vec::with_capacity(capacity),

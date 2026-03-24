@@ -1,0 +1,5 @@
+error[E0599]: no method named `guard` found for struct `PipelineBuilder<In>` in the current scope
+  --> tests/ui/guard_takes_value.rs:14:43
+   |
+14 |     let _ = PipelineBuilder::<u32>::new().guard(check_value, &reg);
+   |                                           ^^^^^ method not found in `PipelineBuilder<u32>`

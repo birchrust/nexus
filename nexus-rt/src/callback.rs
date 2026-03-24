@@ -143,11 +143,17 @@ pub struct Callback<C, F, Params: Param> {
 ///
 /// Panics if any [`Param`] resource is not registered in the
 /// [`Registry`](crate::Registry).
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be converted into a callback",
+    note = "callback signature: `fn(&mut Context, Res<A>, ..., Event)` — context first, then resources, event last",
+    note = "closures are not supported — use a named `fn`"
+)]
 pub trait IntoCallback<C, E, Params> {
     /// The concrete Callback type produced.
     type Callback: Handler<E>;
 
     /// Convert this function + context into a Callback.
+    #[must_use = "the callback must be stored or dispatched — discarding it does nothing"]
     fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback;
 }
 

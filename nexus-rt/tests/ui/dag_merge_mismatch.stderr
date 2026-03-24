@@ -1,0 +1,9 @@
+error[E0599]: no method named `fork` found for struct `DagBuilder<E>` in the current scope
+  --> tests/ui/dag_merge_mismatch.rs:20:10
+   |
+19 |       let _ = DagBuilder::<u32>::new()
+   |  _____________-
+20 | |         .fork()
+   | |         -^^^^ method not found in `DagBuilder<u32>`
+   | |_________|
+   |

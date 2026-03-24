@@ -525,11 +525,18 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 ///
 /// let mut handler = tick.into_handler(builder.registry());
 /// ```
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be converted into a handler",
+    note = "handler signature: `fn(Res<A>, ResMut<B>, ..., Event)` — resources first, event last",
+    note = "closures with resource parameters (Res<T>, ResMut<T>) are not supported — use a named `fn`",
+    note = "arity-0 closures (`fn(Event)` with no resources) ARE supported"
+)]
 pub trait IntoHandler<E, Params> {
     /// The concrete handler type produced.
     type Handler: Handler<E> + 'static;
 
     /// Convert this function into a handler, resolving parameters from the registry.
+    #[must_use = "the handler must be stored or dispatched — discarding it does nothing"]
     fn into_handler(self, registry: &Registry) -> Self::Handler;
 }
 

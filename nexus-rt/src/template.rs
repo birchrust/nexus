@@ -114,6 +114,10 @@ pub trait CallbackBlueprint: Blueprint {
 /// Each arity provides a fn ptr that performs `Param::fetch` + call,
 /// and a `validate` method that checks for conflicting resource access.
 #[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "function signature doesn't match the blueprint's Event and Params types",
+    note = "the function must accept the blueprint's Params then Event, in that order"
+)]
 pub trait TemplateDispatch<P: Param, E> {
     /// Returns a fn ptr that fetches params and calls the handler.
     fn run_fn_ptr() -> unsafe fn(&mut P::State, &mut World, E);
@@ -123,6 +127,10 @@ pub trait TemplateDispatch<P: Param, E> {
 
 /// Context-owning variant of [`TemplateDispatch`].
 #[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "function signature doesn't match the callback blueprint's Context, Event, and Params types",
+    note = "the function must accept &mut Context first, then Params, then Event"
+)]
 pub trait CallbackTemplateDispatch<C, P: Param, E> {
     /// Returns a fn ptr that fetches params and calls the handler with context.
     fn run_fn_ptr() -> unsafe fn(&mut C, &mut P::State, &mut World, E);
@@ -380,6 +388,7 @@ where
     }
 
     /// Stamp out a new handler by copying pre-resolved state.
+    #[must_use = "the generated handler must be stored or dispatched"]
     pub fn generate(&self) -> TemplatedHandler<K> {
         TemplatedHandler {
             state: self.prototype,
@@ -520,6 +529,7 @@ where
     }
 
     /// Stamp out a new callback with the given context.
+    #[must_use = "the generated callback must be stored or dispatched"]
     pub fn generate(&self, ctx: K::Context) -> TemplatedCallback<K> {
         TemplatedCallback {
             ctx,

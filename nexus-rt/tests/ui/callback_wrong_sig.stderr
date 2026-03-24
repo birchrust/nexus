@@ -1,0 +1,5 @@
+error[E0599]: no method named `into_callback` found for fn item `fn(u32) -> u32 {bad_callback}` in the current scope
+  --> tests/ui/callback_wrong_sig.rs:16:28
+   |
+16 |     let _cb = bad_callback.into_callback(MyCtx, &reg);
+   |                            ^^^^^^^^^^^^^ method not found in `fn(u32) -> u32 {bad_callback}`

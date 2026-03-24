@@ -160,6 +160,12 @@ pub trait StepCall<In> {
 /// fn validate(config: Res<Config>, order: Order) -> Option<ValidOrder> { .. }
 /// let step = validate.into_step(registry);
 /// ```
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as a pipeline step for this input type",
+    note = "if the pipeline output is `Option<T>`, use `.map()` to operate on the inner `T`",
+    note = "if the pipeline output is `Result<T, E>`, use `.map()` for `Ok` or `.catch()` for `Err`",
+    note = "closures with resource parameters (Res<T>, ResMut<T>) are not supported — use a named `fn`"
+)]
 pub trait IntoStep<In, Out, Params> {
     /// The concrete resolved step type.
     type Step: StepCall<In, Out = Out>;
@@ -331,6 +337,12 @@ pub trait RefStepCall<In> {
 /// | `()` | `FnMut(&In) -> Out` | `\|o: &Order\| o.price > 0.0` |
 /// | `(P0,)...(P0..P7,)` | `fn(Params..., &In) -> Out` | `fn check(c: Res<Config>, o: &Order) -> bool` |
 /// | [`Opaque`] | `FnMut(&mut World, &In) -> Out` | `\|w: &mut World, o: &Order\| { ... }` |
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as a reference step for this input type",
+    note = "reference steps (guard, filter, tap, inspect) take `&In`, not `In`",
+    note = "if the pipeline output is `Option<T>`, `.filter()` operates on `&T` inside the Option",
+    note = "closures with resource parameters are not supported — use a named `fn`"
+)]
 pub trait IntoRefStep<In, Out, Params> {
     /// The concrete resolved step type.
     type Step: RefStepCall<In, Out = Out>;
@@ -494,6 +506,11 @@ pub trait ProducerCall {
 /// | `()` | `FnMut() -> Out` | `\|\| true` |
 /// | `(P0,)...(P0..P7,)` | `fn(Params...) -> Out` | `fn is_active(s: Res<State>) -> bool` |
 /// | [`Opaque`] | `FnMut(&mut World) -> Out` | `\|w: &mut World\| { ... }` |
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as a producer for this output type",
+    note = "producers take no pipeline input — they produce a value (e.g., default, fallback)",
+    note = "closures with resource parameters are not supported — use a named `fn`"
+)]
 pub trait IntoProducer<Out, Params> {
     /// The concrete resolved producer type.
     type Step: ProducerCall<Out = Out>;
@@ -655,6 +672,11 @@ pub trait ScanStepCall<Acc, In> {
 /// | `()` | `FnMut(&mut Acc, In) -> Out` | `\|acc, trade\| { *acc += trade.amount; Some(*acc) }` |
 /// | `(P0,)...(P0..P7,)` | `fn(Params..., &mut Acc, In) -> Out` | `fn vwap(c: Res<Config>, acc: &mut State, t: Trade) -> Option<f64>` |
 /// | [`Opaque`] | `FnMut(&mut World, &mut Acc, In) -> Out` | `\|w: &mut World, acc: &mut u64, t: Trade\| { ... }` |
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as a scan step",
+    note = "scan steps take `&mut Accumulator` as first param, then resources, then input last",
+    note = "closures with resource parameters are not supported — use a named `fn`"
+)]
 pub trait IntoScanStep<Acc, In, Out, Params> {
     /// The concrete resolved scan step type.
     type Step: ScanStepCall<Acc, In, Out = Out>;
@@ -821,6 +843,11 @@ pub trait RefScanStepCall<Acc, In> {
 /// | `()` | `FnMut(&mut Acc, &In) -> Out` | `\|acc, trade: &Trade\| { ... }` |
 /// | `(P0,)...(P0..P7,)` | `fn(Params..., &mut Acc, &In) -> Out` | `fn vwap(c: Res<Config>, acc: &mut State, t: &Trade) -> Option<f64>` |
 /// | [`Opaque`] | `FnMut(&mut World, &mut Acc, &In) -> Out` | `\|w: &mut World, acc: &mut u64, t: &Trade\| { ... }` |
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as a reference scan step",
+    note = "reference scan steps take `&mut Accumulator` as first param, then resources, then `&In` last",
+    note = "closures with resource parameters are not supported — use a named `fn`"
+)]
 pub trait IntoRefScanStep<Acc, In, Out, Params> {
     /// The concrete resolved ref-scan step type.
     type Step: RefScanStepCall<Acc, In, Out = Out>;
@@ -2279,6 +2306,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 /// pipeline.run(&mut world, 5);
 /// assert_eq!(world.resource::<String>().as_str(), "50");
 /// ```
+#[must_use = "a pipeline builder does nothing unless you chain steps and call .build()"]
 pub struct PipelineBuilder<In>(PhantomData<fn(In)>);
 
 impl<In> PipelineBuilder<In> {
@@ -2349,6 +2377,7 @@ impl<In> Default for PipelineBuilder<In> {
 /// IntoStep-based methods (`.then()`, `.map()`, `.and_then()`, `.catch()`)
 /// take `&Registry` to resolve Param state at build time. Closure-based
 /// methods don't need the registry.
+#[must_use = "pipeline chain does nothing until .build() is called"]
 pub struct PipelineChain<In, Out, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(In) -> Out>,
@@ -2402,6 +2431,26 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     ///
     /// Enters Option-combinator land — follow with `.map()`,
     /// `.and_then()`, `.filter()`, `.unwrap_or()`, etc.
+    ///
+    /// # Common Mistakes
+    ///
+    /// Guard takes `&In`, not `In` — the value passes through unchanged.
+    ///
+    /// ```compile_fail
+    /// # use nexus_rt::{PipelineBuilder, WorldBuilder};
+    /// # let mut wb = WorldBuilder::new();
+    /// # let world = wb.build();
+    /// # let reg = world.registry();
+    /// // ERROR: takes u32 by value, should be &u32
+    /// PipelineBuilder::<u32>::new()
+    ///     .guard(|x: u32| x > 10, &reg);
+    /// ```
+    ///
+    /// Fix: take by reference:
+    /// ```ignore
+    /// PipelineBuilder::<u32>::new()
+    ///     .guard(|x: &u32| *x > 10, &reg);
+    /// ```
     pub fn guard<Params, S: IntoRefStep<Out, bool, Params>>(
         self,
         f: S,
@@ -2420,6 +2469,19 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     ///
     /// The step receives `&Out`. The value passes through unchanged.
     /// Useful for logging, metrics, or debugging mid-chain.
+    ///
+    /// # Common Mistakes
+    ///
+    /// Tap takes `&In`, not `In`:
+    /// ```compile_fail
+    /// # use nexus_rt::{PipelineBuilder, WorldBuilder};
+    /// # let mut wb = WorldBuilder::new();
+    /// # let world = wb.build();
+    /// # let reg = world.registry();
+    /// // ERROR: takes u32 by value
+    /// PipelineBuilder::<u32>::new()
+    ///     .tap(|x: u32| println!("{x}"), &reg);
+    /// ```
     pub fn tap<Params, S: IntoRefStep<Out, (), Params>>(
         self,
         f: S,
@@ -2866,6 +2928,21 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineChain<In, Option<T>, 
     }
 
     /// Keep value if predicate holds. std: `Option::filter`
+    ///
+    /// # Common Mistakes
+    ///
+    /// Filter operates on `&T` inside the Option, not `T`:
+    /// ```compile_fail
+    /// # use nexus_rt::{PipelineBuilder, WorldBuilder};
+    /// # let mut wb = WorldBuilder::new();
+    /// # let world = wb.build();
+    /// # let reg = world.registry();
+    /// fn to_opt(x: u32) -> Option<u32> { Some(x) }
+    /// // ERROR: takes u32, should be &u32
+    /// PipelineBuilder::<u32>::new()
+    ///     .then(to_opt, &reg)
+    ///     .filter(|x: u32| x > 10, &reg);
+    /// ```
     pub fn filter<Params, S: IntoRefStep<T, bool, Params>>(
         self,
         f: S,
@@ -2881,6 +2958,8 @@ impl<In, T, Chain: ChainCall<In, Out = Option<T>>> PipelineChain<In, Option<T>, 
     }
 
     /// Side effect on Some value. std: `Option::inspect`
+    ///
+    /// Takes `&T`, not `T` — the value passes through.
     pub fn inspect<Params, S: IntoRefStep<T, (), Params>>(
         self,
         f: S,
@@ -3046,6 +3125,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>> PipelineChain<In, Resul
     }
 
     /// Side effect on Ok. std: `Result::inspect`
+    ///
+    /// Takes `&T`, not `T` — the value passes through.
     pub fn inspect<Params, S: IntoRefStep<T, (), Params>>(
         self,
         f: S,
@@ -3061,6 +3142,8 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>> PipelineChain<In, Resul
     }
 
     /// Side effect on Err. std: `Result::inspect_err`
+    ///
+    /// Takes `&E`, not `E` — the error passes through.
     pub fn inspect_err<Params, S: IntoRefStep<E, (), Params>>(
         self,
         f: S,
@@ -3149,6 +3232,7 @@ impl<In, Chain: ChainCall<In, Out = ()>> PipelineChain<In, (), Chain> {
     /// Only available when the pipeline ends with `()` or `Option<()>`.
     /// If your chain produces a value, add a final `.then()` that consumes
     /// the output.
+    #[must_use = "building a pipeline without storing it does nothing"]
     pub fn build(self) -> Pipeline<Chain> {
         Pipeline { chain: self.chain }
     }
@@ -3160,6 +3244,7 @@ impl<In, Chain: ChainCall<In, Out = Option<()>>> PipelineChain<In, Option<()>, C
     /// Pipelines ending with `Option<()>` (e.g. after `.map()` on an
     /// `Option<T>` with a step that returns `()`) produce the same
     /// [`Pipeline`] as those ending with `()`.
+    #[must_use = "building a pipeline without storing it does nothing"]
     pub fn build(self) -> Pipeline<DiscardOptionNode<Chain>> {
         Pipeline {
             chain: DiscardOptionNode { prev: self.chain },
@@ -3185,6 +3270,7 @@ impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>> PipelineChain<In,
     ///
     /// `capacity` is the initial allocation — the buffer can grow if needed,
     /// but sizing it for the expected batch size avoids reallocation.
+    #[must_use = "building a pipeline without storing it does nothing"]
     pub fn build_batch(self, capacity: usize) -> BatchPipeline<In, Chain> {
         BatchPipeline {
             input: Vec::with_capacity(capacity),

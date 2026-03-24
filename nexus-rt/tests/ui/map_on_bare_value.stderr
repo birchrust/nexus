@@ -1,0 +1,19 @@
+error[E0599]: `PipelineChain<u32, u32, ThenNode<IdentityNode, nexus_rt::pipeline::Step<fn(u32) -> u32 {add_one}, ()>>>` is not an iterator
+  --> tests/ui/map_on_bare_value.rs:16:10
+   |
+14 |       let _ = PipelineBuilder::<u32>::new()
+   |  _____________-
+15 | |         .then(add_one, &reg)
+16 | |         .map(add_one, &reg); // ERROR: no method named `map`
+   | |         -^^^ `PipelineChain<u32, u32, ThenNode<IdentityNode, nexus_rt::pipeline::Step<fn(u32) -> u32 {add_one}, ()>>>` is not an iterator
+   | |_________|
+   |
+   |
+  ::: src/pipeline.rs
+   |
+   |   pub struct PipelineChain<In, Out, Chain> {
+   |   ---------------------------------------- doesn't satisfy `_: Iterator`
+   |
+   = note: the following trait bounds were not satisfied:
+           `PipelineChain<u32, u32, ThenNode<IdentityNode, nexus_rt::pipeline::Step<fn(u32) -> u32 {add_one}, ()>>>: Iterator`
+           which is required by `&mut PipelineChain<u32, u32, ThenNode<IdentityNode, nexus_rt::pipeline::Step<fn(u32) -> u32 {add_one}, ()>>>: Iterator`

@@ -1,0 +1,5 @@
+error[E0106]: missing lifetime specifier
+ --> tests/ui/template_wrong_blueprint.rs:8:59
+  |
+8 | handler_blueprint!(MyBlueprint, Event = u32, Params = (Res<Config>,));
+  |                                                           ^ expected named lifetime parameter

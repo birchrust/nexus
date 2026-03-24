@@ -1,0 +1,5 @@
+error[E0599]: no method named `into_handler` found for fn item `for<'a> fn(u32, Res<'a, Config>) {bad_order}` in the current scope
+  --> tests/ui/wrong_param_order.rs:16:30
+   |
+16 |     let _handler = bad_order.into_handler(&reg);
+   |                              ^^^^^^^^^^^^ method not found in `for<'a> fn(u32, Res<'a, Config>) {bad_order}`
