@@ -30,9 +30,18 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
+    // Add Send + 'static where clause so errors point at the derive,
+    // not at the register() call site.
+    let mut bounds = where_clause.cloned();
+    let predicate: syn::WherePredicate = syn::parse_quote!(#name #ty_generics: Send + 'static);
+    bounds
+        .get_or_insert_with(|| syn::parse_quote!(where))
+        .predicates
+        .push(predicate);
+
     quote! {
         impl #impl_generics ::nexus_rt::Resource for #name #ty_generics
-            #where_clause
+            #bounds
         {}
     }
     .into()

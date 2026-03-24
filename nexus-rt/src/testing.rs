@@ -4,7 +4,7 @@
 //!
 //! - [`TestHarness`] — dispatch events through handlers directly,
 //!   auto-advancing sequence numbers, with world access for assertions.
-//! - [`TestTimerDriver`] — wraps [`TimerPoller`](crate::timer::TimerPoller)
+//! - `TestTimerDriver` (requires `timer` feature) — wraps `TimerPoller`
 //!   with virtual time control for deterministic timer testing.
 //!
 //! Always available (no feature gate).

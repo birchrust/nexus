@@ -164,7 +164,7 @@ fn main() {
     wb.register(ResU8(0));
     wb.register(ResU16(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     print_header("into_handler Construction (cycles)");
 

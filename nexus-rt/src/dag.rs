@@ -641,7 +641,7 @@ impl<E, Chain> DagChain<E, (), Chain>
 where
     Chain: ChainCall<E, Out = ()> + Send,
 {
-    /// Finalize into a [`Dag`](crate::Dag) that implements [`Handler<E>`].
+    /// Finalize into a [`Dag`] that implements [`Handler<E>`].
     ///
     /// Only available when the chain ends with `()` or `Option<()>`.
     /// If your DAG produces a value, add a final `.then()` that consumes
@@ -656,7 +656,7 @@ impl<E, Chain> DagChain<E, Option<()>, Chain>
 where
     Chain: ChainCall<E, Out = Option<()>> + Send,
 {
-    /// Finalize into a [`Dag`](crate::Dag), discarding the `Option<()>`.
+    /// Finalize into a [`Dag`], discarding the `Option<()>`.
     ///
     /// DAGs ending with `Option<()>` produce the same [`Dag`] as those
     /// ending with `()`.

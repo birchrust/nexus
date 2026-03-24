@@ -1,15 +1,15 @@
 //! Clock abstractions for event-driven runtimes.
 //!
-//! [`Clock`] is a resource registered in the World. Handlers read it via
-//! `Res<Clock>`. Sync sources install into the World via the [`Installer`]
+//! `Clock` is a resource registered in the World. Handlers read it via
+//! `Res<Clock>`. Sync sources install into the World via the `Installer`
 //! trait and return pollers that sync the clock each poll loop iteration.
 //!
 //! Three sync sources:
-//! - [`RealtimeClockInstaller`] → [`RealtimeClockPoller`] — production
-//! - [`TestClockInstaller`] → [`TestClockPoller`] — deterministic testing
-//! - [`HistoricalClockInstaller`] → [`HistoricalClockPoller`] — replay
+//! - `RealtimeClockInstaller` → `RealtimeClockPoller` — production
+//! - `TestClockInstaller` → `TestClockPoller` — deterministic testing
+//! - `HistoricalClockInstaller` → `HistoricalClockPoller` — replay
 //!
-//! The [`RealtimeClockPoller`] calibration design is inspired by Agrona's
+//! The `RealtimeClockPoller` calibration design is inspired by Agrona's
 //! [`OffsetEpochNanoClock`](https://github.com/real-logic/agrona).
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,6 +20,7 @@ use crate::world::{ResourceId, WorldBuilder};
 
 /// Configuration error from clock construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A parameter value is invalid.
     Invalid(&'static str),

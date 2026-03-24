@@ -77,9 +77,10 @@ Three variants: `RealtimeClockInstaller` (production), `TestClockInstaller`
 A driver for a hypothetical market data feed:
 
 ```rust
-use nexus_rt::{Installer, ResourceId, WorldBuilder, World};
+use nexus_rt::{Installer, Resource, ResourceId, WorldBuilder, World};
 
 // The resource handlers will access
+#[derive(Resource)]
 pub struct MarketData {
     pub last_price: f64,
     pub sequence: u64,

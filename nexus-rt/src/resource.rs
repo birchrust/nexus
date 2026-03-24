@@ -84,8 +84,8 @@ impl<'w, T: 'static> Res<'w, T> {
     /// current sequence), this uses `>` — suitable for checking whether
     /// any event since a prior checkpoint wrote this resource.
     ///
-    /// Relies on numeric ordering of the underlying `u64` counter.
-    /// Not wrap-safe, but at one increment per event the `u64` sequence
+    /// Relies on numeric ordering of the underlying `i64` counter.
+    /// Not wrap-safe, but at one increment per event the `i64` sequence
     /// space takes ~584 years at 1 GHz to exhaust.
     pub fn changed_after(&self, since: Sequence) -> bool {
         self.changed_at.0 > since.0
@@ -150,8 +150,8 @@ impl<'w, T: 'static> ResMut<'w, T> {
     /// current sequence), this uses `>` — suitable for checking whether
     /// any event since a prior checkpoint wrote this resource.
     ///
-    /// Relies on numeric ordering of the underlying `u64` counter.
-    /// Not wrap-safe, but at one increment per event the `u64` sequence
+    /// Relies on numeric ordering of the underlying `i64` counter.
+    /// Not wrap-safe, but at one increment per event the `i64` sequence
     /// space takes ~584 years at 1 GHz to exhaust.
     pub fn changed_after(&self, since: Sequence) -> bool {
         self.changed_at.get().0 > since.0

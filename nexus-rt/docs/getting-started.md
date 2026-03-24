@@ -9,7 +9,7 @@ to zero-cost abstractions.
 
 ```toml
 [dependencies]
-nexus-rt = { version = "0.7", features = ["timer"] }
+nexus-rt = { version = "0.13.0", features = ["timer"] }
 nexus-timer = "1.3"
 ```
 
@@ -41,7 +41,7 @@ A complete application with a timer driver and clock:
 ```rust
 use nexus_rt::clock::{RealtimeClockInstaller, Clock};
 use nexus_rt::timer::{TimerInstaller, TimerPoller, TimerWheel};
-use nexus_rt::{WorldBuilder, World, Res, ResMut, IntoHandler, Handler};
+use nexus_rt::{WorldBuilder, World, Res, ResMut, IntoHandler, Handler, Resource};
 use nexus_timer::WheelBuilder;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 // 1. Define your resources (application state)
 // ================================================================
 
+#[derive(Resource)]
 struct MessageCount(u64);
 
 // ================================================================
@@ -144,6 +145,32 @@ full explanation.
 
 In practice, this isn't limiting. Handlers are typically standalone
 functions in your codebase — the same pattern as Bevy's systems.
+
+## Plugins and Closures
+
+`WorldBuilder::install_plugin` accepts any `impl Plugin`, including closures.
+This is convenient for one-off resource registration:
+
+```rust
+wb.install_plugin(|wb: &mut WorldBuilder| {
+    wb.register(MessageCount(0));
+    wb.register(Config::default());
+});
+```
+
+For reusable setup, define a struct implementing `Plugin`:
+
+```rust
+struct TradingPlugin { risk_cap: u64 }
+
+impl Plugin for TradingPlugin {
+    fn build(self, wb: &mut WorldBuilder) {
+        wb.register(RiskConfig { cap: self.risk_cap });
+    }
+}
+
+wb.install_plugin(TradingPlugin { risk_cap: 1000 });
+```
 
 ## Next Steps
 

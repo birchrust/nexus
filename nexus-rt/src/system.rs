@@ -154,7 +154,7 @@ pub struct SystemFn<F, Params: Param, Marker = bool> {
 ///
 /// # Panics
 ///
-/// Panics if any [`Param`](crate::Param) resource is not registered in
+/// Panics if any [`Param`] resource is not registered in
 /// the [`Registry`].
 pub trait IntoSystem<Params, Marker = bool> {
     /// The concrete system type produced.

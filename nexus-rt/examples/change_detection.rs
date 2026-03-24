@@ -182,7 +182,7 @@ fn main() {
     let mut installer = SchedulerInstaller::new();
     installer.add(recompute_quotes, wb.registry());
     let mut scheduler = wb.install_driver(installer);
-    let mut writer = write_price.into_handler(wb.registry_mut());
+    let mut writer = write_price.into_handler(wb.registry());
     let mut world = wb.build();
 
     // Pass 1: price changed → quotes recomputed

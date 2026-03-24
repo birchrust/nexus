@@ -1521,9 +1521,6 @@ where
 }
 
 /// Chain node for `.tee()` — runs side-effect chain on `&Out`, passes value through.
-///
-/// `C` is currently `FnMut(&mut World, &Out)` (DagArm closure). Updated to
-/// `ArmChainCall` in Phase 3.
 #[doc(hidden)]
 pub struct TeeNode<Prev, C> {
     pub(crate) prev: Prev,
@@ -2302,7 +2299,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 ///     out.0 = val.to_string();
 /// }
 ///
-/// let r = world.registry_mut();
+/// let r = world.registry();
 /// let mut pipeline = PipelineBuilder::<u32>::new()
 ///     .then(double, r)
 ///     .then(store, r)
@@ -3222,6 +3219,11 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>> PipelineChain<In, Resul
     label = "this pipeline produces `{Self}`, not `()`",
     note = "add a final `.then()` that consumes the output"
 )]
+/// Sealed marker trait for valid pipeline terminal types.
+///
+/// Only `()` and `Option<()>` satisfy this. A pipeline can only
+/// `.build()` when its output is one of these types — add a final
+/// `.then()` that consumes the output to reach `()`.
 pub trait PipelineOutput {}
 impl PipelineOutput for () {}
 impl PipelineOutput for Option<()> {}
@@ -3339,7 +3341,7 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 ///     sum.0 += x as u64;
 /// }
 ///
-/// let r = world.registry_mut();
+/// let r = world.registry();
 /// let mut batch = PipelineBuilder::<u32>::new()
 ///     .then(accumulate, r)
 ///     .build_batch(64);

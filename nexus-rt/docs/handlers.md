@@ -42,7 +42,7 @@ type lookup — just pointer dereferences.
 Handlers implement the `Handler<E>` trait:
 
 ```rust
-pub trait Handler<E>: Send + 'static {
+pub trait Handler<E>: Send {
     fn run(&mut self, world: &mut World, event: E);
 }
 ```
@@ -59,6 +59,7 @@ internal state (resolved ResourceIds, Local storage) handles the rest.
 | `Local<T>` | `&mut T` (per-handler) | State private to this handler instance |
 | `Option<Res<T>>` | `Option<&T>` | Resource that may not be registered |
 | `Option<ResMut<T>>` | `Option<&mut T>` | Same, mutable |
+| `#[derive(Param)]` struct | grouped fields | Bundle multiple params into one struct |
 | Event type | by value | The event being processed |
 
 ## Dynamic Dispatch (Virtual)
@@ -82,11 +83,16 @@ let handler: FlatVirtual<MyEvent> = FlatVirtual::new(
 For handlers that own state beyond what's in the World:
 
 ```rust
-use nexus_rt::Callback;
+use nexus_rt::{Callback, Resource};
 
 struct MyContext {
     connection_id: u64,
     buffer: Vec<u8>,
+}
+
+#[derive(Resource)]
+struct SharedState {
+    bytes_received: u64,
 }
 
 fn on_data(
@@ -98,9 +104,8 @@ fn on_data(
     state.bytes_received += event.data.len() as u64;
 }
 
-let callback = Callback::new(
+let callback = on_data.into_callback(
     MyContext { connection_id: 42, buffer: Vec::new() },
-    on_data,
     registry,
 );
 ```
@@ -167,3 +172,23 @@ organization pattern.
 // ✓ Works — no Res/ResMut parameters
 let h = (|event: MyEvent| { println!("{event:?}"); }).into_handler(registry);
 ```
+
+## Pre-built handlers as `IntoHandler`
+
+Any type that already implements `Handler<E>` — including `Pipeline`,
+`Dag`, `Callback`, and `TemplatedHandler` — satisfies `IntoHandler<E, Resolved>`
+via a blanket impl. This means you can pass a built pipeline directly
+to any API that expects `impl IntoHandler`:
+
+```rust
+let pipeline = PipelineBuilder::<Order>::new()
+    .then(validate, reg)
+    .dispatch(submit.into_handler(reg))
+    .build();
+
+// Pass directly — no wrapping needed.
+// The `Resolved` marker type makes this work.
+driver.register(pipeline, reg);
+```
+
+Users never need to name `Resolved` — it's inferred automatically.

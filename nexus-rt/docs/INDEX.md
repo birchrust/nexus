@@ -10,6 +10,7 @@ Event-driven runtime with zero-cost dispatch.
 - [Pipelines & DAGs](pipelines.md) — Composing processing chains
 - [Drivers](drivers.md) — The installer/poller pattern for IO and timers
 - [Clock](clock.md) — Time sources: realtime, test, historical
+- [Derive Macros](derives.md) — Resource, Param, Deref/DerefMut derives and new_resource!
 - [Templates](templates.md) — Advanced: blueprints for handler factories
 
 ## Internal Reference
