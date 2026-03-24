@@ -298,7 +298,7 @@ impl Registry {
             .get(&TypeId::of::<T>())
             .unwrap_or_else(|| {
                 panic!(
-                    "resource `{}` not registered — call WorldBuilder::register::<{}>() during setup",
+                    "resource `{}` not registered — call WorldBuilder::register::<{}>(initial_value) during setup",
                     type_name::<T>(),
                     type_name::<T>()
                 )

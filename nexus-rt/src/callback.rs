@@ -146,7 +146,7 @@ pub struct Callback<C, F, Params: Param> {
 #[diagnostic::on_unimplemented(
     message = "this function cannot be converted into a callback",
     note = "callback signature: `fn(&mut Context, Res<A>, ..., Event)` — context first, then resources, event last",
-    note = "closures are not supported — use a named `fn`"
+    note = "closures with resource parameters are not supported — use a named `fn` when using Param resources"
 )]
 pub trait IntoCallback<C, E, Params> {
     /// The concrete Callback type produced.

@@ -5,9 +5,9 @@ use nexus_rt::{HandlerTemplate, Res, WorldBuilder, handler_blueprint};
 
 struct Config;
 
-handler_blueprint!(MyBlueprint, Event = u32, Params = (Res<Config>,));
+handler_blueprint!(MyBlueprint, Event = u32, Params = (Res<'static, Config>,));
 
-// Wrong: takes String instead of u32
+// Wrong: takes String instead of u32 as event
 fn wrong_event(_config: Res<Config>, _event: String) {
 }
 

@@ -164,7 +164,7 @@ pub trait StepCall<In> {
     message = "this function cannot be used as a pipeline step for this input type",
     note = "if the pipeline output is `Option<T>`, use `.map()` to operate on the inner `T`",
     note = "if the pipeline output is `Result<T, E>`, use `.map()` for `Ok` or `.catch()` for `Err`",
-    note = "closures with resource parameters (Res<T>, ResMut<T>) are not supported — use a named `fn`"
+    note = "if using a closure with resource params (Res<T>, ResMut<T>), that isn't supported — use a named `fn`"
 )]
 pub trait IntoStep<In, Out, Params> {
     /// The concrete resolved step type.
@@ -2443,12 +2443,14 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// # let reg = world.registry();
     /// // ERROR: takes u32 by value, should be &u32
     /// PipelineBuilder::<u32>::new()
+    ///     .then(|x: u32| x, &reg)
     ///     .guard(|x: u32| x > 10, &reg);
     /// ```
     ///
     /// Fix: take by reference:
     /// ```ignore
     /// PipelineBuilder::<u32>::new()
+    ///     .then(|x: u32| x, &reg)
     ///     .guard(|x: &u32| *x > 10, &reg);
     /// ```
     pub fn guard<Params, S: IntoRefStep<Out, bool, Params>>(
@@ -2480,6 +2482,7 @@ impl<In, Out, Chain: ChainCall<In, Out = Out>> PipelineChain<In, Out, Chain> {
     /// # let reg = world.registry();
     /// // ERROR: takes u32 by value
     /// PipelineBuilder::<u32>::new()
+    ///     .then(|x: u32| x, &reg)
     ///     .tap(|x: u32| println!("{x}"), &reg);
     /// ```
     pub fn tap<Params, S: IntoRefStep<Out, (), Params>>(

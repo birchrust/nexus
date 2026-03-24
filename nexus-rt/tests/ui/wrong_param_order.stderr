@@ -1,5 +1,16 @@
-error[E0599]: no method named `into_handler` found for fn item `for<'a> fn(u32, Res<'a, Config>) {bad_order}` in the current scope
-  --> tests/ui/wrong_param_order.rs:16:30
+error[E0277]: this function cannot be converted into a handler
+  --> tests/ui/wrong_param_order.rs:23:32
    |
-16 |     let _handler = bad_order.into_handler(&reg);
-   |                              ^^^^^^^^^^^^ method not found in `for<'a> fn(u32, Res<'a, Config>) {bad_order}`
+23 |     register_handler::<u32, _>(bad_order, &reg);
+   |     -------------------------- ^^^^^^^^^ the trait `IntoHandler<u32, _>` is not implemented for fn item `for<'a> fn(u32, Res<'a, Config>) {bad_order}`
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = note: handler signature: `fn(Res<A>, ResMut<B>, ..., Event)` — resources first, event last
+   = note: closures with resource parameters (Res<T>, ResMut<T>) are not supported — use a named `fn`
+   = note: arity-0 closures (`fn(Event)` with no resources) ARE supported
+note: required by a bound in `register_handler`
+  --> tests/ui/wrong_param_order.rs:13:35
+   |
+13 | fn register_handler<E, P>(f: impl IntoHandler<E, P>, registry: &nexus_rt::Registry) {
+   |                                   ^^^^^^^^^^^^^^^^^ required by this bound in `register_handler`

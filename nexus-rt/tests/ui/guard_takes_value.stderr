@@ -1,5 +1,16 @@
-error[E0599]: no method named `guard` found for struct `PipelineBuilder<In>` in the current scope
-  --> tests/ui/guard_takes_value.rs:14:43
+error[E0277]: this function cannot be used as a reference step for this input type
+  --> tests/ui/guard_takes_value.rs:22:16
    |
-14 |     let _ = PipelineBuilder::<u32>::new().guard(check_value, &reg);
-   |                                           ^^^^^ method not found in `PipelineBuilder<u32>`
+22 |         .guard(check_value, &reg);
+   |          ----- ^^^^^^^^^^^ the trait `IntoRefStep<u32, bool, _>` is not implemented for fn item `fn(u32) -> bool {check_value}`
+   |          |
+   |          required by a bound introduced by this call
+   |
+   = note: reference steps (guard, filter, tap, inspect) take `&In`, not `In`
+   = note: if the pipeline output is `Option<T>`, `.filter()` operates on `&T` inside the Option
+   = note: closures with resource parameters are not supported — use a named `fn`
+note: required by a bound in `PipelineChain::<In, Out, Chain>::guard`
+  --> src/pipeline.rs
+   |
+   |     pub fn guard<Params, S: IntoRefStep<Out, bool, Params>>(
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `PipelineChain::<In, Out, Chain>::guard`
