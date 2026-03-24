@@ -90,7 +90,7 @@ fn main() {
     println!("=== Bare Value Pipeline ===\n");
 
     let mut world = WorldBuilder::new().build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut bare_pipeline = PipelineBuilder::<u32>::new()
         .then(|x: u32| x * 2, r)
@@ -106,7 +106,7 @@ fn main() {
     let mut wb = WorldBuilder::new();
     wb.register(PriceCache::new());
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut option_pipeline = PipelineBuilder::<MarketTick>::new()
         .then(
@@ -166,7 +166,7 @@ fn main() {
     wb.register(PriceCache::new());
     wb.register(Accumulator(0)); // error counter
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut result_pipeline = PipelineBuilder::<MarketTick>::new()
         .then(validate, r)
@@ -208,7 +208,7 @@ fn main() {
     let mut wb = WorldBuilder::new();
     wb.register(Accumulator(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut pipeline = PipelineBuilder::<u32>::new().then(accumulate, r).build();
 
@@ -227,7 +227,7 @@ fn main() {
     let mut wb = WorldBuilder::new();
     wb.register(Accumulator(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut guarded = PipelineBuilder::<u32>::new()
         .then(|x: u32| x, r)
@@ -249,7 +249,7 @@ fn main() {
     let mut wb = WorldBuilder::new();
     wb.register(Accumulator(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     #[allow(clippy::items_after_statements)]
     fn split(x: u32) -> (u32, u32) {

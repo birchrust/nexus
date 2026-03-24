@@ -116,7 +116,7 @@ fn main() {
     let mut scheduler = wb.install_driver(installer);
 
     // Event handler for market data
-    let mut market_handler = on_market_tick.into_handler(wb.registry_mut());
+    let mut market_handler = on_market_tick.into_handler(wb.registry());
 
     let mut world = wb.build();
 

@@ -37,7 +37,7 @@
 //!
 //! # Signal Support (Linux only)
 //!
-//! With the `signals` feature, [`ShutdownHandle::enable_signals`] registers
+//! With the `signals` feature, `ShutdownHandle::enable_signals` registers
 //! SIGINT and SIGTERM handlers that flip the shutdown flag automatically.
 //! Targets Linux infrastructure — not supported on Windows.
 

@@ -353,7 +353,7 @@ fn build_world() -> World {
 #[test]
 fn pipeline_single_step() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new().then(store_u32, r).build();
     p.run(&mut world, 42);
     assert_eq!(**world.resource::<ResU32>(), 42);
@@ -362,7 +362,7 @@ fn pipeline_single_step() {
 #[test]
 fn pipeline_linear_chain_three() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(add_ten, r)
         .then(triple, r)
@@ -375,7 +375,7 @@ fn pipeline_linear_chain_three() {
 #[test]
 fn pipeline_linear_chain_five() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .then(add_ten, r)
@@ -391,7 +391,7 @@ fn pipeline_linear_chain_five() {
 #[test]
 fn pipeline_build_batch() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut batch = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> u64 { x as u64 }, r)
         .then(store_u64, r)
@@ -407,7 +407,7 @@ fn pipeline_build_batch() {
 #[test]
 fn pipeline_run_direct() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut builder = PipelineBuilder::<u32>::new().then(double_u32, r);
 
     let result = builder.run(&mut world, 5);
@@ -423,7 +423,7 @@ fn pipeline_with_res() {
     let mut wb = WorldBuilder::new();
     wb.register(ResU64(10));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(read_factor_and_multiply, r)
         .then(store_u64, r)
@@ -435,7 +435,7 @@ fn pipeline_with_res() {
 #[test]
 fn pipeline_with_res_mut() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(write_and_transform, r)
         .then(store_u32, r)
@@ -451,7 +451,7 @@ fn pipeline_with_multiple_res_and_res_mut() {
     wb.register(ResU64(42));
     wb.register(ResString(String::new()));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(read_and_write, r)
         .build();
@@ -464,7 +464,7 @@ fn pipeline_with_option_res() {
     let mut wb = WorldBuilder::new();
     wb.register(ResU64(100));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new().then(opt_res_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 105);
@@ -475,7 +475,7 @@ fn pipeline_with_option_res_mut() {
     let mut wb = WorldBuilder::new();
     wb.register(ResString(String::new()));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new().then(opt_res_mut_step, r);
     let result = p.run(&mut world, 7);
     assert_eq!(result, 7);
@@ -485,7 +485,7 @@ fn pipeline_with_option_res_mut() {
 #[test]
 fn pipeline_with_seq() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new().then(seq_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 5);
@@ -494,7 +494,7 @@ fn pipeline_with_seq() {
 #[test]
 fn pipeline_with_seq_mut() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new().then(seq_mut_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 5);
@@ -503,7 +503,7 @@ fn pipeline_with_seq_mut() {
 #[test]
 fn pipeline_with_shutdown() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new().then(shutdown_step, r);
     let result = p.run(&mut world, 5);
     assert_eq!(result, 5);
@@ -516,7 +516,7 @@ fn pipeline_with_shutdown() {
 #[test]
 fn pipeline_option_map() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> Option<u32> { Some(x) }, r)
         .map(double_u32, r)
@@ -533,7 +533,7 @@ fn pipeline_option_map() {
 #[test]
 fn pipeline_guard_then_map() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -550,7 +550,7 @@ fn pipeline_guard_then_map() {
 #[test]
 fn pipeline_filter() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(|_: &u32| true, r) // enter Option land
@@ -567,7 +567,7 @@ fn pipeline_filter() {
 #[test]
 fn pipeline_inspect_option() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -581,7 +581,7 @@ fn pipeline_inspect_option() {
 #[test]
 fn pipeline_and_then_option() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> Option<u32> { Some(x) }, r)
         .and_then(|x: u32| -> Option<u64> { Some(x as u64 * 3) }, r)
@@ -594,7 +594,7 @@ fn pipeline_and_then_option() {
 #[test]
 fn pipeline_on_none() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -608,7 +608,7 @@ fn pipeline_on_none() {
 #[test]
 fn pipeline_ok_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     // ok_or produces Result<u32, &str>; catch takes the error by value
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
@@ -624,7 +624,7 @@ fn pipeline_ok_or() {
 #[test]
 fn pipeline_unwrap_or_option() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -642,7 +642,7 @@ fn pipeline_unwrap_or_option() {
 #[test]
 fn pipeline_cloned_option() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     // Option<&T> -> Option<T> via .cloned() — T must be Sized + Clone
     static YES: u64 = 1;
     static NO: u64 = 0;
@@ -670,7 +670,7 @@ fn pipeline_cloned_option() {
 #[test]
 fn pipeline_result_map() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .map(map_ok_double, r)
@@ -684,7 +684,7 @@ fn pipeline_result_map() {
 #[test]
 fn pipeline_result_and_then() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .and_then(and_then_validate, r)
@@ -698,7 +698,7 @@ fn pipeline_result_and_then() {
 #[test]
 fn pipeline_result_catch() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .catch(catch_error, r)
@@ -715,7 +715,7 @@ fn pipeline_result_catch() {
 #[test]
 fn pipeline_result_map_err() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     // After map_err, error type is String. Pipeline catch takes E by value.
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
@@ -730,7 +730,7 @@ fn pipeline_result_map_err() {
 #[test]
 fn pipeline_result_inspect_err() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .inspect_err(inspect_err_log, r)
@@ -743,7 +743,7 @@ fn pipeline_result_inspect_err() {
 #[test]
 fn pipeline_result_ok() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .ok()
@@ -756,7 +756,7 @@ fn pipeline_result_ok() {
 #[test]
 fn pipeline_result_unwrap_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .unwrap_or(999)
@@ -769,7 +769,7 @@ fn pipeline_result_unwrap_or() {
 #[test]
 fn pipeline_result_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .or_else(or_else_recover, r)
@@ -783,7 +783,7 @@ fn pipeline_result_or_else() {
 #[test]
 fn pipeline_result_unwrap_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .unwrap_or_else(unwrap_or_else_result, r)
@@ -796,7 +796,7 @@ fn pipeline_result_unwrap_or_else() {
 #[test]
 fn pipeline_result_inspect_ok() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .inspect(inspect_ok_log, r)
@@ -814,7 +814,7 @@ fn pipeline_result_inspect_ok() {
 #[test]
 fn pipeline_bool_not() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> bool { x > 5 }, r)
         .not();
@@ -825,7 +825,7 @@ fn pipeline_bool_not() {
 #[test]
 fn pipeline_bool_and() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> bool { x > 5 }, r)
         .and(produce_true, r);
@@ -836,7 +836,7 @@ fn pipeline_bool_and() {
 #[test]
 fn pipeline_bool_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> bool { x > 5 }, r)
         .or(produce_true, r);
@@ -847,7 +847,7 @@ fn pipeline_bool_or() {
 #[test]
 fn pipeline_bool_xor() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(|x: u32| -> bool { x > 5 }, r)
         .xor(produce_false, r);
@@ -865,7 +865,7 @@ fn pipeline_guard_with_res_param() {
     wb.register(ResU32(5));
     wb.register(ResU64(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive_with_res, r)
@@ -883,7 +883,7 @@ fn pipeline_guard_with_res_param() {
 #[test]
 fn pipeline_guard_arity0_closure() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(|x: &u32| *x > 10, r)
@@ -900,7 +900,7 @@ fn pipeline_guard_arity0_closure() {
 #[test]
 fn pipeline_tap_named_fn() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .tap(tap_log, r)
@@ -913,7 +913,7 @@ fn pipeline_tap_named_fn() {
 #[test]
 fn pipeline_tap_arity0_closure() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .tap(|_x: &u32| {}, r)
@@ -926,7 +926,7 @@ fn pipeline_tap_arity0_closure() {
 #[test]
 fn pipeline_route() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let large = PipelineBuilder::new().then(|x: u32| x * 10, r);
     let small = PipelineBuilder::new().then(|x: u32| x, r);
@@ -947,7 +947,7 @@ fn pipeline_route() {
 #[test]
 fn pipeline_tee() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let side = DagArmSeed::<u32>::new()
         .then(|x: &u32| *x as u64, r)
@@ -967,7 +967,7 @@ fn pipeline_tee() {
 #[test]
 fn pipeline_dedup() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .dedup()
@@ -987,7 +987,7 @@ fn pipeline_dedup() {
 #[test]
 fn pipeline_scan() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .scan(
@@ -1014,7 +1014,7 @@ fn pipeline_scan() {
 #[test]
 fn pipeline_dispatch_to_handler() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn sink(mut out: ResMut<ResU64>, val: u64) {
         **out = val;
@@ -1037,7 +1037,7 @@ fn pipeline_dispatch_to_handler() {
 #[test]
 fn pipeline_splat2() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(make_pair, r)
         .splat()
@@ -1051,7 +1051,7 @@ fn pipeline_splat2() {
 #[test]
 fn pipeline_splat3() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(make_triple, r)
         .splat()
@@ -1065,7 +1065,7 @@ fn pipeline_splat3() {
 #[test]
 fn pipeline_splat4() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(make_quad, r)
         .splat()
@@ -1079,7 +1079,7 @@ fn pipeline_splat4() {
 #[test]
 fn pipeline_splat5() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(make_quint, r)
         .splat()
@@ -1093,7 +1093,7 @@ fn pipeline_splat5() {
 #[test]
 fn pipeline_splat_at_start() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<(u32, u32)>::new()
         .splat()
         .then(splat2, r)
@@ -1110,7 +1110,7 @@ fn pipeline_splat_at_start() {
 #[test]
 fn pipeline_guard_opaque() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(|_w: &mut World, x: &u32| -> bool { *x > 5 }, r)
@@ -1125,7 +1125,7 @@ fn pipeline_guard_opaque() {
 #[test]
 fn pipeline_tap_opaque() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .tap(|_w: &mut World, _x: &u32| {}, r)
@@ -1138,7 +1138,7 @@ fn pipeline_tap_opaque() {
 #[test]
 fn pipeline_on_none_opaque() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -1151,7 +1151,7 @@ fn pipeline_on_none_opaque() {
 #[test]
 fn pipeline_then_opaque() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(
             |w: &mut World, x: u32| {
@@ -1171,7 +1171,7 @@ fn pipeline_then_opaque() {
 #[test]
 fn pipeline_option_unit_terminal() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     // Chain ends with Option<()> -- build() should work
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
@@ -1185,7 +1185,7 @@ fn pipeline_option_unit_terminal() {
 #[test]
 fn pipeline_filter_then_map_sink() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(|_: &u32| true, r)
@@ -1204,7 +1204,7 @@ fn pipeline_filter_then_map_sink() {
 fn pipeline_borrowed_slice() {
     let mut world = build_world();
     let data = vec![1u8, 2, 3, 4, 5];
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode(data: &[u8]) -> u32 {
         data.len() as u32
@@ -1223,7 +1223,7 @@ fn pipeline_borrowed_slice() {
 fn pipeline_borrowed_str() {
     let mut world = build_world();
     let msg = String::from("hello");
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn parse_len(s: &str) -> u32 {
         s.len() as u32
@@ -1242,7 +1242,7 @@ fn pipeline_borrowed_str() {
 fn pipeline_borrowed_option_unit_terminal() {
     let mut world = build_world();
     let data = vec![1u8, 2, 3];
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode_len(data: &[u8]) -> u32 {
         data.len() as u32
@@ -1261,7 +1261,7 @@ fn pipeline_borrowed_option_unit_terminal() {
 #[test]
 fn pipeline_borrowed_through_guard() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn parse_val(s: &str) -> u32 {
         s.len() as u32
@@ -1283,7 +1283,7 @@ fn pipeline_borrowed_through_guard() {
 fn pipeline_borrowed_run_direct() {
     let mut world = build_world();
     let data = vec![1u8, 2, 3, 4];
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode_len(data: &[u8]) -> u32 {
         data.len() as u32
@@ -1298,7 +1298,7 @@ fn pipeline_borrowed_run_direct() {
 #[test]
 fn pipeline_to_boxed_handler() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let p = PipelineBuilder::<u32>::new().then(store_u32, r).build();
 
@@ -1314,7 +1314,7 @@ fn pipeline_to_boxed_handler() {
 #[test]
 fn dag_root_then_build() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut d = DagBuilder::<u32>::new()
         .root(dag_id, r)
         .then(dag_store_u32, r)
@@ -1326,7 +1326,7 @@ fn dag_root_then_build() {
 #[test]
 fn dag_root_then_then_build() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root_to_u64(x: u32) -> u64 {
         x as u64
@@ -1344,7 +1344,7 @@ fn dag_root_then_then_build() {
 #[test]
 fn dag_root_single_step() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut d = DagBuilder::<u32>::new()
         .root(
             |x: u32| {
@@ -1359,7 +1359,7 @@ fn dag_root_single_step() {
 #[test]
 fn dag_fork_merge_2arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1382,7 +1382,7 @@ fn dag_fork_merge_2arm() {
 #[test]
 fn dag_fork_join_2arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1404,7 +1404,7 @@ fn dag_fork_join_2arm() {
 #[test]
 fn dag_build_batch() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u64 {
         x as u64
@@ -1431,7 +1431,7 @@ fn dag_build_batch() {
 #[test]
 fn dag_fork_merge_3arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1456,7 +1456,7 @@ fn dag_fork_merge_3arm() {
 #[test]
 fn dag_fork_merge_4arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u64 {
         x as u64
@@ -1483,7 +1483,7 @@ fn dag_fork_merge_4arm() {
 #[test]
 fn dag_fork_arms_with_multiple_steps() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1508,7 +1508,7 @@ fn dag_fork_arms_with_multiple_steps() {
 #[test]
 fn dag_fork_arm_with_guard() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u64 {
         x as u64
@@ -1534,7 +1534,7 @@ fn dag_fork_arm_with_guard() {
 #[test]
 fn dag_nested_fork() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1569,7 +1569,7 @@ fn dag_nested_fork() {
 #[test]
 fn dag_splat_chain() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn split(x: u32) -> (u32, u32) {
         (x, x + 1)
@@ -1589,7 +1589,7 @@ fn dag_splat_chain() {
 #[test]
 fn dag_splat_inside_arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1623,7 +1623,7 @@ fn dag_splat_inside_arm() {
 fn dag_borrowed_slice() {
     let mut world = build_world();
     let data = vec![1u8, 2, 3];
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode(data: &[u8]) -> u32 {
         data.len() as u32
@@ -1642,7 +1642,7 @@ fn dag_borrowed_slice() {
 fn dag_borrowed_through_fork() {
     let mut world = build_world();
     let data = vec![1u8, 2, 3, 4, 5];
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode(data: &[u8]) -> u32 {
         data.len() as u32
@@ -1666,7 +1666,7 @@ fn dag_borrowed_with_guard() {
     let mut world = build_world();
     let data = vec![1u8, 2, 3];
     let short = vec![1u8];
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode(data: &[u8]) -> u32 {
         data.len() as u32
@@ -1693,7 +1693,7 @@ fn dag_borrowed_with_guard() {
 #[test]
 fn dag_option_unit_terminal() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1716,7 +1716,7 @@ fn dag_option_unit_terminal() {
 #[test]
 fn dag_route() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -1745,7 +1745,7 @@ fn dag_route() {
 #[test]
 fn pipeline_dispatch_handler_interop() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn handler_fn(mut out: ResMut<ResU64>, event: u64) {
         **out = event * 10;
@@ -1763,7 +1763,7 @@ fn pipeline_dispatch_handler_interop() {
 #[test]
 fn pipeline_result_catch_then() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(fallible_parse, r)
         .catch(catch_error, r)
@@ -1778,7 +1778,7 @@ fn pipeline_result_catch_then() {
 fn pipeline_guard_unwrap_then() {
     // Common validation pattern: guard -> unwrap_or -> then -> build
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -1799,7 +1799,7 @@ fn pipeline_realistic_decode_validate_enrich_store() {
     let mut wb = WorldBuilder::new();
     wb.register(ResF64(0.0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut p = PipelineBuilder::<Order>::new()
         .then(validate_order, r)
@@ -1825,7 +1825,7 @@ fn pipeline_long_realistic() {
     wb.register(ResF64(0.0));
     wb.register(ResU64(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn decode(raw: u32) -> Order {
         Order::new(raw as u64, raw as f64, raw)
@@ -1863,7 +1863,7 @@ fn pipeline_long_realistic() {
 #[test]
 fn pipeline_build_into_virtual() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<u32>::new().then(store_u32, r).build();
 
@@ -1875,7 +1875,7 @@ fn pipeline_build_into_virtual() {
 #[test]
 fn dag_build_into_virtual() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let dag = DagBuilder::<u32>::new()
         .root(dag_id, r)
@@ -1951,7 +1951,7 @@ fn resolve_arm_helper() {
 #[test]
 fn batch_pipeline_fill_run_check() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn accumulate(mut sum: ResMut<ResU64>, x: u32) {
         **sum += x as u64;
@@ -1972,7 +1972,7 @@ fn batch_pipeline_fill_run_check() {
 #[test]
 fn batch_dag_fill_run_check() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u64 {
         x as u64
@@ -2001,7 +2001,7 @@ fn batch_dag_fill_run_check() {
 #[test]
 fn pipeline_scan_at_start() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut p = PipelineBuilder::<u32>::new()
         .scan(
@@ -2024,7 +2024,7 @@ fn pipeline_scan_at_start() {
 #[test]
 fn dag_scan() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2052,7 +2052,7 @@ fn dag_scan() {
 #[test]
 fn dag_dedup() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2075,7 +2075,7 @@ fn dag_dedup() {
 #[test]
 fn dag_bool_not_and() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> bool {
         x > 5
@@ -2102,7 +2102,7 @@ fn dag_bool_not_and() {
 #[test]
 fn dag_tap() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u64 {
         x as u64
@@ -2121,7 +2121,7 @@ fn dag_tap() {
 #[test]
 fn dag_tee() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2145,7 +2145,7 @@ fn dag_tee() {
 #[test]
 fn dag_result_combinators() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x < 100 {
@@ -2172,7 +2172,7 @@ fn dag_result_combinators() {
 #[test]
 fn dag_option_combinators() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2199,7 +2199,7 @@ fn dag_option_combinators() {
 #[test]
 fn dag_option_ok_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2220,7 +2220,7 @@ fn dag_option_ok_or() {
 #[test]
 fn dag_option_unwrap_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2243,7 +2243,7 @@ fn dag_option_unwrap_or() {
 #[test]
 fn dag_result_ok() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2266,7 +2266,7 @@ fn dag_result_ok() {
 #[test]
 fn dag_result_unwrap_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2289,7 +2289,7 @@ fn dag_result_unwrap_or() {
 #[test]
 fn dag_result_map_err() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2313,7 +2313,7 @@ fn dag_result_map_err() {
 #[test]
 fn dag_result_inspect_err() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2337,7 +2337,7 @@ fn dag_result_inspect_err() {
 #[test]
 fn dag_result_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2361,7 +2361,7 @@ fn dag_result_or_else() {
 #[test]
 fn dag_dispatch() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn handler_fn(mut out: ResMut<ResU64>, event: u64) {
         **out = event;
@@ -2384,7 +2384,7 @@ fn dag_dispatch() {
 #[test]
 fn pipeline_ok_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -2399,7 +2399,7 @@ fn pipeline_ok_or_else() {
 #[test]
 fn pipeline_unwrap_or_else_option() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .guard(guard_positive, r)
@@ -2417,7 +2417,7 @@ fn pipeline_unwrap_or_else_option() {
 #[test]
 fn dag_option_on_none() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2437,7 +2437,7 @@ fn dag_option_on_none() {
 #[test]
 fn dag_option_ok_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2458,7 +2458,7 @@ fn dag_option_ok_or_else() {
 #[test]
 fn dag_option_unwrap_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2478,7 +2478,7 @@ fn dag_option_unwrap_or_else() {
 #[test]
 fn dag_result_unwrap_or_else() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2501,7 +2501,7 @@ fn dag_result_unwrap_or_else() {
 #[test]
 fn dag_result_and_then() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> Result<u64, MyError> {
         if x > 0 {
@@ -2533,7 +2533,7 @@ fn dag_result_and_then() {
 #[test]
 fn dag_bool_or() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> bool {
         x > 5
@@ -2558,7 +2558,7 @@ fn dag_bool_or() {
 #[test]
 fn dag_bool_xor() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> bool {
         x > 5
@@ -2583,7 +2583,7 @@ fn dag_bool_xor() {
 #[test]
 fn batch_pipeline_option_terminal() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn accumulate(mut sum: ResMut<ResU64>, x: u32) {
         **sum += x as u64;
@@ -2604,7 +2604,7 @@ fn batch_pipeline_option_terminal() {
 #[test]
 fn dag_batch_option_terminal() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2627,7 +2627,7 @@ fn dag_batch_option_terminal() {
 #[test]
 fn dag_join_3arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2663,7 +2663,7 @@ fn dag_join_3arm() {
 #[test]
 fn dag_join_4arm() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2710,7 +2710,7 @@ fn pipeline_tap_with_res() {
     wb.register(ResU64(0));
     wb.register(ResU32(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
     let mut p = PipelineBuilder::<u32>::new()
         .then(identity_u32, r)
         .tap(tap_log_with_res, r)
@@ -2723,7 +2723,7 @@ fn pipeline_tap_with_res() {
 #[test]
 fn dag_option_and_then() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn root(x: u32) -> u32 {
         x
@@ -2747,7 +2747,7 @@ fn dag_option_and_then() {
 #[test]
 fn pipeline_multiple_batch_runs() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn accumulate(mut sum: ResMut<ResU64>, x: u32) {
         **sum += x as u64;
@@ -2814,7 +2814,7 @@ fn hrtb_dag_add_lens(a: &usize, b: &usize) -> usize {
 #[test]
 fn hrtb_pipeline_basic() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -2831,7 +2831,7 @@ fn hrtb_pipeline_basic() {
 #[test]
 fn hrtb_pipeline_with_guard() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -2854,7 +2854,7 @@ fn hrtb_pipeline_with_guard() {
 #[test]
 fn hrtb_pipeline_with_option_chain() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn mark_none(mut flag: ResMut<ResBool>) {
         **flag = true;
@@ -2884,7 +2884,7 @@ fn hrtb_pipeline_with_option_chain() {
 #[test]
 fn hrtb_pipeline_with_closure() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     // Arity-0 closures in .then() and .guard() positions (not just guard)
     let pipeline = PipelineBuilder::<&[u8]>::new()
@@ -2908,7 +2908,7 @@ fn hrtb_pipeline_with_closure() {
 #[test]
 fn hrtb_dag_basic() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let dag = DagBuilder::<&[u8]>::new()
         .root(slice_len, r)
@@ -2925,7 +2925,7 @@ fn hrtb_dag_basic() {
 #[test]
 fn hrtb_dag_fork_merge() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let dag = DagBuilder::<&[u8]>::new()
         .root(slice_len, r)
@@ -2947,7 +2947,7 @@ fn hrtb_dag_fork_merge() {
 #[test]
 fn hrtb_dag_fork_join() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn store_len_u32(mut out: ResMut<ResU32>, len: &usize) {
         **out = *len as u32;
@@ -2975,7 +2975,7 @@ fn hrtb_dag_fork_join() {
 #[test]
 fn hrtb_borrowed_struct_event() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<Message<'_>>::new()
         .then(msg_payload_len, r)
@@ -2996,7 +2996,7 @@ fn hrtb_borrowed_struct_event() {
 #[test]
 fn hrtb_dispatch_map() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn store_len_u32(mut out: ResMut<ResU32>, len: usize) {
         **out = len as u32;
@@ -3029,7 +3029,7 @@ fn hrtb_dispatch_map() {
 #[test]
 fn hrtb_direct_run_no_boxing() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -3044,7 +3044,7 @@ fn hrtb_direct_run_no_boxing() {
 #[test]
 fn hrtb_dag_direct_run_no_boxing() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let mut dag = DagBuilder::<&[u8]>::new()
         .root(slice_len, r)
@@ -3060,7 +3060,7 @@ fn hrtb_dag_direct_run_no_boxing() {
 #[test]
 fn hrtb_pipeline_and_dag_in_same_map() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -3090,7 +3090,7 @@ fn hrtb_pipeline_and_dag_in_same_map() {
 #[test]
 fn hrtb_disjoint_lifetimes() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -3118,7 +3118,7 @@ fn hrtb_disjoint_lifetimes() {
 #[test]
 fn hrtb_pipeline_opaque_closure() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     let pipeline = PipelineBuilder::<&[u8]>::new()
         .then(slice_len, r)
@@ -3140,7 +3140,7 @@ fn hrtb_pipeline_opaque_closure() {
 #[test]
 fn hrtb_pipeline_tee() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn store_len_u32(mut out: ResMut<ResU32>, len: &usize) {
         **out = *len as u32;
@@ -3173,7 +3173,7 @@ fn hrtb_send_bound() {
 #[test]
 fn hrtb_pipeline_local() {
     let mut world = build_world();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     // Local<u64> persists across dispatches — counts invocations
     fn count_and_store(mut count: Local<u64>, mut out: ResMut<ResU64>, data: &[u8]) {
@@ -3205,7 +3205,7 @@ fn hrtb_pipeline_multi_param() {
     wb.register(ResF64(2.5));
     wb.register(ResU64(0));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     fn scaled_store(factor: Res<ResF64>, mut out: ResMut<ResU64>, data: &[u8]) {
         **out = (data.len() as f64 * **factor) as u64;

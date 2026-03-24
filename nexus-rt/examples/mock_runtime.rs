@@ -173,7 +173,7 @@ impl Installer for MarketDataInstaller {
     type Poller = MarketDataHandle;
 
     fn install(self, world: &mut WorldBuilder) -> MarketDataHandle {
-        let r = world.registry_mut();
+        let r = world.registry();
         let pipeline = PipelineBuilder::<MarketTick>::new()
             .then(check_signals, r)
             .then(update_price, r)
@@ -243,7 +243,7 @@ fn main() {
     fn on_signal(signals: Res<SignalBuffer>, _event: ()) {
         black_box(signals.signals.len());
     }
-    let mut signal_handler = on_signal.into_handler(world.registry_mut());
+    let mut signal_handler = on_signal.into_handler(world.registry());
 
     // -- Latency measurement --------------------------------------------------
 

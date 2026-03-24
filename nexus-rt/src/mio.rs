@@ -16,8 +16,8 @@
 //!
 //! # Handler lifecycle (move-out-fire)
 //!
-//! 1. User calls `driver.insert(handler)` → [`MioToken`]
-//! 2. User calls `driver.registry().register(&mut source, token.into(), interest)`
+//! 1. User calls `driver.insert(handler)` → `mio::Token`
+//! 2. User calls `driver.registry().register(&mut source, token, interest)`
 //! 3. On readiness: poller removes handler from slab, fires it
 //! 4. Handler re-registers itself if it wants more events
 //!
@@ -50,25 +50,6 @@ const DEFAULT_EVENT_CAPACITY: usize = 1024;
 
 /// Default handler slab pre-allocation.
 const DEFAULT_HANDLER_CAPACITY: usize = 64;
-
-/// Newtype around a slab key, used as a mio token.
-///
-/// Obtained from [`MioDriver::insert`]. Convert to [`mio::Token`] via
-/// `Into` for use with `mio::Registry::register`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MioToken(pub usize);
-
-impl From<MioToken> for ::mio::Token {
-    fn from(t: MioToken) -> ::mio::Token {
-        ::mio::Token(t.0)
-    }
-}
-
-impl From<::mio::Token> for MioToken {
-    fn from(t: ::mio::Token) -> MioToken {
-        MioToken(t.0)
-    }
-}
 
 /// Configuration trait for generic IO driver code.
 ///
@@ -142,6 +123,8 @@ pub struct MioDriver<S = Box<dyn Handler<::mio::event::Event>>> {
     handlers: ::slab::Slab<S>,
 }
 
+impl<S: Send + 'static> crate::world::Resource for MioDriver<S> {}
+
 impl<S> MioDriver<S> {
     /// Access the mio registry for registering/reregistering sources.
     ///
@@ -155,8 +138,8 @@ impl<S> MioDriver<S> {
     ///
     /// The token maps to a `mio::Token` for use with
     /// `Registry::register`. Requires `ResMut<MioDriver<S>>`.
-    pub fn insert(&mut self, handler: S) -> MioToken {
-        MioToken(self.handlers.insert(handler))
+    pub fn insert(&mut self, handler: S) -> ::mio::Token {
+        ::mio::Token(self.handlers.insert(handler))
     }
 
     /// Remove a handler by token.
@@ -169,12 +152,12 @@ impl<S> MioDriver<S> {
     /// # Panics
     ///
     /// Panics if the token is not present in the slab.
-    pub fn remove(&mut self, token: MioToken) -> S {
+    pub fn remove(&mut self, token: ::mio::Token) -> S {
         self.handlers.remove(token.0)
     }
 
     /// Returns `true` if the token has a handler in the slab.
-    pub fn contains(&self, token: MioToken) -> bool {
+    pub fn contains(&self, token: ::mio::Token) -> bool {
         self.handlers.contains(token.0)
     }
 
@@ -322,7 +305,7 @@ where
     ///     let handler = on_readable.into_handler(/* registry */);
     ///     let new_token = driver.insert(Box::new(handler));
     ///     driver.registry()
-    ///         .reregister(stream, new_token.into(), mio::Interest::READABLE)
+    ///         .reregister(stream, new_token, mio::Interest::READABLE)
     ///         .unwrap();
     /// }
     /// ```
@@ -391,7 +374,7 @@ mod tests {
         let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token).unwrap();
 
         waker.wake().unwrap();
 
@@ -417,7 +400,7 @@ mod tests {
         let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token).unwrap();
 
         waker.wake().unwrap();
         let fired = poller
@@ -455,7 +438,7 @@ mod tests {
         let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token).unwrap();
 
         // Remove handler before waking
         let driver = world.resource_mut::<MioDriver>();
@@ -485,7 +468,7 @@ mod tests {
         let handler = on_wake.into_handler(world.registry());
         let driver = world.resource_mut::<MioDriver>();
         let token = driver.insert(Box::new(handler));
-        let waker = ::mio::Waker::new(driver.registry(), token.into()).unwrap();
+        let waker = ::mio::Waker::new(driver.registry(), token).unwrap();
 
         waker.wake().unwrap();
 

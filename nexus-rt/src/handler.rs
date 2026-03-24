@@ -301,7 +301,7 @@ all_tuples!(impl_param_tuple);
 // =============================================================================
 
 /// Per-handler local state. Stored inside the dispatch wrapper (e.g.
-/// [`Callback`] or pipeline [`Stage`](crate::Stage)), not in [`World`].
+/// [`Callback`] or pipeline step), not in [`World`].
 ///
 /// Analogous to Bevy's `Local<T>`.
 ///

@@ -43,6 +43,13 @@
 //!
 //! - **Plugin** — [`Plugin`] is a composable unit of resource registration.
 //!   [`WorldBuilder::install_plugin`] consumes a plugin to configure state.
+//!   Closures `FnOnce(&mut WorldBuilder)` implement `Plugin` automatically.
+//!
+//! - **Derive macros** — `#[derive(Resource)]` marks types for World storage.
+//!   `#[derive(Param)]` bundles multiple resources into a single handler
+//!   parameter (sidesteps the 8-param arity limit). `#[derive(Deref, DerefMut)]`
+//!   provides newtype ergonomics. [`new_resource!`] is a shorthand for
+//!   newtype + Resource + Deref + From.
 //!
 //! # Quick Start
 //!
@@ -250,8 +257,8 @@ macro_rules! new_resource {
 /// Use `Virtual<E>` when you need to store heterogeneous handlers in a
 /// collection (e.g. `Vec<Virtual<E>>`). One heap allocation per handler.
 ///
-/// For inline storage (no heap), see [`FlatVirtual`] (panics if handler
-/// doesn't fit) or [`FlexVirtual`] (inline with heap fallback). Both
+/// For inline storage (no heap), see `FlatVirtual` (panics if handler
+/// doesn't fit) or `FlexVirtual` (inline with heap fallback). Both
 /// require the `smartptr` feature.
 pub type Virtual<E> = Box<dyn Handler<E>>;
 
@@ -269,7 +276,7 @@ pub type FlatVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flat<dyn Hand
 pub type FlexVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flex<dyn Handler<E>, B>;
 
 #[cfg(feature = "mio")]
-pub use self::mio::{BoxedMio, MioConfig, MioDriver, MioInstaller, MioPoller, MioToken};
+pub use self::mio::{BoxedMio, MioConfig, MioDriver, MioInstaller, MioPoller};
 
 #[cfg(all(feature = "mio", feature = "smartptr"))]
 pub use self::mio::{FlexMio, InlineMio};

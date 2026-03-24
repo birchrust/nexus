@@ -1,25 +1,34 @@
 //! Shared types, resources, and step functions for codegen audit.
 
+use crate::world::Resource;
 use crate::{Res, ResMut, World, WorldBuilder};
 
 // ── Resource types ───────────────────────────────────────────────
 
 /// Simple mutable counter.
 pub struct ResA(pub u64);
+impl Resource for ResA {}
 /// Secondary resource for multi-param tests.
 pub struct ResB(pub u32);
+impl Resource for ResB {}
 /// Third resource for high-arity tests.
 pub struct ResC(pub u16);
+impl Resource for ResC {}
 /// Fourth resource.
 pub struct ResD(pub u8);
+impl Resource for ResD {}
 /// Fifth resource (float).
 pub struct ResE(pub f64);
+impl Resource for ResE {}
 /// Sixth resource for high-arity tests.
 pub struct ResF(pub u64);
+impl Resource for ResF {}
 /// Seventh resource for high-arity tests.
 pub struct ResG(pub u32);
+impl Resource for ResG {}
 /// Eighth resource for high-arity tests.
 pub struct ResH(pub u16);
+impl Resource for ResH {}
 
 // ── World factory ────────────────────────────────────────────────
 

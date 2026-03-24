@@ -13,20 +13,26 @@ Input → Step 1 → Step 2 → Step 3 → Output
 ```
 
 ```rust
-use nexus_rt::{Pipeline, Res, ResMut};
+use nexus_rt::{Pipeline, Res, ResMut, Resource};
 
-fn validate(order: Order, config: Res<Config>) -> Result<Order, String> {
+#[derive(Resource)]
+struct Config { max_qty: u64 }
+
+#[derive(Resource)]
+struct OrderState { pending: Vec<Order> }
+
+fn validate(config: Res<Config>, order: Order) -> Result<Order, String> {
     if order.qty > config.max_qty {
         return Err("qty too large".into());
     }
     Ok(order)
 }
 
-fn enrich(order: Order, clock: Res<Clock>) -> Order {
+fn enrich(clock: Res<Clock>, order: Order) -> Order {
     Order { timestamp: clock.unix_nanos(), ..order }
 }
 
-fn submit(order: Order, mut state: ResMut<OrderState>) {
+fn submit(mut state: ResMut<OrderState>, order: Order) {
     state.pending.push(order);
 }
 
@@ -74,7 +80,7 @@ Every combinator accepts three kinds of functions:
 
 1. **Named function with parameters** — accesses World resources:
    ```rust
-   fn check(order: &Order, config: Res<Config>) -> bool { ... }
+   fn check(config: Res<Config>, order: &Order) -> bool { ... }
    pipeline.guard(check, registry)
    ```
 

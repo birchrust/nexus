@@ -1521,9 +1521,6 @@ where
 }
 
 /// Chain node for `.tee()` — runs side-effect chain on `&Out`, passes value through.
-///
-/// `C` is currently `FnMut(&mut World, &Out)` (DagArm closure). Updated to
-/// `ArmChainCall` in Phase 3.
 #[doc(hidden)]
 pub struct TeeNode<Prev, C> {
     pub(crate) prev: Prev,
@@ -2302,7 +2299,7 @@ impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionN
 ///     out.0 = val.to_string();
 /// }
 ///
-/// let r = world.registry_mut();
+/// let r = world.registry();
 /// let mut pipeline = PipelineBuilder::<u32>::new()
 ///     .then(double, r)
 ///     .then(store, r)
@@ -3212,17 +3209,23 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>> PipelineChain<In, Resul
 // PipelineOutput — marker trait for build()
 // =============================================================================
 
-/// Marker trait restricting [`PipelineChain::build`] to pipelines
-/// that produce `()`.
+mod pipeline_output_seal {
+    pub trait Sealed {}
+    impl Sealed for () {}
+    impl Sealed for Option<()> {}
+}
+
+/// Sealed marker trait for valid pipeline terminal types.
 ///
-/// If your pipeline produces a value, add a final `.then()` that
-/// writes it somewhere (e.g. `ResMut<T>`).
+/// Only `()` and `Option<()>` satisfy this. A pipeline can only
+/// `.build()` when its output is one of these types — add a final
+/// `.then()` or `.dispatch()` that consumes the output.
 #[diagnostic::on_unimplemented(
-    message = "`build()` requires the step pipeline output to be `()`",
-    label = "this pipeline produces `{Self}`, not `()`",
-    note = "add a final `.then()` that consumes the output"
+    message = "`build()` requires the pipeline output to be `()` or `Option<()>`",
+    label = "this pipeline produces `{Self}`, not `()` or `Option<()>`",
+    note = "add a final `.then()` or `.dispatch()` that consumes the output"
 )]
-pub trait PipelineOutput {}
+pub trait PipelineOutput: pipeline_output_seal::Sealed {}
 impl PipelineOutput for () {}
 impl PipelineOutput for Option<()> {}
 
@@ -3339,7 +3342,7 @@ impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
 ///     sum.0 += x as u64;
 /// }
 ///
-/// let r = world.registry_mut();
+/// let r = world.registry();
 /// let mut batch = PipelineBuilder::<u32>::new()
 ///     .then(accumulate, r)
 ///     .build_batch(64);

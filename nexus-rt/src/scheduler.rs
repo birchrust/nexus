@@ -2,7 +2,7 @@
 //!
 //! The scheduler is installed as a **driver** via [`SchedulerInstaller`].
 //! After event handlers process incoming data and write to resources,
-//! the scheduler runs reconciliation [`System`](crate::system::System)s
+//! the scheduler runs reconciliation [`System`]s
 //! in topological order. This two-phase pattern (event → reconcile)
 //! separates reactive logic from derived-state computation.
 //!

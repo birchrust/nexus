@@ -420,7 +420,7 @@ fn main() {
     wb.register(ResU64(42));
     wb.register(ResU32(7));
     let mut world = wb.build();
-    let r = world.registry_mut();
+    let r = world.registry();
 
     // --- Bare 3-stage pipeline (no Option, no World access) ---
 
@@ -572,34 +572,34 @@ fn main() {
         .dispatch(dispatch_inner)
         .build();
 
-    // --- Handler dispatch setup (uses world.registry_mut(), r no longer needed) ---
+    // --- Handler dispatch setup (uses world.registry(), r no longer needed) ---
 
-    let mut sys_res = handler_res_read.into_handler(world.registry_mut());
-    let mut sys_res_mut = handler_res_mut_write.into_handler(world.registry_mut());
-    let mut sys_two = handler_two_res.into_handler(world.registry_mut());
+    let mut sys_res = handler_res_read.into_handler(world.registry());
+    let mut sys_res_mut = handler_res_mut_write.into_handler(world.registry());
+    let mut sys_two = handler_two_res.into_handler(world.registry());
     let mut sys_dyn: Box<dyn Handler<u64>> =
-        Box::new(handler_res_read.into_handler(world.registry_mut()));
+        Box::new(handler_res_read.into_handler(world.registry()));
 
-    // --- Combinator + Adapter setup (uses world.registry_mut()) ---
+    // --- Combinator + Adapter setup (uses world.registry()) ---
 
     // FanOut 2-way
-    let fan_h1 = ref_accumulate.into_handler(world.registry_mut());
-    let fan_h2 = ref_accumulate.into_handler(world.registry_mut());
+    let fan_h1 = ref_accumulate.into_handler(world.registry());
+    let fan_h2 = ref_accumulate.into_handler(world.registry());
     let mut fanout = fan_out!(fan_h1, fan_h2);
 
     // Broadcast 2-way
     let mut broadcast: Broadcast<u64> = Broadcast::new();
-    broadcast.add(ref_accumulate.into_handler(world.registry_mut()));
-    broadcast.add(ref_accumulate.into_handler(world.registry_mut()));
+    broadcast.add(ref_accumulate.into_handler(world.registry()));
+    broadcast.add(ref_accumulate.into_handler(world.registry()));
 
     // Cloned adapter: Handler<u64> → Handler<&u64>
-    let mut cloned_adapt = Cloned(sink.into_handler(world.registry_mut()));
+    let mut cloned_adapt = Cloned(sink.into_handler(world.registry()));
 
     // ByRef adapter: Handler<&u64> → Handler<u64>
-    let mut byref_adapt = ByRef(ref_accumulate.into_handler(world.registry_mut()));
+    let mut byref_adapt = ByRef(ref_accumulate.into_handler(world.registry()));
 
     // Adapt adapter: decode → Option → handler
-    let mut adapt_adapt = Adapt::new(decode_u64, sink.into_handler(world.registry_mut()));
+    let mut adapt_adapt = Adapt::new(decode_u64, sink.into_handler(world.registry()));
 
     // --- Pipeline benchmarks ---
 

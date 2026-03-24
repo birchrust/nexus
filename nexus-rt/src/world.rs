@@ -571,7 +571,7 @@ impl WorldBuilder {
     /// Use this for construction-time calls like
     /// [`into_handler`](crate::IntoHandler::into_handler),
     /// [`into_callback`](crate::IntoCallback::into_callback), and
-    /// [`into_step`](crate::IntoStep::into_step).
+    /// [`into_step`](crate::pipeline::IntoStep::into_step).
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -581,7 +581,8 @@ impl WorldBuilder {
     /// Rarely needed — [`registry()`](Self::registry) suffices for
     /// construction-time calls. Exists for direct mutation of the
     /// registry if needed.
-    pub fn registry_mut(&mut self) -> &mut Registry {
+    #[allow(dead_code)]
+    pub(crate) fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
     }
 
@@ -702,7 +703,8 @@ impl World {
     /// Rarely needed — [`registry()`](Self::registry) suffices for
     /// construction-time calls. Exists for direct mutation of the
     /// registry if needed.
-    pub fn registry_mut(&mut self) -> &mut Registry {
+    #[allow(dead_code)]
+    pub(crate) fn registry_mut(&mut self) -> &mut Registry {
         &mut self.registry
     }
 
@@ -835,7 +837,7 @@ impl World {
     /// timeout. The loop exits when a handler calls
     /// [`Shutdown::trigger`](crate::Shutdown::trigger) or
     /// an external signal flips the flag (see
-    /// [`ShutdownHandle::enable_signals`](crate::shutdown::ShutdownHandle::enable_signals)).
+    /// `ShutdownHandle::enable_signals` (requires `signals` feature)).
     ///
     /// # Examples
     ///

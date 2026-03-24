@@ -10,6 +10,14 @@ All registration happens at setup time through `WorldBuilder`. Once
 `build()` is called, the set of resources is sealed.
 
 ```rust
+use nexus_rt::{WorldBuilder, Resource};
+
+#[derive(Resource, Default)]
+struct GameState { /* ... */ }
+
+#[derive(Resource)]
+struct Config { /* ... */ }
+
 let mut wb = WorldBuilder::new();
 
 // Register resources by type
@@ -26,9 +34,9 @@ let mut world = wb.build();
 
 ### Why build-time registration?
 
-Resources are stored in a flat array indexed by `ResourceId`. The IDs are
-assigned at registration time and are stable for the World's lifetime.
-This gives O(1) access — a single pointer dereference, not a HashMap lookup.
+Resources are stored as individually heap-allocated `ResourceCell<T>` values
+with direct `NonNull<u8>` pointers. `ResourceId` is assigned at registration
+time and is stable for the World's lifetime. O(1) access, single deref.
 
 If resources could be added at runtime, the array might need to grow,
 invalidating existing ResourceIds. The build-time seal prevents this.

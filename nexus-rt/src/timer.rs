@@ -76,6 +76,12 @@ pub use nexus_timer::{
     WheelBuilder, WheelEntry,
 };
 
+// Resource impls for timer wheel types registered by the timer driver.
+impl<T: Send + 'static, S: nexus_timer::store::SlabStore<Item = WheelEntry<T>> + Send + 'static>
+    crate::world::Resource for nexus_timer::TimerWheel<T, S>
+{
+}
+
 use crate::Handler;
 use crate::driver::Installer;
 use crate::world::{ResourceId, World, WorldBuilder};
@@ -241,7 +247,7 @@ impl<S: 'static, Store: SlabStore<Item = WheelEntry<S>>> TimerInstaller<S, Store
 impl<S, Store> Installer for TimerInstaller<S, Store>
 where
     S: Send + 'static,
-    Store: SlabStore<Item = WheelEntry<S>> + 'static,
+    Store: SlabStore<Item = WheelEntry<S>> + Send + 'static,
 {
     type Poller = TimerPoller<S, Store>;
 
