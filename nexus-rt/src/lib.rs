@@ -47,21 +47,24 @@
 //! # Quick Start
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler};
+//! use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Resource};
+//!
+//! #[derive(Resource)]
+//! struct Counter(u64);
 //!
 //! let mut builder = WorldBuilder::new();
-//! builder.register::<u64>(0);
+//! builder.register(Counter(0));
 //! let mut world = builder.build();
 //!
-//! fn tick(mut counter: ResMut<u64>, event: u32) {
-//!     *counter += event as u64;
+//! fn tick(mut counter: ResMut<Counter>, event: u32) {
+//!     counter.0 += event as u64;
 //! }
 //!
 //! let mut handler = tick.into_handler(world.registry());
 //!
 //! handler.run(&mut world, 10u32);
 //!
-//! assert_eq!(*world.resource::<u64>(), 10);
+//! assert_eq!(world.resource::<Counter>().0, 10);
 //! ```
 //!
 //! # Safety
@@ -159,6 +162,8 @@ mod world;
 pub mod codegen_audit;
 
 pub use adapt::{Adapt, ByRef, Cloned, Owned};
+
+// Derive macros re-exported from nexus-rt-derive
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
@@ -168,6 +173,9 @@ pub use handler::{
     CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
     Resolved,
 };
+// Note: `Param` derive macro and `Param` trait coexist — Rust's macro
+// namespace is separate from the type namespace.
+pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource};
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
     PipelineBuilder, PipelineChain, PipelineOutput, resolve_producer, resolve_ref_scan_step,
@@ -182,7 +190,60 @@ pub use template::{
     Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
     TemplatedHandler,
 };
-pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
+pub use world::{Registry, Resource, ResourceId, Sequence, World, WorldBuilder};
+
+/// Declare a newtype resource with `Deref`/`DerefMut` to the inner type.
+///
+/// Generates a struct that implements [`Resource`], `Deref`, `DerefMut`,
+/// and `From<Inner>`.
+///
+/// ```
+/// use nexus_rt::new_resource;
+///
+/// new_resource!(
+///     /// My custom counter.
+///     #[derive(Debug, Default)]
+///     pub MyCounter(u64)
+/// );
+///
+/// let mut c = MyCounter::from(0u64);
+/// *c += 1;
+/// assert_eq!(*c, 1);
+/// ```
+#[macro_export]
+macro_rules! new_resource {
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident($inner:ty)
+    ) => {
+        $(#[$meta])*
+        #[derive($crate::Resource)]
+        $vis struct $name(pub $inner);
+
+        impl ::core::ops::Deref for $name {
+            type Target = $inner;
+
+            #[inline]
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl ::core::ops::DerefMut for $name {
+            #[inline]
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl ::core::convert::From<$inner> for $name {
+            #[inline]
+            fn from(inner: $inner) -> Self {
+                Self(inner)
+            }
+        }
+    };
+}
 
 /// Type alias for a boxed, type-erased [`Handler`].
 ///

@@ -26,21 +26,26 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use nexus_rt::scheduler::{SchedulerInstaller, SchedulerTick};
-use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Res, ResMut, Resource, WorldBuilder};
 
 // ── Domain types ────────────────────────────────────────────────────────
 
+#[derive(Resource)]
 struct MidPrice(f64);
 
+#[derive(Resource)]
 struct TheoreticalValue(f64);
 
+#[derive(Resource)]
 struct SpreadBps(f64);
 
+#[derive(Resource)]
 struct QuoteState {
     bid: f64,
     ask: f64,
 }
 
+#[derive(Resource)]
 struct RiskFlag(bool);
 
 // ── Systems ─────────────────────────────────────────────────────────────

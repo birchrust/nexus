@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 
 use nexus_rt::{
     HandlerTemplate, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef,
-    ResMut, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder, handler_blueprint,
+    ResMut, Resource, Shutdown, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
+    handler_blueprint,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────
@@ -94,10 +95,13 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(50);
 
 // ── Domain types (World resources = application state) ───────────────────
 
+#[derive(Resource)]
 struct Listener(mio::net::TcpListener);
 
+#[derive(Resource)]
 struct Connections(Vec<mio::net::TcpStream>);
 
+#[derive(Resource)]
 struct Stats {
     accepts: u64,
     echoes: u64,

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 
 use nexus_rt::{
-    Handler, Installer, IntoHandler, Local, PipelineBuilder, Plugin, Res, ResMut, World,
+    Handler, Installer, IntoHandler, Local, PipelineBuilder, Plugin, Res, ResMut, Resource, World,
     WorldBuilder,
 };
 
@@ -64,6 +64,7 @@ struct MarketTick {
     price: f64,
 }
 
+#[derive(Resource)]
 struct PriceCache {
     prices: HashMap<&'static str, f64>,
 }
@@ -76,6 +77,7 @@ impl PriceCache {
     }
 }
 
+#[derive(Resource)]
 struct SignalBuffer {
     signals: Vec<&'static str>,
 }
@@ -88,9 +90,11 @@ impl SignalBuffer {
     }
 }
 
+#[derive(Resource)]
 struct OrderCount(u64);
 
 /// Optional resource — may or may not be registered.
+#[derive(Resource)]
 struct RiskLimits {
     max_signals_per_tick: u64,
 }

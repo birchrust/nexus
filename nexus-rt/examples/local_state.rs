@@ -17,7 +17,10 @@
 //! cargo run -p nexus-rt --example local_state
 //! ```
 
-use nexus_rt::{Handler, IntoHandler, Local, ResMut, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Local, ResMut, WorldBuilder, new_resource};
+
+new_resource!(RunningTotal(i64));
+new_resource!(Output(Vec<u32>));
 
 // -- Example 1: Simple counter -----------------------------------------------
 
@@ -31,16 +34,16 @@ fn counting_handler(mut count: Local<u64>, event: &'static str) {
 // -- Example 2: Independent instances ----------------------------------------
 
 /// Two instances of the same function get independent local state.
-fn accumulator(mut sum: Local<i64>, mut total: ResMut<i64>, value: i64) {
+fn accumulator(mut sum: Local<i64>, mut total: ResMut<RunningTotal>, value: i64) {
     *sum += value;
-    *total += value;
-    println!("[accumulator] local_sum={}, world_total={}", *sum, *total);
+    **total += value;
+    println!("[accumulator] local_sum={}, world_total={}", *sum, total.0);
 }
 
 // -- Example 3: Batch buffer -------------------------------------------------
 
 /// Accumulates events locally, flushes to World every N events.
-fn batch_writer(mut buf: Local<Vec<u32>>, mut output: ResMut<Vec<u32>>, value: u32) {
+fn batch_writer(mut buf: Local<Vec<u32>>, mut output: ResMut<Output>, value: u32) {
     buf.push(value);
     if buf.len() >= 3 {
         println!("[batch] flushing {} events to output", buf.len());
@@ -62,7 +65,7 @@ fn main() {
     println!("\n=== Example 2: Independent instances ===\n");
     {
         let mut builder = WorldBuilder::new();
-        builder.register::<i64>(0);
+        builder.register(RunningTotal(0));
         let mut world = builder.build();
 
         // Two handlers from the same function — each has its own Local<i64>.
@@ -79,34 +82,34 @@ fn main() {
         sys_a.run(&mut world, 5i64);
 
         // sys_a local: 15, sys_b local: 20, world total: 35
-        println!("\nWorld total: {}", world.resource::<i64>());
-        assert_eq!(*world.resource::<i64>(), 35);
+        println!("\nWorld total: {}", world.resource::<RunningTotal>().0);
+        assert_eq!(world.resource::<RunningTotal>().0, 35);
     }
 
     println!("\n=== Example 3: Batch buffer ===\n");
     {
         let mut builder = WorldBuilder::new();
-        builder.register::<Vec<u32>>(Vec::new());
+        builder.register(Output(Vec::new()));
         let mut world = builder.build();
 
         let mut sys = batch_writer.into_handler(world.registry_mut());
 
         // First two events accumulate locally.
         sys.run(&mut world, 1u32);
-        println!("  output len: {}", world.resource::<Vec<u32>>().len());
+        println!("  output len: {}", world.resource::<Output>().len());
 
         sys.run(&mut world, 2u32);
-        println!("  output len: {}", world.resource::<Vec<u32>>().len());
+        println!("  output len: {}", world.resource::<Output>().len());
 
         // Third event triggers flush.
         sys.run(&mut world, 3u32);
-        println!("  output len: {}", world.resource::<Vec<u32>>().len());
+        println!("  output len: {}", world.resource::<Output>().len());
 
         // Fourth event starts a new batch.
         sys.run(&mut world, 4u32);
-        println!("  output len: {}", world.resource::<Vec<u32>>().len());
+        println!("  output len: {}", world.resource::<Output>().len());
 
-        let output = world.resource::<Vec<u32>>();
+        let output = world.resource::<Output>();
         println!("\nFinal output: {:?}", &**output);
         assert_eq!(&**output, &[1, 2, 3]);
     }

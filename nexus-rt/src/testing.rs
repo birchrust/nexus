@@ -25,22 +25,25 @@ use crate::world::{Registry, World, WorldBuilder};
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Resource};
 /// use nexus_rt::testing::TestHarness;
 ///
-/// fn accumulate(mut counter: ResMut<u64>, event: u64) {
-///     *counter += event;
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn accumulate(mut counter: ResMut<Counter>, event: u64) {
+///     counter.0 += event;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut harness = TestHarness::new(builder);
 ///
 /// let mut handler = accumulate.into_handler(harness.registry());
 /// harness.dispatch(&mut handler, 10u64);
 /// harness.dispatch(&mut handler, 5u64);
 ///
-/// assert_eq!(*harness.world().resource::<u64>(), 15);
+/// assert_eq!(harness.world().resource::<Counter>().0, 15);
 /// ```
 pub struct TestHarness {
     world: World,

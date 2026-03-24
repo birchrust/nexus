@@ -49,21 +49,24 @@
 //! # Examples
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, Res, ResMut, Installer};
+//! use nexus_rt::{WorldBuilder, Res, ResMut, Installer, Resource};
 //! use nexus_rt::scheduler::SchedulerInstaller;
 //! use nexus_rt::system::IntoSystem;
 //!
-//! fn source(mut val: ResMut<u64>) -> bool {
-//!     *val += 1;
+//! #[derive(Resource)]
+//! struct Val(u64);
+//!
+//! fn source(mut val: ResMut<Val>) -> bool {
+//!     val.0 += 1;
 //!     true
 //! }
 //!
-//! fn sink(val: Res<u64>) -> bool {
-//!     *val > 0
+//! fn sink(val: Res<Val>) -> bool {
+//!     val.0 > 0
 //! }
 //!
 //! let mut builder = WorldBuilder::new();
-//! builder.register::<u64>(0);
+//! builder.register(Val(0));
 //!
 //! let mut installer = SchedulerInstaller::new();
 //! let a = installer.add(source, builder.registry());
@@ -117,6 +120,8 @@ use crate::world::{Registry, ResourceId, Sequence, World, WorldBuilder};
 #[derive(Debug, Default)]
 pub struct SchedulerTick(Sequence);
 
+impl crate::world::Resource for SchedulerTick {}
+
 impl SchedulerTick {
     /// The sequence at which the last scheduler pass completed.
     pub fn last(&self) -> Sequence {
@@ -153,21 +158,24 @@ pub struct SystemId(usize);
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, Installer};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, Installer, Resource};
 /// use nexus_rt::scheduler::SchedulerInstaller;
 /// use nexus_rt::system::IntoSystem;
 ///
-/// fn step_a(mut val: ResMut<u64>) -> bool {
-///     *val += 1;
+/// #[derive(Resource)]
+/// struct Val(u64);
+///
+/// fn step_a(mut val: ResMut<Val>) -> bool {
+///     val.0 += 1;
 ///     true
 /// }
 ///
-/// fn step_b(val: Res<u64>) -> bool {
-///     *val > 0
+/// fn step_b(val: Res<Val>) -> bool {
+///     val.0 > 0
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Val(0));
 ///
 /// let mut installer = SchedulerInstaller::new();
 /// let a = installer.add(step_a, builder.registry());

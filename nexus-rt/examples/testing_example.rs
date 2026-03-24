@@ -18,29 +18,33 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use nexus_rt::testing::TestHarness;
-use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder, new_resource};
+
+new_resource!(Total(u64));
+new_resource!(MaxVal(f64));
+new_resource!(Log(Vec<String>));
 
 // =============================================================================
 // Handlers under test
 // =============================================================================
 
-fn accumulate(mut total: ResMut<u64>, event: u64) {
-    *total += event;
+fn accumulate(mut total: ResMut<Total>, event: u64) {
+    **total += event;
 }
 
-fn track_max(mut max: ResMut<f64>, event: f64) {
-    if event > *max {
-        *max = event;
+fn track_max(mut max: ResMut<MaxVal>, event: f64) {
+    if event > **max {
+        **max = event;
     }
 }
 
-fn check_changed(val: Res<u64>, mut log: ResMut<Vec<String>>, _event: ()) {
+fn check_changed(val: Res<Total>, mut log: ResMut<Log>, _event: ()) {
     let status = if val.is_changed() {
         "changed"
     } else {
         "unchanged"
     };
-    log.push(format!("val={}, {status}", *val));
+    log.push(format!("val={}, {status}", val.0));
 }
 
 fn main() {
@@ -49,7 +53,7 @@ fn main() {
     println!("=== 1. Basic TestHarness ===\n");
 
     let mut builder = WorldBuilder::new();
-    builder.register::<u64>(0);
+    builder.register(Total(0));
     let mut harness = TestHarness::new(builder);
 
     let mut handler = accumulate.into_handler(harness.registry());
@@ -57,7 +61,7 @@ fn main() {
     harness.dispatch(&mut handler, 10u64);
     harness.dispatch(&mut handler, 5u64);
 
-    let total = *harness.world().resource::<u64>();
+    let total = harness.world().resource::<Total>().0;
     println!("  total after 10+5: {total}");
     assert_eq!(total, 15);
 
@@ -66,13 +70,13 @@ fn main() {
     println!("\n=== 2. dispatch_many ===\n");
 
     let mut builder = WorldBuilder::new();
-    builder.register::<f64>(f64::NEG_INFINITY);
+    builder.register(MaxVal(f64::NEG_INFINITY));
     let mut harness = TestHarness::new(builder);
 
     let mut handler = track_max.into_handler(harness.registry());
     harness.dispatch_many(&mut handler, [3.0, 7.0, 2.0, 9.0, 1.0]);
 
-    let max = *harness.world().resource::<f64>();
+    let max = harness.world().resource::<MaxVal>().0;
     println!("  max of [3, 7, 2, 9, 1]: {max}");
     assert!((max - 9.0).abs() < f64::EPSILON);
 
@@ -85,8 +89,8 @@ fn main() {
     println!("\n=== 3. Change detection ===\n");
 
     let mut builder = WorldBuilder::new();
-    builder.register::<u64>(0);
-    builder.register::<Vec<String>>(Vec::new());
+    builder.register(Total(0));
+    builder.register(Log(Vec::new()));
     let mut harness = TestHarness::new(builder);
 
     let mut checker = check_changed.into_handler(harness.registry());
@@ -94,14 +98,14 @@ fn main() {
     // Advance sequence, write at that sequence, then run checker directly
     // in the same sequence — it sees is_changed()=true
     harness.world_mut().next_sequence();
-    *harness.world_mut().resource_mut::<u64>() = 42;
+    *harness.world_mut().resource_mut::<Total>() = Total(42);
     checker.run(harness.world_mut(), ());
 
     // dispatch advances sequence before running — no write at new sequence — unchanged
     harness.dispatch(&mut checker, ());
 
-    let log = harness.world().resource::<Vec<String>>();
-    for entry in log {
+    let log = harness.world().resource::<Log>();
+    for entry in log.iter() {
         println!("  {entry}");
     }
     assert!(log[0].contains("changed"));
@@ -116,8 +120,8 @@ fn main() {
     println!("\n=== 4. Multiple handlers ===\n");
 
     let mut builder = WorldBuilder::new();
-    builder.register::<u64>(0);
-    builder.register::<f64>(f64::NEG_INFINITY);
+    builder.register(Total(0));
+    builder.register(MaxVal(f64::NEG_INFINITY));
     let mut harness = TestHarness::new(builder);
 
     let mut adder = accumulate.into_handler(harness.registry());
@@ -131,15 +135,15 @@ fn main() {
     harness.dispatch(&mut adder, 50u64);
     harness.dispatch(&mut maxer, 3.0);
 
-    let total = *harness.world().resource::<u64>();
-    let max = *harness.world().resource::<f64>();
+    let total = harness.world().resource::<Total>().0;
+    let max = harness.world().resource::<MaxVal>().0;
     println!("  total: {total}, max: {max}");
     assert_eq!(total, 120);
     assert!((max - 9.0).abs() < f64::EPSILON);
 
     // world_mut() is available for manual state manipulation
-    *harness.world_mut().resource_mut::<u64>() = 0;
-    assert_eq!(*harness.world().resource::<u64>(), 0);
+    *harness.world_mut().resource_mut::<Total>() = Total(0);
+    assert_eq!(harness.world().resource::<Total>().0, 0);
     println!("  reset total via world_mut(): 0");
 
     println!("\nDone.");

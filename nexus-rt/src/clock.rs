@@ -14,9 +14,9 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::World;
 use crate::driver::Installer;
 use crate::world::{ResourceId, WorldBuilder};
-use crate::World;
 
 /// Configuration error from clock construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +57,8 @@ pub struct Clock {
     instant: Instant,
     unix_nanos: i128,
 }
+
+impl crate::world::Resource for Clock {}
 
 impl Clock {
     /// Monotonic instant from this poll iteration.
@@ -164,7 +166,9 @@ impl Installer for RealtimeClockInstaller {
 
 impl Default for RealtimeClockInstaller {
     fn default() -> Self {
-        Self::builder().build().expect("default config is always valid")
+        Self::builder()
+            .build()
+            .expect("default config is always valid")
     }
 }
 
@@ -231,8 +235,7 @@ impl RealtimeClockPoller {
     }
 
     fn resync_at(&mut self, now: Instant) {
-        let (best_instant, base_nanos, gap) =
-            Self::calibrate(self.threshold, self.max_retries);
+        let (best_instant, base_nanos, gap) = Self::calibrate(self.threshold, self.max_retries);
         let adjustment = now.saturating_duration_since(best_instant);
         self.base_instant = now;
         self.base_nanos = base_nanos + adjustment.as_nanos() as i128;
@@ -459,11 +462,7 @@ impl HistoricalClockInstaller {
     ///
     /// Returns `ConfigError::Invalid` if `start_nanos >= end_nanos` or
     /// `step` is zero.
-    pub fn new(
-        start_nanos: i128,
-        end_nanos: i128,
-        step: Duration,
-    ) -> Result<Self, ConfigError> {
+    pub fn new(start_nanos: i128, end_nanos: i128, step: Duration) -> Result<Self, ConfigError> {
         if start_nanos >= end_nanos {
             return Err(ConfigError::Invalid("start_nanos must be < end_nanos"));
         }
@@ -728,7 +727,8 @@ mod tests {
 
     #[test]
     fn historical_install_and_sync() {
-        let installer = HistoricalClockInstaller::new(1000, 2000, Duration::from_nanos(100)).unwrap();
+        let installer =
+            HistoricalClockInstaller::new(1000, 2000, Duration::from_nanos(100)).unwrap();
         let mut wb = WorldBuilder::new();
         let mut poller = wb.install_driver(installer);
         let mut world = wb.build();

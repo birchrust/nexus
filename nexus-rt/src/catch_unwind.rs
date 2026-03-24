@@ -20,14 +20,17 @@ use crate::world::World;
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{CatchAssertUnwindSafe, WorldBuilder, ResMut, IntoHandler, Handler, Virtual};
+/// use nexus_rt::{CatchAssertUnwindSafe, WorldBuilder, ResMut, IntoHandler, Handler, Virtual, Resource};
 ///
-/// fn tick(mut counter: ResMut<u64>, event: u32) {
-///     *counter += event as u64;
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// fn tick(mut counter: ResMut<Counter>, event: u32) {
+///     counter.0 += event as u64;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Counter(0));
 /// let mut world = builder.build();
 ///
 /// let handler = tick.into_handler(world.registry());
@@ -35,7 +38,7 @@ use crate::world::World;
 /// let mut boxed: Virtual<u32> = Box::new(guarded);
 ///
 /// boxed.run(&mut world, 10);
-/// assert_eq!(*world.resource::<u64>(), 10);
+/// assert_eq!(world.resource::<Counter>().0, 10);
 /// ```
 pub struct CatchAssertUnwindSafe<H> {
     handler: H,

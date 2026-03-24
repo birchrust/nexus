@@ -1,0 +1,5 @@
+error: derive(Param) requires exactly one lifetime parameter, e.g., `struct MyParam<'w>`
+ --> tests/ui/param_two_lifetimes.rs:7:20
+  |
+7 | struct TwoLifetimes<'a, 'b> {
+  |                    ^^^^^^^^

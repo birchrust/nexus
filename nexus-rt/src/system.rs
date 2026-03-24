@@ -105,11 +105,16 @@ pub struct SystemFn<F, Params: Param, Marker = bool> {
 /// Bool-returning (scheduler propagation):
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, Res, ResMut, IntoSystem, System};
+/// use nexus_rt::{WorldBuilder, Res, ResMut, IntoSystem, System, Resource};
 ///
-/// fn reconcile(val: Res<u64>, mut flag: ResMut<bool>) -> bool {
-///     if *val > 10 {
-///         *flag = true;
+/// #[derive(Resource)]
+/// struct Val(u64);
+/// #[derive(Resource)]
+/// struct Flag(bool);
+///
+/// fn reconcile(val: Res<Val>, mut flag: ResMut<Flag>) -> bool {
+///     if val.0 > 10 {
+///         flag.0 = true;
 ///         true
 ///     } else {
 ///         false
@@ -117,31 +122,34 @@ pub struct SystemFn<F, Params: Param, Marker = bool> {
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(42);
-/// builder.register::<bool>(false);
+/// builder.register(Val(42));
+/// builder.register(Flag(false));
 /// let mut world = builder.build();
 ///
 /// let mut sys = reconcile.into_system(world.registry());
 /// assert!(sys.run(&mut world));
-/// assert!(*world.resource::<bool>());
+/// assert!(world.resource::<Flag>().0);
 /// ```
 ///
 /// Void-returning (startup, unconditional propagation):
 ///
 /// ```
-/// use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System};
+/// use nexus_rt::{WorldBuilder, ResMut, IntoSystem, System, Resource};
 ///
-/// fn initialize(mut val: ResMut<u64>) {
-///     *val = 42;
+/// #[derive(Resource)]
+/// struct Val(u64);
+///
+/// fn initialize(mut val: ResMut<Val>) {
+///     val.0 = 42;
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
+/// builder.register(Val(0));
 /// let mut world = builder.build();
 ///
 /// let mut sys = initialize.into_system(world.registry());
 /// assert!(sys.run(&mut world)); // void → always true
-/// assert_eq!(*world.resource::<u64>(), 42);
+/// assert_eq!(world.resource::<Val>().0, 42);
 /// ```
 ///
 /// # Panics

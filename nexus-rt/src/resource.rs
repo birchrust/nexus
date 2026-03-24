@@ -17,23 +17,28 @@
 //! # Examples
 //!
 //! ```
-//! use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler};
+//! use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
 //!
-//! fn process(config: Res<u64>, mut state: ResMut<bool>, _event: ()) {
-//!     if *config > 10 {
-//!         *state = true; // stamps changed_at
+//! #[derive(Resource)]
+//! struct Config(u64);
+//! #[derive(Resource)]
+//! struct Flag(bool);
+//!
+//! fn process(config: Res<Config>, mut state: ResMut<Flag>, _event: ()) {
+//!     if config.0 > 10 {
+//!         state.0 = true; // stamps changed_at
 //!     }
 //! }
 //!
 //! let mut builder = WorldBuilder::new();
-//! builder.register::<u64>(42);
-//! builder.register::<bool>(false);
+//! builder.register(Config(42));
+//! builder.register(Flag(false));
 //! let mut world = builder.build();
 //!
 //! let mut handler = process.into_handler(world.registry());
 //! handler.run(&mut world, ());
 //!
-//! assert!(*world.resource::<bool>());
+//! assert!(world.resource::<Flag>().0);
 //! ```
 
 use std::cell::Cell;

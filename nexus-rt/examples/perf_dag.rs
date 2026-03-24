@@ -14,7 +14,9 @@
 use std::hint::black_box;
 
 use nexus_rt::dag::DagBuilder;
-use nexus_rt::{Handler, PipelineBuilder, Res, ResMut, WorldBuilder};
+use nexus_rt::{Handler, PipelineBuilder, Res, ResMut, WorldBuilder, new_resource};
+
+new_resource!(ResU32(u32));
 
 // =============================================================================
 // Bench infrastructure (inline — no shared utils crate yet)
@@ -98,13 +100,13 @@ fn mul3(val: &u32) -> u32 {
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn sink_store(mut out: ResMut<u32>, val: &u32) {
-    *out = *val;
+fn sink_store(mut out: ResMut<ResU32>, val: &u32) {
+    out.0 = *val;
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn sink_add(mut out: ResMut<u32>, val: &u32) {
-    *out = out.wrapping_add(*val);
+fn sink_add(mut out: ResMut<ResU32>, val: &u32) {
+    out.0 = out.0.wrapping_add(*val);
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -113,8 +115,8 @@ fn merge2_add(a: &u32, b: &u32) -> u32 {
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn merge2_add_sink(mut out: ResMut<u32>, a: &u32, b: &u32) {
-    *out = a.wrapping_add(*b);
+fn merge2_add_sink(mut out: ResMut<ResU32>, a: &u32, b: &u32) {
+    out.0 = a.wrapping_add(*b);
 }
 
 // Pipeline comparison steps (by value)
@@ -127,14 +129,14 @@ fn pipe_add1(x: u32) -> u32 {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn pipe_sink(mut out: ResMut<u32>, x: u32) {
-    *out = x;
+fn pipe_sink(mut out: ResMut<ResU32>, x: u32) {
+    out.0 = x;
 }
 
 // World-accessing DAG node
 #[allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
-fn scale_by_res(factor: Res<u32>, val: &u32) -> u32 {
-    val.wrapping_mul(*factor)
+fn scale_by_res(factor: Res<ResU32>, val: &u32) -> u32 {
+    val.wrapping_mul(factor.0)
 }
 
 // =============================================================================
@@ -257,7 +259,7 @@ fn main() {
     println!("All times in CPU cycles\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u32>(0);
+    wb.register(ResU32(0));
     let mut world = wb.build();
 
     // -- Build all DAGs and pipelines upfront (reg borrows world immutably) --

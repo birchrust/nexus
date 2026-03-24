@@ -18,8 +18,11 @@
 //! cargo run -p nexus-rt --example pipeline
 //! ```
 
-use nexus_rt::{Handler, PipelineBuilder, ResMut, WorldBuilder};
+use nexus_rt::{Handler, PipelineBuilder, ResMut, Resource, WorldBuilder, new_resource};
 
+new_resource!(Accumulator(u64));
+
+#[derive(Resource)]
 struct PriceCache {
     latest: f64,
     updates: u64,
@@ -64,9 +67,9 @@ fn check_known(tick: MarketTick) -> Result<MarketTick, ProcessError> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn count_error(mut errors: ResMut<u64>, err: ProcessError) {
+fn count_error(mut errors: ResMut<Accumulator>, err: ProcessError) {
     println!("  [catch] {err:?}");
-    *errors += 1;
+    **errors += 1;
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -77,8 +80,8 @@ fn store_price(mut cache: ResMut<PriceCache>, tick: MarketTick) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn accumulate(mut total: ResMut<u64>, x: u32) {
-    *total += u64::from(x);
+fn accumulate(mut total: ResMut<Accumulator>, x: u32) {
+    **total += u64::from(x);
 }
 
 fn main() {
@@ -161,7 +164,7 @@ fn main() {
 
     let mut wb = WorldBuilder::new();
     wb.register(PriceCache::new());
-    wb.register::<u64>(0); // error counter
+    wb.register(Accumulator(0)); // error counter
     let mut world = wb.build();
     let r = world.registry_mut();
 
@@ -194,7 +197,7 @@ fn main() {
         result_pipeline.run(&mut world, tick);
     }
 
-    let errors = *world.resource::<u64>();
+    let errors = world.resource::<Accumulator>().0;
     println!("\n  Errors: {errors}");
     assert_eq!(errors, 2);
 
@@ -203,7 +206,7 @@ fn main() {
     println!("\n=== Pipeline as Handler ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Accumulator(0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
@@ -213,7 +216,7 @@ fn main() {
     pipeline.run(&mut world, 20);
     pipeline.run(&mut world, 30);
 
-    let total = *world.resource::<u64>();
+    let total = world.resource::<Accumulator>().0;
     println!("  Total: {total}");
     assert_eq!(total, 60);
 
@@ -222,7 +225,7 @@ fn main() {
     println!("\n=== Guard + Tap ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Accumulator(0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
@@ -235,7 +238,7 @@ fn main() {
     for v in [3u32, 7, 2, 10, 1] {
         guarded.run(&mut world, v);
     }
-    let total = *world.resource::<u64>();
+    let total = world.resource::<Accumulator>().0;
     println!("  Total (values > 5 only): {total}");
     assert_eq!(total, 17); // 7 + 10
 
@@ -244,7 +247,7 @@ fn main() {
     println!("\n=== Splat ===\n");
 
     let mut wb = WorldBuilder::new();
-    wb.register::<u64>(0);
+    wb.register(Accumulator(0));
     let mut world = wb.build();
     let r = world.registry_mut();
 
@@ -253,8 +256,8 @@ fn main() {
         (x, x * 3)
     }
     #[allow(clippy::items_after_statements, clippy::needless_pass_by_value)]
-    fn combine(mut out: ResMut<u64>, a: u32, b: u32) {
-        *out = a as u64 + b as u64;
+    fn combine(mut out: ResMut<Accumulator>, a: u32, b: u32) {
+        **out = a as u64 + b as u64;
     }
 
     let mut pipeline = PipelineBuilder::<u32>::new()
@@ -264,7 +267,7 @@ fn main() {
         .build();
 
     pipeline.run(&mut world, 5);
-    let result = *world.resource::<u64>();
+    let result = world.resource::<Accumulator>().0;
     println!("  split(5) = (5, 15), combine = {result}");
     assert_eq!(result, 20);
 

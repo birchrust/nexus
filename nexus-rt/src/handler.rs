@@ -511,17 +511,22 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{Res, ResMut, IntoHandler, WorldBuilder};
+/// use nexus_rt::{Res, ResMut, IntoHandler, WorldBuilder, Resource};
 ///
-/// fn tick(counter: Res<u64>, mut flag: ResMut<bool>, event: u32) {
+/// #[derive(Resource)]
+/// struct Counter(u64);
+/// #[derive(Resource)]
+/// struct Flag(bool);
+///
+/// fn tick(counter: Res<Counter>, mut flag: ResMut<Flag>, event: u32) {
 ///     if event > 0 {
-///         *flag = true;
+///         flag.0 = true;
 ///     }
 /// }
 ///
 /// let mut builder = WorldBuilder::new();
-/// builder.register::<u64>(0);
-/// builder.register::<bool>(false);
+/// builder.register(Counter(0));
+/// builder.register(Flag(false));
 ///
 /// let mut handler = tick.into_handler(builder.registry());
 /// ```

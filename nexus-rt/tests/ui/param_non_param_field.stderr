@@ -1,0 +1,85 @@
+error[E0277]: the trait bound `&'static u32: Param` is not satisfied
+ --> tests/ui/param_non_param_field.rs:6:10
+  |
+6 | #[derive(Param)]
+  |          ^^^^^ the trait `Param` is not implemented for `&'static u32`
+  |
+  = help: the following other types implement trait `Param`:
+            ()
+            (P0, P1)
+            (P0, P1, P2)
+            (P0, P1, P2, P3)
+            (P0, P1, P2, P3, P4)
+            (P0, P1, P2, P3, P4, P5)
+            (P0, P1, P2, P3, P4, P5, P6)
+            (P0, P1, P2, P3, P4, P5, P6, P7)
+          and $N others
+  = note: this error originates in the derive macro `Param` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `&'static u32: Param` is not satisfied in `BadFieldState`
+ --> tests/ui/param_non_param_field.rs:7:8
+  |
+7 | struct BadField<'w> {
+  |        ^^^^^^^^ within `BadFieldState`, the trait `Param` is not implemented for `&'static u32`
+  |
+  = help: the following other types implement trait `Param`:
+            ()
+            (P0, P1)
+            (P0, P1, P2)
+            (P0, P1, P2, P3)
+            (P0, P1, P2, P3, P4)
+            (P0, P1, P2, P3, P4, P5)
+            (P0, P1, P2, P3, P4, P5, P6)
+            (P0, P1, P2, P3, P4, P5, P6, P7)
+          and $N others
+note: required because it appears within the type `BadFieldState`
+ --> tests/ui/param_non_param_field.rs:7:8
+  |
+7 | struct BadField<'w> {
+  |        ^^^^^^^^
+note: required by a bound in `nexus_rt::Param::State`
+ --> src/handler.rs
+  |
+  |     type State: Send;
+  |                 ^^^^ required by this bound in `Param::State`
+
+error[E0277]: the trait bound `&'static u32: Param` is not satisfied in `BadFieldState`
+ --> tests/ui/param_non_param_field.rs:6:10
+  |
+6 | #[derive(Param)]
+  |          ^^^^^ within `BadFieldState`, the trait `Param` is not implemented for `&'static u32`
+  |
+  = help: the following other types implement trait `Param`:
+            ()
+            (P0, P1)
+            (P0, P1, P2)
+            (P0, P1, P2, P3)
+            (P0, P1, P2, P3, P4)
+            (P0, P1, P2, P3, P4, P5)
+            (P0, P1, P2, P3, P4, P5, P6)
+            (P0, P1, P2, P3, P4, P5, P6, P7)
+          and $N others
+note: required because it appears within the type `BadFieldState`
+ --> tests/ui/param_non_param_field.rs:7:8
+  |
+7 | struct BadField<'w> {
+  |        ^^^^^^^^
+  = note: the return type of a function must have a statically known size
+  = note: this error originates in the derive macro `Param` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `&'static u32: Param` is not satisfied
+ --> tests/ui/param_non_param_field.rs:8:8
+  |
+8 |     x: &'w u32,  // &u32 doesn't impl Param
+  |        ^^^^^^^ the trait `Param` is not implemented for `&'static u32`
+  |
+  = help: the following other types implement trait `Param`:
+            ()
+            (P0, P1)
+            (P0, P1, P2)
+            (P0, P1, P2, P3)
+            (P0, P1, P2, P3, P4)
+            (P0, P1, P2, P3, P4, P5)
+            (P0, P1, P2, P3, P4, P5, P6)
+            (P0, P1, P2, P3, P4, P5, P6, P7)
+          and $N others

@@ -19,20 +19,23 @@
 //! cargo run -p nexus-rt --example optional_resources
 //! ```
 
-use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Res, ResMut, Resource, WorldBuilder};
 
 // -- Domain types ------------------------------------------------------------
 
+#[derive(Resource)]
 struct Config {
     threshold: f64,
 }
 
 /// Optional — only present if debug mode is enabled.
+#[derive(Resource)]
 struct DebugLog {
     entries: Vec<String>,
 }
 
 /// Optional — only present if metrics are enabled.
+#[derive(Resource)]
 struct Metrics {
     events_processed: u64,
 }

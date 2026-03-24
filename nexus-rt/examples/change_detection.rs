@@ -19,14 +19,18 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use nexus_rt::scheduler::{SchedulerInstaller, SchedulerTick};
-use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Res, ResMut, Resource, WorldBuilder, new_resource};
+
+new_resource!(Log(Vec<String>));
 
 // =============================================================================
 // Domain types
 // =============================================================================
 
+#[derive(Resource)]
 struct Price(f64);
 
+#[derive(Resource)]
 struct Quote {
     bid: f64,
     ask: f64,
@@ -40,7 +44,7 @@ fn write_price(mut price: ResMut<Price>, new_price: f64) {
     price.0 = new_price; // stamps changed_at = current sequence
 }
 
-fn check_price_changed(price: Res<Price>, mut log: ResMut<Vec<String>>, _event: ()) {
+fn check_price_changed(price: Res<Price>, mut log: ResMut<Log>, _event: ()) {
     if price.is_changed() {
         log.push(format!("price changed to {:.2}", price.0));
     } else {
@@ -48,11 +52,7 @@ fn check_price_changed(price: Res<Price>, mut log: ResMut<Vec<String>>, _event: 
     }
 }
 
-fn check_after_checkpoint(
-    price: Res<Price>,
-    mut log: ResMut<Vec<String>>,
-    checkpoint: nexus_rt::Sequence,
-) {
+fn check_after_checkpoint(price: Res<Price>, mut log: ResMut<Log>, checkpoint: nexus_rt::Sequence) {
     let is_now = price.is_changed();
     let since = price.changed_after(checkpoint);
     log.push(format!(
@@ -80,7 +80,7 @@ fn main() {
 
     let mut wb = WorldBuilder::new();
     wb.register(Price(100.0));
-    wb.register::<Vec<String>>(Vec::new());
+    wb.register(Log(Vec::new()));
     let mut world = wb.build();
 
     let mut writer = write_price.into_handler(world.registry());
@@ -100,8 +100,8 @@ fn main() {
     writer.run(&mut world, 110.0);
     checker.run(&mut world, ());
 
-    let log = world.resource::<Vec<String>>();
-    for entry in log {
+    let log = world.resource::<Log>();
+    for entry in log.iter() {
         println!("  {entry}");
     }
     assert_eq!(log.len(), 3);
@@ -118,7 +118,7 @@ fn main() {
 
     let mut wb = WorldBuilder::new();
     wb.register(Price(100.0));
-    wb.register::<Vec<String>>(Vec::new());
+    wb.register(Log(Vec::new()));
     let mut world = wb.build();
 
     let mut checker = check_price_changed.into_handler(world.registry());
@@ -128,7 +128,7 @@ fn main() {
     world.resource_mut::<Price>().0 = 100.0; // same value, but stamps!
     checker.run(&mut world, ());
 
-    let log = world.resource::<Vec<String>>();
+    let log = world.resource::<Log>();
     println!("  {}", log[0]);
     assert!(log[0].contains("changed"));
     println!("  (DerefMut stamps even when value is the same)");
@@ -143,7 +143,7 @@ fn main() {
 
     let mut wb = WorldBuilder::new();
     wb.register(Price(100.0));
-    wb.register::<Vec<String>>(Vec::new());
+    wb.register(Log(Vec::new()));
     let mut world = wb.build();
 
     let mut writer = write_price.into_handler(world.registry());
@@ -161,8 +161,8 @@ fn main() {
     world.next_sequence();
     checker.run(&mut world, checkpoint);
 
-    let log = world.resource::<Vec<String>>();
-    for entry in log {
+    let log = world.resource::<Log>();
+    for entry in log.iter() {
         println!("  {entry}");
     }
     assert!(log[0].contains("is_changed=true"));
