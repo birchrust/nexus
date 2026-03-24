@@ -173,7 +173,9 @@ pub use handler::{
     CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
     Resolved,
 };
-pub use nexus_rt_derive::{Deref, DerefMut, Resource};
+// Note: `Param` derive macro and `Param` trait coexist — Rust's macro
+// namespace is separate from the type namespace.
+pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource};
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
     PipelineBuilder, PipelineChain, PipelineOutput, resolve_producer, resolve_ref_scan_step,

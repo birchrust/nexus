@@ -1,0 +1,7 @@
+error: derive(Param) requires exactly one lifetime parameter, e.g., `struct MyParam<'w>`
+ --> tests/ui/param_no_lifetime.rs:6:10
+  |
+6 | #[derive(Param)]
+  |          ^^^^^
+  |
+  = note: this error originates in the derive macro `Param` (in Nightly builds, run with -Z macro-backtrace for more info)
