@@ -1,0 +1,15 @@
+error[E0277]: this function cannot be converted into a callback
+  --> tests/ui/callback_wrong_sig.rs:22:40
+   |
+22 |     register_callback::<MyCtx, u32, _>(bad_callback, MyCtx, &reg);
+   |     ---------------------------------- ^^^^^^^^^^^^ the trait `IntoCallback<MyCtx, u32, _>` is not implemented for fn item `fn(u32) -> u32 {bad_callback}`
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = note: callback signature: `fn(&mut Context, Res<A>, ..., Event)` — context first, then resources, event last
+   = note: closures with resource parameters are not supported — use a named `fn` when using Param resources
+note: required by a bound in `register_callback`
+  --> tests/ui/callback_wrong_sig.rs:13:39
+   |
+13 | fn register_callback<C, E, P>(f: impl IntoCallback<C, E, P>, ctx: C, registry: &nexus_rt::Registry) {
+   |                                       ^^^^^^^^^^^^^^^^^^^^^ required by this bound in `register_callback`

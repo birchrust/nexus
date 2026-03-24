@@ -1,0 +1,16 @@
+error[E0277]: this function cannot be used as a pipeline step for this input type
+  --> tests/ui/then_on_option.rs:18:15
+   |
+18 |         .then(takes_u32, &reg); // ERROR: takes_u32 expects u32, not Option<u32>
+   |          ---- ^^^^^^^^^ the trait `IntoStep<Option<u32>, _, _>` is not implemented for fn item `fn(u32) -> u32 {takes_u32}`
+   |          |
+   |          required by a bound introduced by this call
+   |
+   = note: if the pipeline output is `Option<T>`, use `.map()` to operate on the inner `T`
+   = note: if the pipeline output is `Result<T, E>`, use `.map()` for `Ok` or `.catch()` for `Err`
+   = note: if using a closure with resource params (Res<T>, ResMut<T>), that isn't supported — use a named `fn`
+note: required by a bound in `PipelineChain::<In, Out, Chain>::then`
+  --> src/pipeline.rs
+   |
+   |     pub fn then<NewOut, Params, S: IntoStep<Out, NewOut, Params>>(
+   |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `PipelineChain::<In, Out, Chain>::then`

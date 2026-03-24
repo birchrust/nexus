@@ -296,7 +296,13 @@ impl Registry {
         *self
             .indices
             .get(&TypeId::of::<T>())
-            .unwrap_or_else(|| panic!("resource `{}` not registered", type_name::<T>()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "resource `{}` not registered — call WorldBuilder::register::<{}>(initial_value) during setup",
+                    type_name::<T>(),
+                    type_name::<T>()
+                )
+            })
     }
 
     /// Try to resolve the [`ResourceId`] for a type. Returns `None` if the

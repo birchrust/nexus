@@ -1,0 +1,39 @@
+error[E0277]: this function cannot be used as a pipeline step for this input type
+  --> tests/ui/dag_merge_mismatch.rs:22:31
+   |
+22 |         .arm(|seed| seed.then(identity, &reg))
+   |                          ---- ^^^^^^^^ the trait `IntoStep<&'static u32, _, _>` is not implemented for fn item `fn(u32) -> u32 {identity}`
+   |                          |
+   |                          required by a bound introduced by this call
+   |
+   = note: if the pipeline output is `Option<T>`, use `.map()` to operate on the inner `T`
+   = note: if the pipeline output is `Result<T, E>`, use `.map()` for `Ok` or `.catch()` for `Err`
+   = note: if using a closure with resource params (Res<T>, ResMut<T>), that isn't supported — use a named `fn`
+note: required by a bound in `DagArmSeed::<In>::then`
+  --> src/dag.rs
+   |
+   |     pub fn then<Out, Params, S>(
+   |            ---- required by a bound in this associated function
+...
+   |         S: IntoStep<&'static In, Out, Params>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DagArmSeed::<In>::then`
+
+error[E0277]: this function cannot be used as a pipeline step for this input type
+  --> tests/ui/dag_merge_mismatch.rs:23:31
+   |
+23 |         .arm(|seed| seed.then(to_string, &reg))
+   |                          ---- ^^^^^^^^^ the trait `IntoStep<&'static u32, _, _>` is not implemented for fn item `fn(u32) -> String {to_string}`
+   |                          |
+   |                          required by a bound introduced by this call
+   |
+   = note: if the pipeline output is `Option<T>`, use `.map()` to operate on the inner `T`
+   = note: if the pipeline output is `Result<T, E>`, use `.map()` for `Ok` or `.catch()` for `Err`
+   = note: if using a closure with resource params (Res<T>, ResMut<T>), that isn't supported — use a named `fn`
+note: required by a bound in `DagArmSeed::<In>::then`
+  --> src/dag.rs
+   |
+   |     pub fn then<Out, Params, S>(
+   |            ---- required by a bound in this associated function
+...
+   |         S: IntoStep<&'static In, Out, Params>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DagArmSeed::<In>::then`

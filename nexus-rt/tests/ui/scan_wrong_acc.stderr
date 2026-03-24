@@ -1,0 +1,18 @@
+error[E0277]: this function cannot be used as a scan step
+  --> tests/ui/scan_wrong_acc.rs:17:28
+   |
+17 |         .scan::<u64, _, _, _>(0u64, bad_scan, &reg);
+   |          ----              ^ the trait `IntoScanStep<u64, u32, _, _>` is not implemented for fn item `fn(u32) -> u32 {bad_scan}`
+   |          |
+   |          required by a bound introduced by this call
+   |
+   = note: scan steps take `&mut Accumulator` as first param, then resources, then input last
+   = note: closures with resource parameters are not supported — use a named `fn`
+note: required by a bound in `PipelineBuilder::<In>::scan`
+  --> src/pipeline.rs
+   |
+   |     pub fn scan<Acc, Out, Params, S>(
+   |            ---- required by a bound in this associated function
+...
+   |         S: IntoScanStep<Acc, In, Out, Params>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `PipelineBuilder::<In>::scan`
