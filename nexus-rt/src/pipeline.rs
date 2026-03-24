@@ -3209,22 +3209,23 @@ impl<In, T, E, Chain: ChainCall<In, Out = Result<T, E>>> PipelineChain<In, Resul
 // PipelineOutput — marker trait for build()
 // =============================================================================
 
-/// Marker trait restricting [`PipelineChain::build`] to pipelines
-/// that produce `()`.
-///
-/// If your pipeline produces a value, add a final `.then()` that
-/// writes it somewhere (e.g. `ResMut<T>`).
-#[diagnostic::on_unimplemented(
-    message = "`build()` requires the step pipeline output to be `()`",
-    label = "this pipeline produces `{Self}`, not `()`",
-    note = "add a final `.then()` that consumes the output"
-)]
+mod pipeline_output_seal {
+    pub trait Sealed {}
+    impl Sealed for () {}
+    impl Sealed for Option<()> {}
+}
+
 /// Sealed marker trait for valid pipeline terminal types.
 ///
 /// Only `()` and `Option<()>` satisfy this. A pipeline can only
 /// `.build()` when its output is one of these types — add a final
-/// `.then()` that consumes the output to reach `()`.
-pub trait PipelineOutput {}
+/// `.then()` or `.dispatch()` that consumes the output.
+#[diagnostic::on_unimplemented(
+    message = "`build()` requires the pipeline output to be `()` or `Option<()>`",
+    label = "this pipeline produces `{Self}`, not `()` or `Option<()>`",
+    note = "add a final `.then()` or `.dispatch()` that consumes the output"
+)]
+pub trait PipelineOutput: pipeline_output_seal::Sealed {}
 impl PipelineOutput for () {}
 impl PipelineOutput for Option<()> {}
 
