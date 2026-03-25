@@ -106,7 +106,12 @@ macro_rules! impl_autocorrelation_float {
                 if self.m2 == 0.0 as $ty {
                     return Option::None;
                 }
-                Option::Some(self.cross_m / self.m2)
+                // cross_m accumulated over (count - LAG) pairs,
+                // m2 accumulated over (count - 1) samples.
+                // Normalize both to get comparable per-observation values.
+                let n_pairs = (self.count - LAG as u64) as $ty;
+                let n_samples = (self.count - 1) as $ty;
+                Option::Some(self.cross_m * n_samples / (self.m2 * n_pairs))
             }
 
             /// Raw autocovariance at the configured lag, or `None` if not primed.

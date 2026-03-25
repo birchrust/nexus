@@ -138,9 +138,20 @@ macro_rules! impl_cross_correlation {
                 if var_product <= 0.0 as $ty {
                     return Option::None;
                 }
+                // Lag 0: cross_m and m2_a/m2_b have the same number of
+                // contributing samples — no scaling needed.
+                // Lags > 0: cross_m[lag] has (count - lag) pairs while
+                // m2 has (count - 1) samples. Scale to normalize.
+                let scale = if lag == 0 {
+                    1.0 as $ty
+                } else {
+                    let n_pairs = (self.count - lag as u64) as $ty;
+                    let n_samples = (self.count - 1) as $ty;
+                    n_samples / n_pairs
+                };
                 #[allow(clippy::cast_possible_truncation)]
                 let denom = crate::math::sqrt(var_product as f64) as $ty;
-                Option::Some(self.cross_m[lag] / denom)
+                Option::Some(self.cross_m[lag] * scale / denom)
             }
 
             /// The lag (0..LAG) with the strongest absolute correlation,
@@ -160,12 +171,22 @@ macro_rules! impl_cross_correlation {
                 let mut best_lag = 0;
                 let mut best_abs = 0.0 as $ty;
                 let max_lag = (self.count - 1).min(LAG as u64) as usize;
+                let n_samples = (self.count - 1) as $ty;
 
                 for k in 0..max_lag {
-                    let abs_cm = if self.cross_m[k] < 0.0 as $ty {
-                        -(self.cross_m[k])
-                    } else {
+                    // Normalize cross_m by pair count so larger lags
+                    // aren't penalized for having fewer contributing pairs.
+                    // Lag 0 needs no scaling (same contributor count as m2).
+                    let normalized = if k == 0 {
                         self.cross_m[k]
+                    } else {
+                        let n_pairs = (self.count - k as u64) as $ty;
+                        self.cross_m[k] * n_samples / n_pairs
+                    };
+                    let abs_cm = if normalized < 0.0 as $ty {
+                        -normalized
+                    } else {
+                        normalized
                     };
                     if abs_cm > best_abs {
                         best_abs = abs_cm;

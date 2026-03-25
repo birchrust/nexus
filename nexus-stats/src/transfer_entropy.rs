@@ -259,6 +259,17 @@ impl TransferEntropyF64 {
         let bins = self.bins;
         let mut te = 0.0;
 
+        // Precompute P(b) = Σ_c marginal[b][c] for all b.
+        // Hoisted outside the (a, b) loop — depends only on b.
+        let mut marginal_b_sums: alloc::vec::Vec<u64> = vec![0u64; bins];
+        for b in 0..bins {
+            let mut sum = 0u64;
+            for c in 0..bins {
+                sum += marginal[self.idx2(b, c)];
+            }
+            marginal_b_sums[b] = sum;
+        }
+
         for a in 0..bins {
             for b in 0..bins {
                 // P(a, b) = Σ_c joint[a][b][c]
@@ -270,11 +281,7 @@ impl TransferEntropyF64 {
                     continue;
                 }
 
-                // P(b) = Σ_c marginal[b][c]
-                let mut marginal_b = 0u64;
-                for c in 0..bins {
-                    marginal_b += marginal[self.idx2(b, c)];
-                }
+                let marginal_b = marginal_b_sums[b];
                 if marginal_b == 0 {
                     continue;
                 }
@@ -342,11 +349,18 @@ impl TransferEntropyF64Builder {
             return Err(crate::ConfigError::Invalid("lag must be >= 1"));
         }
 
+        let bins_sq = bins
+            .checked_mul(bins)
+            .ok_or(crate::ConfigError::Invalid("bins too large (bins² overflows)"))?;
+        let bins_cu = bins_sq
+            .checked_mul(bins)
+            .ok_or(crate::ConfigError::Invalid("bins too large (bins³ overflows)"))?;
+
         Ok(TransferEntropyF64 {
-            joint_xy: vec![0u64; bins * bins * bins].into_boxed_slice(),
-            joint_yx: vec![0u64; bins * bins * bins].into_boxed_slice(),
-            marginal_y: vec![0u64; bins * bins].into_boxed_slice(),
-            marginal_x: vec![0u64; bins * bins].into_boxed_slice(),
+            joint_xy: vec![0u64; bins_cu].into_boxed_slice(),
+            joint_yx: vec![0u64; bins_cu].into_boxed_slice(),
+            marginal_y: vec![0u64; bins_sq].into_boxed_slice(),
+            marginal_x: vec![0u64; bins_sq].into_boxed_slice(),
             hist_x: vec![0usize; lag].into_boxed_slice(),
             hist_y: vec![0usize; lag].into_boxed_slice(),
             head: 0,

@@ -163,7 +163,7 @@ macro_rules! impl_moments_float {
                 let m3 = self.m3 as f64;
                 #[allow(clippy::cast_possible_truncation)]
                 {
-                    Option::Some((n.sqrt() * m3 / (m2 * m2.sqrt())) as $ty)
+                    Option::Some((crate::math::sqrt(n) * m3 / (m2 * crate::math::sqrt(m2))) as $ty)
                 }
             }
 
@@ -385,7 +385,7 @@ macro_rules! impl_moments_int {
                     return Option::None;
                 }
                 let n = self.count as f64;
-                Option::Some(n.sqrt() * self.m3 / (self.m2 * self.m2.sqrt()))
+                Option::Some(crate::math::sqrt(n) * self.m3 / (self.m2 * crate::math::sqrt(self.m2)))
             }
 
             /// Population excess kurtosis, or `None` if < 4 samples or

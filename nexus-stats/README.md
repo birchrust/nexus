@@ -95,7 +95,7 @@ for deep-dives on each algorithm.
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
 | `EntropyF64<K>` | Shannon entropy over K categories | 3 |
-| `TransferEntropyF64` | Directed information flow (Granger causality) | 14 |
+| `TransferEntropyF64` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
 
 ### Monitoring
 
