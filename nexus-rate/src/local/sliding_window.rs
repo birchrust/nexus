@@ -36,14 +36,14 @@ impl SlidingWindow {
     /// Converts an `Instant` to nanoseconds relative to the internal base.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
-        now.duration_since(self.base).as_nanos() as u64
+        now.saturating_duration_since(self.base).as_nanos() as u64
     }
 }
 
 /// Builder for [`SlidingWindow`].
 #[derive(Debug, Clone)]
 pub struct SlidingWindowBuilder {
-    window: Option<u64>,
+    window: Option<Duration>,
     sub_windows: Option<usize>,
     limit: Option<u64>,
     now: Option<Instant>,
@@ -151,11 +151,16 @@ impl SlidingWindow {
         Ok(())
     }
 
-    /// Resets all buckets and the running total.
+    /// Resets all buckets, the running total, and the time base.
+    ///
+    /// After reset, the window is empty and `now` becomes the new time origin.
     #[inline]
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, now: Instant) {
         self.ring_mut().fill(0);
         self.total = 0;
+        self.current_bucket = 0;
+        self.last_bucket_time = 0;
+        self.base = now;
     }
 }
 
@@ -172,7 +177,7 @@ impl SlidingWindowBuilder {
     #[inline]
     #[must_use]
     pub fn window(mut self, duration: Duration) -> Self {
-        self.window = Some(duration.as_nanos() as u64);
+        self.window = Some(duration);
         self
     }
 
@@ -210,12 +215,15 @@ impl SlidingWindowBuilder {
     #[inline]
     pub fn build(self) -> Result<SlidingWindow, crate::ConfigError> {
         let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
+        let window_nanos = u64::try_from(window.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("window duration overflows u64 nanoseconds")
+        })?;
         let sub_windows = self
             .sub_windows
             .ok_or(crate::ConfigError::Missing("sub_windows"))?;
         let limit = self.limit.ok_or(crate::ConfigError::Missing("limit"))?;
         let now = self.now.unwrap_or_else(Instant::now);
-        if window == 0 {
+        if window_nanos == 0 {
             return Err(crate::ConfigError::Invalid("window must be > 0"));
         }
         if sub_windows == 0 {
@@ -225,7 +233,7 @@ impl SlidingWindowBuilder {
             return Err(crate::ConfigError::Invalid("limit must be > 0"));
         }
 
-        let bucket_duration = window / sub_windows as u64;
+        let bucket_duration = window_nanos / sub_windows as u64;
         if bucket_duration == 0 {
             return Err(crate::ConfigError::Invalid(
                 "window / sub_windows must be > 0",
@@ -353,7 +361,8 @@ mod tests {
         for _ in 0..50 {
             let _ = sw.try_acquire(1, start);
         }
-        sw.reset();
+        let reset_time = start + Duration::from_nanos(500);
+        sw.reset(reset_time);
         assert_eq!(sw.count(), 0);
         assert_eq!(sw.remaining(), 100);
     }

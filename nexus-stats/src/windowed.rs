@@ -48,7 +48,7 @@ macro_rules! impl_windowed_max {
             /// this base. Use this for deterministic testing.
             #[inline]
             pub fn with_base(window: Duration, base: Instant) -> Result<Self, crate::ConfigError> {
-                let window_ns = window.as_nanos() as u64;
+                let window_ns = u64::try_from(window.as_nanos()).map_err(|_| crate::ConfigError::Invalid("window duration too large"))?;
                 if window_ns == 0 {
                     return Err(crate::ConfigError::Invalid("window must be positive"));
                 }
@@ -66,7 +66,7 @@ macro_rules! impl_windowed_max {
 
             #[inline]
             fn nanos_since_base(&self, now: Instant) -> u64 {
-                now.duration_since(self.base).as_nanos() as u64
+                now.saturating_duration_since(self.base).as_nanos() as u64
             }
 
             /// Feeds a sample at the given time. Returns current window max.
@@ -141,16 +141,19 @@ macro_rules! impl_windowed_max {
                 self.count
             }
 
-            /// Resets to empty state.
+            /// Resets to empty state with `now` as the new time base.
+            ///
+            /// Pass the same base `Instant` used at construction for
+            /// deterministic testing.
             #[inline]
-            pub fn reset(&mut self) {
+            pub fn reset(&mut self, now: Instant) {
                 let init = Sample {
                     timestamp: 0,
                     value: $init,
                 };
                 self.samples = [init; 3];
                 self.count = 0;
-                self.base = Instant::now();
+                self.base = now;
             }
         }
     };
@@ -185,7 +188,7 @@ macro_rules! impl_windowed_min {
             /// Creates a new windowed min tracker with an explicit base instant.
             #[inline]
             pub fn with_base(window: Duration, base: Instant) -> Result<Self, crate::ConfigError> {
-                let window_ns = window.as_nanos() as u64;
+                let window_ns = u64::try_from(window.as_nanos()).map_err(|_| crate::ConfigError::Invalid("window duration too large"))?;
                 if window_ns == 0 {
                     return Err(crate::ConfigError::Invalid("window must be positive"));
                 }
@@ -203,7 +206,7 @@ macro_rules! impl_windowed_min {
 
             #[inline]
             fn nanos_since_base(&self, now: Instant) -> u64 {
-                now.duration_since(self.base).as_nanos() as u64
+                now.saturating_duration_since(self.base).as_nanos() as u64
             }
 
             /// Feeds a sample at the given time. Returns current window min.
@@ -273,16 +276,19 @@ macro_rules! impl_windowed_min {
                 self.count
             }
 
-            /// Resets to empty state.
+            /// Resets to empty state with `now` as the new time base.
+            ///
+            /// Pass the same base `Instant` used at construction for
+            /// deterministic testing.
             #[inline]
-            pub fn reset(&mut self) {
+            pub fn reset(&mut self, now: Instant) {
                 let init = Sample {
                     timestamp: 0,
                     value: $init,
                 };
                 self.samples = [init; 3];
                 self.count = 0;
-                self.base = Instant::now();
+                self.base = now;
             }
         }
     };
@@ -357,7 +363,7 @@ mod tests {
         let base = Instant::now();
         let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(100), base).unwrap();
         let _ = wm.update(t(base, 0), 42.0);
-        wm.reset();
+        wm.reset(base);
         assert!(wm.max().is_none());
         assert_eq!(wm.count(), 0);
     }
@@ -450,7 +456,7 @@ mod tests {
         let base = Instant::now();
         let mut wm = WindowedMinF64::with_base(Duration::from_nanos(100), base).unwrap();
         let _ = wm.update(t(base, 0), 42.0);
-        wm.reset();
+        wm.reset(base);
         assert!(wm.min().is_none());
     }
 
@@ -507,5 +513,11 @@ mod tests {
         assert_eq!(wm.update(t(base, 0), 100), 100);
         assert_eq!(wm.update(t(base, 1), 50), 50);
         assert_eq!(wm.update(t(base, 2), 75), 50);
+    }
+
+    #[test]
+    fn window_overflow_returns_error() {
+        let result = WindowedMaxF64::new(Duration::from_secs(u64::MAX));
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }

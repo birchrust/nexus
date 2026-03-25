@@ -42,7 +42,7 @@ impl Gcra {
     /// Converts an `Instant` to nanoseconds relative to the base instant.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
-        now.duration_since(self.base).as_nanos() as u64
+        now.saturating_duration_since(self.base).as_nanos() as u64
     }
 
     /// Attempts to acquire with the given cost (thread-safe).
@@ -112,7 +112,9 @@ impl Gcra {
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
-        let period_nanos = period.as_nanos() as u64;
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
@@ -151,10 +153,14 @@ impl Gcra {
         }
     }
 
-    /// Resets the TAT.
+    /// Resets the limiter to full capacity as of `now`.
+    ///
+    /// Equivalent to freshly constructing the limiter at this instant:
+    /// burst+1 requests are available immediately.
     #[inline]
-    pub fn reset(&self) {
-        self.tat.store(0, Ordering::Release);
+    pub fn reset(&self, now: Instant) {
+        self.tat
+            .store(self.nanos_since_base(now), Ordering::Release);
     }
 }
 
@@ -215,7 +221,9 @@ impl GcraBuilder {
     pub fn build(self) -> Result<Gcra, crate::ConfigError> {
         let rate = self.rate.ok_or(crate::ConfigError::Missing("rate"))?;
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
-        let period_nanos = period.as_nanos() as u64;
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
@@ -290,8 +298,10 @@ mod tests {
         for _ in 0..6 {
             let _ = g.try_acquire(1, start);
         }
-        g.reset();
-        assert!(g.try_acquire(1, start));
+        let reset_time = start + Duration::from_nanos(1000);
+        g.reset(reset_time);
+        // After reset, TAT = nanos_since_base(reset_time) = fresh start
+        assert!(g.try_acquire(1, reset_time));
     }
 
     #[test]
@@ -364,11 +374,12 @@ mod tests {
         assert!(!g.try_acquire(1, start));
 
         // Reconfigure to much higher rate and reset TAT
+        let reset_time = start + Duration::from_nanos(500);
         g.reconfigure(1000, Duration::from_nanos(1000), 10).unwrap();
-        g.reset();
-        // Now: emission_interval=1, tau=11, TAT=0
-        // At now=1: new_tat=max(0,1)+1=2, excess=1, tau=11 → allowed
-        assert!(g.try_acquire(1, start + Duration::from_nanos(1)));
+        g.reset(reset_time);
+        // Now: emission_interval=1, tau=11, TAT=nanos_since_base(reset_time)=500
+        // At reset_time: new_tat=max(500,500)+1=501, excess=1, tau=11 → allowed
+        assert!(g.try_acquire(1, reset_time));
     }
 
     #[test]

@@ -100,10 +100,11 @@ macro_rules! impl_codel {
                 self.windowed_min.count() >= self.min_samples
             }
 
-            /// Resets to empty state. Parameters unchanged.
+            /// Resets to empty state with `now` as the new time base.
+            /// Parameters unchanged.
             #[inline]
-            pub fn reset(&mut self) {
-                self.windowed_min.reset();
+            pub fn reset(&mut self, now: Instant) {
+                self.windowed_min.reset(now);
             }
         }
 
@@ -289,7 +290,7 @@ mod tests {
         for ts in 0..10 {
             let _ = qd.update(t(base, ts), 200);
         }
-        qd.reset();
+        qd.reset(base);
         assert_eq!(qd.count(), 0);
         assert!(qd.min_sojourn().is_none());
     }

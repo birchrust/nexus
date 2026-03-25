@@ -21,7 +21,7 @@ pub struct Gcra {
 #[derive(Debug, Clone)]
 pub struct GcraBuilder {
     rate: Option<u64>,
-    period: Option<u64>,
+    period: Option<Duration>,
     burst: u64,
     now: Option<Instant>,
 }
@@ -42,7 +42,7 @@ impl Gcra {
     /// Converts an `Instant` to nanoseconds relative to the internal base.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
-        now.duration_since(self.base).as_nanos() as u64
+        now.saturating_duration_since(self.base).as_nanos() as u64
     }
 
     /// Attempts to acquire with the given cost.
@@ -90,7 +90,9 @@ impl Gcra {
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
-        let period = period.as_nanos() as u64;
+        let period = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if period == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
@@ -117,10 +119,13 @@ impl Gcra {
         self.tat = self.tat.saturating_sub(credit).max(now_ns);
     }
 
-    /// Resets the limiter (clears TAT and base).
+    /// Resets the limiter with `now` as the new time base.
+    ///
+    /// After reset, the limiter behaves as if freshly constructed at `now`:
+    /// full burst capacity is available.
     #[inline]
-    pub fn reset(&mut self) {
-        self.base = Instant::now();
+    pub fn reset(&mut self, now: Instant) {
+        self.base = now;
         self.tat = 0;
     }
 }
@@ -138,7 +143,7 @@ impl GcraBuilder {
     #[inline]
     #[must_use]
     pub fn period(mut self, duration: Duration) -> Self {
-        self.period = Some(duration.as_nanos() as u64);
+        self.period = Some(duration);
         self
     }
 
@@ -168,14 +173,17 @@ impl GcraBuilder {
     pub fn build(self) -> Result<Gcra, crate::ConfigError> {
         let rate = self.rate.ok_or(crate::ConfigError::Missing("rate"))?;
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
-        if period == 0 {
+        if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
 
-        let emission_interval = period / rate;
+        let emission_interval = period_nanos / rate;
         if emission_interval == 0 {
             return Err(crate::ConfigError::Invalid(
                 "period / rate must be > 0 (rate too high for period)",
@@ -326,11 +334,10 @@ mod tests {
         for _ in 0..6 {
             let _ = g.try_acquire(1, start);
         }
-        g.reset();
-        // After reset, base is fresh Instant::now(), tat=0
-        // Should be able to burst again using the new base
-        let new_now = Instant::now();
-        assert!(g.try_acquire(1, new_now));
+        let reset_time = start + Duration::from_nanos(1000);
+        g.reset(reset_time);
+        // After reset, base=reset_time, tat=0 — full burst available
+        assert!(g.try_acquire(1, reset_time));
     }
 
     #[test]
@@ -432,5 +439,27 @@ mod tests {
         assert!(!g.try_acquire(1, base)); // exhausted
         g.release(1, base + Duration::from_nanos(1)); // release at slightly later time
         assert!(g.try_acquire(1, base + Duration::from_nanos(1))); // should work now
+    }
+
+    #[test]
+    fn period_overflow_returns_error() {
+        let result = Gcra::builder()
+            .rate(1)
+            .period(Duration::from_secs(u64::MAX))
+            .build();
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn reconfigure_period_overflow_returns_error() {
+        let start = Instant::now();
+        let mut gcra = Gcra::builder()
+            .rate(1)
+            .period(Duration::from_secs(1))
+            .now(start)
+            .build()
+            .unwrap();
+        let result = gcra.reconfigure(1, Duration::from_secs(u64::MAX), 0);
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }

@@ -4,17 +4,16 @@ use std::time::{Duration, Instant};
 /// Token Bucket — lazy token computation (thread-safe).
 ///
 /// Same Folly-style algorithm as [`local::TokenBucket`](crate::local::TokenBucket)
-/// but uses an `AtomicU64` for `zero_time` with a CAS loop.
+/// but uses `AtomicU64` fields with CAS loops for lock-free concurrent access.
 ///
 /// # Thread Safety
 ///
-/// `try_acquire` and `available` take `&self`. Safe to share via `Arc`.
-/// `reconfigure` uses `&mut self` (control-plane operation).
+/// All methods take `&self`. Safe to share via `Arc` or static reference.
 pub struct TokenBucket {
     zero_time: AtomicU64,
-    rate: u64,
-    period: u64,
-    burst: u64,
+    rate: AtomicU64,
+    period: AtomicU64,
+    burst: AtomicU64,
     base: Instant,
 }
 
@@ -43,7 +42,7 @@ impl TokenBucket {
     /// Converts an `Instant` to nanoseconds relative to the base instant.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
-        now.duration_since(self.base).as_nanos() as u64
+        now.saturating_duration_since(self.base).as_nanos() as u64
     }
 
     /// Attempts to consume `cost` tokens (thread-safe).
@@ -53,18 +52,21 @@ impl TokenBucket {
     #[must_use]
     pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
         let now = self.nanos_since_base(now);
+        let rate = self.rate.load(Ordering::Relaxed);
+        let period = self.period.load(Ordering::Relaxed);
+        let burst = self.burst.load(Ordering::Relaxed);
         loop {
             let zero_time = self.zero_time.load(Ordering::Relaxed);
             let elapsed = now.saturating_sub(zero_time);
-            let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
-            let available = tokens.min(self.burst as u128) as u64;
+            let tokens = elapsed as u128 * rate as u128 / period as u128;
+            let available = tokens.min(burst as u128) as u64;
 
             if available < cost {
                 return false;
             }
 
             let consume_ticks =
-                (cost as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
+                (cost as u128 * period as u128).div_ceil(rate as u128) as u64;
             let new_zero_time = zero_time + consume_ticks;
 
             if self
@@ -87,13 +89,21 @@ impl TokenBucket {
     #[must_use]
     pub fn available(&self, now: Instant) -> u64 {
         let now = self.nanos_since_base(now);
+        let rate = self.rate.load(Ordering::Relaxed);
+        let period = self.period.load(Ordering::Relaxed);
+        let burst = self.burst.load(Ordering::Relaxed);
         let zero_time = self.zero_time.load(Ordering::Relaxed);
         let elapsed = now.saturating_sub(zero_time);
-        let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
-        tokens.min(self.burst as u128) as u64
+        let tokens = elapsed as u128 * rate as u128 / period as u128;
+        tokens.min(burst as u128) as u64
     }
 
     /// Reconfigure rate and burst. Control-plane operation.
+    ///
+    /// Note: `rate`, `period`, and `burst` are stored sequentially. A
+    /// concurrent `try_acquire` may briefly see a partially-updated
+    /// triple. This is benign — at most one or two calls will see
+    /// slightly wrong limits.
     ///
     /// # Errors
     ///
@@ -101,12 +111,14 @@ impl TokenBucket {
     /// `period / rate` rounds to zero.
     #[inline]
     pub fn reconfigure(
-        &mut self,
+        &self,
         rate: u64,
         period: Duration,
         burst: u64,
     ) -> Result<(), crate::ConfigError> {
-        let period_nanos = period.as_nanos() as u64;
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
@@ -116,9 +128,9 @@ impl TokenBucket {
         if period_nanos / rate == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
-        self.rate = rate;
-        self.period = period_nanos;
-        self.burst = burst;
+        self.rate.store(rate, Ordering::Release);
+        self.period.store(period_nanos, Ordering::Release);
+        self.burst.store(burst, Ordering::Release);
         Ok(())
     }
 
@@ -128,14 +140,17 @@ impl TokenBucket {
     #[inline]
     pub fn release(&self, cost: u64, now: Instant) {
         let now_ns = self.nanos_since_base(now);
+        let rate = self.rate.load(Ordering::Relaxed);
+        let period = self.period.load(Ordering::Relaxed);
+        let burst = self.burst.load(Ordering::Relaxed);
         loop {
             let zero_time = self.zero_time.load(Ordering::Relaxed);
             let elapsed = now_ns.saturating_sub(zero_time);
-            let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
-            let available = tokens.min(self.burst as u128) as u64;
-            let new_available = available.saturating_add(cost).min(self.burst);
+            let tokens = elapsed as u128 * rate as u128 / period as u128;
+            let available = tokens.min(burst as u128) as u64;
+            let new_available = available.saturating_add(cost).min(burst);
             let ticks_for_tokens =
-                (new_available as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
+                (new_available as u128 * period as u128).div_ceil(rate as u128) as u64;
             let new_zero_time = now_ns.saturating_sub(ticks_for_tokens);
 
             if self
@@ -165,9 +180,9 @@ impl core::fmt::Debug for TokenBucket {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("sync::TokenBucket")
             .field("zero_time", &self.zero_time.load(Ordering::Relaxed))
-            .field("rate", &self.rate)
-            .field("period", &self.period)
-            .field("burst", &self.burst)
+            .field("rate", &self.rate.load(Ordering::Relaxed))
+            .field("period", &self.period.load(Ordering::Relaxed))
+            .field("burst", &self.burst.load(Ordering::Relaxed))
             .field("base", &self.base)
             .finish()
     }
@@ -210,15 +225,17 @@ impl TokenBucketBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Missing` if rate, period, burst, or now not set.
+    /// Returns `ConfigError::Missing` if rate, period, or burst not set.
     /// Returns `ConfigError::Invalid` if rate or period is zero.
     #[inline]
     pub fn build(self) -> Result<TokenBucket, crate::ConfigError> {
         let rate = self.rate.ok_or(crate::ConfigError::Missing("rate"))?;
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
         let burst = self.burst.ok_or(crate::ConfigError::Missing("burst"))?;
-        let now = self.now.ok_or(crate::ConfigError::Missing("now"))?;
-        let period_nanos = period.as_nanos() as u64;
+        let now = self.now.unwrap_or_else(Instant::now);
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
@@ -231,9 +248,9 @@ impl TokenBucketBuilder {
 
         Ok(TokenBucket {
             zero_time: AtomicU64::new(0),
-            rate,
-            period: period_nanos,
-            burst,
+            rate: AtomicU64::new(rate),
+            period: AtomicU64::new(period_nanos),
+            burst: AtomicU64::new(burst),
             base: now,
         })
     }

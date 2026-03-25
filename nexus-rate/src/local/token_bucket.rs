@@ -22,7 +22,7 @@ pub struct TokenBucket {
 #[derive(Debug, Clone)]
 pub struct TokenBucketBuilder {
     rate: Option<u64>,
-    period: Option<u64>,
+    period: Option<Duration>,
     burst: Option<u64>,
     now: Option<Instant>,
 }
@@ -43,7 +43,7 @@ impl TokenBucket {
     /// Converts an `Instant` to nanoseconds relative to the internal base.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
-        now.duration_since(self.base).as_nanos() as u64
+        now.saturating_duration_since(self.base).as_nanos() as u64
     }
 
     /// Computes available tokens without consuming.
@@ -100,7 +100,9 @@ impl TokenBucket {
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
-        let period = period.as_nanos() as u64;
+        let period = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         if period == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
@@ -150,7 +152,7 @@ impl TokenBucketBuilder {
     #[inline]
     #[must_use]
     pub fn period(mut self, duration: Duration) -> Self {
-        self.period = Some(duration.as_nanos() as u64);
+        self.period = Some(duration);
         self
     }
 
@@ -180,15 +182,18 @@ impl TokenBucketBuilder {
     pub fn build(self) -> Result<TokenBucket, crate::ConfigError> {
         let rate = self.rate.ok_or(crate::ConfigError::Missing("rate"))?;
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
         let burst = self.burst.ok_or(crate::ConfigError::Missing("burst"))?;
         let now = self.now.unwrap_or_else(Instant::now);
         if rate == 0 {
             return Err(crate::ConfigError::Invalid("rate must be > 0"));
         }
-        if period == 0 {
+        if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        if period / rate == 0 {
+        if period_nanos / rate == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
 
@@ -196,7 +201,7 @@ impl TokenBucketBuilder {
             base: now,
             zero_time: 0,
             rate,
-            period,
+            period: period_nanos,
             burst,
         })
     }
