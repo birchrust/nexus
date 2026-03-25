@@ -4018,3 +4018,19 @@ fn hrtb_callback() {
 // In practice this isn't a problem: you don't re-register an already-boxed
 // handler. If you need to pass a boxed handler, use it directly rather
 // than going through IntoHandler again.
+
+// =========================================================================
+// Send bounds — slab-backed resources must be Send for World storage
+// =========================================================================
+
+/// TimerWheel must satisfy Resource (which requires Send) so it can live
+/// in World. This propagates through WheelEntry (raw DLL pointers).
+/// Without WheelEntry's unsafe Send impl, this fails to compile.
+#[cfg(feature = "timer")]
+#[test]
+fn timer_wheel_satisfies_resource_bound() {
+    fn assert_resource<T: nexus_rt::Resource>() {}
+
+    // Default store is unbounded::Slab. Handler type is boxed.
+    assert_resource::<nexus_timer::TimerWheel<Box<dyn Handler<std::time::Instant>>>>();
+}
