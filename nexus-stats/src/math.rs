@@ -32,6 +32,23 @@ pub(crate) fn exp(x: f64) -> f64 {
     }
 }
 
+/// Natural logarithm.
+///
+/// Requires `std` or `libm` feature. Types using this (`EntropyF64`,
+/// `TransferEntropyF64`) won't compile without one of these features.
+#[cfg(any(feature = "std", feature = "libm"))]
+#[inline]
+pub(crate) fn ln(x: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        x.ln()
+    }
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        libm::log(x)
+    }
+}
+
 /// Trait providing `fma` (fused multiply-add) across all feature configurations.
 ///
 /// With `std`: uses hardware FMA intrinsic.

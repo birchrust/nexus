@@ -3,7 +3,7 @@
 
 //! Fixed-memory, zero-allocation streaming statistics for real-time systems.
 //!
-//! 45+ algorithms, all O(1) per update, fixed memory. Core types are `no_std`
+//! 50+ algorithms, all O(1) per update, fixed memory. Core types are `no_std`
 //! compatible; types marked *(std)* require the `std` feature, *(alloc)* require
 //! `alloc`, and *(std|libm)* require either `std` or `libm`.
 //!
@@ -34,10 +34,19 @@
 //!
 //! **Statistics:**
 //! - [`WelfordF64`] — Online mean, variance, std dev. Chan's merge.
+//! - [`MomentsF64`] — Online skewness & kurtosis (Pébay, 2008).
 //! - [`EwmaVarF64`] — Exponentially weighted variance (RiskMetrics).
 //! - [`CovarianceF64`] — Online covariance and Pearson correlation.
 //! - [`HarmonicMeanF64`] — Online harmonic mean.
 //! - [`PercentileF64`] — P² streaming percentile (Jain & Chlamtac, 1985).
+//!
+//! **Signal Analysis:**
+//! - [`AutocorrelationF64`] — Self-correlation at configurable lag.
+//! - [`CrossCorrelationF64`] — Two-stream correlation with lead/lag detection. *(std|libm)*
+//!
+//! **Information Theory:** *(std|libm)*
+//! - [`EntropyF64`] — Shannon entropy over categorical distributions.
+//! - [`TransferEntropyF64`] — Directed information flow (Granger causality). *(alloc, std|libm)*
 //!
 //! **Monitoring:**
 //! - [`DrawdownF64`] — Peak-to-trough decline and max drawdown.
@@ -90,10 +99,13 @@ mod enums;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod adaptive_threshold;
 mod asym_ema;
+mod autocorrelation;
 #[cfg(feature = "alloc")]
 mod bool_window;
 mod codel;
 mod covariance;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod cross_correlation;
 mod cusum;
 mod dead_band;
 mod debounce;
@@ -102,6 +114,8 @@ mod decay_accum;
 mod diff;
 mod drawdown;
 mod ema;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod entropy;
 mod error_rate;
 mod event_rate;
 mod ewma_var;
@@ -117,6 +131,7 @@ mod level_crossing;
 mod liveness;
 mod math;
 mod max_gauge;
+mod moments;
 #[cfg(feature = "alloc")]
 mod mosum;
 mod multi_gate;
@@ -131,6 +146,8 @@ mod shiryaev_roberts;
 mod slew;
 mod spring;
 mod topk;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod transfer_entropy;
 mod trend_alert;
 mod welford;
 mod windowed;
@@ -146,6 +163,9 @@ pub use asym_ema::{
     AsymEmaF32, AsymEmaF32Builder, AsymEmaF64, AsymEmaF64Builder, AsymEmaI32, AsymEmaI32Builder,
     AsymEmaI64, AsymEmaI64Builder,
 };
+pub use autocorrelation::{
+    AutocorrelationF32, AutocorrelationF64, AutocorrelationI32, AutocorrelationI64,
+};
 #[cfg(feature = "alloc")]
 pub use bool_window::BoolWindow;
 #[cfg(feature = "std")]
@@ -158,6 +178,8 @@ pub use codel::{
     CoDelI32RawBuilder, CoDelI64Raw, CoDelI64RawBuilder, CoDelI128Raw, CoDelI128RawBuilder,
 };
 pub use covariance::{CovarianceF32, CovarianceF64};
+#[cfg(any(feature = "std", feature = "libm"))]
+pub use cross_correlation::{CrossCorrelationF32, CrossCorrelationF64};
 pub use cusum::{
     CusumF32, CusumF32Builder, CusumF64, CusumF64Builder, CusumI32, CusumI32Builder, CusumI64,
     CusumI64Builder, CusumI128, CusumI128Builder,
@@ -175,6 +197,8 @@ pub use ema::{
     EmaF32, EmaF32Builder, EmaF64, EmaF64Builder, EmaI32, EmaI32Builder, EmaI64, EmaI64Builder,
 };
 pub use enums::{Condition, ConfigError, Direction};
+#[cfg(any(feature = "std", feature = "libm"))]
+pub use entropy::{EntropyF32, EntropyF64};
 pub use error_rate::{ErrorRateF32, ErrorRateF32Builder, ErrorRateF64, ErrorRateF64Builder};
 pub use event_rate::{
     EventRateF32, EventRateF32Builder, EventRateF64, EventRateF64Builder, EventRateI32,
@@ -204,6 +228,7 @@ pub use liveness::{
 #[cfg(feature = "std")]
 pub use liveness::{LivenessInstant, LivenessInstantBuilder};
 pub use max_gauge::{MaxGaugeF32, MaxGaugeF64, MaxGaugeI32, MaxGaugeI64, MaxGaugeI128};
+pub use moments::{MomentsF32, MomentsF64, MomentsI32, MomentsI64};
 #[cfg(feature = "alloc")]
 pub use mosum::{
     MosumF32, MosumF32Builder, MosumF64, MosumF64Builder, MosumI32, MosumI32Builder, MosumI64,
@@ -233,6 +258,8 @@ pub use shiryaev_roberts::{ShiryaevRobertsF64, ShiryaevRobertsF64Builder};
 pub use slew::{SlewF32, SlewF64, SlewI32, SlewI64, SlewI128};
 pub use spring::{SpringF32, SpringF64};
 pub use topk::TopK;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+pub use transfer_entropy::{TransferEntropyF64, TransferEntropyF64Builder};
 pub use trend_alert::{TrendAlertF32, TrendAlertF32Builder, TrendAlertF64, TrendAlertF64Builder};
 pub use welford::{WelfordF32, WelfordF64};
 #[cfg(feature = "std")]

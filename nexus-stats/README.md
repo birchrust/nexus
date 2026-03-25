@@ -46,7 +46,7 @@ if let Some(mean) = stats.mean() {
 
 ## Algorithms
 
-45 algorithms across 7 categories. See [full documentation](docs/INDEX.md)
+50+ algorithms across 9 categories. See [full documentation](docs/INDEX.md)
 for deep-dives on each algorithm.
 
 ### Change Detection
@@ -78,9 +78,24 @@ for deep-dives on each algorithm.
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
 | `WelfordF64` | Online mean, variance, std dev (Chan's merge) | 10 |
+| `MomentsF64` | Online skewness & kurtosis (Pébay, 2008). Merge support | 24 |
 | `EwmaVarF64` | Exponentially weighted variance | 12 |
 | `CovarianceF64` | Online covariance + Pearson correlation | 12 |
 | `HarmonicMeanF64` | Correct average for rates/throughputs | 5 |
+
+### Signal Analysis
+
+| Type | What It Computes | p50 |
+|------|-----------------|-----|
+| `AutocorrelationF64<LAG>` | Self-correlation at fixed lag (trending vs reverting) | 12 |
+| `CrossCorrelationF64<LAG>` | Two-stream correlation with lead/lag detection | 39 |
+
+### Information Theory *(std\|libm)*
+
+| Type | What It Computes | p50 |
+|------|-----------------|-----|
+| `EntropyF64<K>` | Shannon entropy over K categories | 3 |
+| `TransferEntropyF64` | Directed information flow (Granger causality) | 14 |
 
 ### Monitoring
 
@@ -136,6 +151,9 @@ intrinsics; integer types use bit-shift arithmetic.
 | EMA, Jitter, AsymEMA | ✓ | ✓ | ✓ | ✓ | |
 | Liveness, EventRate | ✓ | ✓ | ✓ | ✓ | |
 | Welford, EwmaVar, Covariance, HarmonicMean | ✓ | ✓ | | | |
+| Moments, Autocorrelation | ✓ | ✓ | ✓ | ✓ | |
+| CrossCorrelation, Entropy | ✓ | ✓ | | | |
+| TransferEntropy | | ✓ | | | |
 | Holt, KAMA, Kalman1D, Spring | ✓ | ✓ | | | |
 | MultiGate, RobustZScore, AdaptiveThreshold | ✓ | ✓ | | | |
 | Saturation, ErrorRate, TrendAlert | ✓ | ✓ | | | |

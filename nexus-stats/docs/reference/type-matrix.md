@@ -24,9 +24,16 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 | WindowedMedian | ✓ | ✓ | ✓ | ✓ | — |
 | **Statistics** | | | | | |
 | Welford | ✓ | ✓ | — | — | — |
+| Moments | ✓ | ✓ | ✓ | ✓ | — |
 | EwmaVariance | ✓ | ✓ | — | — | — |
 | Covariance | ✓ | ✓ | — | — | — |
 | HarmonicMean | ✓ | ✓ | — | — | — |
+| **Signal Analysis** | | | | | |
+| Autocorrelation | ✓ | ✓ | ✓ | ✓ | — |
+| CrossCorrelation | ✓ | ✓ | — | — | — |
+| **Information Theory** | | | | | |
+| Entropy | ✓ | ✓ | — | — | — |
+| TransferEntropy | — | ✓ | — | — | — |
 | **Monitoring** | | | | | |
 | Drawdown | ✓ | ✓ | ✓ | ✓ | ✓ |
 | RunningMin/Max | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -70,6 +77,6 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 
 | Feature | What it enables |
 |---------|----------------|
-| `std` (default) | Hardware `sqrt`/`exp` for Welford, ShiryaevRoberts, etc. |
-| `libm` | Pure Rust `sqrt`/`exp` for `no_std` environments |
-| `alloc` (planned) | Runtime-sized windows for MOSUM, WindowedMedian, KAMA, BoolWindow |
+| `std` (default) | Hardware `sqrt`/`exp`/`ln` for Welford, ShiryaevRoberts, CrossCorrelation, Entropy, etc. |
+| `libm` | Pure Rust `sqrt`/`exp`/`ln` for `no_std` environments |
+| `alloc` | Runtime-sized windows (MOSUM, WindowedMedian, KAMA, BoolWindow) and heap tables (TransferEntropy) |

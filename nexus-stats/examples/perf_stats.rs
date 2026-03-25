@@ -714,6 +714,107 @@ fn bench_hysteresis_f64(samples: &mut [u64]) {
 }
 
 // ============================================================================
+// Phase 8: Statistics & Signal Analysis (new types)
+// ============================================================================
+
+fn bench_moments_f64(samples: &mut [u64]) {
+    let mut m = MomentsF64::new();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        m.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            m.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(m.kurtosis());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_autocorrelation_f64(samples: &mut [u64]) {
+    let mut ac = AutocorrelationF64::<1>::new();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(ac.correlation());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_cross_correlation_f64(samples: &mut [u64]) {
+    let mut cc = CrossCorrelationF64::<10>::new();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let x = 90.0 + (next_val(&mut rng) % 20) as f64;
+        let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
+        cc.update(x, y);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let x = 90.0 + (next_val(&mut rng) % 20) as f64;
+            let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
+            cc.update(x, y);
+        }
+        let end = rdtsc_end();
+        black_box(cc.correlation(0));
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_entropy_f64(samples: &mut [u64]) {
+    let mut e = EntropyF64::<8>::new();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        e.observe((next_val(&mut rng) % 8) as usize);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            e.observe((next_val(&mut rng) % 8) as usize);
+        }
+        let end = rdtsc_end();
+        black_box(e.entropy());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_transfer_entropy_f64(samples: &mut [u64]) {
+    let mut te = TransferEntropyF64::builder()
+        .bins(8)
+        .lag(1)
+        .build()
+        .unwrap();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let x = (next_val(&mut rng) % 8) as usize;
+        let y = (next_val(&mut rng) % 8) as usize;
+        te.observe(x, y);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let x = (next_val(&mut rng) % 8) as usize;
+            let y = (next_val(&mut rng) % 8) as usize;
+            te.observe(x, y);
+        }
+        let end = rdtsc_end();
+        black_box(te.count());
+        *s = (end - start) / BATCH;
+    }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -806,6 +907,19 @@ fn main() {
     print_header();
     bench_topk(&mut buf);
     print_row("TopK<u64,16>::observe", &mut buf);
+
+    section("Statistics & Signal Analysis");
+    print_header();
+    bench_moments_f64(&mut buf);
+    print_row("MomentsF64::update", &mut buf);
+    bench_autocorrelation_f64(&mut buf);
+    print_row("Autocorrelation<1>::update", &mut buf);
+    bench_cross_correlation_f64(&mut buf);
+    print_row("CrossCorrelation<10>::update", &mut buf);
+    bench_entropy_f64(&mut buf);
+    print_row("Entropy<8>::observe", &mut buf);
+    bench_transfer_entropy_f64(&mut buf);
+    print_row("TransferEntropy(8,1)::observe", &mut buf);
 
     println!();
 }

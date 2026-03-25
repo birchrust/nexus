@@ -79,6 +79,8 @@ Start with your problem. Follow the tree to find the right primitive.
 
 - Running mean + variance + std dev → [**Welford**](../algorithms/welford.md)
   - Numerically stable. Supports parallel merge (Chan's algorithm).
+- Skewness + kurtosis (distribution shape) → [**Moments**](../algorithms/moments.md)
+  - Extends Welford to 3rd/4th moments. Fat tail and asymmetry detection.
 - Exponentially weighted variance (recent volatility) → [**EwmaVariance**](../algorithms/ewma-var.md)
   - More responsive than Welford. RiskMetrics pattern.
 - Are two signals correlated? → [**Covariance**](../algorithms/covariance.md)
@@ -87,6 +89,17 @@ Start with your problem. Follow the tree to find the right primitive.
   - Arithmetic mean of rates is wrong. Harmonic mean is correct.
 - Signal variability / jitter → [**Jitter**](../algorithms/jitter.md)
   - EMA of consecutive absolute differences. `jitter_ratio()` for context.
+
+## "I want to analyze signal relationships"
+
+- Is this signal trending or mean-reverting? → [**Autocorrelation**](../algorithms/autocorrelation.md)
+  - Positive lag-1 = trending, negative = reverting, zero = random walk.
+- Does signal A predict signal B? → [**CrossCorrelation**](../algorithms/cross-correlation.md)
+  - Finds the lag with peak correlation. `peak_lag()` = the delay.
+- WHICH signal drives the other? → [**TransferEntropy**](../algorithms/transfer-entropy.md)
+  - Directed information flow. Cross-correlation is symmetric; transfer entropy is not.
+- How predictable is this signal? → [**Entropy**](../algorithms/entropy.md)
+  - Shannon entropy over categorized observations. Low = predictable, high = random.
 
 ## "I want to track extrema"
 
@@ -134,3 +147,7 @@ Common combinations:
 | "Track failure rate, trip a circuit breaker" | ErrorRate or BoolWindow → Debounce |
 | "Load-balance across shards" | FlexibleProportions per shard |
 | "Display smoothed latency with worst-case envelope" | EMA (display) + PeakHoldDecay (envelope) |
+| "Is latency distribution getting fat-tailed?" | Moments (kurtosis) |
+| "Which venue leads price discovery?" | CrossCorrelation to find lag, TransferEntropy to confirm direction |
+| "Is this signal becoming more/less predictable?" | Entropy over categorized values |
+| "Is this signal trending or reverting?" | Autocorrelation lag-1 |
