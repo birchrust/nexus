@@ -22,12 +22,21 @@ macro_rules! impl_hysteresis {
             ///
             /// `low_threshold` must be less than `high_threshold`.
             #[inline]
-            pub fn new(low_threshold: $ty, high_threshold: $ty) -> Result<Self, crate::ConfigError> {
+            pub fn new(
+                low_threshold: $ty,
+                high_threshold: $ty,
+            ) -> Result<Self, crate::ConfigError> {
                 #[allow(clippy::neg_cmp_op_on_partial_ord)]
                 if !(low_threshold < high_threshold) {
-                    return Err(crate::ConfigError::Invalid("low threshold must be less than high"));
+                    return Err(crate::ConfigError::Invalid(
+                        "low threshold must be less than high",
+                    ));
                 }
-                Ok(Self { low: low_threshold, high: high_threshold, state: false })
+                Ok(Self {
+                    low: low_threshold,
+                    high: high_threshold,
+                    state: false,
+                })
             }
 
             /// Feeds a sample. Returns the current state.
@@ -45,11 +54,15 @@ macro_rules! impl_hysteresis {
             /// Current state.
             #[inline]
             #[must_use]
-            pub fn state(&self) -> bool { self.state }
+            pub fn state(&self) -> bool {
+                self.state
+            }
 
             /// Resets state to false.
             #[inline]
-            pub fn reset(&mut self) { self.state = false; }
+            pub fn reset(&mut self) {
+                self.state = false;
+            }
         }
     };
 }
@@ -68,7 +81,7 @@ mod tests {
     fn rising_crosses_high() {
         let mut h = HysteresisF64::new(30.0, 70.0).unwrap();
         assert!(!h.update(50.0)); // between thresholds, starts false
-        assert!(h.update(80.0));  // crosses high
+        assert!(h.update(80.0)); // crosses high
     }
 
     #[test]
@@ -111,7 +124,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_thresholds() {
-        assert!(matches!(HysteresisF64::new(70.0, 30.0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            HysteresisF64::new(70.0, 30.0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]

@@ -97,7 +97,9 @@ macro_rules! impl_welford {
             pub fn std_dev(&self) -> Option<$ty> {
                 self.variance().map(|v| {
                     #[allow(clippy::cast_possible_truncation)]
-                    { crate::math::sqrt(v as f64) as $ty }
+                    {
+                        crate::math::sqrt(v as f64) as $ty
+                    }
                 })
             }
 
@@ -198,15 +200,24 @@ mod tests {
 
         // Population variance = 4.0
         let pop_var = w.population_variance().unwrap();
-        assert!((pop_var - 4.0).abs() < 1e-10, "pop variance should be 4.0, got {pop_var}");
+        assert!(
+            (pop_var - 4.0).abs() < 1e-10,
+            "pop variance should be 4.0, got {pop_var}"
+        );
 
         // Sample variance = 32/7 ≈ 4.571428
         let var = w.variance().unwrap();
-        assert!((var - 32.0 / 7.0).abs() < 1e-10, "sample variance should be 32/7, got {var}");
+        assert!(
+            (var - 32.0 / 7.0).abs() < 1e-10,
+            "sample variance should be 32/7, got {var}"
+        );
 
         // Std dev = sqrt(32/7) ≈ 2.138
         let sd = w.std_dev().unwrap();
-        assert!((sd - (32.0_f64 / 7.0).sqrt()).abs() < 1e-6, "std dev got {sd}");
+        assert!(
+            (sd - (32.0_f64 / 7.0).sqrt()).abs() < 1e-6,
+            "std dev got {sd}"
+        );
     }
 
     #[test]

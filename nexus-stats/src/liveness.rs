@@ -460,7 +460,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Regular events every 10 units
         for i in 0..20 {
@@ -473,7 +474,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Regular events every 10 units
         for i in 0..10 {
@@ -490,7 +492,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..10 {
             let _ = lv.record(i as f64 * 10.0);
@@ -509,7 +512,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_absolute(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = lv.record(0.0);
         let _ = lv.record(10.0);
@@ -526,7 +530,8 @@ mod tests {
             .alpha(0.3)
             .deadline_multiple(3.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Even with huge gaps, returns true before primed
         assert!(lv.record(0.0));
@@ -539,7 +544,8 @@ mod tests {
         let mut lv = LivenessI64::builder()
             .span(7)
             .deadline_multiple(3)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..10 {
             assert!(lv.record(i * 100));
@@ -554,7 +560,8 @@ mod tests {
         let mut lv = LivenessI32::builder()
             .span(3)
             .deadline_absolute(500)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = lv.record(0);
         let _ = lv.record(100);
@@ -567,7 +574,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..10 {
             let _ = lv.record(i as f64 * 10.0);
@@ -583,7 +591,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_absolute(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = lv.record(0.0);
         let _ = lv.record(10.0);
@@ -602,7 +611,8 @@ mod tests {
         let mut lv = LivenessF64::builder()
             .alpha(0.3)
             .deadline_multiple(3.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..10 {
             let _ = lv.record(i as f64 * 10.0);

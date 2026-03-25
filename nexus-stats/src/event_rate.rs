@@ -91,12 +91,16 @@ macro_rules! impl_event_rate_float {
             /// Number of events recorded.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether the tracker has reached `min_samples`.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -154,7 +158,9 @@ macro_rules! impl_event_rate_float {
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("EventRate alpha must be in (0, 1)"));
+                    return Err(crate::ConfigError::Invalid(
+                        "EventRate alpha must be in (0, 1)",
+                    ));
                 }
 
                 Ok($name {
@@ -247,17 +253,23 @@ macro_rules! impl_event_rate_int {
             /// Effective span after rounding.
             #[inline]
             #[must_use]
-            pub fn effective_span(&self) -> u64 { self.span }
+            pub fn effective_span(&self) -> u64 {
+                self.span
+            }
 
             /// Number of events recorded.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether the tracker has reached `min_samples`.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -351,13 +363,19 @@ mod tests {
         }
         let burst_rate = er.rate().unwrap();
 
-        assert!(burst_rate > normal_rate,
-            "burst rate ({burst_rate}) should exceed normal ({normal_rate})");
+        assert!(
+            burst_rate > normal_rate,
+            "burst rate ({burst_rate}) should exceed normal ({normal_rate})"
+        );
     }
 
     #[test]
     fn priming() {
-        let mut er = EventRateF64::builder().alpha(0.3).min_samples(5).build().unwrap();
+        let mut er = EventRateF64::builder()
+            .alpha(0.3)
+            .min_samples(5)
+            .build()
+            .unwrap();
 
         for i in 0..4 {
             er.tick(i as f64 * 10.0);
@@ -393,7 +411,10 @@ mod tests {
             er.tick(i * 100);
         }
         let interval = er.interval().unwrap();
-        assert!((interval - 100).abs() <= 1, "interval should be ~100, got {interval}");
+        assert!(
+            (interval - 100).abs() <= 1,
+            "interval should be ~100, got {interval}"
+        );
     }
 
     #[test]
@@ -410,7 +431,10 @@ mod tests {
         er.tick(100.0);
         er.tick(100.0); // same timestamp → interval = 0
         // rate() should return None (division by zero guard)
-        assert!(er.rate().is_none(), "rate should be None with zero interval");
+        assert!(
+            er.rate().is_none(),
+            "rate should be None with zero interval"
+        );
     }
 
     #[test]

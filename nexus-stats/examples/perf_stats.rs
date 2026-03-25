@@ -78,7 +78,11 @@ fn next_val(state: &mut u64) -> u64 {
 // ============================================================================
 
 fn bench_cusum_f64(samples: &mut [u64]) {
-    let mut cusum = CusumF64::builder(100.0).slack(5.0).threshold(1e18).build().unwrap();
+    let mut cusum = CusumF64::builder(100.0)
+        .slack(5.0)
+        .threshold(1e18)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = cusum.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -95,7 +99,11 @@ fn bench_cusum_f64(samples: &mut [u64]) {
 }
 
 fn bench_cusum_i64(samples: &mut [u64]) {
-    let mut cusum = CusumI64::builder(1000).slack(50).threshold(i64::MAX).build().unwrap();
+    let mut cusum = CusumI64::builder(1000)
+        .slack(50)
+        .threshold(i64::MAX)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = cusum.update(990 + (next_val(&mut rng) % 20) as i64);
@@ -186,16 +194,24 @@ fn bench_drawdown_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_max_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMaxF64::new(1000).unwrap();
+    use std::time::{Duration, Instant};
+    let base = Instant::now();
+    let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(1000), base).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
-        let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
+        let _ = wm.update(
+            base + Duration::from_nanos(t),
+            90.0 + (next_val(&mut rng) % 20) as f64,
+        );
     }
     let mut t = WARMUP as u64;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
+            let _ = wm.update(
+                base + Duration::from_nanos(t),
+                90.0 + (next_val(&mut rng) % 20) as f64,
+            );
             t += 1;
         }
         let end = rdtsc_end();
@@ -205,16 +221,24 @@ fn bench_windowed_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_min_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMinF64::new(1000).unwrap();
+    use std::time::{Duration, Instant};
+    let base = Instant::now();
+    let mut wm = WindowedMinF64::with_base(Duration::from_nanos(1000), base).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
-        let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
+        let _ = wm.update(
+            base + Duration::from_nanos(t),
+            90.0 + (next_val(&mut rng) % 20) as f64,
+        );
     }
     let mut t = WARMUP as u64;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
+            let _ = wm.update(
+                base + Duration::from_nanos(t),
+                90.0 + (next_val(&mut rng) % 20) as f64,
+            );
             t += 1;
         }
         let end = rdtsc_end();
@@ -248,7 +272,8 @@ fn bench_liveness_f64(samples: &mut [u64]) {
     let mut lv = LivenessF64::builder()
         .alpha(0.3)
         .deadline_multiple(3.0)
-        .build().unwrap();
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for i in 0..WARMUP {
         let _ = lv.record((i as f64).mul_add(10.0, (next_val(&mut rng) % 5) as f64));
@@ -266,7 +291,11 @@ fn bench_liveness_f64(samples: &mut [u64]) {
 }
 
 fn bench_mosum_f64(samples: &mut [u64]) {
-    let mut mosum = MosumF64::builder(100.0).window_size(64).threshold(1e18).build().unwrap();
+    let mut mosum = MosumF64::builder(100.0)
+        .window_size(64)
+        .threshold(1e18)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = mosum.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -330,7 +359,8 @@ fn bench_shiryaev_roberts(samples: &mut [u64]) {
         .post_change_mean(110.0)
         .variance(25.0)
         .threshold(1e18)
-        .build().unwrap();
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = sr.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -428,16 +458,29 @@ fn bench_event_rate_f64(samples: &mut [u64]) {
 }
 
 fn bench_codel_i64(samples: &mut [u64]) {
-    let mut qd = CoDelI64::builder().target(100).window(1000).build().unwrap();
+    use std::time::{Duration, Instant};
+    let base = Instant::now();
+    let mut qd = CoDelI64::builder()
+        .target(100)
+        .window(Duration::from_nanos(1000))
+        .base(base)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
-        let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
+        let _ = qd.update(
+            base + Duration::from_nanos(t),
+            50 + (next_val(&mut rng) % 100) as i64,
+        );
     }
     let mut t = WARMUP as u64;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
+            let _ = qd.update(
+                base + Duration::from_nanos(t),
+                50 + (next_val(&mut rng) % 100) as i64,
+            );
             t += 1;
         }
         let end = rdtsc_end();
@@ -452,7 +495,12 @@ fn bench_codel_i64(samples: &mut [u64]) {
 
 fn bench_multi_gate_f64(samples: &mut [u64]) {
     let mut mg = MultiGateF64::builder()
-        .alpha(0.1).hard_limit(0.5).suspect_z(5.0).min_samples(5).build().unwrap();
+        .alpha(0.1)
+        .hard_limit(0.5)
+        .suspect_z(5.0)
+        .min_samples(5)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = mg.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -487,7 +535,11 @@ fn bench_windowed_median_f64(samples: &mut [u64]) {
 
 fn bench_robust_z_f64(samples: &mut [u64]) {
     let mut rz = RobustZScoreF64::builder()
-        .alpha(0.1).reject_threshold(10.0).min_samples(5).build().unwrap();
+        .alpha(0.1)
+        .reject_threshold(10.0)
+        .min_samples(5)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = rz.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -525,7 +577,11 @@ fn bench_spring_f64(samples: &mut [u64]) {
 }
 
 fn bench_peak_hold_f64(samples: &mut [u64]) {
-    let mut ph = PeakHoldF64::builder().decay_rate(0.99).hold_samples(10).build().unwrap();
+    let mut ph = PeakHoldF64::builder()
+        .decay_rate(0.99)
+        .hold_samples(10)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = ph.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -542,7 +598,11 @@ fn bench_peak_hold_f64(samples: &mut [u64]) {
 }
 
 fn bench_asym_ema_f64(samples: &mut [u64]) {
-    let mut ae = AsymEmaF64::builder().alpha_up(0.9).alpha_down(0.1).build().unwrap();
+    let mut ae = AsymEmaF64::builder()
+        .alpha_up(0.9)
+        .alpha_down(0.1)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     let _ = ae.update(100.0);
     for _ in 0..WARMUP {
@@ -578,7 +638,10 @@ fn bench_kama_f64(samples: &mut [u64]) {
 
 fn bench_kalman1d_f64(samples: &mut [u64]) {
     let mut kf = Kalman1dF64::builder()
-        .process_noise(0.01).measurement_noise(1.0).build().unwrap();
+        .process_noise(0.01)
+        .measurement_noise(1.0)
+        .build()
+        .unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = kf.update(90.0 + (next_val(&mut rng) % 20) as f64);

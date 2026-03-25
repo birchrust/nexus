@@ -76,12 +76,16 @@ macro_rules! impl_peak_hold_float {
             /// Current envelope value.
             #[inline]
             #[must_use]
-            pub fn peak(&self) -> $ty { self.peak }
+            pub fn peak(&self) -> $ty {
+                self.peak
+            }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Resets the envelope.
             #[inline]
@@ -119,7 +123,9 @@ macro_rules! impl_peak_hold_float {
             /// - decay_rate must be in (0, 1].
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let rate = self.decay_rate.ok_or(crate::ConfigError::Missing("decay_rate"))?;
+                let rate = self
+                    .decay_rate
+                    .ok_or(crate::ConfigError::Missing("decay_rate"))?;
                 if !(rate > 0.0 as $ty && rate <= 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("decay_rate must be in (0, 1]"));
                 }
@@ -193,12 +199,16 @@ macro_rules! impl_peak_hold_int {
             /// Current peak value.
             #[inline]
             #[must_use]
-            pub fn peak(&self) -> $ty { self.peak }
+            pub fn peak(&self) -> $ty {
+                self.peak
+            }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Resets the peak.
             #[inline]
@@ -245,7 +255,11 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn instant_attack() {
-        let mut ph = PeakHoldF64::builder().decay_rate(0.95).hold_samples(5).build().unwrap();
+        let mut ph = PeakHoldF64::builder()
+            .decay_rate(0.95)
+            .hold_samples(5)
+            .build()
+            .unwrap();
         assert_eq!(ph.update(50.0), 50.0);
         assert_eq!(ph.update(100.0), 100.0); // instant capture
     }
@@ -253,7 +267,11 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn hold_period() {
-        let mut ph = PeakHoldF64::builder().decay_rate(0.95).hold_samples(3).build().unwrap();
+        let mut ph = PeakHoldF64::builder()
+            .decay_rate(0.95)
+            .hold_samples(3)
+            .build()
+            .unwrap();
         let _ = ph.update(100.0);
         assert_eq!(ph.update(50.0), 100.0); // held
         assert_eq!(ph.update(50.0), 100.0); // held
@@ -262,7 +280,11 @@ mod tests {
 
     #[test]
     fn decay_after_hold() {
-        let mut ph = PeakHoldF64::builder().decay_rate(0.9).hold_samples(0).build().unwrap();
+        let mut ph = PeakHoldF64::builder()
+            .decay_rate(0.9)
+            .hold_samples(0)
+            .build()
+            .unwrap();
         let _ = ph.update(100.0);
         let v = ph.update(0.0); // decay immediately (no hold)
         assert!(v < 100.0, "should have decayed, got {v}");
@@ -271,7 +293,11 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn new_peak_during_hold() {
-        let mut ph = PeakHoldF64::builder().decay_rate(0.95).hold_samples(10).build().unwrap();
+        let mut ph = PeakHoldF64::builder()
+            .decay_rate(0.95)
+            .hold_samples(10)
+            .build()
+            .unwrap();
         let _ = ph.update(100.0);
         let _ = ph.update(50.0); // holding at 100
         assert_eq!(ph.update(200.0), 200.0); // new peak resets hold
@@ -284,7 +310,7 @@ mod tests {
         assert_eq!(ph.update(50), 100); // held
         assert_eq!(ph.update(50), 100); // held
         assert_eq!(ph.update(50), 100); // held
-        assert_eq!(ph.update(50), 50);  // hold expired, reset to current
+        assert_eq!(ph.update(50), 50); // hold expired, reset to current
     }
 
     #[test]
@@ -298,7 +324,10 @@ mod tests {
     #[test]
     fn errors_without_decay_rate() {
         let result = PeakHoldF64::builder().build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("decay_rate"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("decay_rate"))
+        ));
     }
 
     #[test]

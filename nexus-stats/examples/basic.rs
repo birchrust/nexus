@@ -18,7 +18,8 @@ fn main() {
     let mut cusum = CusumF64::builder(100.0)
         .slack(5.0)
         .threshold(30.0)
-        .build().unwrap();
+        .build()
+        .unwrap();
 
     // EMA: smooth the noisy signal
     let mut ema = EmaF64::builder().span(10).build().unwrap();
@@ -35,8 +36,12 @@ fn main() {
         stats.update(sample);
 
         let ema_str = smoothed.map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
-        let mean_str = stats.mean().map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
-        let sd_str = stats.std_dev().map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
+        let mean_str = stats
+            .mean()
+            .map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
+        let sd_str = stats
+            .std_dev()
+            .map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
         let shift_str = match shift {
             Some(Direction::Rising) => " ↑ SHIFT",
             Some(Direction::Falling) => " ↓ SHIFT",
@@ -44,9 +49,7 @@ fn main() {
             None => " (warmup)",
         };
 
-        println!(
-            "  {i:3}   {sample:5.1}  {ema_str}  {mean_str}  {sd_str}  {shift_str}"
-        );
+        println!("  {i:3}   {sample:5.1}  {ema_str}  {mean_str}  {sd_str}  {shift_str}");
     }
 
     println!("\nFinal statistics:");

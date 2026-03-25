@@ -42,18 +42,29 @@ impl BoolWindow {
     #[inline]
     pub fn new(sample_count: usize) -> Result<Self, crate::ConfigError> {
         if sample_count == 0 {
-            return Err(crate::ConfigError::Invalid("BoolWindow capacity must be > 0"));
+            return Err(crate::ConfigError::Invalid(
+                "BoolWindow capacity must be > 0",
+            ));
         }
         let words = sample_count.div_ceil(64);
         let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0u64; words]);
         let bits = vec.as_mut_ptr();
-        Ok(Self { bits, words, capacity: sample_count, head: 0, count: 0, failures: 0 })
+        Ok(Self {
+            bits,
+            words,
+            capacity: sample_count,
+            head: 0,
+            count: 0,
+            failures: 0,
+        })
     }
 
     /// Total capacity of the window in samples.
     #[inline]
     #[must_use]
-    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 
     /// Records an outcome. `true` = success, `false` = failure.
     #[inline]
@@ -90,28 +101,40 @@ impl BoolWindow {
     #[inline]
     #[must_use]
     pub fn failure_rate(&self) -> f64 {
-        if self.count == 0 { 0.0 } else { self.failures as f64 / self.count as f64 }
+        if self.count == 0 {
+            0.0
+        } else {
+            self.failures as f64 / self.count as f64
+        }
     }
 
     /// Success rate over the window (0.0 to 1.0).
     #[inline]
     #[must_use]
-    pub fn success_rate(&self) -> f64 { 1.0 - self.failure_rate() }
+    pub fn success_rate(&self) -> f64 {
+        1.0 - self.failure_rate()
+    }
 
     /// Number of failures in the current window.
     #[inline]
     #[must_use]
-    pub fn failures(&self) -> u32 { self.failures }
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
 
     /// Number of samples in the window.
     #[inline]
     #[must_use]
-    pub fn count(&self) -> u64 { self.count }
+    pub fn count(&self) -> u64 {
+        self.count
+    }
 
     /// Whether the window is full.
     #[inline]
     #[must_use]
-    pub fn is_full(&self) -> bool { self.count >= self.capacity as u64 }
+    pub fn is_full(&self) -> bool {
+        self.count >= self.capacity as u64
+    }
 
     /// Resets to empty state.
     #[inline]
@@ -256,6 +279,9 @@ mod tests {
 
     #[test]
     fn rejects_zero_capacity() {
-        assert!(matches!(BoolWindow::new(0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            BoolWindow::new(0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 }

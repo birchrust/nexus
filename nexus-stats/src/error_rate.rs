@@ -103,12 +103,16 @@ macro_rules! impl_error_rate {
             /// Number of outcomes recorded.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether enough data has been collected.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to empty state. Parameters unchanged.
             #[inline]
@@ -123,9 +127,14 @@ macro_rules! impl_error_rate {
             ///
             /// Threshold must be >= 0.
             #[inline]
-            pub fn reconfigure_threshold(&mut self, threshold: $ty) -> Result<(), crate::ConfigError> {
+            pub fn reconfigure_threshold(
+                &mut self,
+                threshold: $ty,
+            ) -> Result<(), crate::ConfigError> {
                 if threshold < (0.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("threshold must be non-negative"));
+                    return Err(crate::ConfigError::Invalid(
+                        "threshold must be non-negative",
+                    ));
                 }
                 self.threshold = threshold;
                 Ok(())
@@ -147,7 +156,8 @@ macro_rules! impl_error_rate {
             #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
-                self.alpha = Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
+                self.alpha =
+                    Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
                 self
             }
 
@@ -185,12 +195,16 @@ macro_rules! impl_error_rate {
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
+                let threshold = self
+                    .threshold
+                    .ok_or(crate::ConfigError::Missing("threshold"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
                 if threshold < 0.0 as $ty {
-                    return Err(crate::ConfigError::Invalid("threshold must be non-negative"));
+                    return Err(crate::ConfigError::Invalid(
+                        "threshold must be non-negative",
+                    ));
                 }
 
                 Ok($name {
@@ -218,7 +232,8 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..100 {
             assert_eq!(er.record(true), Some(Condition::Normal));
@@ -230,7 +245,8 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..50 {
             let _ = er.record(false);
@@ -243,7 +259,8 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // All success — should be healthy
         for _ in 0..20 {
@@ -263,11 +280,13 @@ mod tests {
         let mut light = ErrorRateF64::builder()
             .alpha(0.5)
             .threshold(0.5)
-            .build().unwrap();
+            .build()
+            .unwrap();
         let mut heavy = ErrorRateF64::builder()
             .alpha(0.5)
             .threshold(0.5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Both start healthy
         for _ in 0..10 {
@@ -282,8 +301,10 @@ mod tests {
         let light_rate = light.error_rate().unwrap();
         let heavy_rate = heavy.error_rate().unwrap();
 
-        assert!(heavy_rate > light_rate,
-            "heavy ({heavy_rate}) should exceed light ({light_rate})");
+        assert!(
+            heavy_rate > light_rate,
+            "heavy ({heavy_rate}) should exceed light ({light_rate})"
+        );
     }
 
     #[test]
@@ -292,7 +313,8 @@ mod tests {
             .alpha(0.3)
             .threshold(0.05)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..4 {
             assert!(er.record(false).is_none());
@@ -305,7 +327,8 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = er.record(false);
@@ -320,7 +343,8 @@ mod tests {
         let mut er = ErrorRateF32::builder()
             .alpha(0.3)
             .threshold(0.05)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(er.record(true), Some(Condition::Normal));
     }
@@ -330,14 +354,18 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.1)
             .threshold(0.5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Drive to low error rate with all successes
         for _ in 0..50 {
             let _ = er.record(true);
         }
         let rate = er.error_rate().unwrap();
-        assert!(rate < 0.5, "rate should be low after all successes, got {rate}");
+        assert!(
+            rate < 0.5,
+            "rate should be low after all successes, got {rate}"
+        );
         assert_eq!(er.record(true), Some(Condition::Normal));
 
         // Lower threshold below the current rate
@@ -350,24 +378,21 @@ mod tests {
     #[test]
     fn errors_without_threshold() {
         let result = ErrorRateF64::builder().alpha(0.3).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("threshold"))
+        ));
     }
 
     #[test]
     fn allows_zero_threshold() {
-        let er = ErrorRateF64::builder()
-            .alpha(0.3)
-            .threshold(0.0)
-            .build();
+        let er = ErrorRateF64::builder().alpha(0.3).threshold(0.0).build();
         assert!(er.is_ok());
     }
 
     #[test]
     fn rejects_negative_threshold() {
-        let result = ErrorRateF64::builder()
-            .alpha(0.3)
-            .threshold(-0.1)
-            .build();
+        let result = ErrorRateF64::builder().alpha(0.3).threshold(-0.1).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
@@ -376,7 +401,8 @@ mod tests {
         let mut er = ErrorRateF64::builder()
             .alpha(0.3)
             .threshold(0.5)
-            .build().unwrap();
+            .build()
+            .unwrap();
         assert!(er.reconfigure_threshold(-0.1).is_err());
         assert!(er.reconfigure_threshold(0.0).is_ok());
     }

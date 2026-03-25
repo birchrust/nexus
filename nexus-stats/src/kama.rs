@@ -353,7 +353,10 @@ mod tests {
             let _ = kama.update(i as f64);
         }
         let er = kama.efficiency_ratio().unwrap();
-        assert!((0.0..=1.0).contains(&er), "ER should be in [0, 1], got {er}");
+        assert!(
+            (0.0..=1.0).contains(&er),
+            "ER should be in [0, 1], got {er}"
+        );
     }
 
     #[test]

@@ -51,7 +51,9 @@ impl FlexProportionGlobal {
     #[inline]
     pub fn new(half_life_events: u64) -> Result<Self, crate::ConfigError> {
         if half_life_events == 0 {
-            return Err(crate::ConfigError::Invalid("half_life_events must be positive"));
+            return Err(crate::ConfigError::Invalid(
+                "half_life_events must be positive",
+            ));
         }
         Ok(Self {
             total: 0,
@@ -90,7 +92,10 @@ impl FlexProportionEntity {
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        Self { count: 0, period: 0 }
+        Self {
+            count: 0,
+            period: 0,
+        }
     }
 
     /// Records an event for this entity.
@@ -186,7 +191,10 @@ mod tests {
 
         let f1 = e1.fraction(global.total(), global.period());
         let f2 = e2.fraction(global.total(), global.period());
-        assert!((f1 - f2).abs() < 0.1, "equal entities should have equal fraction: {f1} vs {f2}");
+        assert!(
+            (f1 - f2).abs() < 0.1,
+            "equal entities should have equal fraction: {f1} vs {f2}"
+        );
     }
 
     #[test]
@@ -238,6 +246,9 @@ mod tests {
 
     #[test]
     fn rejects_zero_half_life() {
-        assert!(matches!(FlexProportionGlobal::new(0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            FlexProportionGlobal::new(0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 }

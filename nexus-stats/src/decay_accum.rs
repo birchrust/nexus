@@ -93,10 +93,16 @@ mod tests {
         da.accumulate(0.0, 100.0);
 
         let s = da.score(10.0); // one half-life
-        assert!((s - 50.0).abs() < 1.0, "should be ~50 after one half-life, got {s}");
+        assert!(
+            (s - 50.0).abs() < 1.0,
+            "should be ~50 after one half-life, got {s}"
+        );
 
         let s = da.score(20.0); // two half-lives
-        assert!((s - 25.0).abs() < 1.0, "should be ~25 after two half-lives, got {s}");
+        assert!(
+            (s - 25.0).abs() < 1.0,
+            "should be ~25 after two half-lives, got {s}"
+        );
     }
 
     #[test]
@@ -122,6 +128,9 @@ mod tests {
 
     #[test]
     fn rejects_zero_half_life() {
-        assert!(matches!(DecayAccumF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            DecayAccumF64::new(0.0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 }

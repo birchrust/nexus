@@ -20,7 +20,10 @@ macro_rules! impl_max_gauge {
             #[inline]
             #[must_use]
             pub const fn new() -> Self {
-                Self { max: $min_val, has_value: false }
+                Self {
+                    max: $min_val,
+                    has_value: false,
+                }
             }
 
             /// Records a sample.
@@ -49,7 +52,11 @@ macro_rules! impl_max_gauge {
             #[inline]
             #[must_use]
             pub fn peek(&self) -> Option<$ty> {
-                if self.has_value { Option::Some(self.max) } else { Option::None }
+                if self.has_value {
+                    Option::Some(self.max)
+                } else {
+                    Option::None
+                }
             }
 
             /// Resets the gauge.
@@ -62,7 +69,9 @@ macro_rules! impl_max_gauge {
 
         impl Default for $name {
             #[inline]
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
     };
 }

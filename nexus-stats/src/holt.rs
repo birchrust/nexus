@@ -65,9 +65,15 @@ macro_rules! impl_holt {
                 } else {
                     let prev_level = self.level;
                     // Level: alpha * sample + (1 - alpha) * (prev_level + prev_trend)
-                    self.level = self.alpha.fma(sample, (1.0 as $ty - self.alpha) * (prev_level + self.trend));
+                    self.level = self.alpha.fma(
+                        sample,
+                        (1.0 as $ty - self.alpha) * (prev_level + self.trend),
+                    );
                     // Trend: beta * (level - prev_level) + (1 - beta) * prev_trend
-                    self.trend = self.beta.fma(self.level - prev_level, (1.0 as $ty - self.beta) * self.trend);
+                    self.trend = self.beta.fma(
+                        self.level - prev_level,
+                        (1.0 as $ty - self.beta) * self.trend,
+                    );
                 }
 
                 if self.count >= self.min_samples {
@@ -220,7 +226,10 @@ mod tests {
         }
 
         let trend = h.trend().unwrap();
-        assert!(trend.abs() < 0.01, "constant input should have ~zero trend, got {trend}");
+        assert!(
+            trend.abs() < 0.01,
+            "constant input should have ~zero trend, got {trend}"
+        );
     }
 
     #[test]
@@ -234,7 +243,10 @@ mod tests {
 
         let trend = h.trend().unwrap();
         // Should converge to ~10.0 (the slope)
-        assert!((trend - 10.0).abs() < 1.0, "linear trend should be ~10, got {trend}");
+        assert!(
+            (trend - 10.0).abs() < 1.0,
+            "linear trend should be ~10, got {trend}"
+        );
     }
 
     #[test]
@@ -288,7 +300,8 @@ mod tests {
             .alpha(0.3)
             .beta(0.1)
             .seed(100.0, 5.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert!(h.is_primed());
         assert!((h.level().unwrap() - 100.0).abs() < 1e-10);

@@ -54,7 +54,9 @@ macro_rules! impl_level_crossing {
             /// Total number of crossings detected.
             #[inline]
             #[must_use]
-            pub fn crossing_count(&self) -> u64 { self.crossings }
+            pub fn crossing_count(&self) -> u64 {
+                self.crossings
+            }
 
             /// Resets the detector.
             #[inline]

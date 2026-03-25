@@ -487,7 +487,10 @@ mod tests {
         }
 
         let val = ema.value().unwrap();
-        assert!((val - 100.0).abs() < 0.01, "EMA should converge to 100, got {val}");
+        assert!(
+            (val - 100.0).abs() < 0.01,
+            "EMA should converge to 100, got {val}"
+        );
     }
 
     #[test]
@@ -504,16 +507,15 @@ mod tests {
         let fast_val = fast.value().unwrap();
         let slow_val = slow.value().unwrap();
 
-        assert!(fast_val > slow_val,
-            "fast ({fast_val}) should react more than slow ({slow_val})");
+        assert!(
+            fast_val > slow_val,
+            "fast ({fast_val}) should react more than slow ({slow_val})"
+        );
     }
 
     #[test]
     fn priming_behavior() {
-        let mut ema = EmaF64::builder()
-            .alpha(0.5)
-            .min_samples(5)
-            .build().unwrap();
+        let mut ema = EmaF64::builder().alpha(0.5).min_samples(5).build().unwrap();
 
         for i in 1..5 {
             assert_eq!(ema.update(100.0), None, "sample {i} should not be primed");
@@ -626,7 +628,10 @@ mod tests {
 
         let val = ema.value().unwrap();
         // Should converge close to 1000 (integer precision may be off by 1)
-        assert!((val - 1000).abs() <= 1, "should converge to ~1000, got {val}");
+        assert!(
+            (val - 1000).abs() <= 1,
+            "should converge to ~1000, got {val}"
+        );
     }
 
     #[test]
@@ -639,15 +644,15 @@ mod tests {
         }
 
         let val = ema.value().unwrap();
-        assert_eq!(val, 500, "constant input should produce exact output, got {val}");
+        assert_eq!(
+            val, 500,
+            "constant input should produce exact output, got {val}"
+        );
     }
 
     #[test]
     fn int_priming() {
-        let mut ema = EmaI64::builder()
-            .span(7)
-            .min_samples(5)
-            .build().unwrap();
+        let mut ema = EmaI64::builder().span(7).min_samples(5).build().unwrap();
 
         for _ in 0..4 {
             assert_eq!(ema.update(100), None);
@@ -746,7 +751,9 @@ mod tests {
 
         // Should be within a few units of each other
         let diff = (int_val as f64 - float_val).abs();
-        assert!(diff < 5.0,
-            "int ({int_val}) and float ({float_val}) should be close, diff={diff}");
+        assert!(
+            diff < 5.0,
+            "int ({int_val}) and float ({float_val}) should be close, diff={diff}"
+        );
     }
 }

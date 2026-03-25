@@ -68,14 +68,22 @@ macro_rules! impl_covariance {
             #[inline]
             #[must_use]
             pub fn mean_x(&self) -> Option<$ty> {
-                if self.count == 0 { Option::None } else { Option::Some(self.mean_x) }
+                if self.count == 0 {
+                    Option::None
+                } else {
+                    Option::Some(self.mean_x)
+                }
             }
 
             /// Mean of Y, or `None` if empty.
             #[inline]
             #[must_use]
             pub fn mean_y(&self) -> Option<$ty> {
-                if self.count == 0 { Option::None } else { Option::Some(self.mean_y) }
+                if self.count == 0 {
+                    Option::None
+                } else {
+                    Option::Some(self.mean_y)
+                }
             }
 
             /// Sample covariance (N-1 denominator), or `None` if < 2 samples.
@@ -124,8 +132,10 @@ macro_rules! impl_covariance {
                 let dy = other.mean_y - self.mean_y;
                 let weight = self.count as $ty * other.count as $ty / combined as $ty;
 
-                let new_mean_x = (dx * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_x);
-                let new_mean_y = (dy * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_y);
+                let new_mean_x =
+                    (dx * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_x);
+                let new_mean_y =
+                    (dy * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_y);
 
                 self.co_moment += (dx * dy).fma(weight, other.co_moment);
                 self.m2_x += (dx * dx).fma(weight, other.m2_x);
@@ -173,7 +183,10 @@ mod tests {
             c.update(i as f64, i as f64 * 2.0);
         }
         let r = c.correlation().unwrap();
-        assert!((r - 1.0).abs() < 1e-10, "perfect positive should be 1.0, got {r}");
+        assert!(
+            (r - 1.0).abs() < 1e-10,
+            "perfect positive should be 1.0, got {r}"
+        );
     }
 
     #[test]
@@ -183,7 +196,10 @@ mod tests {
             c.update(i as f64, -(i as f64));
         }
         let r = c.correlation().unwrap();
-        assert!((r + 1.0).abs() < 1e-10, "perfect negative should be -1.0, got {r}");
+        assert!(
+            (r + 1.0).abs() < 1e-10,
+            "perfect negative should be -1.0, got {r}"
+        );
     }
 
     #[test]
@@ -196,7 +212,10 @@ mod tests {
 
         let cov = c.covariance().unwrap();
         // Cov(X, 2X) = 2 * Var(X). Var([1,2,3]) = 1.0. So cov = 2.0.
-        assert!((cov - 2.0).abs() < 1e-10, "covariance should be 2.0, got {cov}");
+        assert!(
+            (cov - 2.0).abs() < 1e-10,
+            "covariance should be 2.0, got {cov}"
+        );
     }
 
     #[test]

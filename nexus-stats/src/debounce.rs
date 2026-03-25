@@ -25,7 +25,10 @@ macro_rules! impl_debounce {
                 if threshold == 0 {
                     return Err(crate::ConfigError::Invalid("threshold must be positive"));
                 }
-                Ok(Self { threshold, consecutive: 0 })
+                Ok(Self {
+                    threshold,
+                    consecutive: 0,
+                })
             }
 
             /// Feeds a boolean signal. Returns `true` once the threshold of
@@ -44,11 +47,15 @@ macro_rules! impl_debounce {
             /// Current consecutive count.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> $ty { self.consecutive }
+            pub fn count(&self) -> $ty {
+                self.consecutive
+            }
 
             /// Resets the consecutive counter.
             #[inline]
-            pub fn reset(&mut self) { self.consecutive = 0; }
+            pub fn reset(&mut self) {
+                self.consecutive = 0;
+            }
         }
     };
 }
@@ -74,9 +81,9 @@ mod tests {
         assert!(!d.update(true));
         assert!(!d.update(true));
         assert!(!d.update(false)); // reset
-        assert!(!d.update(true));  // restart count
+        assert!(!d.update(true)); // restart count
         assert!(!d.update(true));
-        assert!(d.update(true));   // 3rd consecutive again
+        assert!(d.update(true)); // 3rd consecutive again
     }
 
     #[test]
@@ -114,7 +121,13 @@ mod tests {
 
     #[test]
     fn rejects_zero_threshold() {
-        assert!(matches!(DebounceU32::new(0), Err(crate::ConfigError::Invalid(_))));
-        assert!(matches!(DebounceU64::new(0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            DebounceU32::new(0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            DebounceU64::new(0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 }

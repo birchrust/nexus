@@ -1,4 +1,5 @@
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Token Bucket — lazy token computation (thread-safe).
 ///
@@ -14,15 +15,16 @@ pub struct TokenBucket {
     rate: u64,
     period: u64,
     burst: u64,
+    base: Instant,
 }
 
 /// Builder for [`TokenBucket`].
 #[derive(Debug, Clone)]
 pub struct TokenBucketBuilder {
     rate: Option<u64>,
-    period: Option<u64>,
+    period: Option<Duration>,
     burst: Option<u64>,
-    now: Option<u64>,
+    now: Option<Instant>,
 }
 
 impl TokenBucket {
@@ -38,12 +40,19 @@ impl TokenBucket {
         }
     }
 
+    /// Converts an `Instant` to nanoseconds relative to the base instant.
+    #[inline]
+    fn nanos_since_base(&self, now: Instant) -> u64 {
+        now.duration_since(self.base).as_nanos() as u64
+    }
+
     /// Attempts to consume `cost` tokens (thread-safe).
     ///
     /// Uses a CAS loop on `zero_time`.
     #[inline]
     #[must_use]
-    pub fn try_acquire(&self, cost: u64, now: u64) -> bool {
+    pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
+        let now = self.nanos_since_base(now);
         loop {
             let zero_time = self.zero_time.load(Ordering::Relaxed);
             let elapsed = now.saturating_sub(zero_time);
@@ -54,15 +63,20 @@ impl TokenBucket {
                 return false;
             }
 
-            let consume_ticks = (cost as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
+            let consume_ticks =
+                (cost as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
             let new_zero_time = zero_time + consume_ticks;
 
-            if self.zero_time.compare_exchange_weak(
-                zero_time,
-                new_zero_time,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .zero_time
+                .compare_exchange_weak(
+                    zero_time,
+                    new_zero_time,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 return true;
             }
         }
@@ -71,7 +85,8 @@ impl TokenBucket {
     /// Available tokens right now (without consuming).
     #[inline]
     #[must_use]
-    pub fn available(&self, now: u64) -> u64 {
+    pub fn available(&self, now: Instant) -> u64 {
+        let now = self.nanos_since_base(now);
         let zero_time = self.zero_time.load(Ordering::Relaxed);
         let elapsed = now.saturating_sub(zero_time);
         let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
@@ -82,22 +97,66 @@ impl TokenBucket {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if rate or period is zero, or if
+    /// Returns `ConfigError::Invalid` if rate is zero, period is zero, or if
     /// `period / rate` rounds to zero.
     #[inline]
-    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
-        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
-        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
-        if period / rate == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+    pub fn reconfigure(
+        &mut self,
+        rate: u64,
+        period: Duration,
+        burst: u64,
+    ) -> Result<(), crate::ConfigError> {
+        let period_nanos = period.as_nanos() as u64;
+        if rate == 0 {
+            return Err(crate::ConfigError::Invalid("rate must be > 0"));
+        }
+        if period_nanos == 0 {
+            return Err(crate::ConfigError::Invalid("period must be > 0"));
+        }
+        if period_nanos / rate == 0 {
+            return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
+        }
         self.rate = rate;
-        self.period = period;
+        self.period = period_nanos;
         self.burst = burst;
         Ok(())
     }
 
+    /// Release capacity back to the limiter.
+    ///
+    /// Adds `cost` tokens back, saturating at `burst`. Uses CAS loop.
+    #[inline]
+    pub fn release(&self, cost: u64, now: Instant) {
+        let now_ns = self.nanos_since_base(now);
+        loop {
+            let zero_time = self.zero_time.load(Ordering::Relaxed);
+            let elapsed = now_ns.saturating_sub(zero_time);
+            let tokens = elapsed as u128 * self.rate as u128 / self.period as u128;
+            let available = tokens.min(self.burst as u128) as u64;
+            let new_available = available.saturating_add(cost).min(self.burst);
+            let ticks_for_tokens =
+                (new_available as u128 * self.period as u128).div_ceil(self.rate as u128) as u64;
+            let new_zero_time = now_ns.saturating_sub(ticks_for_tokens);
+
+            if self
+                .zero_time
+                .compare_exchange_weak(
+                    zero_time,
+                    new_zero_time,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
     /// Resets to fresh state at the given timestamp.
     #[inline]
-    pub fn reset(&self, now: u64) {
+    pub fn reset(&self, now: Instant) {
+        let now = self.nanos_since_base(now);
         self.zero_time.store(now, Ordering::Release);
     }
 }
@@ -109,6 +168,7 @@ impl core::fmt::Debug for TokenBucket {
             .field("rate", &self.rate)
             .field("period", &self.period)
             .field("burst", &self.burst)
+            .field("base", &self.base)
             .finish()
     }
 }
@@ -122,11 +182,11 @@ impl TokenBucketBuilder {
         self
     }
 
-    /// Period length in timestamp units.
+    /// Period length as a `Duration`.
     #[inline]
     #[must_use]
-    pub fn period(mut self, ticks: u64) -> Self {
-        self.period = Some(ticks);
+    pub fn period(mut self, duration: Duration) -> Self {
+        self.period = Some(duration);
         self
     }
 
@@ -138,10 +198,10 @@ impl TokenBucketBuilder {
         self
     }
 
-    /// Initial timestamp.
+    /// Initial timestamp used as the base instant.
     #[inline]
     #[must_use]
-    pub fn now(mut self, now: u64) -> Self {
+    pub fn now(mut self, now: Instant) -> Self {
         self.now = Some(now);
         self
     }
@@ -158,15 +218,23 @@ impl TokenBucketBuilder {
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
         let burst = self.burst.ok_or(crate::ConfigError::Missing("burst"))?;
         let now = self.now.ok_or(crate::ConfigError::Missing("now"))?;
-        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
-        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
-        if period / rate == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+        let period_nanos = period.as_nanos() as u64;
+        if rate == 0 {
+            return Err(crate::ConfigError::Invalid("rate must be > 0"));
+        }
+        if period_nanos == 0 {
+            return Err(crate::ConfigError::Invalid("period must be > 0"));
+        }
+        if period_nanos / rate == 0 {
+            return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
+        }
 
         Ok(TokenBucket {
-            zero_time: AtomicU64::new(now),
+            zero_time: AtomicU64::new(0),
             rate,
-            period,
+            period: period_nanos,
             burst,
+            base: now,
         })
     }
 }
@@ -177,35 +245,62 @@ mod tests {
 
     #[test]
     fn basic() {
-        let tb = TokenBucket::builder().rate(10).period(1000).burst(20).now(0).build().unwrap();
-        assert_eq!(tb.available(1000), 10);
-        assert!(tb.try_acquire(10, 1000));
-        assert!(!tb.try_acquire(1, 1000));
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        assert_eq!(tb.available(start + Duration::from_nanos(1000)), 10);
+        assert!(tb.try_acquire(10, start + Duration::from_nanos(1000)));
+        assert!(!tb.try_acquire(1, start + Duration::from_nanos(1000)));
     }
 
     #[test]
     fn burst_cap() {
-        let tb = TokenBucket::builder().rate(10).period(1000).burst(20).now(0).build().unwrap();
-        assert_eq!(tb.available(10000), 20); // capped at burst
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        assert_eq!(tb.available(start + Duration::from_nanos(10000)), 20); // capped at burst
     }
 
     #[test]
     fn reset() {
-        let tb = TokenBucket::builder().rate(10).period(1000).burst(20).now(0).build().unwrap();
-        let _ = tb.try_acquire(10, 1000);
-        tb.reset(5000);
-        assert_eq!(tb.available(5000), 0);
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        let _ = tb.try_acquire(10, start + Duration::from_nanos(1000));
+        tb.reset(start + Duration::from_nanos(5000));
+        assert_eq!(tb.available(start + Duration::from_nanos(5000)), 0);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     #[allow(clippy::needless_collect)]
     fn concurrent_consumption() {
         use std::sync::Arc;
         use std::thread;
 
+        let start = Instant::now();
         let tb = Arc::new(
-            TokenBucket::builder().rate(1000).period(1000).burst(100).now(0).build().unwrap(),
+            TokenBucket::builder()
+                .rate(1000)
+                .period(Duration::from_nanos(1000))
+                .burst(100)
+                .now(start)
+                .build()
+                .unwrap(),
         );
 
         let threads: Vec<_> = (0..4)
@@ -214,7 +309,7 @@ mod tests {
                 thread::spawn(move || {
                     let mut allowed = 0u64;
                     for t in 1..=100 {
-                        if tb.try_acquire(1, t * 10) {
+                        if tb.try_acquire(1, start + Duration::from_nanos(t * 10)) {
                             allowed += 1;
                         }
                     }
@@ -229,26 +324,83 @@ mod tests {
 
     #[test]
     fn available_query() {
-        let tb = TokenBucket::builder().rate(10).period(1000).burst(20).now(0).build().unwrap();
-        assert_eq!(tb.available(1000), 10);
-        assert_eq!(tb.available(1000), 10); // doesn't consume
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        assert_eq!(tb.available(start + Duration::from_nanos(1000)), 10);
+        assert_eq!(tb.available(start + Duration::from_nanos(1000)), 10); // doesn't consume
     }
 
     #[test]
     fn cost_zero() {
-        let tb = TokenBucket::builder().rate(10).period(1000).burst(10).now(0).build().unwrap();
-        assert!(tb.try_acquire(0, 0));
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(10)
+            .now(start)
+            .build()
+            .unwrap();
+        assert!(tb.try_acquire(0, start));
     }
 
     #[test]
     fn missing_rate_returns_error() {
-        let result = TokenBucket::builder().period(1000).burst(10).now(0).build();
+        let start = Instant::now();
+        let result = TokenBucket::builder()
+            .period(Duration::from_nanos(1000))
+            .burst(10)
+            .now(start)
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("rate"))));
     }
 
     #[test]
     fn zero_rate_returns_error() {
-        let result = TokenBucket::builder().rate(0).period(1000).burst(10).now(0).build();
+        let start = Instant::now();
+        let result = TokenBucket::builder()
+            .rate(0)
+            .period(Duration::from_nanos(1000))
+            .burst(10)
+            .now(start)
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn release_returns_tokens() {
+        let base = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(10)
+            .now(base)
+            .build()
+            .unwrap();
+        let t = base + Duration::from_nanos(1000);
+        assert!(tb.try_acquire(8, t));
+        assert_eq!(tb.available(t), 2);
+        tb.release(3, t);
+        assert_eq!(tb.available(t), 5);
+    }
+
+    #[test]
+    fn release_saturates_at_burst() {
+        let base = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(10)
+            .now(base)
+            .build()
+            .unwrap();
+        let t = base + Duration::from_nanos(1000);
+        tb.release(100, t);
+        assert_eq!(tb.available(t), 10);
     }
 }

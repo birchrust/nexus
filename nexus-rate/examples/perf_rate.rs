@@ -5,6 +5,7 @@
 //!   taskset -c 0 ./target/release/examples/perf_rate
 
 use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 use nexus_rate::{local, sync};
 
@@ -64,19 +65,25 @@ const BATCH: u64 = 64;
 // ============================================================================
 
 fn bench_local_gcra_allowed(samples: &mut [u64]) {
-    let mut g = local::Gcra::builder().rate(1_000_000).period(1_000_000).burst(100).build().unwrap();
+    let base = Instant::now();
+    let mut g = local::Gcra::builder()
+        .rate(1_000_000)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(100)
+        .build()
+        .unwrap();
     let mut t = 0u64;
 
     for _ in 0..WARMUP {
         t += 1;
-        let _ = g.try_acquire(1, t);
+        let _ = g.try_acquire(1, base + Duration::from_nanos(t));
     }
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 1;
-            black_box(g.try_acquire(1, t));
+            black_box(g.try_acquire(1, base + Duration::from_nanos(t)));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -84,14 +91,20 @@ fn bench_local_gcra_allowed(samples: &mut [u64]) {
 }
 
 fn bench_local_gcra_rejected(samples: &mut [u64]) {
-    // Rate of 1 per 1M ticks, no burst — nearly all requests rejected
-    let mut g = local::Gcra::builder().rate(1).period(1_000_000).burst(0).build().unwrap();
-    let _ = g.try_acquire(1, 0); // consume the one allowed
+    let base = Instant::now();
+    // Rate of 1 per 1M nanos, no burst — nearly all requests rejected
+    let mut g = local::Gcra::builder()
+        .rate(1)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(0)
+        .build()
+        .unwrap();
+    let _ = g.try_acquire(1, base); // consume the one allowed
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            black_box(g.try_acquire(1, 1));
+            black_box(g.try_acquire(1, base + Duration::from_nanos(1)));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -103,36 +116,50 @@ fn bench_local_gcra_rejected(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_sync_gcra_allowed(samples: &mut [u64]) {
-    let g = sync::Gcra::builder().rate(1_000_000).period(1_000_000).burst(100).build().unwrap();
+    let base = Instant::now();
+    let g = sync::Gcra::builder()
+        .rate(1_000_000)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(100)
+        .now(base)
+        .build()
+        .unwrap();
     let mut t = 0u64;
 
     for _ in 0..WARMUP {
         t += 1;
-        let _ = g.try_acquire(1, t);
+        let _ = g.try_acquire(1, base + Duration::from_nanos(t));
     }
 
     for s in samples.iter_mut() {
-        let start = rdtsc_start();
+        let tsc_start = rdtsc_start();
         for _ in 0..BATCH {
             t += 1;
-            black_box(g.try_acquire(1, t));
+            black_box(g.try_acquire(1, base + Duration::from_nanos(t)));
         }
-        let end = rdtsc_end();
-        *s = (end - start) / BATCH;
+        let tsc_end = rdtsc_end();
+        *s = (tsc_end - tsc_start) / BATCH;
     }
 }
 
 fn bench_sync_gcra_rejected(samples: &mut [u64]) {
-    let g = sync::Gcra::builder().rate(1).period(1_000_000).burst(0).build().unwrap();
-    let _ = g.try_acquire(1, 0);
+    let base = Instant::now();
+    let g = sync::Gcra::builder()
+        .rate(1)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(0)
+        .now(base)
+        .build()
+        .unwrap();
+    let _ = g.try_acquire(1, base);
 
     for s in samples.iter_mut() {
-        let start = rdtsc_start();
+        let tsc_start = rdtsc_start();
         for _ in 0..BATCH {
-            black_box(g.try_acquire(1, 1));
+            black_box(g.try_acquire(1, base + Duration::from_nanos(1)));
         }
-        let end = rdtsc_end();
-        *s = (end - start) / BATCH;
+        let tsc_end = rdtsc_end();
+        *s = (tsc_end - tsc_start) / BATCH;
     }
 }
 
@@ -141,20 +168,26 @@ fn bench_sync_gcra_rejected(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_local_tb_allowed(samples: &mut [u64]) {
+    let base = Instant::now();
     let mut tb = local::TokenBucket::builder()
-        .rate(1_000_000).period(1_000_000).burst(1_000_000).now(0).build().unwrap();
+        .rate(1_000_000)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(1_000_000)
+        .now(base)
+        .build()
+        .unwrap();
     let mut t = 0u64;
 
     for _ in 0..WARMUP {
         t += 1;
-        let _ = tb.try_acquire(1, t);
+        let _ = tb.try_acquire(1, base + Duration::from_nanos(t));
     }
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 1;
-            black_box(tb.try_acquire(1, t));
+            black_box(tb.try_acquire(1, base + Duration::from_nanos(t)));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -162,14 +195,20 @@ fn bench_local_tb_allowed(samples: &mut [u64]) {
 }
 
 fn bench_local_tb_rejected(samples: &mut [u64]) {
+    let base = Instant::now();
     let mut tb = local::TokenBucket::builder()
-        .rate(1).period(1_000_000).burst(1).now(0).build().unwrap();
-    let _ = tb.try_acquire(1, 1); // consume the one token
+        .rate(1)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(1)
+        .now(base)
+        .build()
+        .unwrap();
+    let _ = tb.try_acquire(1, base + Duration::from_nanos(1)); // consume the one token
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            black_box(tb.try_acquire(1, 1));
+            black_box(tb.try_acquire(1, base + Duration::from_nanos(1)));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -181,38 +220,50 @@ fn bench_local_tb_rejected(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_sync_tb_allowed(samples: &mut [u64]) {
+    let base = Instant::now();
     let tb = sync::TokenBucket::builder()
-        .rate(1_000_000).period(1_000_000).burst(1_000_000).now(0).build().unwrap();
+        .rate(1_000_000)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(1_000_000)
+        .now(base)
+        .build()
+        .unwrap();
     let mut t = 0u64;
 
     for _ in 0..WARMUP {
         t += 1;
-        let _ = tb.try_acquire(1, t);
+        let _ = tb.try_acquire(1, base + Duration::from_nanos(t));
     }
 
     for s in samples.iter_mut() {
-        let start = rdtsc_start();
+        let tsc_start = rdtsc_start();
         for _ in 0..BATCH {
             t += 1;
-            black_box(tb.try_acquire(1, t));
+            black_box(tb.try_acquire(1, base + Duration::from_nanos(t)));
         }
-        let end = rdtsc_end();
-        *s = (end - start) / BATCH;
+        let tsc_end = rdtsc_end();
+        *s = (tsc_end - tsc_start) / BATCH;
     }
 }
 
 fn bench_sync_tb_rejected(samples: &mut [u64]) {
+    let base = Instant::now();
     let tb = sync::TokenBucket::builder()
-        .rate(1).period(1_000_000).burst(1).now(0).build().unwrap();
-    let _ = tb.try_acquire(1, 1);
+        .rate(1)
+        .period(Duration::from_nanos(1_000_000))
+        .burst(1)
+        .now(base)
+        .build()
+        .unwrap();
+    let _ = tb.try_acquire(1, base + Duration::from_nanos(1));
 
     for s in samples.iter_mut() {
-        let start = rdtsc_start();
+        let tsc_start = rdtsc_start();
         for _ in 0..BATCH {
-            black_box(tb.try_acquire(1, 1));
+            black_box(tb.try_acquire(1, base + Duration::from_nanos(1)));
         }
-        let end = rdtsc_end();
-        *s = (end - start) / BATCH;
+        let tsc_end = rdtsc_end();
+        *s = (tsc_end - tsc_start) / BATCH;
     }
 }
 
@@ -221,20 +272,26 @@ fn bench_sync_tb_rejected(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_local_sw_allowed(samples: &mut [u64]) {
+    let base = Instant::now();
     let mut sw = local::SlidingWindow::builder()
-        .window(1_000_000).sub_windows(10).limit(10_000_000).now(0).build().unwrap();
+        .window(Duration::from_nanos(1_000_000))
+        .sub_windows(10)
+        .limit(10_000_000)
+        .now(base)
+        .build()
+        .unwrap();
     let mut t = 0u64;
 
     for _ in 0..WARMUP {
         t += 1;
-        let _ = sw.try_acquire(1, t);
+        let _ = sw.try_acquire(1, base + Duration::from_nanos(t));
     }
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 1;
-            black_box(sw.try_acquire(1, t));
+            black_box(sw.try_acquire(1, base + Duration::from_nanos(t)));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -242,14 +299,20 @@ fn bench_local_sw_allowed(samples: &mut [u64]) {
 }
 
 fn bench_local_sw_rejected(samples: &mut [u64]) {
+    let base = Instant::now();
     let mut sw = local::SlidingWindow::builder()
-        .window(1_000_000).sub_windows(10).limit(1).now(0).build().unwrap();
-    let _ = sw.try_acquire(1, 0); // consume the one allowed
+        .window(Duration::from_nanos(1_000_000))
+        .sub_windows(10)
+        .limit(1)
+        .now(base)
+        .build()
+        .unwrap();
+    let _ = sw.try_acquire(1, base); // consume the one allowed
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            black_box(sw.try_acquire(1, 0));
+            black_box(sw.try_acquire(1, base));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;

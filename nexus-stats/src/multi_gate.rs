@@ -122,7 +122,9 @@ macro_rules! impl_multi_gate {
 
                 // Gate 3: Spread multiple (optional)
                 let verdict = if let Some(spread_mult) = self.unusual_spread_mult {
-                    if self.ema_abs_return > (0.0 as $ty) && abs_return > spread_mult * self.ema_abs_return {
+                    if self.ema_abs_return > (0.0 as $ty)
+                        && abs_return > spread_mult * self.ema_abs_return
+                    {
                         Verdict::Unusual
                     } else {
                         Verdict::Accept
@@ -132,8 +134,12 @@ macro_rules! impl_multi_gate {
                 };
 
                 // Update EMA (only on Accept or Unusual)
-                self.ema_value = self.alpha.fma(sample, self.one_minus_alpha * self.ema_value);
-                self.ema_abs_return = self.alpha.fma(abs_return, self.one_minus_alpha * self.ema_abs_return);
+                self.ema_value = self
+                    .alpha
+                    .fma(sample, self.one_minus_alpha * self.ema_value);
+                self.ema_abs_return = self
+                    .alpha
+                    .fma(abs_return, self.one_minus_alpha * self.ema_abs_return);
 
                 if self.count >= self.min_samples {
                     Option::Some(verdict)
@@ -146,18 +152,26 @@ macro_rules! impl_multi_gate {
             #[inline]
             #[must_use]
             pub fn ema_abs_return(&self) -> Option<$ty> {
-                if self.count >= self.min_samples { Option::Some(self.ema_abs_return) } else { Option::None }
+                if self.count >= self.min_samples {
+                    Option::Some(self.ema_abs_return)
+                } else {
+                    Option::None
+                }
             }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether the filter has reached `min_samples`.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -226,8 +240,12 @@ macro_rules! impl_multi_gate {
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let hard_limit = self.hard_limit_pct.ok_or(crate::ConfigError::Missing("hard_limit"))?;
-                let suspect_z = self.suspect_z.ok_or(crate::ConfigError::Missing("suspect_z"))?;
+                let hard_limit = self
+                    .hard_limit_pct
+                    .ok_or(crate::ConfigError::Missing("hard_limit"))?;
+                let suspect_z = self
+                    .suspect_z
+                    .ok_or(crate::ConfigError::Missing("suspect_z"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
@@ -259,8 +277,8 @@ mod tests {
     fn make_gate() -> MultiGateF64 {
         MultiGateF64::builder()
             .alpha(0.1)
-            .hard_limit(0.5)     // reject > 50% change
-            .suspect_z(5.0)      // suspect at 5x normal spread
+            .hard_limit(0.5) // reject > 50% change
+            .suspect_z(5.0) // suspect at 5x normal spread
             .unusual_spread_multiple(3.0)
             .min_samples(5)
             .build()
@@ -308,10 +326,11 @@ mod tests {
     fn moderate_anomaly_suspect() {
         let mut mg = MultiGateF64::builder()
             .alpha(0.1)
-            .hard_limit(1.0)    // very high hard limit
+            .hard_limit(1.0) // very high hard limit
             .suspect_z(3.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Build up baseline with small movements
         for i in 0..20 {
@@ -352,7 +371,8 @@ mod tests {
             .hard_limit(0.5)
             .suspect_z(5.0)
             .min_samples(3)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..5 {
             let _ = mg.update(100.0);
@@ -363,6 +383,9 @@ mod tests {
     #[test]
     fn errors_without_hard_limit() {
         let result = MultiGateF64::builder().alpha(0.1).suspect_z(3.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("hard_limit"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("hard_limit"))
+        ));
     }
 }

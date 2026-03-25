@@ -34,7 +34,9 @@ macro_rules! impl_peak_detector {
             pub fn new(prominence: $ty) -> Result<Self, crate::ConfigError> {
                 #[allow(clippy::neg_cmp_op_on_partial_ord)]
                 if !(prominence >= $zero) {
-                    return Err(crate::ConfigError::Invalid("prominence must be non-negative"));
+                    return Err(crate::ConfigError::Invalid(
+                        "prominence must be non-negative",
+                    ));
                 }
                 Ok(Self {
                     prominence,
@@ -60,7 +62,10 @@ macro_rules! impl_peak_detector {
                         self.extreme = sample;
                         Option::None
                     } else if self.extreme - sample >= self.prominence {
-                        let peak = Peak { value: self.extreme, is_maximum: true };
+                        let peak = Peak {
+                            value: self.extreme,
+                            is_maximum: true,
+                        };
                         self.extreme = sample;
                         self.rising = false;
                         Option::Some(peak)
@@ -71,7 +76,10 @@ macro_rules! impl_peak_detector {
                     self.extreme = sample;
                     Option::None
                 } else if sample - self.extreme >= self.prominence {
-                    let peak = Peak { value: self.extreme, is_maximum: false };
+                    let peak = Peak {
+                        value: self.extreme,
+                        is_maximum: false,
+                    };
                     self.extreme = sample;
                     self.rising = true;
                     Option::Some(peak)
@@ -108,7 +116,13 @@ mod tests {
         let _ = pd.update(20.0);
         let _ = pd.update(30.0); // rising
         let peak = pd.update(20.0); // dropped by 10 > prominence 5
-        assert_eq!(peak, Some(Peak { value: 30.0, is_maximum: true }));
+        assert_eq!(
+            peak,
+            Some(Peak {
+                value: 30.0,
+                is_maximum: true
+            })
+        );
     }
 
     #[test]
@@ -124,9 +138,15 @@ mod tests {
         let _ = pd2.update(10.0);
         let _ = pd2.update(20.0); // rising
         let _ = pd2.update(10.0); // max at 20, reversal
-        let _ = pd2.update(5.0);  // falling
+        let _ = pd2.update(5.0); // falling
         let peak = pd2.update(15.0); // reversal from 5 by 10 > 5, minimum at 5
-        assert_eq!(peak, Some(Peak { value: 5.0, is_maximum: false }));
+        assert_eq!(
+            peak,
+            Some(Peak {
+                value: 5.0,
+                is_maximum: false
+            })
+        );
     }
 
     #[test]
@@ -143,7 +163,13 @@ mod tests {
         let _ = pd.update(0);
         let _ = pd.update(50);
         let peak = pd.update(30); // dropped 20 > 10
-        assert_eq!(peak, Some(Peak { value: 50, is_maximum: true }));
+        assert_eq!(
+            peak,
+            Some(Peak {
+                value: 50,
+                is_maximum: true
+            })
+        );
     }
 
     #[test]
@@ -156,7 +182,10 @@ mod tests {
 
     #[test]
     fn rejects_negative_prominence() {
-        assert!(matches!(PeakDetectorF64::new(-1.0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            PeakDetectorF64::new(-1.0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -165,6 +194,12 @@ mod tests {
         let _ = pd.update(0);
         let _ = pd.update(50);
         let peak = pd.update(30); // dropped 20 > 10
-        assert_eq!(peak, Some(Peak { value: 50, is_maximum: true }));
+        assert_eq!(
+            peak,
+            Some(Peak {
+                value: 50,
+                is_maximum: true
+            })
+        );
     }
 }

@@ -482,7 +482,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..1000 {
             assert_eq!(cusum.update(100.0), Some(Direction::Neutral));
@@ -499,7 +500,8 @@ mod tests {
             .slack(5.0)
             .threshold(50.0)
             .min_samples(10)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..9 {
             assert_eq!(cusum.update(200.0), None);
@@ -517,7 +519,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(cusum.min_samples(), 0);
         // First sample should return Some
@@ -534,7 +537,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = cusum.update(120.0);
@@ -569,7 +573,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(10.0)
             .threshold(75.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         cusum.reset_with_target(200.0);
 
@@ -591,7 +596,8 @@ mod tests {
             .slack_upper(2.0)
             .slack_lower(10.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Small upward deviation should accumulate faster than downward
         for _ in 0..10 {
@@ -606,17 +612,20 @@ mod tests {
         let lower_after = cusum.lower();
 
         // Upper should accumulate more (slack_upper=2 eats less of the deviation)
-        assert!(upper_after > lower_after,
-            "upper ({upper_after}) should accumulate faster than lower ({lower_after}) with tighter slack");
+        assert!(
+            upper_after > lower_after,
+            "upper ({upper_after}) should accumulate faster than lower ({lower_after}) with tighter slack"
+        );
     }
 
     #[test]
     fn asymmetric_threshold() {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
-            .threshold_upper(20.0)    // trigger fast on increases
-            .threshold_lower(500.0)   // very slow to trigger on decreases
-            .build().unwrap();
+            .threshold_upper(20.0) // trigger fast on increases
+            .threshold_lower(500.0) // very slow to trigger on decreases
+            .build()
+            .unwrap();
 
         // Upward shift should trigger quickly
         let mut upper_triggered = false;
@@ -638,15 +647,16 @@ mod tests {
                 break;
             }
         }
-        assert!(!lower_triggered, "lower should not trigger with high threshold");
+        assert!(
+            !lower_triggered,
+            "lower should not trigger with high threshold"
+        );
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn symmetric_slack_sets_both() {
-        let cusum = CusumF64::builder(100.0)
-            .slack(7.5)
-            .build().unwrap();
+        let cusum = CusumF64::builder(100.0).slack(7.5).build().unwrap();
 
         assert_eq!(cusum.slack_upper(), 7.5);
         assert_eq!(cusum.slack_lower(), 7.5);
@@ -655,9 +665,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn symmetric_threshold_sets_both() {
-        let cusum = CusumF64::builder(100.0)
-            .threshold(42.0)
-            .build().unwrap();
+        let cusum = CusumF64::builder(100.0).threshold(42.0).build().unwrap();
 
         assert_eq!(cusum.threshold_upper(), 42.0);
         assert_eq!(cusum.threshold_lower(), 42.0);
@@ -670,25 +678,45 @@ mod tests {
     #[test]
     fn rejects_negative_slack_upper() {
         let result = CusumF64::builder(100.0).slack_upper(-1.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid("slack_upper must be non-negative"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Invalid(
+                "slack_upper must be non-negative"
+            ))
+        ));
     }
 
     #[test]
     fn rejects_negative_slack_lower() {
         let result = CusumF64::builder(100.0).slack_lower(-1.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid("slack_lower must be non-negative"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Invalid(
+                "slack_lower must be non-negative"
+            ))
+        ));
     }
 
     #[test]
     fn rejects_zero_threshold() {
         let result = CusumF64::builder(100.0).threshold(0.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid("threshold_upper must be positive"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Invalid(
+                "threshold_upper must be positive"
+            ))
+        ));
     }
 
     #[test]
     fn rejects_negative_threshold_lower() {
         let result = CusumF64::builder(100.0).threshold_lower(-1.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid("threshold_lower must be positive"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Invalid(
+                "threshold_lower must be positive"
+            ))
+        ));
     }
 
     // =========================================================================
@@ -700,7 +728,8 @@ mod tests {
         let mut cusum = CusumI64::builder(1000)
             .slack(50)
             .threshold(500)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let mut triggered = false;
         for _ in 0..100 {
@@ -717,7 +746,8 @@ mod tests {
         let mut cusum = CusumI32::builder(100)
             .slack(5)
             .threshold(50)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(cusum.update(100), Some(Direction::Neutral));
     }
@@ -727,7 +757,8 @@ mod tests {
         let mut cusum = CusumF32::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(cusum.update(100.0), Some(Direction::Neutral));
     }
@@ -741,7 +772,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(cusum.count(), 0);
         let _ = cusum.update(100.0);
@@ -756,7 +788,8 @@ mod tests {
         let cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(cusum.upper(), 0.0);
         assert_eq!(cusum.lower(), 0.0);
@@ -768,7 +801,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Deviation exactly equals slack — S_high = max(0, 0 + 5 - 5) = 0
         let _ = cusum.update(105.0);
@@ -785,7 +819,8 @@ mod tests {
         let mut cusum = CusumF64::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Accumulate some state
         for _ in 0..5 {
@@ -813,7 +848,10 @@ mod tests {
     #[test]
     fn reconfigure_validates() {
         let mut cusum = CusumF64::builder(100.0)
-            .slack(5.0).threshold(50.0).build().unwrap();
+            .slack(5.0)
+            .threshold(50.0)
+            .build()
+            .unwrap();
 
         assert!(cusum.reconfigure(100.0, -1.0, 0.0, 1.0, 1.0).is_err());
         assert!(cusum.reconfigure(100.0, 0.0, -1.0, 1.0, 1.0).is_err());
@@ -836,17 +874,13 @@ mod tests {
     fn integer_default_slack_floor() {
         // target=10, 10/20 = 0 would truncate, but floor is 1
         // Ensures at least 1 unit of noise tolerance for integer types
-        let cusum = CusumI64::builder(10)
-            .threshold(5)
-            .build().unwrap();
+        let cusum = CusumI64::builder(10).threshold(5).build().unwrap();
 
         assert_eq!(cusum.slack_upper(), 1);
         assert_eq!(cusum.slack_lower(), 1);
 
         // Larger target: 100/20 = 5, no floor needed
-        let cusum = CusumI64::builder(100)
-            .threshold(50)
-            .build().unwrap();
+        let cusum = CusumI64::builder(100).threshold(50).build().unwrap();
         assert_eq!(cusum.slack_upper(), 5);
     }
 }

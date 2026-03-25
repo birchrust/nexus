@@ -22,7 +22,11 @@ macro_rules! impl_dead_band {
             #[inline]
             #[must_use]
             pub fn new(threshold: $ty) -> Self {
-                Self { threshold, last_reported: $zero, initialized: false }
+                Self {
+                    threshold,
+                    last_reported: $zero,
+                    initialized: false,
+                }
             }
 
             /// Feeds a sample. Returns `Some(value)` if the change exceeds
@@ -53,7 +57,11 @@ macro_rules! impl_dead_band {
             #[inline]
             #[must_use]
             pub fn last_reported(&self) -> Option<$ty> {
-                if self.initialized { Option::Some(self.last_reported) } else { Option::None }
+                if self.initialized {
+                    Option::Some(self.last_reported)
+                } else {
+                    Option::None
+                }
             }
 
             /// Resets to uninitialized state.
@@ -88,7 +96,7 @@ mod tests {
         let mut db = DeadBandF64::new(5.0);
         let _ = db.update(100.0);
         assert_eq!(db.update(103.0), None); // within threshold
-        assert_eq!(db.update(99.0), None);  // within threshold
+        assert_eq!(db.update(99.0), None); // within threshold
     }
 
     #[test]

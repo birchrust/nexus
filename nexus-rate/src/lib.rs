@@ -1,4 +1,3 @@
-#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 
 //! Rate limiting and flow control primitives for real-time systems.
@@ -12,13 +11,8 @@
 //! | Sliding Window | [`local::SlidingWindow`] | — |
 //!
 //! All types share a uniform `try_acquire(cost, now) -> bool` API with
-//! weighted request support.
-//!
-//! `no_std` compatible. GCRA and TokenBucket require no allocation.
-//! SlidingWindow requires the `alloc` feature.
-
-#[cfg(feature = "alloc")]
-extern crate alloc;
+//! weighted request support. Time parameters use `std::time::Instant` and
+//! `std::time::Duration` for type-safe, unambiguous time handling.
 
 mod error;
 

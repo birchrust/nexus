@@ -85,26 +85,36 @@ macro_rules! impl_trend_alert {
             /// Current smoothed level, or `None` if not primed.
             #[inline]
             #[must_use]
-            pub fn level(&self) -> Option<$ty> { self.holt.level() }
+            pub fn level(&self) -> Option<$ty> {
+                self.holt.level()
+            }
 
             /// Current trend (rate of change), or `None` if not primed.
             #[inline]
             #[must_use]
-            pub fn trend(&self) -> Option<$ty> { self.holt.trend() }
+            pub fn trend(&self) -> Option<$ty> {
+                self.holt.trend()
+            }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.holt.count() }
+            pub fn count(&self) -> u64 {
+                self.holt.count()
+            }
 
             /// Whether enough data has been collected.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.holt.count() >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.holt.count() >= self.min_samples
+            }
 
             /// Resets to empty state. Parameters unchanged.
             #[inline]
-            pub fn reset(&mut self) { self.holt.reset(); }
+            pub fn reset(&mut self) {
+                self.holt.reset();
+            }
 
             /// Updates the absolute trend threshold without resetting state.
             ///
@@ -112,9 +122,14 @@ macro_rules! impl_trend_alert {
             ///
             /// Threshold must be >= 0.
             #[inline]
-            pub fn reconfigure_threshold(&mut self, threshold: $ty) -> Result<(), crate::ConfigError> {
+            pub fn reconfigure_threshold(
+                &mut self,
+                threshold: $ty,
+            ) -> Result<(), crate::ConfigError> {
                 if threshold < (0.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("threshold must be non-negative"));
+                    return Err(crate::ConfigError::Invalid(
+                        "threshold must be non-negative",
+                    ));
                 }
                 self.trend_threshold_abs = Option::Some(threshold);
                 Ok(())
@@ -173,7 +188,9 @@ macro_rules! impl_trend_alert {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 let beta = self.beta.ok_or(crate::ConfigError::Missing("beta"))?;
                 if self.trend_threshold_abs.is_none() && self.trend_threshold_rel.is_none() {
-                    return Err(crate::ConfigError::Invalid("TrendAlert requires a trend threshold"));
+                    return Err(crate::ConfigError::Invalid(
+                        "TrendAlert requires a trend threshold",
+                    ));
                 }
 
                 let holt = <$holt>::builder()
@@ -204,9 +221,11 @@ mod tests {
     #[test]
     fn constant_is_stable() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.3).beta(0.1)
+            .alpha(0.3)
+            .beta(0.1)
             .trend_threshold(1.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..50 {
             let _ = ta.update(100.0);
@@ -217,9 +236,11 @@ mod tests {
     #[test]
     fn linear_increase_is_rising() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.5).beta(0.5)
+            .alpha(0.5)
+            .beta(0.5)
             .trend_threshold(5.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..100 {
             let _ = ta.update(i as f64 * 10.0);
@@ -230,9 +251,11 @@ mod tests {
     #[test]
     fn linear_decrease_is_falling() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.5).beta(0.5)
+            .alpha(0.5)
+            .beta(0.5)
             .trend_threshold(5.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..100 {
             let _ = ta.update((i as f64).fma(-10.0, 1000.0));
@@ -244,9 +267,11 @@ mod tests {
     #[test]
     fn relative_threshold() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.5).beta(0.5)
+            .alpha(0.5)
+            .beta(0.5)
             .trend_threshold_relative(0.05)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..100 {
             let _ = ta.update((i as f64).fma(10.0, 100.0));
@@ -259,10 +284,12 @@ mod tests {
     #[test]
     fn priming() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.3).beta(0.1)
+            .alpha(0.3)
+            .beta(0.1)
             .trend_threshold(1.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..4 {
             assert!(ta.update(100.0).is_none());
@@ -273,9 +300,11 @@ mod tests {
     #[test]
     fn reset() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.3).beta(0.1)
+            .alpha(0.3)
+            .beta(0.1)
             .trend_threshold(1.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = ta.update(100.0);
@@ -287,9 +316,11 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut ta = TrendAlertF32::builder()
-            .alpha(0.3).beta(0.1)
+            .alpha(0.3)
+            .beta(0.1)
             .trend_threshold(1.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = ta.update(10.0);
         let _ = ta.update(20.0);
@@ -299,9 +330,11 @@ mod tests {
     #[test]
     fn reconfigure_threshold_preserves_state() {
         let mut ta = TrendAlertF64::builder()
-            .alpha(0.3).beta(0.1)
+            .alpha(0.3)
+            .beta(0.1)
             .trend_threshold(1.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = ta.update(100.0);

@@ -57,7 +57,9 @@ macro_rules! impl_ewma_var {
                     let diff = sample - self.mean;
                     self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
                     let diff2 = sample - self.mean;
-                    self.variance = self.alpha.fma(diff * diff2, self.one_minus_alpha * self.variance);
+                    self.variance = self
+                        .alpha
+                        .fma(diff * diff2, self.one_minus_alpha * self.variance);
                 }
 
                 if self.count >= self.min_samples {
@@ -96,7 +98,9 @@ macro_rules! impl_ewma_var {
             pub fn std_dev(&self) -> Option<$ty> {
                 self.variance().map(|v| {
                     #[allow(clippy::cast_possible_truncation)]
-                    { crate::math::sqrt(v as f64) as $ty }
+                    {
+                        crate::math::sqrt(v as f64) as $ty
+                    }
                 })
             }
 
@@ -188,7 +192,9 @@ macro_rules! impl_ewma_var {
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("EWMA variance alpha must be in (0, 1)"));
+                    return Err(crate::ConfigError::Invalid(
+                        "EWMA variance alpha must be in (0, 1)",
+                    ));
                 }
 
                 let (mean, variance, count) = match (self.seed_mean, self.seed_variance) {
@@ -225,7 +231,10 @@ mod tests {
         }
 
         let var = ev.variance().unwrap();
-        assert!(var.abs() < 1e-10, "constant input should have ~zero variance, got {var}");
+        assert!(
+            var.abs() < 1e-10,
+            "constant input should have ~zero variance, got {var}"
+        );
     }
 
     #[test]
@@ -237,12 +246,19 @@ mod tests {
         }
 
         let var = ev.variance().unwrap();
-        assert!(var > 0.0, "varying input should have positive variance, got {var}");
+        assert!(
+            var > 0.0,
+            "varying input should have positive variance, got {var}"
+        );
     }
 
     #[test]
     fn priming_behavior() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).min_samples(5).build().unwrap();
+        let mut ev = EwmaVarF64::builder()
+            .alpha(0.1)
+            .min_samples(5)
+            .build()
+            .unwrap();
 
         for _ in 0..4 {
             assert!(ev.update(100.0).is_none());
@@ -290,7 +306,8 @@ mod tests {
         let ev = EwmaVarF64::builder()
             .alpha(0.1)
             .seed(100.0, 25.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert!(ev.is_primed());
         assert!((ev.mean().unwrap() - 100.0).abs() < 1e-10);

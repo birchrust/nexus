@@ -19,7 +19,10 @@ macro_rules! impl_running_min {
             #[inline]
             #[must_use]
             pub const fn new() -> Self {
-                Self { min: $init, count: 0 }
+                Self {
+                    min: $init,
+                    count: 0,
+                }
             }
 
             /// Feeds a sample. Returns the current all-time minimum.
@@ -37,18 +40,26 @@ macro_rules! impl_running_min {
             #[inline]
             #[must_use]
             pub fn min(&self) -> Option<$ty> {
-                if self.count == 0 { Option::None } else { Option::Some(self.min) }
+                if self.count == 0 {
+                    Option::None
+                } else {
+                    Option::Some(self.min)
+                }
             }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether at least one sample has been fed.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count > 0 }
+            pub fn is_primed(&self) -> bool {
+                self.count > 0
+            }
 
             /// Resets to empty state.
             #[inline]
@@ -60,7 +71,9 @@ macro_rules! impl_running_min {
 
         impl Default for $name {
             #[inline]
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
     };
 }
@@ -86,7 +99,10 @@ macro_rules! impl_running_max {
             #[inline]
             #[must_use]
             pub const fn new() -> Self {
-                Self { max: $init, count: 0 }
+                Self {
+                    max: $init,
+                    count: 0,
+                }
             }
 
             /// Feeds a sample. Returns the current all-time maximum.
@@ -104,18 +120,26 @@ macro_rules! impl_running_max {
             #[inline]
             #[must_use]
             pub fn max(&self) -> Option<$ty> {
-                if self.count == 0 { Option::None } else { Option::Some(self.max) }
+                if self.count == 0 {
+                    Option::None
+                } else {
+                    Option::Some(self.max)
+                }
             }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether at least one sample has been fed.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count > 0 }
+            pub fn is_primed(&self) -> bool {
+                self.count > 0
+            }
 
             /// Resets to empty state.
             #[inline]
@@ -127,7 +151,9 @@ macro_rules! impl_running_max {
 
         impl Default for $name {
             #[inline]
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
     };
 }

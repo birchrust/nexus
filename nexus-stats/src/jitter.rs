@@ -70,7 +70,9 @@ macro_rules! impl_jitter_float {
                     self.jitter = abs_delta;
                     self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
                 } else {
-                    self.jitter = self.alpha.fma(abs_delta, self.one_minus_alpha * self.jitter);
+                    self.jitter = self
+                        .alpha
+                        .fma(abs_delta, self.one_minus_alpha * self.jitter);
                     self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
                 }
 
@@ -119,12 +121,16 @@ macro_rules! impl_jitter_float {
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether enough data has been collected.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to empty state. Parameters unchanged.
             #[inline]
@@ -152,7 +158,8 @@ macro_rules! impl_jitter_float {
             #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
-                self.alpha = Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
+                self.alpha =
+                    Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
                 self
             }
 
@@ -194,7 +201,9 @@ macro_rules! impl_jitter_float {
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("Jitter alpha must be in (0, 1)"));
+                    return Err(crate::ConfigError::Invalid(
+                        "Jitter alpha must be in (0, 1)",
+                    ));
                 }
 
                 let (last_sample, jitter, mean, count) = match (self.seed_value, self.seed_jitter) {
@@ -313,17 +322,23 @@ macro_rules! impl_jitter_int {
             /// Effective span after rounding.
             #[inline]
             #[must_use]
-            pub fn effective_span(&self) -> u64 { self.span }
+            pub fn effective_span(&self) -> u64 {
+                self.span
+            }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether enough data has been collected.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to empty state.
             #[inline]
@@ -398,7 +413,10 @@ mod tests {
             let _ = j.update(100.0);
         }
         let jitter = j.jitter().unwrap();
-        assert!(jitter.abs() < 1e-10, "constant input should have ~zero jitter, got {jitter}");
+        assert!(
+            jitter.abs() < 1e-10,
+            "constant input should have ~zero jitter, got {jitter}"
+        );
     }
 
     #[test]
@@ -408,7 +426,10 @@ mod tests {
             let _ = j.update(if i % 2 == 0 { 100.0 } else { 200.0 });
         }
         let jitter = j.jitter().unwrap();
-        assert!(jitter > 50.0, "alternating input should have high jitter, got {jitter}");
+        assert!(
+            jitter > 50.0,
+            "alternating input should have high jitter, got {jitter}"
+        );
     }
 
     #[test]
@@ -418,12 +439,19 @@ mod tests {
             let _ = j.update(100.0 + (i % 10) as f64);
         }
         let ratio = j.jitter_ratio().unwrap();
-        assert!(ratio > 0.0 && ratio < 1.0, "ratio should be reasonable, got {ratio}");
+        assert!(
+            ratio > 0.0 && ratio < 1.0,
+            "ratio should be reasonable, got {ratio}"
+        );
     }
 
     #[test]
     fn priming() {
-        let mut j = JitterF64::builder().alpha(0.3).min_samples(5).build().unwrap();
+        let mut j = JitterF64::builder()
+            .alpha(0.3)
+            .min_samples(5)
+            .build()
+            .unwrap();
         for _ in 0..4 {
             assert!(j.update(100.0).is_none());
         }
@@ -472,7 +500,8 @@ mod tests {
         let j = JitterF64::builder()
             .alpha(0.3)
             .seed(100.0, 5.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert!(j.is_primed());
         assert!((j.jitter().unwrap() - 5.0).abs() < 1e-10);
@@ -483,7 +512,8 @@ mod tests {
         let mut j = JitterF64::builder()
             .alpha(0.3)
             .seed(100.0, 5.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Next update should compute deviation from seeded last_sample=100
         let result = j.update(110.0);

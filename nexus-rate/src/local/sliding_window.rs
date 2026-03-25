@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 /// Sliding Window Counter — time-bucketed rate limiter (single-threaded).
 ///
 /// Divides the window into sub-windows (buckets) for fine-grained time
@@ -12,6 +14,7 @@
 /// - Traffic shaping with windowed counters
 #[derive(Debug, Clone)]
 pub struct SlidingWindow {
+    base: Instant,
     buckets: *mut u64,
     num_buckets: usize,
     total: u64,
@@ -29,6 +32,12 @@ impl SlidingWindow {
     fn ring_mut(&mut self) -> &mut [u64] {
         unsafe { core::slice::from_raw_parts_mut(self.buckets, self.num_buckets) }
     }
+
+    /// Converts an `Instant` to nanoseconds relative to the internal base.
+    #[inline]
+    fn nanos_since_base(&self, now: Instant) -> u64 {
+        now.duration_since(self.base).as_nanos() as u64
+    }
 }
 
 /// Builder for [`SlidingWindow`].
@@ -37,7 +46,7 @@ pub struct SlidingWindowBuilder {
     window: Option<u64>,
     sub_windows: Option<usize>,
     limit: Option<u64>,
-    now: Option<u64>,
+    now: Option<Instant>,
 }
 
 impl SlidingWindow {
@@ -78,14 +87,16 @@ impl SlidingWindow {
 
         self.current_bucket = current;
         self.total = total;
-        self.last_bucket_time = self.last_bucket_time
+        self.last_bucket_time = self
+            .last_bucket_time
             .saturating_add((buckets_to_advance as u64).saturating_mul(self.bucket_duration));
     }
 
     /// Records an event with the given cost. Returns `true` if under limit.
     #[inline]
     #[must_use]
-    pub fn try_acquire(&mut self, cost: u64, now: u64) -> bool {
+    pub fn try_acquire(&mut self, cost: u64, now: Instant) -> bool {
+        let now = self.nanos_since_base(now);
         self.advance_time(now);
 
         if self.limit.saturating_sub(self.total) >= cost {
@@ -96,6 +107,20 @@ impl SlidingWindow {
         } else {
             false
         }
+    }
+
+    /// Release capacity back to the current sub-window.
+    ///
+    /// Decrements the current bucket's count, saturating at 0.
+    #[inline]
+    pub fn release(&mut self, cost: u64, now: Instant) {
+        let now_ns = self.nanos_since_base(now);
+        self.advance_time(now_ns);
+        let idx = self.current_bucket;
+        let bucket = &mut self.ring_mut()[idx];
+        let decrement = cost.min(*bucket);
+        *bucket -= decrement;
+        self.total -= decrement;
     }
 
     /// Current count in the window.
@@ -119,7 +144,9 @@ impl SlidingWindow {
     /// Returns `ConfigError::Invalid` if `new_limit` is zero.
     #[inline]
     pub fn reconfigure(&mut self, new_limit: u64) -> Result<(), crate::ConfigError> {
-        if new_limit == 0 { return Err(crate::ConfigError::Invalid("limit must be > 0")); }
+        if new_limit == 0 {
+            return Err(crate::ConfigError::Invalid("limit must be > 0"));
+        }
         self.limit = new_limit;
         Ok(())
     }
@@ -135,17 +162,17 @@ impl SlidingWindow {
 impl Drop for SlidingWindow {
     fn drop(&mut self) {
         unsafe {
-            let _ = alloc::vec::Vec::from_raw_parts(self.buckets, 0, self.num_buckets);
+            let _ = Vec::from_raw_parts(self.buckets, 0, self.num_buckets);
         }
     }
 }
 
 impl SlidingWindowBuilder {
-    /// Total window duration in timestamp units.
+    /// Total window duration as a `Duration`.
     #[inline]
     #[must_use]
-    pub fn window(mut self, ticks: u64) -> Self {
-        self.window = Some(ticks);
+    pub fn window(mut self, duration: Duration) -> Self {
+        self.window = Some(duration.as_nanos() as u64);
         self
     }
 
@@ -165,10 +192,10 @@ impl SlidingWindowBuilder {
         self
     }
 
-    /// Initial timestamp.
+    /// Initial timestamp. If not called, defaults to `Instant::now()` at build time.
     #[inline]
     #[must_use]
-    pub fn now(mut self, now: u64) -> Self {
+    pub fn now(mut self, now: Instant) -> Self {
         self.now = Some(now);
         self
     }
@@ -177,32 +204,45 @@ impl SlidingWindowBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Missing` if window, sub_windows, limit, or now not set.
+    /// Returns `ConfigError::Missing` if window, sub_windows, or limit not set.
     /// Returns `ConfigError::Invalid` if window, sub_windows, limit, or
     /// bucket duration (window / sub_windows) is zero.
     #[inline]
     pub fn build(self) -> Result<SlidingWindow, crate::ConfigError> {
         let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
-        let sub_windows = self.sub_windows.ok_or(crate::ConfigError::Missing("sub_windows"))?;
+        let sub_windows = self
+            .sub_windows
+            .ok_or(crate::ConfigError::Missing("sub_windows"))?;
         let limit = self.limit.ok_or(crate::ConfigError::Missing("limit"))?;
-        let now = self.now.ok_or(crate::ConfigError::Missing("now"))?;
-        if window == 0 { return Err(crate::ConfigError::Invalid("window must be > 0")); }
-        if sub_windows == 0 { return Err(crate::ConfigError::Invalid("sub_windows must be > 0")); }
-        if limit == 0 { return Err(crate::ConfigError::Invalid("limit must be > 0")); }
+        let now = self.now.unwrap_or_else(Instant::now);
+        if window == 0 {
+            return Err(crate::ConfigError::Invalid("window must be > 0"));
+        }
+        if sub_windows == 0 {
+            return Err(crate::ConfigError::Invalid("sub_windows must be > 0"));
+        }
+        if limit == 0 {
+            return Err(crate::ConfigError::Invalid("limit must be > 0"));
+        }
 
         let bucket_duration = window / sub_windows as u64;
-        if bucket_duration == 0 { return Err(crate::ConfigError::Invalid("window / sub_windows must be > 0")); }
+        if bucket_duration == 0 {
+            return Err(crate::ConfigError::Invalid(
+                "window / sub_windows must be > 0",
+            ));
+        }
 
-        let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0u64; sub_windows]);
+        let mut vec = core::mem::ManuallyDrop::new(vec![0u64; sub_windows]);
         let buckets = vec.as_mut_ptr();
 
         Ok(SlidingWindow {
+            base: now,
             buckets,
             num_buckets: sub_windows,
             total: 0,
             current_bucket: 0,
             bucket_duration,
-            last_bucket_time: now,
+            last_bucket_time: 0,
             limit,
         })
     }
@@ -212,100 +252,106 @@ impl SlidingWindowBuilder {
 mod tests {
     use super::*;
 
-    fn make_window() -> SlidingWindow {
-        // 100 events per 1000 ticks, 10 sub-windows (each 100 ticks)
+    fn make_window(start: Instant) -> SlidingWindow {
+        // 100 events per 1000 nanos, 10 sub-windows (each 100 nanos)
         SlidingWindow::builder()
-            .window(1000)
+            .window(Duration::from_nanos(1000))
             .sub_windows(10)
             .limit(100)
-            .now(0)
+            .now(start)
             .build()
             .unwrap()
     }
 
     #[test]
     fn under_limit_allowed() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..100 {
-            assert!(sw.try_acquire(1, 0));
+            assert!(sw.try_acquire(1, start));
         }
     }
 
     #[test]
     fn at_limit_rejected() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..100 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
-        assert!(!sw.try_acquire(1, 0));
+        assert!(!sw.try_acquire(1, start));
     }
 
     #[test]
     fn time_passes_frees_capacity() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         // Fill up at time 0 (all in bucket 0)
         for _ in 0..100 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
-        assert!(!sw.try_acquire(1, 0));
+        assert!(!sw.try_acquire(1, start));
 
         // Bucket 0 events don't evict until the head pointer wraps past it.
-        // With 10 sub-windows of 100 ticks each, we need to advance through
-        // all 10 sub-windows for bucket 0 to be evicted (full window = 1000 ticks).
-        // At 1100 ticks, bucket 0 is cleared.
-        assert!(sw.try_acquire(1, 1100));
+        // With 10 sub-windows of 100 nanos each, we need to advance through
+        // all 10 sub-windows for bucket 0 to be evicted (full window = 1000 nanos).
+        // At 1100 nanos, bucket 0 is cleared.
+        assert!(sw.try_acquire(1, start + Duration::from_nanos(1100)));
     }
 
     #[test]
     fn weighted_cost() {
-        let mut sw = make_window();
-        assert!(sw.try_acquire(50, 0)); // half the limit
-        assert!(sw.try_acquire(50, 0)); // at limit
-        assert!(!sw.try_acquire(1, 0)); // over
+        let start = Instant::now();
+        let mut sw = make_window(start);
+        assert!(sw.try_acquire(50, start)); // half the limit
+        assert!(sw.try_acquire(50, start)); // at limit
+        assert!(!sw.try_acquire(1, start)); // over
     }
 
     #[test]
     fn count_and_remaining() {
-        let mut sw = make_window();
-        let _ = sw.try_acquire(30, 0);
+        let start = Instant::now();
+        let mut sw = make_window(start);
+        let _ = sw.try_acquire(30, start);
         assert_eq!(sw.count(), 30);
         assert_eq!(sw.remaining(), 70);
     }
 
     #[test]
     fn reconfigure_limit() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..100 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
-        assert!(!sw.try_acquire(1, 0));
+        assert!(!sw.try_acquire(1, start));
 
         sw.reconfigure(200).unwrap();
-        assert!(sw.try_acquire(1, 0)); // now under new limit
+        assert!(sw.try_acquire(1, start)); // now under new limit
     }
 
     #[test]
     fn sub_window_granularity() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         // Events at different sub-windows
-        let _ = sw.try_acquire(30, 0);    // bucket 0
-        let _ = sw.try_acquire(30, 200);  // bucket 2
-        let _ = sw.try_acquire(30, 400);  // bucket 4
+        let _ = sw.try_acquire(30, start); // bucket 0
+        let _ = sw.try_acquire(30, start + Duration::from_nanos(200)); // bucket 2
+        let _ = sw.try_acquire(30, start + Duration::from_nanos(400)); // bucket 4
         assert_eq!(sw.count(), 90);
 
-        // At time 200, bucket 0 evicts (it's 2 sub-windows behind the head at 200)
-        // Actually eviction happens when we advance past bucket 0
-        // At time 1100, bucket 0 is evicted (1000 ticks = full window)
-        let _ = sw.try_acquire(1, 1100);
+        // At time 1100, bucket 0 is evicted (1000 nanos = full window)
+        let _ = sw.try_acquire(1, start + Duration::from_nanos(1100));
         // Bucket 0's 30 events should have been evicted
         assert!(sw.count() <= 91); // 90 - 30 + 1 = 61
     }
 
     #[test]
     fn reset_clears() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..50 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
         sw.reset();
         assert_eq!(sw.count(), 0);
@@ -314,69 +360,124 @@ mod tests {
 
     #[test]
     fn long_idle_clears_all() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..100 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
         // After a very long time, all buckets should be evicted
-        assert!(sw.try_acquire(1, 100_000));
+        assert!(sw.try_acquire(1, start + Duration::from_nanos(100_000)));
     }
 
     #[test]
     fn cost_zero() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..100 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
-        assert!(!sw.try_acquire(1, 0));
-        assert!(sw.try_acquire(0, 0)); // zero cost always ok
+        assert!(!sw.try_acquire(1, start));
+        assert!(sw.try_acquire(0, start)); // zero cost always ok
     }
 
     #[test]
     fn weighted_eviction() {
+        let start = Instant::now();
         let mut sw = SlidingWindow::builder()
-            .window(1000).sub_windows(10).limit(100).now(0).build().unwrap();
+            .window(Duration::from_nanos(1000))
+            .sub_windows(10)
+            .limit(100)
+            .now(start)
+            .build()
+            .unwrap();
 
         // Insert weighted events in bucket 0
-        let _ = sw.try_acquire(30, 0);
+        let _ = sw.try_acquire(30, start);
         // Insert in bucket 1
-        let _ = sw.try_acquire(20, 100);
+        let _ = sw.try_acquire(20, start + Duration::from_nanos(100));
         assert_eq!(sw.count(), 50);
 
         // Advance past the full window — all buckets evicted
-        let _ = sw.try_acquire(1, 1200);
+        let _ = sw.try_acquire(1, start + Duration::from_nanos(1200));
         // Only the new event should remain
         assert!(sw.count() <= 1);
     }
 
     #[test]
     fn large_timestamp_jump() {
-        let mut sw = make_window();
+        let start = Instant::now();
+        let mut sw = make_window(start);
         for _ in 0..50 {
-            let _ = sw.try_acquire(1, 0);
+            let _ = sw.try_acquire(1, start);
         }
-        // Jump to near u64::MAX — should not loop forever or panic
-        assert!(sw.try_acquire(1, u64::MAX - 1));
+        // Jump far into the future — should not loop forever or panic
+        assert!(sw.try_acquire(1, start + Duration::from_secs(1_000_000)));
     }
 
     #[test]
     fn timestamp_backward() {
-        let mut sw = make_window();
-        let _ = sw.try_acquire(1, 100);
+        let start = Instant::now();
+        let mut sw = make_window(start);
+        let _ = sw.try_acquire(1, start + Duration::from_nanos(100));
         // Backward timestamp — saturating_sub produces 0 elapsed, no advance
-        let _ = sw.try_acquire(1, 50);
+        // Note: Instant subtraction panics if result would be negative,
+        // but nanos_since_base uses duration_since which saturates to 0
+        // when now < base. Here start+50 > base=start, so it's fine.
+        let _ = sw.try_acquire(1, start + Duration::from_nanos(50));
         assert_eq!(sw.count(), 2); // both events counted, no eviction
     }
 
     #[test]
     fn missing_window_returns_error() {
-        let result = SlidingWindow::builder().sub_windows(10).limit(100).now(0).build();
+        let start = Instant::now();
+        let result = SlidingWindow::builder()
+            .sub_windows(10)
+            .limit(100)
+            .now(start)
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("window"))));
     }
 
     #[test]
     fn zero_window_returns_error() {
-        let result = SlidingWindow::builder().window(0).sub_windows(10).limit(100).now(0).build();
+        let start = Instant::now();
+        let result = SlidingWindow::builder()
+            .window(Duration::ZERO)
+            .sub_windows(10)
+            .limit(100)
+            .now(start)
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn release_decrements_current() {
+        let base = Instant::now();
+        let mut sw = SlidingWindow::builder()
+            .window(Duration::from_nanos(1000))
+            .sub_windows(4)
+            .limit(100)
+            .now(base)
+            .build()
+            .unwrap();
+        assert!(sw.try_acquire(10, base));
+        assert_eq!(sw.count(), 10);
+        sw.release(3, base);
+        assert_eq!(sw.count(), 7);
+    }
+
+    #[test]
+    fn release_saturates_at_zero() {
+        let base = Instant::now();
+        let mut sw = SlidingWindow::builder()
+            .window(Duration::from_nanos(1000))
+            .sub_windows(4)
+            .limit(100)
+            .now(base)
+            .build()
+            .unwrap();
+        assert!(sw.try_acquire(5, base));
+        sw.release(100, base); // more than consumed
+        assert_eq!(sw.count(), 0); // saturates at 0
     }
 }

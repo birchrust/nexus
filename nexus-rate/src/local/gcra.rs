@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 /// GCRA — Generic Cell Rate Algorithm (single-threaded).
 ///
 /// From the ATM specification. Uses a single timestamp (Theoretical Arrival
@@ -9,6 +11,7 @@
 /// - Exchange order rate control
 #[derive(Debug, Clone)]
 pub struct Gcra {
+    base: Instant,
     tat: u64,
     emission_interval: u64,
     tau: u64,
@@ -20,6 +23,7 @@ pub struct GcraBuilder {
     rate: Option<u64>,
     period: Option<u64>,
     burst: u64,
+    now: Option<Instant>,
 }
 
 impl Gcra {
@@ -31,7 +35,14 @@ impl Gcra {
             rate: None,
             period: None,
             burst: 0,
+            now: None,
         }
+    }
+
+    /// Converts an `Instant` to nanoseconds relative to the internal base.
+    #[inline]
+    fn nanos_since_base(&self, now: Instant) -> u64 {
+        now.duration_since(self.base).as_nanos() as u64
     }
 
     /// Attempts to acquire with the given cost.
@@ -40,8 +51,12 @@ impl Gcra {
     /// `cost = 1` for a standard request. Higher for weighted operations.
     #[inline]
     #[must_use]
-    pub fn try_acquire(&mut self, cost: u64, now: u64) -> bool {
-        let new_tat = self.tat.max(now).saturating_add(cost.saturating_mul(self.emission_interval));
+    pub fn try_acquire(&mut self, cost: u64, now: Instant) -> bool {
+        let now = self.nanos_since_base(now);
+        let new_tat = self
+            .tat
+            .max(now)
+            .saturating_add(cost.saturating_mul(self.emission_interval));
         if new_tat.saturating_sub(now) <= self.tau {
             self.tat = new_tat;
             true
@@ -50,31 +65,62 @@ impl Gcra {
         }
     }
 
-    /// Time (in ticks) until a request of the given cost would be allowed.
-    /// Returns 0 if allowed now.
+    /// Duration until a request of the given cost would be allowed.
+    /// Returns `Duration::ZERO` if allowed now.
     #[inline]
     #[must_use]
-    pub fn time_until_allowed(&self, cost: u64, now: u64) -> u64 {
-        let new_tat = self.tat.max(now).saturating_add(cost.saturating_mul(self.emission_interval));
+    pub fn time_until_allowed(&self, cost: u64, now: Instant) -> Duration {
+        let now = self.nanos_since_base(now);
+        let new_tat = self
+            .tat
+            .max(now)
+            .saturating_add(cost.saturating_mul(self.emission_interval));
         let excess = new_tat.saturating_sub(now);
-        excess.saturating_sub(self.tau)
+        Duration::from_nanos(excess.saturating_sub(self.tau))
     }
 
     /// Reconfigure rate and burst at runtime. Takes effect immediately.
     #[inline]
-    pub fn reconfigure(&mut self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
-        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
-        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+    pub fn reconfigure(
+        &mut self,
+        rate: u64,
+        period: Duration,
+        burst: u64,
+    ) -> Result<(), crate::ConfigError> {
+        if rate == 0 {
+            return Err(crate::ConfigError::Invalid("rate must be > 0"));
+        }
+        let period = period.as_nanos() as u64;
+        if period == 0 {
+            return Err(crate::ConfigError::Invalid("period must be > 0"));
+        }
         let ei = period / rate;
-        if ei == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+        if ei == 0 {
+            return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
+        }
         self.emission_interval = ei;
         self.tau = ei.saturating_mul(burst.saturating_add(1));
         Ok(())
     }
 
-    /// Resets the limiter (clears TAT).
+    /// Release capacity back to the limiter.
+    ///
+    /// Shifts the Theoretical Arrival Time backward by `cost` emission
+    /// intervals, but never before `now`. This prevents stockpiling
+    /// credits beyond the burst window.
+    ///
+    /// Use case: exchange rate limits that rebate capacity on fills.
+    #[inline]
+    pub fn release(&mut self, cost: u64, now: Instant) {
+        let now_ns = self.nanos_since_base(now);
+        let credit = self.emission_interval.saturating_mul(cost);
+        self.tat = self.tat.saturating_sub(credit).max(now_ns);
+    }
+
+    /// Resets the limiter (clears TAT and base).
     #[inline]
     pub fn reset(&mut self) {
+        self.base = Instant::now();
         self.tat = 0;
     }
 }
@@ -88,11 +134,11 @@ impl GcraBuilder {
         self
     }
 
-    /// Period length in timestamp units.
+    /// Period length as a `Duration`.
     #[inline]
     #[must_use]
-    pub fn period(mut self, ticks: u64) -> Self {
-        self.period = Some(ticks);
+    pub fn period(mut self, duration: Duration) -> Self {
+        self.period = Some(duration.as_nanos() as u64);
         self
     }
 
@@ -101,6 +147,14 @@ impl GcraBuilder {
     #[must_use]
     pub fn burst(mut self, n: u64) -> Self {
         self.burst = n;
+        self
+    }
+
+    /// Initial timestamp. If not called, defaults to `Instant::now()` at build time.
+    #[inline]
+    #[must_use]
+    pub fn now(mut self, now: Instant) -> Self {
+        self.now = Some(now);
         self
     }
 
@@ -114,14 +168,23 @@ impl GcraBuilder {
     pub fn build(self) -> Result<Gcra, crate::ConfigError> {
         let rate = self.rate.ok_or(crate::ConfigError::Missing("rate"))?;
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
-        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
-        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        if rate == 0 {
+            return Err(crate::ConfigError::Invalid("rate must be > 0"));
+        }
+        if period == 0 {
+            return Err(crate::ConfigError::Invalid("period must be > 0"));
+        }
 
         let emission_interval = period / rate;
-        if emission_interval == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0 (rate too high for period)")); }
+        if emission_interval == 0 {
+            return Err(crate::ConfigError::Invalid(
+                "period / rate must be > 0 (rate too high for period)",
+            ));
+        }
         let tau = emission_interval.saturating_mul(self.burst.saturating_add(1));
 
         Ok(Gcra {
+            base: self.now.unwrap_or_else(Instant::now),
             tat: 0,
             emission_interval,
             tau,
@@ -133,143 +196,241 @@ impl GcraBuilder {
 mod tests {
     use super::*;
 
-    fn make_gcra() -> Gcra {
-        // 10 requests per 1000 ticks, burst of 5
-        Gcra::builder().rate(10).period(1000).burst(5).build().unwrap()
+    fn make_gcra(start: Instant) -> Gcra {
+        // 10 requests per 1000 nanos, burst of 5
+        Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(start)
+            .build()
+            .unwrap()
     }
 
     #[test]
     fn steady_rate_allowed() {
-        let mut g = make_gcra();
-        // emission_interval = 100, spacing at 100 ticks should always work
-        for i in 0..100 {
-            assert!(g.try_acquire(1, i * 100), "should be allowed at tick {}", i * 100);
+        let start = Instant::now();
+        let mut g = make_gcra(start);
+        // emission_interval = 100, spacing at 100 nanos should always work
+        for i in 0..100u64 {
+            assert!(
+                g.try_acquire(1, start + Duration::from_nanos(i * 100)),
+                "should be allowed at tick {}",
+                i * 100
+            );
         }
     }
 
     #[test]
     fn over_rate_rejected() {
-        let mut g = make_gcra();
+        let start = Instant::now();
+        let mut g = make_gcra(start);
         // Burst: 5+1 = 6 requests allowed immediately
         for i in 0..6 {
-            assert!(g.try_acquire(1, 0), "burst request {i} should be allowed");
+            assert!(
+                g.try_acquire(1, start),
+                "burst request {i} should be allowed"
+            );
         }
         // 7th should be rejected
-        assert!(!g.try_acquire(1, 0), "should be rate limited");
+        assert!(!g.try_acquire(1, start), "should be rate limited");
     }
 
     #[test]
     fn burst_then_reject() {
-        let mut g = Gcra::builder().rate(10).period(1000).burst(3).build().unwrap();
+        let start = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(3)
+            .now(start)
+            .build()
+            .unwrap();
         // burst + 1 = 4 requests at time 0
-        assert!(g.try_acquire(1, 0));
-        assert!(g.try_acquire(1, 0));
-        assert!(g.try_acquire(1, 0));
-        assert!(g.try_acquire(1, 0));
-        assert!(!g.try_acquire(1, 0)); // 5th rejected
+        assert!(g.try_acquire(1, start));
+        assert!(g.try_acquire(1, start));
+        assert!(g.try_acquire(1, start));
+        assert!(g.try_acquire(1, start));
+        assert!(!g.try_acquire(1, start)); // 5th rejected
     }
 
     #[test]
     fn time_passes_allows_again() {
-        let mut g = make_gcra();
+        let start = Instant::now();
+        let mut g = make_gcra(start);
         // Exhaust burst
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
-        assert!(!g.try_acquire(1, 0));
+        assert!(!g.try_acquire(1, start));
 
         // After enough time, should be allowed
-        assert!(g.try_acquire(1, 200));
+        assert!(g.try_acquire(1, start + Duration::from_nanos(200)));
     }
 
     #[test]
     fn weighted_cost() {
-        let mut g = Gcra::builder().rate(10).period(1000).burst(5).build().unwrap();
-        // cost=3 consumes 3× the budget
-        assert!(g.try_acquire(3, 0)); // uses 3 of 6 burst capacity
-        assert!(g.try_acquire(3, 0)); // uses remaining 3
-        assert!(!g.try_acquire(1, 0)); // exhausted
+        let start = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(start)
+            .build()
+            .unwrap();
+        // cost=3 consumes 3x the budget
+        assert!(g.try_acquire(3, start)); // uses 3 of 6 burst capacity
+        assert!(g.try_acquire(3, start)); // uses remaining 3
+        assert!(!g.try_acquire(1, start)); // exhausted
     }
 
     #[test]
     fn time_until_allowed_zero_when_ok() {
-        let g = make_gcra();
-        assert_eq!(g.time_until_allowed(1, 0), 0);
+        let start = Instant::now();
+        let g = make_gcra(start);
+        assert_eq!(g.time_until_allowed(1, start), Duration::ZERO);
     }
 
     #[test]
     fn time_until_allowed_positive_when_limited() {
-        let mut g = make_gcra();
+        let start = Instant::now();
+        let mut g = make_gcra(start);
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
-        let wait = g.time_until_allowed(1, 0);
-        assert!(wait > 0, "should need to wait, got {wait}");
+        let wait = g.time_until_allowed(1, start);
+        assert!(wait > Duration::ZERO, "should need to wait, got {wait:?}");
     }
 
     #[test]
     fn reconfigure() {
-        let mut g = make_gcra();
+        let start = Instant::now();
+        let mut g = make_gcra(start);
         // Exhaust at original rate
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
-        assert!(!g.try_acquire(1, 0));
+        assert!(!g.try_acquire(1, start));
 
         // Double the rate — emission_interval halves, more burst
-        g.reconfigure(20, 1000, 10).unwrap();
+        g.reconfigure(20, Duration::from_nanos(1000), 10).unwrap();
         // Need enough time for new config to allow: TAT=600, new tau=50*11=550
-        // At now=100: new_tat=max(600,100)+50=650, excess=550, tau=550 → allowed
-        assert!(g.try_acquire(1, 100));
+        // At now=100: new_tat=max(600,100)+50=650, excess=550, tau=550 -> allowed
+        assert!(g.try_acquire(1, start + Duration::from_nanos(100)));
     }
 
     #[test]
     fn reset_clears() {
-        let mut g = make_gcra();
+        let start = Instant::now();
+        let mut g = make_gcra(start);
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
         g.reset();
-        // Should be able to burst again
-        assert!(g.try_acquire(1, 0));
+        // After reset, base is fresh Instant::now(), tat=0
+        // Should be able to burst again using the new base
+        let new_now = Instant::now();
+        assert!(g.try_acquire(1, new_now));
     }
 
     #[test]
     fn cost_zero_always_allowed() {
-        let mut g = make_gcra();
+        let start = Instant::now();
+        let mut g = make_gcra(start);
         // Exhaust burst
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
-        assert!(!g.try_acquire(1, 0));
+        assert!(!g.try_acquire(1, start));
         // cost=0 should always succeed without consuming
-        assert!(g.try_acquire(0, 0));
+        assert!(g.try_acquire(0, start));
     }
 
     #[test]
     fn overflow_saturates() {
-        let mut g = Gcra::builder().rate(1).period(100).burst(0).build().unwrap();
+        let start = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(1)
+            .period(Duration::from_nanos(100))
+            .burst(0)
+            .now(start)
+            .build()
+            .unwrap();
         // emission_interval = 100. cost * ei would overflow for huge cost
-        assert!(!g.try_acquire(u64::MAX, 0)); // should saturate, not wrap
+        assert!(!g.try_acquire(u64::MAX, start)); // should saturate, not wrap
     }
 
     #[test]
     fn timestamp_backward() {
-        let mut g = make_gcra();
-        assert!(g.try_acquire(1, 100));
+        let start = Instant::now();
+        let mut g = make_gcra(start);
+        assert!(g.try_acquire(1, start + Duration::from_nanos(100)));
         // Going backward — should still work (max(tat, now) handles it)
-        assert!(g.try_acquire(1, 50));
+        assert!(g.try_acquire(1, start + Duration::from_nanos(50)));
     }
 
     #[test]
     fn missing_rate_returns_error() {
-        let result = Gcra::builder().period(1000).build();
+        let result = Gcra::builder().period(Duration::from_nanos(1000)).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("rate"))));
     }
 
     #[test]
     fn zero_rate_returns_error() {
-        let result = Gcra::builder().rate(0).period(1000).build();
+        let result = Gcra::builder()
+            .rate(0)
+            .period(Duration::from_nanos(1000))
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn release_returns_capacity() {
+        let base = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        // Consume some capacity
+        assert!(g.try_acquire(3, base));
+        // Release 1 unit
+        g.release(1, base);
+        // Should have more capacity now
+        assert!(g.try_acquire(4, base)); // 5 burst + 1 released - 3 consumed = would fail without release
+    }
+
+    #[test]
+    fn release_saturates_at_now() {
+        let base = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        // Release without consuming — should be no-op (TAT already <= now)
+        g.release(100, base);
+        // Still limited by burst
+        assert!(!g.try_acquire(7, base)); // burst is 5
+    }
+
+    #[test]
+    fn acquire_release_roundtrip() {
+        let base = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(1)
+            .period(Duration::from_nanos(1000))
+            .burst(0)
+            .now(base)
+            .build()
+            .unwrap();
+        assert!(g.try_acquire(1, base));
+        assert!(!g.try_acquire(1, base)); // exhausted
+        g.release(1, base + Duration::from_nanos(1)); // release at slightly later time
+        assert!(g.try_acquire(1, base + Duration::from_nanos(1))); // should work now
     }
 }

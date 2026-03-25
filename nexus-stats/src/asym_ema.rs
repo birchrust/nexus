@@ -51,7 +51,11 @@ macro_rules! impl_asym_ema_float {
                 if self.count == 1 {
                     self.value = sample;
                 } else {
-                    let alpha = if sample > self.value { self.alpha_up } else { self.alpha_down };
+                    let alpha = if sample > self.value {
+                        self.alpha_up
+                    } else {
+                        self.alpha_down
+                    };
                     self.value = alpha.fma(sample, (1.0 as $ty - alpha) * self.value);
                 }
 
@@ -66,18 +70,26 @@ macro_rules! impl_asym_ema_float {
             #[inline]
             #[must_use]
             pub fn value(&self) -> Option<$ty> {
-                if self.count >= self.min_samples { Option::Some(self.value) } else { Option::None }
+                if self.count >= self.min_samples {
+                    Option::Some(self.value)
+                } else {
+                    Option::None
+                }
             }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether the EMA has reached `min_samples`.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -136,8 +148,12 @@ macro_rules! impl_asym_ema_float {
             /// - Both must be in (0, 1) exclusive.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha_up = self.alpha_up.ok_or(crate::ConfigError::Missing("alpha_up"))?;
-                let alpha_down = self.alpha_down.ok_or(crate::ConfigError::Missing("alpha_down"))?;
+                let alpha_up = self
+                    .alpha_up
+                    .ok_or(crate::ConfigError::Missing("alpha_up"))?;
+                let alpha_down = self
+                    .alpha_down
+                    .ok_or(crate::ConfigError::Missing("alpha_down"))?;
                 if !(alpha_up > 0.0 as $ty && alpha_up < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha_up must be in (0, 1)"));
                 }
@@ -207,7 +223,11 @@ macro_rules! impl_asym_ema_int {
                     self.initialized = true;
                 } else {
                     let current = (self.acc >> self.shift_up.max(self.shift_down)) as $ty;
-                    let shift = if sample > current { self.shift_up } else { self.shift_down };
+                    let shift = if sample > current {
+                        self.shift_up
+                    } else {
+                        self.shift_down
+                    };
                     let sample_shifted = (sample as $acc_ty) << shift;
                     // Normalize accumulator to the active shift
                     let acc_at_shift = if shift == self.shift_up {
@@ -242,22 +262,30 @@ macro_rules! impl_asym_ema_int {
             /// Effective spans after rounding.
             #[inline]
             #[must_use]
-            pub fn effective_span_up(&self) -> u64 { self.span_up }
+            pub fn effective_span_up(&self) -> u64 {
+                self.span_up
+            }
 
             /// Effective span for falling direction.
             #[inline]
             #[must_use]
-            pub fn effective_span_down(&self) -> u64 { self.span_down }
+            pub fn effective_span_down(&self) -> u64 {
+                self.span_down
+            }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether the EMA has reached `min_samples`.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -301,7 +329,9 @@ macro_rules! impl_asym_ema_int {
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let req_up = self.span_up.ok_or(crate::ConfigError::Missing("span_up"))?;
-                let req_down = self.span_down.ok_or(crate::ConfigError::Missing("span_down"))?;
+                let req_down = self
+                    .span_down
+                    .ok_or(crate::ConfigError::Missing("span_down"))?;
                 if req_up < 1 {
                     return Err(crate::ConfigError::Invalid("span_up must be >= 1"));
                 }
@@ -339,9 +369,10 @@ mod tests {
     #[test]
     fn fast_attack_slow_decay() {
         let mut ema = AsymEmaF64::builder()
-            .alpha_up(0.9)   // fast attack
+            .alpha_up(0.9) // fast attack
             .alpha_down(0.1) // slow decay
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = ema.update(0.0); // initialize
         let _ = ema.update(100.0); // fast attack
@@ -351,16 +382,28 @@ mod tests {
         let after_decay = ema.value().unwrap();
 
         // Attack should move a lot, decay should move little
-        assert!(after_attack > 50.0, "fast attack should jump, got {after_attack}");
-        assert!(after_decay > 30.0, "slow decay should hold, got {after_decay}");
+        assert!(
+            after_attack > 50.0,
+            "fast attack should jump, got {after_attack}"
+        );
+        assert!(
+            after_decay > 30.0,
+            "slow decay should hold, got {after_decay}"
+        );
     }
 
     #[test]
     fn asymmetric_response() {
         let mut fast_up = AsymEmaF64::builder()
-            .alpha_up(0.9).alpha_down(0.1).build().unwrap();
+            .alpha_up(0.9)
+            .alpha_down(0.1)
+            .build()
+            .unwrap();
         let mut fast_down = AsymEmaF64::builder()
-            .alpha_up(0.1).alpha_down(0.9).build().unwrap();
+            .alpha_up(0.1)
+            .alpha_down(0.9)
+            .build()
+            .unwrap();
 
         let _ = fast_up.update(50.0);
         let _ = fast_down.update(50.0);
@@ -375,9 +418,11 @@ mod tests {
     #[test]
     fn priming() {
         let mut ema = AsymEmaF64::builder()
-            .alpha_up(0.5).alpha_down(0.5)
+            .alpha_up(0.5)
+            .alpha_down(0.5)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..4 {
             assert!(ema.update(100.0).is_none());
@@ -387,7 +432,11 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut ema = AsymEmaF64::builder().alpha_up(0.5).alpha_down(0.5).build().unwrap();
+        let mut ema = AsymEmaF64::builder()
+            .alpha_up(0.5)
+            .alpha_down(0.5)
+            .build()
+            .unwrap();
         let _ = ema.update(100.0);
         ema.reset();
         assert_eq!(ema.count(), 0);
@@ -397,8 +446,10 @@ mod tests {
     #[test]
     fn i64_basic() {
         let mut ema = AsymEmaI64::builder()
-            .span_up(3).span_down(7)
-            .build().unwrap();
+            .span_up(3)
+            .span_down(7)
+            .build()
+            .unwrap();
 
         let _ = ema.update(100);
         let _ = ema.update(200);
@@ -408,8 +459,10 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut ema = AsymEmaF32::builder()
-            .alpha_up(0.5).alpha_down(0.3)
-            .build().unwrap();
+            .alpha_up(0.5)
+            .alpha_down(0.3)
+            .build()
+            .unwrap();
 
         assert!(ema.update(100.0).is_some());
     }
@@ -417,6 +470,9 @@ mod tests {
     #[test]
     fn errors_without_alpha_up() {
         let result = AsymEmaF64::builder().alpha_down(0.5).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha_up"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("alpha_up"))
+        ));
     }
 }
