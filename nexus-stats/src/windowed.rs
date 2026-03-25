@@ -98,10 +98,14 @@ macro_rules! impl_windowed_max_raw {
                 s[0].value
             }
 
-            /// Convenience wrapper that casts an `i64` timestamp to `u64`.
+            /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
+            ///
+            /// Timestamps must be non-negative. Negative values wrap to large
+            /// `u64` values and will produce incorrect window expiration.
             #[inline]
             #[must_use]
             pub fn update_i64(&mut self, timestamp: i64, value: $ty) -> $ty {
+                debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
                 self.update(timestamp as u64, value)
             }
 
@@ -224,10 +228,14 @@ macro_rules! impl_windowed_min_raw {
                 s[0].value
             }
 
-            /// Convenience wrapper that casts an `i64` timestamp to `u64`.
+            /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
+            ///
+            /// Timestamps must be non-negative. Negative values wrap to large
+            /// `u64` values and will produce incorrect window expiration.
             #[inline]
             #[must_use]
             pub fn update_i64(&mut self, timestamp: i64, value: $ty) -> $ty {
+                debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
                 self.update(timestamp as u64, value)
             }
 

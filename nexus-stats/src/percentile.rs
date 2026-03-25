@@ -33,9 +33,11 @@ macro_rules! impl_percentile {
         /// let est = p.percentile().unwrap();
         #[doc = concat!("assert!((est - 990.0 as ", stringify!($ty), ").abs() < 50.0 as ", stringify!($ty), ");")]
         /// ```
-        /// Positions are stored as f64 for interpolation math. Precision
-        /// degrades after 2^53 observations (~9 quadrillion). At 1M events/sec
-        /// that's ~285 years.
+        /// Marker positions are stored as the same float type as values.
+        /// For `PercentileF64`, precision degrades after 2^53 observations
+        /// (~9 quadrillion, ~285 years at 1M/s). For `PercentileF32`,
+        /// precision degrades after 2^24 observations (~16 million, ~16s at
+        /// 1M/s). Use `PercentileF64` unless memory is extremely constrained.
         #[derive(Debug, Clone)]
         pub struct $name {
             /// Marker heights (value estimates).
@@ -213,26 +215,52 @@ macro_rules! impl_percentile {
                 self.count >= 5
             }
 
-            /// Current minimum observed value.
+            /// Current minimum observed value, or `None` if empty.
+            ///
+            /// Before priming (< 5 observations), scans the buffered samples.
+            /// After priming, marker 0 tracks the minimum.
             #[inline]
             #[must_use]
             pub fn min(&self) -> Option<$ty> {
-                if self.count > 0 {
-                    Some(self.q[0])
-                } else {
-                    None
+                if self.count == 0 {
+                    return None;
                 }
+                if self.count >= 5 {
+                    return Some(self.q[0]);
+                }
+                // Warmup: q[..count] is unsorted, scan for min
+                let len = self.count as usize;
+                let mut min = self.q[0];
+                for i in 1..len {
+                    if self.q[i] < min {
+                        min = self.q[i];
+                    }
+                }
+                Some(min)
             }
 
-            /// Current maximum observed value.
+            /// Current maximum observed value, or `None` if empty.
+            ///
+            /// Before priming (< 5 observations), scans the buffered samples.
+            /// After priming, marker 4 tracks the maximum.
             #[inline]
             #[must_use]
             pub fn max(&self) -> Option<$ty> {
-                if self.count > 0 {
-                    Some(self.q[4.min(self.count as usize - 1)])
-                } else {
-                    None
+                if self.count == 0 {
+                    return None;
                 }
+                if self.count >= 5 {
+                    return Some(self.q[4]);
+                }
+                // Warmup: q[..count] is unsorted, scan for max
+                let len = self.count as usize;
+                let mut max = self.q[0];
+                for i in 1..len {
+                    if self.q[i] > max {
+                        max = self.q[i];
+                    }
+                }
+                Some(max)
             }
 
             /// Resets to empty state. Target percentile unchanged.

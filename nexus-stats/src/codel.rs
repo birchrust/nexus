@@ -61,10 +61,14 @@ macro_rules! impl_codel_raw {
                 }
             }
 
-            /// Convenience wrapper that casts an `i64` timestamp to `u64`.
+            /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
+            ///
+            /// Timestamps must be non-negative. Negative values wrap to large
+            /// `u64` values and will produce incorrect window expiration.
             #[inline]
             #[must_use]
             pub fn update_i64(&mut self, timestamp: i64, sojourn: $ty) -> Option<Condition> {
+                debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
                 self.update(timestamp as u64, sojourn)
             }
 
