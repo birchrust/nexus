@@ -36,6 +36,21 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 | ExponentialRegression | ✓ | ✓ | — | — | — |
 | LogarithmicRegression | ✓ | ✓ | — | — | — |
 | PowerRegression | ✓ | ✓ | — | — | — |
+| **Bayesian Inference** | | | | | |
+| BetaBinomial | ✓ | ✓ | — | — | — |
+| GammaPoisson | ✓ | ✓ | — | — | — |
+| **Hypothesis Testing** | | | | | |
+| SprtBernoulli | — | ✓ | — | — | — |
+| SprtGaussian | — | ✓ | — | — | — |
+| **Adaptive Filters** | | | | | |
+| LmsFilter | ✓ | ✓ | — | — | — |
+| NlmsFilter | ✓ | ✓ | — | — | — |
+| RlsFilter | ✓ | ✓ | — | — | — |
+| LogisticRegression | — | ✓ | — | — | — |
+| OnlineKMeans | — | ✓ | — | — | — |
+| **State Estimation** | | | | | |
+| Kalman2D | ✓ | ✓ | — | — | — |
+| Kalman3D | ✓ | ✓ | — | — | — |
 | **Signal Analysis** | | | | | |
 | Autocorrelation | ✓ | ✓ | ✓ | ✓ | — |
 | CrossCorrelation | ✓ | ✓ | — | — | — |

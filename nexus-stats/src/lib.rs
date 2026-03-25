@@ -3,7 +3,7 @@
 
 //! Fixed-memory, zero-allocation streaming statistics for real-time systems.
 //!
-//! 50+ algorithms, all O(1) per update, fixed memory. Core types are `no_std`
+//! 65+ algorithms, all O(1) per update (or O(d) for d-dimensional filters), fixed memory. Core types are `no_std`
 //! compatible; types marked *(std)* require the `std` feature, *(alloc)* require
 //! `alloc`, and *(std|libm)* require either `std` or `libm`.
 //!
@@ -52,6 +52,25 @@
 //! - [`ExponentialRegressionF64`] — Exponential fit (`y = ae^(bx)`). *(std|libm)*
 //! - [`LogarithmicRegressionF64`] — Logarithmic fit (`y = a·ln(x) + b`). *(std|libm)*
 //! - [`PowerRegressionF64`] — Power law fit (`y = ax^b`). *(std|libm)*
+//!
+//! **Bayesian Inference:**
+//! - [`BetaBinomialF64`] — Success rate with credible intervals.
+//! - [`GammaPoissonF64`] — Event rate with uncertainty.
+//!
+//! **Hypothesis Testing:** *(std|libm)*
+//! - [`SprtBernoulli`] — Sequential probability ratio test (binary).
+//! - [`SprtGaussian`] — Sequential probability ratio test (continuous).
+//!
+//! **Adaptive Filters:** *(alloc)*
+//! - [`LmsFilterF64`] — Least mean squares adaptive filter.
+//! - [`NlmsFilterF64`] — Normalized LMS.
+//! - [`RlsFilterF64`] — Recursive least squares.
+//! - [`LogisticRegressionF64`] — Online binary classifier. *(alloc, std|libm)*
+//! - [`OnlineKMeansF64`] — Streaming cluster assignment.
+//!
+//! **State Estimation:**
+//! - [`Kalman2dF64`] — 2-state Kalman filter with time-varying observation.
+//! - [`Kalman3dF64`] — 3-state Kalman filter (position/velocity/acceleration).
 //!
 //! **Information Theory:** *(std|libm)*
 //! - [`EntropyF64`] — Shannon entropy over categorical distributions.
@@ -109,6 +128,7 @@ mod enums;
 mod adaptive_threshold;
 mod asym_ema;
 mod autocorrelation;
+mod beta_binomial;
 #[cfg(feature = "alloc")]
 mod bool_window;
 mod codel;
@@ -130,16 +150,23 @@ mod event_rate;
 mod ew_polynomial_regression;
 mod ewma_var;
 mod flex_proportion;
+mod gamma_poisson;
 mod harmonic_mean;
 mod holt;
 mod hysteresis;
 mod jitter;
 mod kalman1d;
+mod kalman2d;
+mod kalman3d;
 #[cfg(feature = "alloc")]
 mod kama;
 mod level_crossing;
 mod linear_regression;
 mod liveness;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod logistic_regression;
+#[cfg(feature = "alloc")]
+mod lms;
 mod math;
 mod max_gauge;
 mod moments;
@@ -150,6 +177,8 @@ mod peak_detector;
 mod peak_hold;
 mod percentile;
 mod polynomial_regression;
+#[cfg(feature = "alloc")]
+mod rls;
 mod robust_z;
 mod running;
 mod saturation;
@@ -157,6 +186,8 @@ mod saturation;
 mod shiryaev_roberts;
 mod slew;
 mod spring;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod sprt;
 mod topk;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod transfer_entropy;
@@ -177,6 +208,7 @@ pub use asym_ema::{
     AsymEmaF32, AsymEmaF32Builder, AsymEmaF64, AsymEmaF64Builder, AsymEmaI32, AsymEmaI32Builder,
     AsymEmaI64, AsymEmaI64Builder,
 };
+pub use beta_binomial::{BetaBinomialF32, BetaBinomialF32Builder, BetaBinomialF64, BetaBinomialF64Builder};
 pub use autocorrelation::{
     AutocorrelationF32, AutocorrelationF64, AutocorrelationI32, AutocorrelationI64,
 };
@@ -226,6 +258,7 @@ pub use ew_polynomial_regression::{
 };
 pub use ewma_var::{EwmaVarF32, EwmaVarF32Builder, EwmaVarF64, EwmaVarF64Builder};
 pub use flex_proportion::{FlexProportionEntity, FlexProportionGlobal};
+pub use gamma_poisson::{GammaPoissonF32, GammaPoissonF32Builder, GammaPoissonF64, GammaPoissonF64Builder};
 pub use harmonic_mean::{HarmonicMeanF32, HarmonicMeanF64};
 pub use holt::{HoltF32, HoltF32Builder, HoltF64, HoltF64Builder};
 pub use hysteresis::{HysteresisF32, HysteresisF64, HysteresisI32, HysteresisI64, HysteresisI128};
@@ -234,12 +267,21 @@ pub use jitter::{
     JitterI64, JitterI64Builder,
 };
 pub use kalman1d::{Kalman1dF32, Kalman1dF32Builder, Kalman1dF64, Kalman1dF64Builder};
+pub use kalman2d::{Kalman2dF32, Kalman2dF32Builder, Kalman2dF64, Kalman2dF64Builder};
+pub use kalman3d::{Kalman3dF32, Kalman3dF32Builder, Kalman3dF64, Kalman3dF64Builder};
 #[cfg(feature = "alloc")]
 pub use kama::{KamaF32, KamaF32Builder, KamaF64, KamaF64Builder};
 pub use linear_regression::{
     EwLinearRegressionF32, EwLinearRegressionF32Builder, EwLinearRegressionF64,
     EwLinearRegressionF64Builder, LinearRegressionF32, LinearRegressionF32Builder,
     LinearRegressionF64, LinearRegressionF64Builder,
+};
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+pub use logistic_regression::{LogisticRegressionF64, LogisticRegressionF64Builder};
+#[cfg(feature = "alloc")]
+pub use lms::{
+    LmsFilterF32, LmsFilterF32Builder, LmsFilterF64, LmsFilterF64Builder, NlmsFilterF32,
+    NlmsFilterF32Builder, NlmsFilterF64, NlmsFilterF64Builder,
 };
 pub use level_crossing::{
     LevelCrossingF32, LevelCrossingF64, LevelCrossingI32, LevelCrossingI64, LevelCrossingI128,
@@ -272,6 +314,8 @@ pub use polynomial_regression::{
     CoefficientsF32, CoefficientsF64, PolynomialRegressionF32, PolynomialRegressionF32Builder,
     PolynomialRegressionF64, PolynomialRegressionF64Builder,
 };
+#[cfg(feature = "alloc")]
+pub use rls::{RlsFilterF32, RlsFilterF32Builder, RlsFilterF64, RlsFilterF64Builder};
 pub use robust_z::{
     RobustZScoreF32, RobustZScoreF32Builder, RobustZScoreF64, RobustZScoreF64Builder,
 };
@@ -284,6 +328,8 @@ pub use saturation::{SaturationF32, SaturationF32Builder, SaturationF64, Saturat
 pub use shiryaev_roberts::{ShiryaevRobertsF64, ShiryaevRobertsF64Builder};
 pub use slew::{SlewF32, SlewF64, SlewI32, SlewI64, SlewI128};
 pub use spring::{SpringF32, SpringF64};
+#[cfg(any(feature = "std", feature = "libm"))]
+pub use sprt::{Decision, SprtBernoulli, SprtBernoulliBuilder, SprtGaussian, SprtGaussianBuilder};
 pub use topk::TopK;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use transfer_entropy::{TransferEntropyF64, TransferEntropyF64Builder};
