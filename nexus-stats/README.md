@@ -87,13 +87,13 @@ for deep-dives on each algorithm.
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `LinearRegressionF64` | Online OLS linear fit (y = ax + b) | TBD |
-| `QuadraticRegressionF64` | Online quadratic fit | TBD |
-| `PolynomialRegressionF64<D,I>` | Const-generic polynomial up to degree 8 | TBD |
+| `LinearRegressionF64` | Online OLS linear fit (`y = ax + b`) | TBD |
 | `EwLinearRegressionF64` | Exponentially-weighted linear fit | TBD |
-| `ExponentialRegressionF64` | Exponential fit (y = ae^bx) | TBD |
-| `LogarithmicRegressionF64` | Logarithmic fit (y = a·ln(x) + b) | TBD |
-| `PowerRegressionF64` | Power law fit (y = ax^b) | TBD |
+| `PolynomialRegressionF64` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | TBD |
+| `EwPolynomialRegressionF64` | Exponentially-weighted polynomial fit | TBD |
+| `ExponentialRegressionF64` | Exponential fit (`y = ae^(bx)`) | TBD |
+| `LogarithmicRegressionF64` | Logarithmic fit (`y = a·ln(x) + b`) | TBD |
+| `PowerRegressionF64` | Power law fit (`y = ax^b`) | TBD |
 
 ### Signal Analysis
 

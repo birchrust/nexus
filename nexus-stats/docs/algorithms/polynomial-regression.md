@@ -95,15 +95,19 @@ Maximum system size: 9×9 (degree 8 + intercept).
 ```rust
 use nexus_stats::PolynomialRegressionF64;
 
-// Convenience constructors for common cases
-let mut r = PolynomialRegressionF64::linear();       // y = ax + b
-let mut r = PolynomialRegressionF64::quadratic();    // y = ax² + bx + c
-let mut r = PolynomialRegressionF64::cubic();        // y = ax³ + ...
+// Quadratic: y = ax² + bx + c
+let mut r = PolynomialRegressionF64::builder()
+    .degree(2)
+    .build()
+    .unwrap();
 
-// Through origin (no intercept)
-let mut r = PolynomialRegressionF64::linear_no_intercept();  // y = ax
+// Cubic: y = ax³ + bx² + cx + d
+let mut r = PolynomialRegressionF64::builder()
+    .degree(3)
+    .build()
+    .unwrap();
 
-// Builder for any degree
+// Degree 4, no intercept
 let mut r = PolynomialRegressionF64::builder()
     .degree(4)
     .intercept(false)
@@ -111,16 +115,15 @@ let mut r = PolynomialRegressionF64::builder()
     .unwrap();
 ```
 
+For linear regression (degree 1), use the dedicated
+[`LinearRegressionF64`](linear-regression.md) type instead —
+smaller state, closed-form solve, `slope()`/`intercept_value()` API.
+
 ### Exponentially-weighted
 
 ```rust
 use nexus_stats::EwPolynomialRegressionF64;
 
-// Convenience constructors
-let mut r = EwPolynomialRegressionF64::linear(0.05);     // alpha = 0.05
-let mut r = EwPolynomialRegressionF64::quadratic(0.05);
-
-// Builder
 let mut r = EwPolynomialRegressionF64::builder()
     .degree(3)
     .alpha(0.05)
@@ -151,30 +154,23 @@ let mut ew_exp = EwExponentialRegressionF64::builder()
 ### Trading — Trend Estimation
 
 ```rust
-let mut trend = PolynomialRegressionF64::linear();
+// For linear trends, use LinearRegressionF64 (see linear-regression.md).
+// PolynomialRegression is for degree 2+ curves:
 
-// Feed (sequence_number, price):
+let mut accel = PolynomialRegressionF64::builder()
+    .degree(2)
+    .build()
+    .unwrap();
+
+// Feed (sequence, price):
 for (i, price) in prices.enumerate() {
-    trend.update(i as f64, price);
+    accel.update(i as f64, price);
 }
 
-if let Some(slope) = trend.slope() {
-    // Positive slope = uptrend, negative = downtrend
-    // Magnitude = rate of change per sample
-}
-```
-
-### Monitoring — Latency Trend with Adaptation
-
-```rust
-let mut trend = EwPolynomialRegressionF64::linear(0.02);
-
-// Feed (timestamp, latency):
-trend.update(elapsed_secs, latency_us);
-
-if let Some(slope) = trend.slope() {
-    if slope > 1.0 {
-        alert("latency increasing at {slope:.1} μs/sec");
+if let Some(coeffs) = accel.coefficients() {
+    let quadratic_coeff = coeffs[2];  // acceleration term
+    if quadratic_coeff > 0.0 {
+        // Price accelerating upward (parabolic)
     }
 }
 ```

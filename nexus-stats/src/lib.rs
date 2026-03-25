@@ -47,7 +47,7 @@
 //! **Regression:**
 //! - [`LinearRegressionF64`] — Online linear fit with closed-form solve (`y = ax + b`).
 //! - [`EwLinearRegressionF64`] — Exponentially-weighted linear fit.
-//! - [`PolynomialRegressionF64`] — Online polynomial fit, degree 2-8 (quadratic, cubic, etc.).
+//! - [`PolynomialRegressionF64`] — Online polynomial fit, degree 1-8 (linear, quadratic, cubic, etc.).
 //! - [`EwPolynomialRegressionF64`] — Exponentially-weighted polynomial fit.
 //! - [`ExponentialRegressionF64`] — Exponential fit (`y = ae^(bx)`). *(std|libm)*
 //! - [`LogarithmicRegressionF64`] — Logarithmic fit (`y = a·ln(x) + b`). *(std|libm)*

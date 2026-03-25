@@ -364,9 +364,7 @@ macro_rules! impl_ew_exponential_regression {
             inner: $inner,
         }
 
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
+        #[doc = concat!("Builder for [`", stringify!($name), "`].")]
         #[derive(Debug, Clone)]
         pub struct $builder {
             alpha: Option<$ty>,
@@ -467,9 +465,7 @@ macro_rules! impl_ew_logarithmic_regression {
             inner: $inner,
         }
 
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
+        #[doc = concat!("Builder for [`", stringify!($name), "`].")]
         #[derive(Debug, Clone)]
         pub struct $builder {
             alpha: Option<$ty>,
@@ -565,9 +561,7 @@ macro_rules! impl_ew_power_regression {
             inner: $inner,
         }
 
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
+        #[doc = concat!("Builder for [`", stringify!($name), "`].")]
         #[derive(Debug, Clone)]
         pub struct $builder {
             alpha: Option<$ty>,

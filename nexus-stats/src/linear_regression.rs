@@ -256,9 +256,8 @@ macro_rules! impl_ew_linear_regression {
     ($name:ident, $builder:ident, $ty:ty) => {
         /// Exponentially-weighted online linear regression.
         ///
-        /// Same closed-form solve as [`
-        #[doc = concat!("crate::", stringify!($name))]
-        /// `] but with exponential decay on accumulators. Recent data
+        /// Same closed-form solve as the non-EW linear regression types
+        /// but with exponential decay on accumulators. Recent data
         /// dominates, making the fit adaptive to trend changes.
         ///
         /// # Complexity
