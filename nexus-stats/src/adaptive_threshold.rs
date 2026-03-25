@@ -163,7 +163,8 @@ macro_rules! impl_adaptive_threshold {
             #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
-                self.alpha = Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
+                self.alpha =
+                    Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
                 self
             }
 
@@ -218,7 +219,11 @@ macro_rules! impl_adaptive_threshold {
                 }
 
                 let ema = if let Some(seed_mean) = self.seed_mean {
-                    <$ema>::builder().alpha(alpha).seed(seed_mean).min_samples(1).build()?
+                    <$ema>::builder()
+                        .alpha(alpha)
+                        .seed(seed_mean)
+                        .min_samples(1)
+                        .build()?
                 } else {
                     <$ema>::builder().alpha(alpha).min_samples(1).build()?
                 };
@@ -226,7 +231,11 @@ macro_rules! impl_adaptive_threshold {
                 // Welford doesn't support seeding directly — if seeded, we
                 // set min_samples to allow immediate priming and accept that
                 // the first few std_dev estimates will be from the seed approximation.
-                let min_samples = if self.seed_mean.is_some() { 2 } else { self.min_samples };
+                let min_samples = if self.seed_mean.is_some() {
+                    2
+                } else {
+                    self.min_samples
+                };
 
                 Ok($name {
                     ema,
@@ -240,8 +249,22 @@ macro_rules! impl_adaptive_threshold {
     };
 }
 
-impl_adaptive_threshold!(AdaptiveThresholdF64, AdaptiveThresholdF64Builder, f64, EmaF64, EmaF64Builder, WelfordF64);
-impl_adaptive_threshold!(AdaptiveThresholdF32, AdaptiveThresholdF32Builder, f32, EmaF32, EmaF32Builder, WelfordF32);
+impl_adaptive_threshold!(
+    AdaptiveThresholdF64,
+    AdaptiveThresholdF64Builder,
+    f64,
+    EmaF64,
+    EmaF64Builder,
+    WelfordF64
+);
+impl_adaptive_threshold!(
+    AdaptiveThresholdF32,
+    AdaptiveThresholdF32Builder,
+    f32,
+    EmaF32,
+    EmaF32Builder,
+    WelfordF32
+);
 
 #[cfg(test)]
 mod tests {
@@ -253,7 +276,8 @@ mod tests {
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Feed normal samples around 100
         for _ in 0..50 {
@@ -271,7 +295,8 @@ mod tests {
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..50 {
             let _ = at.update(100.0);
@@ -283,7 +308,8 @@ mod tests {
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..50 {
             let _ = at2.update(100.0 + (i % 5) as f64);
@@ -299,7 +325,8 @@ mod tests {
             .alpha(0.1)
             .z_threshold(3.0)
             .min_samples(20)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..100 {
             let sample = 100.0 + (i % 3) as f64;
@@ -315,7 +342,8 @@ mod tests {
         let mut at = AdaptiveThresholdF64::builder()
             .alpha(0.1)
             .min_samples(10)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..9 {
             assert!(at.update(100.0).is_none());
@@ -331,7 +359,8 @@ mod tests {
             .alpha(0.1)
             .z_threshold(3.0)
             .seed(100.0, 5.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Should be primed quickly since seeded
         let _ = at.update(100.0);
@@ -345,7 +374,8 @@ mod tests {
         let mut at = AdaptiveThresholdF64::builder()
             .alpha(0.1)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = at.update(100.0);
@@ -360,7 +390,8 @@ mod tests {
         let mut at = AdaptiveThresholdF32::builder()
             .alpha(0.1)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = at.update(100.0);
@@ -374,7 +405,8 @@ mod tests {
             .alpha(0.1)
             .z_threshold(3.0)
             .min_samples(10)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..20 {
             let _ = at.update(100.0 + (i % 5) as f64);

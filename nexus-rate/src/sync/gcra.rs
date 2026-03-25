@@ -1,4 +1,5 @@
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// GCRA — Generic Cell Rate Algorithm (thread-safe).
 ///
@@ -13,14 +14,16 @@ pub struct Gcra {
     tat: AtomicU64,
     emission_interval: AtomicU64,
     tau: AtomicU64,
+    base: Instant,
 }
 
 /// Builder for [`Gcra`].
 #[derive(Debug, Clone)]
 pub struct GcraBuilder {
     rate: Option<u64>,
-    period: Option<u64>,
+    period: Option<Duration>,
     burst: u64,
+    now: Option<Instant>,
 }
 
 impl Gcra {
@@ -32,7 +35,15 @@ impl Gcra {
             rate: None,
             period: None,
             burst: 0,
+            now: None,
         }
+    }
+
+    /// Converts an `Instant` to nanoseconds relative to the base instant.
+    #[inline]
+    fn nanos_since_base(&self, now: Instant) -> u64 {
+        let nanos = now.saturating_duration_since(self.base).as_nanos();
+        if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
     }
 
     /// Attempts to acquire with the given cost (thread-safe).
@@ -40,39 +51,45 @@ impl Gcra {
     /// Uses a CAS loop on the TAT. Retries on contention.
     #[inline]
     #[must_use]
-    pub fn try_acquire(&self, cost: u64, now: u64) -> bool {
+    pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
+        let now = self.nanos_since_base(now);
         let emission_interval = self.emission_interval.load(Ordering::Relaxed);
         let tau = self.tau.load(Ordering::Relaxed);
 
         loop {
             let tat = self.tat.load(Ordering::Relaxed);
-            let new_tat = tat.max(now).saturating_add(cost.saturating_mul(emission_interval));
+            let new_tat = tat
+                .max(now)
+                .saturating_add(cost.saturating_mul(emission_interval));
 
             if new_tat.saturating_sub(now) > tau {
                 return false;
             }
 
-            if self.tat.compare_exchange_weak(
-                tat,
-                new_tat,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .tat
+                .compare_exchange_weak(tat, new_tat, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
                 return true;
             }
         }
     }
 
-    /// Time (in ticks) until a request of the given cost would be allowed.
+    /// Duration until a request of the given cost would be allowed.
     #[inline]
     #[must_use]
-    pub fn time_until_allowed(&self, cost: u64, now: u64) -> u64 {
+    pub fn time_until_allowed(&self, cost: u64, now: Instant) -> Duration {
+        let now = self.nanos_since_base(now);
         let tat = self.tat.load(Ordering::Relaxed);
         let emission_interval = self.emission_interval.load(Ordering::Relaxed);
         let tau = self.tau.load(Ordering::Relaxed);
-        let new_tat = tat.max(now).saturating_add(cost.saturating_mul(emission_interval));
+        let new_tat = tat
+            .max(now)
+            .saturating_add(cost.saturating_mul(emission_interval));
         let excess = new_tat.saturating_sub(now);
-        excess.saturating_sub(tau)
+        let nanos = excess.saturating_sub(tau);
+        Duration::from_nanos(nanos)
     }
 
     /// Reconfigure rate and burst. Atomic stores.
@@ -84,23 +101,67 @@ impl Gcra {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if rate or period is zero, or if
+    /// Returns `ConfigError::Invalid` if rate is zero, period is zero, or if
     /// `period / rate` rounds to zero.
     #[inline]
-    pub fn reconfigure(&self, rate: u64, period: u64, burst: u64) -> Result<(), crate::ConfigError> {
-        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
-        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
-        let ei = period / rate;
-        if ei == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+    pub fn reconfigure(
+        &self,
+        rate: u64,
+        period: Duration,
+        burst: u64,
+    ) -> Result<(), crate::ConfigError> {
+        if rate == 0 {
+            return Err(crate::ConfigError::Invalid("rate must be > 0"));
+        }
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
+        if period_nanos == 0 {
+            return Err(crate::ConfigError::Invalid("period must be > 0"));
+        }
+        let ei = period_nanos / rate;
+        if ei == 0 {
+            return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
+        }
         self.emission_interval.store(ei, Ordering::Release);
-        self.tau.store(ei.saturating_mul(burst.saturating_add(1)), Ordering::Release);
+        self.tau.store(
+            ei.saturating_mul(burst.saturating_add(1)),
+            Ordering::Release,
+        );
         Ok(())
     }
 
-    /// Resets the TAT.
+    /// Release capacity back to the limiter.
+    ///
+    /// Shifts TAT backward by `cost` emission intervals, never before `now`.
+    /// Uses a CAS loop for lock-free concurrent access.
     #[inline]
-    pub fn reset(&self) {
-        self.tat.store(0, Ordering::Release);
+    pub fn release(&self, cost: u64, now: Instant) {
+        let now_ns = self.nanos_since_base(now);
+        let emission_interval = self.emission_interval.load(Ordering::Relaxed);
+        let credit = emission_interval.saturating_mul(cost);
+
+        loop {
+            let tat = self.tat.load(Ordering::Relaxed);
+            let new_tat = tat.saturating_sub(credit).max(now_ns);
+            if self
+                .tat
+                .compare_exchange_weak(tat, new_tat, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    /// Resets the limiter to full capacity as of `now`.
+    ///
+    /// Equivalent to freshly constructing the limiter at this instant:
+    /// burst+1 requests are available immediately.
+    #[inline]
+    pub fn reset(&self, now: Instant) {
+        self.tat
+            .store(self.nanos_since_base(now), Ordering::Release);
     }
 }
 
@@ -108,8 +169,12 @@ impl core::fmt::Debug for Gcra {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("sync::Gcra")
             .field("tat", &self.tat.load(Ordering::Relaxed))
-            .field("emission_interval", &self.emission_interval.load(Ordering::Relaxed))
+            .field(
+                "emission_interval",
+                &self.emission_interval.load(Ordering::Relaxed),
+            )
             .field("tau", &self.tau.load(Ordering::Relaxed))
+            .field("base", &self.base)
             .finish()
     }
 }
@@ -123,11 +188,11 @@ impl GcraBuilder {
         self
     }
 
-    /// Period length in timestamp units.
+    /// Period length as a `Duration`.
     #[inline]
     #[must_use]
-    pub fn period(mut self, ticks: u64) -> Self {
-        self.period = Some(ticks);
+    pub fn period(mut self, duration: Duration) -> Self {
+        self.period = Some(duration);
         self
     }
 
@@ -136,6 +201,14 @@ impl GcraBuilder {
     #[must_use]
     pub fn burst(mut self, n: u64) -> Self {
         self.burst = n;
+        self
+    }
+
+    /// Initial timestamp used as the base instant.
+    #[inline]
+    #[must_use]
+    pub fn now(mut self, now: Instant) -> Self {
+        self.now = Some(now);
         self
     }
 
@@ -149,17 +222,28 @@ impl GcraBuilder {
     pub fn build(self) -> Result<Gcra, crate::ConfigError> {
         let rate = self.rate.ok_or(crate::ConfigError::Missing("rate"))?;
         let period = self.period.ok_or(crate::ConfigError::Missing("period"))?;
-        if rate == 0 { return Err(crate::ConfigError::Invalid("rate must be > 0")); }
-        if period == 0 { return Err(crate::ConfigError::Invalid("period must be > 0")); }
+        let period_nanos = u64::try_from(period.as_nanos()).map_err(|_| {
+            crate::ConfigError::Invalid("period duration overflows u64 nanoseconds")
+        })?;
+        if rate == 0 {
+            return Err(crate::ConfigError::Invalid("rate must be > 0"));
+        }
+        if period_nanos == 0 {
+            return Err(crate::ConfigError::Invalid("period must be > 0"));
+        }
 
-        let ei = period / rate;
-        if ei == 0 { return Err(crate::ConfigError::Invalid("period / rate must be > 0")); }
+        let ei = period_nanos / rate;
+        if ei == 0 {
+            return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
+        }
         let tau = ei.saturating_mul(self.burst.saturating_add(1));
+        let base = self.now.unwrap_or_else(Instant::now);
 
         Ok(Gcra {
             tat: AtomicU64::new(0),
             emission_interval: AtomicU64::new(ei),
             tau: AtomicU64::new(tau),
+            base,
         })
     }
 }
@@ -170,49 +254,80 @@ mod tests {
 
     #[test]
     fn basic_rate_limiting() {
-        let g = Gcra::builder().rate(10).period(1000).burst(5).build().unwrap();
+        let start = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(start)
+            .build()
+            .unwrap();
 
         // Burst: 6 allowed
         for i in 0..6 {
-            assert!(g.try_acquire(1, 0), "burst request {i}");
+            assert!(g.try_acquire(1, start), "burst request {i}");
         }
-        assert!(!g.try_acquire(1, 0));
+        assert!(!g.try_acquire(1, start));
     }
 
     #[test]
     fn time_allows_more() {
-        let g = Gcra::builder().rate(10).period(1000).burst(0).build().unwrap();
-        assert!(g.try_acquire(1, 0));
-        assert!(!g.try_acquire(1, 0));
+        let start = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(0)
+            .now(start)
+            .build()
+            .unwrap();
+        assert!(g.try_acquire(1, start));
+        assert!(!g.try_acquire(1, start));
         // After emission_interval (100 ticks)
-        assert!(g.try_acquire(1, 200));
+        assert!(g.try_acquire(1, start + Duration::from_nanos(200)));
     }
 
     #[test]
     fn reset() {
-        let g = Gcra::builder().rate(10).period(1000).burst(5).build().unwrap();
+        let start = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(start)
+            .build()
+            .unwrap();
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
-        g.reset();
-        assert!(g.try_acquire(1, 0));
+        let reset_time = start + Duration::from_nanos(1000);
+        g.reset(reset_time);
+        // After reset, TAT = nanos_since_base(reset_time) = fresh start
+        assert!(g.try_acquire(1, reset_time));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     #[allow(clippy::needless_collect)]
     fn concurrent_rate_limit() {
         use std::sync::Arc;
         use std::thread;
 
-        let g = Arc::new(Gcra::builder().rate(100).period(1000).burst(0).build().unwrap());
+        let start = Instant::now();
+        let g = Arc::new(
+            Gcra::builder()
+                .rate(100)
+                .period(Duration::from_nanos(1000))
+                .burst(0)
+                .now(start)
+                .build()
+                .unwrap(),
+        );
         let threads: Vec<_> = (0..4)
             .map(|t| {
                 let g = Arc::clone(&g);
                 thread::spawn(move || {
                     let mut allowed = 0u64;
                     for i in 0..1000 {
-                        let now = (t * 1000 + i) * 10; // spread across time
+                        let now = start + Duration::from_nanos((t * 1000 + i) * 10);
                         if g.try_acquire(1, now) {
                             allowed += 1;
                         }
@@ -230,46 +345,100 @@ mod tests {
 
     #[test]
     fn time_until_allowed() {
-        let g = Gcra::builder().rate(10).period(1000).burst(5).build().unwrap();
-        assert_eq!(g.time_until_allowed(1, 0), 0);
+        let start = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(start)
+            .build()
+            .unwrap();
+        assert_eq!(g.time_until_allowed(1, start), Duration::ZERO);
 
         for _ in 0..6 {
-            let _ = g.try_acquire(1, 0);
+            let _ = g.try_acquire(1, start);
         }
-        assert!(g.time_until_allowed(1, 0) > 0);
+        assert!(g.time_until_allowed(1, start) > Duration::ZERO);
     }
 
     #[test]
     fn reconfigure_takes_effect() {
-        let g = Gcra::builder().rate(1).period(1000).burst(0).build().unwrap();
-        assert!(g.try_acquire(1, 0));
-        assert!(!g.try_acquire(1, 0));
+        let start = Instant::now();
+        let g = Gcra::builder()
+            .rate(1)
+            .period(Duration::from_nanos(1000))
+            .burst(0)
+            .now(start)
+            .build()
+            .unwrap();
+        assert!(g.try_acquire(1, start));
+        assert!(!g.try_acquire(1, start));
 
         // Reconfigure to much higher rate and reset TAT
-        g.reconfigure(1000, 1000, 10).unwrap();
-        g.reset();
-        // Now: emission_interval=1, tau=11, TAT=0
-        // At now=1: new_tat=max(0,1)+1=2, excess=1, tau=11 → allowed
-        assert!(g.try_acquire(1, 1));
+        let reset_time = start + Duration::from_nanos(500);
+        g.reconfigure(1000, Duration::from_nanos(1000), 10).unwrap();
+        g.reset(reset_time);
+        // Now: emission_interval=1, tau=11, TAT=nanos_since_base(reset_time)=500
+        // At reset_time: new_tat=max(500,500)+1=501, excess=1, tau=11 → allowed
+        assert!(g.try_acquire(1, reset_time));
     }
 
     #[test]
     fn cost_zero() {
-        let g = Gcra::builder().rate(1).period(1000).burst(0).build().unwrap();
-        let _ = g.try_acquire(1, 0);
-        assert!(!g.try_acquire(1, 0));
-        assert!(g.try_acquire(0, 0));
+        let start = Instant::now();
+        let g = Gcra::builder()
+            .rate(1)
+            .period(Duration::from_nanos(1000))
+            .burst(0)
+            .now(start)
+            .build()
+            .unwrap();
+        let _ = g.try_acquire(1, start);
+        assert!(!g.try_acquire(1, start));
+        assert!(g.try_acquire(0, start));
     }
 
     #[test]
     fn missing_rate_returns_error() {
-        let result = Gcra::builder().period(1000).build();
+        let result = Gcra::builder().period(Duration::from_nanos(1000)).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("rate"))));
     }
 
     #[test]
     fn zero_rate_returns_error() {
-        let result = Gcra::builder().rate(0).period(1000).build();
+        let result = Gcra::builder()
+            .rate(0)
+            .period(Duration::from_nanos(1000))
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn release_returns_capacity() {
+        let base = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        assert!(g.try_acquire(3, base));
+        g.release(1, base);
+        assert!(g.try_acquire(4, base));
+    }
+
+    #[test]
+    fn release_saturates_at_now() {
+        let base = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        g.release(100, base);
+        assert!(!g.try_acquire(7, base));
     }
 }

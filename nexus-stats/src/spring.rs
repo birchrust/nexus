@@ -68,12 +68,16 @@ macro_rules! impl_spring {
             /// Current output value.
             #[inline]
             #[must_use]
-            pub fn value(&self) -> $ty { self.value }
+            pub fn value(&self) -> $ty {
+                self.value
+            }
 
             /// Current velocity.
             #[inline]
             #[must_use]
-            pub fn velocity(&self) -> $ty { self.velocity }
+            pub fn velocity(&self) -> $ty {
+                self.velocity
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -110,8 +114,11 @@ mod tests {
             let _ = s.update(target, 0.016); // ~60fps
         }
 
-        assert!((s.value() - target).abs() < 0.01,
-            "should converge to {target}, got {}", s.value());
+        assert!(
+            (s.value() - target).abs() < 0.01,
+            "should converge to {target}, got {}",
+            s.value()
+        );
     }
 
     #[test]
@@ -128,8 +135,10 @@ mod tests {
             }
         }
 
-        assert!(max_value <= target + 0.1,
-            "should not overshoot, max was {max_value}");
+        assert!(
+            max_value <= target + 0.1,
+            "should not overshoot, max was {max_value}"
+        );
     }
 
     #[test]
@@ -166,6 +175,9 @@ mod tests {
 
     #[test]
     fn rejects_zero_smooth_time() {
-        assert!(matches!(SpringF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            SpringF64::new(0.0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 }

@@ -89,7 +89,9 @@ macro_rules! impl_robust_z {
                 // Only update estimators if not rejected
                 if self.last_z.abs() <= self.reject_threshold {
                     self.ema = self.alpha.fma(sample, self.one_minus_alpha * self.ema);
-                    self.ema_abs_dev = self.alpha.fma(abs_dev, self.one_minus_alpha * self.ema_abs_dev);
+                    self.ema_abs_dev = self
+                        .alpha
+                        .fma(abs_dev, self.one_minus_alpha * self.ema_abs_dev);
                 }
 
                 if self.count >= self.min_samples {
@@ -114,25 +116,37 @@ macro_rules! impl_robust_z {
             #[inline]
             #[must_use]
             pub fn baseline(&self) -> Option<$ty> {
-                if self.count >= self.min_samples { Option::Some(self.ema) } else { Option::None }
+                if self.count >= self.min_samples {
+                    Option::Some(self.ema)
+                } else {
+                    Option::None
+                }
             }
 
             /// Current EMA of absolute deviation (MAD proxy), or `None` if not primed.
             #[inline]
             #[must_use]
             pub fn mad(&self) -> Option<$ty> {
-                if self.count >= self.min_samples { Option::Some(self.ema_abs_dev) } else { Option::None }
+                if self.count >= self.min_samples {
+                    Option::Some(self.ema_abs_dev)
+                } else {
+                    Option::None
+                }
             }
 
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether the detector has reached `min_samples`.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -186,12 +200,16 @@ macro_rules! impl_robust_z {
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let reject = self.reject_threshold.ok_or(crate::ConfigError::Missing("reject_threshold"))?;
+                let reject = self
+                    .reject_threshold
+                    .ok_or(crate::ConfigError::Missing("reject_threshold"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
                 if reject <= 0.0 as $ty {
-                    return Err(crate::ConfigError::Invalid("reject_threshold must be positive"));
+                    return Err(crate::ConfigError::Invalid(
+                        "reject_threshold must be positive",
+                    ));
                 }
 
                 Ok($name {
@@ -223,14 +241,18 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(10.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = rz.update(100.0);
         }
 
         let z = rz.z_score().unwrap();
-        assert!(z.abs() < 0.1, "stable signal should have ~zero z-score, got {z}");
+        assert!(
+            z.abs() < 0.1,
+            "stable signal should have ~zero z-score, got {z}"
+        );
     }
 
     #[test]
@@ -239,7 +261,8 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(10.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Build baseline around 100 with small variation
         for i in 0..20 {
@@ -257,7 +280,8 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(3.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for i in 0..20 {
             let _ = rz.update(100.0 + (i % 2) as f64);
@@ -281,7 +305,8 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = rz.update(100.0);
@@ -303,7 +328,8 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(10)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..9 {
             assert!(rz.update(100.0).is_none());
@@ -317,7 +343,8 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = rz.update(100.0);
@@ -332,7 +359,8 @@ mod tests {
             .alpha(0.1)
             .reject_threshold(5.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = rz.update(100.0);
@@ -343,6 +371,9 @@ mod tests {
     #[test]
     fn errors_without_reject_threshold() {
         let result = RobustZScoreF64::builder().alpha(0.1).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("reject_threshold"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("reject_threshold"))
+        ));
     }
 }

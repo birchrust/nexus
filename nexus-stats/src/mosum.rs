@@ -244,7 +244,8 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(10)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = mosum.update(100.0);
@@ -259,7 +260,8 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(10)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = mosum.update(100.0);
@@ -280,7 +282,8 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(5)
             .threshold(40.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..5 {
             let _ = mosum.update(100.0);
@@ -293,7 +296,8 @@ mod tests {
         }
         assert!(
             mosum.sum().abs() < 1e-10,
-            "sum should return to ~0, got {}", mosum.sum()
+            "sum should return to ~0, got {}",
+            mosum.sum()
         );
     }
 
@@ -303,7 +307,8 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(10)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..20 {
             let _ = mosum.update(120.0);
@@ -318,7 +323,8 @@ mod tests {
         let mut mosum = MosumF64::builder(100.0)
             .window_size(5)
             .threshold(50.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..5 {
             let _ = mosum.update(110.0);
@@ -334,7 +340,8 @@ mod tests {
         let mut mosum = MosumI64::builder(1000)
             .window_size(5)
             .threshold(100)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..5 {
             let _ = mosum.update(1000);
@@ -345,13 +352,19 @@ mod tests {
     #[test]
     fn errors_without_threshold() {
         let result = MosumF64::builder(100.0).window_size(10).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("threshold"))
+        ));
     }
 
     #[test]
     fn errors_without_window() {
         let result = MosumF64::builder(100.0).threshold(50.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("window_size"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("window_size"))
+        ));
     }
 
     #[test]

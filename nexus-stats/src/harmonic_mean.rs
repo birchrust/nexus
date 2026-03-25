@@ -21,7 +21,10 @@ macro_rules! impl_harmonic_mean {
             #[inline]
             #[must_use]
             pub const fn new() -> Self {
-                Self { reciprocal_sum: 0.0 as $ty, count: 0 }
+                Self {
+                    reciprocal_sum: 0.0 as $ty,
+                    count: 0,
+                }
             }
 
             /// Feeds a sample. Must be positive and non-zero.
@@ -31,7 +34,10 @@ macro_rules! impl_harmonic_mean {
             /// Panics if sample is zero or negative.
             #[inline]
             pub fn update(&mut self, sample: $ty) {
-                assert!(sample > 0.0 as $ty, "harmonic mean requires positive values");
+                assert!(
+                    sample > 0.0 as $ty,
+                    "harmonic mean requires positive values"
+                );
                 self.count += 1;
                 self.reciprocal_sum += 1.0 as $ty / sample;
             }
@@ -50,7 +56,9 @@ macro_rules! impl_harmonic_mean {
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Resets to empty state.
             #[inline]
@@ -62,7 +70,9 @@ macro_rules! impl_harmonic_mean {
 
         impl Default for $name {
             #[inline]
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
     };
 }
@@ -101,7 +111,10 @@ mod tests {
         }
         let arithmetic = sum / vals.len() as f64;
         let harmonic = hm.mean().unwrap();
-        assert!(harmonic <= arithmetic, "HM ({harmonic}) should be <= AM ({arithmetic})");
+        assert!(
+            harmonic <= arithmetic,
+            "HM ({harmonic}) should be <= AM ({arithmetic})"
+        );
     }
 
     #[test]
@@ -111,7 +124,10 @@ mod tests {
             hm.update(5.0);
         }
         let m = hm.mean().unwrap();
-        assert!((m - 5.0).abs() < 1e-10, "HM of equal values should equal that value");
+        assert!(
+            (m - 5.0).abs() < 1e-10,
+            "HM of equal values should equal that value"
+        );
     }
 
     #[test]

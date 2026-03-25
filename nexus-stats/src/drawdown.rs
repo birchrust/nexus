@@ -170,7 +170,7 @@ mod tests {
     fn max_drawdown_tracks_worst() {
         let mut dd = DrawdownF64::new();
         let _ = dd.update(100.0);
-        let _ = dd.update(80.0);  // drawdown = 20
+        let _ = dd.update(80.0); // drawdown = 20
         let _ = dd.update(110.0); // new peak, drawdown = 0
         let _ = dd.update(100.0); // drawdown = 10
 

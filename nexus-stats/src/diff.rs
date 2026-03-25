@@ -20,7 +20,10 @@ macro_rules! impl_first_diff {
             #[inline]
             #[must_use]
             pub const fn new() -> Self {
-                Self { prev: $zero, initialized: false }
+                Self {
+                    prev: $zero,
+                    initialized: false,
+                }
             }
 
             /// Feeds a sample. Returns `Some(x[n] - x[n-1])` or `None` on first sample.
@@ -47,7 +50,9 @@ macro_rules! impl_first_diff {
 
         impl Default for $name {
             #[inline]
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
     };
 }
@@ -75,7 +80,11 @@ macro_rules! impl_second_diff {
             #[inline]
             #[must_use]
             pub const fn new() -> Self {
-                Self { prev2: $zero, prev1: $zero, count: 0 }
+                Self {
+                    prev2: $zero,
+                    prev1: $zero,
+                    count: 0,
+                }
             }
 
             /// Feeds a sample. Returns `Some(x[n] - 2*x[n-1] + x[n-2])` or `None`
@@ -113,7 +122,9 @@ macro_rules! impl_second_diff {
 
         impl Default for $name {
             #[inline]
-            fn default() -> Self { Self::new() }
+            fn default() -> Self {
+                Self::new()
+            }
         }
     };
 }

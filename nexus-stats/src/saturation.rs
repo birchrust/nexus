@@ -53,7 +53,9 @@ macro_rules! impl_saturation {
                 if self.count == 1 {
                     self.value = utilization;
                 } else {
-                    self.value = self.alpha.fma(utilization, self.one_minus_alpha * self.value);
+                    self.value = self
+                        .alpha
+                        .fma(utilization, self.one_minus_alpha * self.value);
                 }
 
                 if self.count < self.min_samples {
@@ -81,12 +83,16 @@ macro_rules! impl_saturation {
             /// Number of samples processed.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.count }
+            pub fn count(&self) -> u64 {
+                self.count
+            }
 
             /// Whether enough data has been collected.
             #[inline]
             #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
+            pub fn is_primed(&self) -> bool {
+                self.count >= self.min_samples
+            }
 
             /// Resets to empty state. Parameters unchanged.
             #[inline]
@@ -117,7 +123,8 @@ macro_rules! impl_saturation {
             #[cfg(any(feature = "std", feature = "libm"))]
             pub fn halflife(mut self, halflife: $ty) -> Self {
                 let ln2 = core::f64::consts::LN_2 as $ty;
-                self.alpha = Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
+                self.alpha =
+                    Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
                 self
             }
 
@@ -154,7 +161,9 @@ macro_rules! impl_saturation {
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
+                let threshold = self
+                    .threshold
+                    .ok_or(crate::ConfigError::Missing("threshold"))?;
                 if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
                 }
@@ -184,7 +193,8 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..50 {
             assert_eq!(s.update(0.5), Some(Condition::Normal));
@@ -196,7 +206,8 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..50 {
             let _ = s.update(0.95);
@@ -209,7 +220,8 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.5)
             .threshold(0.8)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // Drive up
         for _ in 0..50 {
@@ -230,7 +242,8 @@ mod tests {
             .alpha(0.3)
             .threshold(0.8)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..4 {
             assert!(s.update(0.95).is_none());
@@ -243,7 +256,8 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..10 {
             let _ = s.update(0.95);
@@ -258,7 +272,8 @@ mod tests {
         let mut s = SaturationF32::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         assert_eq!(s.update(0.5), Some(Condition::Normal));
     }
@@ -269,7 +284,8 @@ mod tests {
         let mut s = SaturationF64::builder()
             .alpha(0.3)
             .threshold(0.8)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..50 {
             let _ = s.update(0.75);
@@ -284,6 +300,9 @@ mod tests {
     #[test]
     fn errors_without_threshold() {
         let result = SaturationF64::builder().alpha(0.3).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("threshold"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("threshold"))
+        ));
     }
 }

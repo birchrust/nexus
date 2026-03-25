@@ -154,10 +154,18 @@ impl ShiryaevRobertsF64Builder {
     /// - Pre-change and post-change means must differ.
     #[inline]
     pub fn build(self) -> Result<ShiryaevRobertsF64, crate::ConfigError> {
-        let pre_mean = self.pre_mean.ok_or(crate::ConfigError::Missing("pre_change_mean"))?;
-        let post_mean = self.post_mean.ok_or(crate::ConfigError::Missing("post_change_mean"))?;
-        let variance = self.variance.ok_or(crate::ConfigError::Missing("variance"))?;
-        let threshold = self.threshold.ok_or(crate::ConfigError::Missing("threshold"))?;
+        let pre_mean = self
+            .pre_mean
+            .ok_or(crate::ConfigError::Missing("pre_change_mean"))?;
+        let post_mean = self
+            .post_mean
+            .ok_or(crate::ConfigError::Missing("post_change_mean"))?;
+        let variance = self
+            .variance
+            .ok_or(crate::ConfigError::Missing("variance"))?;
+        let threshold = self
+            .threshold
+            .ok_or(crate::ConfigError::Missing("threshold"))?;
 
         if variance <= 0.0 {
             return Err(crate::ConfigError::Invalid("variance must be positive"));
@@ -166,7 +174,9 @@ impl ShiryaevRobertsF64Builder {
             return Err(crate::ConfigError::Invalid("threshold must be positive"));
         }
         if (post_mean - pre_mean).abs() <= f64::EPSILON {
-            return Err(crate::ConfigError::Invalid("pre and post change means must differ"));
+            return Err(crate::ConfigError::Invalid(
+                "pre and post change means must differ",
+            ));
         }
 
         Ok(ShiryaevRobertsF64 {
@@ -192,7 +202,8 @@ mod tests {
             .post_change_mean(110.0)
             .variance(25.0)
             .threshold(100.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..100 {
             let result = sr.update(100.0);
@@ -207,7 +218,8 @@ mod tests {
             .post_change_mean(110.0)
             .variance(25.0)
             .threshold(100.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let mut detected = false;
         for _ in 0..100 {
@@ -226,7 +238,8 @@ mod tests {
             .post_change_mean(5.0)
             .variance(1.0)
             .threshold(1000.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = sr.update(5.0);
         let r1 = sr.statistic();
@@ -243,7 +256,8 @@ mod tests {
             .post_change_mean(5.0)
             .variance(1.0)
             .threshold(100.0)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let _ = sr.update(5.0);
         assert!(sr.statistic() > 0.0);
@@ -264,7 +278,8 @@ mod tests {
             .variance(1.0)
             .threshold(100.0)
             .min_samples(5)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         for _ in 0..4 {
             assert_eq!(sr.update(5.0), None);
@@ -279,7 +294,10 @@ mod tests {
             .post_change_mean(5.0)
             .threshold(100.0)
             .build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("variance"))));
+        assert!(matches!(
+            result,
+            Err(crate::ConfigError::Missing("variance"))
+        ));
     }
 
     #[test]

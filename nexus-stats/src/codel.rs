@@ -1,5 +1,9 @@
+use std::time::{Duration, Instant};
+
 use crate::Condition;
-use crate::windowed::{WindowedMinI32, WindowedMinI64, WindowedMinI128};
+use crate::windowed::{
+    WindowedMinF32, WindowedMinF64, WindowedMinI32, WindowedMinI64, WindowedMinI128,
+};
 
 macro_rules! impl_codel {
     ($name:ident, $builder:ident, $ty:ty, $windowed_min:ty) => {
@@ -27,8 +31,9 @@ macro_rules! impl_codel {
         #[derive(Debug, Clone)]
         pub struct $builder {
             target: Option<$ty>,
-            window: Option<u64>,
+            window: Option<Duration>,
             min_samples: u64,
+            base: Option<Instant>,
         }
 
         impl $name {
@@ -40,6 +45,7 @@ macro_rules! impl_codel {
                     target: Option::None,
                     window: Option::None,
                     min_samples: 1,
+                    base: Option::None,
                 }
             }
 
@@ -48,8 +54,8 @@ macro_rules! impl_codel {
             /// Returns `Some(Condition)` once primed, `None` before.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, timestamp: u64, sojourn: $ty) -> Option<Condition> {
-                let min = self.windowed_min.update(timestamp, sojourn);
+            pub fn update(&mut self, now: Instant, sojourn: $ty) -> Option<Condition> {
+                let min = self.windowed_min.update(now, sojourn);
 
                 if self.windowed_min.count() < self.min_samples {
                     return Option::None;
@@ -94,10 +100,11 @@ macro_rules! impl_codel {
                 self.windowed_min.count() >= self.min_samples
             }
 
-            /// Resets to empty state. Parameters unchanged.
+            /// Resets to empty state with `now` as the new time base.
+            /// Parameters unchanged.
             #[inline]
-            pub fn reset(&mut self) {
-                self.windowed_min.reset();
+            pub fn reset(&mut self, now: Instant) {
+                self.windowed_min.reset(now);
             }
         }
 
@@ -110,10 +117,10 @@ macro_rules! impl_codel {
                 self
             }
 
-            /// Observation window size (in timestamp units).
+            /// Observation window as a `Duration`.
             #[inline]
             #[must_use]
-            pub fn window(mut self, window: u64) -> Self {
+            pub fn window(mut self, window: Duration) -> Self {
                 self.window = Option::Some(window);
                 self
             }
@@ -123,6 +130,14 @@ macro_rules! impl_codel {
             #[must_use]
             pub fn min_samples(mut self, min: u64) -> Self {
                 self.min_samples = min;
+                self
+            }
+
+            /// Base instant for timestamp conversion. Default: `Instant::now()`.
+            #[inline]
+            #[must_use]
+            pub fn base(mut self, base: Instant) -> Self {
+                self.base = Option::Some(base);
                 self
             }
 
@@ -136,12 +151,13 @@ macro_rules! impl_codel {
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
                 let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
-                if window == 0 {
+                if window.is_zero() {
                     return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
                 }
 
+                let base = self.base.unwrap_or_else(Instant::now);
                 Ok($name {
-                    windowed_min: <$windowed_min>::new(window)?,
+                    windowed_min: <$windowed_min>::with_base(window, base)?,
                     target,
                     min_samples: self.min_samples,
                 })
@@ -153,21 +169,31 @@ macro_rules! impl_codel {
 impl_codel!(CoDelI64, CoDelI64Builder, i64, WindowedMinI64);
 impl_codel!(CoDelI32, CoDelI32Builder, i32, WindowedMinI32);
 impl_codel!(CoDelI128, CoDelI128Builder, i128, WindowedMinI128);
+impl_codel!(CoDelF64, CoDelF64Builder, f64, WindowedMinF64);
+impl_codel!(CoDelF32, CoDelF32Builder, f32, WindowedMinF32);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    fn t(base: Instant, ns: u64) -> Instant {
+        base + Duration::from_nanos(ns)
+    }
 
     #[test]
     fn healthy_queue() {
+        let base = Instant::now();
         let mut qd = CoDelI64::builder()
             .target(100)
-            .window(1000)
-            .build().unwrap();
+            .window(Duration::from_nanos(1000))
+            .base(base)
+            .build()
+            .unwrap();
 
         // All sojourn times below target
-        for t in 0..100 {
-            let result = qd.update(t * 10, 50);
+        for ts in 0..100 {
+            let result = qd.update(t(base, ts * 10), 50);
             assert_eq!(result, Some(Condition::Normal));
         }
         assert!(!qd.is_elevated());
@@ -175,114 +201,142 @@ mod tests {
 
     #[test]
     fn elevated_detection() {
+        let base = Instant::now();
         let mut qd = CoDelI64::builder()
             .target(100)
-            .window(1000)
-            .build().unwrap();
+            .window(Duration::from_nanos(1000))
+            .base(base)
+            .build()
+            .unwrap();
 
         // Sojourn times above target
-        for t in 0..100 {
-            let _ = qd.update(t * 10, 200);
+        for ts in 0..100 {
+            let _ = qd.update(t(base, ts * 10), 200);
         }
         assert!(qd.is_elevated());
     }
 
     #[test]
     fn recovery_after_drain() {
+        let base = Instant::now();
         let mut qd = CoDelI64::builder()
             .target(100)
-            .window(10)
-            .build().unwrap();
+            .window(Duration::from_nanos(10))
+            .base(base)
+            .build()
+            .unwrap();
 
         // Build up
-        for t in 0..10 {
-            let _ = qd.update(t, 200);
+        for ts in 0..10 {
+            let _ = qd.update(t(base, ts), 200);
         }
         assert!(qd.is_elevated());
 
         // Drain — low sojourn times should eventually make min drop below target
-        for t in 10..30 {
-            let _ = qd.update(t, 10);
+        for ts in 10..30 {
+            let _ = qd.update(t(base, ts), 10);
         }
         assert!(!qd.is_elevated(), "should recover after drain");
     }
 
     #[test]
     fn burst_vs_standing_queue() {
+        let base = Instant::now();
         let mut qd = CoDelI64::builder()
             .target(100)
-            .window(10)
-            .build().unwrap();
+            .window(Duration::from_nanos(10))
+            .base(base)
+            .build()
+            .unwrap();
 
         // Single burst sample among low values — min stays low, not elevated
-        for t in 0..10 {
-            let _ = qd.update(t, 10);
+        for ts in 0..10 {
+            let _ = qd.update(t(base, ts), 10);
         }
-        let _ = qd.update(10, 500); // single burst
-        assert!(!qd.is_elevated(), "single burst should not trigger — min is still low");
+        let _ = qd.update(t(base, 10), 500); // single burst
+        assert!(
+            !qd.is_elevated(),
+            "single burst should not trigger — min is still low"
+        );
     }
 
     #[test]
     fn priming() {
+        let base = Instant::now();
         let mut qd = CoDelI64::builder()
             .target(100)
-            .window(1000)
+            .window(Duration::from_nanos(1000))
             .min_samples(5)
-            .build().unwrap();
+            .base(base)
+            .build()
+            .unwrap();
 
-        for t in 0..4 {
-            assert_eq!(qd.update(t, 200), None);
+        for ts in 0..4 {
+            assert_eq!(qd.update(t(base, ts), 200), None);
         }
-        assert!(qd.update(4, 200).is_some());
+        assert!(qd.update(t(base, 4), 200).is_some());
     }
 
     #[test]
     fn reset_clears() {
+        let base = Instant::now();
         let mut qd = CoDelI64::builder()
             .target(100)
-            .window(1000)
-            .build().unwrap();
+            .window(Duration::from_nanos(1000))
+            .base(base)
+            .build()
+            .unwrap();
 
-        for t in 0..10 {
-            let _ = qd.update(t, 200);
+        for ts in 0..10 {
+            let _ = qd.update(t(base, ts), 200);
         }
-        qd.reset();
+        qd.reset(base);
         assert_eq!(qd.count(), 0);
         assert!(qd.min_sojourn().is_none());
     }
 
     #[test]
     fn i32_basic() {
+        let base = Instant::now();
         let mut qd = CoDelI32::builder()
             .target(50)
-            .window(100)
-            .build().unwrap();
+            .window(Duration::from_nanos(100))
+            .base(base)
+            .build()
+            .unwrap();
 
-        let result = qd.update(0, 30);
+        let result = qd.update(t(base, 0), 30);
         assert_eq!(result, Some(Condition::Normal));
     }
 
     #[test]
     fn errors_without_target() {
-        let result = CoDelI64::builder().window(100).build();
+        let base = Instant::now();
+        let result = CoDelI64::builder()
+            .window(Duration::from_nanos(100))
+            .base(base)
+            .build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("target"))));
     }
 
     #[test]
     fn errors_without_window() {
-        let result = CoDelI64::builder().target(100).build();
+        let base = Instant::now();
+        let result = CoDelI64::builder().target(100).base(base).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("window"))));
     }
 
     #[test]
     fn i128_basic() {
+        let base = Instant::now();
         let mut qd = CoDelI128::builder()
             .target(50)
-            .window(100)
+            .window(Duration::from_nanos(100))
+            .base(base)
             .build()
             .unwrap();
 
-        let result = qd.update(0, 30);
+        let result = qd.update(t(base, 0), 30);
         assert_eq!(result, Some(Condition::Normal));
     }
 }

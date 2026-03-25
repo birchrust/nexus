@@ -24,7 +24,11 @@ macro_rules! impl_slew {
                 if !(max_rate > $zero) {
                     return Err(crate::ConfigError::Invalid("max_rate must be positive"));
                 }
-                Ok(Self { max_rate, value: $zero, initialized: false })
+                Ok(Self {
+                    max_rate,
+                    value: $zero,
+                    initialized: false,
+                })
             }
 
             /// Feeds a sample. Returns the rate-limited output.
@@ -44,7 +48,9 @@ macro_rules! impl_slew {
             /// Current output value.
             #[inline]
             #[must_use]
-            pub fn value(&self) -> $ty { self.value }
+            pub fn value(&self) -> $ty {
+                self.value
+            }
 
             /// Resets to uninitialized state.
             #[inline]
@@ -109,8 +115,14 @@ mod tests {
 
     #[test]
     fn rejects_zero_max_rate() {
-        assert!(matches!(SlewF64::new(0.0), Err(crate::ConfigError::Invalid(_))));
-        assert!(matches!(SlewI64::new(0), Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            SlewF64::new(0.0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            SlewI64::new(0),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]

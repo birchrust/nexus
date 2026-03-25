@@ -6,9 +6,13 @@
 #[inline]
 pub(crate) fn sqrt(x: f64) -> f64 {
     #[cfg(feature = "std")]
-    { x.sqrt() }
+    {
+        x.sqrt()
+    }
     #[cfg(all(not(feature = "std"), feature = "libm"))]
-    { libm::sqrt(x) }
+    {
+        libm::sqrt(x)
+    }
 }
 
 /// Exponential function.
@@ -19,9 +23,13 @@ pub(crate) fn sqrt(x: f64) -> f64 {
 #[inline]
 pub(crate) fn exp(x: f64) -> f64 {
     #[cfg(feature = "std")]
-    { x.exp() }
+    {
+        x.exp()
+    }
     #[cfg(all(not(feature = "std"), feature = "libm"))]
-    { libm::exp(x) }
+    {
+        libm::exp(x)
+    }
 }
 
 /// Trait providing `fma` (fused multiply-add) across all feature configurations.
@@ -38,11 +46,17 @@ impl MulAdd for f64 {
     #[inline]
     fn fma(self, b: f64, c: f64) -> f64 {
         #[cfg(feature = "std")]
-        { self.mul_add(b, c) }
+        {
+            self.mul_add(b, c)
+        }
         #[cfg(all(not(feature = "std"), feature = "libm"))]
-        { libm::fma(self, b, c) }
+        {
+            libm::fma(self, b, c)
+        }
         #[cfg(not(any(feature = "std", feature = "libm")))]
-        { self * b + c }
+        {
+            self * b + c
+        }
     }
 }
 
@@ -50,10 +64,16 @@ impl MulAdd for f32 {
     #[inline]
     fn fma(self, b: f32, c: f32) -> f32 {
         #[cfg(feature = "std")]
-        { self.mul_add(b, c) }
+        {
+            self.mul_add(b, c)
+        }
         #[cfg(all(not(feature = "std"), feature = "libm"))]
-        { libm::fmaf(self, b, c) }
+        {
+            libm::fmaf(self, b, c)
+        }
         #[cfg(not(any(feature = "std", feature = "libm")))]
-        { self * b + c }
+        {
+            self * b + c
+        }
     }
 }

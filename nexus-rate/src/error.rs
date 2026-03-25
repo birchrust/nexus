@@ -16,5 +16,4 @@ impl core::fmt::Display for ConfigError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for ConfigError {}

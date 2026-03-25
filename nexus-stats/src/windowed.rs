@@ -5,12 +5,14 @@
 // a sub-window of `window/3` ticks. When a sub-window expires, the next
 // candidate is promoted.
 //
-// State: 3 × (timestamp, value) — 48 bytes for f64, 40 bytes for i64.
+// State: 3 × (timestamp, value) + base Instant.
+
+use std::time::{Duration, Instant};
 
 /// Internal sample stored per sub-window.
 #[derive(Debug, Clone, Copy)]
 struct Sample<T: Copy> {
-    timestamp: u64,
+    timestamp: u64, // nanos since base
     value: T,
 }
 
@@ -30,32 +32,49 @@ macro_rules! impl_windowed_max {
             window: u64,
             samples: [Sample<$ty>; 3],
             count: u64,
+            base: Instant,
         }
 
         impl $name {
-            /// Creates a new windowed max tracker.
-            ///
-            /// `window` is the size of the sliding window in timestamp units.
-            /// The caller defines the timestamp semantics (nanoseconds, ticks, etc.).
+            /// Creates a new windowed max tracker with `Instant::now()` as base.
             #[inline]
-            pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
-                if window == 0 {
+            pub fn new(window: Duration) -> Result<Self, crate::ConfigError> {
+                Self::with_base(window, Instant::now())
+            }
+
+            /// Creates a new windowed max tracker with an explicit base instant.
+            ///
+            /// All timestamps passed to `update()` are measured relative to
+            /// this base. Use this for deterministic testing.
+            #[inline]
+            pub fn with_base(window: Duration, base: Instant) -> Result<Self, crate::ConfigError> {
+                let window_ns = u64::try_from(window.as_nanos()).map_err(|_| crate::ConfigError::Invalid("window duration too large"))?;
+                if window_ns == 0 {
                     return Err(crate::ConfigError::Invalid("window must be positive"));
                 }
-                let init = Sample { timestamp: 0, value: $init };
+                let init = Sample {
+                    timestamp: 0,
+                    value: $init,
+                };
                 Ok(Self {
-                    window,
+                    window: window_ns,
                     samples: [init; 3],
                     count: 0,
+                    base,
                 })
             }
 
-            /// Feeds a sample at the given timestamp. Returns current window max.
-            ///
-            /// Timestamps must be monotonically non-decreasing.
+            #[inline]
+            fn nanos_since_base(&self, now: Instant) -> u64 {
+                let nanos = now.saturating_duration_since(self.base).as_nanos();
+                if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
+            }
+
+            /// Feeds a sample at the given time. Returns current window max.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, timestamp: u64, value: $ty) -> $ty {
+            pub fn update(&mut self, now: Instant, value: $ty) -> $ty {
+                let timestamp = self.nanos_since_base(now);
                 self.count += 1;
                 let win = self.window;
                 let s = &mut self.samples;
@@ -109,11 +128,11 @@ macro_rules! impl_windowed_max {
                 }
             }
 
-            /// Window size.
+            /// Window size as Duration.
             #[inline]
             #[must_use]
-            pub fn window(&self) -> u64 {
-                self.window
+            pub fn window(&self) -> Duration {
+                Duration::from_nanos(self.window)
             }
 
             /// Number of samples processed.
@@ -123,12 +142,19 @@ macro_rules! impl_windowed_max {
                 self.count
             }
 
-            /// Resets to empty state.
+            /// Resets to empty state with `now` as the new time base.
+            ///
+            /// Pass the same base `Instant` used at construction for
+            /// deterministic testing.
             #[inline]
-            pub fn reset(&mut self) {
-                let init = Sample { timestamp: 0, value: $init };
+            pub fn reset(&mut self, now: Instant) {
+                let init = Sample {
+                    timestamp: 0,
+                    value: $init,
+                };
                 self.samples = [init; 3];
                 self.count = 0;
+                self.base = now;
             }
         }
     };
@@ -150,29 +176,46 @@ macro_rules! impl_windowed_min {
             window: u64,
             samples: [Sample<$ty>; 3],
             count: u64,
+            base: Instant,
         }
 
         impl $name {
-            /// Creates a new windowed min tracker.
+            /// Creates a new windowed min tracker with `Instant::now()` as base.
             #[inline]
-            pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
-                if window == 0 {
+            pub fn new(window: Duration) -> Result<Self, crate::ConfigError> {
+                Self::with_base(window, Instant::now())
+            }
+
+            /// Creates a new windowed min tracker with an explicit base instant.
+            #[inline]
+            pub fn with_base(window: Duration, base: Instant) -> Result<Self, crate::ConfigError> {
+                let window_ns = u64::try_from(window.as_nanos()).map_err(|_| crate::ConfigError::Invalid("window duration too large"))?;
+                if window_ns == 0 {
                     return Err(crate::ConfigError::Invalid("window must be positive"));
                 }
-                let init = Sample { timestamp: 0, value: $init };
+                let init = Sample {
+                    timestamp: 0,
+                    value: $init,
+                };
                 Ok(Self {
-                    window,
+                    window: window_ns,
                     samples: [init; 3],
                     count: 0,
+                    base,
                 })
             }
 
-            /// Feeds a sample at the given timestamp. Returns current window min.
-            ///
-            /// Timestamps must be monotonically non-decreasing.
+            #[inline]
+            fn nanos_since_base(&self, now: Instant) -> u64 {
+                let nanos = now.saturating_duration_since(self.base).as_nanos();
+                if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
+            }
+
+            /// Feeds a sample at the given time. Returns current window min.
             #[inline]
             #[must_use]
-            pub fn update(&mut self, timestamp: u64, value: $ty) -> $ty {
+            pub fn update(&mut self, now: Instant, value: $ty) -> $ty {
+                let timestamp = self.nanos_since_base(now);
                 self.count += 1;
                 let win = self.window;
                 let s = &mut self.samples;
@@ -221,11 +264,11 @@ macro_rules! impl_windowed_min {
                 }
             }
 
-            /// Window size.
+            /// Window size as Duration.
             #[inline]
             #[must_use]
-            pub fn window(&self) -> u64 {
-                self.window
+            pub fn window(&self) -> Duration {
+                Duration::from_nanos(self.window)
             }
 
             /// Number of samples processed.
@@ -235,12 +278,19 @@ macro_rules! impl_windowed_min {
                 self.count
             }
 
-            /// Resets to empty state.
+            /// Resets to empty state with `now` as the new time base.
+            ///
+            /// Pass the same base `Instant` used at construction for
+            /// deterministic testing.
             #[inline]
-            pub fn reset(&mut self) {
-                let init = Sample { timestamp: 0, value: $init };
+            pub fn reset(&mut self, now: Instant) {
+                let init = Sample {
+                    timestamp: 0,
+                    value: $init,
+                };
                 self.samples = [init; 3];
                 self.count = 0;
+                self.base = now;
             }
         }
     };
@@ -261,6 +311,11 @@ impl_windowed_min!(WindowedMinI128, i128, i128::MAX);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    fn t(base: Instant, nanos: u64) -> Instant {
+        base + Duration::from_nanos(nanos)
+    }
 
     // =========================================================================
     // Windowed Max
@@ -268,7 +323,8 @@ mod tests {
 
     #[test]
     fn max_empty() {
-        let wm = WindowedMaxF64::new(100).unwrap();
+        let base = Instant::now();
+        let wm = WindowedMaxF64::with_base(Duration::from_nanos(100), base).unwrap();
         assert!(wm.max().is_none());
         assert_eq!(wm.count(), 0);
     }
@@ -276,55 +332,61 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn max_single_sample() {
-        let mut wm = WindowedMaxF64::new(100).unwrap();
-        assert_eq!(wm.update(0, 42.0), 42.0);
+        let base = Instant::now();
+        let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(100), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 42.0), 42.0);
         assert_eq!(wm.max(), Some(42.0));
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn max_new_peak_replaces() {
-        let mut wm = WindowedMaxF64::new(100).unwrap();
-        let _ = wm.update(0, 10.0);
-        let _ = wm.update(1, 20.0);
-        assert_eq!(wm.update(2, 30.0), 30.0);
+        let base = Instant::now();
+        let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(100), base).unwrap();
+        let _ = wm.update(t(base, 0), 10.0);
+        let _ = wm.update(t(base, 1), 20.0);
+        assert_eq!(wm.update(t(base, 2), 30.0), 30.0);
     }
 
     #[test]
     fn max_expires_after_window() {
-        let mut wm = WindowedMaxF64::new(10).unwrap();
-        let _ = wm.update(0, 100.0); // peak at t=0
-        let _ = wm.update(5, 50.0);
+        let base = Instant::now();
+        let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(10), base).unwrap();
+        let _ = wm.update(t(base, 0), 100.0); // peak at t=0
+        let _ = wm.update(t(base, 5), 50.0);
 
         // At t=11, the peak at t=0 should have expired
-        let result = wm.update(11, 60.0);
+        let result = wm.update(t(base, 11), 60.0);
         assert!(result <= 60.0, "old peak should have expired, got {result}");
     }
 
     #[test]
     fn max_reset() {
-        let mut wm = WindowedMaxF64::new(100).unwrap();
-        let _ = wm.update(0, 42.0);
-        wm.reset();
+        let base = Instant::now();
+        let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(100), base).unwrap();
+        let _ = wm.update(t(base, 0), 42.0);
+        wm.reset(base);
         assert!(wm.max().is_none());
         assert_eq!(wm.count(), 0);
     }
 
     #[test]
     fn max_i64_basic() {
-        let mut wm = WindowedMaxI64::new(10).unwrap();
-        assert_eq!(wm.update(0, 100), 100);
-        assert_eq!(wm.update(1, 200), 200);
-        assert_eq!(wm.update(2, 150), 200);
+        let base = Instant::now();
+        let mut wm = WindowedMaxI64::with_base(Duration::from_nanos(10), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 100), 100);
+        assert_eq!(wm.update(t(base, 1), 200), 200);
+        assert_eq!(wm.update(t(base, 2), 150), 200);
     }
 
     #[test]
     fn max_monotonic_decreasing_tracks_recent() {
-        let mut wm = WindowedMaxF64::new(10).unwrap();
+        let base = Instant::now();
+        let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(10), base).unwrap();
         // Decreasing values — max should eventually drop as window slides
-        for t in 0..20u64 {
-            let v = 100.0 - t as f64;
-            let _ = wm.update(t, v);
+        for ts in 0..20u64 {
+            let v = 100.0 - ts as f64;
+            let _ = wm.update(t(base, ts), v);
         }
         // The max should not still be 100.0 (that was at t=0, window=10, now at t=19)
         let m = wm.max().unwrap();
@@ -337,103 +399,127 @@ mod tests {
 
     #[test]
     fn min_empty() {
-        let wm = WindowedMinF64::new(100).unwrap();
+        let base = Instant::now();
+        let wm = WindowedMinF64::with_base(Duration::from_nanos(100), base).unwrap();
         assert!(wm.min().is_none());
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn min_single_sample() {
-        let mut wm = WindowedMinF64::new(100).unwrap();
-        assert_eq!(wm.update(0, 42.0), 42.0);
+        let base = Instant::now();
+        let mut wm = WindowedMinF64::with_base(Duration::from_nanos(100), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 42.0), 42.0);
         assert_eq!(wm.min(), Some(42.0));
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn min_new_low_replaces() {
-        let mut wm = WindowedMinF64::new(100).unwrap();
-        let _ = wm.update(0, 30.0);
-        let _ = wm.update(1, 20.0);
-        assert_eq!(wm.update(2, 10.0), 10.0);
+        let base = Instant::now();
+        let mut wm = WindowedMinF64::with_base(Duration::from_nanos(100), base).unwrap();
+        let _ = wm.update(t(base, 0), 30.0);
+        let _ = wm.update(t(base, 1), 20.0);
+        assert_eq!(wm.update(t(base, 2), 10.0), 10.0);
     }
 
     #[test]
     fn min_expires_after_window() {
-        let mut wm = WindowedMinF64::new(10).unwrap();
-        let _ = wm.update(0, 10.0); // min at t=0
-        let _ = wm.update(5, 50.0);
+        let base = Instant::now();
+        let mut wm = WindowedMinF64::with_base(Duration::from_nanos(10), base).unwrap();
+        let _ = wm.update(t(base, 0), 10.0); // min at t=0
+        let _ = wm.update(t(base, 5), 50.0);
 
         // At t=11, the min at t=0 should have expired
-        let result = wm.update(11, 40.0);
+        let result = wm.update(t(base, 11), 40.0);
         assert!(result >= 40.0, "old min should have expired, got {result}");
     }
 
     #[test]
     fn min_rtt_tracking() {
+        let base = Instant::now();
         // Simulating BBR min RTT tracking
-        let mut min_rtt = WindowedMinI64::new(100).unwrap();
+        let mut min_rtt = WindowedMinI64::with_base(Duration::from_nanos(100), base).unwrap();
 
         // Normal RTTs around 50
-        for t in 0..50 {
-            let _ = min_rtt.update(t, 50 + (t % 5) as i64);
+        for ts in 0..50 {
+            let _ = min_rtt.update(t(base, ts), 50 + (ts % 5) as i64);
         }
         assert!(min_rtt.min().unwrap() <= 50);
 
         // Spike to 200, then back to normal
-        let _ = min_rtt.update(50, 200);
+        let _ = min_rtt.update(t(base, 50), 200);
         // Min should still be the normal value, not the spike
         assert!(min_rtt.min().unwrap() <= 54);
     }
 
     #[test]
     fn min_reset() {
-        let mut wm = WindowedMinF64::new(100).unwrap();
-        let _ = wm.update(0, 42.0);
-        wm.reset();
+        let base = Instant::now();
+        let mut wm = WindowedMinF64::with_base(Duration::from_nanos(100), base).unwrap();
+        let _ = wm.update(t(base, 0), 42.0);
+        wm.reset(base);
         assert!(wm.min().is_none());
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn min_f32_basic() {
-        let mut wm = WindowedMinF32::new(10).unwrap();
-        assert_eq!(wm.update(0, 50.0), 50.0);
-        assert_eq!(wm.update(1, 30.0), 30.0);
-        assert_eq!(wm.update(2, 40.0), 30.0);
+        let base = Instant::now();
+        let mut wm = WindowedMinF32::with_base(Duration::from_nanos(10), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 50.0), 50.0);
+        assert_eq!(wm.update(t(base, 1), 30.0), 30.0);
+        assert_eq!(wm.update(t(base, 2), 40.0), 30.0);
     }
 
     #[test]
     fn min_i32_basic() {
-        let mut wm = WindowedMinI32::new(10).unwrap();
-        assert_eq!(wm.update(0, 100), 100);
-        assert_eq!(wm.update(1, 50), 50);
-        assert_eq!(wm.update(2, 75), 50);
+        let base = Instant::now();
+        let mut wm = WindowedMinI32::with_base(Duration::from_nanos(10), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 100), 100);
+        assert_eq!(wm.update(t(base, 1), 50), 50);
+        assert_eq!(wm.update(t(base, 2), 75), 50);
     }
 
     #[test]
     fn max_rejects_zero_window() {
-        assert!(matches!(WindowedMaxF64::new(0), Err(crate::ConfigError::Invalid(_))));
+        let base = Instant::now();
+        assert!(matches!(
+            WindowedMaxF64::with_base(Duration::from_nanos(0), base),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
     fn min_rejects_zero_window() {
-        assert!(matches!(WindowedMinF64::new(0), Err(crate::ConfigError::Invalid(_))));
+        let base = Instant::now();
+        assert!(matches!(
+            WindowedMinF64::with_base(Duration::from_nanos(0), base),
+            Err(crate::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
     fn max_i128_basic() {
-        let mut wm = WindowedMaxI128::new(10).unwrap();
-        assert_eq!(wm.update(0, 100), 100);
-        assert_eq!(wm.update(1, 200), 200);
-        assert_eq!(wm.update(2, 150), 200);
+        let base = Instant::now();
+        let mut wm = WindowedMaxI128::with_base(Duration::from_nanos(10), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 100), 100);
+        assert_eq!(wm.update(t(base, 1), 200), 200);
+        assert_eq!(wm.update(t(base, 2), 150), 200);
     }
 
     #[test]
     fn min_i128_basic() {
-        let mut wm = WindowedMinI128::new(10).unwrap();
-        assert_eq!(wm.update(0, 100), 100);
-        assert_eq!(wm.update(1, 50), 50);
-        assert_eq!(wm.update(2, 75), 50);
+        let base = Instant::now();
+        let mut wm = WindowedMinI128::with_base(Duration::from_nanos(10), base).unwrap();
+        assert_eq!(wm.update(t(base, 0), 100), 100);
+        assert_eq!(wm.update(t(base, 1), 50), 50);
+        assert_eq!(wm.update(t(base, 2), 75), 50);
+    }
+
+    #[test]
+    fn window_overflow_returns_error() {
+        let result = WindowedMaxF64::new(Duration::from_secs(u64::MAX));
+        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }

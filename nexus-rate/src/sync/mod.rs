@@ -1,8 +1,8 @@
 //! Thread-safe rate limiters using atomics.
 //!
-//! Hot-path methods (`try_acquire`, `available`) use `&self`. Control-plane
-//! methods (`reconfigure`) may require `&mut self`. Uses CAS loops for
-//! lock-free operation on hot paths.
+//! All methods take `&self`. Hot-path methods (`try_acquire`, `available`,
+//! `release`) use CAS loops. Control-plane methods (`reconfigure`, `reset`)
+//! use atomic stores.
 
 mod gcra;
 mod token_bucket;
