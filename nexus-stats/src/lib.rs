@@ -23,11 +23,11 @@
 //!
 //! **Monitoring:**
 //! - [`DrawdownF64`] — Peak-to-trough decline and max drawdown.
-//! - [`WindowedMaxF64`] / [`WindowedMinF64`] — Nichols' algorithm (kernel `win_minmax.h`).
+//! - [`WindowedMaxF64`] / [`WindowedMinF64`] — Nichols' algorithm (kernel `win_minmax.h`). *(std)*
 //! - [`RunningMinF64`] / [`RunningMaxF64`] — All-time min/max tracking.
 //! - [`LivenessF64`] — EMA of inter-arrival times with deadline.
 //! - [`EventRateF64`] — Smoothed event rate (events per unit time).
-//! - [`CoDelI64`] — Controlled Delay queue monitor (Nichols & Jacobson, 2012).
+//! - [`CoDelI64`] — Controlled Delay queue monitor (Nichols & Jacobson, 2012). *(std)*
 //!
 //! **Frequency:**
 //! - [`TopK`] — Space-Saving top-K frequent items.

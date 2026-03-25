@@ -117,7 +117,7 @@ macro_rules! impl_codel {
                 self
             }
 
-            /// Observation window size (in timestamp units).
+            /// Observation window as a `Duration`.
             #[inline]
             #[must_use]
             pub fn window(mut self, window: Duration) -> Self {

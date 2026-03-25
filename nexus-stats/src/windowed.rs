@@ -66,7 +66,8 @@ macro_rules! impl_windowed_max {
 
             #[inline]
             fn nanos_since_base(&self, now: Instant) -> u64 {
-                now.saturating_duration_since(self.base).as_nanos() as u64
+                let nanos = now.saturating_duration_since(self.base).as_nanos();
+                if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
             }
 
             /// Feeds a sample at the given time. Returns current window max.
@@ -206,7 +207,8 @@ macro_rules! impl_windowed_min {
 
             #[inline]
             fn nanos_since_base(&self, now: Instant) -> u64 {
-                now.saturating_duration_since(self.base).as_nanos() as u64
+                let nanos = now.saturating_duration_since(self.base).as_nanos();
+                if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
             }
 
             /// Feeds a sample at the given time. Returns current window min.
