@@ -1,4 +1,5 @@
-#![allow(clippy::suboptimal_flops)]
+// neg_cmp_op_on_partial_ord: !(x > 0.0) intentionally rejects NaN.
+#![allow(clippy::suboptimal_flops, clippy::neg_cmp_op_on_partial_ord)]
 
 // Online K-Means Clustering
 //
@@ -191,7 +192,7 @@ impl OnlineKMeansF64 {
     #[must_use]
     pub fn count(&self) -> u64 {
         let mut total = 0u64;
-        for &c in self.counts.iter() {
+        for &c in &*self.counts {
             total += c;
         }
         total

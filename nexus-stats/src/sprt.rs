@@ -1,4 +1,6 @@
-#![allow(clippy::suboptimal_flops, clippy::float_cmp)]
+// neg_cmp_op_on_partial_ord: !(x > 0.0) intentionally rejects NaN,
+// unlike x <= 0.0 which passes NaN silently.
+#![allow(clippy::suboptimal_flops, clippy::float_cmp, clippy::neg_cmp_op_on_partial_ord)]
 
 /// Result of a sequential test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,10 +192,10 @@ impl SprtBernoulliBuilder {
             .beta
             .ok_or(crate::ConfigError::Missing("beta"))?;
 
-        if p0 <= 0.0 || p0 >= 1.0 {
+        if !(p0 > 0.0 && p0 < 1.0) {
             return Err(crate::ConfigError::Invalid("null_rate must be in (0, 1)"));
         }
-        if p1 <= 0.0 || p1 >= 1.0 {
+        if !(p1 > 0.0 && p1 < 1.0) {
             return Err(crate::ConfigError::Invalid("alt_rate must be in (0, 1)"));
         }
         if (p1 - p0).abs() <= f64::EPSILON {
@@ -201,10 +203,10 @@ impl SprtBernoulliBuilder {
                 "null_rate and alt_rate must differ",
             ));
         }
-        if alpha <= 0.0 || alpha >= 1.0 {
+        if !(alpha > 0.0 && alpha < 1.0) {
             return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
         }
-        if beta <= 0.0 || beta >= 1.0 {
+        if !(beta > 0.0 && beta < 1.0) {
             return Err(crate::ConfigError::Invalid("beta must be in (0, 1)"));
         }
 
@@ -425,7 +427,7 @@ impl SprtGaussianBuilder {
             .beta
             .ok_or(crate::ConfigError::Missing("beta"))?;
 
-        if variance <= 0.0 {
+        if !(variance > 0.0) {
             return Err(crate::ConfigError::Invalid("variance must be positive"));
         }
         if (alt_mean - null_mean).abs() <= f64::EPSILON {
@@ -433,10 +435,10 @@ impl SprtGaussianBuilder {
                 "null_mean and alt_mean must differ",
             ));
         }
-        if alpha <= 0.0 || alpha >= 1.0 {
+        if !(alpha > 0.0 && alpha < 1.0) {
             return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
         }
-        if beta <= 0.0 || beta >= 1.0 {
+        if !(beta > 0.0 && beta < 1.0) {
             return Err(crate::ConfigError::Invalid("beta must be in (0, 1)"));
         }
 
@@ -483,7 +485,7 @@ mod tests {
             .build()
             .unwrap();
 
-        // Feed 60% successes — clearly above both hypotheses, should
+        // Feed 80% successes — clearly above both hypotheses, should
         // accumulate evidence toward H1.
         let mut decision = Decision::Continue;
         for i in 0..10_000 {
@@ -783,13 +785,27 @@ mod tests {
         g.observe(2.0);
         assert!(g.log_likelihood_ratio() > 0.0);
 
-        // Verify numeric bound values match Wald's formulas.
-        // We need to access the bounds — use a proxy: feed enough extreme
-        // observations to just cross, then check count is reasonable.
-        // Instead, verify the formulas directly.
-        let _ = expected_upper;
-        let _ = expected_lower;
-        let _ = sprt;
-        let _ = sprt_g;
+        // Verify numeric bound values match Wald's formulas directly.
+        // Test module is a child of the defining module — can access private fields.
+        assert!(
+            (sprt.upper_bound - expected_upper).abs() < 1e-10,
+            "Bernoulli upper bound: got {}, expected {expected_upper}",
+            sprt.upper_bound
+        );
+        assert!(
+            (sprt.lower_bound - expected_lower).abs() < 1e-10,
+            "Bernoulli lower bound: got {}, expected {expected_lower}",
+            sprt.lower_bound
+        );
+        assert!(
+            (sprt_g.upper_bound - expected_upper).abs() < 1e-10,
+            "Gaussian upper bound: got {}, expected {expected_upper}",
+            sprt_g.upper_bound
+        );
+        assert!(
+            (sprt_g.lower_bound - expected_lower).abs() < 1e-10,
+            "Gaussian lower bound: got {}, expected {expected_lower}",
+            sprt_g.lower_bound
+        );
     }
 }

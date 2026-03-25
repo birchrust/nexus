@@ -144,6 +144,9 @@ macro_rules! impl_beta_binomial {
                 if self.total() == 0.0 as $ty {
                     return Option::None;
                 }
+                if !(confidence > 0.0 as $ty && confidence < 1.0 as $ty) {
+                    return Option::None;
+                }
 
                 let tail = (1.0 as $ty - confidence) / 2.0 as $ty;
 

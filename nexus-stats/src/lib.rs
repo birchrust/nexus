@@ -172,6 +172,8 @@ mod max_gauge;
 mod moments;
 #[cfg(feature = "alloc")]
 mod mosum;
+#[cfg(feature = "alloc")]
+mod online_kmeans;
 mod multi_gate;
 mod peak_detector;
 mod peak_hold;
@@ -283,6 +285,8 @@ pub use lms::{
     LmsFilterF32, LmsFilterF32Builder, LmsFilterF64, LmsFilterF64Builder, NlmsFilterF32,
     NlmsFilterF32Builder, NlmsFilterF64, NlmsFilterF64Builder,
 };
+#[cfg(feature = "alloc")]
+pub use online_kmeans::{OnlineKMeansF64, OnlineKMeansF64Builder};
 pub use level_crossing::{
     LevelCrossingF32, LevelCrossingF64, LevelCrossingI32, LevelCrossingI64, LevelCrossingI128,
 };

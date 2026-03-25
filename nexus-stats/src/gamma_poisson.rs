@@ -102,6 +102,13 @@ macro_rules! impl_gamma_poisson {
             /// Updates the posterior: alpha += count, beta += exposure.
             #[inline]
             pub fn observe(&mut self, count: u64, exposure: $ty) {
+                debug_assert!(
+                    exposure.is_finite() && exposure >= 0.0 as $ty,
+                    "invalid exposure: must be non-negative and finite"
+                );
+                if !exposure.is_finite() || exposure < 0.0 as $ty {
+                    return;
+                }
                 self.alpha += count as $ty;
                 self.beta += exposure;
             }
@@ -156,7 +163,8 @@ macro_rules! impl_gamma_poisson {
                 let std_dev = crate::math::sqrt(self.variance() as f64) as $ty;
                 let mean = self.rate();
 
-                Option::Some((mean - z * std_dev, mean + z * std_dev))
+                let lower = (mean - z * std_dev).max(0.0 as $ty);
+                Option::Some((lower, mean + z * std_dev))
             }
 
             /// Total event count observed (excluding prior).
