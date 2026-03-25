@@ -40,6 +40,11 @@ examples.
 - [Autocorrelation](algorithms/autocorrelation.md) — Self-correlation at fixed lag (trending vs reverting)
 - [CrossCorrelation](algorithms/cross-correlation.md) — Two-stream lead/lag detection
 
+### Regression
+- [LinearRegression](algorithms/linear-regression.md) — Online linear fit with closed-form solve
+- [PolynomialRegression](algorithms/polynomial-regression.md) — Online curve fitting (degree 1-8)
+- Transformed fits: [Exponential](algorithms/polynomial-regression.md#exponential-y--aebx), [Logarithmic](algorithms/polynomial-regression.md#logarithmic-y--alnx--b), [Power](algorithms/polynomial-regression.md#power-y--axb)
+
 ### Information Theory
 - [Entropy](algorithms/entropy.md) — Shannon entropy over categorical distributions
 - [TransferEntropy](algorithms/transfer-entropy.md) — Directed information flow (Granger causality)

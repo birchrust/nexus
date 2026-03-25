@@ -90,6 +90,25 @@ Start with your problem. Follow the tree to find the right primitive.
 - Signal variability / jitter → [**Jitter**](../algorithms/jitter.md)
   - EMA of consecutive absolute differences. `jitter_ratio()` for context.
 
+## "I want to fit a trend or model"
+
+**What kind of relationship?**
+
+- Simple linear trend (slope + intercept) → [**LinearRegression**](../algorithms/linear-regression.md)
+  - Closed-form solve, 48 bytes, ~6 cycles. The default for trend estimation.
+- Linear trend that adapts to regime changes → [**EwLinearRegression**](../algorithms/linear-regression.md)
+  - Same but with exponential decay. "What's the *current* slope?"
+- Proportional relationship through origin → `LinearRegression::through_origin()`
+  - `y = ax`, no intercept. Rate estimation, calibration.
+- Quadratic / cubic / higher-degree curve → [**PolynomialRegression**](../algorithms/polynomial-regression.md)
+  - Builder: `.degree(3)`. Acceleration detection, complex curvature.
+- Exponential growth or decay → [**ExponentialRegression**](../algorithms/polynomial-regression.md#exponential-y--aebx)
+  - `y = ae^(bx)`. Growth rate estimation, half-life.
+- Logarithmic / diminishing returns → [**LogarithmicRegression**](../algorithms/polynomial-regression.md#logarithmic-y--alnx--b)
+  - `y = a·ln(x) + b`. Saturation curves.
+- Power law / scaling → [**PowerRegression**](../algorithms/polynomial-regression.md#power-y--axb)
+  - `y = ax^b`. Scaling exponent estimation.
+
 ## "I want to analyze signal relationships"
 
 - Is this signal trending or mean-reverting? → [**Autocorrelation**](../algorithms/autocorrelation.md)
@@ -148,6 +167,9 @@ Common combinations:
 | "Load-balance across shards" | FlexibleProportions per shard |
 | "Display smoothed latency with worst-case envelope" | EMA (display) + PeakHoldDecay (envelope) |
 | "Is latency distribution getting fat-tailed?" | Moments (kurtosis) |
-| "Which venue leads price discovery?" | CrossCorrelation to find lag, TransferEntropy to confirm direction |
+| "Which signal leads the other?" | CrossCorrelation to find lag, TransferEntropy to confirm direction |
 | "Is this signal becoming more/less predictable?" | Entropy over categorized values |
 | "Is this signal trending or reverting?" | Autocorrelation lag-1 |
+| "What's the current trend slope?" | LinearRegression or EwLinearRegression |
+| "Is this accelerating or decelerating?" | PolynomialRegression(degree=2), check quadratic coefficient |
+| "Fit an exponential growth curve" | ExponentialRegression |

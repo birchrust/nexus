@@ -94,18 +94,18 @@ range of lags tracked (0 through LAG-1).
 
 ## Examples by Domain
 
-### Trading — Venue Lead/Lag
+### Sensor Networks — Signal Propagation
 
 ```rust
-// Does venue A's price move predict venue B?
+// Does sensor A's reading predict sensor B's?
 let mut cc = CrossCorrelationF64::<20>::new();
 
-// Feed mid-price returns from both venues:
-cc.update(venue_a_return, venue_b_return);
+// Feed readings from both sensors:
+cc.update(sensor_a_reading, sensor_b_reading);
 
 if let Some(lag) = cc.peak_lag() {
     if lag > 0 {
-        println!("venue A leads by {lag} ticks");
+        println!("sensor A leads by {lag} samples");
     }
 }
 ```

@@ -137,20 +137,20 @@ first to find the peak lag, then use that as the `lag` parameter.
 
 ## Examples by Domain
 
-### Trading — Venue Price Discovery
+### Monitoring — Causal Relationship Detection
 
 ```rust
-// Which venue's price moves predict the other's?
+// Which metric drives the other?
 let mut te = TransferEntropyF64::builder()
     .bins(8)
     .lag(1)
     .build()
     .unwrap();
 
-// Discretize returns into 8 bins (e.g., by quantile)
-te.observe(venue_a_bin, venue_b_bin);
+// Discretize metrics into 8 bins (e.g., by quantile)
+te.observe(metric_a_bin, metric_b_bin);
 
-// Positive net_flow → venue A leads price discovery
+// Positive net_flow → metric A drives metric B
 ```
 
 ### Monitoring — Root Cause Detection

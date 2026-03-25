@@ -113,25 +113,23 @@ worker_a.merge(&worker_b);
 
 ## Examples by Domain
 
-### Trading — Return Distribution Monitoring
+### Distribution Shape Monitoring
 
 ```rust
-let mut returns = MomentsF64::new();
+let mut samples = MomentsF64::new();
 
-// On each trade:
-returns.update(trade_return);
+// On each observation:
+samples.update(measurement);
 
-if let Some(skew) = returns.skewness() {
+if let Some(skew) = samples.skewness() {
     if skew < -0.5 {
-        // Negative skew: larger losses than gains
-        // Consider tightening risk limits
+        // Negative skew: larger negative deviations than positive
     }
 }
 
-if let Some(kurt) = returns.kurtosis() {
+if let Some(kurt) = samples.kurtosis() {
     if kurt > 3.0 {
-        // Fat tails: extreme events more likely than normal
-        // VaR models may underestimate risk
+        // Fat tails: extreme values more likely than Gaussian
     }
 }
 ```
@@ -156,10 +154,10 @@ if let Some(skew) = latency.skewness() {
 ### Monitoring — Regime Change via Kurtosis
 
 ```rust
-// Track kurtosis over rolling windows:
-// Normal market: kurtosis ≈ 0
-// Crisis: kurtosis spikes (fat tails)
-// Low vol: kurtosis drops (thin tails)
+// Track kurtosis over time:
+// Stable regime: kurtosis ≈ 0
+// Volatile regime: kurtosis spikes (fat tails)
+// Calm regime: kurtosis drops (thin tails)
 ```
 
 ## Population vs Sample

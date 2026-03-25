@@ -42,7 +42,7 @@ use alloc::vec;
 /// | 16   | ~131 KB |
 ///
 /// # Use Cases
-/// - "Does order flow on venue A predict price moves on venue B?"
+/// - "Does metric A predict changes in metric B?"
 /// - Granger-causality proxy without regression
 /// - Detecting leading/lagging relationships between discretized signals
 ///
