@@ -55,10 +55,14 @@ pub struct WheelEntry<T> {
     value: UnsafeCell<Option<T>>,
 }
 
-// SAFETY: WheelEntry is single-owner, single-threaded at runtime. The raw
-// pointers (prev/next DLL links) and UnsafeCell are internal implementation
-// details. T: Send ensures the contained value can move across threads
-// (needed because TimerWheel lives in World which is Send).
+// SAFETY: WheelEntry<T> is never exposed directly to user code; it is only
+// owned and accessed via TimerWheel, which is !Sync and therefore cannot be
+// shared between threads. All mutation of the DLL links (prev/next), the
+// refcount, and the UnsafeCell<Option<T>> happens while the owning
+// TimerWheel has exclusive access on a single thread — no concurrent access
+// to a given WheelEntry<T>. The T: Send bound is required because
+// TimerWheel (and its slab storage) may be moved between threads as a whole;
+// it does not permit cross-thread aliasing of WheelEntry<T> itself.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send> Send for WheelEntry<T> {}
 

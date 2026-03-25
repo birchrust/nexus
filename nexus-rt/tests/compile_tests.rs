@@ -4024,9 +4024,8 @@ fn hrtb_callback() {
 // =========================================================================
 
 /// TimerWheel must satisfy Resource (which requires Send) so it can live
-/// in World. This propagates through WheelEntry (raw DLL pointers) and
-/// the slab storage (Cell<*mut SlotCell<T>>). Without the unsafe Send
-/// impls on WheelEntry and Slab, this fails to compile.
+/// in World. This propagates through WheelEntry (raw DLL pointers).
+/// Without WheelEntry's unsafe Send impl, this fails to compile.
 #[cfg(feature = "timer")]
 #[test]
 fn timer_wheel_satisfies_resource_bound() {

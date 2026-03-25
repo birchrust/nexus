@@ -77,7 +77,10 @@ pub use nexus_timer::{
 };
 
 // Resource impls for timer wheel types registered by the timer driver.
-impl<T: Send + 'static, S: nexus_timer::store::SlabStore<Item = WheelEntry<T>> + Send + 'static>
+// TimerWheel has its own `unsafe impl Send` (the wheel owns the slab
+// exclusively, no RawSlots escape). We don't require S: Send here —
+// the wheel's Send impl handles it.
+impl<T: Send + 'static, S: nexus_timer::store::SlabStore<Item = WheelEntry<T>> + 'static>
     crate::world::Resource for nexus_timer::TimerWheel<T, S>
 {
 }
