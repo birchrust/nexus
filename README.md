@@ -46,11 +46,11 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 ┌─────────────────────────────────────────────────────────┐
 │                     Primitives                          │
 │                                                         │
-│  nexus-queue    nexus-slab     nexus-id       nexus-bits  │
-│  nexus-channel  nexus-pool     nexus-ascii                │
-│  nexus-notify   nexus-timer    nexus-logbuf               │
-│  nexus-slot     nexus-collections  nexus-smartptr         │
-│  nexus-decimal                                            │
+│  nexus-queue    nexus-slab     nexus-id     nexus-bits  │
+│  nexus-channel  nexus-pool     nexus-ascii              │
+│  nexus-notify   nexus-timer    nexus-logbuf             │
+│  nexus-slot     nexus-collections  nexus-smartptr       │
+│  nexus-decimal                                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
