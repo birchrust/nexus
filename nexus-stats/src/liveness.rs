@@ -636,3 +636,287 @@ mod tests {
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 }
+
+// =============================================================================
+// LivenessInstant — Instant-based liveness detector
+// =============================================================================
+
+#[cfg(feature = "std")]
+mod instant_liveness {
+    use std::time::{Duration, Instant};
+
+    /// Liveness detector using `Instant` timestamps.
+    ///
+    /// EMA of inter-arrival times with deadline threshold. Timestamps
+    /// are `Instant`, deadlines are `Duration` or multiples.
+    #[derive(Debug, Clone)]
+    pub struct LivenessInstant {
+        alpha: f64,
+        one_minus_alpha: f64,
+        interval: f64, // seconds
+        last_timestamp: Option<Instant>,
+        deadline_multiple: Option<f64>,
+        deadline_absolute: Option<Duration>,
+        count: u64,
+        min_samples: u64,
+    }
+
+    /// Builder for [`LivenessInstant`].
+    #[derive(Debug, Clone)]
+    pub struct LivenessInstantBuilder {
+        alpha: Option<f64>,
+        deadline_multiple: Option<f64>,
+        deadline_absolute: Option<Duration>,
+        min_samples: u64,
+    }
+
+    impl LivenessInstant {
+        /// Creates a builder.
+        #[inline]
+        #[must_use]
+        pub fn builder() -> LivenessInstantBuilder {
+            LivenessInstantBuilder {
+                alpha: None,
+                deadline_multiple: None,
+                deadline_absolute: None,
+                min_samples: 2,
+            }
+        }
+
+        /// Records an event. Returns `true` if alive.
+        #[inline]
+        #[must_use]
+        pub fn record(&mut self, now: Instant) -> bool {
+            self.count += 1;
+
+            let dt = if let Some(last) = self.last_timestamp {
+                now.saturating_duration_since(last).as_secs_f64()
+            } else {
+                self.last_timestamp = Some(now);
+                return true;
+            };
+            self.last_timestamp = Some(now);
+
+            if self.count == 2 {
+                self.interval = dt;
+            } else {
+                self.interval = self.alpha.mul_add(dt, self.one_minus_alpha * self.interval);
+            }
+
+            if self.count < self.min_samples {
+                return true;
+            }
+
+            self.is_alive_at_interval(dt)
+        }
+
+        /// Checks liveness without recording. Returns `true` if alive.
+        #[inline]
+        #[must_use]
+        pub fn check(&self, now: Instant) -> bool {
+            if self.count < self.min_samples {
+                return true;
+            }
+            let dt = match self.last_timestamp {
+                Some(last) => now.saturating_duration_since(last).as_secs_f64(),
+                None => return true,
+            };
+            self.is_alive_at_interval(dt)
+        }
+
+        #[inline]
+        fn is_alive_at_interval(&self, dt: f64) -> bool {
+            if let Some(multiple) = self.deadline_multiple {
+                return dt <= self.interval * multiple;
+            }
+            if let Some(absolute) = self.deadline_absolute {
+                return dt <= absolute.as_secs_f64();
+            }
+            true
+        }
+
+        /// Current smoothed inter-arrival time as Duration.
+        #[inline]
+        #[must_use]
+        pub fn interval(&self) -> Option<Duration> {
+            if self.count >= 2 && self.interval > 0.0 {
+                Some(Duration::from_secs_f64(self.interval))
+            } else {
+                None
+            }
+        }
+
+        /// Number of events recorded.
+        #[inline]
+        #[must_use]
+        pub fn count(&self) -> u64 {
+            self.count
+        }
+
+        /// Whether the detector has reached `min_samples`.
+        #[inline]
+        #[must_use]
+        pub fn is_primed(&self) -> bool {
+            self.count >= self.min_samples
+        }
+
+        /// Resets. `now` becomes the new time reference.
+        #[inline]
+        pub fn reset(&mut self, now: Instant) {
+            self.interval = 0.0;
+            self.last_timestamp = Some(now);
+            self.count = 0;
+        }
+
+        /// Switch to deadline-multiple threshold.
+        #[inline]
+        pub fn reconfigure_deadline_multiple(&mut self, n: f64) {
+            self.deadline_multiple = Some(n);
+            self.deadline_absolute = None;
+        }
+
+        /// Switch to absolute deadline threshold.
+        #[inline]
+        pub fn reconfigure_deadline_absolute(&mut self, d: Duration) {
+            self.deadline_absolute = Some(d);
+            self.deadline_multiple = None;
+        }
+    }
+
+    impl LivenessInstantBuilder {
+        /// Direct smoothing factor.
+        #[inline]
+        #[must_use]
+        pub fn alpha(mut self, alpha: f64) -> Self {
+            self.alpha = Some(alpha);
+            self
+        }
+
+        /// Span for smoothing: `alpha = 2 / (n + 1)`.
+        #[inline]
+        #[must_use]
+        pub fn span(mut self, n: u64) -> Self {
+            self.alpha = Some(2.0 / (n as f64 + 1.0));
+            self
+        }
+
+        /// Minimum events before checking. Default: 2.
+        #[inline]
+        #[must_use]
+        pub fn min_samples(mut self, min: u64) -> Self {
+            self.min_samples = min;
+            self
+        }
+
+        /// Deadline as multiple of smoothed interval.
+        #[inline]
+        #[must_use]
+        pub fn deadline_multiple(mut self, n: f64) -> Self {
+            self.deadline_multiple = Some(n);
+            self
+        }
+
+        /// Deadline as absolute Duration.
+        #[inline]
+        #[must_use]
+        pub fn deadline_absolute(mut self, d: Duration) -> Self {
+            self.deadline_absolute = Some(d);
+            self
+        }
+
+        /// Builds the liveness detector.
+        ///
+        /// # Errors
+        ///
+        /// Alpha must be in (0, 1). At least one deadline required.
+        #[inline]
+        pub fn build(self) -> Result<LivenessInstant, crate::ConfigError> {
+            let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+            if !(alpha > 0.0 && alpha < 1.0) {
+                return Err(crate::ConfigError::Invalid(
+                    "LivenessInstant alpha must be in (0, 1)",
+                ));
+            }
+            if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
+                return Err(crate::ConfigError::Invalid(
+                    "LivenessInstant requires at least one deadline (multiple or absolute)",
+                ));
+            }
+
+            Ok(LivenessInstant {
+                alpha,
+                one_minus_alpha: 1.0 - alpha,
+                interval: 0.0,
+                last_timestamp: None,
+                deadline_multiple: self.deadline_multiple,
+                deadline_absolute: self.deadline_absolute,
+                count: 0,
+                min_samples: self.min_samples,
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn alive_within_deadline() {
+            let base = Instant::now();
+            let mut lv = LivenessInstant::builder()
+                .span(10)
+                .deadline_multiple(3.0)
+                .build()
+                .unwrap();
+            assert!(lv.record(base));
+            assert!(lv.record(base + Duration::from_secs(1)));
+            // 2 seconds later — 2x interval, within 3x deadline
+            assert!(lv.check(base + Duration::from_secs(3)));
+        }
+
+        #[test]
+        fn dead_beyond_deadline() {
+            let base = Instant::now();
+            let mut lv = LivenessInstant::builder()
+                .span(10)
+                .deadline_multiple(3.0)
+                .build()
+                .unwrap();
+            assert!(lv.record(base));
+            assert!(lv.record(base + Duration::from_secs(1)));
+            // 10 seconds later — 10x interval, exceeds 3x deadline
+            assert!(!lv.check(base + Duration::from_secs(11)));
+        }
+
+        #[test]
+        fn absolute_deadline() {
+            let base = Instant::now();
+            let mut lv = LivenessInstant::builder()
+                .span(10)
+                .deadline_absolute(Duration::from_secs(5))
+                .build()
+                .unwrap();
+            assert!(lv.record(base));
+            assert!(lv.record(base + Duration::from_secs(1)));
+            assert!(lv.check(base + Duration::from_secs(5))); // within 5s
+            assert!(!lv.check(base + Duration::from_secs(7))); // beyond 5s
+        }
+
+        #[test]
+        fn reset_clears() {
+            let base = Instant::now();
+            let mut lv = LivenessInstant::builder()
+                .span(10)
+                .deadline_multiple(3.0)
+                .build()
+                .unwrap();
+            lv.record(base);
+            lv.record(base + Duration::from_secs(1));
+            lv.reset(base + Duration::from_secs(2));
+            assert_eq!(lv.count(), 0);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+pub use instant_liveness::{LivenessInstant, LivenessInstantBuilder};
