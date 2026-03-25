@@ -28,6 +28,14 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 | EwmaVariance | ✓ | ✓ | — | — | — |
 | Covariance | ✓ | ✓ | — | — | — |
 | HarmonicMean | ✓ | ✓ | — | — | — |
+| **Regression** | | | | | |
+| LinearRegression | ✓ | ✓ | — | — | — |
+| EwLinearRegression | ✓ | ✓ | — | — | — |
+| PolynomialRegression | ✓ | ✓ | — | — | — |
+| EwPolynomialRegression | ✓ | ✓ | — | — | — |
+| ExponentialRegression | ✓ | ✓ | — | — | — |
+| LogarithmicRegression | ✓ | ✓ | — | — | — |
+| PowerRegression | ✓ | ✓ | — | — | — |
 | **Signal Analysis** | | | | | |
 | Autocorrelation | ✓ | ✓ | ✓ | ✓ | — |
 | CrossCorrelation | ✓ | ✓ | — | — | — |

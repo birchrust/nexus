@@ -44,6 +44,15 @@
 //! - [`AutocorrelationF64`] — Self-correlation at configurable lag.
 //! - [`CrossCorrelationF64`] — Two-stream correlation with lead/lag detection. *(std|libm)*
 //!
+//! **Regression:**
+//! - [`LinearRegressionF64`] — Online linear fit with closed-form solve (`y = ax + b`).
+//! - [`EwLinearRegressionF64`] — Exponentially-weighted linear fit.
+//! - [`PolynomialRegressionF64`] — Online polynomial fit, degree 2-8 (quadratic, cubic, etc.).
+//! - [`EwPolynomialRegressionF64`] — Exponentially-weighted polynomial fit.
+//! - [`ExponentialRegressionF64`] — Exponential fit (`y = ae^(bx)`). *(std|libm)*
+//! - [`LogarithmicRegressionF64`] — Logarithmic fit (`y = a·ln(x) + b`). *(std|libm)*
+//! - [`PowerRegressionF64`] — Power law fit (`y = ax^b`). *(std|libm)*
+//!
 //! **Information Theory:** *(std|libm)*
 //! - [`EntropyF64`] — Shannon entropy over categorical distributions.
 //! - [`TransferEntropyF64`] — Directed information flow (Granger causality). *(alloc, std|libm)*
@@ -118,6 +127,7 @@ mod ema;
 mod entropy;
 mod error_rate;
 mod event_rate;
+mod ew_polynomial_regression;
 mod ewma_var;
 mod flex_proportion;
 mod harmonic_mean;
@@ -128,6 +138,7 @@ mod kalman1d;
 #[cfg(feature = "alloc")]
 mod kama;
 mod level_crossing;
+mod linear_regression;
 mod liveness;
 mod math;
 mod max_gauge;
@@ -138,6 +149,7 @@ mod multi_gate;
 mod peak_detector;
 mod peak_hold;
 mod percentile;
+mod polynomial_regression;
 mod robust_z;
 mod running;
 mod saturation;
@@ -148,6 +160,8 @@ mod spring;
 mod topk;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod transfer_entropy;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod transformed_regression;
 mod trend_alert;
 mod welford;
 mod windowed;
@@ -206,6 +220,10 @@ pub use event_rate::{
 };
 #[cfg(feature = "std")]
 pub use event_rate::{EventRateInstant, EventRateInstantBuilder};
+pub use ew_polynomial_regression::{
+    EwPolynomialRegressionF32, EwPolynomialRegressionF32Builder, EwPolynomialRegressionF64,
+    EwPolynomialRegressionF64Builder,
+};
 pub use ewma_var::{EwmaVarF32, EwmaVarF32Builder, EwmaVarF64, EwmaVarF64Builder};
 pub use flex_proportion::{FlexProportionEntity, FlexProportionGlobal};
 pub use harmonic_mean::{HarmonicMeanF32, HarmonicMeanF64};
@@ -218,6 +236,11 @@ pub use jitter::{
 pub use kalman1d::{Kalman1dF32, Kalman1dF32Builder, Kalman1dF64, Kalman1dF64Builder};
 #[cfg(feature = "alloc")]
 pub use kama::{KamaF32, KamaF32Builder, KamaF64, KamaF64Builder};
+pub use linear_regression::{
+    EwLinearRegressionF32, EwLinearRegressionF32Builder, EwLinearRegressionF64,
+    EwLinearRegressionF64Builder, LinearRegressionF32, LinearRegressionF32Builder,
+    LinearRegressionF64, LinearRegressionF64Builder,
+};
 pub use level_crossing::{
     LevelCrossingF32, LevelCrossingF64, LevelCrossingI32, LevelCrossingI64, LevelCrossingI128,
 };
@@ -245,6 +268,10 @@ pub use peak_hold::{
     PeakHoldI32Builder, PeakHoldI64, PeakHoldI64Builder, PeakHoldI128, PeakHoldI128Builder,
 };
 pub use percentile::{PercentileF32, PercentileF32Builder, PercentileF64, PercentileF64Builder};
+pub use polynomial_regression::{
+    CoefficientsF32, CoefficientsF64, PolynomialRegressionF32, PolynomialRegressionF32Builder,
+    PolynomialRegressionF64, PolynomialRegressionF64Builder,
+};
 pub use robust_z::{
     RobustZScoreF32, RobustZScoreF32Builder, RobustZScoreF64, RobustZScoreF64Builder,
 };
@@ -260,6 +287,15 @@ pub use spring::{SpringF32, SpringF64};
 pub use topk::TopK;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use transfer_entropy::{TransferEntropyF64, TransferEntropyF64Builder};
+#[cfg(any(feature = "std", feature = "libm"))]
+pub use transformed_regression::{
+    EwExponentialRegressionF64, EwExponentialRegressionF64Builder,
+    EwLogarithmicRegressionF64, EwLogarithmicRegressionF64Builder,
+    EwPowerRegressionF64, EwPowerRegressionF64Builder,
+    ExponentialRegressionF32, ExponentialRegressionF64,
+    LogarithmicRegressionF32, LogarithmicRegressionF64,
+    PowerRegressionF32, PowerRegressionF64,
+};
 pub use trend_alert::{TrendAlertF32, TrendAlertF32Builder, TrendAlertF64, TrendAlertF64Builder};
 pub use welford::{WelfordF32, WelfordF64};
 #[cfg(feature = "std")]
