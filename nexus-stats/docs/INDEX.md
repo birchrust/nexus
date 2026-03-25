@@ -31,9 +31,18 @@ examples.
 
 ### Statistics
 - [Welford](algorithms/welford.md) — Online mean, variance, standard deviation
+- [Moments](algorithms/moments.md) — Online skewness & kurtosis (Pebay, 2008)
 - [EwmaVariance](algorithms/ewma-var.md) — Exponentially weighted variance
 - [Covariance](algorithms/covariance.md) — Online covariance and Pearson correlation
 - [HarmonicMean](algorithms/harmonic-mean.md) — Correct average for rates
+
+### Signal Analysis
+- [Autocorrelation](algorithms/autocorrelation.md) — Self-correlation at fixed lag (trending vs reverting)
+- [CrossCorrelation](algorithms/cross-correlation.md) — Two-stream lead/lag detection
+
+### Information Theory
+- [Entropy](algorithms/entropy.md) — Shannon entropy over categorical distributions
+- [TransferEntropy](algorithms/transfer-entropy.md) — Directed information flow (Granger causality)
 
 ### Monitoring
 - [Drawdown](algorithms/drawdown.md) — Peak-to-trough decline tracking

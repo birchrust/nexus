@@ -20,7 +20,7 @@ libm = { version = "0.2", optional = true }
 
 [[example]]
 name = "perf_stats"
-required-features = ["alloc"]
+required-features = ["std"]
 
 [[example]]
 name = "basic"
