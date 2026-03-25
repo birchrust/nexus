@@ -4023,14 +4023,32 @@ fn hrtb_callback() {
 // Send bounds — slab-backed resources must be Send for World storage
 // =========================================================================
 
-/// TimerWheel must satisfy Resource (which requires Send) so it can live
-/// in World. This propagates through WheelEntry (raw DLL pointers).
-/// Without WheelEntry's unsafe Send impl, this fails to compile.
+/// All types registered as World resources must satisfy Resource (Send + 'static).
+/// These compile tests catch regressions where internal raw pointers or
+/// UnsafeCell fields break the auto-Send derivation.
+
 #[cfg(feature = "timer")]
 #[test]
 fn timer_wheel_satisfies_resource_bound() {
     fn assert_resource<T: nexus_rt::Resource>() {}
 
-    // Default store is unbounded::Slab. Handler type is boxed.
+    // TimerWheel contains WheelEntry with raw DLL pointers.
+    // Without WheelEntry's unsafe Send impl, this fails to compile.
     assert_resource::<nexus_timer::TimerWheel<Box<dyn Handler<std::time::Instant>>>>();
+}
+
+#[cfg(feature = "timer")]
+#[test]
+fn clock_satisfies_resource_bound() {
+    fn assert_resource<T: nexus_rt::Resource>() {}
+    assert_resource::<nexus_rt::clock::Clock>();
+}
+
+#[cfg(feature = "mio")]
+#[test]
+fn mio_driver_satisfies_resource_bound() {
+    fn assert_resource<T: nexus_rt::Resource>() {}
+
+    // MioDriver uses external slab crate (not nexus-slab), which is Send when S: Send.
+    assert_resource::<nexus_rt::mio::MioDriver<Box<dyn Handler<::mio::event::Event>>>>();
 }
