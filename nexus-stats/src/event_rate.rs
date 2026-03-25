@@ -443,3 +443,215 @@ mod tests {
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 }
+
+// =============================================================================
+// EventRateInstant — Instant-based event rate tracker
+// =============================================================================
+
+#[cfg(feature = "std")]
+mod instant_event_rate {
+    use std::time::{Duration, Instant};
+
+    /// Smoothed event rate tracker using `Instant` timestamps.
+    ///
+    /// Wraps EMA-of-intervals math with `Instant` → f64 seconds conversion.
+    /// Rate is in events per second.
+    ///
+    /// # Use Cases
+    /// - Application-internal message throughput monitoring
+    /// - Handler invocation rate tracking
+    #[derive(Debug, Clone)]
+    pub struct EventRateInstant {
+        alpha: f64,
+        one_minus_alpha: f64,
+        interval: f64, // seconds
+        last_timestamp: Option<Instant>,
+        count: u64,
+        min_samples: u64,
+    }
+
+    /// Builder for [`EventRateInstant`].
+    #[derive(Debug, Clone)]
+    pub struct EventRateInstantBuilder {
+        alpha: Option<f64>,
+        min_samples: u64,
+    }
+
+    impl EventRateInstant {
+        /// Creates a builder.
+        #[inline]
+        #[must_use]
+        pub fn builder() -> EventRateInstantBuilder {
+            EventRateInstantBuilder {
+                alpha: None,
+                min_samples: 2,
+            }
+        }
+
+        /// Records an event at the given time.
+        #[inline]
+        pub fn tick(&mut self, now: Instant) {
+            self.count += 1;
+
+            if let Some(last) = self.last_timestamp {
+                let dt = now.saturating_duration_since(last).as_secs_f64();
+                if self.count == 2 {
+                    self.interval = dt;
+                } else {
+                    self.interval = self.alpha.mul_add(dt, self.one_minus_alpha * self.interval);
+                }
+            }
+            self.last_timestamp = Some(now);
+        }
+
+        /// Current smoothed event rate (events per second).
+        ///
+        /// Returns `None` if not primed or if interval is zero.
+        #[inline]
+        #[must_use]
+        pub fn rate(&self) -> Option<f64> {
+            if self.count < self.min_samples || self.interval <= 0.0 {
+                None
+            } else {
+                Some(1.0 / self.interval)
+            }
+        }
+
+        /// Current smoothed inter-event interval as Duration.
+        #[inline]
+        #[must_use]
+        pub fn interval(&self) -> Option<Duration> {
+            if self.count >= 2 && self.interval > 0.0 {
+                Some(Duration::from_secs_f64(self.interval))
+            } else {
+                None
+            }
+        }
+
+        /// Number of events recorded.
+        #[inline]
+        #[must_use]
+        pub fn count(&self) -> u64 {
+            self.count
+        }
+
+        /// Whether the tracker has reached `min_samples`.
+        #[inline]
+        #[must_use]
+        pub fn is_primed(&self) -> bool {
+            self.count >= self.min_samples
+        }
+
+        /// Resets. `now` becomes the new time reference.
+        #[inline]
+        pub fn reset(&mut self, now: Instant) {
+            self.interval = 0.0;
+            self.last_timestamp = Some(now);
+            self.count = 0;
+        }
+    }
+
+    impl EventRateInstantBuilder {
+        /// Direct smoothing factor for interval EMA.
+        #[inline]
+        #[must_use]
+        pub fn alpha(mut self, alpha: f64) -> Self {
+            self.alpha = Some(alpha);
+            self
+        }
+
+        /// Span for interval smoothing: `alpha = 2 / (n + 1)`.
+        #[inline]
+        #[must_use]
+        pub fn span(mut self, n: u64) -> Self {
+            self.alpha = Some(2.0 / (n as f64 + 1.0));
+            self
+        }
+
+        /// Minimum events before rate is valid. Default: 2.
+        #[inline]
+        #[must_use]
+        pub fn min_samples(mut self, min: u64) -> Self {
+            self.min_samples = min;
+            self
+        }
+
+        /// Builds the event rate tracker.
+        ///
+        /// # Errors
+        ///
+        /// Alpha must be in (0, 1) exclusive.
+        #[inline]
+        pub fn build(self) -> Result<EventRateInstant, crate::ConfigError> {
+            let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+            if !(alpha > 0.0 && alpha < 1.0) {
+                return Err(crate::ConfigError::Invalid(
+                    "EventRateInstant alpha must be in (0, 1)",
+                ));
+            }
+
+            Ok(EventRateInstant {
+                alpha,
+                one_minus_alpha: 1.0 - alpha,
+                interval: 0.0,
+                last_timestamp: None,
+                count: 0,
+                min_samples: self.min_samples,
+            })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn basic_rate() {
+            let base = Instant::now();
+            let mut er = EventRateInstant::builder().span(10).build().unwrap();
+            er.tick(base);
+            er.tick(base + Duration::from_secs(1));
+            let rate = er.rate().unwrap();
+            assert!((rate - 1.0).abs() < 0.1, "expected ~1.0 eps, got {rate}");
+        }
+
+        #[test]
+        fn interval_as_duration() {
+            let base = Instant::now();
+            let mut er = EventRateInstant::builder().span(10).build().unwrap();
+            er.tick(base);
+            er.tick(base + Duration::from_millis(500));
+            let interval = er.interval().unwrap();
+            let ms = interval.as_millis();
+            assert!((450..=550).contains(&ms), "expected ~500ms, got {ms}ms");
+        }
+
+        #[test]
+        fn not_primed_before_min_samples() {
+            let base = Instant::now();
+            let mut er = EventRateInstant::builder()
+                .span(10)
+                .min_samples(5)
+                .build()
+                .unwrap();
+            er.tick(base);
+            er.tick(base + Duration::from_secs(1));
+            assert!(!er.is_primed());
+            assert!(er.rate().is_none());
+        }
+
+        #[test]
+        fn reset_clears() {
+            let base = Instant::now();
+            let mut er = EventRateInstant::builder().span(10).build().unwrap();
+            er.tick(base);
+            er.tick(base + Duration::from_secs(1));
+            er.reset(base + Duration::from_secs(2));
+            assert_eq!(er.count(), 0);
+            assert!(er.rate().is_none());
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+pub use instant_event_rate::{EventRateInstant, EventRateInstantBuilder};

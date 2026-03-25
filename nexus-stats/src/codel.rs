@@ -1,10 +1,180 @@
+use crate::Condition;
+use crate::windowed::{
+    WindowedMinF32Raw, WindowedMinF64Raw, WindowedMinI32Raw, WindowedMinI64Raw, WindowedMinI128Raw,
+};
+
+// =========================================================================
+// Raw (u64 timestamp) variants — no_std compatible
+// =========================================================================
+
+macro_rules! impl_codel_raw {
+    ($name:ident, $builder:ident, $ty:ty, $windowed_min_raw:ty) => {
+        /// CoDel — Controlled Delay queue monitor using raw `u64` timestamps.
+        ///
+        /// Same algorithm as the `Instant`-based variant but operates on
+        /// caller-supplied `u64` timestamps directly. No `std` dependency.
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            windowed_min: $windowed_min_raw,
+            target: $ty,
+            min_samples: u64,
+        }
+
+        /// Builder for [`
+        #[doc = stringify!($name)]
+        /// `].
+        #[derive(Debug, Clone)]
+        pub struct $builder {
+            target: Option<$ty>,
+            window: Option<u64>,
+            min_samples: u64,
+        }
+
+        impl $name {
+            /// Creates a builder.
+            #[inline]
+            #[must_use]
+            pub fn builder() -> $builder {
+                $builder {
+                    target: Option::None,
+                    window: Option::None,
+                    min_samples: 1,
+                }
+            }
+
+            /// Feeds a sojourn time at the given timestamp.
+            ///
+            /// Returns `Some(Condition)` once primed, `None` before.
+            #[inline]
+            #[must_use]
+            pub fn update(&mut self, timestamp: u64, sojourn: $ty) -> Option<Condition> {
+                let min = self.windowed_min.update(timestamp, sojourn);
+
+                if self.windowed_min.count() < self.min_samples {
+                    return Option::None;
+                }
+
+                if min > self.target {
+                    Option::Some(Condition::Degraded)
+                } else {
+                    Option::Some(Condition::Normal)
+                }
+            }
+
+            /// Convenience wrapper that casts an `i64` timestamp to `u64`.
+            #[inline]
+            #[must_use]
+            pub fn update_i64(&mut self, timestamp: i64, sojourn: $ty) -> Option<Condition> {
+                self.update(timestamp as u64, sojourn)
+            }
+
+            /// Current windowed minimum sojourn time, or `None` if empty.
+            #[inline]
+            #[must_use]
+            pub fn min_sojourn(&self) -> Option<$ty> {
+                self.windowed_min.min()
+            }
+
+            /// Whether the queue is currently elevated.
+            #[inline]
+            #[must_use]
+            pub fn is_elevated(&self) -> bool {
+                if let Some(min) = self.windowed_min.min() {
+                    min > self.target
+                } else {
+                    false
+                }
+            }
+
+            /// Number of samples processed.
+            #[inline]
+            #[must_use]
+            pub fn count(&self) -> u64 {
+                self.windowed_min.count()
+            }
+
+            /// Whether the monitor has reached `min_samples`.
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.windowed_min.count() >= self.min_samples
+            }
+
+            /// Resets to empty state. Parameters unchanged.
+            #[inline]
+            pub fn reset(&mut self) {
+                self.windowed_min.reset();
+            }
+        }
+
+        impl $builder {
+            /// Target sojourn time. Elevated when minimum exceeds this.
+            #[inline]
+            #[must_use]
+            pub fn target(mut self, target: $ty) -> Self {
+                self.target = Option::Some(target);
+                self
+            }
+
+            /// Observation window in raw units (same as timestamps).
+            #[inline]
+            #[must_use]
+            pub fn window(mut self, window: u64) -> Self {
+                self.window = Option::Some(window);
+                self
+            }
+
+            /// Minimum samples before monitoring activates. Default: 1.
+            #[inline]
+            #[must_use]
+            pub fn min_samples(mut self, min: u64) -> Self {
+                self.min_samples = min;
+                self
+            }
+
+            /// Builds the CoDel monitor.
+            ///
+            /// # Errors
+            ///
+            /// - Target must have been set.
+            /// - Window must have been set and be positive.
+            #[inline]
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
+                let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
+                if window == 0 {
+                    return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
+                }
+
+                Ok($name {
+                    windowed_min: <$windowed_min_raw>::new(window)?,
+                    target,
+                    min_samples: self.min_samples,
+                })
+            }
+        }
+    };
+}
+
+impl_codel_raw!(CoDelI64Raw, CoDelI64RawBuilder, i64, WindowedMinI64Raw);
+impl_codel_raw!(CoDelI32Raw, CoDelI32RawBuilder, i32, WindowedMinI32Raw);
+impl_codel_raw!(CoDelI128Raw, CoDelI128RawBuilder, i128, WindowedMinI128Raw);
+impl_codel_raw!(CoDelF64Raw, CoDelF64RawBuilder, f64, WindowedMinF64Raw);
+impl_codel_raw!(CoDelF32Raw, CoDelF32RawBuilder, f32, WindowedMinF32Raw);
+
+// =========================================================================
+// Instant-based variants — requires std
+// =========================================================================
+
+#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-use crate::Condition;
+#[cfg(feature = "std")]
 use crate::windowed::{
     WindowedMinF32, WindowedMinF64, WindowedMinI32, WindowedMinI64, WindowedMinI128,
 };
 
+#[cfg(feature = "std")]
 macro_rules! impl_codel {
     ($name:ident, $builder:ident, $ty:ty, $windowed_min:ty) => {
         /// CoDel — Controlled Delay queue monitor (Nichols & Jacobson, 2012).
@@ -166,13 +336,58 @@ macro_rules! impl_codel {
     };
 }
 
+#[cfg(feature = "std")]
 impl_codel!(CoDelI64, CoDelI64Builder, i64, WindowedMinI64);
+#[cfg(feature = "std")]
 impl_codel!(CoDelI32, CoDelI32Builder, i32, WindowedMinI32);
+#[cfg(feature = "std")]
 impl_codel!(CoDelI128, CoDelI128Builder, i128, WindowedMinI128);
+#[cfg(feature = "std")]
 impl_codel!(CoDelF64, CoDelF64Builder, f64, WindowedMinF64);
+#[cfg(feature = "std")]
 impl_codel!(CoDelF32, CoDelF32Builder, f32, WindowedMinF32);
 
 #[cfg(test)]
+mod raw_tests {
+    use super::*;
+    use crate::Condition;
+
+    #[test]
+    fn raw_codel_normal() {
+        let mut cd = CoDelI64Raw::builder()
+            .target(100)
+            .window(1000)
+            .build()
+            .unwrap();
+        assert_eq!(cd.update(0, 50), Some(Condition::Normal));
+    }
+
+    #[test]
+    fn raw_codel_degraded() {
+        let mut cd = CoDelI64Raw::builder()
+            .target(50)
+            .window(1000)
+            .build()
+            .unwrap();
+        for t in 0..10 {
+            let _ = cd.update(t * 100, 200);
+        }
+        assert!(cd.is_elevated());
+    }
+
+    #[test]
+    fn raw_codel_f64() {
+        let mut cd = CoDelF64Raw::builder()
+            .target(0.5)
+            .window(1000)
+            .build()
+            .unwrap();
+        assert_eq!(cd.update(0, 0.1), Some(Condition::Normal));
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "std")]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
