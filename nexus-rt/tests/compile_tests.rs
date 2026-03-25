@@ -3713,7 +3713,7 @@ fn resolved_pipeline() {
         .dispatch(s)
         .build();
     let mut h = p.into_handler(r);
-    drop(r);
+    // r borrow ends here — world can be mutably borrowed below
     h.run(&mut world, 5);
     assert_eq!(**world.resource::<ResU64>(), 10);
 }
@@ -3733,7 +3733,7 @@ fn resolved_dag() {
     let s = sink.into_handler(r);
     let d = DagBuilder::<u32>::new().root(root, r).dispatch(s).build();
     let mut h = d.into_handler(r);
-    drop(r);
+    // r borrow ends here
     h.run(&mut world, 3);
     assert_eq!(**world.resource::<ResU64>(), 30);
 }
@@ -3754,7 +3754,7 @@ fn resolved_callback() {
     let r = world.registry();
     let cb = acc.into_callback(Acc { total: 0 }, r);
     let mut h = cb.into_handler(r);
-    drop(r);
+    // r borrow ends here
     h.run(&mut world, 10);
     h.run(&mut world, 20);
     assert_eq!(**world.resource::<ResU64>(), 30);
@@ -3795,7 +3795,7 @@ fn resolved_arity_zero() {
     fn event_only(e: u64) {
         assert!(e > 0);
     }
-    let mut wb = WorldBuilder::new();
+    let wb = WorldBuilder::new();
     let mut world = wb.build();
     let mut h = event_only
         .into_handler(world.registry())
@@ -3848,7 +3848,7 @@ fn resolved_install_handler_pattern() {
     let mut world = wb.build();
     let r = world.registry();
     let mut h = install_handler(tick, r);
-    drop(r);
+    // r borrow ends here
     h.run(&mut world, 42);
     assert_eq!(**world.resource::<ResU64>(), 42);
 }
@@ -3866,7 +3866,7 @@ fn resolved_box_passthrough() {
     let boxed: Virtual<u64> = Box::new(handler);
     // Box<dyn Handler<E>> through Resolved blanket
     let mut h = boxed.into_handler(r);
-    drop(r);
+    // r borrow ends here
     h.run(&mut world, 99);
     assert_eq!(**world.resource::<ResU64>(), 99);
 }
@@ -3932,7 +3932,7 @@ fn hrtb_pipeline() {
         .dispatch(sink.into_handler(r))
         .build();
     let mut h = register_handler(pipeline, r);
-    drop(r);
+    // r borrow ends here
     h.run(
         &mut world,
         Msg {
@@ -3961,7 +3961,7 @@ fn hrtb_dag() {
         .dispatch(s)
         .build();
     let mut h = register_handler(dag, r);
-    drop(r);
+    // r borrow ends here
     h.run(
         &mut world,
         Msg {
@@ -3988,7 +3988,7 @@ fn hrtb_callback() {
     let r = world.registry();
     let cb = log_msg.into_callback(Logger { count: 0 }, r);
     let mut h = register_handler(cb, r);
-    drop(r);
+    // r borrow ends here
     h.run(
         &mut world,
         Msg {

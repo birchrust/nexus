@@ -1,3 +1,4 @@
+#![allow(unused_mut, clippy::drop_ref)]
 //! Latency and throughput benchmark for nexus SPSC
 //!
 //! Measures:

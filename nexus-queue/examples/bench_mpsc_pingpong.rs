@@ -1,3 +1,4 @@
+#![allow(unused_mut, clippy::drop_ref)]
 //! MPSC ping-pong latency benchmark (matches SPSC methodology).
 //!
 //! Measures true round-trip: producer sends, consumer responds, producer measures.
