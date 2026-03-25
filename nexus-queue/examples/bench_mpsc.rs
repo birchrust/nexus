@@ -1,3 +1,4 @@
+#![allow(unused_mut, clippy::drop_ref)]
 //! MPSC queue latency benchmark using rdtscp.
 //!
 //! Measures round-trip latency: producer pushes, consumer pops, records cycles.

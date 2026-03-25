@@ -1,3 +1,4 @@
+#![allow(unused_mut, clippy::drop_ref)]
 //! SPMC queue latency and throughput benchmark.
 //!
 //! Two benchmarks:

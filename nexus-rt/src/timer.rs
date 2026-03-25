@@ -250,7 +250,7 @@ impl<S: 'static, Store: SlabStore<Item = WheelEntry<S>>> TimerInstaller<S, Store
 impl<S, Store> Installer for TimerInstaller<S, Store>
 where
     S: Send + 'static,
-    Store: SlabStore<Item = WheelEntry<S>> + Send + 'static,
+    Store: SlabStore<Item = WheelEntry<S>> + 'static,
 {
     type Poller = TimerPoller<S, Store>;
 

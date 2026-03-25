@@ -1,6 +1,6 @@
 //! Integration tests for #[derive(Param)].
 
-use nexus_rt::{Handler, IntoHandler, Local, Param, Res, ResMut, Resource, World, WorldBuilder};
+use nexus_rt::{Handler, IntoHandler, Local, Param, Res, ResMut, Resource, WorldBuilder};
 
 // =========================================================================
 // Test types

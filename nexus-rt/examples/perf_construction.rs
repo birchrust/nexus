@@ -1,3 +1,4 @@
+#![allow(unused_mut, clippy::drop_ref)]
 //! Construction-time latency benchmark for `into_handler`, `into_callback`,
 //! and `into_step`.
 //!

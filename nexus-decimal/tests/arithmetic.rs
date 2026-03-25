@@ -479,8 +479,6 @@ fn equality() {
 mod d96_rounding {
     type D96 = nexus_decimal::Decimal<i128, 12>;
 
-    const SCALE: i128 = 1_000_000_000_000;
-
     #[test]
     fn floor_positive() {
         // 1.75 → 1.0
