@@ -167,7 +167,7 @@ Common combinations:
 | "Load-balance across shards" | FlexibleProportions per shard |
 | "Display smoothed latency with worst-case envelope" | EMA (display) + PeakHoldDecay (envelope) |
 | "Is latency distribution getting fat-tailed?" | Moments (kurtosis) |
-| "Which venue leads price discovery?" | CrossCorrelation to find lag, TransferEntropy to confirm direction |
+| "Which signal leads the other?" | CrossCorrelation to find lag, TransferEntropy to confirm direction |
 | "Is this signal becoming more/less predictable?" | Entropy over categorized values |
 | "Is this signal trending or reverting?" | Autocorrelation lag-1 |
 | "What's the current trend slope?" | LinearRegression or EwLinearRegression |

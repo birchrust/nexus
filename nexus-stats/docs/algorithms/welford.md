@@ -108,16 +108,16 @@ worker_a.merge(&worker_b);
 
 ## Examples by Domain
 
-### Trading — PnL Statistics
+### Signal-to-Noise Ratio
 
 ```rust
-let mut pnl_stats = WelfordF64::new();
+let mut stats = WelfordF64::new();
 
-// On each trade:
-pnl_stats.update(realized_pnl);
+// On each observation:
+stats.update(measurement);
 
-if let (Some(mean), Some(std)) = (pnl_stats.mean(), pnl_stats.std_dev()) {
-    let sharpe = mean / std;  // simplified Sharpe ratio
+if let (Some(mean), Some(std)) = (stats.mean(), stats.std_dev()) {
+    let snr = mean / std;  // signal-to-noise ratio
 }
 ```
 

@@ -110,8 +110,8 @@ let bucket = match order_size {
 };
 e.observe(bucket);
 
-// Low entropy = concentrated in one size → possible informed flow
-// High entropy = diverse sizes → normal market
+// Low entropy = concentrated in one bucket → predictable behavior
+// High entropy = diverse distribution → normal variation
 ```
 
 ### Monitoring — Signal Predictability
