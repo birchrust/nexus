@@ -15,6 +15,7 @@ pub mod estimation;
 pub mod filters;
 pub mod hypothesis;
 pub mod info;
+pub mod optimization;
 pub mod regression;
 pub mod signal;
 pub mod smoothing;

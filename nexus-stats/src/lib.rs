@@ -106,6 +106,11 @@
 //! - [`Kalman2dF64`] — 2-state Kalman filter with time-varying observation.
 //! - [`Kalman3dF64`] — 3-state Kalman filter (position/velocity/acceleration).
 //!
+//! **Optimization:** *(alloc)*
+//! - [`OnlineGdF64`] — Gradient descent with fixed learning rate. *(alloc)*
+//! - [`AdaGradF64`] — Per-coordinate adaptive learning rates. *(alloc, std|libm)*
+//! - [`AdamF64`] — Adaptive moment estimation with optional weight decay. *(alloc, std|libm)*
+//!
 //! **Information Theory:** *(std|libm)*
 //! - [`EntropyF64`] — Shannon entropy over categorical distributions.
 //! - [`TransferEntropyF64`] — Directed information flow (Granger causality). *(alloc, std|libm)*
@@ -157,9 +162,14 @@
 extern crate alloc;
 
 mod enums;
+mod feature_vector;
 #[macro_use]
 mod math;
 
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod adagrad;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod adam;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod adaptive_threshold;
 mod asym_ema;
@@ -208,6 +218,8 @@ mod moments;
 mod mosum;
 mod multi_gate;
 #[cfg(feature = "alloc")]
+mod online_gd;
+#[cfg(feature = "alloc")]
 mod online_kmeans;
 mod peak_detector;
 mod peak_hold;
@@ -237,6 +249,10 @@ mod windowed_median;
 
 pub mod categories;
 
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+pub use adagrad::{AdaGradF64, AdaGradF64Builder};
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+pub use adam::{AdamF64, AdamF64Builder};
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use adaptive_threshold::{
     AdaptiveThresholdF32, AdaptiveThresholdF32Builder, AdaptiveThresholdF64,
@@ -343,6 +359,8 @@ pub use mosum::{
 pub use multi_gate::{
     MultiGateF32, MultiGateF32Builder, MultiGateF64, MultiGateF64Builder, Verdict,
 };
+#[cfg(feature = "alloc")]
+pub use online_gd::{OnlineGdF64, OnlineGdF64Builder};
 #[cfg(feature = "alloc")]
 pub use online_kmeans::{OnlineKMeansF64, OnlineKMeansF64Builder};
 pub use peak_detector::{

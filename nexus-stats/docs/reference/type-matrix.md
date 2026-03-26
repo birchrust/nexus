@@ -51,6 +51,10 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 | **State Estimation** | | | | | |
 | Kalman2D | ✓ | ✓ | — | — | — |
 | Kalman3D | ✓ | ✓ | — | — | — |
+| **Optimization** | | | | | |
+| OnlineGD | — | ✓ | — | — | — |
+| AdaGrad | — | ✓ | — | — | — |
+| Adam | — | ✓ | — | — | — |
 | **Signal Analysis** | | | | | |
 | Autocorrelation | ✓ | ✓ | ✓ | ✓ | — |
 | CrossCorrelation | ✓ | ✓ | — | — | — |
