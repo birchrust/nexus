@@ -59,7 +59,11 @@ macro_rules! impl_coefficients {
             type Output = $ty;
             #[inline]
             fn index(&self, i: usize) -> &$ty {
-                assert!(i < self.len, "coefficient index {i} out of range (len={})", self.len);
+                assert!(
+                    i < self.len,
+                    "coefficient index {i} out of range (len={})",
+                    self.len
+                );
                 &self.values[i]
             }
         }
@@ -74,11 +78,7 @@ impl_coefficients!(CoefficientsF32, f32);
 /// On success, `rhs` contains the solution.
 macro_rules! impl_gauss_solve {
     ($fn_name:ident, $ty:ty) => {
-        pub(crate) fn $fn_name(
-            dim: usize,
-            a: &mut [[$ty; 9]; 9],
-            b: &mut [$ty; 9],
-        ) -> bool {
+        pub(crate) fn $fn_name(dim: usize, a: &mut [[$ty; 9]; 9], b: &mut [$ty; 9]) -> bool {
             for col in 0..dim {
                 let mut max_row = col;
                 let mut max_val = if a[col][col] < 0.0 as $ty {
@@ -209,8 +209,15 @@ macro_rules! impl_polynomial_regression {
             }
 
             /// Feeds an (x, y) observation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if either value is NaN, or
+            /// `DataError::Infinite` if either value is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 self.count += 1;
                 self.sum_y2 += y * y;
                 let mut x_pow = 1.0 as $ty;
@@ -222,6 +229,7 @@ macro_rules! impl_polynomial_regression {
                     }
                     x_pow *= x;
                 }
+                Ok(())
             }
 
             /// Solve for polynomial coefficients, or `None` if underdetermined.
@@ -378,19 +386,37 @@ macro_rules! impl_polynomial_regression {
     };
 }
 
-impl_polynomial_regression!(PolynomialRegressionF64, PolynomialRegressionF64Builder, CoefficientsF64, gauss_solve_f64, f64);
-impl_polynomial_regression!(PolynomialRegressionF32, PolynomialRegressionF32Builder, CoefficientsF32, gauss_solve_f32, f32);
+impl_polynomial_regression!(
+    PolynomialRegressionF64,
+    PolynomialRegressionF64Builder,
+    CoefficientsF64,
+    gauss_solve_f64,
+    f64
+);
+impl_polynomial_regression!(
+    PolynomialRegressionF32,
+    PolynomialRegressionF32Builder,
+    CoefficientsF32,
+    gauss_solve_f32,
+    f32
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn quadratic() -> PolynomialRegressionF64 {
-        PolynomialRegressionF64::builder().degree(2).build().unwrap()
+        PolynomialRegressionF64::builder()
+            .degree(2)
+            .build()
+            .unwrap()
     }
 
     fn cubic() -> PolynomialRegressionF64 {
-        PolynomialRegressionF64::builder().degree(3).build().unwrap()
+        PolynomialRegressionF64::builder()
+            .degree(3)
+            .build()
+            .unwrap()
     }
 
     // =========================================================================
@@ -402,7 +428,7 @@ mod tests {
         let mut r = quadratic();
         for x in -50..50 {
             let xf = x as f64;
-            r.update(xf, xf * xf - 3.0 * xf + 2.0);
+            r.update(xf, xf * xf - 3.0 * xf + 2.0).unwrap();
         }
         let c = r.coefficients().unwrap();
         assert!((c[0] - 2.0).abs() < 1e-6, "c0 = {}", c[0]);
@@ -415,7 +441,7 @@ mod tests {
         let mut r = quadratic();
         for x in -50..50 {
             let xf = x as f64;
-            r.update(xf, xf * xf);
+            r.update(xf, xf * xf).unwrap();
         }
         let y = r.predict(10.0).unwrap();
         assert!((y - 100.0).abs() < 1e-4, "predict(10) = {y}");
@@ -431,7 +457,7 @@ mod tests {
         for x in -20..20 {
             let xf = x as f64;
             let y = 0.5 * xf * xf * xf - 2.0 * xf * xf + xf - 1.0;
-            r.update(xf, y);
+            r.update(xf, y).unwrap();
         }
         let c = r.coefficients().unwrap();
         assert!((c[0] - (-1.0)).abs() < 1e-4, "c0 = {}", c[0]);
@@ -446,10 +472,13 @@ mod tests {
 
     #[test]
     fn builder_degree_4() {
-        let mut r = PolynomialRegressionF64::builder().degree(4).build().unwrap();
+        let mut r = PolynomialRegressionF64::builder()
+            .degree(4)
+            .build()
+            .unwrap();
         for x in -20..20 {
             let xf = x as f64;
-            r.update(xf, xf * xf * xf * xf);
+            r.update(xf, xf * xf * xf * xf).unwrap();
         }
         assert!(r.is_primed());
         assert_eq!(r.degree(), 4);
@@ -464,7 +493,7 @@ mod tests {
             .build()
             .unwrap();
         for x in 1..100 {
-            r.update(x as f64, 5.0 * x as f64);
+            r.update(x as f64, 5.0 * x as f64).unwrap();
         }
         let c = r.coefficients().unwrap();
         assert_eq!(c.len(), 1);
@@ -473,12 +502,22 @@ mod tests {
 
     #[test]
     fn builder_rejects_degree_0() {
-        assert!(PolynomialRegressionF64::builder().degree(0).build().is_err());
+        assert!(
+            PolynomialRegressionF64::builder()
+                .degree(0)
+                .build()
+                .is_err()
+        );
     }
 
     #[test]
     fn builder_rejects_degree_9() {
-        assert!(PolynomialRegressionF64::builder().degree(9).build().is_err());
+        assert!(
+            PolynomialRegressionF64::builder()
+                .degree(9)
+                .build()
+                .is_err()
+        );
     }
 
     #[test]
@@ -495,7 +534,7 @@ mod tests {
         let mut r = quadratic();
         for x in -50..50 {
             let xf = x as f64;
-            r.update(xf, xf * xf - 3.0 * xf + 2.0);
+            r.update(xf, xf * xf - 3.0 * xf + 2.0).unwrap();
         }
         let r2 = r.r_squared().unwrap();
         assert!((r2 - 1.0).abs() < 1e-10, "R² = {r2}");
@@ -508,10 +547,10 @@ mod tests {
     #[test]
     fn quadratic_needs_3_points() {
         let mut r = quadratic();
-        r.update(1.0, 1.0);
-        r.update(2.0, 4.0);
+        r.update(1.0, 1.0).unwrap();
+        r.update(2.0, 4.0).unwrap();
         assert!(!r.is_primed());
-        r.update(3.0, 9.0);
+        r.update(3.0, 9.0).unwrap();
         assert!(r.is_primed());
     }
 
@@ -522,8 +561,14 @@ mod tests {
     #[test]
     fn different_degrees_same_type() {
         let models: [PolynomialRegressionF64; 2] = [
-            PolynomialRegressionF64::builder().degree(2).build().unwrap(),
-            PolynomialRegressionF64::builder().degree(3).build().unwrap(),
+            PolynomialRegressionF64::builder()
+                .degree(2)
+                .build()
+                .unwrap(),
+            PolynomialRegressionF64::builder()
+                .degree(3)
+                .build()
+                .unwrap(),
         ];
         assert_eq!(models[0].degree(), 2);
         assert_eq!(models[1].degree(), 3);
@@ -537,7 +582,7 @@ mod tests {
     fn reset_clears_state() {
         let mut r = quadratic();
         for x in 0..100 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         r.reset();
         assert_eq!(r.count(), 0);
@@ -551,10 +596,13 @@ mod tests {
 
     #[test]
     fn f32_quadratic() {
-        let mut r = PolynomialRegressionF32::builder().degree(2).build().unwrap();
+        let mut r = PolynomialRegressionF32::builder()
+            .degree(2)
+            .build()
+            .unwrap();
         for x in -20..20i32 {
             let xf = x as f32;
-            r.update(xf, xf * xf);
+            r.update(xf, xf * xf).unwrap();
         }
         assert!(r.coefficients().is_some());
     }
@@ -568,7 +616,7 @@ mod tests {
         let mut r = quadratic();
         for x in -10..10 {
             let xf = x as f64;
-            r.update(xf, xf * xf);
+            r.update(xf, xf * xf).unwrap();
         }
         let c = r.coefficients().unwrap();
         assert_eq!(c.len(), 3);
@@ -576,5 +624,16 @@ mod tests {
         assert!(c.get(0).is_some());
         assert!(c.get(3).is_none());
         assert_eq!(c.as_slice().len(), 3);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut r = quadratic();
+        assert_eq!(r.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            r.update(1.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(r.count(), 0);
     }
 }

@@ -66,9 +66,9 @@ impl BoolWindow {
         self.capacity
     }
 
-    /// Records an outcome. `true` = success, `false` = failure.
+    /// Updates with an outcome. `true` = success, `false` = failure.
     #[inline]
-    pub fn record(&mut self, success: bool) {
+    pub fn update(&mut self, success: bool) {
         let head = self.head;
         let capacity = self.capacity;
         let count = self.count;
@@ -201,7 +201,7 @@ mod tests {
     fn all_success() {
         let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
-            bw.record(true);
+            bw.update(true);
         }
         assert_eq!(bw.failure_rate(), 0.0);
         assert_eq!(bw.failures(), 0);
@@ -211,7 +211,7 @@ mod tests {
     fn all_failure() {
         let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
-            bw.record(false);
+            bw.update(false);
         }
         assert_eq!(bw.failure_rate(), 1.0);
         assert_eq!(bw.failures(), 64);
@@ -221,7 +221,7 @@ mod tests {
     fn half_and_half() {
         let mut bw = BoolWindow::new(64).unwrap();
         for i in 0..64 {
-            bw.record(i % 2 == 0);
+            bw.update(i % 2 == 0);
         }
         assert!((bw.failure_rate() - 0.5).abs() < 1e-10);
     }
@@ -230,12 +230,12 @@ mod tests {
     fn window_rolls() {
         let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
-            bw.record(false);
+            bw.update(false);
         }
         assert_eq!(bw.failures(), 64);
 
         for _ in 0..64 {
-            bw.record(true);
+            bw.update(true);
         }
         assert_eq!(bw.failures(), 0);
     }
@@ -246,13 +246,13 @@ mod tests {
         assert_eq!(bw.capacity(), 100);
 
         for _ in 0..100 {
-            bw.record(false);
+            bw.update(false);
         }
         assert_eq!(bw.failures(), 100);
         assert!(bw.is_full());
 
         for _ in 0..100 {
-            bw.record(true);
+            bw.update(true);
         }
         assert_eq!(bw.failures(), 0);
     }
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn priming() {
         let mut bw = BoolWindow::new(64).unwrap();
-        bw.record(false);
+        bw.update(false);
         assert_eq!(bw.count(), 1);
         assert!(!bw.is_full());
         assert_eq!(bw.failure_rate(), 1.0);
@@ -270,7 +270,7 @@ mod tests {
     fn reset() {
         let mut bw = BoolWindow::new(64).unwrap();
         for _ in 0..64 {
-            bw.record(false);
+            bw.update(false);
         }
         bw.reset();
         assert_eq!(bw.count(), 0);

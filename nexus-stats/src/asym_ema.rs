@@ -43,9 +43,14 @@ macro_rules! impl_asym_ema_float {
             }
 
             /// Feeds a sample. Returns smoothed value once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if self.count == 1 {
@@ -60,9 +65,9 @@ macro_rules! impl_asym_ema_float {
                 }
 
                 if self.count >= self.min_samples {
-                    Option::Some(self.value)
+                    Ok(Option::Some(self.value))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -374,11 +379,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = ema.update(0.0); // initialize
-        let _ = ema.update(100.0); // fast attack
+        ema.update(0.0).unwrap(); // initialize
+        ema.update(100.0).unwrap(); // fast attack
         let after_attack = ema.value().unwrap();
 
-        let _ = ema.update(0.0); // slow decay
+        ema.update(0.0).unwrap(); // slow decay
         let after_decay = ema.value().unwrap();
 
         // Attack should move a lot, decay should move little
@@ -405,11 +410,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = fast_up.update(50.0);
-        let _ = fast_down.update(50.0);
+        fast_up.update(50.0).unwrap();
+        fast_down.update(50.0).unwrap();
 
-        let _ = fast_up.update(100.0);
-        let _ = fast_down.update(100.0);
+        fast_up.update(100.0).unwrap();
+        fast_down.update(100.0).unwrap();
 
         // fast_up should be closer to 100
         assert!(fast_up.value().unwrap() > fast_down.value().unwrap());
@@ -425,9 +430,9 @@ mod tests {
             .unwrap();
 
         for _ in 0..4 {
-            assert!(ema.update(100.0).is_none());
+            assert!(ema.update(100.0).unwrap().is_none());
         }
-        assert!(ema.update(100.0).is_some());
+        assert!(ema.update(100.0).unwrap().is_some());
     }
 
     #[test]
@@ -437,7 +442,7 @@ mod tests {
             .alpha_down(0.5)
             .build()
             .unwrap();
-        let _ = ema.update(100.0);
+        ema.update(100.0).unwrap();
         ema.reset();
         assert_eq!(ema.count(), 0);
         assert!(ema.value().is_none());
@@ -464,7 +469,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(ema.update(100.0).is_some());
+        assert!(ema.update(100.0).unwrap().is_some());
     }
 
     #[test]
@@ -474,5 +479,27 @@ mod tests {
             result,
             Err(crate::ConfigError::Missing("alpha_up"))
         ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut ema = AsymEmaF64::builder()
+            .alpha_up(0.5)
+            .alpha_down(0.3)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            ema.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            ema.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            ema.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert_eq!(ema.count(), 0);
     }
 }

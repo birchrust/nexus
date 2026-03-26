@@ -46,19 +46,24 @@ macro_rules! impl_liveness_float {
                 }
             }
 
-            /// Records an event at the given timestamp. Returns `true` if alive.
+            /// Updates with an event at the given timestamp. Returns `true` if alive.
             ///
             /// The first event only records the timestamp. The second event
             /// computes the first interval. Returns `true` until primed, then
             /// checks against the deadline.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the timestamp is NaN, or
+            /// `DataError::Infinite` if the timestamp is infinite.
             #[inline]
-            #[must_use]
-            pub fn record(&mut self, timestamp: $ty) -> bool {
+            pub fn update(&mut self, timestamp: $ty) -> Result<bool, crate::DataError> {
+                check_finite!(timestamp);
                 self.count += 1;
 
                 if self.count == 1 {
                     self.last_timestamp = timestamp;
-                    return true;
+                    return Ok(true);
                 }
 
                 let dt = timestamp - self.last_timestamp;
@@ -71,10 +76,10 @@ macro_rules! impl_liveness_float {
                 }
 
                 if self.count < self.min_samples {
-                    return true;
+                    return Ok(true);
                 }
 
-                self.is_alive_at_interval(dt)
+                Ok(self.is_alive_at_interval(dt))
             }
 
             /// Checks liveness at the given timestamp without recording an event.
@@ -284,10 +289,10 @@ macro_rules! impl_liveness_int {
                 }
             }
 
-            /// Records an event at the given tick. Returns `true` if alive.
+            /// Updates with an event at the given tick. Returns `true` if alive.
             #[inline]
             #[must_use]
-            pub fn record(&mut self, timestamp: $ty) -> bool {
+            pub fn update(&mut self, timestamp: $ty) -> bool {
                 self.count += 1;
 
                 if self.count == 1 {
@@ -465,7 +470,10 @@ mod tests {
 
         // Regular events every 10 units
         for i in 0..20 {
-            assert!(lv.record(i as f64 * 10.0), "should be alive at event {i}");
+            assert!(
+                lv.update(i as f64 * 10.0).unwrap(),
+                "should be alive at event {i}"
+            );
         }
     }
 
@@ -479,7 +487,7 @@ mod tests {
 
         // Regular events every 10 units
         for i in 0..10 {
-            let _ = lv.record(i as f64 * 10.0);
+            let _ = lv.update(i as f64 * 10.0).unwrap();
         }
 
         // Check after long silence — should be dead
@@ -496,15 +504,15 @@ mod tests {
             .unwrap();
 
         for i in 0..10 {
-            let _ = lv.record(i as f64 * 10.0);
+            let _ = lv.update(i as f64 * 10.0).unwrap();
         }
 
         // Dead check
         assert!(!lv.check(200.0));
 
         // Resume events — should recover
-        assert!(lv.record(200.0)); // records, interval updates
-        assert!(lv.record(210.0));
+        assert!(lv.update(200.0).unwrap()); // records, interval updates
+        assert!(lv.update(210.0).unwrap());
     }
 
     #[test]
@@ -515,8 +523,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = lv.record(0.0);
-        let _ = lv.record(10.0);
+        let _ = lv.update(0.0).unwrap();
+        let _ = lv.update(10.0).unwrap();
 
         // Within deadline
         assert!(lv.check(55.0));
@@ -534,8 +542,8 @@ mod tests {
             .unwrap();
 
         // Even with huge gaps, returns true before primed
-        assert!(lv.record(0.0));
-        assert!(lv.record(1000.0));
+        assert!(lv.update(0.0).unwrap());
+        assert!(lv.update(1000.0).unwrap());
         assert!(!lv.is_primed());
     }
 
@@ -548,7 +556,7 @@ mod tests {
             .unwrap();
 
         for i in 0..10 {
-            assert!(lv.record(i * 100));
+            assert!(lv.update(i * 100));
         }
 
         // Long silence
@@ -563,8 +571,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = lv.record(0);
-        let _ = lv.record(100);
+        let _ = lv.update(0);
+        let _ = lv.update(100);
         assert!(lv.check(400));
         assert!(!lv.check(700));
     }
@@ -578,7 +586,7 @@ mod tests {
             .unwrap();
 
         for i in 0..10 {
-            let _ = lv.record(i as f64 * 10.0);
+            let _ = lv.update(i as f64 * 10.0).unwrap();
         }
 
         lv.reset();
@@ -594,8 +602,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = lv.record(0.0);
-        let _ = lv.record(10.0);
+        let _ = lv.update(0.0).unwrap();
+        let _ = lv.update(10.0).unwrap();
 
         // With absolute 50, check at 55 is alive
         assert!(lv.check(55.0));
@@ -615,7 +623,7 @@ mod tests {
             .unwrap();
 
         for i in 0..10 {
-            let _ = lv.record(i as f64 * 10.0);
+            let _ = lv.update(i as f64 * 10.0).unwrap();
         }
 
         // Switch to absolute deadline
@@ -634,6 +642,33 @@ mod tests {
     fn errors_without_deadline() {
         let result = LivenessF64::builder().alpha(0.3).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut lv = LivenessF64::builder()
+            .alpha(0.3)
+            .deadline_multiple(3.0)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            lv.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            lv.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+
+        let mut lv32 = LivenessF32::builder()
+            .alpha(0.3)
+            .deadline_multiple(3.0)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            lv32.update(f32::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
     }
 }
 
@@ -683,10 +718,10 @@ mod instant_liveness {
             }
         }
 
-        /// Records an event. Returns `true` if alive.
+        /// Updates with an event. Returns `true` if alive.
         #[inline]
         #[must_use]
-        pub fn record(&mut self, now: Instant) -> bool {
+        pub fn update(&mut self, now: Instant) -> bool {
             self.count += 1;
 
             let dt = if let Some(last) = self.last_timestamp {
@@ -868,8 +903,8 @@ mod instant_liveness {
                 .deadline_multiple(3.0)
                 .build()
                 .unwrap();
-            assert!(lv.record(base));
-            assert!(lv.record(base + Duration::from_secs(1)));
+            assert!(lv.update(base));
+            assert!(lv.update(base + Duration::from_secs(1)));
             // 2 seconds later — 2x interval, within 3x deadline
             assert!(lv.check(base + Duration::from_secs(3)));
         }
@@ -882,8 +917,8 @@ mod instant_liveness {
                 .deadline_multiple(3.0)
                 .build()
                 .unwrap();
-            assert!(lv.record(base));
-            assert!(lv.record(base + Duration::from_secs(1)));
+            assert!(lv.update(base));
+            assert!(lv.update(base + Duration::from_secs(1)));
             // 10 seconds later — 10x interval, exceeds 3x deadline
             assert!(!lv.check(base + Duration::from_secs(11)));
         }
@@ -896,8 +931,8 @@ mod instant_liveness {
                 .deadline_absolute(Duration::from_secs(5))
                 .build()
                 .unwrap();
-            assert!(lv.record(base));
-            assert!(lv.record(base + Duration::from_secs(1)));
+            assert!(lv.update(base));
+            assert!(lv.update(base + Duration::from_secs(1)));
             assert!(lv.check(base + Duration::from_secs(5))); // within 5s
             assert!(!lv.check(base + Duration::from_secs(7))); // beyond 5s
         }
@@ -910,8 +945,8 @@ mod instant_liveness {
                 .deadline_multiple(3.0)
                 .build()
                 .unwrap();
-            lv.record(base);
-            lv.record(base + Duration::from_secs(1));
+            lv.update(base);
+            lv.update(base + Duration::from_secs(1));
             lv.reset(base + Duration::from_secs(2));
             assert_eq!(lv.count(), 0);
         }

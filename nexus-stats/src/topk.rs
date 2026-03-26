@@ -45,13 +45,13 @@ impl<K: Eq + Hash + Clone, const CAP: usize> TopK<K, CAP> {
         }
     }
 
-    /// Records an observation of the given key.
+    /// Updates with an observation of the given key.
     ///
     /// If the key is already tracked, increments its count.
     /// If the table is full, evicts the minimum-count entry and replaces
     /// it with this key (count = evicted count + 1, per Space-Saving).
     #[inline]
-    pub fn observe(&mut self, key: K) {
+    pub fn update(&mut self, key: K) {
         self.total += 1;
 
         // Check if already tracked
@@ -181,9 +181,9 @@ mod tests {
     #[test]
     fn tracks_single_key() {
         let mut tk: TopK<&str, 5> = TopK::new();
-        tk.observe("BTC");
-        tk.observe("BTC");
-        tk.observe("BTC");
+        tk.update("BTC");
+        tk.update("BTC");
+        tk.update("BTC");
 
         assert_eq!(tk.count_of(&"BTC"), 3);
         assert_eq!(tk.total(), 3);
@@ -192,12 +192,12 @@ mod tests {
     #[test]
     fn tracks_multiple_keys() {
         let mut tk: TopK<&str, 5> = TopK::new();
-        tk.observe("BTC");
-        tk.observe("ETH");
-        tk.observe("BTC");
-        tk.observe("SOL");
-        tk.observe("BTC");
-        tk.observe("ETH");
+        tk.update("BTC");
+        tk.update("ETH");
+        tk.update("BTC");
+        tk.update("SOL");
+        tk.update("BTC");
+        tk.update("ETH");
 
         assert_eq!(tk.count_of(&"BTC"), 3);
         assert_eq!(tk.count_of(&"ETH"), 2);
@@ -208,12 +208,12 @@ mod tests {
     #[test]
     fn top_returns_sorted() {
         let mut tk: TopK<&str, 5> = TopK::new();
-        tk.observe("SOL");
+        tk.update("SOL");
         for _ in 0..5 {
-            tk.observe("BTC");
+            tk.update("BTC");
         }
         for _ in 0..3 {
-            tk.observe("ETH");
+            tk.update("ETH");
         }
 
         let mut buf = [("", 0u64); 5];
@@ -229,15 +229,15 @@ mod tests {
         let mut tk: TopK<u32, 3> = TopK::new();
 
         // Fill the table
-        tk.observe(1); // count=1
-        tk.observe(2); // count=1
-        tk.observe(3); // count=1
+        tk.update(1); // count=1
+        tk.update(2); // count=1
+        tk.update(3); // count=1
 
         // Bump key 1 so it's not the minimum
-        tk.observe(1); // count=2
+        tk.update(1); // count=2
 
         // New key should evict one of the minimums (2 or 3)
-        tk.observe(4);
+        tk.update(4);
 
         // Key 1 should still be tracked
         assert!(tk.count_of(&1) >= 2);
@@ -252,10 +252,10 @@ mod tests {
         // This means counts may overestimate but never underestimate
         let mut tk: TopK<u32, 2> = TopK::new();
 
-        tk.observe(1); // count=1
-        tk.observe(2); // count=1
+        tk.update(1); // count=1
+        tk.update(2); // count=1
         // Table full. Evict minimum (count=1), replace with 3 (count=1+1=2)
-        tk.observe(3);
+        tk.update(3);
 
         // Key 3 has only been observed once, but count should be 2 (overcount)
         assert_eq!(tk.count_of(&3), 2);
@@ -270,8 +270,8 @@ mod tests {
     #[test]
     fn reset_clears_all() {
         let mut tk: TopK<u32, 5> = TopK::new();
-        tk.observe(1);
-        tk.observe(2);
+        tk.update(1);
+        tk.update(2);
 
         tk.reset();
         assert_eq!(tk.total(), 0);
@@ -284,7 +284,7 @@ mod tests {
     fn string_keys() {
         let mut tk: TopK<u64, 10> = TopK::new();
         for i in 0..100 {
-            tk.observe(i % 10);
+            tk.update(i % 10);
         }
         assert_eq!(tk.total(), 100);
         // Each of the 10 keys should have count 10

@@ -1,3 +1,18 @@
+/// Validates that a float value is finite (not NaN, not Inf).
+/// Returns `Err(DataError)` with the appropriate variant if invalid.
+/// Used at the top of every update method that accepts float input.
+macro_rules! check_finite {
+    ($val:expr) => {
+        if !$val.is_finite() {
+            return Err(if $val.is_nan() {
+                crate::DataError::NotANumber
+            } else {
+                crate::DataError::Infinite
+            });
+        }
+    };
+}
+
 /// Square root.
 ///
 /// Requires `std` or `libm` feature. Types using this (`std_dev()`,

@@ -159,12 +159,13 @@ fn bench_welford_f64(samples: &mut [u64]) {
     let mut w = WelfordF64::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        w.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        w.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            w.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64));
+            w.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64))
+                .unwrap();
         }
         let end = rdtsc_end();
         black_box(w.mean());
@@ -251,12 +252,12 @@ fn bench_ewma_var_f64(samples: &mut [u64]) {
     let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
+            let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
         }
         let end = rdtsc_end();
         black_box(ev.variance());
@@ -276,14 +277,14 @@ fn bench_liveness_f64(samples: &mut [u64]) {
         .unwrap();
     let mut rng = 12345u64;
     for i in 0..WARMUP {
-        let _ = lv.record((i as f64).mul_add(10.0, (next_val(&mut rng) % 5) as f64));
+        let _ = lv.update((i as f64).mul_add(10.0, (next_val(&mut rng) % 5) as f64));
     }
     let mut t = WARMUP as f64 * 10.0;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 10.0 + (next_val(&mut rng) % 5) as f64;
-            black_box(lv.record(t));
+            black_box(lv.update(t));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -321,14 +322,14 @@ fn bench_covariance_f64(samples: &mut [u64]) {
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
         let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-        cov.update(x, y);
+        cov.update(x, y).unwrap();
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let x = 90.0 + (next_val(&mut rng) % 20) as f64;
             let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-            cov.update(x, y);
+            cov.update(x, y).unwrap();
         }
         let end = rdtsc_end();
         black_box(cov.correlation());
@@ -386,12 +387,12 @@ fn bench_topk(samples: &mut [u64]) {
     let mut tk: TopK<u64, 16> = TopK::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        tk.observe(next_val(&mut rng) % 100);
+        tk.update(next_val(&mut rng) % 100);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            tk.observe(next_val(&mut rng) % 100);
+            tk.update(next_val(&mut rng) % 100);
         }
         let end = rdtsc_end();
         black_box(tk.total());
@@ -443,13 +444,13 @@ fn bench_event_rate_f64(samples: &mut [u64]) {
     let mut t = 0.0f64;
     for _ in 0..WARMUP {
         t += 10.0 + (next_val(&mut rng) % 5) as f64;
-        er.tick(t);
+        er.update(t);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 10.0 + (next_val(&mut rng) % 5) as f64;
-            er.tick(t);
+            er.update(t);
         }
         let end = rdtsc_end();
         black_box(er.rate());
@@ -683,12 +684,12 @@ fn bench_bool_window(samples: &mut [u64]) {
     let mut bw = BoolWindow::new(64).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        bw.record(next_val(&mut rng) % 10 > 0);
+        bw.update(next_val(&mut rng) % 10 > 0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            bw.record(next_val(&mut rng) % 10 > 0);
+            bw.update(next_val(&mut rng) % 10 > 0);
         }
         let end = rdtsc_end();
         black_box(bw.failure_rate());
@@ -721,12 +722,12 @@ fn bench_moments_f64(samples: &mut [u64]) {
     let mut m = MomentsF64::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        m.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            m.update(90.0 + (next_val(&mut rng) % 20) as f64);
+            m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
         }
         let end = rdtsc_end();
         black_box(m.kurtosis());
@@ -776,12 +777,12 @@ fn bench_entropy_f64(samples: &mut [u64]) {
     let mut e = EntropyF64::<8>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        e.observe((next_val(&mut rng) % 8) as usize);
+        e.update((next_val(&mut rng) % 8) as usize);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            e.observe((next_val(&mut rng) % 8) as usize);
+            e.update((next_val(&mut rng) % 8) as usize);
         }
         let end = rdtsc_end();
         black_box(e.entropy());
@@ -799,14 +800,14 @@ fn bench_transfer_entropy_f64(samples: &mut [u64]) {
     for _ in 0..WARMUP {
         let x = (next_val(&mut rng) % 8) as usize;
         let y = (next_val(&mut rng) % 8) as usize;
-        te.observe(x, y);
+        te.update(x, y);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let x = (next_val(&mut rng) % 8) as usize;
             let y = (next_val(&mut rng) % 8) as usize;
-            te.observe(x, y);
+            te.update(x, y);
         }
         let end = rdtsc_end();
         black_box(te.count());
@@ -862,13 +863,13 @@ fn main() {
     bench_windowed_min_f64(&mut buf);
     print_row("WindowedMinF64::update", &mut buf);
     bench_liveness_f64(&mut buf);
-    print_row("LivenessF64::record", &mut buf);
+    print_row("LivenessF64::update", &mut buf);
     bench_running_min_f64(&mut buf);
     print_row("RunningMinF64::update", &mut buf);
     bench_running_max_f64(&mut buf);
     print_row("RunningMaxF64::update", &mut buf);
     bench_event_rate_f64(&mut buf);
-    print_row("EventRateF64::tick", &mut buf);
+    print_row("EventRateF64::update", &mut buf);
     bench_codel_i64(&mut buf);
     print_row("CoDelI64::update", &mut buf);
 
@@ -899,14 +900,14 @@ fn main() {
     bench_slew_f64(&mut buf);
     print_row("SlewF64::update", &mut buf);
     bench_bool_window(&mut buf);
-    print_row("BoolWindow<1>::record", &mut buf);
+    print_row("BoolWindow<1>::update", &mut buf);
     bench_hysteresis_f64(&mut buf);
     print_row("HysteresisF64::update", &mut buf);
 
     section("Frequency");
     print_header();
     bench_topk(&mut buf);
-    print_row("TopK<u64,16>::observe", &mut buf);
+    print_row("TopK<u64,16>::update", &mut buf);
 
     section("Statistics & Signal Analysis");
     print_header();
@@ -917,9 +918,9 @@ fn main() {
     bench_cross_correlation_f64(&mut buf);
     print_row("CrossCorrelation<10>::update", &mut buf);
     bench_entropy_f64(&mut buf);
-    print_row("Entropy<8>::observe", &mut buf);
+    print_row("Entropy<8>::update", &mut buf);
     bench_transfer_entropy_f64(&mut buf);
-    print_row("TransferEntropy(8,1)::observe", &mut buf);
+    print_row("TransferEntropy(8,1)::update", &mut buf);
 
     println!();
 }

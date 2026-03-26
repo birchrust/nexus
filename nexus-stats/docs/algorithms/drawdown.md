@@ -9,6 +9,7 @@ for circuit breakers.
 | Memory | ~24 bytes |
 | Types | `DrawdownF64`, `DrawdownF32`, `DrawdownI64`, `DrawdownI32` |
 | Output | Current drawdown value |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -38,14 +39,14 @@ Tracks three values: peak (highest value seen), current drawdown
 ```rust
 let mut dd = DrawdownF64::new();
 
-dd.update(100.0);  // peak = 100, drawdown = 0
-dd.update(90.0);   // peak = 100, drawdown = 10
-dd.update(95.0);   // peak = 100, drawdown = 5
-dd.update(60.0);   // peak = 100, drawdown = 40
+dd.update(100.0).unwrap();  // peak = 100, drawdown = 0
+dd.update(90.0).unwrap();   // peak = 100, drawdown = 10
+dd.update(95.0).unwrap();   // peak = 100, drawdown = 5
+dd.update(60.0).unwrap();   // peak = 100, drawdown = 40
 
 assert_eq!(dd.max_drawdown(), 40.0);
 
-dd.update(110.0);  // NEW peak = 110, drawdown = 0
+dd.update(110.0).unwrap();  // NEW peak = 110, drawdown = 0
 ```
 
 Zero config — just create and update. Implements `Default`.

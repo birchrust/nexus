@@ -152,6 +152,28 @@ Start with your problem. Follow the tree to find the right primitive.
 - Suppress changes below threshold → [**DeadBand**](../algorithms/dead-band.md)
   - "Don't tell me unless it changed by at least 5%."
 
+## "I want to make a decision from streaming data"
+
+**What kind of decision?**
+
+- Is A better than B (binary outcome)? → [**SprtBernoulli**](../algorithms/sprt.md)
+  - Controlled false positive/negative rates. Minimal samples.
+- Is the mean shifted (continuous)? → [**SprtGaussian**](../algorithms/sprt.md)
+  - Same as Bernoulli but for continuous observations.
+- What's the success rate with uncertainty? → [**BetaBinomial**](../algorithms/bayesian.md)
+  - Not just "73%" but "73% ± 4% (95% CI)."
+- What's the event rate with uncertainty? → [**GammaPoisson**](../algorithms/bayesian.md)
+  - Bayesian rate estimation with credible intervals.
+
+## "I want to predict from features"
+
+**What type of prediction?**
+
+- Predict a continuous value from features → [**NlmsFilter**](../algorithms/adaptive-filters.md) (simple) or [**RlsFilter**](../algorithms/adaptive-filters.md) (fast convergence)
+- Predict a probability (yes/no) from features → [**LogisticRegression**](../algorithms/adaptive-filters.md#logistic-regression--binary-classification)
+- Classify into regimes/clusters → [**OnlineKMeans**](../algorithms/adaptive-filters.md#online-k-means--streaming-clustering)
+- Track correlated states with uncertainty → [**Kalman2D/3D**](../algorithms/kalman.md)
+
 ## Still not sure?
 
 Common combinations:

@@ -40,13 +40,19 @@ macro_rules! impl_spring {
             /// Updates toward the target. Returns the new value.
             ///
             /// `dt` is the time since the last update, in the same units as `smooth_time`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if target or dt is NaN, or
+            /// `DataError::Infinite` if either is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, target: $ty, dt: $ty) -> $ty {
+            pub fn update(&mut self, target: $ty, dt: $ty) -> Result<$ty, crate::DataError> {
+                check_finite!(target);
+                check_finite!(dt);
                 if !self.initialized {
                     self.value = target;
                     self.initialized = true;
-                    return target;
+                    return Ok(target);
                 }
 
                 // Critically damped spring using Padé approximant
@@ -62,7 +68,7 @@ macro_rules! impl_spring {
                 self.velocity = (self.velocity - omega * temp) * exp_neg;
                 self.value = (delta + temp).fma(exp_neg, target);
 
-                self.value
+                Ok(self.value)
             }
 
             /// Current output value.
@@ -111,7 +117,7 @@ mod tests {
         let target = 100.0;
 
         for _ in 0..200 {
-            let _ = s.update(target, 0.016); // ~60fps
+            s.update(target, 0.016).unwrap(); // ~60fps
         }
 
         assert!(
@@ -125,11 +131,11 @@ mod tests {
     fn no_overshoot() {
         let mut s = SpringF64::new(0.5).unwrap();
         let target = 100.0;
-        let _ = s.update(0.0, 0.016); // initialize at 0
+        s.update(0.0, 0.016).unwrap(); // initialize at 0
 
         let mut max_value = 0.0f64;
         for _ in 0..1000 {
-            let v = s.update(target, 0.016);
+            let v = s.update(target, 0.016).unwrap();
             if v > max_value {
                 max_value = v;
             }
@@ -147,11 +153,11 @@ mod tests {
         let target = 50.0;
 
         // Large dt steps shouldn't explode
-        let _ = s.update(target, 0.5);
+        s.update(target, 0.5).unwrap();
         assert!(s.value().is_finite());
-        let _ = s.update(target, 2.0);
+        s.update(target, 2.0).unwrap();
         assert!(s.value().is_finite());
-        let _ = s.update(target, 10.0);
+        s.update(target, 10.0).unwrap();
         assert!(s.value().is_finite());
     }
 
@@ -159,7 +165,7 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn reset_to() {
         let mut s = SpringF64::new(0.5).unwrap();
-        let _ = s.update(100.0, 0.016);
+        s.update(100.0, 0.016).unwrap();
 
         s.reset_to(50.0);
         assert_eq!(s.value(), 50.0);
@@ -169,7 +175,7 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut s = SpringF32::new(0.5).unwrap();
-        let v = s.update(100.0, 0.016);
+        let v = s.update(100.0, 0.016).unwrap();
         assert!((v - 100.0).abs() < 0.01);
     }
 
@@ -178,6 +184,31 @@ mod tests {
         assert!(matches!(
             SpringF64::new(0.0),
             Err(crate::ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut s = SpringF64::new(0.5).unwrap();
+        // NaN target
+        assert!(matches!(
+            s.update(f64::NAN, 0.016),
+            Err(crate::DataError::NotANumber)
+        ));
+        // Infinite target
+        assert!(matches!(
+            s.update(f64::INFINITY, 0.016),
+            Err(crate::DataError::Infinite)
+        ));
+        // NaN dt
+        assert!(matches!(
+            s.update(100.0, f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        // Infinite dt
+        assert!(matches!(
+            s.update(100.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
         ));
     }
 }

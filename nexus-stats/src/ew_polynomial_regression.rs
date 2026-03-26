@@ -6,7 +6,7 @@
 
 #![allow(clippy::suboptimal_flops)]
 
-use crate::polynomial_regression::{CoefficientsF64, CoefficientsF32};
+use crate::polynomial_regression::{CoefficientsF32, CoefficientsF64};
 
 macro_rules! impl_ew_polynomial_regression {
     ($name:ident, $builder:ident, $coeff:ident, $solve_fn:path, $ty:ty) => {
@@ -71,8 +71,15 @@ macro_rules! impl_ew_polynomial_regression {
             }
 
             /// Feeds an (x, y) observation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if either value is NaN, or
+            /// `DataError::Infinite` if either value is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 self.count += 1;
                 self.effective_n = self.one_minus_alpha * self.effective_n + 1.0 as $ty;
                 self.sum_y2 = self.one_minus_alpha * self.sum_y2 + y * y;
@@ -86,6 +93,7 @@ macro_rules! impl_ew_polynomial_regression {
                     }
                     x_pow *= x;
                 }
+                Ok(())
             }
 
             /// Solve for polynomial coefficients.
@@ -291,48 +299,85 @@ mod tests {
 
     #[test]
     fn ew_linear_basic() {
-        let mut r = EwPolynomialRegressionF64::builder().degree(1).alpha(0.05).build().unwrap();
+        let mut r = EwPolynomialRegressionF64::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
         for x in 0..500 {
-            r.update(x as f64, 2.0 * x as f64 + 3.0);
+            r.update(x as f64, 2.0 * x as f64 + 3.0).unwrap();
         }
         let c = r.coefficients().unwrap();
-        assert!((c.as_slice()[1] - 2.0).abs() < 0.5, "ew slope = {}", c.as_slice()[1]);
+        assert!(
+            (c.as_slice()[1] - 2.0).abs() < 0.5,
+            "ew slope = {}",
+            c.as_slice()[1]
+        );
     }
 
     #[test]
     fn ew_adapts_to_trend_change() {
-        let mut r = EwPolynomialRegressionF64::builder().degree(1).alpha(0.05).build().unwrap();
+        let mut r = EwPolynomialRegressionF64::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
         for x in 0..200 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         for x in 200..500 {
-            r.update(x as f64, -(x as f64) + 400.0);
+            r.update(x as f64, -(x as f64) + 400.0).unwrap();
         }
         let slope = r.coefficients().unwrap().values[1];
-        assert!(slope < 0.0, "slope should be negative after trend change, got {slope}");
+        assert!(
+            slope < 0.0,
+            "slope should be negative after trend change, got {slope}"
+        );
     }
 
     #[test]
     fn ew_rejects_invalid_alpha() {
-        assert!(EwPolynomialRegressionF64::builder()
-            .degree(1).alpha(0.0).build().is_err());
-        assert!(EwPolynomialRegressionF64::builder()
-            .degree(1).alpha(1.0).build().is_err());
+        assert!(
+            EwPolynomialRegressionF64::builder()
+                .degree(1)
+                .alpha(0.0)
+                .build()
+                .is_err()
+        );
+        assert!(
+            EwPolynomialRegressionF64::builder()
+                .degree(1)
+                .alpha(1.0)
+                .build()
+                .is_err()
+        );
     }
 
     #[test]
     fn ew_rejects_missing() {
-        assert!(EwPolynomialRegressionF64::builder()
-            .alpha(0.05).build().is_err()); // missing degree
-        assert!(EwPolynomialRegressionF64::builder()
-            .degree(1).build().is_err()); // missing alpha
+        assert!(
+            EwPolynomialRegressionF64::builder()
+                .alpha(0.05)
+                .build()
+                .is_err()
+        ); // missing degree
+        assert!(
+            EwPolynomialRegressionF64::builder()
+                .degree(1)
+                .build()
+                .is_err()
+        ); // missing alpha
     }
 
     #[test]
     fn ew_predict() {
-        let mut r = EwPolynomialRegressionF64::builder().degree(1).alpha(0.05).build().unwrap();
+        let mut r = EwPolynomialRegressionF64::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
         for x in 0..300 {
-            r.update(x as f64, 3.0 * x as f64);
+            r.update(x as f64, 3.0 * x as f64).unwrap();
         }
         let y = r.predict(100.0).unwrap();
         assert!((y - 300.0).abs() < 50.0, "predict(100) = {y}");
@@ -340,9 +385,13 @@ mod tests {
 
     #[test]
     fn ew_reset() {
-        let mut r = EwPolynomialRegressionF64::builder().degree(1).alpha(0.05).build().unwrap();
+        let mut r = EwPolynomialRegressionF64::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
         for x in 0..100 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         r.reset();
         assert_eq!(r.count(), 0);
@@ -352,18 +401,26 @@ mod tests {
 
     #[test]
     fn ew_f32_basic() {
-        let mut r = EwPolynomialRegressionF32::builder().degree(1).alpha(0.05).build().unwrap();
+        let mut r = EwPolynomialRegressionF32::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
         for x in 0..200u32 {
-            r.update(x as f32, 2.0 * x as f32 + 1.0);
+            r.update(x as f32, 2.0 * x as f32 + 1.0).unwrap();
         }
         assert!(r.is_primed());
     }
 
     #[test]
     fn ew_effective_count() {
-        let mut r = EwPolynomialRegressionF64::builder().degree(1).alpha(0.05).build().unwrap();
+        let mut r = EwPolynomialRegressionF64::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
         for x in 0..1000 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         assert!(
             (r.effective_count() - 20.0).abs() < 1.0,
@@ -380,5 +437,20 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(r.degree(), 2);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut r = EwPolynomialRegressionF64::builder()
+            .degree(1)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+        assert_eq!(r.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            r.update(1.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(r.count(), 0);
     }
 }

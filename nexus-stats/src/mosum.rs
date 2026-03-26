@@ -1,8 +1,77 @@
 use crate::Direction;
 
+/// Generates the MOSUM update method — float variant validates input,
+/// integer variant passes through without validation.
+#[cfg(feature = "alloc")]
+macro_rules! impl_mosum_update {
+    (float, $ty:ty) => {
+        /// Feeds a sample. Returns shift direction once primed.
+        ///
+        /// # Errors
+        ///
+        /// Returns `DataError::NotANumber` if the sample is NaN, or
+        /// `DataError::Infinite` if the sample is infinite.
+        #[inline]
+        pub fn update(&mut self, sample: $ty) -> Result<Option<Direction>, crate::DataError> {
+            check_finite!(sample);
+            let target = self.target;
+            let head = self.head;
+            let window = self.window;
+            let sum = self.sum;
+            let deviation = sample - target;
+            let ring = self.ring_mut();
+            let new_sum = sum - ring[head] + deviation;
+            ring[head] = deviation;
+            self.sum = new_sum;
+            self.head = (head + 1) % window;
+            self.count += 1;
+
+            if self.count < self.min_samples {
+                return Ok(Option::None);
+            }
+            Ok(if self.sum > self.threshold {
+                Option::Some(Direction::Rising)
+            } else if self.sum < -self.threshold {
+                Option::Some(Direction::Falling)
+            } else {
+                Option::Some(Direction::Neutral)
+            })
+        }
+    };
+    (int, $ty:ty) => {
+        /// Feeds a sample. Returns shift direction once primed.
+        #[inline]
+        #[must_use]
+        pub fn update(&mut self, sample: $ty) -> Option<Direction> {
+            let target = self.target;
+            let head = self.head;
+            let window = self.window;
+            let sum = self.sum;
+            let deviation = sample - target;
+            let ring = self.ring_mut();
+            let new_sum = sum - ring[head] + deviation;
+            ring[head] = deviation;
+            self.sum = new_sum;
+            self.head = (head + 1) % window;
+            self.count += 1;
+
+            if self.count < self.min_samples {
+                return Option::None;
+            }
+            if self.sum > self.threshold {
+                Option::Some(Direction::Rising)
+            } else if self.sum < -self.threshold {
+                Option::Some(Direction::Falling)
+            } else {
+                Option::Some(Direction::Neutral)
+            }
+        }
+    };
+}
+
 #[cfg(feature = "alloc")]
 macro_rules! impl_mosum {
-    ($name:ident, $builder:ident, $ty:ty, $zero:expr) => {
+    ($name:ident, $builder:ident, $ty:ty, $kind:tt, $zero:expr) => {
         /// MOSUM — Moving Sum change detector.
         ///
         /// Windowed complement to CUSUM. Detects transient shifts (spikes)
@@ -65,33 +134,7 @@ macro_rules! impl_mosum {
                 }
             }
 
-            /// Feeds a sample. Returns shift direction once primed.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
-                let target = self.target;
-                let head = self.head;
-                let window = self.window;
-                let sum = self.sum;
-                let deviation = sample - target;
-                let ring = self.ring_mut();
-                let new_sum = sum - ring[head] + deviation;
-                ring[head] = deviation;
-                self.sum = new_sum;
-                self.head = (head + 1) % window;
-                self.count += 1;
-
-                if self.count < self.min_samples {
-                    return Option::None;
-                }
-                if self.sum > self.threshold {
-                    Option::Some(Direction::Rising)
-                } else if self.sum < -self.threshold {
-                    Option::Some(Direction::Falling)
-                } else {
-                    Option::Some(Direction::Neutral)
-                }
-            }
+            impl_mosum_update!($kind, $ty);
 
             /// Current moving sum of deviations.
             #[inline]
@@ -224,15 +267,15 @@ macro_rules! impl_mosum {
 }
 
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumF64, MosumF64Builder, f64, 0.0);
+impl_mosum!(MosumF64, MosumF64Builder, f64, float, 0.0);
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumF32, MosumF32Builder, f32, 0.0);
+impl_mosum!(MosumF32, MosumF32Builder, f32, float, 0.0);
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumI64, MosumI64Builder, i64, 0);
+impl_mosum!(MosumI64, MosumI64Builder, i64, int, 0);
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumI32, MosumI32Builder, i32, 0);
+impl_mosum!(MosumI32, MosumI32Builder, i32, int, 0);
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumI128, MosumI128Builder, i128, 0);
+impl_mosum!(MosumI128, MosumI128Builder, i128, int, 0);
 
 #[cfg(all(test, feature = "alloc"))]
 #[allow(clippy::float_cmp)]
@@ -251,7 +294,7 @@ mod tests {
             let _ = mosum.update(100.0);
         }
         for _ in 0..100 {
-            assert_eq!(mosum.update(100.0), Some(Direction::Neutral));
+            assert_eq!(mosum.update(100.0).unwrap(), Some(Direction::Neutral));
         }
     }
 
@@ -269,7 +312,7 @@ mod tests {
 
         let mut triggered = false;
         for _ in 0..10 {
-            if mosum.update(110.0) == Some(Direction::Rising) {
+            if mosum.update(110.0).unwrap() == Some(Direction::Rising) {
                 triggered = true;
                 break;
             }
@@ -379,5 +422,28 @@ mod tests {
             let _ = mosum.update(1000);
         }
         assert_eq!(mosum.update(1000), Some(Direction::Neutral));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut mosum = MosumF64::builder(100.0)
+            .window_size(10)
+            .threshold(50.0)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            mosum.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            mosum.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            mosum.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(mosum.count(), 0);
     }
 }

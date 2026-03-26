@@ -48,34 +48,42 @@ macro_rules! impl_adaptive_threshold {
             }
 
             /// Feeds a sample. Returns anomaly direction once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<Direction>, crate::DataError> {
+                check_finite!(sample);
                 let _ = self.ema.update(sample);
-                self.welford.update(sample);
+                // Already validated by check_finite! above
+                let _ = self.welford.update(sample);
 
                 if self.welford.count() < self.min_samples {
-                    return Option::None;
+                    return Ok(Option::None);
                 }
 
-                let baseline = self.ema.value()?;
+                let Some(baseline) = self.ema.value() else {
+                    return Ok(Option::None);
+                };
                 let sd = match self.welford.std_dev() {
                     Some(v) if v > 0.0 as $ty => v,
                     _ => {
                         self.last_z = 0.0 as $ty;
-                        return Option::Some(Direction::Neutral);
+                        return Ok(Option::Some(Direction::Neutral));
                     }
                 };
 
                 self.last_z = (sample - baseline) / sd;
 
-                if self.last_z > self.z_threshold {
+                Ok(if self.last_z > self.z_threshold {
                     Option::Some(Direction::Rising)
                 } else if self.last_z < -self.z_threshold {
                     Option::Some(Direction::Falling)
                 } else {
                     Option::Some(Direction::Neutral)
-                }
+                })
             }
 
             /// Current EMA baseline, or `None` if not primed.
@@ -285,7 +293,7 @@ mod tests {
         }
 
         // Spike — should be anomalous
-        let result = at.update(200.0);
+        let result = at.update(200.0).unwrap();
         assert_eq!(result, Some(Direction::Rising));
     }
 
@@ -315,7 +323,7 @@ mod tests {
             let _ = at2.update(100.0 + (i % 5) as f64);
         }
 
-        let result = at2.update(50.0);
+        let result = at2.update(50.0).unwrap();
         assert_eq!(result, Some(Direction::Falling));
     }
 
@@ -330,7 +338,7 @@ mod tests {
 
         for i in 0..100 {
             let sample = 100.0 + (i % 3) as f64;
-            let result = at.update(sample);
+            let result = at.update(sample).unwrap();
             if let Some(anomaly) = result {
                 assert_eq!(anomaly, Direction::Neutral, "false positive at sample {i}");
             }
@@ -346,10 +354,10 @@ mod tests {
             .unwrap();
 
         for _ in 0..9 {
-            assert!(at.update(100.0).is_none());
+            assert!(at.update(100.0).unwrap().is_none());
         }
         assert!(!at.is_primed());
-        assert!(at.update(100.0).is_some());
+        assert!(at.update(100.0).unwrap().is_some());
         assert!(at.is_primed());
     }
 
@@ -424,5 +432,29 @@ mod tests {
     fn errors_without_alpha() {
         let result = AdaptiveThresholdF64::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut at = AdaptiveThresholdF64::builder()
+            .alpha(0.1)
+            .z_threshold(3.0)
+            .min_samples(5)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            at.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            at.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            at.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(at.count(), 0);
     }
 }

@@ -29,7 +29,7 @@ macro_rules! impl_percentile {
         #[doc = concat!("use nexus_stats::", stringify!($name), ";")]
         ///
         #[doc = concat!("let mut p = ", stringify!($name), "::new(0.99).unwrap();")]
-        #[doc = concat!("for i in 1..=1000u64 { p.update(i as ", stringify!($ty), "); }")]
+        #[doc = concat!("for i in 1..=1000u64 { p.update(i as ", stringify!($ty), ").unwrap(); }")]
         /// let est = p.percentile().unwrap();
         #[doc = concat!("assert!((est - 990.0 as ", stringify!($ty), ").abs() < 50.0 as ", stringify!($ty), ");")]
         /// ```
@@ -80,8 +80,14 @@ macro_rules! impl_percentile {
             }
 
             /// Feeds an observation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            pub fn update(&mut self, sample: $ty) {
+            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 // Initialization: collect first 5 observations
@@ -103,7 +109,7 @@ macro_rules! impl_percentile {
                             5.0 as $ty,
                         ];
                     }
-                    return;
+                    return Ok(());
                 }
 
                 // Find cell k where q[k-1] <= sample < q[k]
@@ -159,6 +165,7 @@ macro_rules! impl_percentile {
                         self.n[i] += sign;
                     }
                 }
+                Ok(())
             }
 
             /// Parabolic (P²) interpolation.
@@ -187,7 +194,7 @@ macro_rules! impl_percentile {
             #[inline]
             #[must_use]
             pub fn percentile(&self) -> Option<$ty> {
-                if self.count >= 5 {
+                if self.is_primed() {
                     Some(self.q[2])
                 } else {
                     None
@@ -208,11 +215,17 @@ macro_rules! impl_percentile {
                 self.count
             }
 
-            /// Whether enough data has been collected (>= 5 observations).
+            /// Whether enough data has been collected for reliable estimates.
+            ///
+            /// More observations are needed for extreme percentiles.
+            /// p=0.50 requires 5, p=0.99 requires 100, p=0.999 requires 1000.
             #[inline]
             #[must_use]
             pub fn is_primed(&self) -> bool {
-                self.count >= 5
+                // More observations needed for extreme percentiles.
+                // p=0.50 → min 5, p=0.99 → min 100, p=0.999 → min 1000.
+                let min_samples = (1.0 as $ty / (self.p * (1.0 as $ty - self.p))) as u64;
+                self.count >= min_samples.max(5)
             }
 
             /// Current minimum observed value, or `None` if empty.
@@ -328,7 +341,7 @@ mod tests {
     fn p50_converges_to_median() {
         let mut p = PercentileF64::new(0.50).unwrap();
         for i in 1..=1000u64 {
-            p.update(i as f64);
+            p.update(i as f64).unwrap();
         }
         let est = p.percentile().unwrap();
         assert!((est - 500.0).abs() < 50.0, "p50 = {est}, expected ~500");
@@ -338,7 +351,7 @@ mod tests {
     fn p99_converges() {
         let mut p = PercentileF64::new(0.99).unwrap();
         for i in 1..=10000u64 {
-            p.update(i as f64);
+            p.update(i as f64).unwrap();
         }
         let est = p.percentile().unwrap();
         assert!((est - 9900.0).abs() < 200.0, "p99 = {est}, expected ~9900");
@@ -348,10 +361,10 @@ mod tests {
     fn not_primed_until_5_observations() {
         let mut p = PercentileF64::new(0.50).unwrap();
         for i in 0..4 {
-            p.update(i as f64);
+            p.update(i as f64).unwrap();
             assert!(p.percentile().is_none());
         }
-        p.update(4.0);
+        p.update(4.0).unwrap();
         assert!(p.percentile().is_some());
     }
 
@@ -360,7 +373,7 @@ mod tests {
     fn tracks_min_max() {
         let mut p = PercentileF64::new(0.50).unwrap();
         for v in [5.0, 1.0, 9.0, 3.0, 7.0] {
-            p.update(v);
+            p.update(v).unwrap();
         }
         assert_eq!(p.min(), Some(1.0));
         assert_eq!(p.max(), Some(9.0));
@@ -370,7 +383,7 @@ mod tests {
     fn reset_clears_state() {
         let mut p = PercentileF64::new(0.50).unwrap();
         for i in 0..100 {
-            p.update(i as f64);
+            p.update(i as f64).unwrap();
         }
         p.reset();
         assert_eq!(p.count(), 0);
@@ -383,7 +396,7 @@ mod tests {
     fn constant_input() {
         let mut p = PercentileF64::new(0.50).unwrap();
         for _ in 0..100 {
-            p.update(42.0);
+            p.update(42.0).unwrap();
         }
         assert_eq!(p.percentile(), Some(42.0));
     }
@@ -392,7 +405,7 @@ mod tests {
     fn f32_basic() {
         let mut p = PercentileF32::new(0.50).unwrap();
         for i in 1..=100u32 {
-            p.update(i as f32);
+            p.update(i as f32).unwrap();
         }
         assert!(p.percentile().is_some());
     }
@@ -409,7 +422,7 @@ mod tests {
     fn p90_reasonable() {
         let mut p = PercentileF64::new(0.90).unwrap();
         for i in 1..=1000u64 {
-            p.update(i as f64);
+            p.update(i as f64).unwrap();
         }
         let est = p.percentile().unwrap();
         assert!((est - 900.0).abs() < 50.0, "p90 = {est}, expected ~900");
@@ -421,13 +434,22 @@ mod tests {
         // Interleave: 99 values of 10.0 for every 1 value of 1000.0
         for i in 0..10000u64 {
             if i % 100 == 99 {
-                p.update(1000.0);
+                p.update(1000.0).unwrap();
             } else {
-                p.update(10.0);
+                p.update(10.0).unwrap();
             }
         }
         let est = p.percentile().unwrap();
         // p99 should be near the transition, not at 1000
         assert!(est < 500.0, "p99 = {est}, expected well below 1000");
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut p = PercentileF64::new(0.50).unwrap();
+        assert_eq!(p.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(p.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(p.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(p.count(), 0);
     }
 }

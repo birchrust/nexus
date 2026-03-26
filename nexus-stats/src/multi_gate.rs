@@ -72,20 +72,25 @@ macro_rules! impl_multi_gate {
             ///
             /// On `Suspect` or `Reject` verdicts, the internal EMA is NOT
             /// updated — preventing bad data from corrupting the baseline.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Verdict> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<Verdict>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if !self.initialized {
                     self.ema_value = sample;
                     self.ema_abs_return = 0.0 as $ty;
                     self.initialized = true;
-                    return if self.count >= self.min_samples {
+                    return Ok(if self.count >= self.min_samples {
                         Option::Some(Verdict::Accept)
                     } else {
                         Option::None
-                    };
+                    });
                 }
 
                 // Compute return
@@ -99,11 +104,11 @@ macro_rules! impl_multi_gate {
                     let pct_change = abs_return / ema_abs;
                     if pct_change > self.hard_limit_pct {
                         // Do NOT update EMA
-                        return if self.count >= self.min_samples {
+                        return Ok(if self.count >= self.min_samples {
                             Option::Some(Verdict::Reject)
                         } else {
                             Option::None
-                        };
+                        });
                     }
                 }
 
@@ -112,11 +117,11 @@ macro_rules! impl_multi_gate {
                     let z = abs_return / self.ema_abs_return;
                     if z > self.suspect_z {
                         // Do NOT update EMA
-                        return if self.count >= self.min_samples {
+                        return Ok(if self.count >= self.min_samples {
                             Option::Some(Verdict::Suspect)
                         } else {
                             Option::None
-                        };
+                        });
                     }
                 }
 
@@ -141,11 +146,11 @@ macro_rules! impl_multi_gate {
                     .alpha
                     .fma(abs_return, self.one_minus_alpha * self.ema_abs_return);
 
-                if self.count >= self.min_samples {
+                Ok(if self.count >= self.min_samples {
                     Option::Some(verdict)
                 } else {
                     Option::None
-                }
+                })
             }
 
             /// Current EMA of absolute returns, or `None` if not primed.
@@ -289,7 +294,7 @@ mod tests {
     fn normal_data_accepted() {
         let mut mg = make_gate();
         for _ in 0..20 {
-            let result = mg.update(100.0);
+            let result = mg.update(100.0).unwrap();
             if let Some(v) = result {
                 assert_eq!(v, Verdict::Accept);
             }
@@ -303,7 +308,7 @@ mod tests {
             let _ = mg.update(100.0);
         }
         // 200 is 100% change from 100 — exceeds 50% hard limit
-        assert_eq!(mg.update(200.0), Some(Verdict::Reject));
+        assert_eq!(mg.update(200.0).unwrap(), Some(Verdict::Reject));
     }
 
     #[test]
@@ -338,7 +343,7 @@ mod tests {
         }
 
         // Moderate spike — not enough for hard limit but exceeds z-score
-        let result = mg.update(130.0);
+        let result = mg.update(130.0).unwrap();
         assert!(
             result == Some(Verdict::Suspect) || result == Some(Verdict::Accept),
             "moderate spike should be suspect or accept"
@@ -349,9 +354,9 @@ mod tests {
     fn priming() {
         let mut mg = make_gate();
         for _ in 0..4 {
-            assert!(mg.update(100.0).is_none());
+            assert!(mg.update(100.0).unwrap().is_none());
         }
-        assert!(mg.update(100.0).is_some());
+        assert!(mg.update(100.0).unwrap().is_some());
     }
 
     #[test]
@@ -387,5 +392,24 @@ mod tests {
             result,
             Err(crate::ConfigError::Missing("hard_limit"))
         ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut mg = make_gate();
+
+        assert_eq!(
+            mg.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            mg.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            mg.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(mg.count(), 0);
     }
 }

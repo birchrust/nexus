@@ -46,23 +46,31 @@ macro_rules! impl_trend_alert {
             }
 
             /// Feeds a sample. Returns trend direction once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
-                let result = self.holt.update(sample);
+            pub fn update(&mut self, sample: $ty) -> Result<Option<Direction>, crate::DataError> {
+                check_finite!(sample);
+                // Holt already validated by check_finite above
+                let result = self.holt.update(sample)?;
 
                 if self.holt.count() < self.min_samples {
-                    return Option::None;
+                    return Ok(Option::None);
                 }
 
-                let (level, trend) = result?;
+                let Some((level, trend)) = result else {
+                    return Ok(Option::None);
+                };
 
                 // Check absolute threshold
                 if let Some(abs_thresh) = self.trend_threshold_abs {
                     if trend > abs_thresh {
-                        return Option::Some(Direction::Rising);
+                        return Ok(Option::Some(Direction::Rising));
                     } else if trend < -abs_thresh {
-                        return Option::Some(Direction::Falling);
+                        return Ok(Option::Some(Direction::Falling));
                     }
                 }
 
@@ -72,14 +80,14 @@ macro_rules! impl_trend_alert {
                     if level != (0.0 as $ty) {
                         let ratio = trend / level;
                         if ratio > rel_thresh {
-                            return Option::Some(Direction::Rising);
+                            return Ok(Option::Some(Direction::Rising));
                         } else if ratio < -rel_thresh {
-                            return Option::Some(Direction::Falling);
+                            return Ok(Option::Some(Direction::Falling));
                         }
                     }
                 }
 
-                Option::Some(Direction::Neutral)
+                Ok(Option::Some(Direction::Neutral))
             }
 
             /// Current smoothed level, or `None` if not primed.
@@ -230,7 +238,7 @@ mod tests {
         for _ in 0..50 {
             let _ = ta.update(100.0);
         }
-        assert_eq!(ta.update(100.0), Some(Direction::Neutral));
+        assert_eq!(ta.update(100.0).unwrap(), Some(Direction::Neutral));
     }
 
     #[test]
@@ -245,7 +253,7 @@ mod tests {
         for i in 0..100 {
             let _ = ta.update(i as f64 * 10.0);
         }
-        assert_eq!(ta.update(1000.0), Some(Direction::Rising));
+        assert_eq!(ta.update(1000.0).unwrap(), Some(Direction::Rising));
     }
 
     #[test]
@@ -260,7 +268,7 @@ mod tests {
         for i in 0..100 {
             let _ = ta.update((i as f64).fma(-10.0, 1000.0));
         }
-        let result = ta.update(0.0);
+        let result = ta.update(0.0).unwrap();
         assert_eq!(result, Some(Direction::Falling));
     }
 
@@ -292,9 +300,9 @@ mod tests {
             .unwrap();
 
         for _ in 0..4 {
-            assert!(ta.update(100.0).is_none());
+            assert!(ta.update(100.0).unwrap().is_none());
         }
-        assert!(ta.update(100.0).is_some());
+        assert!(ta.update(100.0).unwrap().is_some());
     }
 
     #[test]
@@ -350,5 +358,29 @@ mod tests {
     fn errors_without_threshold() {
         let result = TrendAlertF64::builder().alpha(0.3).beta(0.1).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut ta = TrendAlertF64::builder()
+            .alpha(0.3)
+            .beta(0.1)
+            .trend_threshold(1.0)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            ta.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            ta.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            ta.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(ta.count(), 0);
     }
 }

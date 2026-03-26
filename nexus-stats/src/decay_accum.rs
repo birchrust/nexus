@@ -1,6 +1,6 @@
 /// Decaying accumulator — event-driven score with exponential decay.
 ///
-/// Lazy evaluation: only computes decay when `accumulate()` or `score()` is called.
+/// Lazy evaluation: only computes decay when `update()` or `score()` is called.
 /// Between calls, no work is done.
 ///
 /// # Use Cases
@@ -19,7 +19,7 @@ impl DecayAccumF64 {
     /// Creates a new decaying accumulator with the given half-life.
     ///
     /// `half_life` is in the same time units as the timestamps passed to
-    /// `accumulate()` and `score()`.
+    /// `update()` and `score()`.
     #[inline]
     pub fn new(half_life: f64) -> Result<Self, crate::ConfigError> {
         #[allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -34,13 +34,21 @@ impl DecayAccumF64 {
         })
     }
 
-    /// Adds weight at the given timestamp.
+    /// Updates with a weighted event at the given timestamp.
     ///
     /// Applies decay from the last event/query before adding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if either argument is NaN, or
+    /// `DataError::Infinite` if either argument is infinite.
     #[inline]
-    pub fn accumulate(&mut self, timestamp: f64, weight: f64) {
+    pub fn update(&mut self, timestamp: f64, weight: f64) -> Result<(), crate::DataError> {
+        check_finite!(timestamp);
+        check_finite!(weight);
         self.apply_decay(timestamp);
         self.score += weight;
+        Ok(())
     }
 
     /// Queries the current decayed score at the given timestamp.
@@ -81,8 +89,8 @@ mod tests {
     #[test]
     fn accumulates() {
         let mut da = DecayAccumF64::new(10.0).unwrap();
-        da.accumulate(0.0, 1.0);
-        da.accumulate(0.0, 1.0);
+        da.update(0.0, 1.0).unwrap();
+        da.update(0.0, 1.0).unwrap();
         let s = da.score(0.0);
         assert!((s - 2.0).abs() < 1e-10);
     }
@@ -90,7 +98,7 @@ mod tests {
     #[test]
     fn decays_over_time() {
         let mut da = DecayAccumF64::new(10.0).unwrap();
-        da.accumulate(0.0, 100.0);
+        da.update(0.0, 100.0).unwrap();
 
         let s = da.score(10.0); // one half-life
         assert!(
@@ -108,9 +116,9 @@ mod tests {
     #[test]
     fn lazy_evaluation() {
         let mut da = DecayAccumF64::new(10.0).unwrap();
-        da.accumulate(0.0, 100.0);
+        da.update(0.0, 100.0).unwrap();
         // No work done between calls
-        da.accumulate(5.0, 50.0); // decays 100 by 5 time units, adds 50
+        da.update(5.0, 50.0).unwrap(); // decays 100 by 5 time units, adds 50
 
         let s = da.score(5.0);
         // After 5 units: 100 * exp(-ln2/10 * 5) + 50 ≈ 100 * 0.707 + 50 ≈ 120.7
@@ -120,7 +128,7 @@ mod tests {
     #[test]
     fn reset() {
         let mut da = DecayAccumF64::new(10.0).unwrap();
-        da.accumulate(0.0, 100.0);
+        da.update(0.0, 100.0).unwrap();
         da.reset();
         let s = da.score(0.0);
         assert!((s).abs() < 1e-10);
@@ -132,5 +140,18 @@ mod tests {
             DecayAccumF64::new(0.0),
             Err(crate::ConfigError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut da = DecayAccumF64::new(10.0).unwrap();
+        assert_eq!(
+            da.update(f64::NAN, 1.0),
+            Err(crate::DataError::NotANumber)
+        );
+        assert_eq!(
+            da.update(0.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
     }
 }

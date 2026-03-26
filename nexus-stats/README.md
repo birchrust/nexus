@@ -205,6 +205,25 @@ cargo build --release --example perf_stats -p nexus-stats
 taskset -c 0 ./target/release/examples/perf_stats
 ```
 
+## Data Quality & Error Policy
+
+nexus-stats distinguishes two failure categories:
+
+- **Data errors** (NaN, Inf) — All float update methods return `Result<_, DataError>`. The library rejects the input and leaves state unchanged. The caller declares the policy: `.unwrap()` to crash, log and continue, or trigger a circuit breaker.
+- **Programmer errors** (wrong dimensions, out-of-range) — The library panics. Fix the code.
+
+The library makes no assumptions about which policy is correct. Each system has different implications.
+
+```rust
+// Production: log and continue
+if let Err(e) = stats.update(sample) {
+    warn!("bad data: {e:?}");
+}
+
+// Testing: crash hard
+stats.update(sample).unwrap();
+```
+
 ## Features
 
 | Feature | Default | What |

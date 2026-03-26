@@ -41,17 +41,23 @@ macro_rules! impl_event_rate_float {
                 }
             }
 
-            /// Records an event at the given timestamp.
+            /// Updates with an event at the given timestamp.
             ///
             /// If two events share a timestamp, the interval is zero and
             /// `rate()` returns `None` until a non-zero interval is observed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the timestamp is NaN, or
+            /// `DataError::Infinite` if the timestamp is infinite.
             #[inline]
-            pub fn tick(&mut self, timestamp: $ty) {
+            pub fn update(&mut self, timestamp: $ty) -> Result<(), crate::DataError> {
+                check_finite!(timestamp);
                 self.count += 1;
 
                 if self.count == 1 {
                     self.last_timestamp = timestamp;
-                    return;
+                    return Ok(());
                 }
 
                 let dt = timestamp - self.last_timestamp;
@@ -62,6 +68,7 @@ macro_rules! impl_event_rate_float {
                 } else {
                     self.interval = self.alpha.fma(dt, self.one_minus_alpha * self.interval);
                 }
+                Ok(())
             }
 
             /// Current smoothed event rate (events per unit time).
@@ -217,9 +224,9 @@ macro_rules! impl_event_rate_int {
                 }
             }
 
-            /// Records an event at the given tick.
+            /// Updates with an event at the given tick.
             #[inline]
-            pub fn tick(&mut self, timestamp: $ty) {
+            pub fn update(&mut self, timestamp: $ty) {
                 self.count += 1;
 
                 if self.count == 1 {
@@ -340,7 +347,7 @@ mod tests {
 
         // Events every 10 units → rate should converge to 0.1
         for i in 0..100 {
-            er.tick(i as f64 * 10.0);
+            er.update(i as f64 * 10.0).unwrap();
         }
 
         let rate = er.rate().unwrap();
@@ -353,13 +360,13 @@ mod tests {
 
         // Normal rate: every 10 units
         for i in 0..20 {
-            er.tick(i as f64 * 10.0);
+            er.update(i as f64 * 10.0).unwrap();
         }
         let normal_rate = er.rate().unwrap();
 
         // Burst: events every 1 unit
         for i in 0..20 {
-            er.tick(200.0 + i as f64);
+            er.update(200.0 + i as f64).unwrap();
         }
         let burst_rate = er.rate().unwrap();
 
@@ -378,10 +385,10 @@ mod tests {
             .unwrap();
 
         for i in 0..4 {
-            er.tick(i as f64 * 10.0);
+            er.update(i as f64 * 10.0).unwrap();
             assert!(er.rate().is_none());
         }
-        er.tick(40.0);
+        er.update(40.0).unwrap();
         assert!(er.rate().is_some());
     }
 
@@ -389,7 +396,7 @@ mod tests {
     fn reset() {
         let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
         for i in 0..10 {
-            er.tick(i as f64 * 10.0);
+            er.update(i as f64 * 10.0).unwrap();
         }
         er.reset();
         assert_eq!(er.count(), 0);
@@ -399,8 +406,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut er = EventRateF32::builder().alpha(0.3).build().unwrap();
-        er.tick(0.0);
-        er.tick(10.0);
+        er.update(0.0).unwrap();
+        er.update(10.0).unwrap();
         assert!(er.rate().is_some());
     }
 
@@ -408,7 +415,7 @@ mod tests {
     fn i64_basic() {
         let mut er = EventRateI64::builder().span(7).build().unwrap();
         for i in 0..10 {
-            er.tick(i * 100);
+            er.update(i * 100);
         }
         let interval = er.interval().unwrap();
         assert!(
@@ -420,16 +427,16 @@ mod tests {
     #[test]
     fn i32_basic() {
         let mut er = EventRateI32::builder().span(3).build().unwrap();
-        er.tick(0);
-        er.tick(50);
+        er.update(0);
+        er.update(50);
         assert!(er.interval().is_some());
     }
 
     #[test]
     fn zero_interval_returns_none() {
         let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
-        er.tick(100.0);
-        er.tick(100.0); // same timestamp → interval = 0
+        er.update(100.0).unwrap();
+        er.update(100.0).unwrap(); // same timestamp → interval = 0
         // rate() should return None (division by zero guard)
         assert!(
             er.rate().is_none(),
@@ -441,6 +448,25 @@ mod tests {
     fn errors_without_alpha() {
         let result = EventRateF64::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut er = EventRateF64::builder().alpha(0.3).build().unwrap();
+        assert!(matches!(
+            er.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            er.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+
+        let mut er32 = EventRateF32::builder().alpha(0.3).build().unwrap();
+        assert!(matches!(
+            er32.update(f32::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
     }
 }
 
@@ -488,9 +514,9 @@ mod instant_event_rate {
             }
         }
 
-        /// Records an event at the given time.
+        /// Updates with an event at the given time.
         #[inline]
-        pub fn tick(&mut self, now: Instant) {
+        pub fn update(&mut self, now: Instant) {
             self.count += 1;
 
             if let Some(last) = self.last_timestamp {
@@ -609,8 +635,8 @@ mod instant_event_rate {
         fn basic_rate() {
             let base = Instant::now();
             let mut er = EventRateInstant::builder().span(10).build().unwrap();
-            er.tick(base);
-            er.tick(base + Duration::from_secs(1));
+            er.update(base);
+            er.update(base + Duration::from_secs(1));
             let rate = er.rate().unwrap();
             assert!((rate - 1.0).abs() < 0.1, "expected ~1.0 eps, got {rate}");
         }
@@ -619,8 +645,8 @@ mod instant_event_rate {
         fn interval_as_duration() {
             let base = Instant::now();
             let mut er = EventRateInstant::builder().span(10).build().unwrap();
-            er.tick(base);
-            er.tick(base + Duration::from_millis(500));
+            er.update(base);
+            er.update(base + Duration::from_millis(500));
             let interval = er.interval().unwrap();
             let ms = interval.as_millis();
             assert!((450..=550).contains(&ms), "expected ~500ms, got {ms}ms");
@@ -634,8 +660,8 @@ mod instant_event_rate {
                 .min_samples(5)
                 .build()
                 .unwrap();
-            er.tick(base);
-            er.tick(base + Duration::from_secs(1));
+            er.update(base);
+            er.update(base + Duration::from_secs(1));
             assert!(!er.is_primed());
             assert!(er.rate().is_none());
         }
@@ -644,8 +670,8 @@ mod instant_event_rate {
         fn reset_clears() {
             let base = Instant::now();
             let mut er = EventRateInstant::builder().span(10).build().unwrap();
-            er.tick(base);
-            er.tick(base + Duration::from_secs(1));
+            er.update(base);
+            er.update(base + Duration::from_secs(1));
             er.reset(base + Duration::from_secs(2));
             assert_eq!(er.count(), 0);
             assert!(er.rate().is_none());

@@ -65,9 +65,17 @@ macro_rules! impl_kalman1d {
             ///
             /// Assumes dt = 1 between measurements. For variable dt, scale
             /// the process noise or pre-process timestamps.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the measurement is NaN, or
+            /// `DataError::Infinite` if the measurement is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, measurement: $ty) -> Option<($ty, $ty)> {
+            pub fn update(
+                &mut self,
+                measurement: $ty,
+            ) -> Result<Option<($ty, $ty)>, crate::DataError> {
+                check_finite!(measurement);
                 self.count += 1;
 
                 if !self.initialized {
@@ -80,9 +88,9 @@ macro_rules! impl_kalman1d {
                     self.initialized = true;
 
                     return if self.count >= self.min_samples {
-                        Option::Some((self.x0, self.x1))
+                        Ok(Option::Some((self.x0, self.x1)))
                     } else {
-                        Option::None
+                        Ok(Option::None)
                     };
                 }
 
@@ -117,9 +125,9 @@ macro_rules! impl_kalman1d {
                 self.p11 = pred_p11 - k1 * pred_p01;
 
                 if self.count >= self.min_samples {
-                    Option::Some((self.x0, self.x1))
+                    Ok(Option::Some((self.x0, self.x1)))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -279,7 +287,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..100 {
-            let _ = kf.update(50.0);
+            kf.update(50.0).unwrap();
         }
 
         let pos = kf.position().unwrap();
@@ -298,7 +306,7 @@ mod tests {
             .unwrap();
 
         for i in 0..100 {
-            let _ = kf.update(i as f64 * 10.0);
+            kf.update(i as f64 * 10.0).unwrap();
         }
 
         let vel = kf.velocity().unwrap();
@@ -322,12 +330,12 @@ mod tests {
             .unwrap();
 
         for _ in 0..20 {
-            let _ = reactive.update(100.0);
-            let _ = smooth.update(100.0);
+            reactive.update(100.0).unwrap();
+            smooth.update(100.0).unwrap();
         }
         // Both at 100. Now jump.
-        let _ = reactive.update(200.0);
-        let _ = smooth.update(200.0);
+        reactive.update(200.0).unwrap();
+        smooth.update(200.0).unwrap();
 
         let r_pos = reactive.position().unwrap();
         let s_pos = smooth.position().unwrap();
@@ -345,11 +353,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = kf.update(50.0);
+        kf.update(50.0).unwrap();
         let u1 = kf.uncertainty();
 
         for _ in 0..50 {
-            let _ = kf.update(50.0);
+            kf.update(50.0).unwrap();
         }
         let u2 = kf.uncertainty();
 
@@ -379,7 +387,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..50 {
-            let _ = kf.update(100.0);
+            kf.update(100.0).unwrap();
         }
         kf.reset();
         assert_eq!(kf.count(), 0);
@@ -393,7 +401,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let _ = kf.update(50.0);
+        kf.update(50.0).unwrap();
         assert!(kf.position().is_some());
     }
 
@@ -408,7 +416,7 @@ mod tests {
 
         assert!(kf.is_primed());
         // First update should apply predict+update, not re-initialize
-        let (pos, _vel) = kf.update(10.0).unwrap();
+        let (pos, _vel) = kf.update(10.0).unwrap().unwrap();
         assert!(pos > 0.0, "should track toward 10, got {pos}");
     }
 
@@ -419,5 +427,27 @@ mod tests {
             result,
             Err(crate::ConfigError::Missing("process_noise"))
         ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut kf = Kalman1dF64::builder()
+            .process_noise(0.01)
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            kf.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            kf.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            kf.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert_eq!(kf.count(), 0);
     }
 }

@@ -69,8 +69,14 @@ macro_rules! impl_autocorrelation_float {
             }
 
             /// Feeds a sample.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            pub fn update(&mut self, sample: $ty) {
+            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 // Welford update for running mean and variance
@@ -90,6 +96,7 @@ macro_rules! impl_autocorrelation_float {
                 // Store in circular buffer
                 self.buffer[self.head] = sample;
                 self.head = (self.head + 1) % LAG;
+                Ok(())
             }
 
             /// Autocorrelation coefficient in \[-1, 1\], or `None` if fewer
@@ -307,7 +314,7 @@ mod tests {
     fn alternating_negative_lag1() {
         let mut ac = AutocorrelationF64::<1>::new();
         for i in 0..1000u64 {
-            ac.update(if i % 2 == 0 { 1.0 } else { -1.0 });
+            ac.update(if i % 2 == 0 { 1.0 } else { -1.0 }).unwrap();
         }
         let r = ac.correlation().unwrap();
         assert!(r < -0.9, "alternating should be strongly negative, got {r}");
@@ -318,10 +325,13 @@ mod tests {
         let mut ac = AutocorrelationF64::<1>::new();
         // Monotonically increasing — consecutive values are close
         for i in 0..1000u64 {
-            ac.update(i as f64);
+            ac.update(i as f64).unwrap();
         }
         let r = ac.correlation().unwrap();
-        assert!(r > 0.9, "monotone trend should have positive lag-1, got {r}");
+        assert!(
+            r > 0.9,
+            "monotone trend should have positive lag-1, got {r}"
+        );
     }
 
     #[test]
@@ -329,7 +339,7 @@ mod tests {
         let mut ac = AutocorrelationF64::<10>::new();
         // Period-10 signal: strong autocorrelation at lag 10
         for i in 0..2000u64 {
-            ac.update((i % 10) as f64);
+            ac.update((i % 10) as f64).unwrap();
         }
         let r = ac.correlation().unwrap();
         assert!(
@@ -342,7 +352,7 @@ mod tests {
     fn constant_input_zero_variance() {
         let mut ac = AutocorrelationF64::<1>::new();
         for _ in 0..100 {
-            ac.update(42.0);
+            ac.update(42.0).unwrap();
         }
         // Zero variance → correlation undefined
         assert!(ac.correlation().is_none());
@@ -356,10 +366,10 @@ mod tests {
     fn not_primed_until_lag_plus_2() {
         let mut ac = AutocorrelationF64::<5>::new();
         for i in 0..6 {
-            ac.update(i as f64);
+            ac.update(i as f64).unwrap();
             assert!(!ac.is_primed(), "should not be primed at count {}", i + 1);
         }
-        ac.update(6.0);
+        ac.update(6.0).unwrap();
         assert!(ac.is_primed(), "should be primed at count 7 (LAG+2)");
     }
 
@@ -371,7 +381,7 @@ mod tests {
     fn covariance_sign_matches_correlation() {
         let mut ac = AutocorrelationF64::<1>::new();
         for i in 0..500u64 {
-            ac.update(i as f64);
+            ac.update(i as f64).unwrap();
         }
         let corr = ac.correlation().unwrap();
         let cov = ac.covariance().unwrap();
@@ -389,7 +399,7 @@ mod tests {
     fn reset_clears_state() {
         let mut ac = AutocorrelationF64::<1>::new();
         for i in 0..100 {
-            ac.update(i as f64);
+            ac.update(i as f64).unwrap();
         }
         ac.reset();
         assert_eq!(ac.count(), 0);
@@ -429,7 +439,7 @@ mod tests {
     fn f32_basic() {
         let mut ac = AutocorrelationF32::<1>::new();
         for i in 0..200u32 {
-            ac.update(i as f32);
+            ac.update(i as f32).unwrap();
         }
         assert!(ac.correlation().is_some());
     }
@@ -441,6 +451,14 @@ mod tests {
     #[test]
     fn default_is_empty() {
         let ac = AutocorrelationF64::<1>::default();
+        assert_eq!(ac.count(), 0);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut ac = AutocorrelationF64::<1>::new();
+        assert_eq!(ac.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(ac.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(ac.count(), 0);
     }
 }

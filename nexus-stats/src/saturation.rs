@@ -45,9 +45,17 @@ macro_rules! impl_saturation {
             }
 
             /// Feeds a utilization sample. Returns pressure state once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, utilization: $ty) -> Option<Condition> {
+            pub fn update(
+                &mut self,
+                utilization: $ty,
+            ) -> Result<Option<Condition>, crate::DataError> {
+                check_finite!(utilization);
                 self.count += 1;
 
                 if self.count == 1 {
@@ -59,14 +67,14 @@ macro_rules! impl_saturation {
                 }
 
                 if self.count < self.min_samples {
-                    return Option::None;
+                    return Ok(Option::None);
                 }
 
-                if self.value > self.threshold {
+                Ok(if self.value > self.threshold {
                     Option::Some(Condition::Degraded)
                 } else {
                     Option::Some(Condition::Normal)
-                }
+                })
             }
 
             /// Current smoothed utilization, or `None` if not primed.
@@ -197,7 +205,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..50 {
-            assert_eq!(s.update(0.5), Some(Condition::Normal));
+            assert_eq!(s.update(0.5).unwrap(), Some(Condition::Normal));
         }
     }
 
@@ -212,7 +220,7 @@ mod tests {
         for _ in 0..50 {
             let _ = s.update(0.95);
         }
-        assert_eq!(s.update(0.95), Some(Condition::Degraded));
+        assert_eq!(s.update(0.95).unwrap(), Some(Condition::Degraded));
     }
 
     #[test]
@@ -227,13 +235,13 @@ mod tests {
         for _ in 0..50 {
             let _ = s.update(0.95);
         }
-        assert_eq!(s.update(0.95), Some(Condition::Degraded));
+        assert_eq!(s.update(0.95).unwrap(), Some(Condition::Degraded));
 
         // Drive down
         for _ in 0..50 {
             let _ = s.update(0.3);
         }
-        assert_eq!(s.update(0.3), Some(Condition::Normal));
+        assert_eq!(s.update(0.3).unwrap(), Some(Condition::Normal));
     }
 
     #[test]
@@ -246,9 +254,9 @@ mod tests {
             .unwrap();
 
         for _ in 0..4 {
-            assert!(s.update(0.95).is_none());
+            assert!(s.update(0.95).unwrap().is_none());
         }
-        assert!(s.update(0.95).is_some());
+        assert!(s.update(0.95).unwrap().is_some());
     }
 
     #[test]
@@ -275,7 +283,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(s.update(0.5), Some(Condition::Normal));
+        assert_eq!(s.update(0.5).unwrap(), Some(Condition::Normal));
     }
 
     #[test]
@@ -290,11 +298,11 @@ mod tests {
         for _ in 0..50 {
             let _ = s.update(0.75);
         }
-        assert_eq!(s.update(0.75), Some(Condition::Normal));
+        assert_eq!(s.update(0.75).unwrap(), Some(Condition::Normal));
 
         // Lower the threshold — same value should now be degraded
         s.reconfigure_threshold(0.7);
-        assert_eq!(s.update(0.75), Some(Condition::Degraded));
+        assert_eq!(s.update(0.75).unwrap(), Some(Condition::Degraded));
     }
 
     #[test]
@@ -304,5 +312,28 @@ mod tests {
             result,
             Err(crate::ConfigError::Missing("threshold"))
         ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut s = SaturationF64::builder()
+            .alpha(0.3)
+            .threshold(0.8)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            s.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            s.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            s.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(s.count(), 0);
     }
 }

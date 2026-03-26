@@ -9,6 +9,7 @@ per sample.
 | Memory | ~16 bytes |
 | Types | All (f32, f64, i32, i64) |
 | Output | `bool` — true on crossing |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -33,10 +34,10 @@ and activity/oscillation counting.
 ```rust
 let mut lc = LevelCrossingF64::new(100.0);  // threshold
 
-lc.update(95.0);   // below — false
-lc.update(105.0);  // crossed! — true
-lc.update(110.0);  // still above — false
-lc.update(90.0);   // crossed back — true
+lc.update(95.0).unwrap();   // below — false
+lc.update(105.0).unwrap();  // crossed! — true
+lc.update(110.0).unwrap();  // still above — false
+lc.update(90.0).unwrap();   // crossed back — true
 
 assert_eq!(lc.crossing_count(), 2);
 ```

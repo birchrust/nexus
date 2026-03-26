@@ -45,6 +45,21 @@ examples.
 - [PolynomialRegression](algorithms/polynomial-regression.md) — Online curve fitting (degree 1-8)
 - Transformed fits: [Exponential](algorithms/polynomial-regression.md#exponential-y--aebx), [Logarithmic](algorithms/polynomial-regression.md#logarithmic-y--alnx--b), [Power](algorithms/polynomial-regression.md#power-y--axb)
 
+### Bayesian Inference
+- [BetaBinomial / GammaPoisson](algorithms/bayesian.md) — Conjugate prior rate estimation with credible intervals
+
+### Hypothesis Testing
+- [SPRT](algorithms/sprt.md) — Sequential Probability Ratio Test (Bernoulli + Gaussian)
+
+### Adaptive Filters & Online Learning
+- [LMS / NLMS / RLS](algorithms/adaptive-filters.md) — Adaptive weight learning (gradient + recursive least squares)
+- [LogisticRegression](algorithms/adaptive-filters.md#logistic-regression--binary-classification) — Online binary classifier
+- [OnlineKMeans](algorithms/adaptive-filters.md#online-k-means--streaming-clustering) — Streaming cluster assignment
+
+### State Estimation
+- [Kalman2D / Kalman3D](algorithms/kalman.md) — Multivariate Kalman filters with time-varying observation
+- [Kalman1D](algorithms/kalman1d.md) — Scalar Kalman filter
+
 ### Information Theory
 - [Entropy](algorithms/entropy.md) — Shannon entropy over categorical distributions
 - [TransferEntropy](algorithms/transfer-entropy.md) — Directed information flow (Granger causality)

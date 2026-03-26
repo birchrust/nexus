@@ -60,9 +60,14 @@ macro_rules! impl_robust_z {
             /// If the z-score exceeds `reject_threshold`, the EMA and MAD
             /// are NOT updated — the outlier is scored but doesn't corrupt
             /// the baseline.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if !self.initialized {
@@ -70,11 +75,11 @@ macro_rules! impl_robust_z {
                     self.ema_abs_dev = 0.0 as $ty;
                     self.initialized = true;
                     self.last_z = 0.0 as $ty;
-                    return if self.count >= self.min_samples {
+                    return Ok(if self.count >= self.min_samples {
                         Option::Some(0.0 as $ty)
                     } else {
                         Option::None
-                    };
+                    });
                 }
 
                 let abs_dev = (sample - self.ema).abs();
@@ -94,11 +99,11 @@ macro_rules! impl_robust_z {
                         .fma(abs_dev, self.one_minus_alpha * self.ema_abs_dev);
                 }
 
-                if self.count >= self.min_samples {
+                Ok(if self.count >= self.min_samples {
                     Option::Some(self.last_z)
                 } else {
                     Option::None
-                }
+                })
             }
 
             /// Last computed z-score, or `None` if not primed.
@@ -270,7 +275,7 @@ mod tests {
         }
 
         // Outlier
-        let z = rz.update(200.0).unwrap();
+        let z = rz.update(200.0).unwrap().unwrap();
         assert!(z.abs() > 3.0, "outlier should have high z-score, got {z}");
     }
 
@@ -332,9 +337,9 @@ mod tests {
             .unwrap();
 
         for _ in 0..9 {
-            assert!(rz.update(100.0).is_none());
+            assert!(rz.update(100.0).unwrap().is_none());
         }
-        assert!(rz.update(100.0).is_some());
+        assert!(rz.update(100.0).unwrap().is_some());
     }
 
     #[test]
@@ -375,5 +380,29 @@ mod tests {
             result,
             Err(crate::ConfigError::Missing("reject_threshold"))
         ));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut rz = RobustZScoreF64::builder()
+            .alpha(0.1)
+            .reject_threshold(5.0)
+            .min_samples(5)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            rz.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            rz.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            rz.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(rz.count(), 0);
     }
 }

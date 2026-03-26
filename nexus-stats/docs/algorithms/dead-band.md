@@ -9,6 +9,7 @@ processing by suppressing small, irrelevant fluctuations.
 | Memory | ~16 bytes |
 | Types | `DeadBandF64`, `DeadBandF32`, `DeadBandI64`, `DeadBandI32` |
 | Output | `Option<T>` — `Some(value)` if changed enough, `None` if suppressed |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -66,7 +67,7 @@ processing by suppressing small, irrelevant fluctuations.
 let mut db = DeadBandF64::new(5.0);  // suppress changes < 5.0
 
 // Returns Some only when change from last reported value exceeds threshold
-match db.update(sample) {
+match db.update(sample).unwrap() {
     Some(value) => send_downstream(value),  // significant change
     None => {}                               // suppressed
 }

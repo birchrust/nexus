@@ -41,13 +41,20 @@ macro_rules! impl_welford {
             }
 
             /// Feeds a sample.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            pub fn update(&mut self, sample: $ty) {
+            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
                 let delta = sample - self.mean;
                 self.mean += delta / self.count as $ty;
                 let delta2 = sample - self.mean;
                 self.m2 += delta * delta2;
+                Ok(())
             }
 
             /// Number of samples processed.
@@ -55,6 +62,13 @@ macro_rules! impl_welford {
             #[must_use]
             pub fn count(&self) -> u64 {
                 self.count
+            }
+
+            /// Whether enough data for variance/std_dev queries (>= 2 samples).
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.count >= 2
             }
 
             /// Running mean, or `None` if empty.
@@ -173,7 +187,7 @@ mod tests {
     #[test]
     fn single_sample() {
         let mut w = WelfordF64::new();
-        w.update(42.0);
+        w.update(42.0).unwrap();
 
         assert_eq!(w.count(), 1);
         assert_eq!(w.mean(), Some(42.0));
@@ -189,7 +203,7 @@ mod tests {
 
         // Dataset: [2, 4, 4, 4, 5, 5, 7, 9]
         for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
-            w.update(x);
+            w.update(x).unwrap();
         }
 
         assert_eq!(w.count(), 8);
@@ -223,8 +237,8 @@ mod tests {
     #[test]
     fn two_samples() {
         let mut w = WelfordF64::new();
-        w.update(10.0);
-        w.update(20.0);
+        w.update(10.0).unwrap();
+        w.update(20.0).unwrap();
 
         assert_eq!(w.count(), 2);
         assert!((w.mean().unwrap() - 15.0).abs() < 1e-10);
@@ -245,7 +259,7 @@ mod tests {
         let base = 1e8;
 
         for i in 0..1000 {
-            w.update((i as f64).fma(0.001, base));
+            w.update((i as f64).fma(0.001, base)).unwrap();
         }
 
         let var = w.variance().unwrap();
@@ -272,8 +286,8 @@ mod tests {
     fn merge_into_empty() {
         let mut a = WelfordF64::new();
         let mut b = WelfordF64::new();
-        b.update(10.0);
-        b.update(20.0);
+        b.update(10.0).unwrap();
+        b.update(20.0).unwrap();
 
         a.merge(&b);
         assert_eq!(a.count(), 2);
@@ -283,8 +297,8 @@ mod tests {
     #[test]
     fn merge_empty_into_existing() {
         let mut a = WelfordF64::new();
-        a.update(10.0);
-        a.update(20.0);
+        a.update(10.0).unwrap();
+        a.update(20.0).unwrap();
         let b = WelfordF64::new();
 
         a.merge(&b);
@@ -299,17 +313,17 @@ mod tests {
         // Single accumulator
         let mut single = WelfordF64::new();
         for &x in &data {
-            single.update(x);
+            single.update(x).unwrap();
         }
 
         // Split into two halves and merge
         let mut first = WelfordF64::new();
         let mut second = WelfordF64::new();
         for &x in &data[..4] {
-            first.update(x);
+            first.update(x).unwrap();
         }
         for &x in &data[4..] {
-            second.update(x);
+            second.update(x).unwrap();
         }
         first.merge(&second);
 
@@ -326,11 +340,11 @@ mod tests {
 
         for i in 0..100 {
             let x = i as f64;
-            single.update(x);
+            single.update(x).unwrap();
             if i < 7 {
-                a.update(x);
+                a.update(x).unwrap();
             } else {
-                b.update(x);
+                b.update(x).unwrap();
             }
         }
         a.merge(&b);
@@ -348,7 +362,7 @@ mod tests {
     fn reset_clears_state() {
         let mut w = WelfordF64::new();
         for i in 0..100 {
-            w.update(i as f64);
+            w.update(i as f64).unwrap();
         }
 
         w.reset();
@@ -379,7 +393,7 @@ mod tests {
     fn from_parts_round_trip() {
         let mut w = WelfordF64::new();
         for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
-            w.update(x);
+            w.update(x).unwrap();
         }
 
         let count = w.count();
@@ -396,8 +410,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut w = WelfordF32::new();
-        w.update(10.0);
-        w.update(20.0);
+        w.update(10.0).unwrap();
+        w.update(20.0).unwrap();
 
         assert_eq!(w.count(), 2);
         assert!((w.mean().unwrap() - 15.0).abs() < 1e-5);
@@ -406,6 +420,15 @@ mod tests {
     #[test]
     fn f32_default() {
         let w = WelfordF32::default();
+        assert_eq!(w.count(), 0);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut w = WelfordF64::new();
+        assert_eq!(w.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(w.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(w.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(w.count(), 0);
     }
 }

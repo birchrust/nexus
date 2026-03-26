@@ -55,9 +55,14 @@ macro_rules! impl_ema_float {
             /// Feeds a sample. Returns smoothed value once primed.
             ///
             /// First sample initializes the EMA directly (no smoothing).
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if self.count == 1 {
@@ -67,9 +72,9 @@ macro_rules! impl_ema_float {
                 }
 
                 if self.count >= self.min_samples {
-                    Option::Some(self.value)
+                    Ok(Option::Some(self.value))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -470,7 +475,7 @@ mod tests {
     #[test]
     fn first_sample_initializes() {
         let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
-        assert_eq!(ema.update(100.0), Some(100.0));
+        assert_eq!(ema.update(100.0).unwrap(), Some(100.0));
         assert_eq!(ema.value(), Some(100.0));
     }
 
@@ -479,11 +484,11 @@ mod tests {
         let mut ema = EmaF64::builder().alpha(0.1).build().unwrap();
 
         // Initialize with 0
-        let _ = ema.update(0.0);
+        ema.update(0.0).unwrap();
 
         // Feed constant 100 — should converge
         for _ in 0..1000 {
-            let _ = ema.update(100.0);
+            ema.update(100.0).unwrap();
         }
 
         let val = ema.value().unwrap();
@@ -498,11 +503,11 @@ mod tests {
         let mut fast = EmaF64::builder().alpha(0.9).build().unwrap();
         let mut slow = EmaF64::builder().alpha(0.1).build().unwrap();
 
-        let _ = fast.update(0.0);
-        let _ = slow.update(0.0);
+        fast.update(0.0).unwrap();
+        slow.update(0.0).unwrap();
 
-        let _ = fast.update(100.0);
-        let _ = slow.update(100.0);
+        fast.update(100.0).unwrap();
+        slow.update(100.0).unwrap();
 
         let fast_val = fast.value().unwrap();
         let slow_val = slow.value().unwrap();
@@ -518,26 +523,30 @@ mod tests {
         let mut ema = EmaF64::builder().alpha(0.5).min_samples(5).build().unwrap();
 
         for i in 1..5 {
-            assert_eq!(ema.update(100.0), None, "sample {i} should not be primed");
+            assert_eq!(
+                ema.update(100.0).unwrap(),
+                None,
+                "sample {i} should not be primed"
+            );
             assert!(!ema.is_primed());
         }
 
-        assert!(ema.update(100.0).is_some());
+        assert!(ema.update(100.0).unwrap().is_some());
         assert!(ema.is_primed());
     }
 
     #[test]
     fn reset_clears_state() {
         let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
-        let _ = ema.update(100.0);
-        let _ = ema.update(200.0);
+        ema.update(100.0).unwrap();
+        ema.update(200.0).unwrap();
 
         ema.reset();
         assert_eq!(ema.count(), 0);
         assert_eq!(ema.value(), None);
 
         // Re-initialize should work
-        assert_eq!(ema.update(50.0), Some(50.0));
+        assert_eq!(ema.update(50.0).unwrap(), Some(50.0));
     }
 
     #[test]
@@ -575,8 +584,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut ema = EmaF32::builder().alpha(0.5).build().unwrap();
-        assert_eq!(ema.update(100.0), Some(100.0));
-        let v = ema.update(200.0).unwrap();
+        assert_eq!(ema.update(100.0).unwrap(), Some(100.0));
+        let v = ema.update(200.0).unwrap().unwrap();
         assert!((v - 150.0).abs() < 0.01);
     }
 
@@ -691,8 +700,8 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn float_reconfigure_alpha_preserves_value() {
         let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
-        let _ = ema.update(100.0);
-        let _ = ema.update(200.0);
+        ema.update(100.0).unwrap();
+        ema.update(200.0).unwrap();
         let val_before = ema.value().unwrap();
         let count_before = ema.count();
 
@@ -743,7 +752,7 @@ mod tests {
 
         for &s in &samples {
             let _ = int_ema.update(s);
-            let _ = float_ema.update(s as f64);
+            float_ema.update(s as f64).unwrap();
         }
 
         let int_val = int_ema.value().unwrap();
@@ -755,5 +764,24 @@ mod tests {
             diff < 5.0,
             "int ({int_val}) and float ({float_val}) should be close, diff={diff}"
         );
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        assert!(matches!(
+            ema.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            ema.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            ema.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        // State unchanged — counter should still be 0
+        assert_eq!(ema.count(), 0);
     }
 }
