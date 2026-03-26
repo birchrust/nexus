@@ -5,7 +5,7 @@ Copy-paste recipes for common patterns.
 ## Smooth a Noisy Signal
 
 ```rust
-use nexus_stats::EmaF64;
+use nexus_stats::smoothing::EmaF64;
 
 let mut ema = EmaF64::builder().span(20).build().unwrap();
 
@@ -19,7 +19,7 @@ for sample in data {
 ## Detect When Something Changes
 
 ```rust
-use nexus_stats::{CusumF64, Shift};
+use nexus_stats::{Direction, detection::CusumF64};
 
 let mut cusum = CusumF64::builder(100.0)  // expected baseline
     .slack(5.0)
@@ -38,7 +38,7 @@ for sample in data {
 ## Track Running Statistics
 
 ```rust
-use nexus_stats::WelfordF64;
+use nexus_stats::statistics::WelfordF64;
 
 let mut stats = WelfordF64::new();
 
@@ -54,7 +54,7 @@ println!("mean={:.2}, std_dev={:.2}",
 ## Filter Bad Data
 
 ```rust
-use nexus_stats::{MultiGateF64, Verdict};
+use nexus_stats::detection::{MultiGateF64, Verdict};
 
 let mut gate = MultiGateF64::builder()
     .alpha(0.05)
@@ -75,7 +75,7 @@ for sample in data {
 ## Monitor a Data Source
 
 ```rust
-use nexus_stats::LivenessI64;
+use nexus_stats::monitoring::LivenessI64;
 
 let mut live = LivenessI64::builder()
     .span(15)
@@ -94,7 +94,7 @@ if !live.check(now_ns) {
 ## Track Queue Health
 
 ```rust
-use nexus_stats::{CoDelI64, Condition};
+use nexus_stats::{Condition, monitoring::CoDelI64};
 
 let mut qd = CoDelI64::builder()
     .target(10_000)       // 10μs max wait

@@ -1,13 +1,13 @@
 # Autocorrelation — Self-Correlation at Fixed Lag
 
-Online autocorrelation coefficient at a compile-time-fixed lag.
+Online autocorrelation coefficient at a configurable lag.
 "Is this signal trending or mean-reverting?"
 
 | Property | Value |
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | `8×LAG + 32` bytes |
-| Types | `AutocorrelationF64<LAG>`, `AutocorrelationF32<LAG>`, `AutocorrelationI64<LAG>`, `AutocorrelationI32<LAG>` |
+| Types | `AutocorrelationF64`, `AutocorrelationF32`, `AutocorrelationI64`, `AutocorrelationI32` |
 | Priming | After `LAG + 2` samples |
 | Output | `correlation()` in [-1, 1], `covariance()` — both `Option` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
@@ -69,10 +69,10 @@ means for the lagged and current windows.
 ## Configuration
 
 ```rust
-use nexus_stats::AutocorrelationF64;
+use nexus_stats::signal::AutocorrelationF64;
 
 // Lag-1 autocorrelation (is the signal trending?)
-let mut ac = AutocorrelationF64::<1>::new();
+let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
 
 for sample in data {
     ac.update(sample).unwrap();
@@ -83,15 +83,15 @@ if let Some(r) = ac.correlation() {
 }
 ```
 
-`LAG` is a const generic — it determines the buffer size and is part
-of the type. Changing the lag means changing the type.
+`lag` determines the buffer size and is set at construction time
+via the builder.
 
 ## Examples by Domain
 
 ### Trading — Regime Detection
 
 ```rust
-let mut ac = AutocorrelationF64::<1>::new();
+let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
 
 // Feed returns:
 ac.update(price_return).unwrap();
@@ -111,7 +111,7 @@ if let Some(r) = ac.correlation() {
 
 ```rust
 // High autocorrelation in quote changes = not updating
-let mut ac = AutocorrelationF64::<1>::new();
+let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
 
 // Feed quote deltas (should be ~random if feed is live):
 ac.update(new_quote - last_quote).unwrap();
@@ -127,7 +127,7 @@ if let Some(r) = ac.correlation() {
 
 ```rust
 // Detect periodic jitter at known interval
-let mut ac = AutocorrelationF64::<100>::new();
+let mut ac = AutocorrelationF64::builder().lag(100).build().unwrap();
 
 // Feed inter-packet intervals:
 ac.update(interval_ms).unwrap();
@@ -150,8 +150,8 @@ you want to avoid the caller-side cast.
 
 | Operation | p50 |
 |-----------|-----|
-| `AutocorrelationF64::<1>::update` | ~12 cycles |
-| `AutocorrelationF64::<10>::update` | ~14 cycles |
+| `AutocorrelationF64::update` (lag=1) | ~12 cycles |
+| `AutocorrelationF64::update` (lag=10) | ~14 cycles |
 | `correlation()` query | ~3 cycles |
 
 The update cost is dominated by the Welford mean/variance update

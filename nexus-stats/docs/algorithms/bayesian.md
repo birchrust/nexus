@@ -79,7 +79,7 @@ Posterior variance = α / β²
 ### Beta-Binomial
 
 ```rust
-use nexus_stats::BetaBinomialF64;
+use nexus_stats::estimation::BetaBinomialF64;
 
 // Uniform prior (no prior knowledge)
 let mut rate = BetaBinomialF64::new();
@@ -101,7 +101,7 @@ println!("95% CI: {:?}", rate.credible_interval(0.95));
 ### Gamma-Poisson
 
 ```rust
-use nexus_stats::GammaPoissonF64;
+use nexus_stats::estimation::GammaPoissonF64;
 
 let mut event_rate = GammaPoissonF64::new();
 

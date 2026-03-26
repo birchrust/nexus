@@ -5,7 +5,7 @@ Load distribution analysis, trend forecasting, and shard balancing.
 ## Recipe: Load Distribution Across Shards
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::frequency::{FlexProportionGlobal, FlexProportionEntity};
 
 // Track what % of traffic each shard handles
 let mut global = FlexProportionGlobal::new(100_000); // half-life: 100k events
@@ -29,7 +29,7 @@ for (i, shard) in per_shard.iter().enumerate() {
 ## Recipe: Load Trend Forecasting
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::estimation::Kalman1dF64;
 
 // Kalman filter for load with velocity (trend)
 let mut load = Kalman1dF64::builder()
@@ -48,7 +48,7 @@ if let Some((current, trend)) = load.update(requests_per_sec) {
 ## Recipe: Top-K Hot Symbols
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::frequency::TopK;
 
 let mut hot: TopK<String, 10> = TopK::new();
 

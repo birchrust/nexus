@@ -1,9 +1,9 @@
 /// Generates a named feature vector struct where every field is `f64`.
 ///
 /// The struct converts to `&[f64]` at zero cost via `repr(C)` pointer
-/// cast, for passing to adaptive filters ([`crate::LmsFilterF64`], [`crate::RlsFilterF64`]),
-/// classifiers ([`crate::LogisticRegressionF64`], [`crate::OnlineKMeansF64`]),
-/// and optimizers ([`crate::AdamF64`], [`crate::AdaGradF64`]).
+/// cast, for passing to adaptive filters ([`crate::learning::LmsFilterF64`], [`crate::learning::RlsFilterF64`]),
+/// classifiers ([`crate::regression::LogisticRegressionF64`], [`crate::learning::OnlineKMeansF64`]),
+/// and optimizers ([`crate::learning::AdamF64`], [`crate::learning::AdaGradF64`]).
 ///
 /// All fields are `pub` and `f64`. Construct via struct literal or
 /// `new()` (which applies defaults). Mutate fields directly.
@@ -259,7 +259,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn works_with_lms_filter() {
-        use crate::LmsFilterF64;
+        use crate::learning::LmsFilterF64;
 
         let mut filter = LmsFilterF64::builder()
             .dimensions(TestVec::DIMENSIONS)

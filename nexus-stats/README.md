@@ -9,7 +9,7 @@ anywhere you need statistics without latency jitter.
 ## Quick Start
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::{Direction, detection::CusumF64, smoothing::EmaF64, statistics::WelfordF64};
 
 // Detect latency shifts with CUSUM
 let mut cusum = CusumF64::builder(100.0)  // target: 100μs baseline
@@ -99,14 +99,14 @@ for deep-dives on each algorithm.
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `AutocorrelationF64<LAG>` | Self-correlation at fixed lag (trending vs reverting) | 12 |
-| `CrossCorrelationF64<LAG>` | Two-stream correlation with lead/lag detection | 39 |
+| `AutocorrelationF64` | Self-correlation at fixed lag (trending vs reverting) | 12 |
+| `CrossCorrelationF64` | Two-stream correlation with lead/lag detection | 39 |
 
 ### Information Theory *(std\|libm)*
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `EntropyF64<K>` | Shannon entropy over K categories | 3 |
+| `EntropyF64` | Shannon entropy over K categories | 3 |
 | `TransferEntropyF64` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
 
 ### Monitoring

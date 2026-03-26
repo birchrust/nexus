@@ -5,7 +5,10 @@ Frame timing, stutter detection, and adaptive quality.
 ## Recipe: Frame Time Dashboard
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Direction;
+use nexus_stats::smoothing::EmaF64;
+use nexus_stats::detection::AdaptiveThresholdF64;
+use nexus_stats::monitoring::PeakHoldF64;
 
 // Smooth FPS display (don't show every fluctuation)
 let mut frame_ema = EmaF64::builder().alpha(0.05).build().unwrap();
@@ -38,7 +41,9 @@ let worst = worst_frame.update(dt_ms);
 ## Recipe: Adaptive Quality
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::{Condition, Direction};
+use nexus_stats::monitoring::SaturationF64;
+use nexus_stats::detection::TrendAlertF64;
 
 // Track frame budget utilization
 let mut budget = SaturationF64::builder()

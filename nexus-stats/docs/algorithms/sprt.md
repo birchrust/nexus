@@ -71,7 +71,7 @@ One multiply-add per update.
 ### Bernoulli
 
 ```rust
-use nexus_stats::SprtBernoulli;
+use nexus_stats::estimation::SprtBernoulli;
 
 let mut test = SprtBernoulli::builder()
     .null_rate(0.50)      // H₀: rate = 50%
@@ -100,7 +100,7 @@ for outcome in observations {
 ### Gaussian
 
 ```rust
-use nexus_stats::SprtGaussian;
+use nexus_stats::estimation::SprtGaussian;
 
 let mut test = SprtGaussian::builder()
     .null_mean(100.0)     // H₀: mean = 100

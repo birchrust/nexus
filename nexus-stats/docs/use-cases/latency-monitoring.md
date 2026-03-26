@@ -17,7 +17,9 @@ durations, queue wait times). You need to:
 ## Recipe: Basic Latency Dashboard
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::smoothing::EmaF64;
+use nexus_stats::statistics::WelfordF64;
+use nexus_stats::monitoring::PeakHoldF64;
 
 // Smooth display value
 let mut ema = EmaF64::builder().span(20).min_samples(5).build().unwrap();
@@ -51,7 +53,8 @@ fn on_measurement(latency_us: f64,
 ## Recipe: Latency Degradation Detection
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Direction;
+use nexus_stats::detection::{CusumF64, TrendAlertF64};
 
 let baseline_us = 200.0;  // from calibration
 
@@ -97,7 +100,7 @@ match cusum.update(latency_us) {
 ## Recipe: Latency Jitter Monitoring
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::monitoring::JitterF64;
 
 let mut jitter = JitterF64::builder().span(30).build().unwrap();
 
@@ -115,7 +118,8 @@ if let Some(j) = jitter.update(latency_us) {
 ## Recipe: Bad Measurement Filtering
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::detection::{MultiGateF64, Verdict};
+use nexus_stats::statistics::WelfordF64;
 
 // Multi-gate filter: reject impossible values, flag suspect ones
 let mut gate = MultiGateF64::builder()

@@ -16,7 +16,8 @@ room to act.
 ## Recipe: CoDel-Style Queue Health
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Condition;
+use nexus_stats::monitoring::CoDelI64;
 
 // Detect standing queues via sojourn time
 let mut qd = CoDelI64::builder()
@@ -45,7 +46,9 @@ match qd.update(now_ns as u64, sojourn_ns) {
 Combine queue delay with resource saturation for comprehensive monitoring:
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::{Condition, Direction};
+use nexus_stats::monitoring::{CoDelI64, SaturationF64};
+use nexus_stats::detection::TrendAlertF64;
 
 let mut queue_health = CoDelI64::builder()
     .target(10_000).window(100_000_000).build().unwrap();
@@ -76,7 +79,8 @@ if should_throttle {
 ## Recipe: Aeron Publication Monitoring
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::monitoring::SaturationF64;
+use nexus_stats::smoothing::AsymEmaF64;
 
 // Track Aeron buffer utilization
 let mut buf_sat = SaturationF64::builder()

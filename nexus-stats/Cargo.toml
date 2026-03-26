@@ -1,6 +1,6 @@
 [package]
 name = "nexus-stats"
-version = "2.1.0"
+version = "3.0.0"
 description = "Fixed-memory, zero-allocation streaming statistics for real-time systems"
 readme = "README.md"
 edition.workspace = true
@@ -25,6 +25,13 @@ required-features = ["std"]
 [[example]]
 name = "basic"
 required-features = ["std"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "update_bench"
+harness = false
 
 [lints]
 workspace = true

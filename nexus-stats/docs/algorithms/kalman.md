@@ -81,7 +81,7 @@ may be needed.
 ### Kalman2d
 
 ```rust
-use nexus_stats::Kalman2dF64;
+use nexus_stats::estimation::Kalman2dF64;
 
 let mut kf = Kalman2dF64::builder()
     .process_noise([[0.001, 0.0], [0.0, 0.001]])
@@ -105,7 +105,7 @@ println!("covariance: {:?}", kf.covariance());
 ### Kalman3d
 
 ```rust
-use nexus_stats::Kalman3dF64;
+use nexus_stats::estimation::Kalman3dF64;
 
 let mut kf = Kalman3dF64::builder()
     .process_noise([

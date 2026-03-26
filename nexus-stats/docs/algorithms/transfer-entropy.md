@@ -75,7 +75,7 @@ TE(X→Y) query (O(bins³)):
 ## Configuration
 
 ```rust
-use nexus_stats::TransferEntropyF64;
+use nexus_stats::signal::TransferEntropyF64;
 
 let mut te = TransferEntropyF64::builder()
     .bins(8)    // 8 categories per stream

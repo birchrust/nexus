@@ -6,7 +6,7 @@ Online Shannon entropy estimation. "How predictable is this signal?"
 |----------|-------|
 | Update cost | ~3 cycles |
 | Memory | `8×K + 8` bytes |
-| Types | `EntropyF64<K>`, `EntropyF32<K>` |
+| Types | `EntropyF64`, `EntropyF32` |
 | Priming | After 1 observation |
 | Output | `entropy()`, `entropy_bits()`, `surprise(cat)`, `probability(cat)` — all `Option` |
 | Feature | `std` or `libm` (needs `ln`) |
@@ -66,10 +66,10 @@ O(K), but K is const and typically small (4-32).
 ## Configuration
 
 ```rust
-use nexus_stats::EntropyF64;
+use nexus_stats::signal::EntropyF64;
 
 // 8 categories
-let mut e = EntropyF64::<8>::new();
+let mut e = EntropyF64::builder().bins(8).build().unwrap();
 
 for category in observations {
     e.observe(category);
@@ -79,8 +79,8 @@ println!("entropy: {:.3} nats", e.entropy().unwrap());
 println!("entropy: {:.3} bits", e.entropy_bits().unwrap());
 ```
 
-`K` is a const generic — it determines the frequency table size.
-Categories must be in `0..K`. Out-of-range panics.
+`bins` determines the frequency table size and is set at construction
+time via the builder. Categories must be in `0..bins`. Out-of-range panics.
 
 ### Surprise Scoring
 
@@ -99,7 +99,7 @@ if let Some(s) = e.surprise(rare_category) {
 
 ```rust
 // Discretize order sizes into buckets
-let mut e = EntropyF64::<4>::new();
+let mut e = EntropyF64::builder().bins(4).build().unwrap();
 
 // 0 = small, 1 = medium, 2 = large, 3 = very large
 let bucket = match order_size {
@@ -118,7 +118,7 @@ e.observe(bucket);
 
 ```rust
 // Discretize latency into ranges
-let mut e = EntropyF64::<8>::new();
+let mut e = EntropyF64::builder().bins(8).build().unwrap();
 
 let bucket = (latency_us / 100).min(7) as usize;
 e.observe(bucket);
@@ -131,7 +131,7 @@ e.observe(bucket);
 
 ```rust
 // Track distribution of packet types
-let mut e = EntropyF64::<16>::new();
+let mut e = EntropyF64::builder().bins(16).build().unwrap();
 
 e.observe(packet_type as usize);
 
@@ -153,7 +153,7 @@ information theory. Conversion: bits = nats / ln(2).
 
 | Operation | p50 |
 |-----------|-----|
-| `EntropyF64::<8>::observe` | ~3 cycles |
+| `EntropyF64::observe` (bins=8) | ~3 cycles |
 | `entropy()` query (K=8) | ~20 cycles |
 | `surprise(cat)` query | ~8 cycles |
 

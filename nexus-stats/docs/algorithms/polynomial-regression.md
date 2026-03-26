@@ -93,7 +93,7 @@ Maximum system size: 9×9 (degree 8 + intercept).
 ### OLS (all-history)
 
 ```rust
-use nexus_stats::PolynomialRegressionF64;
+use nexus_stats::regression::PolynomialRegressionF64;
 
 // Quadratic: y = ax² + bx + c
 let mut r = PolynomialRegressionF64::builder()
@@ -122,7 +122,7 @@ smaller state, closed-form solve, `slope()`/`intercept_value()` API.
 ### Exponentially-weighted
 
 ```rust
-use nexus_stats::EwPolynomialRegressionF64;
+use nexus_stats::regression::EwPolynomialRegressionF64;
 
 let mut r = EwPolynomialRegressionF64::builder()
     .degree(3)
@@ -134,9 +134,9 @@ let mut r = EwPolynomialRegressionF64::builder()
 ### Transformed fits
 
 ```rust
-use nexus_stats::ExponentialRegressionF64;
-use nexus_stats::LogarithmicRegressionF64;
-use nexus_stats::PowerRegressionF64;
+use nexus_stats::regression::ExponentialRegressionF64;
+use nexus_stats::regression::LogarithmicRegressionF64;
+use nexus_stats::regression::PowerRegressionF64;
 
 let mut exp = ExponentialRegressionF64::new();    // y = a·e^(bx)
 let mut log = LogarithmicRegressionF64::new();    // y = a·ln(x) + b
@@ -193,7 +193,7 @@ if let Some(rate) = decay.growth_rate() {
 
 ```rust
 use std::collections::HashMap;
-use nexus_stats::PolynomialRegressionF64;
+use nexus_stats::regression::PolynomialRegressionF64;
 
 let mut models: HashMap<String, PolynomialRegressionF64> = HashMap::new();
 

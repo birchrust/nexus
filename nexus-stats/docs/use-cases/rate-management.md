@@ -8,7 +8,8 @@ lives in the `nexus-rate` crate. This covers the *measurement* side.
 ## Recipe: Monitor Against Exchange Rate Limits
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Condition;
+use nexus_stats::monitoring::{EventRateF64, SaturationF64};
 
 // Track our own order rate
 let mut order_rate = EventRateF64::builder().span(20).build().unwrap();
@@ -33,7 +34,9 @@ if let Some(rate) = order_rate.rate() {
 ## Recipe: Detect Rate Anomalies
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Direction;
+use nexus_stats::monitoring::EventRateF64;
+use nexus_stats::detection::CusumF64;
 
 let mut rate = EventRateF64::builder().span(30).build().unwrap();
 let mut cusum = CusumF64::builder(expected_rate)

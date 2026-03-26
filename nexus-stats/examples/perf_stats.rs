@@ -8,7 +8,22 @@
 
 use std::hint::black_box;
 
-use nexus_stats::*;
+use nexus_stats::{
+    control::{BoolWindow, HysteresisF64},
+    detection::{CusumF64, CusumI64, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
+    estimation::Kalman1dF64,
+    frequency::TopK,
+    monitoring::{
+        CoDelI64, DrawdownF64, EventRateF64, LivenessF64, PeakHoldF64,
+        RunningMaxF64, RunningMinF64, WindowedMaxF64, WindowedMinF64,
+    },
+    signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
+    smoothing::{
+        AsymEmaF64, EmaF64, EmaI64, HoltF64, KamaF64, SlewF64, SpringF64,
+        WindowedMedianF64,
+    },
+    statistics::{CovarianceF64, EwmaVarF64, MomentsF64, WelfordF64},
+};
 
 // ============================================================================
 // Timing
@@ -736,15 +751,15 @@ fn bench_moments_f64(samples: &mut [u64]) {
 }
 
 fn bench_autocorrelation_f64(samples: &mut [u64]) {
-    let mut ac = AutocorrelationF64::<1>::new();
+    let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        let _ = ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
+            let _ = ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
         black_box(ac.correlation());
@@ -753,19 +768,19 @@ fn bench_autocorrelation_f64(samples: &mut [u64]) {
 }
 
 fn bench_cross_correlation_f64(samples: &mut [u64]) {
-    let mut cc = CrossCorrelationF64::<10>::new();
+    let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
         let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-        cc.update(x, y);
+        let _ = cc.update(x, y);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let x = 90.0 + (next_val(&mut rng) % 20) as f64;
             let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-            cc.update(x, y);
+            let _ = cc.update(x, y);
         }
         let end = rdtsc_end();
         black_box(cc.correlation(0));
@@ -774,7 +789,7 @@ fn bench_cross_correlation_f64(samples: &mut [u64]) {
 }
 
 fn bench_entropy_f64(samples: &mut [u64]) {
-    let mut e = EntropyF64::<8>::new();
+    let mut e = EntropyF64::builder().bins(8).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         e.update((next_val(&mut rng) % 8) as usize);
