@@ -99,14 +99,14 @@ for deep-dives on each algorithm.
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `AutocorrelationF64<LAG>` | Self-correlation at fixed lag (trending vs reverting) | 12 |
-| `CrossCorrelationF64<LAG>` | Two-stream correlation with lead/lag detection | 39 |
+| `AutocorrelationF64` | Self-correlation at fixed lag (trending vs reverting) | 12 |
+| `CrossCorrelationF64` | Two-stream correlation with lead/lag detection | 39 |
 
 ### Information Theory *(std\|libm)*
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `EntropyF64<K>` | Shannon entropy over K categories | 3 |
+| `EntropyF64` | Shannon entropy over K categories | 3 |
 | `TransferEntropyF64` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
 
 ### Monitoring

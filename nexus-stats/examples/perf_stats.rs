@@ -8,7 +8,22 @@
 
 use std::hint::black_box;
 
-use nexus_stats::*;
+use nexus_stats::{
+    control::{BoolWindow, HysteresisF64},
+    detection::{CusumF64, CusumI64, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
+    estimation::Kalman1dF64,
+    frequency::TopK,
+    monitoring::{
+        CoDelI64, DrawdownF64, EventRateF64, LivenessF64, PeakHoldF64,
+        RunningMaxF64, RunningMinF64, WindowedMaxF64, WindowedMinF64,
+    },
+    signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
+    smoothing::{
+        AsymEmaF64, EmaF64, EmaI64, HoltF64, KamaF64, SlewF64, SpringF64,
+        WindowedMedianF64,
+    },
+    statistics::{CovarianceF64, EwmaVarF64, MomentsF64, WelfordF64},
+};
 
 // ============================================================================
 // Timing

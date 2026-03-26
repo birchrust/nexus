@@ -7,7 +7,7 @@ Online Pearson correlation between two streams at multiple lags.
 |----------|-------|
 | Update cost | ~39 cycles (LAG=10) |
 | Memory | `16×LAG + 48` bytes |
-| Types | `CrossCorrelationF64<LAG>`, `CrossCorrelationF32<LAG>` |
+| Types | `CrossCorrelationF64`, `CrossCorrelationF32` |
 | Priming | After `LAG + 2` paired observations |
 | Output | `correlation(lag)`, `covariance(lag)`, `peak_lag()` — all `Option` |
 | Feature | `std` or `libm` (needs `sqrt` for correlation) |
@@ -76,7 +76,7 @@ the current running mean — O(1/n) error, negligible for streaming.
 use nexus_stats::CrossCorrelationF64;
 
 // Track correlations at lags 0..9
-let mut cc = CrossCorrelationF64::<10>::new();
+let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
 
 for (a, b) in stream_a.iter().zip(stream_b.iter()) {
     cc.update(*a, *b);
@@ -89,8 +89,8 @@ if let Some(lag) = cc.peak_lag() {
 }
 ```
 
-`LAG` is a const generic — it determines the buffer size and the
-range of lags tracked (0 through LAG-1).
+`lag` determines the buffer size and the range of lags tracked
+(0 through lag-1). Set at construction time via the builder.
 
 ## Examples by Domain
 
@@ -98,7 +98,7 @@ range of lags tracked (0 through LAG-1).
 
 ```rust
 // Does sensor A's reading predict sensor B's?
-let mut cc = CrossCorrelationF64::<20>::new();
+let mut cc = CrossCorrelationF64::builder().lag(20).build().unwrap();
 
 // Feed readings from both sensors:
 cc.update(sensor_a_reading, sensor_b_reading);
@@ -114,7 +114,7 @@ if let Some(lag) = cc.peak_lag() {
 
 ```rust
 // Does CPU spike predict latency spike?
-let mut cc = CrossCorrelationF64::<10>::new();
+let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
 
 cc.update(cpu_utilization, request_latency);
 
@@ -126,7 +126,7 @@ cc.update(cpu_utilization, request_latency);
 
 ```rust
 // Measure propagation delay between two sensors
-let mut cc = CrossCorrelationF64::<100>::new();
+let mut cc = CrossCorrelationF64::builder().lag(100).build().unwrap();
 
 cc.update(sensor_a_reading, sensor_b_reading);
 
@@ -154,6 +154,6 @@ confirm directionality.
 
 | Operation | p50 |
 |-----------|-----|
-| `CrossCorrelationF64::<10>::update` | ~39 cycles |
+| `CrossCorrelationF64::update` (lag=10) | ~39 cycles |
 | `correlation(lag)` query | ~8 cycles (includes `sqrt`) |
 | `peak_lag()` query | ~15 cycles (scans all lags) |

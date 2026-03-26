@@ -56,10 +56,10 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 | AdaGrad | — | ✓ | — | — | — |
 | Adam | — | ✓ | — | — | — |
 | **Signal Analysis** | | | | | |
-| Autocorrelation | ✓ | ✓ | ✓ | ✓ | — |
-| CrossCorrelation | ✓ | ✓ | — | — | — |
+| Autocorrelation *(alloc)* | ✓ | ✓ | ✓ | ✓ | — |
+| CrossCorrelation *(alloc)* | ✓ | ✓ | — | — | — |
 | **Information Theory** | | | | | |
-| Entropy | ✓ | ✓ | — | — | — |
+| Entropy *(alloc)* | ✓ | ✓ | — | — | — |
 | TransferEntropy | — | ✓ | — | — | — |
 | **Monitoring** | | | | | |
 | Drawdown | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -106,4 +106,4 @@ Full type availability for all algorithms. ✓ = available, — = not applicable
 |---------|----------------|
 | `std` (default) | Hardware `sqrt`/`exp`/`ln` for Welford, ShiryaevRoberts, CrossCorrelation, Entropy, etc. |
 | `libm` | Pure Rust `sqrt`/`exp`/`ln` for `no_std` environments |
-| `alloc` | Runtime-sized windows (MOSUM, WindowedMedian, KAMA, BoolWindow) and heap tables (TransferEntropy) |
+| `alloc` | Runtime-sized windows (MOSUM, WindowedMedian, KAMA, BoolWindow), heap tables (TransferEntropy), and runtime-sized buffers (Autocorrelation, CrossCorrelation, Entropy) |

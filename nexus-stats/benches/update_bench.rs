@@ -11,7 +11,27 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nexus_stats::*;
+use nexus_stats::{
+    control::{DeadBandF64, FirstDiffF64, HysteresisF64, LevelCrossingF64, SecondDiffF64},
+    detection::{
+        AdaptiveThresholdF64, CusumF64, RobustZScoreF64, ShiryaevRobertsF64, TrendAlertF64,
+    },
+    estimation::{Kalman1dF64, Kalman2dF64, Kalman3dF64},
+    learning::{
+        AdaGradF64, AdamF64, LmsFilterF64, NlmsFilterF64, OnlineGdF64, OnlineKMeansF64,
+        RlsFilterF64,
+    },
+    monitoring::{DrawdownF64, ErrorRateF64, JitterF64, RunningMaxF64, RunningMinF64, SaturationF64},
+    regression::{
+        EwLinearRegressionF64, LinearRegressionF64, LogisticRegressionF64,
+        PolynomialRegressionF64,
+    },
+    signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
+    smoothing::{AsymEmaF64, EmaF64, HoltF64, SlewF64, SpringF64},
+    statistics::{
+        CovarianceF64, EwmaVarF64, HarmonicMeanF64, MomentsF64, PercentileF64, WelfordF64,
+    },
+};
 
 // Simple LCG for deterministic pseudo-random data in benchmarks.
 // Not crypto-quality — just needs to defeat constant propagation.

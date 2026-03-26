@@ -3,7 +3,12 @@
 //!
 //! Run with: `cargo run --example basic -p nexus-stats`
 
-use nexus_stats::*;
+use nexus_stats::{
+    detection::CusumF64,
+    smoothing::EmaF64,
+    statistics::WelfordF64,
+    Direction,
+};
 
 fn main() {
     // Simulated latency samples (μs): normal around 100, then a shift to 120

@@ -329,7 +329,7 @@ fn debug_format() {
 #[cfg(feature = "alloc")]
 #[test]
 fn works_with_lms_filter() {
-    use nexus_stats::LmsFilterF64;
+    use nexus_stats::learning::LmsFilterF64;
 
     feature_vector! {
         struct LmsFeatures {
@@ -357,7 +357,7 @@ fn works_with_lms_filter() {
 #[cfg(feature = "alloc")]
 #[test]
 fn works_with_nlms_filter() {
-    use nexus_stats::NlmsFilterF64;
+    use nexus_stats::learning::NlmsFilterF64;
 
     feature_vector! {
         struct NlmsFeatures {
@@ -380,7 +380,7 @@ fn works_with_nlms_filter() {
 #[cfg(feature = "alloc")]
 #[test]
 fn works_with_rls_filter() {
-    use nexus_stats::RlsFilterF64;
+    use nexus_stats::learning::RlsFilterF64;
 
     feature_vector! {
         struct RlsFeatures {
@@ -403,7 +403,7 @@ fn works_with_rls_filter() {
 #[cfg(feature = "alloc")]
 #[test]
 fn works_with_online_gd() {
-    use nexus_stats::OnlineGdF64;
+    use nexus_stats::learning::OnlineGdF64;
 
     feature_vector! {
         struct GdGradient {
@@ -426,7 +426,7 @@ fn works_with_online_gd() {
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adagrad() {
-    use nexus_stats::AdaGradF64;
+    use nexus_stats::learning::AdaGradF64;
 
     feature_vector! {
         struct AgGradient {
@@ -454,7 +454,7 @@ fn works_with_adagrad() {
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adam() {
-    use nexus_stats::AdamF64;
+    use nexus_stats::learning::AdamF64;
 
     feature_vector! {
         struct AdamGradient {
@@ -477,7 +477,7 @@ fn works_with_adam() {
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adam_weight_decay() {
-    use nexus_stats::AdamF64;
+    use nexus_stats::learning::AdamF64;
 
     feature_vector! {
         struct WdGradient {
@@ -501,7 +501,7 @@ fn works_with_adam_weight_decay() {
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_logistic_regression() {
-    use nexus_stats::LogisticRegressionF64;
+    use nexus_stats::regression::LogisticRegressionF64;
 
     feature_vector! {
         struct LrFeatures {
@@ -524,7 +524,7 @@ fn works_with_logistic_regression() {
 #[cfg(feature = "alloc")]
 #[test]
 fn works_with_online_kmeans() {
-    use nexus_stats::OnlineKMeansF64;
+    use nexus_stats::learning::OnlineKMeansF64;
 
     feature_vector! {
         struct KmFeatures {
@@ -549,7 +549,7 @@ fn works_with_online_kmeans() {
 
 #[test]
 fn realistic_training_loop() {
-    use nexus_stats::AdamF64;
+    use nexus_stats::learning::AdamF64;
 
     feature_vector! {
         struct ModelParams {
