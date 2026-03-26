@@ -2,6 +2,7 @@
 
 use std::ops::{Deref, DerefMut};
 
+use crate::Resource;
 use crate::callback::Callback;
 use crate::resource::{Res, ResMut, Seq, SeqMut};
 use crate::shutdown::Shutdown;
@@ -76,7 +77,7 @@ pub trait Param {
 
 // -- Res<T> ------------------------------------------------------------------
 
-impl<T: 'static> Param for Res<'_, T> {
+impl<T: Resource> Param for Res<'_, T> {
     type State = ResourceId;
     type Item<'w> = Res<'w, T>;
 
@@ -107,7 +108,7 @@ impl<T: 'static> Param for Res<'_, T> {
 
 // -- ResMut<T> ---------------------------------------------------------------
 
-impl<T: 'static> Param for ResMut<'_, T> {
+impl<T: Resource> Param for ResMut<'_, T> {
     type State = ResourceId;
     type Item<'w> = ResMut<'w, T>;
 
@@ -138,7 +139,7 @@ impl<T: 'static> Param for ResMut<'_, T> {
 
 // -- Option<Res<T>> ----------------------------------------------------------
 
-impl<T: 'static> Param for Option<Res<'_, T>> {
+impl<T: Resource> Param for Option<Res<'_, T>> {
     type State = Option<ResourceId>;
     type Item<'w> = Option<Res<'w, T>>;
 
@@ -170,7 +171,7 @@ impl<T: 'static> Param for Option<Res<'_, T>> {
 
 // -- Option<ResMut<T>> -------------------------------------------------------
 
-impl<T: 'static> Param for Option<ResMut<'_, T>> {
+impl<T: Resource> Param for Option<ResMut<'_, T>> {
     type State = Option<ResourceId>;
     type Item<'w> = Option<ResMut<'w, T>>;
 

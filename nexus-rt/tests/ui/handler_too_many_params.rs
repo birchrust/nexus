@@ -1,17 +1,17 @@
 // Mistake: handler with >8 resource parameters (beyond macro arity).
 // Fix: consolidate resources into fewer structs.
 
-use nexus_rt::{IntoHandler, Res, WorldBuilder};
+use nexus_rt::{IntoHandler, Res, Resource, WorldBuilder};
 
-struct R0;
-struct R1;
-struct R2;
-struct R3;
-struct R4;
-struct R5;
-struct R6;
-struct R7;
-struct R8;
+#[derive(Resource)] struct R0;
+#[derive(Resource)] struct R1;
+#[derive(Resource)] struct R2;
+#[derive(Resource)] struct R3;
+#[derive(Resource)] struct R4;
+#[derive(Resource)] struct R5;
+#[derive(Resource)] struct R6;
+#[derive(Resource)] struct R7;
+#[derive(Resource)] struct R8;
 
 fn too_many(
     _r0: Res<R0>, _r1: Res<R1>, _r2: Res<R2>, _r3: Res<R3>,

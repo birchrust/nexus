@@ -1,8 +1,9 @@
 // Mistake: handler with event before resources.
 // Fix: resources first, event last.
 
-use nexus_rt::{IntoHandler, Res, WorldBuilder};
+use nexus_rt::{IntoHandler, Res, Resource, WorldBuilder};
 
+#[derive(Resource)]
 struct Config;
 
 fn bad_order(event: u32, _config: Res<Config>) {

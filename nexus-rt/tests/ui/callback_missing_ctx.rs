@@ -1,9 +1,11 @@
 // Mistake: callback function missing &mut Ctx first param.
 // Fix: add &mut MyCtx as the first parameter.
 
-use nexus_rt::{IntoCallback, Res, WorldBuilder};
+use nexus_rt::{IntoCallback, Res, Resource, WorldBuilder};
 
 struct MyCtx;
+
+#[derive(Resource)]
 struct Config;
 
 // Missing &mut MyCtx — should be fn(&mut MyCtx, Res<Config>, u32)
