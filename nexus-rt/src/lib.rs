@@ -163,6 +163,7 @@ pub mod template;
 pub mod testing;
 #[cfg(feature = "timer")]
 pub mod timer;
+mod view;
 mod world;
 
 #[cfg(feature = "codegen-audit")]
@@ -197,6 +198,7 @@ pub use template::{
     Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
     TemplatedHandler,
 };
+pub use view::{View, ViewScope};
 pub use world::{Registry, Resource, ResourceId, Sequence, World, WorldBuilder};
 
 /// Declare a newtype resource with `Deref`/`DerefMut` to the inner type.

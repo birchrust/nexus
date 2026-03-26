@@ -1,0 +1,16 @@
+error[E0277]: this function cannot be used as a reference step for this input type
+  --> tests/ui/view_wrong_handler_type.rs:33:14
+   |
+33 |         .tap(bad_handler, reg);
+   |          --- ^^^^^^^^^^^ the trait `IntoRefStep<OrderView, (), _>` is not implemented for fn item `for<'a> fn(&'a WrongView) {bad_handler}`
+   |          |
+   |          required by a bound introduced by this call
+   |
+   = note: reference steps (guard, filter, tap, inspect) take `&In`, not `In`
+   = note: if the pipeline output is `Option<T>`, `.filter()` operates on `&T` inside the Option
+   = note: closures with resource parameters are not supported — use a named `fn`
+note: required by a bound in `ViewScope::<In, Out, V, PrevChain, InnerSteps>::tap`
+  --> src/view.rs
+   |
+   |     pub fn tap<Params, S: IntoRefStep<V::StaticViewType, (), Params>>(
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ViewScope::<In, Out, V, PrevChain, InnerSteps>::tap`

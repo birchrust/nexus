@@ -622,8 +622,8 @@ impl<E> Default for DagBuilder<E> {
 /// representing all steps composed so far. No closures, no `use<>`.
 #[must_use = "DAG chain does nothing until .build() is called"]
 pub struct DagChain<E, Out, Chain> {
-    chain: Chain,
-    _marker: PhantomData<fn(E) -> Out>,
+    pub(crate) chain: Chain,
+    pub(crate) _marker: PhantomData<fn(E) -> Out>,
 }
 
 impl<E, Out: 'static, Chain> DagChain<E, Out, Chain> {
@@ -724,7 +724,7 @@ impl<In: 'static> DagArmSeed<In> {
 /// for this arm's steps.
 pub struct DagArm<In, Out, Chain> {
     pub(crate) chain: Chain,
-    _marker: PhantomData<fn(*const In) -> Out>,
+    pub(crate) _marker: PhantomData<fn(*const In) -> Out>,
 }
 
 impl<In: 'static, Out: 'static, Chain> DagArm<In, Out, Chain> {
@@ -843,6 +843,14 @@ macro_rules! impl_dag_combinators {
                     },
                     _marker: PhantomData,
                 }
+            }
+
+            /// Open a view scope. Steps inside operate on a read-only
+            /// view constructed from the event. Close with `.end_view()`.
+            pub fn view<V: crate::view::View<Out>>(
+                self,
+            ) -> crate::view::ViewScope<$U, Out, V, Chain, ()> {
+                crate::view::ViewScope::new(self.chain)
             }
 
             /// Observe the current value without consuming or changing it.

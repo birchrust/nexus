@@ -1,0 +1,21 @@
+error[E0277]: `BadEvent` cannot be viewed as `AsOrderView`
+  --> tests/ui/view_missing_impl.rs:32:17
+   |
+32 |         .view::<AsOrderView>();
+   |          ----   ^^^^^^^^^^^ unsatisfied trait bound
+   |          |
+   |          required by a bound introduced by this call
+   |
+   = note: implement `View<BadEvent>` for your view marker type
+help: the trait `View<BadEvent>` is not implemented for `AsOrderView`
+      but trait `View<GoodEvent>` is implemented for it
+  --> tests/ui/view_missing_impl.rs:21:1
+   |
+21 | unsafe impl View<GoodEvent> for AsOrderView {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `GoodEvent`, found `BadEvent`
+note: required by a bound in `nexus_rt::view::<impl PipelineBuilder<In>>::view`
+  --> src/view.rs
+   |
+   |     pub fn view<V: View<In>>(self) -> ViewScope<In, In, V, crate::pipeline::IdentityNode, ()> {
+   |                    ^^^^^^^^ required by this bound in `nexus_rt::view::<impl PipelineBuilder<In>>::view`
