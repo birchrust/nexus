@@ -499,6 +499,20 @@ fn derive_view_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn
         ));
     }
 
+    // Reject type and const generics
+    if input.generics.type_params().count() > 0 {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "#[derive(View)] does not support type parameters",
+        ));
+    }
+    if input.generics.const_params().count() > 0 {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "#[derive(View)] does not support const parameters",
+        ));
+    }
+
     // Detect lifetime: 0 or 1 lifetime param
     let lifetime_param = match input.generics.lifetimes().count() {
         0 => None,
@@ -610,18 +624,21 @@ fn parse_field_info(field: &syn::Field) -> Result<FieldInfo, syn::Error> {
     for attr in &field.attrs {
         if attr.path().is_ident("source") {
             // Parse #[source(TypePath, from = "field_name")]
-            attr.parse_nested_meta(|meta| {
-                let path = meta.path.clone();
-                if meta.input.peek(syn::Token![,]) {
-                    meta.input.parse::<syn::Token![,]>()?;
-                    let kw: syn::Ident = meta.input.parse()?;
-                    if kw != "from" {
-                        return Err(syn::Error::new_spanned(&kw, "expected `from`"));
-                    }
-                    meta.input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = meta.input.parse()?;
-                    remaps.push((path, lit.value()));
+            attr.parse_args_with(|input: syn::parse::ParseStream| {
+                let path: syn::Path = input.parse()?;
+
+                if input.is_empty() {
+                    return Ok(());
                 }
+
+                input.parse::<syn::Token![,]>()?;
+                let kw: syn::Ident = input.parse()?;
+                if kw != "from" {
+                    return Err(syn::Error::new_spanned(&kw, "expected `from`"));
+                }
+                input.parse::<syn::Token![=]>()?;
+                let lit: syn::LitStr = input.parse()?;
+                remaps.push((path, lit.value()));
                 Ok(())
             })?;
         }
@@ -650,9 +667,7 @@ fn parse_source_attrs(
     Ok(sources)
 }
 
-/// Check if two paths match (simple last-segment comparison).
+/// Check if two paths match by comparing full path equality.
 fn path_matches(a: &syn::Path, b: &syn::Path) -> bool {
-    let a_last = a.segments.last().map(|s| &s.ident);
-    let b_last = b.segments.last().map(|s| &s.ident);
-    a_last == b_last
+    a == b
 }
