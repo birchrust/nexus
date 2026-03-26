@@ -9,7 +9,7 @@ anywhere you need statistics without latency jitter.
 ## Quick Start
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::{Direction, detection::CusumF64, smoothing::EmaF64, statistics::WelfordF64};
 
 // Detect latency shifts with CUSUM
 let mut cusum = CusumF64::builder(100.0)  // target: 100μs baseline

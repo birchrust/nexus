@@ -66,7 +66,7 @@ O(K), but K is const and typically small (4-32).
 ## Configuration
 
 ```rust
-use nexus_stats::EntropyF64;
+use nexus_stats::signal::EntropyF64;
 
 // 8 categories
 let mut e = EntropyF64::builder().bins(8).build().unwrap();

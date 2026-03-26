@@ -107,7 +107,7 @@ less susceptible to this issue.
 ### OLS
 
 ```rust
-use nexus_stats::LinearRegressionF64;
+use nexus_stats::regression::LinearRegressionF64;
 
 // Standard: y = ax + b
 let mut r = LinearRegressionF64::new();
@@ -125,7 +125,7 @@ let mut r = LinearRegressionF64::builder()
 ### Exponentially-Weighted
 
 ```rust
-use nexus_stats::EwLinearRegressionF64;
+use nexus_stats::regression::EwLinearRegressionF64;
 
 let mut r = EwLinearRegressionF64::builder()
     .alpha(0.05)       // weight on new observation

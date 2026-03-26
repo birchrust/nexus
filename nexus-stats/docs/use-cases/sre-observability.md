@@ -6,7 +6,9 @@ service health for site reliability engineering.
 ## Recipe: Error Budget / SLO Tracking
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Condition;
+use nexus_stats::monitoring::ErrorRateF64;
+use nexus_stats::control::BoolWindow;
 
 // Track error rate with EMA
 let mut error_rate = ErrorRateF64::builder()
@@ -34,7 +36,7 @@ if let Some(Condition::Degraded) = error_rate.record(ok) {
 ## Recipe: USE Method (Utilization, Saturation, Errors)
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::monitoring::{SaturationF64, CoDelI64, ErrorRateF64};
 
 // Per resource (CPU, memory, disk, network):
 struct ResourceMonitor {
@@ -65,7 +67,10 @@ impl ResourceMonitor {
 ## Recipe: Service Health Composite
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Direction;
+use nexus_stats::monitoring::ErrorRateF64;
+use nexus_stats::detection::CusumF64;
+use nexus_stats::control::DebounceU32;
 
 // Consecutive health check failures → confirmed outage
 let mut health_debounce = DebounceU32::new(3);

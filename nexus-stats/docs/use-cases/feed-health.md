@@ -15,7 +15,10 @@ upstream services). These sources can fail in multiple ways:
 ## Recipe: Comprehensive Feed Monitor
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Direction;
+use nexus_stats::detection::CusumF64;
+use nexus_stats::monitoring::{LivenessI64, EventRateI64, JitterI64};
+use nexus_stats::control::DeadBandI64;
 
 struct FeedMonitor {
     liveness: LivenessI64,      // is it alive?
@@ -73,7 +76,8 @@ impl FeedMonitor {
 ## Recipe: WebSocket Feed Health (Trading)
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::detection::CusumF64;
+use nexus_stats::monitoring::{LivenessI64, EventRateI64};
 
 // Per-exchange feed monitor
 let mut liveness = LivenessI64::builder()

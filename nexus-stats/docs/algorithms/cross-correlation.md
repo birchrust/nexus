@@ -73,7 +73,7 @@ the current running mean — O(1/n) error, negligible for streaming.
 ## Configuration
 
 ```rust
-use nexus_stats::CrossCorrelationF64;
+use nexus_stats::signal::CrossCorrelationF64;
 
 // Track correlations at lags 0..9
 let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();

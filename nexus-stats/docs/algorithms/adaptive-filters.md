@@ -30,7 +30,7 @@ of input scale. Use NLMS unless you have a specific reason for LMS.
 ### Configuration
 
 ```rust
-use nexus_stats::NlmsFilterF64;
+use nexus_stats::learning::NlmsFilterF64;
 
 let mut filter = NlmsFilterF64::builder()
     .dimensions(3)
@@ -67,7 +67,7 @@ P = (P - K×x'×P) / λ       — covariance update (Sherman-Morrison)
 ### Configuration
 
 ```rust
-use nexus_stats::RlsFilterF64;
+use nexus_stats::learning::RlsFilterF64;
 
 let mut filter = RlsFilterF64::builder()
     .dimensions(3)
@@ -125,7 +125,7 @@ range near 0 and 1.
 ### Configuration
 
 ```rust
-use nexus_stats::LogisticRegressionF64;
+use nexus_stats::regression::LogisticRegressionF64;
 
 let mut model = LogisticRegressionF64::builder()
     .dimensions(5)
@@ -157,7 +157,7 @@ initial centroids.
 ### Configuration
 
 ```rust
-use nexus_stats::OnlineKMeansF64;
+use nexus_stats::learning::OnlineKMeansF64;
 
 let mut kmeans = OnlineKMeansF64::builder()
     .clusters(3)

@@ -87,7 +87,7 @@ params[i] -= weight_decay * params[i]
 ### Online GD
 
 ```rust
-use nexus_stats::OnlineGdF64;
+use nexus_stats::learning::OnlineGdF64;
 
 let mut gd = OnlineGdF64::builder()
     .dimensions(5)
@@ -104,7 +104,7 @@ println!("params: {:?}", gd.parameters());
 ### AdaGrad
 
 ```rust
-use nexus_stats::AdaGradF64;
+use nexus_stats::learning::AdaGradF64;
 
 let mut ag = AdaGradF64::builder()
     .dimensions(5)
@@ -119,7 +119,7 @@ ag.step(&gradient).unwrap();
 ### Adam (with optional weight decay)
 
 ```rust
-use nexus_stats::AdamF64;
+use nexus_stats::learning::AdamF64;
 
 // Standard Adam:
 let mut adam = AdamF64::builder()

@@ -6,7 +6,9 @@ and IoT systems.
 ## Recipe: Sensor Input Validation
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::smoothing::SlewF64;
+use nexus_stats::detection::RobustZScoreF64;
+use nexus_stats::control::DeadBandF64;
 
 // Hard limits (physical impossibility)
 let mut slew = SlewF64::new(10.0);  // max 10°C change per sample
@@ -35,7 +37,9 @@ if changed.is_none() {
 ## Recipe: Process Drift Detection
 
 ```rust
-use nexus_stats::*;
+use nexus_stats::Direction;
+use nexus_stats::detection::CusumF64;
+use nexus_stats::control::DebounceU32;
 
 // CUSUM for detecting drift from setpoint
 let mut drift = CusumF64::builder(setpoint)

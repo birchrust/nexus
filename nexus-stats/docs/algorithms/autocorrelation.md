@@ -69,7 +69,7 @@ means for the lagged and current windows.
 ## Configuration
 
 ```rust
-use nexus_stats::AutocorrelationF64;
+use nexus_stats::signal::AutocorrelationF64;
 
 // Lag-1 autocorrelation (is the signal trending?)
 let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
