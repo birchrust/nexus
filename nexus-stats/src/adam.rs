@@ -1,4 +1,4 @@
-#![allow(clippy::suboptimal_flops)]
+#![allow(clippy::suboptimal_flops, clippy::neg_cmp_op_on_partial_ord)]
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -322,7 +322,7 @@ impl AdamF64Builder {
         if dims < 1 {
             return Err(crate::ConfigError::Invalid("dimensions must be >= 1"));
         }
-        if lr <= 0.0 {
+        if !(lr > 0.0) {
             return Err(crate::ConfigError::Invalid(
                 "learning_rate must be positive",
             ));
@@ -333,10 +333,10 @@ impl AdamF64Builder {
         if !(b2 > 0.0 && b2 < 1.0) {
             return Err(crate::ConfigError::Invalid("beta2 must be in (0, 1)"));
         }
-        if eps <= 0.0 {
+        if !(eps > 0.0) {
             return Err(crate::ConfigError::Invalid("epsilon must be positive"));
         }
-        if wd < 0.0 {
+        if !(wd >= 0.0) {
             return Err(crate::ConfigError::Invalid(
                 "weight_decay must be non-negative",
             ));

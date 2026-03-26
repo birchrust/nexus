@@ -1,9 +1,9 @@
 /// Generates a named feature vector struct where every field is `f64`.
 ///
 /// The struct converts to `&[f64]` at zero cost via `repr(C)` pointer
-/// cast, for passing to adaptive filters ([`LmsFilterF64`], [`RlsFilterF64`]),
-/// classifiers ([`LogisticRegressionF64`], [`OnlineKMeansF64`]),
-/// and optimizers ([`AdamF64`], [`AdaGradF64`]).
+/// cast, for passing to adaptive filters ([`crate::LmsFilterF64`], [`crate::RlsFilterF64`]),
+/// classifiers ([`crate::LogisticRegressionF64`], [`crate::OnlineKMeansF64`]),
+/// and optimizers ([`crate::AdamF64`], [`crate::AdaGradF64`]).
 ///
 /// All fields are `pub` and `f64`. Construct via struct literal or
 /// `new()` (which applies defaults). Mutate fields directly.
@@ -34,7 +34,7 @@ macro_rules! feature_vector {
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
-            $( $field:ident $( = $default:expr )? ),* $(,)?
+            $( $field:ident $( = $default:expr )? ),+ $(,)?
         }
     ) => {
         $(#[$meta])*

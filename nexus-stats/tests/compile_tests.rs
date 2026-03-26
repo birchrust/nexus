@@ -324,7 +324,9 @@ fn debug_format() {
 }
 
 // === Integration with filters and optimizers ===
+// These require alloc (and some require std|libm) for the filter/optimizer types.
 
+#[cfg(feature = "alloc")]
 #[test]
 fn works_with_lms_filter() {
     use nexus_stats::LmsFilterF64;
@@ -352,6 +354,7 @@ fn works_with_lms_filter() {
     assert_eq!(filter.count(), 1);
 }
 
+#[cfg(feature = "alloc")]
 #[test]
 fn works_with_nlms_filter() {
     use nexus_stats::NlmsFilterF64;
@@ -374,6 +377,7 @@ fn works_with_nlms_filter() {
     assert_eq!(filter.count(), 1);
 }
 
+#[cfg(feature = "alloc")]
 #[test]
 fn works_with_rls_filter() {
     use nexus_stats::RlsFilterF64;
@@ -396,6 +400,7 @@ fn works_with_rls_filter() {
     assert_eq!(filter.count(), 1);
 }
 
+#[cfg(feature = "alloc")]
 #[test]
 fn works_with_online_gd() {
     use nexus_stats::OnlineGdF64;
@@ -418,6 +423,7 @@ fn works_with_online_gd() {
     assert_eq!(opt.count(), 1);
 }
 
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adagrad() {
     use nexus_stats::AdaGradF64;
@@ -445,6 +451,7 @@ fn works_with_adagrad() {
     assert_eq!(opt.count(), 1);
 }
 
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adam() {
     use nexus_stats::AdamF64;
@@ -467,6 +474,7 @@ fn works_with_adam() {
     assert_eq!(opt.count(), 1);
 }
 
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adam_weight_decay() {
     use nexus_stats::AdamF64;
@@ -490,6 +498,7 @@ fn works_with_adam_weight_decay() {
     assert_eq!(opt.count(), 1);
 }
 
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_logistic_regression() {
     use nexus_stats::LogisticRegressionF64;
@@ -512,6 +521,7 @@ fn works_with_logistic_regression() {
     assert_eq!(lr.count(), 1);
 }
 
+#[cfg(feature = "alloc")]
 #[test]
 fn works_with_online_kmeans() {
     use nexus_stats::OnlineKMeansF64;

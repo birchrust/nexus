@@ -1,4 +1,4 @@
-#![allow(clippy::suboptimal_flops)]
+#![allow(clippy::suboptimal_flops, clippy::neg_cmp_op_on_partial_ord)]
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -194,7 +194,7 @@ impl OnlineGdF64Builder {
         if dims < 1 {
             return Err(crate::ConfigError::Invalid("dimensions must be >= 1"));
         }
-        if lr <= 0.0 {
+        if !(lr > 0.0) {
             return Err(crate::ConfigError::Invalid(
                 "learning_rate must be positive",
             ));
