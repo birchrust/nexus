@@ -2381,8 +2381,8 @@ impl<In> Default for PipelineBuilder<In> {
 /// methods don't need the registry.
 #[must_use = "pipeline chain does nothing until .build() is called"]
 pub struct PipelineChain<In, Out, Chain> {
-    chain: Chain,
-    _marker: PhantomData<fn(In) -> Out>,
+    pub(crate) chain: Chain,
+    pub(crate) _marker: PhantomData<fn(In) -> Out>,
 }
 
 // =============================================================================

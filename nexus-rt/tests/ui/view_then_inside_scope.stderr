@@ -1,0 +1,13 @@
+error[E0599]: no method named `then` found for struct `nexus_rt::view::ViewScope<In, Out, V, PrevChain, InnerSteps>` in the current scope
+  --> tests/ui/view_then_inside_scope.rs:28:10
+   |
+26 |       let _ = PipelineBuilder::<u32>::new()
+   |               -----------------------------
+   |               |
+   |  _____________method `then` is available on `PipelineBuilder<u32>`
+   | |
+27 | |         .view::<AsOrderView>()
+28 | |         .then(transform);
+   | |         -^^^^ method not found in `nexus_rt::view::ViewScope<u32, u32, AsOrderView, IdentityNode, ()>`
+   | |_________|
+   |
