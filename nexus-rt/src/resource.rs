@@ -59,13 +59,13 @@ use crate::world::Sequence;
 /// access (no panic if unregistered), use [`Option<Res<T>>`].
 ///
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
-pub struct Res<'w, T: Resource + 'static> {
+pub struct Res<'w, T: Resource> {
     value: &'w T,
     changed_at: Sequence,
     current_sequence: Sequence,
 }
 
-impl<'w, T: Resource + 'static> Res<'w, T> {
+impl<'w, T: Resource> Res<'w, T> {
     pub(crate) fn new(value: &'w T, changed_at: Sequence, current_sequence: Sequence) -> Self {
         Self {
             value,
@@ -93,13 +93,13 @@ impl<'w, T: Resource + 'static> Res<'w, T> {
     }
 }
 
-impl<T: std::fmt::Debug + Resource + 'static> std::fmt::Debug for Res<'_, T> {
+impl<T: std::fmt::Debug + Resource> std::fmt::Debug for Res<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.value.fmt(f)
     }
 }
 
-impl<T: Resource + 'static> Deref for Res<'_, T> {
+impl<T: Resource> Deref for Res<'_, T> {
     type Target = T;
 
     #[inline(always)]
@@ -121,13 +121,13 @@ impl<T: Resource + 'static> Deref for Res<'_, T> {
 /// (no panic if unregistered), use [`Option<ResMut<T>>`].
 ///
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
-pub struct ResMut<'w, T: Resource + 'static> {
+pub struct ResMut<'w, T: Resource> {
     value: &'w mut T,
     changed_at: &'w Cell<Sequence>,
     current_sequence: Sequence,
 }
 
-impl<'w, T: Resource + 'static> ResMut<'w, T> {
+impl<'w, T: Resource> ResMut<'w, T> {
     pub(crate) fn new(
         value: &'w mut T,
         changed_at: &'w Cell<Sequence>,
@@ -159,13 +159,13 @@ impl<'w, T: Resource + 'static> ResMut<'w, T> {
     }
 }
 
-impl<T: std::fmt::Debug + Resource + 'static> std::fmt::Debug for ResMut<'_, T> {
+impl<T: std::fmt::Debug + Resource> std::fmt::Debug for ResMut<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.value.fmt(f)
     }
 }
 
-impl<T: Resource + 'static> Deref for ResMut<'_, T> {
+impl<T: Resource> Deref for ResMut<'_, T> {
     type Target = T;
 
     #[inline(always)]
@@ -174,7 +174,7 @@ impl<T: Resource + 'static> Deref for ResMut<'_, T> {
     }
 }
 
-impl<T: Resource + 'static> DerefMut for ResMut<'_, T> {
+impl<T: Resource> DerefMut for ResMut<'_, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         self.changed_at.set(self.current_sequence);

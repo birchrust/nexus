@@ -1,8 +1,9 @@
 // Mistake: function signature doesn't match Blueprint's Event/Params types.
 // Fix: function params must match Blueprint::Params then Blueprint::Event.
 
-use nexus_rt::{HandlerTemplate, Res, WorldBuilder, handler_blueprint};
+use nexus_rt::{HandlerTemplate, Res, Resource, WorldBuilder, handler_blueprint};
 
+#[derive(Resource)]
 struct Config;
 
 handler_blueprint!(MyBlueprint, Event = u32, Params = (Res<'static, Config>,));

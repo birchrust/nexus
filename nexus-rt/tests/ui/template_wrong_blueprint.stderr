@@ -1,157 +1,27 @@
-error[E0277]: this type cannot be stored as a resource in the World
- --> tests/ui/template_wrong_blueprint.rs:8:55
-  |
-8 | handler_blueprint!(MyBlueprint, Event = u32, Params = (Res<'static, Config>,));
-  |                                                       ^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-  |
-help: the trait `Resource` is not implemented for `Config`
- --> tests/ui/template_wrong_blueprint.rs:6:1
-  |
-6 | struct Config;
-  | ^^^^^^^^^^^^^
-  = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
-help: the following other types implement trait `Resource`
- --> src/scheduler.rs
-  |
-  | impl crate::world::Resource for SchedulerTick {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
-  |
- ::: src/clock.rs
-  |
-  | impl crate::world::Resource for Clock {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
-  = note: required for `Res<'static, Config>` to implement `Param`
-  = note: 1 redundant requirement hidden
-  = note: required for `(Res<'static, Config>,)` to implement `Param`
-note: required by a bound in `nexus_rt::Blueprint::Params`
- --> src/template.rs
-  |
-  |     type Params: Param + 'static;
-  |                  ^^^^^ required by this bound in `Blueprint::Params`
-
-error[E0277]: this type cannot be stored as a resource in the World
-  --> tests/ui/template_wrong_blueprint.rs:11:25
+error[E0631]: type mismatch in function arguments
+  --> tests/ui/template_wrong_blueprint.rs:21:57
    |
-11 | fn wrong_event(_config: Res<Config>, _event: String) {
-   |                         ^^^^^^^^^^^ unsatisfied trait bound
-   |
-help: the trait `Resource` is not implemented for `Config`
-  --> tests/ui/template_wrong_blueprint.rs:6:1
-   |
- 6 | struct Config;
-   | ^^^^^^^^^^^^^
-   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
-help: the following other types implement trait `Resource`
-  --> src/scheduler.rs
-   |
-   | impl crate::world::Resource for SchedulerTick {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
-   |
-  ::: src/clock.rs
-   |
-   | impl crate::world::Resource for Clock {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
-note: required by a bound in `Res`
-  --> src/resource.rs
-   |
-   | pub struct Res<'w, T: Resource + 'static> {
-   |                       ^^^^^^^^ required by this bound in `Res`
-
-error[E0277]: this type cannot be stored as a resource in the World
- --> tests/ui/template_wrong_blueprint.rs:8:56
-  |
-8 | handler_blueprint!(MyBlueprint, Event = u32, Params = (Res<'static, Config>,));
-  |                                                        ^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-  |
-help: the trait `Resource` is not implemented for `Config`
- --> tests/ui/template_wrong_blueprint.rs:6:1
-  |
-6 | struct Config;
-  | ^^^^^^^^^^^^^
-  = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
-help: the following other types implement trait `Resource`
- --> src/scheduler.rs
-  |
-  | impl crate::world::Resource for SchedulerTick {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
-  |
- ::: src/clock.rs
-  |
-  | impl crate::world::Resource for Clock {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
-note: required by a bound in `Res`
- --> src/resource.rs
-  |
-  | pub struct Res<'w, T: Resource + 'static> {
-  |                       ^^^^^^^^ required by this bound in `Res`
-
-error[E0277]: this type cannot be stored as a resource in the World
-  --> tests/ui/template_wrong_blueprint.rs:16:17
-   |
-16 |     wb.register(Config);
-   |        -------- ^^^^^^ unsatisfied trait bound
-   |        |
-   |        required by a bound introduced by this call
-   |
-help: the trait `Resource` is not implemented for `Config`
-  --> tests/ui/template_wrong_blueprint.rs:6:1
-   |
- 6 | struct Config;
-   | ^^^^^^^^^^^^^
-   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
-help: the following other types implement trait `Resource`
-  --> src/scheduler.rs
-   |
-   | impl crate::world::Resource for SchedulerTick {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
-   |
-  ::: src/clock.rs
-   |
-   | impl crate::world::Resource for Clock {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
-note: required by a bound in `WorldBuilder::register`
-  --> src/world.rs
-   |
-   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
-   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
-
-error[E0277]: this type cannot be stored as a resource in the World
-  --> tests/ui/template_wrong_blueprint.rs:20:21
-   |
-20 |     let _template = HandlerTemplate::<MyBlueprint>::new(wrong_event, &reg);
-   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-   |
-help: the trait `Resource` is not implemented for `Config`
-  --> tests/ui/template_wrong_blueprint.rs:6:1
-   |
- 6 | struct Config;
-   | ^^^^^^^^^^^^^
-   = note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper
-help: the following other types implement trait `Resource`
-  --> src/scheduler.rs
-   |
-   | impl crate::world::Resource for SchedulerTick {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SchedulerTick`
-   |
-  ::: src/clock.rs
-   |
-   | impl crate::world::Resource for Clock {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Clock`
-   = note: required for `Res<'static, Config>` to implement `Param`
-
-error[E0599]: the function or associated item `new` exists for struct `HandlerTemplate<MyBlueprint>`, but its trait bounds were not satisfied
-  --> tests/ui/template_wrong_blueprint.rs:20:53
-   |
- 6 | struct Config;
-   | ------------- doesn't satisfy `Config: Resource`
+12 | fn wrong_event(_config: Res<Config>, _event: String) {
+   | ---------------------------------------------------- found signature defined here
 ...
-20 |     let _template = HandlerTemplate::<MyBlueprint>::new(wrong_event, &reg);
-   |                                                     ^^^ function or associated item cannot be called on `HandlerTemplate<MyBlueprint>` due to unsatisfied trait bounds
+21 |     let _template = HandlerTemplate::<MyBlueprint>::new(wrong_event, &reg);
+   |                     ----------------------------------- ^^^^^^^^^^^ expected due to this
+   |                     |
+   |                     required by a bound introduced by this call
    |
-   = note: the following trait bounds were not satisfied:
-           `Config: Resource`
-note: the trait `Resource` must be implemented
-  --> src/world.rs
+   = note: expected function signature `fn(Res<'static, Config>, u32) -> _`
+              found function signature `fn(Res<'_, Config>, String) -> _`
+   = note: required for `&'a mut for<'a> fn(Res<'a, Config>, String) {wrong_event}` to implement `for<'a> FnOnce(Res<'static, Config>, u32)`
+   = note: required for `for<'a> fn(Res<'a, Config>, String) {wrong_event}` to implement `TemplateDispatch<(Res<'static, Config>,), u32>`
+note: required by a bound in `HandlerTemplate::<K>::new`
+  --> src/template.rs
    |
-   | pub trait Resource: Send + 'static {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     pub fn new<F>(f: F, registry: &Registry) -> Self
+   |            --- required by a bound in this associated function
+   |     where
+   |         F: TemplateDispatch<K::Params, K::Event>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HandlerTemplate::<K>::new`
+help: consider wrapping the function in a closure
+   |
+21 |     let _template = HandlerTemplate::<MyBlueprint>::new(|arg0: Res<'static, Config>, arg1: u32| wrong_event(arg0, /* String */), &reg);
+   |                                                         +++++++++++++++++++++++++++++++++++++++            ++++++++++++++++++++
