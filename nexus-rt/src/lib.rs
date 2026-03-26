@@ -198,7 +198,7 @@ pub use template::{
     Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedCallback,
     TemplatedHandler,
 };
-pub use view::View;
+pub use view::{View, ViewScope};
 pub use world::{Registry, Resource, ResourceId, Sequence, World, WorldBuilder};
 
 /// Declare a newtype resource with `Deref`/`DerefMut` to the inner type.

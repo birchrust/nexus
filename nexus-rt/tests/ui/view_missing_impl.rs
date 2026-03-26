@@ -18,7 +18,7 @@ struct BadEvent {
     name: String,
 }
 
-impl View<GoodEvent> for AsOrderView {
+unsafe impl View<GoodEvent> for AsOrderView {
     type ViewType<'a> = OrderView;
     type StaticViewType = OrderView;
     fn view(source: &GoodEvent) -> OrderView {
@@ -27,7 +27,7 @@ impl View<GoodEvent> for AsOrderView {
 }
 
 fn main() {
-    // This should fail: AsOrderView doesn't impl View<BadEvent>
+    // This should fail: AsOrderView doesn't unsafe impl View<BadEvent>
     let _ = PipelineBuilder::<BadEvent>::new()
         .view::<AsOrderView>();
 }

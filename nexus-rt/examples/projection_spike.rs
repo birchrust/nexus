@@ -55,7 +55,7 @@ struct MarketUpdate {
 /// Marker type selecting the OrderView projection.
 struct AsOrderView;
 
-impl View<AdminCommand> for AsOrderView {
+unsafe impl View<AdminCommand> for AsOrderView {
     type ViewType<'a> = OrderView<'a>;
     type StaticViewType = OrderView<'static>;
     fn view(source: &AdminCommand) -> OrderView<'_> {
@@ -67,7 +67,7 @@ impl View<AdminCommand> for AsOrderView {
     }
 }
 
-impl View<MarketUpdate> for AsOrderView {
+unsafe impl View<MarketUpdate> for AsOrderView {
     type ViewType<'a> = OrderView<'a>;
     type StaticViewType = OrderView<'static>;
     fn view(source: &MarketUpdate) -> OrderView<'_> {

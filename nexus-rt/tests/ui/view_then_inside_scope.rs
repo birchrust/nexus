@@ -9,7 +9,7 @@ struct OrderView {
 }
 
 struct AsOrderView;
-impl View<u32> for AsOrderView {
+unsafe impl View<u32> for AsOrderView {
     type ViewType<'a> = OrderView;
     type StaticViewType = OrderView;
     fn view(_s: &u32) -> OrderView {

@@ -1,11 +1,3 @@
-warning: unused import: `Resource`
- --> tests/ui/view_wrong_handler_type.rs:4:53
-  |
-4 | use nexus_rt::{PipelineBuilder, View, WorldBuilder, Resource};
-  |                                                     ^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
 error[E0277]: this function cannot be used as a reference step for this input type
   --> tests/ui/view_wrong_handler_type.rs:33:14
    |
@@ -17,7 +9,7 @@ error[E0277]: this function cannot be used as a reference step for this input ty
    = note: reference steps (guard, filter, tap, inspect) take `&In`, not `In`
    = note: if the pipeline output is `Option<T>`, `.filter()` operates on `&T` inside the Option
    = note: closures with resource parameters are not supported — use a named `fn`
-note: required by a bound in `nexus_rt::view::ViewScope::<In, Out, V, PrevChain, InnerSteps>::tap`
+note: required by a bound in `ViewScope::<In, Out, V, PrevChain, InnerSteps>::tap`
   --> src/view.rs
    |
    |     pub fn tap<Params, S: IntoRefStep<V::StaticViewType, (), Params>>(

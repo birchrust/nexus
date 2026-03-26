@@ -34,7 +34,7 @@ use crate::world::World;
 /// struct NewOrder { symbol: String, qty: u64 }
 ///
 /// struct AsOrderView;
-/// impl View<NewOrder> for AsOrderView {
+/// unsafe impl View<NewOrder> for AsOrderView {
 ///     type ViewType<'a> = OrderView<'a>;
 ///     type StaticViewType = OrderView<'static>;
 ///     fn view(source: &NewOrder) -> OrderView<'_> {
@@ -44,9 +44,18 @@ use crate::world::World;
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Source}` cannot be viewed as `{Self}`",
-    note = "implement `View<{Source}>` for your view marker, or use `#[derive(View)]` with `#[source({Source})]`"
+    note = "implement `View<{Source}>` for your view marker type"
 )]
-pub trait View<Source> {
+/// # Safety
+///
+/// `StaticViewType` must be layout-identical to `ViewType<'a>` for any `'a`.
+/// They must be the same struct with different lifetime parameters. The
+/// framework performs a pointer cast between them in `with_view()`.
+///
+/// Incorrect implementations (e.g., `StaticViewType` being a different struct)
+/// cause undefined behavior. Use the `#[derive(View)]` macro when available
+/// to generate correct implementations.
+pub unsafe trait View<Source> {
     /// The view type with the source borrow lifetime.
     type ViewType<'a> where Source: 'a;
 
@@ -77,19 +86,21 @@ pub trait View<Source> {
 #[inline(always)]
 fn with_view<Source, V, R>(
     source: &Source,
-    f: impl FnOnce(&V::StaticViewType) -> R,
+    f: impl for<'a> FnOnce(&'a V::StaticViewType) -> R,
 ) -> R
 where
     V: View<Source>,
 {
     let view = V::view(source);
     // SAFETY: ViewType<'a> and StaticViewType are the same struct with
-    // different lifetime parameters. The transmute is sound because:
-    // 1. The layouts are identical (same repr, same fields).
-    // 2. The erased 'static lifetime is confined to the closure scope.
-    // 3. `source` outlives this entire function, so the borrow is valid.
-    // 4. The closure receives `&StaticViewType` (shared ref) — it cannot
-    //    store, return, or leak it.
+    // different lifetime parameters. The pointer cast is sound because:
+    // 1. The layouts are identical (same repr, same fields) — guaranteed
+    //    by the `unsafe trait View` contract.
+    // 2. `source` outlives this entire function, so the borrow is valid.
+    // 3. The `for<'a> FnOnce(&'a ...)` bound prevents the closure from
+    //    storing the reference — it must work for ANY lifetime, so it
+    //    cannot assume 'static.
+    // 4. The view is explicitly dropped after the closure returns.
     let static_ref: &V::StaticViewType =
         unsafe { &*(std::ptr::from_ref(&view) as *const V::StaticViewType) };
     let result = f(static_ref);
@@ -140,6 +151,27 @@ impl<In, Out, V: View<Out>, PrevChain, InnerSteps>
         }
     }
 
+    /// Observe the view without side effects (no Params).
+    /// Step signature: `fn(&ViewType)`.
+    pub fn inspect<S: IntoRefStep<V::StaticViewType, (), ()>>(
+        self,
+        f: S,
+        registry: &crate::world::Registry,
+    ) -> ViewScope<In, Out, V, PrevChain, (InnerSteps, ViewTap<S::Step>)> {
+        self.tap(f, registry)
+    }
+
+    /// Filter the event based on the view. Same as `guard` — returns
+    /// `bool` to accept/reject.
+    /// Step signature: `fn(Params..., &ViewType) -> bool`.
+    pub fn filter<Params, S: IntoRefStep<V::StaticViewType, bool, Params>>(
+        self,
+        f: S,
+        registry: &crate::world::Registry,
+    ) -> ViewScope<In, Out, V, PrevChain, (InnerSteps, ViewGuard<S::Step>)> {
+        self.guard(f, registry)
+    }
+
     /// Guard the event based on the view.
     /// Step signature: `fn(Params..., &ViewType) -> bool`.
     pub fn guard<Params, S: IntoRefStep<V::StaticViewType, bool, Params>>(
@@ -176,9 +208,11 @@ impl<V> ViewSteps<V> for () {
 
 impl<V, Prev: ViewSteps<V>, S: RefStepCall<V, Out = ()>> ViewSteps<V> for (Prev, ViewTap<S>) {
     fn run(&mut self, world: &mut World, view: &V) -> bool {
-        let ok = self.0.run(world, view);
+        if !self.0.run(world, view) {
+            return false;
+        }
         self.1 .0.call(world, view);
-        ok
+        true
     }
 }
 
@@ -404,7 +438,7 @@ mod tests {
 
     struct AsOrderView;
 
-    impl View<NewOrderCommand> for AsOrderView {
+    unsafe impl View<NewOrderCommand> for AsOrderView {
         type ViewType<'a> = OrderView<'a>;
         type StaticViewType = OrderView<'static>;
         fn view(source: &NewOrderCommand) -> OrderView<'_> {
@@ -412,7 +446,7 @@ mod tests {
         }
     }
 
-    impl View<AmendOrderCommand> for AsOrderView {
+    unsafe impl View<AmendOrderCommand> for AsOrderView {
         type ViewType<'a> = OrderView<'a>;
         type StaticViewType = OrderView<'static>;
         fn view(source: &AmendOrderCommand) -> OrderView<'_> {
@@ -476,7 +510,8 @@ mod tests {
         });
         assert!(result.is_none());
 
-        // Tap fires even when guard rejects
+        // Tap is before guard, so both events are logged.
+        // Steps after a rejecting guard short-circuit.
         assert_eq!(world.resource::<AuditLog>().0.len(), 2);
     }
 
@@ -573,7 +608,7 @@ mod tests {
         struct QtyView { qty: u64 }
 
         struct AsSymbolView;
-        impl View<NewOrderCommand> for AsSymbolView {
+        unsafe impl View<NewOrderCommand> for AsSymbolView {
             type ViewType<'a> = SymbolView<'a>;
             type StaticViewType = SymbolView<'static>;
             fn view(source: &NewOrderCommand) -> SymbolView<'_> {
@@ -582,7 +617,7 @@ mod tests {
         }
 
         struct AsQtyView;
-        impl View<NewOrderCommand> for AsQtyView {
+        unsafe impl View<NewOrderCommand> for AsQtyView {
             type ViewType<'a> = QtyView;
             type StaticViewType = QtyView;
             fn view(source: &NewOrderCommand) -> QtyView {
@@ -685,5 +720,56 @@ mod tests {
         assert_eq!(log[1], "accepted");
         assert_eq!(log[2], "ETH qty=200");
         assert_eq!(log[3], "rejected");
+    }
+
+    #[test]
+    fn inspect_no_params() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // inspect takes no Params — just &View
+        fn just_print(v: &OrderView) {
+            assert!(!v.symbol.is_empty());
+        }
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .inspect(just_print, reg)
+                .tap(log_order, reg)
+            .end_view()
+            .then(|_: NewOrderCommand| {}, reg);
+
+        p.run(&mut world, NewOrderCommand {
+            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["BTC qty=50"]);
+    }
+
+    #[test]
+    fn filter_rejects() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        wb.register(RiskLimits { max_qty: 100 });
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+                .filter(check_risk, reg)
+            .end_view_guarded();
+
+        let result = p.run(&mut world, NewOrderCommand {
+            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+        assert!(result.is_some());
+
+        let result = p.run(&mut world, NewOrderCommand {
+            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
+        });
+        assert!(result.is_none());
     }
 }

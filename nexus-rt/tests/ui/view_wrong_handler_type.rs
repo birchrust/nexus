@@ -1,7 +1,7 @@
 // Mistake: handler inside view scope takes wrong view type.
 // Fix: the handler's last parameter must be &ViewType.
 
-use nexus_rt::{PipelineBuilder, View, WorldBuilder, Resource};
+use nexus_rt::{PipelineBuilder, View, WorldBuilder};
 
 struct OrderView {
     qty: u64,
@@ -12,7 +12,7 @@ struct WrongView {
 }
 
 struct AsOrderView;
-impl View<u32> for AsOrderView {
+unsafe impl View<u32> for AsOrderView {
     type ViewType<'a> = OrderView;
     type StaticViewType = OrderView;
     fn view(_s: &u32) -> OrderView {
