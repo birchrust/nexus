@@ -1,0 +1,5 @@
+error: #[derive(View)] supports at most one lifetime parameter
+  --> tests/ui/view_derive_two_lifetimes.rs:13:15
+   |
+13 | struct BadView<'a, 'b> {
+   |               ^^^^^^^^

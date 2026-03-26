@@ -4052,3 +4052,378 @@ fn mio_driver_satisfies_resource_bound() {
     // MioDriver uses external slab crate (not nexus-slab), which is Send when S: Send.
     assert_resource::<nexus_rt::mio::MioDriver<Box<dyn Handler<::mio::event::Event>>>>();
 }
+
+// =============================================================================
+// #[derive(View)] tests
+// =============================================================================
+
+mod view_derive {
+    use nexus_rt::{
+        PipelineBuilder, Res, ResMut, Resource, View, WorldBuilder,
+    };
+
+    #[derive(Resource)]
+    struct AuditLog(Vec<String>);
+
+    #[derive(Resource)]
+    struct RiskLimits {
+        max_qty: u64,
+    }
+
+    // -- Event types --
+
+    struct NewOrderCommand {
+        source: String,
+        symbol: String,
+        qty: u64,
+        price: f64,
+    }
+
+    struct AmendOrderCommand {
+        order_id: u64,
+        symbol: String,
+        qty: u64,
+        price: f64,
+    }
+
+    // -- Derived view with borrowed + copy fields --
+
+    #[derive(View)]
+    #[source(NewOrderCommand)]
+    #[source(AmendOrderCommand)]
+    struct OrderView<'a> {
+        #[borrow]
+        symbol: &'a str,
+        qty: u64,
+        price: f64,
+    }
+
+    // -- Derived view without lifetime (all Copy) --
+
+    #[derive(View)]
+    #[source(NewOrderCommand)]
+    struct RiskView {
+        qty: u64,
+        price: f64,
+    }
+
+    // -- Reusable steps --
+
+    fn log_order(mut log: ResMut<AuditLog>, v: &OrderView) {
+        log.0.push(format!("{} qty={}", v.symbol, v.qty));
+    }
+
+    fn check_risk(limits: Res<RiskLimits>, v: &OrderView) -> bool {
+        v.qty <= limits.max_qty
+    }
+
+    #[test]
+    fn derive_basic_tap() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+            .end_view()
+            .then(|_: NewOrderCommand| {}, reg);
+
+        p.run(&mut world, NewOrderCommand {
+            source: "test".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["BTC qty=50"]);
+    }
+
+    #[test]
+    fn derive_guard_rejects() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        wb.register(RiskLimits { max_qty: 100 });
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+                .guard(check_risk, reg)
+            .end_view_guarded();
+
+        let result = p.run(&mut world, NewOrderCommand {
+            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+        assert!(result.is_some());
+
+        let result = p.run(&mut world, NewOrderCommand {
+            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
+        });
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn derive_reusable_across_sources() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p_new = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+            .end_view()
+            .then(|_: NewOrderCommand| {}, reg);
+
+        let mut p_amend = PipelineBuilder::<AmendOrderCommand>::new()
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+            .end_view()
+            .then(|_: AmendOrderCommand| {}, reg);
+
+        p_new.run(&mut world, NewOrderCommand {
+            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+        p_amend.run(&mut world, AmendOrderCommand {
+            order_id: 123, symbol: "ETH".into(), qty: 25, price: 3000.0,
+        });
+
+        let log = &world.resource::<AuditLog>().0;
+        assert_eq!(log[0], "BTC qty=50");
+        assert_eq!(log[1], "ETH qty=25");
+    }
+
+    #[test]
+    fn derive_no_lifetime_view() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_risk(mut log: ResMut<AuditLog>, v: &RiskView) {
+            log.0.push(format!("risk: qty={} price={}", v.qty, v.price));
+        }
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsRiskView>()
+                .tap(log_risk, reg)
+            .end_view()
+            .then(|_: NewOrderCommand| {}, reg);
+
+        p.run(&mut world, NewOrderCommand {
+            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["risk: qty=50 price=42000"]);
+    }
+
+    // -- Field remapping --
+
+    struct ExternalOrder {
+        ticker: String,
+        quantity: u64,
+        px: f64,
+    }
+
+    #[derive(View)]
+    #[source(ExternalOrder)]
+    struct RemappedView<'a> {
+        #[borrow]
+        #[source(ExternalOrder, from = "ticker")]
+        symbol: &'a str,
+
+        #[source(ExternalOrder, from = "quantity")]
+        qty: u64,
+
+        #[source(ExternalOrder, from = "px")]
+        price: f64,
+    }
+
+    // -- Mixed remap: one source matches by name, another remapped --
+
+    struct InternalOrder {
+        symbol: String,
+        qty: u64,
+        price: f64,
+    }
+
+    #[derive(View)]
+    #[source(InternalOrder)]
+    #[source(ExternalOrder)]
+    struct UnifiedView<'a> {
+        #[borrow]
+        #[source(ExternalOrder, from = "ticker")]
+        symbol: &'a str,
+
+        #[source(ExternalOrder, from = "quantity")]
+        qty: u64,
+
+        #[source(ExternalOrder, from = "px")]
+        price: f64,
+    }
+
+    #[test]
+    fn derive_mixed_remap_and_match() {
+        // InternalOrder: fields match by name
+        // ExternalOrder: all fields remapped
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_unified(mut log: ResMut<AuditLog>, v: &UnifiedView) {
+            log.0.push(format!("{} qty={}", v.symbol, v.qty));
+        }
+
+        let mut p_internal = PipelineBuilder::<InternalOrder>::new()
+            .view::<AsUnifiedView>()
+                .tap(log_unified, reg)
+            .end_view()
+            .then(|_: InternalOrder| {}, reg);
+
+        let mut p_external = PipelineBuilder::<ExternalOrder>::new()
+            .view::<AsUnifiedView>()
+                .tap(log_unified, reg)
+            .end_view()
+            .then(|_: ExternalOrder| {}, reg);
+
+        p_internal.run(&mut world, InternalOrder {
+            symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+        p_external.run(&mut world, ExternalOrder {
+            ticker: "ETH".into(), quantity: 25, px: 3000.0,
+        });
+
+        let log = &world.resource::<AuditLog>().0;
+        assert_eq!(log[0], "BTC qty=50");
+        assert_eq!(log[1], "ETH qty=25");
+    }
+
+    // -- Borrow on Copy type --
+
+    #[derive(Clone, Copy)]
+    struct SymbolId(u64);
+
+    struct TypedOrder {
+        symbol_id: SymbolId,
+        qty: u64,
+    }
+
+    #[derive(View)]
+    #[source(TypedOrder)]
+    struct BorrowCopyView<'a> {
+        #[borrow]
+        symbol_id: &'a SymbolId,
+        qty: u64,
+    }
+
+    #[test]
+    fn derive_borrow_copy_type() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_id(mut log: ResMut<AuditLog>, v: &BorrowCopyView) {
+            log.0.push(format!("id={} qty={}", v.symbol_id.0, v.qty));
+        }
+
+        let mut p = PipelineBuilder::<TypedOrder>::new()
+            .view::<AsBorrowCopyView>()
+                .tap(log_id, reg)
+            .end_view()
+            .then(|_: TypedOrder| {}, reg);
+
+        p.run(&mut world, TypedOrder { symbol_id: SymbolId(42), qty: 100 });
+        assert_eq!(world.resource::<AuditLog>().0, vec!["id=42 qty=100"]);
+    }
+
+    // -- Multiple views from same event --
+
+    #[derive(View)]
+    #[source(NewOrderCommand)]
+    struct SourceView<'a> {
+        #[borrow]
+        source: &'a str,
+    }
+
+    #[test]
+    fn derive_multiple_views_same_event() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_source(mut log: ResMut<AuditLog>, v: &SourceView) {
+            log.0.push(format!("from: {}", v.source));
+        }
+
+        // Use OrderView first, then SourceView — two different derived views
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+            .end_view()
+            .view::<AsSourceView>()
+                .tap(log_source, reg)
+            .end_view()
+            .then(|_: NewOrderCommand| {}, reg);
+
+        p.run(&mut world, NewOrderCommand {
+            source: "ops".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+
+        let log = &world.resource::<AuditLog>().0;
+        assert_eq!(log[0], "BTC qty=50");
+        assert_eq!(log[1], "from: ops");
+    }
+
+    // -- DAG with derived view --
+
+    #[test]
+    fn derive_dag_integration() {
+        use nexus_rt::{DagBuilder, Handler};
+
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let dag = DagBuilder::<NewOrderCommand>::new()
+            .root(|cmd: NewOrderCommand| cmd, reg)
+            .view::<AsOrderView>()
+                .tap(log_order, reg)
+            .end_view_dag()
+            .then(|_: &NewOrderCommand| {}, reg);
+
+        let mut handler = dag.build();
+        handler.run(&mut world, NewOrderCommand {
+            source: "test".into(), symbol: "SOL".into(), qty: 10, price: 150.0,
+        });
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["SOL qty=10"]);
+    }
+
+    #[test]
+    fn derive_field_remap() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_remapped(mut log: ResMut<AuditLog>, v: &RemappedView) {
+            log.0.push(format!("{} qty={} @{}", v.symbol, v.qty, v.price));
+        }
+
+        let mut p = PipelineBuilder::<ExternalOrder>::new()
+            .view::<AsRemappedView>()
+                .tap(log_remapped, reg)
+            .end_view()
+            .then(|_: ExternalOrder| {}, reg);
+
+        p.run(&mut world, ExternalOrder {
+            ticker: "SOL-USD".into(), quantity: 100, px: 150.0,
+        });
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["SOL-USD qty=100 @150"]);
+    }
+}

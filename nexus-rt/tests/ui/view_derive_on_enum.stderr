@@ -1,0 +1,5 @@
+error: #[derive(View)] can only be used on structs
+ --> tests/ui/view_derive_on_enum.rs:8:6
+  |
+8 | enum BadView {
+  |      ^^^^^^^

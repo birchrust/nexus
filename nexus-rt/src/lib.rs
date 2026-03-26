@@ -183,7 +183,9 @@ pub use handler::{
 };
 // Note: `Param` derive macro and `Param` trait coexist — Rust's macro
 // namespace is separate from the type namespace.
-pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource};
+// Note: `View` derive macro and `View` trait coexist — Rust's macro
+// namespace is separate from the type namespace (same as `Param`).
+pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource, View};
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
     PipelineBuilder, PipelineChain, PipelineOutput, resolve_producer, resolve_ref_scan_step,
