@@ -261,7 +261,7 @@ impl TransferEntropyF64 {
 
         // Precompute P(b) = Σ_c marginal[b][c] for all b.
         // Hoisted outside the (a, b) loop — depends only on b.
-        let mut marginal_b_sums: alloc::vec::Vec<u64> = vec![0u64; bins];
+        let mut marginal_b_sums = [0u64; 32]; // max bins is 32 (validated by builder)
         for b in 0..bins {
             let mut sum = 0u64;
             for c in 0..bins {

@@ -1,6 +1,13 @@
 //! Signal analysis types.
 
-pub use crate::{AutocorrelationF32, AutocorrelationF64, AutocorrelationI32, AutocorrelationI64};
+#[cfg(feature = "alloc")]
+pub use crate::{
+    AutocorrelationF32, AutocorrelationF32Builder, AutocorrelationF64, AutocorrelationF64Builder,
+    AutocorrelationI32, AutocorrelationI32Builder, AutocorrelationI64, AutocorrelationI64Builder,
+};
 
-#[cfg(any(feature = "std", feature = "libm"))]
-pub use crate::{CrossCorrelationF32, CrossCorrelationF64};
+#[cfg(feature = "alloc")]
+pub use crate::{
+    CrossCorrelationF32, CrossCorrelationF32Builder, CrossCorrelationF64,
+    CrossCorrelationF64Builder,
+};

@@ -26,5 +26,12 @@ required-features = ["std"]
 name = "basic"
 required-features = ["std"]
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "update_bench"
+harness = false
+
 [lints]
 workspace = true

@@ -4,7 +4,7 @@
 
 // Online Cross-Correlation — Two-Stream, Multi-Lag
 //
-// Cross-correlation between stream A and stream B at lags 0..LAG-1.
+// Cross-correlation between stream A and stream B at lags 0..lag-1.
 // "Does A at time t-k correlate with B at time t?"
 //
 // Maintains a circular buffer for stream A's history, per-stream
@@ -12,11 +12,15 @@
 //
 // r_AB(k) = C_AB(k) / sqrt(Var(A) * Var(B))
 
+extern crate alloc;
+use alloc::boxed::Box;
+use alloc::vec;
+
 macro_rules! impl_cross_correlation {
-    ($name:ident, $ty:ty) => {
+    ($name:ident, $builder:ident, $ty:ty) => {
         /// Online cross-correlation between two streams at multiple lags.
         ///
-        /// Tracks the Pearson correlation between stream A (lagged by 0..LAG-1
+        /// Tracks the Pearson correlation between stream A (lagged by 0..lag-1
         /// steps) and stream B at the current time. Uses Welford-style
         /// running accumulators for numerical stability.
         ///
@@ -28,7 +32,7 @@ macro_rules! impl_cross_correlation {
         /// - Measuring coupling strength between two metrics
         ///
         /// # Complexity
-        /// - O(LAG) per update, `16*LAG + 48` bytes state, zero allocation.
+        /// - O(lag) per update, heap-allocated buffers.
         ///
         /// # Examples
         ///
@@ -36,11 +40,11 @@ macro_rules! impl_cross_correlation {
         #[doc = concat!("use nexus_stats::", stringify!($name), ";")]
         ///
         /// // B = A shifted by 3 steps
-        #[doc = concat!("let mut cc = ", stringify!($name), "::<10>::new();")]
+        #[doc = concat!("let mut cc = ", stringify!($name), "::builder().lag(10).build().unwrap();")]
         /// let a: Vec<f64> = (0..500).map(|i| (i as f64).sin()).collect();
         /// for i in 0..500 {
         ///     let b = if i >= 3 { a[i - 3] } else { 0.0 };
-        #[doc = concat!("    cc.update(a[i] as ", stringify!($ty), ", b as ", stringify!($ty), ");")]
+        #[doc = concat!("    cc.update(a[i] as ", stringify!($ty), ", b as ", stringify!($ty), ").unwrap();")]
         /// }
         /// // Peak correlation should be near lag 3
         /// if let Some(peak) = cc.peak_lag() {
@@ -48,35 +52,33 @@ macro_rules! impl_cross_correlation {
         /// }
         /// ```
         #[derive(Debug, Clone)]
-        pub struct $name<const LAG: usize> {
-            buffer_a: [$ty; LAG],
+        pub struct $name {
+            buffer_a: Box<[$ty]>,
+            cross_m: Box<[$ty]>,
+            lag: usize,
             head: usize,
             count: u64,
             mean_a: $ty,
             mean_b: $ty,
             m2_a: $ty,
             m2_b: $ty,
-            cross_m: [$ty; LAG],
         }
 
-        impl<const LAG: usize> $name<LAG> {
-            const _ASSERT_LAG: () = assert!(LAG >= 1, "LAG must be at least 1");
+        /// Builder for [`
+        #[doc = stringify!($name)]
+        /// `].
+        #[derive(Debug, Clone)]
+        pub struct $builder {
+            lag: Option<usize>,
+        }
 
-            /// Creates a new empty cross-correlation tracker.
+        impl $name {
+            /// Creates a builder.
             #[inline]
             #[must_use]
-            pub fn new() -> Self {
-                #[allow(clippy::let_unit_value)]
-                let () = Self::_ASSERT_LAG;
-                Self {
-                    buffer_a: [0.0 as $ty; LAG],
-                    head: 0,
-                    count: 0,
-                    mean_a: 0.0 as $ty,
-                    mean_b: 0.0 as $ty,
-                    m2_a: 0.0 as $ty,
-                    m2_b: 0.0 as $ty,
-                    cross_m: [0.0 as $ty; LAG],
+            pub fn builder() -> $builder {
+                $builder {
+                    lag: Option::None,
                 }
             }
 
@@ -92,6 +94,7 @@ macro_rules! impl_cross_correlation {
                 check_finite!(b);
                 self.count += 1;
                 let n = self.count as $ty;
+                let lag = self.lag;
 
                 // Capture old means for Welford co-moment
                 let da_old = a - self.mean_a;
@@ -109,12 +112,12 @@ macro_rules! impl_cross_correlation {
                 // Lag 0: exact Welford co-moment (old_delta_a * new_residual_b)
                 self.cross_m[0] += da_old * db_new;
 
-                // Lags 1..LAG-1: use buffered A values (approximate,
+                // Lags 1..lag-1: use buffered A values (approximate,
                 // error is O(1/n) per step — fine for streaming)
                 if self.count > 1 {
-                    let filled = (self.count - 1).min(LAG as u64) as usize;
-                    for k in 1..filled.min(LAG) {
-                        let idx = (self.head + LAG - k) % LAG;
+                    let filled = (self.count - 1).min(lag as u64) as usize;
+                    for k in 1..filled.min(lag) {
+                        let idx = (self.head + lag - k) % lag;
                         let a_lagged = self.buffer_a[idx];
                         self.cross_m[k] +=
                             (a_lagged - self.mean_a) * db_new;
@@ -123,7 +126,7 @@ macro_rules! impl_cross_correlation {
 
                 // Store A in circular buffer
                 self.buffer_a[self.head] = a;
-                self.head = (self.head + 1) % LAG;
+                self.head = (self.head + 1) % lag;
                 Ok(())
             }
 
@@ -136,7 +139,7 @@ macro_rules! impl_cross_correlation {
             #[inline]
             #[must_use]
             pub fn correlation(&self, lag: usize) -> Option<$ty> {
-                if lag >= LAG {
+                if lag >= self.lag {
                     return Option::None;
                 }
                 if self.count < (lag as u64 + 2) {
@@ -162,7 +165,7 @@ macro_rules! impl_cross_correlation {
                 Option::Some(self.cross_m[lag] * scale / denom)
             }
 
-            /// The lag (0..LAG) with the strongest absolute correlation,
+            /// The lag (0..max_lag) with the strongest absolute correlation,
             /// or `None` if not primed.
             #[cfg(any(feature = "std", feature = "libm"))]
             #[inline]
@@ -178,13 +181,10 @@ macro_rules! impl_cross_correlation {
 
                 let mut best_lag = 0;
                 let mut best_abs = 0.0 as $ty;
-                let max_lag = (self.count - 1).min(LAG as u64) as usize;
+                let max_lag = (self.count - 1).min(self.lag as u64) as usize;
                 let n_samples = (self.count - 1) as $ty;
 
                 for k in 0..max_lag {
-                    // Normalize cross_m by pair count so larger lags
-                    // aren't penalized for having fewer contributing pairs.
-                    // Lag 0 needs no scaling (same contributor count as m2).
                     let normalized = if k == 0 {
                         self.cross_m[k]
                     } else {
@@ -209,7 +209,7 @@ macro_rules! impl_cross_correlation {
             #[inline]
             #[must_use]
             pub fn covariance(&self, lag: usize) -> Option<$ty> {
-                if lag >= LAG {
+                if lag >= self.lag {
                     return Option::None;
                 }
                 if self.count < (lag as u64 + 2) {
@@ -219,6 +219,13 @@ macro_rules! impl_cross_correlation {
                 Option::Some(self.cross_m[lag] / n_pairs)
             }
 
+            /// The configured maximum lag.
+            #[inline]
+            #[must_use]
+            pub fn lag(&self) -> usize {
+                self.lag
+            }
+
             /// Number of paired observations processed.
             #[inline]
             #[must_use]
@@ -226,50 +233,74 @@ macro_rules! impl_cross_correlation {
                 self.count
             }
 
-            /// Whether enough data has been collected for all lags (>= LAG + 1).
+            /// Whether enough data has been collected for all lags (> lag).
             #[inline]
             #[must_use]
             pub fn is_primed(&self) -> bool {
-                self.count > LAG as u64
+                self.count > self.lag as u64
             }
 
-            /// Resets to empty state.
+            /// Resets to empty state. Configuration and buffer allocations preserved.
             #[inline]
             pub fn reset(&mut self) {
-                self.buffer_a = [0.0 as $ty; LAG];
+                self.buffer_a.fill(0.0 as $ty);
+                self.cross_m.fill(0.0 as $ty);
                 self.head = 0;
                 self.count = 0;
                 self.mean_a = 0.0 as $ty;
                 self.mean_b = 0.0 as $ty;
                 self.m2_a = 0.0 as $ty;
                 self.m2_b = 0.0 as $ty;
-                self.cross_m = [0.0 as $ty; LAG];
             }
         }
 
-        impl<const LAG: usize> Default for $name<LAG> {
+        impl $builder {
+            /// Sets the maximum lag (required, >= 1).
+            ///
+            /// The tracker computes cross-correlation at lags 0..lag-1.
             #[inline]
-            fn default() -> Self {
-                Self::new()
+            #[must_use]
+            pub fn lag(mut self, lag: usize) -> Self {
+                self.lag = Option::Some(lag);
+                self
+            }
+
+            /// Builds the cross-correlation tracker.
+            ///
+            /// # Errors
+            /// Returns `ConfigError` if lag is missing or < 1.
+            #[inline]
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let lag = self.lag.ok_or(crate::ConfigError::Missing("lag"))?;
+                if lag < 1 {
+                    return Err(crate::ConfigError::Invalid("lag must be >= 1"));
+                }
+                Ok($name {
+                    buffer_a: vec![0.0 as $ty; lag].into_boxed_slice(),
+                    cross_m: vec![0.0 as $ty; lag].into_boxed_slice(),
+                    lag,
+                    head: 0,
+                    count: 0,
+                    mean_a: 0.0 as $ty,
+                    mean_b: 0.0 as $ty,
+                    m2_a: 0.0 as $ty,
+                    m2_b: 0.0 as $ty,
+                })
             }
         }
     };
 }
 
-impl_cross_correlation!(CrossCorrelationF64, f64);
-impl_cross_correlation!(CrossCorrelationF32, f32);
+impl_cross_correlation!(CrossCorrelationF64, CrossCorrelationF64Builder, f64);
+impl_cross_correlation!(CrossCorrelationF32, CrossCorrelationF32Builder, f32);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // =========================================================================
-    // Basic correctness
-    // =========================================================================
-
     #[test]
     fn identical_streams_correlation_one() {
-        let mut cc = CrossCorrelationF64::<1>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
         for i in 0..1000u64 {
             let x = i as f64;
             cc.update(x, x).unwrap();
@@ -283,7 +314,7 @@ mod tests {
 
     #[test]
     fn opposite_streams_correlation_negative() {
-        let mut cc = CrossCorrelationF64::<1>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
         for i in 0..1000u64 {
             let x = i as f64;
             cc.update(x, -x).unwrap();
@@ -297,9 +328,8 @@ mod tests {
 
     #[test]
     fn shifted_signal_peak_lag() {
-        let mut cc = CrossCorrelationF64::<10>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
         let shift = 3;
-        // A is a sine wave, B is A shifted by 3
         let a: Vec<f64> = (0..1000).map(|i| ((i as f64) * 0.1).sin()).collect();
         for i in 0..1000 {
             let b = if i >= shift { a[i - shift] } else { 0.0 };
@@ -314,8 +344,7 @@ mod tests {
 
     #[test]
     fn lag0_matches_covariance_type() {
-        // CrossCorrelation at lag 0 should match CovarianceF64's correlation
-        let mut cc = CrossCorrelationF64::<1>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
         let mut cov = crate::CovarianceF64::new();
 
         for i in 0..500u64 {
@@ -333,13 +362,9 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // Priming
-    // =========================================================================
-
     #[test]
     fn not_primed_until_enough_samples() {
-        let mut cc = CrossCorrelationF64::<5>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(5).build().unwrap();
         for i in 0..5 {
             cc.update(i as f64, i as f64).unwrap();
             assert!(!cc.is_primed());
@@ -350,34 +375,26 @@ mod tests {
 
     #[test]
     fn lag_out_of_range_returns_none() {
-        let mut cc = CrossCorrelationF64::<5>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(5).build().unwrap();
         for i in 0..20 {
             cc.update(i as f64, i as f64).unwrap();
         }
-        assert!(cc.correlation(5).is_none()); // LAG=5, max valid lag is 4
+        assert!(cc.correlation(5).is_none()); // lag=5, max valid lag index is 4
         assert!(cc.covariance(5).is_none());
     }
 
-    // =========================================================================
-    // Zero variance
-    // =========================================================================
-
     #[test]
     fn zero_variance_returns_none() {
-        let mut cc = CrossCorrelationF64::<1>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
         for _ in 0..100 {
             cc.update(42.0, 42.0).unwrap();
         }
         assert!(cc.correlation(0).is_none());
     }
 
-    // =========================================================================
-    // Reset
-    // =========================================================================
-
     #[test]
     fn reset_clears_state() {
-        let mut cc = CrossCorrelationF64::<3>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(3).build().unwrap();
         for i in 0..100 {
             cc.update(i as f64, (i * 2) as f64).unwrap();
         }
@@ -386,13 +403,15 @@ mod tests {
         assert!(!cc.is_primed());
     }
 
-    // =========================================================================
-    // f32 variant
-    // =========================================================================
+    #[test]
+    fn lag_accessor() {
+        let cc = CrossCorrelationF64::builder().lag(7).build().unwrap();
+        assert_eq!(cc.lag(), 7);
+    }
 
     #[test]
     fn f32_basic() {
-        let mut cc = CrossCorrelationF32::<1>::new();
+        let mut cc = CrossCorrelationF32::builder().lag(1).build().unwrap();
         for i in 0..200u32 {
             cc.update(i as f32, (i * 2) as f32).unwrap();
         }
@@ -400,24 +419,26 @@ mod tests {
         assert!(r > 0.9, "f32 perfect linear should be near 1.0, got {r}");
     }
 
-    // =========================================================================
-    // Default
-    // =========================================================================
-
-    #[test]
-    fn default_is_empty() {
-        let cc = CrossCorrelationF64::<5>::default();
-        assert_eq!(cc.count(), 0);
-    }
-
     #[test]
     fn rejects_nan_and_inf() {
-        let mut cc = CrossCorrelationF64::<1>::new();
+        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
         assert_eq!(cc.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
         assert_eq!(
             cc.update(1.0, f64::INFINITY),
             Err(crate::DataError::Infinite)
         );
         assert_eq!(cc.count(), 0);
+    }
+
+    #[test]
+    fn builder_requires_lag() {
+        let result = CrossCorrelationF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("lag"))));
+    }
+
+    #[test]
+    fn builder_rejects_zero_lag() {
+        let result = CrossCorrelationF64::builder().lag(0).build();
+        assert!(result.is_err());
     }
 }

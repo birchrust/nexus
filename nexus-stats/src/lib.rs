@@ -173,12 +173,14 @@ mod adam;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod adaptive_threshold;
 mod asym_ema;
+#[cfg(feature = "alloc")]
 mod autocorrelation;
 mod beta_binomial;
 #[cfg(feature = "alloc")]
 mod bool_window;
 mod codel;
 mod covariance;
+#[cfg(feature = "alloc")]
 mod cross_correlation;
 mod cusum;
 mod dead_band;
@@ -188,7 +190,7 @@ mod decay_accum;
 mod diff;
 mod drawdown;
 mod ema;
-#[cfg(any(feature = "std", feature = "libm"))]
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod entropy;
 mod error_rate;
 mod event_rate;
@@ -262,8 +264,10 @@ pub use asym_ema::{
     AsymEmaF32, AsymEmaF32Builder, AsymEmaF64, AsymEmaF64Builder, AsymEmaI32, AsymEmaI32Builder,
     AsymEmaI64, AsymEmaI64Builder,
 };
+#[cfg(feature = "alloc")]
 pub use autocorrelation::{
-    AutocorrelationF32, AutocorrelationF64, AutocorrelationI32, AutocorrelationI64,
+    AutocorrelationF32, AutocorrelationF32Builder, AutocorrelationF64, AutocorrelationF64Builder,
+    AutocorrelationI32, AutocorrelationI32Builder, AutocorrelationI64, AutocorrelationI64Builder,
 };
 pub use beta_binomial::{
     BetaBinomialF32, BetaBinomialF32Builder, BetaBinomialF64, BetaBinomialF64Builder,
@@ -280,7 +284,11 @@ pub use codel::{
     CoDelI32RawBuilder, CoDelI64Raw, CoDelI64RawBuilder, CoDelI128Raw, CoDelI128RawBuilder,
 };
 pub use covariance::{CovarianceF32, CovarianceF64};
-pub use cross_correlation::{CrossCorrelationF32, CrossCorrelationF64};
+#[cfg(feature = "alloc")]
+pub use cross_correlation::{
+    CrossCorrelationF32, CrossCorrelationF32Builder, CrossCorrelationF64,
+    CrossCorrelationF64Builder,
+};
 pub use cusum::{
     CusumF32, CusumF32Builder, CusumF64, CusumF64Builder, CusumI32, CusumI32Builder, CusumI64,
     CusumI64Builder, CusumI128, CusumI128Builder,
@@ -297,8 +305,8 @@ pub use drawdown::{DrawdownF32, DrawdownF64, DrawdownI32, DrawdownI64, DrawdownI
 pub use ema::{
     EmaF32, EmaF32Builder, EmaF64, EmaF64Builder, EmaI32, EmaI32Builder, EmaI64, EmaI64Builder,
 };
-#[cfg(any(feature = "std", feature = "libm"))]
-pub use entropy::{EntropyF32, EntropyF64};
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+pub use entropy::{EntropyF32, EntropyF32Builder, EntropyF64, EntropyF64Builder};
 pub use enums::{Condition, ConfigError, DataError, Direction};
 pub use error_rate::{ErrorRateF32, ErrorRateF32Builder, ErrorRateF64, ErrorRateF64Builder};
 pub use event_rate::{

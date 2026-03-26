@@ -2,12 +2,16 @@
 //
 // H(X) = -Σ p_i * ln(p_i)  where p_i = count_i / total
 //
-// Maintains frequency counts over K categories, computes entropy on query.
-// O(K) for entropy query, O(1) for update.
+// Maintains frequency counts over `bins` categories, computes entropy on query.
+// O(bins) for entropy query, O(1) for update.
+
+extern crate alloc;
+use alloc::boxed::Box;
+use alloc::vec;
 
 macro_rules! impl_entropy {
-    ($name:ident, $ty:ty) => {
-        /// Shannon entropy over a categorical distribution with `K` categories.
+    ($name:ident, $builder:ident, $ty:ty) => {
+        /// Shannon entropy over a categorical distribution.
         ///
         /// Maintains frequency counts and computes entropy on query.
         /// Entropy measures how "spread out" or unpredictable a distribution
@@ -19,8 +23,8 @@ macro_rules! impl_entropy {
         /// - Monitoring regime change via entropy shifts
         ///
         /// # Complexity
-        /// - O(1) per observation, O(K) per entropy query.
-        /// - `8*K + 8` bytes state, zero allocation.
+        /// - O(1) per observation, O(bins) per entropy query.
+        /// - Heap-allocated count vector.
         ///
         /// # Examples
         ///
@@ -28,30 +32,34 @@ macro_rules! impl_entropy {
         #[doc = concat!("use nexus_stats::", stringify!($name), ";")]
         ///
         /// // Uniform distribution over 4 categories → maximum entropy
-        #[doc = concat!("let mut e = ", stringify!($name), "::<4>::new();")]
+        #[doc = concat!("let mut e = ", stringify!($name), "::builder().bins(4).build().unwrap();")]
         /// for i in 0..400u32 { e.update(i as usize % 4); }
         /// let h = e.entropy().unwrap();
         /// // ln(4) ≈ 1.386
         /// assert!((h - 1.386).abs() < 0.01);
         /// ```
         #[derive(Debug, Clone)]
-        pub struct $name<const K: usize> {
-            counts: [u64; K],
+        pub struct $name {
+            counts: Box<[u64]>,
+            bins: usize,
             total: u64,
         }
 
-        impl<const K: usize> $name<K> {
-            const _ASSERT_K: () = assert!(K >= 2, "K must be at least 2");
+        /// Builder for [`
+        #[doc = stringify!($name)]
+        /// `].
+        #[derive(Debug, Clone)]
+        pub struct $builder {
+            bins: Option<usize>,
+        }
 
-            /// Creates a new empty entropy tracker.
+        impl $name {
+            /// Creates a builder.
             #[inline]
             #[must_use]
-            pub fn new() -> Self {
-                #[allow(clippy::let_unit_value)]
-                let () = Self::_ASSERT_K;
-                Self {
-                    counts: [0; K],
-                    total: 0,
+            pub fn builder() -> $builder {
+                $builder {
+                    bins: Option::None,
                 }
             }
 
@@ -59,10 +67,14 @@ macro_rules! impl_entropy {
             ///
             /// # Panics
             ///
-            /// Panics if `category >= K`.
+            /// Panics if `category >= bins`.
             #[inline]
             pub fn update(&mut self, category: usize) {
-                assert!(category < K, "category {category} out of range (K={K})");
+                assert!(
+                    category < self.bins,
+                    "category {category} out of range (bins={})",
+                    self.bins,
+                );
                 self.counts[category] += 1;
                 self.total += 1;
             }
@@ -79,7 +91,8 @@ macro_rules! impl_entropy {
                 }
                 let n = self.total as $ty;
                 let mut h = 0.0 as $ty;
-                for &c in &self.counts {
+                for i in 0..self.bins {
+                    let c = self.counts[i];
                     if c > 0 {
                         let p = c as $ty / n;
                         #[allow(clippy::cast_possible_truncation)]
@@ -112,11 +125,15 @@ macro_rules! impl_entropy {
             ///
             /// # Panics
             ///
-            /// Panics if `category >= K`.
+            /// Panics if `category >= bins`.
             #[inline]
             #[must_use]
             pub fn surprise(&self, category: usize) -> Option<$ty> {
-                assert!(category < K, "category {category} out of range (K={K})");
+                assert!(
+                    category < self.bins,
+                    "category {category} out of range (bins={})",
+                    self.bins,
+                );
                 if self.total == 0 || self.counts[category] == 0 {
                     return Option::None;
                 }
@@ -131,15 +148,26 @@ macro_rules! impl_entropy {
             ///
             /// # Panics
             ///
-            /// Panics if `category >= K`.
+            /// Panics if `category >= bins`.
             #[inline]
             #[must_use]
             pub fn probability(&self, category: usize) -> Option<$ty> {
-                assert!(category < K, "category {category} out of range (K={K})");
+                assert!(
+                    category < self.bins,
+                    "category {category} out of range (bins={})",
+                    self.bins,
+                );
                 if self.total == 0 {
                     return Option::None;
                 }
                 Option::Some(self.counts[category] as $ty / self.total as $ty)
+            }
+
+            /// Number of configured categories.
+            #[inline]
+            #[must_use]
+            pub fn bins(&self) -> usize {
+                self.bins
             }
 
             /// Total observations across all categories.
@@ -160,45 +188,65 @@ macro_rules! impl_entropy {
             ///
             /// # Panics
             ///
-            /// Panics if `category >= K`.
+            /// Panics if `category >= bins`.
             #[inline]
             #[must_use]
             pub fn category_count(&self, category: usize) -> u64 {
-                assert!(category < K, "category {category} out of range (K={K})");
+                assert!(
+                    category < self.bins,
+                    "category {category} out of range (bins={})",
+                    self.bins,
+                );
                 self.counts[category]
             }
 
-            /// Resets to empty state.
+            /// Resets to empty state. Configuration and allocation preserved.
             #[inline]
             pub fn reset(&mut self) {
-                self.counts = [0; K];
+                self.counts.fill(0);
                 self.total = 0;
             }
         }
 
-        impl<const K: usize> Default for $name<K> {
+        impl $builder {
+            /// Number of categories (required, >= 2).
             #[inline]
-            fn default() -> Self {
-                Self::new()
+            #[must_use]
+            pub fn bins(mut self, bins: usize) -> Self {
+                self.bins = Option::Some(bins);
+                self
+            }
+
+            /// Builds the entropy tracker.
+            ///
+            /// # Errors
+            /// Returns `ConfigError` if bins is missing or < 2.
+            #[inline]
+            pub fn build(self) -> Result<$name, crate::ConfigError> {
+                let bins = self.bins.ok_or(crate::ConfigError::Missing("bins"))?;
+                if bins < 2 {
+                    return Err(crate::ConfigError::Invalid("bins must be >= 2"));
+                }
+                Ok($name {
+                    counts: vec![0u64; bins].into_boxed_slice(),
+                    bins,
+                    total: 0,
+                })
             }
         }
     };
 }
 
-impl_entropy!(EntropyF64, f64);
-impl_entropy!(EntropyF32, f32);
+impl_entropy!(EntropyF64, EntropyF64Builder, f64);
+impl_entropy!(EntropyF32, EntropyF32Builder, f32);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // =========================================================================
-    // Basic correctness
-    // =========================================================================
-
     #[test]
     fn uniform_entropy_equals_ln_k() {
-        let mut e = EntropyF64::<4>::new();
+        let mut e = EntropyF64::builder().bins(4).build().unwrap();
         for i in 0..4000u32 {
             e.update(i as usize % 4);
         }
@@ -212,7 +260,7 @@ mod tests {
 
     #[test]
     fn concentrated_entropy_zero() {
-        let mut e = EntropyF64::<4>::new();
+        let mut e = EntropyF64::builder().bins(4).build().unwrap();
         for _ in 0..1000 {
             e.update(0);
         }
@@ -222,7 +270,7 @@ mod tests {
 
     #[test]
     fn binary_50_50() {
-        let mut e = EntropyF64::<2>::new();
+        let mut e = EntropyF64::builder().bins(2).build().unwrap();
         for i in 0..2000u32 {
             e.update(i as usize % 2);
         }
@@ -236,30 +284,25 @@ mod tests {
 
     #[test]
     fn entropy_bits_conversion() {
-        let mut e = EntropyF64::<2>::new();
+        let mut e = EntropyF64::builder().bins(2).build().unwrap();
         for i in 0..2000u32 {
             e.update(i as usize % 2);
         }
         let h_bits = e.entropy_bits().unwrap();
-        // ln(2) / ln(2) = 1.0 bit
         assert!(
             (h_bits - 1.0).abs() < 1e-10,
             "50/50 binary entropy should be 1 bit, got {h_bits}"
         );
     }
 
-    // =========================================================================
-    // Surprise (self-information)
-    // =========================================================================
-
     #[test]
     fn surprise_rare_vs_common() {
-        let mut e = EntropyF64::<2>::new();
+        let mut e = EntropyF64::builder().bins(2).build().unwrap();
         for _ in 0..990 {
-            e.update(0); // common
+            e.update(0);
         }
         for _ in 0..10 {
-            e.update(1); // rare
+            e.update(1);
         }
         let s_common = e.surprise(0).unwrap();
         let s_rare = e.surprise(1).unwrap();
@@ -271,18 +314,14 @@ mod tests {
 
     #[test]
     fn surprise_unobserved_returns_none() {
-        let mut e = EntropyF64::<4>::new();
+        let mut e = EntropyF64::builder().bins(4).build().unwrap();
         e.update(0);
         assert!(e.surprise(1).is_none());
     }
 
-    // =========================================================================
-    // Probability
-    // =========================================================================
-
     #[test]
     fn probability_matches_counts() {
-        let mut e = EntropyF64::<3>::new();
+        let mut e = EntropyF64::builder().bins(3).build().unwrap();
         for _ in 0..30 {
             e.update(0);
         }
@@ -297,13 +336,9 @@ mod tests {
         assert!((e.probability(2).unwrap() - 0.2).abs() < 1e-10);
     }
 
-    // =========================================================================
-    // Edge cases
-    // =========================================================================
-
     #[test]
     fn empty_returns_none() {
-        let e = EntropyF64::<4>::new();
+        let e = EntropyF64::builder().bins(4).build().unwrap();
         assert!(e.entropy().is_none());
         assert!(e.entropy_bits().is_none());
         assert!(e.probability(0).is_none());
@@ -312,17 +347,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of range")]
     fn observe_out_of_range_panics() {
-        let mut e = EntropyF64::<4>::new();
+        let mut e = EntropyF64::builder().bins(4).build().unwrap();
         e.update(4);
     }
 
-    // =========================================================================
-    // Category count
-    // =========================================================================
-
     #[test]
     fn category_count_tracks() {
-        let mut e = EntropyF64::<3>::new();
+        let mut e = EntropyF64::builder().bins(3).build().unwrap();
         e.update(0);
         e.update(0);
         e.update(1);
@@ -332,13 +363,15 @@ mod tests {
         assert_eq!(e.count(), 3);
     }
 
-    // =========================================================================
-    // Reset
-    // =========================================================================
+    #[test]
+    fn bins_accessor() {
+        let e = EntropyF64::builder().bins(8).build().unwrap();
+        assert_eq!(e.bins(), 8);
+    }
 
     #[test]
     fn reset_clears_state() {
-        let mut e = EntropyF64::<4>::new();
+        let mut e = EntropyF64::builder().bins(4).build().unwrap();
         for i in 0..100 {
             e.update(i % 4);
         }
@@ -347,13 +380,9 @@ mod tests {
         assert!(e.entropy().is_none());
     }
 
-    // =========================================================================
-    // f32 variant
-    // =========================================================================
-
     #[test]
     fn f32_basic() {
-        let mut e = EntropyF32::<4>::new();
+        let mut e = EntropyF32::builder().bins(4).build().unwrap();
         for i in 0..400u32 {
             e.update(i as usize % 4);
         }
@@ -361,13 +390,15 @@ mod tests {
         assert!((h - 1.386).abs() < 0.01, "f32 entropy = {h}");
     }
 
-    // =========================================================================
-    // Default
-    // =========================================================================
+    #[test]
+    fn builder_requires_bins() {
+        let result = EntropyF64::builder().build();
+        assert!(matches!(result, Err(crate::ConfigError::Missing("bins"))));
+    }
 
     #[test]
-    fn default_is_empty() {
-        let e = EntropyF64::<4>::default();
-        assert_eq!(e.count(), 0);
+    fn builder_rejects_one_bin() {
+        let result = EntropyF64::builder().bins(1).build();
+        assert!(result.is_err());
     }
 }

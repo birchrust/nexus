@@ -121,9 +121,10 @@ macro_rules! impl_rls_filter {
 
                 // k[i] = px[i] / (lambda + xpx)
                 // Epsilon floor prevents NaN if P degrades numerically.
-                let denom = (lambda + xpx).max(<$ty>::EPSILON);
+                // Reciprocal: one division outside the loop instead of d inside.
+                let inv_denom = 1.0 as $ty / (lambda + xpx).max(<$ty>::EPSILON);
                 for i in 0..d {
-                    self.scratch_k[i] = self.scratch_px[i] / denom;
+                    self.scratch_k[i] = self.scratch_px[i] * inv_denom;
                 }
 
                 // error = target - w·x
@@ -139,11 +140,13 @@ macro_rules! impl_rls_filter {
                 }
 
                 // P[i][j] = (P[i][j] - k[i] * px[j]) / lambda
+                // Reciprocal: one division outside d² loop, multiply inside.
+                let inv_lambda = 1.0 as $ty / lambda;
                 for i in 0..d {
                     for j in 0..d {
                         self.p_matrix[i * d + j] = (self.p_matrix[i * d + j]
                             - self.scratch_k[i] * self.scratch_px[j])
-                            / lambda;
+                            * inv_lambda;
                     }
                 }
 
