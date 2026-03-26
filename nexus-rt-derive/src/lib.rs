@@ -419,3 +419,240 @@ impl VisitMut for LifetimeReplacer {
         }
     }
 }
+
+// =============================================================================
+// #[derive(View)]
+// =============================================================================
+
+/// Derive a `View` projection for use with pipeline `.view()` scopes.
+///
+/// Generates a marker ZST (`As{ViewName}`) and `unsafe impl View<Source>`
+/// for each `#[source(Type)]` attribute. Use with `.view::<AsViewName>()`
+/// in pipeline and DAG builders.
+///
+/// # Attributes
+///
+/// **On the struct:**
+/// - `#[source(TypePath)]` — one per source event type
+///
+/// **On fields:**
+/// - `#[borrow]` — borrow from source (`&source.field`) instead of copy
+/// - `#[source(TypePath, from = "name")]` — remap field name for a specific source
+///
+/// # Examples
+///
+/// ```ignore
+/// use nexus_rt::View;
+///
+/// #[derive(View)]
+/// #[source(NewOrderCommand)]
+/// #[source(AmendOrderCommand)]
+/// struct OrderView<'a> {
+///     #[borrow]
+///     symbol: &'a str,
+///     qty: u64,
+///     price: f64,
+/// }
+///
+/// // Generates: struct AsOrderView;
+/// // Generates: unsafe impl View<NewOrderCommand> for AsOrderView { ... }
+/// // Generates: unsafe impl View<AmendOrderCommand> for AsOrderView { ... }
+/// ```
+#[proc_macro_derive(View, attributes(source, borrow))]
+pub fn derive_view(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match derive_view_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn derive_view_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn::Error> {
+    // Only structs
+    let fields = match &input.data {
+        Data::Struct(s) => match &s.fields {
+            Fields::Named(f) => &f.named,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &input.ident,
+                    "#[derive(View)] only supports structs with named fields",
+                ))
+            }
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "#[derive(View)] can only be used on structs",
+            ))
+        }
+    };
+
+    let view_name = &input.ident;
+    let vis = &input.vis;
+
+    // Extract #[source(TypePath)] attributes from the struct
+    let sources = parse_source_attrs(&input.attrs, view_name)?;
+    if sources.is_empty() {
+        return Err(syn::Error::new_spanned(
+            view_name,
+            "#[derive(View)] requires at least one #[source(Type)] attribute",
+        ));
+    }
+
+    // Detect lifetime: 0 or 1 lifetime param
+    let lifetime_param = match input.generics.lifetimes().count() {
+        0 => None,
+        1 => Some(input.generics.lifetimes().next().unwrap().lifetime.clone()),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input.generics,
+                "#[derive(View)] supports at most one lifetime parameter",
+            ))
+        }
+    };
+
+    // Marker name: As{ViewName}
+    let marker_name = format_ident!("As{}", view_name);
+
+    // Build ViewType<'a>, StaticViewType, and tick-lifetime tokens
+    let (view_type_with_a, static_view_type, view_type_tick) =
+        lifetime_param.as_ref().map_or_else(
+            || {
+                (
+                    quote! { #view_name },
+                    quote! { #view_name },
+                    quote! { #view_name },
+                )
+            },
+            |lt| {
+                let lt_ident = &lt.ident;
+                let mut static_generics = input.generics.clone();
+                LifetimeReplacer {
+                    from: lt_ident.to_string(),
+                }
+                .visit_generics_mut(&mut static_generics);
+                let (_, static_ty_generics, _) = static_generics.split_for_impl();
+                (
+                    quote! { #view_name<'a> },
+                    quote! { #view_name #static_ty_generics },
+                    quote! { #view_name<'_> },
+                )
+            },
+        );
+
+    // Parse field info
+    let field_infos: Vec<FieldInfo> = fields
+        .iter()
+        .map(parse_field_info)
+        .collect::<Result<_, _>>()?;
+
+    // Generate impl for each source
+    let mut impls = Vec::new();
+    for source_type in &sources {
+        let field_exprs: Vec<proc_macro2::TokenStream> = field_infos
+            .iter()
+            .map(|fi| {
+                let view_field = &fi.ident;
+                // Check for per-source field remap
+                let source_field = fi
+                    .remaps
+                    .iter()
+                    .find(|(path, _)| path_matches(path, source_type))
+                    .map_or_else(|| fi.ident.clone(), |(_, name)| format_ident!("{}", name));
+
+                if fi.borrow {
+                    quote! { #view_field: &source.#source_field }
+                } else {
+                    quote! { #view_field: source.#source_field }
+                }
+            })
+            .collect();
+
+        impls.push(quote! {
+            // SAFETY: ViewType<'a> and StaticViewType are the same struct
+            // with different lifetime parameters. Layout-identical by construction.
+            unsafe impl ::nexus_rt::View<#source_type> for #marker_name {
+                type ViewType<'a> = #view_type_with_a where #source_type: 'a;
+                type StaticViewType = #static_view_type;
+
+                fn view(source: &#source_type) -> #view_type_tick {
+                    #view_name {
+                        #(#field_exprs),*
+                    }
+                }
+            }
+        });
+    }
+
+    Ok(quote! {
+        /// View marker generated by `#[derive(View)]`.
+        #vis struct #marker_name;
+
+        #(#impls)*
+    })
+}
+
+struct FieldInfo {
+    ident: syn::Ident,
+    borrow: bool,
+    /// Per-source field remaps: (source_path, source_field_name)
+    remaps: Vec<(syn::Path, String)>,
+}
+
+fn parse_field_info(field: &syn::Field) -> Result<FieldInfo, syn::Error> {
+    let ident = field.ident.clone().ok_or_else(|| {
+        syn::Error::new_spanned(field, "View fields must be named")
+    })?;
+
+    let borrow = field.attrs.iter().any(|a| a.path().is_ident("borrow"));
+
+    let mut remaps = Vec::new();
+    for attr in &field.attrs {
+        if attr.path().is_ident("source") {
+            // Parse #[source(TypePath, from = "field_name")]
+            attr.parse_nested_meta(|meta| {
+                let path = meta.path.clone();
+                if meta.input.peek(syn::Token![,]) {
+                    meta.input.parse::<syn::Token![,]>()?;
+                    let kw: syn::Ident = meta.input.parse()?;
+                    if kw != "from" {
+                        return Err(syn::Error::new_spanned(&kw, "expected `from`"));
+                    }
+                    meta.input.parse::<syn::Token![=]>()?;
+                    let lit: syn::LitStr = meta.input.parse()?;
+                    remaps.push((path, lit.value()));
+                }
+                Ok(())
+            })?;
+        }
+    }
+
+    Ok(FieldInfo {
+        ident,
+        borrow,
+        remaps,
+    })
+}
+
+/// Parse `#[source(TypePath)]` attributes from struct-level attrs.
+fn parse_source_attrs(
+    attrs: &[syn::Attribute],
+    span_target: &syn::Ident,
+) -> Result<Vec<syn::Path>, syn::Error> {
+    let mut sources = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("source") {
+            let path: syn::Path = attr.parse_args()?;
+            sources.push(path);
+        }
+    }
+    let _ = span_target; // used for error span if needed
+    Ok(sources)
+}
+
+/// Check if two paths match (simple last-segment comparison).
+fn path_matches(a: &syn::Path, b: &syn::Path) -> bool {
+    let a_last = a.segments.last().map(|s| &s.ident);
+    let b_last = b.segments.last().map(|s| &s.ident);
+    a_last == b_last
+}

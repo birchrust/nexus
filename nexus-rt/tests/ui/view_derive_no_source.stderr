@@ -1,0 +1,5 @@
+error: #[derive(View)] requires at least one #[source(Type)] attribute
+ --> tests/ui/view_derive_no_source.rs:8:8
+  |
+8 | struct OrderView<'a> {
+  |        ^^^^^^^^^

@@ -1,6 +1,6 @@
 [package]
 name = "nexus-rt-derive"
-version = "1.0.1"
+version = "1.1.0"
 description = "Derive macros for nexus-rt. Use nexus-rt instead of depending on this directly."
 keywords = ["derive", "macro", "resource", "ecs"]
 categories = ["no-std", "data-structures"]
@@ -15,7 +15,7 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
-syn = { version = "2", features = ["derive", "visit-mut"] }
+syn = { version = "2", features = ["derive", "visit-mut", "full", "extra-traits"] }
 
 [lints]
 workspace = true
