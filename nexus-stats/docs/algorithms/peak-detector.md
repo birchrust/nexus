@@ -9,6 +9,7 @@ configurable prominence threshold to filter noise.
 | Memory | ~16 bytes |
 | Types | All (f32, f64, i32, i64) |
 | Output | `Option<Peak>` — detected peak with value and direction |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -35,7 +36,7 @@ This filters out small oscillations — only significant reversals trigger.
 let mut pd = PeakDetectorF64::new(5.0);  // prominence = 5.0
 
 // Returns Some(Peak) when a local extremum is found
-if let Some(peak) = pd.update(sample) {
+if let Some(peak) = pd.update(sample).unwrap() {
     if peak.is_maximum {
         println!("peak at {}", peak.value);
     } else {

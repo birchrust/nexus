@@ -10,6 +10,7 @@ utility functions in game development.
 | Memory | ~16 bytes |
 | Types | `SpringF64`, `SpringF32` |
 | Output | Current smoothed value |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -66,7 +67,7 @@ any slower would lag unnecessarily.
 let mut spring = SpringF64::new(0.5);  // smooth_time in seconds
 
 // Each update: provide target and time delta
-let smoothed = spring.update(target_value, dt_seconds);
+let smoothed = spring.update(target_value, dt_seconds).unwrap();
 ```
 
 ### Parameters
@@ -93,7 +94,7 @@ mathematically exact rate.
 let mut gauge = SpringF64::new(0.3);
 
 // On each data update (potentially irregular):
-let display_value = gauge.update(actual_value, dt);
+let display_value = gauge.update(actual_value, dt).unwrap();
 render_gauge(display_value);
 ```
 
@@ -103,7 +104,7 @@ let mut threshold = SpringF64::new(1.0);
 
 // Smoothly track a moving threshold target
 let target = compute_new_threshold(market_conditions);
-let smooth_threshold = threshold.update(target, dt);
+let smooth_threshold = threshold.update(target, dt).unwrap();
 ```
 
 ### Gaming — Camera Follow
@@ -111,8 +112,8 @@ let smooth_threshold = threshold.update(target, dt);
 let mut cam_x = SpringF64::new(0.2);
 let mut cam_y = SpringF64::new(0.2);
 
-let sx = cam_x.update(player_x, dt);
-let sy = cam_y.update(player_y, dt);
+let sx = cam_x.update(player_x, dt).unwrap();
+let sy = cam_y.update(player_y, dt).unwrap();
 ```
 
 ## Performance

@@ -36,8 +36,15 @@ macro_rules! impl_covariance {
             }
 
             /// Feeds a paired sample.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if either input is NaN, or
+            /// `DataError::Infinite` if either input is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 self.count += 1;
                 let n = self.count as $ty;
 
@@ -55,6 +62,7 @@ macro_rules! impl_covariance {
                 self.m2_x += dx * dx2;
                 let dy2 = y - self.mean_y;
                 self.m2_y += dy * dy2;
+                Ok(())
             }
 
             /// Number of paired samples processed.
@@ -180,7 +188,7 @@ mod tests {
     fn perfect_positive_correlation() {
         let mut c = CovarianceF64::new();
         for i in 0..100 {
-            c.update(i as f64, i as f64 * 2.0);
+            c.update(i as f64, i as f64 * 2.0).unwrap();
         }
         let r = c.correlation().unwrap();
         assert!(
@@ -193,7 +201,7 @@ mod tests {
     fn perfect_negative_correlation() {
         let mut c = CovarianceF64::new();
         for i in 0..100 {
-            c.update(i as f64, -(i as f64));
+            c.update(i as f64, -(i as f64)).unwrap();
         }
         let r = c.correlation().unwrap();
         assert!(
@@ -206,9 +214,9 @@ mod tests {
     fn known_covariance() {
         let mut c = CovarianceF64::new();
         // Simple dataset: (1,2), (2,4), (3,6)
-        c.update(1.0, 2.0);
-        c.update(2.0, 4.0);
-        c.update(3.0, 6.0);
+        c.update(1.0, 2.0).unwrap();
+        c.update(2.0, 4.0).unwrap();
+        c.update(3.0, 6.0).unwrap();
 
         let cov = c.covariance().unwrap();
         // Cov(X, 2X) = 2 * Var(X). Var([1,2,3]) = 1.0. So cov = 2.0.
@@ -225,16 +233,16 @@ mod tests {
 
         let mut single = CovarianceF64::new();
         for i in 0..8 {
-            single.update(data_x[i], data_y[i]);
+            single.update(data_x[i], data_y[i]).unwrap();
         }
 
         let mut a = CovarianceF64::new();
         let mut b = CovarianceF64::new();
         for i in 0..4 {
-            a.update(data_x[i], data_y[i]);
+            a.update(data_x[i], data_y[i]).unwrap();
         }
         for i in 4..8 {
-            b.update(data_x[i], data_y[i]);
+            b.update(data_x[i], data_y[i]).unwrap();
         }
         a.merge(&b);
 
@@ -246,8 +254,8 @@ mod tests {
     #[test]
     fn reset_clears() {
         let mut c = CovarianceF64::new();
-        c.update(1.0, 2.0);
-        c.update(3.0, 4.0);
+        c.update(1.0, 2.0).unwrap();
+        c.update(3.0, 4.0).unwrap();
         c.reset();
         assert_eq!(c.count(), 0);
     }
@@ -255,8 +263,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut c = CovarianceF32::new();
-        c.update(1.0, 2.0);
-        c.update(2.0, 4.0);
+        c.update(1.0, 2.0).unwrap();
+        c.update(2.0, 4.0).unwrap();
         assert!(c.covariance().is_some());
     }
 
@@ -269,8 +277,28 @@ mod tests {
     #[test]
     fn zero_variance_returns_none_correlation() {
         let mut c = CovarianceF64::new();
-        c.update(5.0, 1.0);
-        c.update(5.0, 2.0); // X has zero variance
+        c.update(5.0, 1.0).unwrap();
+        c.update(5.0, 2.0).unwrap(); // X has zero variance
         assert!(c.correlation().is_none());
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut c = CovarianceF64::new();
+        // NaN in x
+        assert_eq!(c.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
+        // NaN in y
+        assert_eq!(c.update(1.0, f64::NAN), Err(crate::DataError::NotANumber));
+        // Inf in x
+        assert_eq!(
+            c.update(f64::INFINITY, 1.0),
+            Err(crate::DataError::Infinite)
+        );
+        // Neg inf in y
+        assert_eq!(
+            c.update(1.0, f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(c.count(), 0);
     }
 }

@@ -6,7 +6,7 @@
 ///
 /// # Usage
 ///
-/// The user is responsible for calling `global.record()` once per event.
+/// The user is responsible for calling `global.update()` once per event.
 /// Entities take the current period as a plain `u64` — no mutable reference
 /// to the global is needed.
 ///
@@ -15,8 +15,8 @@
 /// let mut entity_a = FlexProportionEntity::new();
 ///
 /// // Record an event for entity A
-/// global.record();
-/// entity_a.record(global.period());
+/// global.update();
+/// entity_a.update(global.period());
 ///
 /// // Query fraction
 /// let frac = entity_a.fraction(global.total(), global.period());
@@ -36,7 +36,7 @@ pub struct FlexProportionGlobal {
 /// Per-entity event counter for proportion tracking.
 ///
 /// Decoupled from the global tracker — takes plain values instead of
-/// references. The user calls `global.record()` separately.
+/// references. The user calls `global.update()` separately.
 #[derive(Debug, Clone)]
 pub struct FlexProportionEntity {
     count: u64,
@@ -62,10 +62,10 @@ impl FlexProportionGlobal {
         })
     }
 
-    /// Records a global event. Call this once per event, before recording
-    /// on the entity.
+    /// Updates the global event count. Call this once per event, before
+    /// updating the entity.
     #[inline]
-    pub fn record(&mut self) {
+    pub fn update(&mut self) {
         self.total += 1;
         if self.total % self.half_life == 0 {
             self.period += 1;
@@ -104,10 +104,10 @@ impl FlexProportionEntity {
     /// applies decay catch-up if the period has advanced, then increments
     /// its count.
     ///
-    /// **Important:** Call `global.record()` separately — this method does
+    /// **Important:** Call `global.update()` separately — this method does
     /// NOT update the global tracker.
     #[inline]
-    pub fn record(&mut self, current_period: u64) {
+    pub fn update(&mut self, current_period: u64) {
         while self.period < current_period {
             self.count /= 2;
             self.period += 1;
@@ -168,8 +168,8 @@ mod tests {
         let mut entity = FlexProportionEntity::new();
 
         for _ in 0..50 {
-            global.record();
-            entity.record(global.period());
+            global.update();
+            entity.update(global.period());
         }
 
         let frac = entity.fraction(global.total(), global.period());
@@ -183,10 +183,10 @@ mod tests {
         let mut e2 = FlexProportionEntity::new();
 
         for _ in 0..100 {
-            global.record();
-            e1.record(global.period());
-            global.record();
-            e2.record(global.period());
+            global.update();
+            e1.update(global.period());
+            global.update();
+            e2.update(global.period());
         }
 
         let f1 = e1.fraction(global.total(), global.period());
@@ -203,14 +203,14 @@ mod tests {
         let mut old = FlexProportionEntity::new();
 
         for _ in 0..50 {
-            global.record();
-            old.record(global.period());
+            global.update();
+            old.update(global.period());
         }
 
         let mut new = FlexProportionEntity::new();
         for _ in 0..10 {
-            global.record();
-            new.record(global.period());
+            global.update();
+            new.update(global.period());
         }
 
         let f_new = new.fraction(global.total(), global.period());
@@ -231,8 +231,8 @@ mod tests {
         let mut entity = FlexProportionEntity::new();
 
         for _ in 0..20 {
-            global.record();
-            entity.record(global.period());
+            global.update();
+            entity.update(global.period());
         }
         entity.reset();
         assert_eq!(entity.count(), 0);

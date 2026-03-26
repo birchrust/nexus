@@ -9,6 +9,7 @@ Prevents oscillation when a noisy signal hovers near a decision boundary.
 | Memory | ~24 bytes |
 | Types | `HysteresisF64`, `HysteresisF32`, `HysteresisI64`, `HysteresisI32` |
 | Output | `bool` — current state (high/low) |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -94,7 +95,7 @@ amplitude at the boundary.
 let mut conn_quality = HysteresisF64::new(0.80, 0.95);
 
 // On each health check:
-let is_good = conn_quality.update(success_rate);
+let is_good = conn_quality.update(success_rate).unwrap();
 if !is_good {
     route_to_backup();
 }
@@ -113,7 +114,7 @@ let mut util_alert = HysteresisF64::new(0.70, 0.90);
 // Heater: turn on below 19°C, off above 21°C
 let mut heater = HysteresisF64::new(19.0, 21.0);
 
-let should_heat = heater.update(current_temp);
+let should_heat = heater.update(current_temp).unwrap();
 ```
 
 ### Gaming — LOD Switching
@@ -123,7 +124,7 @@ let should_heat = heater.update(current_temp);
 // Dead zone prevents LOD popping at the boundary
 let mut lod = HysteresisF64::new(45.0, 55.0);  // distance units
 
-let use_high_detail = !lod.update(distance);  // closer = lower value = HIGH
+let use_high_detail = !lod.update(distance).unwrap();  // closer = lower value = HIGH
 ```
 
 ## Performance

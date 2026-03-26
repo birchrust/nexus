@@ -45,17 +45,22 @@ impl ShiryaevRobertsF64 {
         }
     }
 
-    /// Feeds a sample. Returns `Some(true)` if change detected, `Some(false)`
-    /// if not, or `None` if not yet primed.
+    /// Feeds a sample. Returns `Ok(Some(true))` if change detected, `Ok(Some(false))`
+    /// if not, or `Ok(None)` if not yet primed.
     ///
     /// The likelihood ratio for normal distributions is:
     /// ```text
     /// LR = exp((x - μ₀)(μ₁ - μ₀) / σ² - (μ₁² - μ₀²) / (2σ²))
     ///    = exp((μ₁ - μ₀) * (x - (μ₀ + μ₁) / 2) / σ²)
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    #[must_use]
-    pub fn update(&mut self, sample: f64) -> Option<bool> {
+    pub fn update(&mut self, sample: f64) -> Result<Option<bool>, crate::DataError> {
+        check_finite!(sample);
         self.count += 1;
 
         // Log-likelihood ratio for normal distribution
@@ -67,10 +72,10 @@ impl ShiryaevRobertsF64 {
         self.r = (1.0 + self.r) * crate::math::exp(log_lr);
 
         if self.count < self.min_samples {
-            return None;
+            return Ok(None);
         }
 
-        Some(self.r > self.threshold)
+        Ok(Some(self.r > self.threshold))
     }
 
     /// Current R statistic value.
@@ -206,7 +211,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..100 {
-            let result = sr.update(100.0);
+            let result = sr.update(100.0).unwrap();
             assert_eq!(result, Some(false), "should not detect at pre-change mean");
         }
     }
@@ -223,7 +228,7 @@ mod tests {
 
         let mut detected = false;
         for _ in 0..100 {
-            if sr.update(110.0) == Some(true) {
+            if sr.update(110.0).unwrap() == Some(true) {
                 detected = true;
                 break;
             }
@@ -282,9 +287,9 @@ mod tests {
             .unwrap();
 
         for _ in 0..4 {
-            assert_eq!(sr.update(5.0), None);
+            assert_eq!(sr.update(5.0).unwrap(), None);
         }
-        assert!(sr.update(5.0).is_some());
+        assert!(sr.update(5.0).unwrap().is_some());
     }
 
     #[test]
@@ -309,5 +314,30 @@ mod tests {
             .threshold(100.0)
             .build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut sr = ShiryaevRobertsF64::builder()
+            .pre_change_mean(100.0)
+            .post_change_mean(110.0)
+            .variance(25.0)
+            .threshold(100.0)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            sr.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            sr.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            sr.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(sr.count(), 0);
     }
 }

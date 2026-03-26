@@ -47,15 +47,20 @@ macro_rules! impl_jitter_float {
             }
 
             /// Feeds a sample. Returns smoothed jitter once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if self.count == 1 {
                     self.last_sample = sample;
                     self.mean = sample;
-                    return Option::None;
+                    return Ok(Option::None);
                 }
 
                 let abs_delta = if sample > self.last_sample {
@@ -77,9 +82,9 @@ macro_rules! impl_jitter_float {
                 }
 
                 if self.count >= self.min_samples {
-                    Option::Some(self.jitter)
+                    Ok(Option::Some(self.jitter))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -410,7 +415,7 @@ mod tests {
     fn constant_input_zero_jitter() {
         let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
         for _ in 0..100 {
-            let _ = j.update(100.0);
+            let _ = j.update(100.0).unwrap();
         }
         let jitter = j.jitter().unwrap();
         assert!(
@@ -423,7 +428,7 @@ mod tests {
     fn alternating_input_high_jitter() {
         let mut j = JitterF64::builder().alpha(0.5).build().unwrap();
         for i in 0..50 {
-            let _ = j.update(if i % 2 == 0 { 100.0 } else { 200.0 });
+            let _ = j.update(if i % 2 == 0 { 100.0 } else { 200.0 }).unwrap();
         }
         let jitter = j.jitter().unwrap();
         assert!(
@@ -436,7 +441,7 @@ mod tests {
     fn jitter_ratio_correctness() {
         let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
         for i in 0..100 {
-            let _ = j.update(100.0 + (i % 10) as f64);
+            let _ = j.update(100.0 + (i % 10) as f64).unwrap();
         }
         let ratio = j.jitter_ratio().unwrap();
         assert!(
@@ -453,16 +458,16 @@ mod tests {
             .build()
             .unwrap();
         for _ in 0..4 {
-            assert!(j.update(100.0).is_none());
+            assert!(j.update(100.0).unwrap().is_none());
         }
-        assert!(j.update(100.0).is_some());
+        assert!(j.update(100.0).unwrap().is_some());
     }
 
     #[test]
     fn reset() {
         let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
         for _ in 0..10 {
-            let _ = j.update(100.0);
+            let _ = j.update(100.0).unwrap();
         }
         j.reset();
         assert_eq!(j.count(), 0);
@@ -490,8 +495,8 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn f32_basic() {
         let mut j = JitterF32::builder().alpha(0.5).build().unwrap();
-        let _ = j.update(100.0);
-        let _ = j.update(110.0);
+        let _ = j.update(100.0).unwrap();
+        let _ = j.update(110.0).unwrap();
         assert_eq!(j.last_deviation(), Some(10.0));
     }
 
@@ -516,7 +521,7 @@ mod tests {
             .unwrap();
 
         // Next update should compute deviation from seeded last_sample=100
-        let result = j.update(110.0);
+        let result = j.update(110.0).unwrap();
         assert!(result.is_some());
         // Deviation is |110-100|=10, smoothed jitter = 0.3*10 + 0.7*5 = 6.5
         let jitter = result.unwrap();
@@ -527,5 +532,28 @@ mod tests {
     fn errors_without_alpha() {
         let result = JitterF64::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
+        assert!(matches!(
+            j.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            j.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            j.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+
+        let mut j32 = JitterF32::builder().alpha(0.3).build().unwrap();
+        assert!(matches!(
+            j32.update(f32::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
     }
 }

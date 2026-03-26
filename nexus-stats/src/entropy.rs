@@ -3,7 +3,7 @@
 // H(X) = -Σ p_i * ln(p_i)  where p_i = count_i / total
 //
 // Maintains frequency counts over K categories, computes entropy on query.
-// O(K) for entropy query, O(1) for observe.
+// O(K) for entropy query, O(1) for update.
 
 macro_rules! impl_entropy {
     ($name:ident, $ty:ty) => {
@@ -29,7 +29,7 @@ macro_rules! impl_entropy {
         ///
         /// // Uniform distribution over 4 categories → maximum entropy
         #[doc = concat!("let mut e = ", stringify!($name), "::<4>::new();")]
-        /// for i in 0..400u32 { e.observe(i as usize % 4); }
+        /// for i in 0..400u32 { e.update(i as usize % 4); }
         /// let h = e.entropy().unwrap();
         /// // ln(4) ≈ 1.386
         /// assert!((h - 1.386).abs() < 0.01);
@@ -61,7 +61,7 @@ macro_rules! impl_entropy {
             ///
             /// Panics if `category >= K`.
             #[inline]
-            pub fn observe(&mut self, category: usize) {
+            pub fn update(&mut self, category: usize) {
                 assert!(category < K, "category {category} out of range (K={K})");
                 self.counts[category] += 1;
                 self.total += 1;
@@ -200,7 +200,7 @@ mod tests {
     fn uniform_entropy_equals_ln_k() {
         let mut e = EntropyF64::<4>::new();
         for i in 0..4000u32 {
-            e.observe(i as usize % 4);
+            e.update(i as usize % 4);
         }
         let h = e.entropy().unwrap();
         let expected = (4.0_f64).ln();
@@ -214,7 +214,7 @@ mod tests {
     fn concentrated_entropy_zero() {
         let mut e = EntropyF64::<4>::new();
         for _ in 0..1000 {
-            e.observe(0);
+            e.update(0);
         }
         let h = e.entropy().unwrap();
         assert!(h.abs() < 1e-10, "concentrated entropy should be 0, got {h}");
@@ -224,7 +224,7 @@ mod tests {
     fn binary_50_50() {
         let mut e = EntropyF64::<2>::new();
         for i in 0..2000u32 {
-            e.observe(i as usize % 2);
+            e.update(i as usize % 2);
         }
         let h = e.entropy().unwrap();
         let expected = (2.0_f64).ln();
@@ -238,7 +238,7 @@ mod tests {
     fn entropy_bits_conversion() {
         let mut e = EntropyF64::<2>::new();
         for i in 0..2000u32 {
-            e.observe(i as usize % 2);
+            e.update(i as usize % 2);
         }
         let h_bits = e.entropy_bits().unwrap();
         // ln(2) / ln(2) = 1.0 bit
@@ -256,10 +256,10 @@ mod tests {
     fn surprise_rare_vs_common() {
         let mut e = EntropyF64::<2>::new();
         for _ in 0..990 {
-            e.observe(0); // common
+            e.update(0); // common
         }
         for _ in 0..10 {
-            e.observe(1); // rare
+            e.update(1); // rare
         }
         let s_common = e.surprise(0).unwrap();
         let s_rare = e.surprise(1).unwrap();
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn surprise_unobserved_returns_none() {
         let mut e = EntropyF64::<4>::new();
-        e.observe(0);
+        e.update(0);
         assert!(e.surprise(1).is_none());
     }
 
@@ -284,13 +284,13 @@ mod tests {
     fn probability_matches_counts() {
         let mut e = EntropyF64::<3>::new();
         for _ in 0..30 {
-            e.observe(0);
+            e.update(0);
         }
         for _ in 0..50 {
-            e.observe(1);
+            e.update(1);
         }
         for _ in 0..20 {
-            e.observe(2);
+            e.update(2);
         }
         assert!((e.probability(0).unwrap() - 0.3).abs() < 1e-10);
         assert!((e.probability(1).unwrap() - 0.5).abs() < 1e-10);
@@ -313,7 +313,7 @@ mod tests {
     #[should_panic(expected = "out of range")]
     fn observe_out_of_range_panics() {
         let mut e = EntropyF64::<4>::new();
-        e.observe(4);
+        e.update(4);
     }
 
     // =========================================================================
@@ -323,9 +323,9 @@ mod tests {
     #[test]
     fn category_count_tracks() {
         let mut e = EntropyF64::<3>::new();
-        e.observe(0);
-        e.observe(0);
-        e.observe(1);
+        e.update(0);
+        e.update(0);
+        e.update(1);
         assert_eq!(e.category_count(0), 2);
         assert_eq!(e.category_count(1), 1);
         assert_eq!(e.category_count(2), 0);
@@ -340,7 +340,7 @@ mod tests {
     fn reset_clears_state() {
         let mut e = EntropyF64::<4>::new();
         for i in 0..100 {
-            e.observe(i % 4);
+            e.update(i % 4);
         }
         e.reset();
         assert_eq!(e.count(), 0);
@@ -355,7 +355,7 @@ mod tests {
     fn f32_basic() {
         let mut e = EntropyF32::<4>::new();
         for i in 0..400u32 {
-            e.observe(i as usize % 4);
+            e.update(i as usize % 4);
         }
         let h = e.entropy().unwrap();
         assert!((h - 1.386).abs() < 0.01, "f32 entropy = {h}");

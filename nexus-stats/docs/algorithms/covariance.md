@@ -8,6 +8,7 @@ Supports Chan's merge for parallel aggregation.
 | Update cost | ~12 cycles |
 | Memory | ~48 bytes |
 | Types | `CovarianceF64`, `CovarianceF32` |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -18,7 +19,7 @@ Pearson correlation coefficient (-1 to +1).
 let mut cov = CovarianceF64::new();
 
 for (x, y) in paired_samples {
-    cov.update(x, y);
+    cov.update(x, y).unwrap();
 }
 
 if let Some(r) = cov.correlation() {

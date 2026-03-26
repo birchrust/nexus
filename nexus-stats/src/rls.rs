@@ -28,6 +28,7 @@ macro_rules! impl_rls_filter {
             scratch_k: Box<[$ty]>,
             forgetting_factor: $ty,
             initial_covariance: $ty,
+            max_covariance: Option<$ty>,
             dims: usize,
             count: u64,
         }
@@ -40,6 +41,7 @@ macro_rules! impl_rls_filter {
             dimensions: Option<usize>,
             forgetting_factor: $ty,
             initial_covariance: $ty,
+            max_covariance: Option<$ty>,
         }
 
         impl $name {
@@ -51,6 +53,7 @@ macro_rules! impl_rls_filter {
                     dimensions: Option::None,
                     forgetting_factor: 1.0 as $ty,
                     initial_covariance: 1000.0 as $ty,
+                    max_covariance: Option::None,
                 }
             }
 
@@ -82,8 +85,15 @@ macro_rules! impl_rls_filter {
             ///
             /// # Panics
             /// Panics if `features.len() != self.dimensions()`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the target is NaN, or
+            /// `DataError::Infinite` if the target is infinite.
             #[inline]
-            pub fn update(&mut self, features: &[$ty], target: $ty) {
+            pub fn update(&mut self, features: &[$ty], target: $ty) -> Result<(), crate::DataError> {
+                check_finite!(target);
+                debug_assert!(features.iter().all(|f| f.is_finite()), "features must be finite");
                 assert_eq!(
                     features.len(),
                     self.dims,
@@ -131,13 +141,33 @@ macro_rules! impl_rls_filter {
                 // P[i][j] = (P[i][j] - k[i] * px[j]) / lambda
                 for i in 0..d {
                     for j in 0..d {
-                        self.p_matrix[i * d + j] =
-                            (self.p_matrix[i * d + j] - self.scratch_k[i] * self.scratch_px[j])
-                                / lambda;
+                        self.p_matrix[i * d + j] = (self.p_matrix[i * d + j]
+                            - self.scratch_k[i] * self.scratch_px[j])
+                            / lambda;
                     }
                 }
 
                 self.count += 1;
+
+                if let Option::Some(max) = self.max_covariance {
+                    let mut max_diag = 0.0 as $ty;
+                    for i in 0..d {
+                        let diag = self.p_matrix[i * d + i];
+                        if diag > max_diag {
+                            max_diag = diag;
+                        }
+                    }
+                    if max_diag > max {
+                        for p in self.p_matrix.iter_mut() {
+                            *p = 0.0 as $ty;
+                        }
+                        for i in 0..d {
+                            self.p_matrix[i * d + i] = self.initial_covariance;
+                        }
+                    }
+                }
+
+                Ok(())
             }
 
             /// Returns the current weight vector.
@@ -166,6 +196,20 @@ macro_rules! impl_rls_filter {
             #[must_use]
             pub fn count(&self) -> u64 {
                 self.count
+            }
+
+            /// Returns the P matrix diagonal (covariance estimates).
+            #[inline]
+            #[must_use]
+            pub fn covariance(&self) -> &[$ty] {
+                &self.p_matrix
+            }
+
+            /// Whether any updates have been performed.
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.count > 0
             }
 
             /// Zeros weights and resets covariance to initial state.
@@ -216,6 +260,18 @@ macro_rules! impl_rls_filter {
                 self
             }
 
+            /// Maximum allowed diagonal covariance before auto-reset.
+            ///
+            /// When the largest P diagonal exceeds this threshold, P is reset
+            /// to `initial_covariance × I`. Prevents divergence in long-running
+            /// filters with forgetting factor < 1.0.
+            #[inline]
+            #[must_use]
+            pub fn max_covariance(mut self, threshold: $ty) -> Self {
+                self.max_covariance = Option::Some(threshold);
+                self
+            }
+
             /// Builds the filter. Returns an error if parameters are missing or invalid.
             #[inline]
             pub fn build(self) -> Result<$name, crate::ConfigError> {
@@ -226,9 +282,7 @@ macro_rules! impl_rls_filter {
                 let delta = self.initial_covariance;
 
                 if dims < 1 {
-                    return Err(crate::ConfigError::Invalid(
-                        "dimensions must be >= 1",
-                    ));
+                    return Err(crate::ConfigError::Invalid("dimensions must be >= 1"));
                 }
                 if lambda <= 0.0 as $ty || lambda > 1.0 as $ty {
                     return Err(crate::ConfigError::Invalid(
@@ -254,6 +308,7 @@ macro_rules! impl_rls_filter {
                     scratch_k: vec![0.0 as $ty; dims].into_boxed_slice(),
                     forgetting_factor: lambda,
                     initial_covariance: delta,
+                    max_covariance: self.max_covariance,
                     dims,
                     count: 0,
                 })
@@ -272,29 +327,18 @@ mod tests {
     #[test]
     fn learns_linear_relationship() {
         // y = 2*x1 + 3*x2
-        let mut filter = RlsFilterF64::builder()
-            .dimensions(2)
-            .build()
-            .unwrap();
+        let mut filter = RlsFilterF64::builder().dimensions(2).build().unwrap();
 
         for i in 0..200 {
             let x1 = (i as f64 * 0.7).sin();
             let x2 = (i as f64 * 1.3).cos();
             let target = 2.0 * x1 + 3.0 * x2;
-            filter.update(&[x1, x2], target);
+            filter.update(&[x1, x2], target).unwrap();
         }
 
         let w = filter.weights();
-        assert!(
-            (w[0] - 2.0).abs() < 0.01,
-            "w[0] = {}, expected ~2.0",
-            w[0]
-        );
-        assert!(
-            (w[1] - 3.0).abs() < 0.01,
-            "w[1] = {}, expected ~3.0",
-            w[1]
-        );
+        assert!((w[0] - 2.0).abs() < 0.01, "w[0] = {}, expected ~2.0", w[0]);
+        assert!((w[1] - 3.0).abs() < 0.01, "w[1] = {}, expected ~3.0", w[1]);
     }
 
     #[test]
@@ -308,7 +352,7 @@ mod tests {
         // Learn y = 2*x
         for i in 0..200 {
             let x = (i as f64 * 0.5).sin();
-            filter.update(&[x], 2.0 * x);
+            filter.update(&[x], 2.0 * x).unwrap();
         }
 
         let w_before = filter.weights()[0];
@@ -320,7 +364,7 @@ mod tests {
         // Switch to y = 5*x
         for i in 0..200 {
             let x = (i as f64 * 0.5).sin();
-            filter.update(&[x], 5.0 * x);
+            filter.update(&[x], 5.0 * x).unwrap();
         }
 
         let w_after = filter.weights()[0];
@@ -338,9 +382,9 @@ mod tests {
             .build()
             .unwrap();
 
-        filter.update(&[1.0], 2.0);
-        filter.update(&[2.0], 4.0);
-        filter.update(&[3.0], 6.0);
+        filter.update(&[1.0], 2.0).unwrap();
+        filter.update(&[2.0], 4.0).unwrap();
+        filter.update(&[3.0], 6.0).unwrap();
 
         // The diagonal of P should be much smaller than initial 1000.0
         // We can't access P directly, but we can verify convergence speed
@@ -355,14 +399,11 @@ mod tests {
 
     #[test]
     fn predict_matches_dot_product() {
-        let mut filter = RlsFilterF64::builder()
-            .dimensions(3)
-            .build()
-            .unwrap();
+        let mut filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
 
-        filter.update(&[1.0, 0.0, 0.0], 5.0);
-        filter.update(&[0.0, 1.0, 0.0], 3.0);
-        filter.update(&[0.0, 0.0, 1.0], 7.0);
+        filter.update(&[1.0, 0.0, 0.0], 5.0).unwrap();
+        filter.update(&[0.0, 1.0, 0.0], 3.0).unwrap();
+        filter.update(&[0.0, 0.0, 1.0], 7.0).unwrap();
 
         let features = [2.0, 4.0, 6.0];
         let w = filter.weights();
@@ -376,12 +417,9 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut filter = RlsFilterF64::builder()
-            .dimensions(2)
-            .build()
-            .unwrap();
+        let mut filter = RlsFilterF64::builder().dimensions(2).build().unwrap();
 
-        filter.update(&[1.0, 2.0], 5.0);
+        filter.update(&[1.0, 2.0], 5.0).unwrap();
         assert!(filter.count() > 0);
         assert!(filter.weights().iter().any(|&w| w != 0.0));
 
@@ -393,10 +431,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_predict() {
-        let filter = RlsFilterF64::builder()
-            .dimensions(3)
-            .build()
-            .unwrap();
+        let filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
 
         filter.predict(&[1.0, 2.0]);
     }
@@ -404,41 +439,42 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_update() {
-        let mut filter = RlsFilterF64::builder()
-            .dimensions(3)
-            .build()
-            .unwrap();
+        let mut filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
 
-        filter.update(&[1.0], 5.0);
+        let _ = filter.update(&[1.0], 5.0);
     }
 
     #[test]
     fn builder_rejects_zero_dimensions() {
-        let result = RlsFilterF64::builder()
-            .dimensions(0)
-            .build();
+        let result = RlsFilterF64::builder().dimensions(0).build();
         assert!(result.is_err());
     }
 
     #[test]
     fn builder_rejects_invalid_forgetting_factor() {
-        assert!(RlsFilterF64::builder()
-            .dimensions(2)
-            .forgetting_factor(0.0)
-            .build()
-            .is_err());
+        assert!(
+            RlsFilterF64::builder()
+                .dimensions(2)
+                .forgetting_factor(0.0)
+                .build()
+                .is_err()
+        );
 
-        assert!(RlsFilterF64::builder()
-            .dimensions(2)
-            .forgetting_factor(1.5)
-            .build()
-            .is_err());
+        assert!(
+            RlsFilterF64::builder()
+                .dimensions(2)
+                .forgetting_factor(1.5)
+                .build()
+                .is_err()
+        );
 
-        assert!(RlsFilterF64::builder()
-            .dimensions(2)
-            .forgetting_factor(-0.1)
-            .build()
-            .is_err());
+        assert!(
+            RlsFilterF64::builder()
+                .dimensions(2)
+                .forgetting_factor(-0.1)
+                .build()
+                .is_err()
+        );
     }
 
     #[test]
@@ -452,28 +488,50 @@ mod tests {
 
     #[test]
     fn f32_basic() {
-        let mut filter = RlsFilterF32::builder()
-            .dimensions(2)
-            .build()
-            .unwrap();
+        let mut filter = RlsFilterF32::builder().dimensions(2).build().unwrap();
 
         for i in 0..200 {
             let x1 = (i as f32 * 0.7).sin();
             let x2 = (i as f32 * 1.3).cos();
             let target = 2.0 * x1 + 3.0 * x2;
-            filter.update(&[x1, x2], target);
+            filter.update(&[x1, x2], target).unwrap();
         }
 
         let w = filter.weights();
-        assert!(
-            (w[0] - 2.0).abs() < 0.1,
-            "w[0] = {}, expected ~2.0",
-            w[0]
+        assert!((w[0] - 2.0).abs() < 0.1, "w[0] = {}, expected ~2.0", w[0]);
+        assert!((w[1] - 3.0).abs() < 0.1, "w[1] = {}, expected ~3.0", w[1]);
+    }
+
+    #[test]
+    fn rejects_nan_target() {
+        let mut filter = RlsFilterF64::builder()
+            .dimensions(2)
+            .build()
+            .unwrap();
+        assert_eq!(
+            filter.update(&[1.0, 2.0], f64::NAN),
+            Err(crate::DataError::NotANumber)
         );
-        assert!(
-            (w[1] - 3.0).abs() < 0.1,
-            "w[1] = {}, expected ~3.0",
-            w[1]
-        );
+        assert_eq!(filter.count(), 0);
+    }
+
+    #[test]
+    fn max_covariance_auto_resets() {
+        let mut rls = RlsFilterF64::builder()
+            .dimensions(1)
+            .forgetting_factor(0.5) // aggressive forgetting
+            .initial_covariance(100.0)
+            .max_covariance(1e6)
+            .build()
+            .unwrap();
+
+        // Feed data that could cause P to grow
+        for i in 1..=1000u32 {
+            let x = i as f64;
+            rls.update(&[x], x).unwrap();
+        }
+        // P diagonal should not exceed max_covariance
+        let p = rls.covariance()[0];
+        assert!(p <= 1e6, "P should be bounded: {p}");
     }
 }

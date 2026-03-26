@@ -69,16 +69,61 @@ macro_rules! impl_kalman3d {
                 }
             }
 
+            /// Predict with custom state transition matrix F.
+            pub fn predict_with_dynamics(&mut self, f: [[$ty; 3]; 3]) {
+                // x_new = F * x
+                let mut new_state = [0.0 as $ty; 3];
+                for i in 0..3 {
+                    for k in 0..3 {
+                        new_state[i] += f[i][k] * self.state[k];
+                    }
+                }
+                self.state = new_state;
+
+                // FP = F * P
+                let mut fp = [0.0 as $ty; 9];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        for k in 0..3 {
+                            fp[i * 3 + j] += f[i][k] * self.p[k * 3 + j];
+                        }
+                    }
+                }
+
+                // P_new = FP * F' + Q
+                let mut new_p = [0.0 as $ty; 9];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        for k in 0..3 {
+                            new_p[i * 3 + j] += fp[i * 3 + k] * f[j][k];
+                        }
+                        new_p[i * 3 + j] += self.q[i * 3 + j];
+                    }
+                }
+                self.p = new_p;
+            }
+
             /// Incorporates a scalar observation with observation model H.
             ///
             /// The observation is modeled as:
-            /// z = h[0]*state[0] + h[1]*state[1] + h[2]*state[2] + noise.
+            /// `z = h[0]*state[0] + h[1]*state[1] + h[2]*state[2] + noise`.
             ///
             /// # Arguments
             /// - `observation` — the measured scalar value
             /// - `h` — the 3-element observation vector [h0, h1, h2]
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the observation is NaN, or
+            /// `DataError::Infinite` if the observation is infinite.
             #[inline]
-            pub fn update(&mut self, observation: $ty, h: [$ty; 3]) {
+            pub fn update(
+                &mut self,
+                observation: $ty,
+                h: [$ty; 3],
+            ) -> Result<(), crate::DataError> {
+                check_finite!(observation);
+                debug_assert!(h.iter().all(|v| v.is_finite()), "h must be finite");
                 // Innovation: y = obs - H*x
                 let mut hx = 0.0 as $ty;
                 for i in 0..3 {
@@ -117,8 +162,7 @@ macro_rules! impl_kalman3d {
                     for j in 0..3 {
                         let mut sum = 0.0 as $ty;
                         for m in 0..3 {
-                            let ikh = if i == m { 1.0 as $ty } else { 0.0 as $ty }
-                                - k[i] * h[m];
+                            let ikh = if i == m { 1.0 as $ty } else { 0.0 as $ty } - k[i] * h[m];
                             sum += ikh * old_p[m * 3 + j];
                         }
                         self.p[i * 3 + j] = sum;
@@ -128,6 +172,7 @@ macro_rules! impl_kalman3d {
                 self.last_innovation = Option::Some(y);
                 self.last_innovation_var = Option::Some(s);
                 self.count += 1;
+                Ok(())
             }
 
             /// Returns the current state estimate [x0, x1, x2].
@@ -269,19 +314,11 @@ mod tests {
     use super::*;
 
     fn diagonal_q() -> [[f64; 3]; 3] {
-        [
-            [0.01, 0.0, 0.0],
-            [0.0, 0.01, 0.0],
-            [0.0, 0.0, 0.01],
-        ]
+        [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]]
     }
 
     fn diagonal_q_f32() -> [[f32; 3]; 3] {
-        [
-            [0.01, 0.0, 0.0],
-            [0.0, 0.01, 0.0],
-            [0.0, 0.0, 0.01],
-        ]
+        [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]]
     }
 
     #[test]
@@ -294,7 +331,7 @@ mod tests {
 
         for _ in 0..100 {
             kf.predict();
-            kf.update(50.0, [1.0, 0.0, 0.0]);
+            kf.update(50.0, [1.0, 0.0, 0.0]).unwrap();
         }
 
         let s = kf.state();
@@ -309,32 +346,24 @@ mod tests {
     fn covariance_shrinks() {
         // Observe all 3 states to ensure all covariances shrink
         let mut kf = Kalman3dF64::builder()
-            .process_noise([
-                [0.001, 0.0, 0.0],
-                [0.0, 0.001, 0.0],
-                [0.0, 0.0, 0.001],
-            ])
+            .process_noise([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 0.001]])
             .measurement_noise(1.0)
-            .initial_covariance([
-                [100.0, 0.0, 0.0],
-                [0.0, 100.0, 0.0],
-                [0.0, 0.0, 100.0],
-            ])
+            .initial_covariance([[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]])
             .build()
             .unwrap();
 
         kf.predict();
-        kf.update(50.0, [1.0, 0.0, 0.0]);
-        kf.update(25.0, [0.0, 1.0, 0.0]);
-        kf.update(10.0, [0.0, 0.0, 1.0]);
+        kf.update(50.0, [1.0, 0.0, 0.0]).unwrap();
+        kf.update(25.0, [0.0, 1.0, 0.0]).unwrap();
+        kf.update(10.0, [0.0, 0.0, 1.0]).unwrap();
         let cov1 = kf.covariance();
         let trace1 = cov1[0][0] + cov1[1][1] + cov1[2][2];
 
         for _ in 0..50 {
             kf.predict();
-            kf.update(50.0, [1.0, 0.0, 0.0]);
-            kf.update(25.0, [0.0, 1.0, 0.0]);
-            kf.update(10.0, [0.0, 0.0, 1.0]);
+            kf.update(50.0, [1.0, 0.0, 0.0]).unwrap();
+            kf.update(25.0, [0.0, 1.0, 0.0]).unwrap();
+            kf.update(10.0, [0.0, 0.0, 1.0]).unwrap();
         }
 
         let cov2 = kf.covariance();
@@ -358,7 +387,7 @@ mod tests {
         assert!(kf.innovation_variance().is_none());
 
         kf.predict();
-        kf.update(10.0, [1.0, 0.0, 0.0]);
+        kf.update(10.0, [1.0, 0.0, 0.0]).unwrap();
 
         assert!(kf.innovation().is_some());
         assert!(kf.innovation_variance().is_some());
@@ -376,7 +405,7 @@ mod tests {
 
         for _ in 0..50 {
             kf.predict();
-            kf.update(100.0, [1.0, 0.0, 0.0]);
+            kf.update(100.0, [1.0, 0.0, 0.0]).unwrap();
         }
 
         kf.reset();
@@ -395,7 +424,7 @@ mod tests {
 
         for _ in 0..100 {
             kf.predict();
-            kf.update(50.0, [1.0, 0.0, 0.0]);
+            kf.update(50.0, [1.0, 0.0, 0.0]).unwrap();
         }
 
         let s = kf.state();
@@ -408,9 +437,7 @@ mod tests {
 
     #[test]
     fn builder_missing_process_noise() {
-        let result = Kalman3dF64::builder()
-            .measurement_noise(1.0)
-            .build();
+        let result = Kalman3dF64::builder().measurement_noise(1.0).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("process_noise"))
@@ -419,9 +446,7 @@ mod tests {
 
     #[test]
     fn builder_missing_measurement_noise() {
-        let result = Kalman3dF64::builder()
-            .process_noise(diagonal_q())
-            .build();
+        let result = Kalman3dF64::builder().process_noise(diagonal_q()).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("measurement_noise"))
@@ -448,18 +473,14 @@ mod tests {
         // Observe position only, H = [1, 0, 0].
         // True signal: position grows linearly.
         let mut kf = Kalman3dF64::builder()
-            .process_noise([
-                [0.1, 0.0, 0.0],
-                [0.0, 0.1, 0.0],
-                [0.0, 0.0, 0.1],
-            ])
+            .process_noise([[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])
             .measurement_noise(1.0)
             .build()
             .unwrap();
 
         for i in 0..200 {
             kf.predict();
-            kf.update(i as f64, [1.0, 0.0, 0.0]);
+            kf.update(i as f64, [1.0, 0.0, 0.0]).unwrap();
         }
 
         let s = kf.state();
@@ -482,15 +503,30 @@ mod tests {
         for _ in 0..200 {
             kf.predict();
             // Observe 10.0 = 0.5*x0 + 0.5*x1
-            kf.update(10.0, [0.5, 0.5, 0.0]);
+            kf.update(10.0, [0.5, 0.5, 0.0]).unwrap();
         }
 
         let s = kf.state();
         // x0 + x1 should be ~20.0
         let sum = s[0] + s[1];
-        assert!(
-            (sum - 20.0).abs() < 2.0,
-            "x0 + x1 = {sum}, expected ~20.0"
+        assert!((sum - 20.0).abs() < 2.0, "x0 + x1 = {sum}, expected ~20.0");
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut kf = Kalman3dF64::builder()
+            .process_noise(diagonal_q())
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        assert_eq!(
+            kf.update(f64::NAN, [1.0, 0.0, 0.0]),
+            Err(crate::DataError::NotANumber)
         );
+        assert_eq!(
+            kf.update(f64::INFINITY, [1.0, 0.0, 0.0]),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(kf.count(), 0);
     }
 }

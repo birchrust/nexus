@@ -73,6 +73,7 @@ impl OnlineKMeansF64 {
     /// Panics if `features.len() != self.dimensions()`.
     #[inline]
     pub fn update(&mut self, features: &[f64]) -> usize {
+        debug_assert!(features.iter().all(|f| f.is_finite()), "features must be finite");
         assert_eq!(
             features.len(),
             self.dims,
@@ -185,6 +186,13 @@ impl OnlineKMeansF64 {
     #[must_use]
     pub fn is_seeded(&self) -> bool {
         self.seeded >= self.k
+    }
+
+    /// Whether enough data for meaningful queries (all centroids seeded).
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.is_seeded()
     }
 
     /// Returns the total observation count across all clusters.
@@ -445,10 +453,7 @@ mod tests {
         assert!(err.is_err());
 
         // missing required field
-        let err = OnlineKMeansF64::builder()
-            .clusters(2)
-            .dimensions(2)
-            .build();
+        let err = OnlineKMeansF64::builder().clusters(2).dimensions(2).build();
         assert!(err.is_err());
     }
 

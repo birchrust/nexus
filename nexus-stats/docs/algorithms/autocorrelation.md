@@ -10,6 +10,7 @@ Online autocorrelation coefficient at a compile-time-fixed lag.
 | Types | `AutocorrelationF64<LAG>`, `AutocorrelationF32<LAG>`, `AutocorrelationI64<LAG>`, `AutocorrelationI32<LAG>` |
 | Priming | After `LAG + 2` samples |
 | Output | `correlation()` in [-1, 1], `covariance()` — both `Option` |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -74,7 +75,7 @@ use nexus_stats::AutocorrelationF64;
 let mut ac = AutocorrelationF64::<1>::new();
 
 for sample in data {
-    ac.update(sample);
+    ac.update(sample).unwrap();
 }
 
 if let Some(r) = ac.correlation() {
@@ -93,7 +94,7 @@ of the type. Changing the lag means changing the type.
 let mut ac = AutocorrelationF64::<1>::new();
 
 // Feed returns:
-ac.update(price_return);
+ac.update(price_return).unwrap();
 
 if let Some(r) = ac.correlation() {
     if r > 0.3 {
@@ -113,7 +114,7 @@ if let Some(r) = ac.correlation() {
 let mut ac = AutocorrelationF64::<1>::new();
 
 // Feed quote deltas (should be ~random if feed is live):
-ac.update(new_quote - last_quote);
+ac.update(new_quote - last_quote).unwrap();
 
 if let Some(r) = ac.correlation() {
     if r > 0.8 {
@@ -129,7 +130,7 @@ if let Some(r) = ac.correlation() {
 let mut ac = AutocorrelationF64::<100>::new();
 
 // Feed inter-packet intervals:
-ac.update(interval_ms);
+ac.update(interval_ms).unwrap();
 
 if let Some(r) = ac.correlation() {
     if r > 0.5 {

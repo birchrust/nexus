@@ -1,6 +1,10 @@
 // neg_cmp_op_on_partial_ord: !(x > 0.0) intentionally rejects NaN,
 // unlike x <= 0.0 which passes NaN silently.
-#![allow(clippy::suboptimal_flops, clippy::float_cmp, clippy::neg_cmp_op_on_partial_ord)]
+#![allow(
+    clippy::suboptimal_flops,
+    clippy::float_cmp,
+    clippy::neg_cmp_op_on_partial_ord
+)]
 
 /// Result of a sequential test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,13 +69,13 @@ impl SprtBernoulli {
         }
     }
 
-    /// Feeds a binary observation. Returns the current decision.
+    /// Updates with a binary observation. Returns the current decision.
     ///
     /// Once a boundary is crossed the decision is sticky — further
-    /// observations return the same result without updating state.
+    /// updates return the same result without changing state.
     #[inline]
     #[must_use]
-    pub fn observe(&mut self, success: bool) -> Decision {
+    pub fn update(&mut self, success: bool) -> Decision {
         if self.decided {
             return self.last_decision;
         }
@@ -185,12 +189,8 @@ impl SprtBernoulliBuilder {
         let p1 = self
             .alt_rate
             .ok_or(crate::ConfigError::Missing("alt_rate"))?;
-        let alpha = self
-            .alpha
-            .ok_or(crate::ConfigError::Missing("alpha"))?;
-        let beta = self
-            .beta
-            .ok_or(crate::ConfigError::Missing("beta"))?;
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        let beta = self.beta.ok_or(crate::ConfigError::Missing("beta"))?;
 
         if !(p0 > 0.0 && p0 < 1.0) {
             return Err(crate::ConfigError::Invalid("null_rate must be in (0, 1)"));
@@ -284,15 +284,20 @@ impl SprtGaussian {
         }
     }
 
-    /// Feeds an observation. Returns the current decision.
+    /// Updates with an observation. Returns the current decision.
     ///
     /// Once a boundary is crossed the decision is sticky — further
-    /// observations return the same result without updating state.
+    /// updates return the same result without changing state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the value is NaN, or
+    /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    #[must_use]
-    pub fn observe(&mut self, value: f64) -> Decision {
+    pub fn update(&mut self, value: f64) -> Result<Decision, crate::DataError> {
+        check_finite!(value);
         if self.decided {
-            return self.last_decision;
+            return Ok(self.last_decision);
         }
 
         self.log_likelihood +=
@@ -312,7 +317,7 @@ impl SprtGaussian {
             self.last_decision = decision;
         }
 
-        decision
+        Ok(decision)
     }
 
     /// Current cumulative log-likelihood ratio.
@@ -420,12 +425,8 @@ impl SprtGaussianBuilder {
         let variance = self
             .variance
             .ok_or(crate::ConfigError::Missing("variance"))?;
-        let alpha = self
-            .alpha
-            .ok_or(crate::ConfigError::Missing("alpha"))?;
-        let beta = self
-            .beta
-            .ok_or(crate::ConfigError::Missing("beta"))?;
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        let beta = self.beta.ok_or(crate::ConfigError::Missing("beta"))?;
 
         if !(variance > 0.0) {
             return Err(crate::ConfigError::Invalid("variance must be positive"));
@@ -490,7 +491,7 @@ mod tests {
         let mut decision = Decision::Continue;
         for i in 0..10_000 {
             let success = i % 5 != 0; // 80% success rate
-            decision = sprt.observe(success);
+            decision = sprt.update(success);
             if decision != Decision::Continue {
                 break;
             }
@@ -512,7 +513,7 @@ mod tests {
         let mut decision = Decision::Continue;
         for i in 0..10_000 {
             let success = i % 2 == 0;
-            decision = sprt.observe(success);
+            decision = sprt.update(success);
             if decision != Decision::Continue {
                 break;
             }
@@ -533,7 +534,7 @@ mod tests {
         // Drive to a decision.
         for i in 0..10_000 {
             let success = i % 5 != 0;
-            if sprt.observe(success) != Decision::Continue {
+            if sprt.update(success) != Decision::Continue {
                 break;
             }
         }
@@ -543,7 +544,7 @@ mod tests {
 
         // Further observations don't change the outcome.
         for _ in 0..100 {
-            assert_eq!(sprt.observe(false), locked);
+            assert_eq!(sprt.update(false), locked);
         }
     }
 
@@ -559,7 +560,7 @@ mod tests {
 
         // Accumulate some evidence.
         for _ in 0..50 {
-            sprt.observe(true);
+            sprt.update(true);
         }
         assert!(sprt.count() > 0);
 
@@ -581,7 +582,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..7 {
-            sprt.observe(true);
+            sprt.update(true);
         }
         assert_eq!(sprt.count(), 7);
     }
@@ -601,7 +602,7 @@ mod tests {
 
         let mut decision = Decision::Continue;
         for _ in 0..10_000 {
-            decision = sprt.observe(108.0);
+            decision = sprt.update(108.0).unwrap();
             if decision != Decision::Continue {
                 break;
             }
@@ -622,7 +623,7 @@ mod tests {
 
         let mut decision = Decision::Continue;
         for _ in 0..10_000 {
-            decision = sprt.observe(100.0);
+            decision = sprt.update(100.0).unwrap();
             if decision != Decision::Continue {
                 break;
             }
@@ -642,7 +643,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..10_000 {
-            if sprt.observe(108.0) != Decision::Continue {
+            if sprt.update(108.0).unwrap() != Decision::Continue {
                 break;
             }
         }
@@ -651,7 +652,7 @@ mod tests {
         let locked = sprt.decision();
 
         for _ in 0..100 {
-            assert_eq!(sprt.observe(90.0), locked);
+            assert_eq!(sprt.update(90.0).unwrap(), locked);
         }
     }
 
@@ -770,7 +771,7 @@ mod tests {
             .beta(beta)
             .build()
             .unwrap();
-        b.observe(true);
+        b.update(true);
         assert!(b.log_likelihood_ratio() > 0.0);
 
         // Gaussian: one observation above midpoint should move positive.
@@ -782,7 +783,7 @@ mod tests {
             .beta(beta)
             .build()
             .unwrap();
-        g.observe(2.0);
+        g.update(2.0).unwrap();
         assert!(g.log_likelihood_ratio() > 0.0);
 
         // Verify numeric bound values match Wald's formulas directly.
@@ -807,5 +808,20 @@ mod tests {
             "Gaussian lower bound: got {}, expected {expected_lower}",
             sprt_g.lower_bound
         );
+    }
+
+    #[test]
+    fn gaussian_rejects_nan_and_inf() {
+        let mut sprt = SprtGaussian::builder()
+            .null_mean(100.0)
+            .alt_mean(105.0)
+            .variance(25.0)
+            .alpha(0.05)
+            .beta(0.05)
+            .build()
+            .unwrap();
+        assert_eq!(sprt.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(sprt.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(sprt.count(), 0);
     }
 }

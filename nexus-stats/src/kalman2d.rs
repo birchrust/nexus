@@ -48,10 +48,7 @@ macro_rules! impl_kalman2d {
                     process_noise: Option::None,
                     measurement_noise: Option::None,
                     initial_state: [0.0 as $ty; 2],
-                    initial_covariance: [
-                        [1.0 as $ty, 0.0 as $ty],
-                        [0.0 as $ty, 1.0 as $ty],
-                    ],
+                    initial_covariance: [[1.0 as $ty, 0.0 as $ty], [0.0 as $ty, 1.0 as $ty]],
                 }
             }
 
@@ -67,15 +64,50 @@ macro_rules! impl_kalman2d {
                 self.p[3] += self.q[3];
             }
 
+            /// Predict with custom state transition matrix F.
+            ///
+            /// Propagates state as `x = F * x` and covariance as `P = F * P * F' + Q`.
+            /// The existing `predict()` uses identity dynamics (F = I).
+            pub fn predict_with_dynamics(&mut self, f: [[$ty; 2]; 2]) {
+                // x_new = F * x
+                let x0 = f[0][0] * self.state[0] + f[0][1] * self.state[1];
+                let x1 = f[1][0] * self.state[0] + f[1][1] * self.state[1];
+                self.state = [x0, x1];
+
+                // P_new = F * P * F' + Q
+                // FP[i][j] = Σ_k F[i][k] * P[k*2+j]
+                let fp00 = f[0][0] * self.p[0] + f[0][1] * self.p[2];
+                let fp01 = f[0][0] * self.p[1] + f[0][1] * self.p[3];
+                let fp10 = f[1][0] * self.p[0] + f[1][1] * self.p[2];
+                let fp11 = f[1][0] * self.p[1] + f[1][1] * self.p[3];
+
+                // (FP) * F' + Q
+                self.p[0] = fp00 * f[0][0] + fp01 * f[0][1] + self.q[0];
+                self.p[1] = fp00 * f[1][0] + fp01 * f[1][1] + self.q[1];
+                self.p[2] = fp10 * f[0][0] + fp11 * f[0][1] + self.q[2];
+                self.p[3] = fp10 * f[1][0] + fp11 * f[1][1] + self.q[3];
+            }
+
             /// Incorporates a scalar observation with observation model H.
             ///
-            /// The observation is modeled as: z = h[0]*state[0] + h[1]*state[1] + noise.
+            /// The observation is modeled as: `z = h[0]*state[0] + h[1]*state[1] + noise`.
             ///
             /// # Arguments
             /// - `observation` — the measured scalar value
             /// - `h` — the 2-element observation vector [h0, h1]
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the observation is NaN, or
+            /// `DataError::Infinite` if the observation is infinite.
             #[inline]
-            pub fn update(&mut self, observation: $ty, h: [$ty; 2]) {
+            pub fn update(
+                &mut self,
+                observation: $ty,
+                h: [$ty; 2],
+            ) -> Result<(), crate::DataError> {
+                check_finite!(observation);
+                debug_assert!(h.iter().all(|v| v.is_finite()), "h must be finite");
                 // Innovation: y = obs - H*x
                 let y = observation - h[0] * self.state[0] - h[1] * self.state[1];
 
@@ -106,6 +138,7 @@ macro_rules! impl_kalman2d {
                 self.last_innovation = Option::Some(y);
                 self.last_innovation_var = Option::Some(s);
                 self.count += 1;
+                Ok(())
             }
 
             /// Returns the current state estimate [x0, x1].
@@ -119,10 +152,7 @@ macro_rules! impl_kalman2d {
             #[inline]
             #[must_use]
             pub fn covariance(&self) -> [[$ty; 2]; 2] {
-                [
-                    [self.p[0], self.p[1]],
-                    [self.p[2], self.p[3]],
-                ]
+                [[self.p[0], self.p[1]], [self.p[2], self.p[3]]]
             }
 
             /// Returns the last innovation (measurement residual), or `None`
@@ -250,7 +280,7 @@ mod tests {
 
         for _ in 0..100 {
             kf.predict();
-            kf.update(50.0, [1.0, 0.0]);
+            kf.update(50.0, [1.0, 0.0]).unwrap();
         }
 
         let s = kf.state();
@@ -277,7 +307,7 @@ mod tests {
 
         for _ in 0..50 {
             kf.predict();
-            kf.update(50.0, [1.0, 0.0]);
+            kf.update(50.0, [1.0, 0.0]).unwrap();
         }
 
         let cov2 = kf.covariance();
@@ -301,7 +331,7 @@ mod tests {
         assert!(kf.innovation_variance().is_none());
 
         kf.predict();
-        kf.update(10.0, [1.0, 0.0]);
+        kf.update(10.0, [1.0, 0.0]).unwrap();
 
         assert!(kf.innovation().is_some());
         assert!(kf.innovation_variance().is_some());
@@ -319,7 +349,7 @@ mod tests {
 
         for _ in 0..50 {
             kf.predict();
-            kf.update(100.0, [1.0, 0.0]);
+            kf.update(100.0, [1.0, 0.0]).unwrap();
         }
 
         kf.reset();
@@ -338,7 +368,7 @@ mod tests {
 
         for _ in 0..100 {
             kf.predict();
-            kf.update(50.0, [1.0, 0.0]);
+            kf.update(50.0, [1.0, 0.0]).unwrap();
         }
 
         let s = kf.state();
@@ -351,9 +381,7 @@ mod tests {
 
     #[test]
     fn builder_missing_process_noise() {
-        let result = Kalman2dF64::builder()
-            .measurement_noise(1.0)
-            .build();
+        let result = Kalman2dF64::builder().measurement_noise(1.0).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("process_noise"))
@@ -399,7 +427,7 @@ mod tests {
         for i in 0..200 {
             kf.predict();
             // Simulate constant velocity: position = i
-            kf.update(i as f64, [1.0, 0.0]);
+            kf.update(i as f64, [1.0, 0.0]).unwrap();
         }
 
         let s = kf.state();
@@ -408,5 +436,23 @@ mod tests {
             "position = {}, expected ~199",
             s[0]
         );
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut kf = Kalman2dF64::builder()
+            .process_noise([[0.01, 0.0], [0.0, 0.01]])
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        assert_eq!(
+            kf.update(f64::NAN, [1.0, 0.0]),
+            Err(crate::DataError::NotANumber)
+        );
+        assert_eq!(
+            kf.update(f64::INFINITY, [1.0, 0.0]),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(kf.count(), 0);
     }
 }

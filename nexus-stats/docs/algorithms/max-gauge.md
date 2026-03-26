@@ -8,6 +8,7 @@ resets when read. Designed for periodic scraping and alerting.
 | Update cost | ~5 cycles |
 | Memory | ~8 bytes |
 | Types | `MaxGaugeF64`, `MaxGaugeF32`, `MaxGaugeI64`, `MaxGaugeI32` |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -34,9 +35,9 @@ resets when read. Designed for periodic scraping and alerting.
 ```rust
 let mut gauge = MaxGaugeF64::new();
 
-gauge.update(10.0);
-gauge.update(25.0);
-gauge.update(15.0);
+gauge.update(10.0).unwrap();
+gauge.update(25.0).unwrap();
+gauge.update(15.0).unwrap();
 
 assert_eq!(gauge.peek(), Some(25.0));  // reads without reset
 assert_eq!(gauge.take(), Some(25.0));  // reads AND resets

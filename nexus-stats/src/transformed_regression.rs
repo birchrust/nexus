@@ -5,9 +5,7 @@
 // - Logarithmic: y = a * ln(x) + b  →  y = a * ln(x) + b  (already linear in ln(x))
 // - Power law: y = a * x^b  →  ln(y) = ln(a) + b * ln(x)
 
-use crate::linear_regression::{
-    EwLinearRegressionF64, LinearRegressionF32, LinearRegressionF64,
-};
+use crate::linear_regression::{EwLinearRegressionF64, LinearRegressionF32, LinearRegressionF64};
 
 // ============================================================================
 // Exponential: y = a * e^(bx)
@@ -49,13 +47,21 @@ macro_rules! impl_exponential_regression {
             }
 
             /// Feeds (x, y). Silently skips if `y <= 0`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if x or y is NaN, or
+            /// `DataError::Infinite` if x or y is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 if y > 0.0 as $ty {
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_y = crate::math::ln(y as f64) as $ty;
-                    self.inner.update(x, ln_y);
+                    self.inner.update(x, ln_y)?;
                 }
+                Ok(())
             }
 
             /// Growth/decay rate (the exponent b), or `None` if not primed.
@@ -159,13 +165,21 @@ macro_rules! impl_logarithmic_regression {
             }
 
             /// Feeds (x, y). Silently skips if `x <= 0`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if x or y is NaN, or
+            /// `DataError::Infinite` if x or y is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 if x > 0.0 as $ty {
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_x = crate::math::ln(x as f64) as $ty;
-                    self.inner.update(ln_x, y);
+                    self.inner.update(ln_x, y)?;
                 }
+                Ok(())
             }
 
             /// Slope (coefficient of ln(x)), or `None` if not primed.
@@ -270,15 +284,23 @@ macro_rules! impl_power_regression {
             }
 
             /// Feeds (x, y). Silently skips if `x <= 0` or `y <= 0`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if x or y is NaN, or
+            /// `DataError::Infinite` if x or y is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 if x > 0.0 as $ty && y > 0.0 as $ty {
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_x = crate::math::ln(x as f64) as $ty;
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_y = crate::math::ln(y as f64) as $ty;
-                    self.inner.update(ln_x, ln_y);
+                    self.inner.update(ln_x, ln_y)?;
                 }
+                Ok(())
             }
 
             /// Exponent (the power b), or `None` if not primed.
@@ -375,17 +397,27 @@ macro_rules! impl_ew_exponential_regression {
             #[inline]
             #[must_use]
             pub fn builder() -> $builder {
-                $builder { alpha: Option::None }
+                $builder {
+                    alpha: Option::None,
+                }
             }
 
             /// Feeds (x, y). Silently skips if `y <= 0`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if x or y is NaN, or
+            /// `DataError::Infinite` if x or y is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 if y > 0.0 as $ty {
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_y = crate::math::ln(y as f64) as $ty;
-                    self.inner.update(x, ln_y);
+                    self.inner.update(x, ln_y)?;
                 }
+                Ok(())
             }
 
             /// Growth/decay rate.
@@ -399,36 +431,48 @@ macro_rules! impl_ew_exponential_regression {
             pub fn scale(&self) -> Option<$ty> {
                 self.inner.intercept_value().map(|v| {
                     #[allow(clippy::cast_possible_truncation)]
-                    { crate::math::exp(v as f64) as $ty }
+                    {
+                        crate::math::exp(v as f64) as $ty
+                    }
                 })
             }
 
             /// R² in log-space.
             #[must_use]
-            pub fn r_squared(&self) -> Option<$ty> { self.inner.r_squared() }
+            pub fn r_squared(&self) -> Option<$ty> {
+                self.inner.r_squared()
+            }
 
             /// Predict `y = a · e^(bx)`.
             #[must_use]
             pub fn predict(&self, x: $ty) -> Option<$ty> {
                 self.inner.predict(x).map(|ln_y| {
                     #[allow(clippy::cast_possible_truncation)]
-                    { crate::math::exp(ln_y as f64) as $ty }
+                    {
+                        crate::math::exp(ln_y as f64) as $ty
+                    }
                 })
             }
 
             /// Number of accepted observations.
             #[inline]
             #[must_use]
-            pub fn count(&self) -> u64 { self.inner.count() }
+            pub fn count(&self) -> u64 {
+                self.inner.count()
+            }
 
             #[inline]
             #[must_use]
             /// Whether primed.
-            pub fn is_primed(&self) -> bool { self.inner.is_primed() }
+            pub fn is_primed(&self) -> bool {
+                self.inner.is_primed()
+            }
 
             /// Reset.
             #[inline]
-            pub fn reset(&mut self) { self.inner.reset(); }
+            pub fn reset(&mut self) {
+                self.inner.reset();
+            }
         }
 
         impl $builder {
@@ -443,9 +487,7 @@ macro_rules! impl_ew_exponential_regression {
             /// Builds the estimator.
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let inner = $inner::builder()
-                    .alpha(alpha)
-                    .build()?;
+                let inner = $inner::builder().alpha(alpha).build()?;
                 Ok($name { inner })
             }
         }
@@ -453,8 +495,10 @@ macro_rules! impl_ew_exponential_regression {
 }
 
 impl_ew_exponential_regression!(
-    EwExponentialRegressionF64, EwExponentialRegressionF64Builder,
-    EwLinearRegressionF64, f64
+    EwExponentialRegressionF64,
+    EwExponentialRegressionF64Builder,
+    EwLinearRegressionF64,
+    f64
 );
 
 macro_rules! impl_ew_logarithmic_regression {
@@ -476,17 +520,27 @@ macro_rules! impl_ew_logarithmic_regression {
             #[inline]
             #[must_use]
             pub fn builder() -> $builder {
-                $builder { alpha: Option::None }
+                $builder {
+                    alpha: Option::None,
+                }
             }
 
             /// Feeds (x, y). Silently skips if `x <= 0`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if x or y is NaN, or
+            /// `DataError::Infinite` if x or y is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 if x > 0.0 as $ty {
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_x = crate::math::ln(x as f64) as $ty;
-                    self.inner.update(ln_x, y);
+                    self.inner.update(ln_x, y)?;
                 }
+                Ok(())
             }
 
             /// Slope (coefficient of ln(x)).
@@ -503,12 +557,16 @@ macro_rules! impl_ew_logarithmic_regression {
 
             /// R².
             #[must_use]
-            pub fn r_squared(&self) -> Option<$ty> { self.inner.r_squared() }
+            pub fn r_squared(&self) -> Option<$ty> {
+                self.inner.r_squared()
+            }
 
             /// Predict `y = a · ln(x) + b`.
             #[must_use]
             pub fn predict(&self, x: $ty) -> Option<$ty> {
-                if x <= 0.0 as $ty { return Option::None; }
+                if x <= 0.0 as $ty {
+                    return Option::None;
+                }
                 #[allow(clippy::cast_possible_truncation)]
                 let ln_x = crate::math::ln(x as f64) as $ty;
                 self.inner.predict(ln_x)
@@ -517,14 +575,20 @@ macro_rules! impl_ew_logarithmic_regression {
             #[inline]
             #[must_use]
             /// Count.
-            pub fn count(&self) -> u64 { self.inner.count() }
+            pub fn count(&self) -> u64 {
+                self.inner.count()
+            }
             #[inline]
             #[must_use]
             /// Primed.
-            pub fn is_primed(&self) -> bool { self.inner.is_primed() }
+            pub fn is_primed(&self) -> bool {
+                self.inner.is_primed()
+            }
             /// Reset.
             #[inline]
-            pub fn reset(&mut self) { self.inner.reset(); }
+            pub fn reset(&mut self) {
+                self.inner.reset();
+            }
         }
 
         impl $builder {
@@ -539,9 +603,7 @@ macro_rules! impl_ew_logarithmic_regression {
             /// Build.
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let inner = $inner::builder()
-                    .alpha(alpha)
-                    .build()?;
+                let inner = $inner::builder().alpha(alpha).build()?;
                 Ok($name { inner })
             }
         }
@@ -549,8 +611,10 @@ macro_rules! impl_ew_logarithmic_regression {
 }
 
 impl_ew_logarithmic_regression!(
-    EwLogarithmicRegressionF64, EwLogarithmicRegressionF64Builder,
-    EwLinearRegressionF64, f64
+    EwLogarithmicRegressionF64,
+    EwLogarithmicRegressionF64Builder,
+    EwLinearRegressionF64,
+    f64
 );
 
 macro_rules! impl_ew_power_regression {
@@ -572,19 +636,29 @@ macro_rules! impl_ew_power_regression {
             #[inline]
             #[must_use]
             pub fn builder() -> $builder {
-                $builder { alpha: Option::None }
+                $builder {
+                    alpha: Option::None,
+                }
             }
 
             /// Feeds (x, y). Silently skips if `x <= 0` or `y <= 0`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if x or y is NaN, or
+            /// `DataError::Infinite` if x or y is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 if x > 0.0 as $ty && y > 0.0 as $ty {
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_x = crate::math::ln(x as f64) as $ty;
                     #[allow(clippy::cast_possible_truncation)]
                     let ln_y = crate::math::ln(y as f64) as $ty;
-                    self.inner.update(ln_x, ln_y);
+                    self.inner.update(ln_x, ln_y)?;
                 }
+                Ok(())
             }
 
             /// Exponent b.
@@ -598,18 +672,24 @@ macro_rules! impl_ew_power_regression {
             pub fn scale(&self) -> Option<$ty> {
                 self.inner.intercept_value().map(|v| {
                     #[allow(clippy::cast_possible_truncation)]
-                    { crate::math::exp(v as f64) as $ty }
+                    {
+                        crate::math::exp(v as f64) as $ty
+                    }
                 })
             }
 
             /// R² in log-log space.
             #[must_use]
-            pub fn r_squared(&self) -> Option<$ty> { self.inner.r_squared() }
+            pub fn r_squared(&self) -> Option<$ty> {
+                self.inner.r_squared()
+            }
 
             /// Predict `y = a · x^b`.
             #[must_use]
             pub fn predict(&self, x: $ty) -> Option<$ty> {
-                if x <= 0.0 as $ty { return Option::None; }
+                if x <= 0.0 as $ty {
+                    return Option::None;
+                }
                 let intercept = self.inner.intercept_value()?;
                 let slope = self.inner.slope()?;
                 #[allow(clippy::cast_possible_truncation)]
@@ -624,14 +704,20 @@ macro_rules! impl_ew_power_regression {
             #[inline]
             #[must_use]
             /// Count.
-            pub fn count(&self) -> u64 { self.inner.count() }
+            pub fn count(&self) -> u64 {
+                self.inner.count()
+            }
             #[inline]
             #[must_use]
             /// Primed.
-            pub fn is_primed(&self) -> bool { self.inner.is_primed() }
+            pub fn is_primed(&self) -> bool {
+                self.inner.is_primed()
+            }
             /// Reset.
             #[inline]
-            pub fn reset(&mut self) { self.inner.reset(); }
+            pub fn reset(&mut self) {
+                self.inner.reset();
+            }
         }
 
         impl $builder {
@@ -646,9 +732,7 @@ macro_rules! impl_ew_power_regression {
             /// Build.
             pub fn build(self) -> Result<$name, crate::ConfigError> {
                 let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let inner = $inner::builder()
-                    .alpha(alpha)
-                    .build()?;
+                let inner = $inner::builder().alpha(alpha).build()?;
                 Ok($name { inner })
             }
         }
@@ -656,8 +740,10 @@ macro_rules! impl_ew_power_regression {
 }
 
 impl_ew_power_regression!(
-    EwPowerRegressionF64, EwPowerRegressionF64Builder,
-    EwLinearRegressionF64, f64
+    EwPowerRegressionF64,
+    EwPowerRegressionF64Builder,
+    EwLinearRegressionF64,
+    f64
 );
 
 #[cfg(test)]
@@ -674,7 +760,7 @@ mod tests {
         for x in 0..100 {
             let xf = x as f64;
             let y = 2.0 * (0.05 * xf).exp();
-            r.update(xf, y);
+            r.update(xf, y).unwrap();
         }
         let rate = r.growth_rate().unwrap();
         assert!((rate - 0.05).abs() < 1e-8, "growth rate = {rate}");
@@ -688,7 +774,7 @@ mod tests {
         let mut r = ExponentialRegressionF64::new();
         for x in 0..100 {
             let xf = x as f64;
-            r.update(xf, 2.0 * (0.05 * xf).exp());
+            r.update(xf, 2.0 * (0.05 * xf).exp()).unwrap();
         }
         let y = r.predict(10.0).unwrap();
         let expected = 2.0 * (0.05 * 10.0_f64).exp();
@@ -698,8 +784,8 @@ mod tests {
     #[test]
     fn exponential_skips_negative_y() {
         let mut r = ExponentialRegressionF64::new();
-        r.update(1.0, -5.0); // skipped
-        r.update(2.0, 0.0);  // skipped
+        r.update(1.0, -5.0).unwrap(); // skipped
+        r.update(2.0, 0.0).unwrap(); // skipped
         assert_eq!(r.count(), 0);
     }
 
@@ -712,7 +798,7 @@ mod tests {
         let mut r = LogarithmicRegressionF64::new();
         for x in 1..200 {
             let xf = x as f64;
-            r.update(xf, 3.0 * xf.ln() + 1.0);
+            r.update(xf, 3.0 * xf.ln() + 1.0).unwrap();
         }
         let slope = r.slope().unwrap();
         assert!((slope - 3.0).abs() < 1e-6, "slope = {slope}");
@@ -723,8 +809,8 @@ mod tests {
     #[test]
     fn logarithmic_skips_negative_x() {
         let mut r = LogarithmicRegressionF64::new();
-        r.update(-1.0, 5.0);
-        r.update(0.0, 5.0);
+        r.update(-1.0, 5.0).unwrap();
+        r.update(0.0, 5.0).unwrap();
         assert_eq!(r.count(), 0);
     }
 
@@ -732,7 +818,7 @@ mod tests {
     fn logarithmic_predict_negative_x_returns_none() {
         let mut r = LogarithmicRegressionF64::new();
         for x in 1..100 {
-            r.update(x as f64, (x as f64).ln());
+            r.update(x as f64, (x as f64).ln()).unwrap();
         }
         assert!(r.predict(-1.0).is_none());
     }
@@ -746,7 +832,7 @@ mod tests {
         let mut r = PowerRegressionF64::new();
         for x in 1..200 {
             let xf = x as f64;
-            r.update(xf, 4.0 * xf.powf(2.5));
+            r.update(xf, 4.0 * xf.powf(2.5)).unwrap();
         }
         let exp = r.exponent().unwrap();
         assert!((exp - 2.5).abs() < 1e-4, "exponent = {exp}");
@@ -757,8 +843,8 @@ mod tests {
     #[test]
     fn power_skips_nonpositive() {
         let mut r = PowerRegressionF64::new();
-        r.update(0.0, 5.0);
-        r.update(1.0, -5.0);
+        r.update(0.0, 5.0).unwrap();
+        r.update(1.0, -5.0).unwrap();
         r.update(-1.0, 5.0);
         assert_eq!(r.count(), 0);
     }
@@ -775,7 +861,7 @@ mod tests {
             .unwrap();
         for x in 0..300 {
             let xf = x as f64;
-            r.update(xf, 2.0 * (0.01 * xf).exp());
+            r.update(xf, 2.0 * (0.01 * xf).exp()).unwrap();
         }
         assert!(r.is_primed());
         assert!(r.growth_rate().is_some());
@@ -788,19 +874,16 @@ mod tests {
             .build()
             .unwrap();
         for x in 1..300 {
-            r.update(x as f64, 2.0 * (x as f64).ln() + 5.0);
+            r.update(x as f64, 2.0 * (x as f64).ln() + 5.0).unwrap();
         }
         assert!(r.is_primed());
     }
 
     #[test]
     fn ew_power_basic() {
-        let mut r = EwPowerRegressionF64::builder()
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut r = EwPowerRegressionF64::builder().alpha(0.05).build().unwrap();
         for x in 1..300 {
-            r.update(x as f64, 3.0 * (x as f64).powf(1.5));
+            r.update(x as f64, 3.0 * (x as f64).powf(1.5)).unwrap();
         }
         assert!(r.is_primed());
     }
@@ -814,7 +897,7 @@ mod tests {
         let mut r = ExponentialRegressionF32::new();
         for x in 0..100u32 {
             let xf = x as f32;
-            r.update(xf, 2.0 * (0.05 * xf).exp());
+            r.update(xf, 2.0 * (0.05 * xf).exp()).unwrap();
         }
         assert!(r.growth_rate().is_some());
     }
@@ -823,7 +906,7 @@ mod tests {
     fn f32_logarithmic() {
         let mut r = LogarithmicRegressionF32::new();
         for x in 1..100u32 {
-            r.update(x as f32, 3.0 * (x as f32).ln() + 1.0);
+            r.update(x as f32, 3.0 * (x as f32).ln() + 1.0).unwrap();
         }
         assert!(r.slope().is_some());
     }
@@ -832,7 +915,7 @@ mod tests {
     fn f32_power() {
         let mut r = PowerRegressionF32::new();
         for x in 1..100u32 {
-            r.update(x as f32, 4.0 * (x as f32).powf(2.0));
+            r.update(x as f32, 4.0 * (x as f32).powf(2.0)).unwrap();
         }
         assert!(r.exponent().is_some());
     }
@@ -847,9 +930,9 @@ mod tests {
         let mut log = LogarithmicRegressionF64::new();
         let mut pow = PowerRegressionF64::new();
         for x in 1..100 {
-            exp.update(x as f64, (x as f64).exp());
-            log.update(x as f64, (x as f64).ln());
-            pow.update(x as f64, (x as f64).powi(2));
+            exp.update(x as f64, (x as f64).exp()).unwrap();
+            log.update(x as f64, (x as f64).ln()).unwrap();
+            pow.update(x as f64, (x as f64).powi(2)).unwrap();
         }
         exp.reset();
         log.reset();

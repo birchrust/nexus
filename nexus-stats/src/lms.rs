@@ -81,8 +81,22 @@ macro_rules! impl_lms_filter {
             ///
             /// # Panics
             /// Panics if `features.len() != self.dimensions()`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the target is NaN, or
+            /// `DataError::Infinite` if the target is infinite.
             #[inline]
-            pub fn update(&mut self, features: &[$ty], target: $ty) {
+            pub fn update(
+                &mut self,
+                features: &[$ty],
+                target: $ty,
+            ) -> Result<(), crate::DataError> {
+                check_finite!(target);
+                debug_assert!(
+                    features.iter().all(|f| f.is_finite()),
+                    "features must be finite"
+                );
                 let prediction = self.predict(features);
                 let error = target - prediction;
                 let step = self.learning_rate * error;
@@ -90,6 +104,7 @@ macro_rules! impl_lms_filter {
                     self.weights[i] += step * features[i];
                 }
                 self.count += 1;
+                Ok(())
             }
 
             /// Returns the current weight vector.
@@ -118,6 +133,13 @@ macro_rules! impl_lms_filter {
             #[must_use]
             pub fn count(&self) -> u64 {
                 self.count
+            }
+
+            /// Whether any updates have been performed.
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.count > 0
             }
 
             /// Zeros all weights, keeping configuration intact.
@@ -155,9 +177,7 @@ macro_rules! impl_lms_filter {
                     .learning_rate
                     .ok_or(crate::ConfigError::Missing("learning_rate"))?;
                 if dims < 1 {
-                    return Err(crate::ConfigError::Invalid(
-                        "dimensions must be >= 1",
-                    ));
+                    return Err(crate::ConfigError::Invalid("dimensions must be >= 1"));
                 }
                 if lr <= 0.0 as $ty {
                     return Err(crate::ConfigError::Invalid(
@@ -246,8 +266,22 @@ macro_rules! impl_nlms_filter {
             ///
             /// # Panics
             /// Panics if `features.len() != self.dimensions()`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the target is NaN, or
+            /// `DataError::Infinite` if the target is infinite.
             #[inline]
-            pub fn update(&mut self, features: &[$ty], target: $ty) {
+            pub fn update(
+                &mut self,
+                features: &[$ty],
+                target: $ty,
+            ) -> Result<(), crate::DataError> {
+                check_finite!(target);
+                debug_assert!(
+                    features.iter().all(|f| f.is_finite()),
+                    "features must be finite"
+                );
                 let prediction = self.predict(features);
                 let error = target - prediction;
                 let mut norm_sq = 0.0 as $ty;
@@ -259,6 +293,7 @@ macro_rules! impl_nlms_filter {
                     self.weights[i] += step * features[i];
                 }
                 self.count += 1;
+                Ok(())
             }
 
             /// Returns the current weight vector.
@@ -294,6 +329,13 @@ macro_rules! impl_nlms_filter {
             #[must_use]
             pub fn count(&self) -> u64 {
                 self.count
+            }
+
+            /// Whether any updates have been performed.
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.count > 0
             }
 
             /// Zeros all weights, keeping configuration intact.
@@ -340,9 +382,7 @@ macro_rules! impl_nlms_filter {
                     .ok_or(crate::ConfigError::Missing("learning_rate"))?;
                 let eps = self.epsilon.unwrap_or(1e-8 as $ty);
                 if dims < 1 {
-                    return Err(crate::ConfigError::Invalid(
-                        "dimensions must be >= 1",
-                    ));
+                    return Err(crate::ConfigError::Invalid("dimensions must be >= 1"));
                 }
                 if lr <= 0.0 as $ty {
                     return Err(crate::ConfigError::Invalid(
@@ -350,9 +390,7 @@ macro_rules! impl_nlms_filter {
                     ));
                 }
                 if eps <= 0.0 as $ty {
-                    return Err(crate::ConfigError::Invalid(
-                        "epsilon must be positive",
-                    ));
+                    return Err(crate::ConfigError::Invalid("epsilon must be positive"));
                 }
                 Ok($name {
                     weights: vec![0.0 as $ty; dims].into_boxed_slice(),
@@ -388,20 +426,12 @@ mod tests {
             let x1 = (i as f64 * 0.7).sin();
             let x2 = (i as f64 * 1.3).cos();
             let target = 2.0 * x1 + 3.0 * x2;
-            filter.update(&[x1, x2], target);
+            filter.update(&[x1, x2], target).unwrap();
         }
 
         let w = filter.weights();
-        assert!(
-            (w[0] - 2.0).abs() < 0.1,
-            "w[0] = {}, expected ~2.0",
-            w[0]
-        );
-        assert!(
-            (w[1] - 3.0).abs() < 0.1,
-            "w[1] = {}, expected ~3.0",
-            w[1]
-        );
+        assert!((w[0] - 2.0).abs() < 0.1, "w[0] = {}, expected ~2.0", w[0]);
+        assert!((w[1] - 3.0).abs() < 0.1, "w[1] = {}, expected ~3.0", w[1]);
     }
 
     #[test]
@@ -417,20 +447,12 @@ mod tests {
             let x1 = 100.0 * (i as f64 * 0.7).sin();
             let x2 = (i as f64 * 1.3).cos();
             let target = 2.0 * x1 + 3.0 * x2;
-            filter.update(&[x1, x2], target);
+            filter.update(&[x1, x2], target).unwrap();
         }
 
         let w = filter.weights();
-        assert!(
-            (w[0] - 2.0).abs() < 0.1,
-            "w[0] = {}, expected ~2.0",
-            w[0]
-        );
-        assert!(
-            (w[1] - 3.0).abs() < 0.1,
-            "w[1] = {}, expected ~3.0",
-            w[1]
-        );
+        assert!((w[0] - 2.0).abs() < 0.1, "w[0] = {}, expected ~2.0", w[0]);
+        assert!((w[1] - 3.0).abs() < 0.1, "w[1] = {}, expected ~3.0", w[1]);
     }
 
     #[test]
@@ -442,9 +464,9 @@ mod tests {
             .unwrap();
 
         // Train a bit so weights are non-zero
-        filter.update(&[1.0, 0.0, 0.0], 5.0);
-        filter.update(&[0.0, 1.0, 0.0], 3.0);
-        filter.update(&[0.0, 0.0, 1.0], 7.0);
+        filter.update(&[1.0, 0.0, 0.0], 5.0).unwrap();
+        filter.update(&[0.0, 1.0, 0.0], 3.0).unwrap();
+        filter.update(&[0.0, 0.0, 1.0], 7.0).unwrap();
 
         let features = [2.0, 4.0, 6.0];
         let w = filter.weights();
@@ -464,7 +486,7 @@ mod tests {
             .build()
             .unwrap();
 
-        filter.update(&[1.0, 2.0], 5.0);
+        filter.update(&[1.0, 2.0], 5.0).unwrap();
         assert!(filter.count() > 0);
         assert!(filter.weights().iter().any(|&w| w != 0.0));
 
@@ -494,7 +516,7 @@ mod tests {
             .build()
             .unwrap();
 
-        filter.update(&[1.0], 5.0);
+        let _ = filter.update(&[1.0], 5.0);
     }
 
     #[test]
@@ -537,20 +559,12 @@ mod tests {
             let x1 = (i as f32 * 0.7).sin();
             let x2 = (i as f32 * 1.3).cos();
             let target = 2.0 * x1 + 3.0 * x2;
-            filter.update(&[x1, x2], target);
+            filter.update(&[x1, x2], target).unwrap();
         }
 
         let w = filter.weights();
-        assert!(
-            (w[0] - 2.0).abs() < 0.5,
-            "w[0] = {}, expected ~2.0",
-            w[0]
-        );
-        assert!(
-            (w[1] - 3.0).abs() < 0.5,
-            "w[1] = {}, expected ~3.0",
-            w[1]
-        );
+        assert!((w[0] - 2.0).abs() < 0.5, "w[0] = {}, expected ~2.0", w[0]);
+        assert!((w[1] - 3.0).abs() < 0.5, "w[1] = {}, expected ~3.0", w[1]);
     }
 
     #[test]
@@ -562,9 +576,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(filter.count(), 0);
-        filter.update(&[1.0], 2.0);
+        filter.update(&[1.0], 2.0).unwrap();
         assert_eq!(filter.count(), 1);
-        filter.update(&[1.0], 2.0);
+        filter.update(&[1.0], 2.0).unwrap();
         assert_eq!(filter.count(), 2);
     }
 
@@ -589,5 +603,33 @@ mod tests {
             .unwrap();
 
         assert!((filter.epsilon() - 1e-8).abs() < 1e-15);
+    }
+
+    #[test]
+    fn lms_rejects_nan_target() {
+        let mut filter = LmsFilterF64::builder()
+            .dimensions(2)
+            .learning_rate(0.01)
+            .build()
+            .unwrap();
+        assert_eq!(
+            filter.update(&[1.0, 2.0], f64::NAN),
+            Err(crate::DataError::NotANumber)
+        );
+        assert_eq!(filter.count(), 0);
+    }
+
+    #[test]
+    fn nlms_rejects_inf_target() {
+        let mut filter = NlmsFilterF64::builder()
+            .dimensions(2)
+            .learning_rate(0.5)
+            .build()
+            .unwrap();
+        assert_eq!(
+            filter.update(&[1.0, 2.0], f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(filter.count(), 0);
     }
 }

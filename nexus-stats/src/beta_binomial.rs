@@ -1,4 +1,8 @@
-#![allow(clippy::suboptimal_flops, clippy::float_cmp, clippy::neg_cmp_op_on_partial_ord)]
+#![allow(
+    clippy::suboptimal_flops,
+    clippy::float_cmp,
+    clippy::neg_cmp_op_on_partial_ord
+)]
 
 macro_rules! impl_beta_binomial {
     ($name:ident, $builder:ident, $ty:ty) => {
@@ -80,9 +84,9 @@ macro_rules! impl_beta_binomial {
                 }
             }
 
-            /// Observes a single binary outcome.
+            /// Updates with a single binary outcome.
             #[inline]
-            pub fn observe(&mut self, success: bool) {
+            pub fn update(&mut self, success: bool) {
                 if success {
                     self.alpha += 1.0 as $ty;
                 } else {
@@ -90,9 +94,9 @@ macro_rules! impl_beta_binomial {
                 }
             }
 
-            /// Observes a batch of outcomes.
+            /// Updates with a batch of outcomes.
             #[inline]
-            pub fn observe_batch(&mut self, successes: u64, failures: u64) {
+            pub fn update_batch(&mut self, successes: u64, failures: u64) {
                 self.alpha += successes as $ty;
                 self.beta += failures as $ty;
             }
@@ -124,9 +128,7 @@ macro_rules! impl_beta_binomial {
                 if self.alpha <= 1.0 as $ty || self.beta <= 1.0 as $ty {
                     Option::None
                 } else {
-                    Option::Some(
-                        (self.alpha - 1.0 as $ty) / (self.alpha + self.beta - 2.0 as $ty),
-                    )
+                    Option::Some((self.alpha - 1.0 as $ty) / (self.alpha + self.beta - 2.0 as $ty))
                 }
             }
 
@@ -283,15 +285,12 @@ mod tests {
     fn uniform_prior_balanced_observations() {
         let mut bb = BetaBinomialF64::new();
         for _ in 0..50 {
-            bb.observe(true);
-            bb.observe(false);
+            bb.update(true);
+            bb.update(false);
         }
         // Beta(51, 51) → mean = 0.5
         let mean = bb.mean();
-        assert!(
-            (mean - 0.5).abs() < 0.01,
-            "expected ~0.5, got {mean}"
-        );
+        assert!((mean - 0.5).abs() < 0.01, "expected ~0.5, got {mean}");
     }
 
     #[test]
@@ -311,7 +310,7 @@ mod tests {
         let initial_var = bb.variance();
 
         for _ in 0..100 {
-            bb.observe(true);
+            bb.update(true);
         }
         let final_var = bb.variance();
         assert!(
@@ -331,10 +330,7 @@ mod tests {
         let bb = BetaBinomialF64::with_prior(10.0, 10.0).unwrap();
         // Beta(10, 10) → mode = 9/18 = 0.5
         let mode = bb.mode().unwrap();
-        assert!(
-            (mode - 0.5).abs() < 1e-10,
-            "expected 0.5, got {mode}"
-        );
+        assert!((mode - 0.5).abs() < 1e-10, "expected 0.5, got {mode}");
     }
 
     #[cfg(any(feature = "std", feature = "libm"))]
@@ -342,15 +338,15 @@ mod tests {
     fn credible_interval_narrows() {
         let mut bb = BetaBinomialF64::with_prior(2.0, 2.0).unwrap();
         for _ in 0..10 {
-            bb.observe(true);
-            bb.observe(false);
+            bb.update(true);
+            bb.update(false);
         }
         let (lo1, hi1) = bb.credible_interval(0.95).unwrap();
         let width1 = hi1 - lo1;
 
         for _ in 0..200 {
-            bb.observe(true);
-            bb.observe(false);
+            bb.update(true);
+            bb.update(false);
         }
         let (lo2, hi2) = bb.credible_interval(0.95).unwrap();
         let width2 = hi2 - lo2;
@@ -365,14 +361,14 @@ mod tests {
     fn observe_batch_equivalence() {
         let mut single = BetaBinomialF64::new();
         for _ in 0..30 {
-            single.observe(true);
+            single.update(true);
         }
         for _ in 0..20 {
-            single.observe(false);
+            single.update(false);
         }
 
         let mut batch = BetaBinomialF64::new();
-        batch.observe_batch(30, 20);
+        batch.update_batch(30, 20);
 
         assert!(
             (single.mean() - batch.mean()).abs() < 1e-10,
@@ -389,7 +385,7 @@ mod tests {
         let mean_before = bb.mean();
 
         for _ in 0..100 {
-            bb.observe(true);
+            bb.update(true);
         }
         bb.reset();
 
@@ -404,14 +400,11 @@ mod tests {
     #[test]
     fn f32_variant() {
         let mut bb = BetaBinomialF32::new();
-        bb.observe(true);
-        bb.observe(false);
+        bb.update(true);
+        bb.update(false);
         // Beta(2, 2) → mean = 0.5
         let mean = bb.mean();
-        assert!(
-            (mean - 0.5).abs() < 1e-5,
-            "expected ~0.5, got {mean}"
-        );
+        assert!((mean - 0.5).abs() < 1e-5, "expected ~0.5, got {mean}");
     }
 
     #[test]

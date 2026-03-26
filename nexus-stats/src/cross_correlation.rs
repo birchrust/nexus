@@ -81,8 +81,15 @@ macro_rules! impl_cross_correlation {
             }
 
             /// Feeds paired observations from both streams.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if either value is NaN, or
+            /// `DataError::Infinite` if either value is infinite.
             #[inline]
-            pub fn update(&mut self, a: $ty, b: $ty) {
+            pub fn update(&mut self, a: $ty, b: $ty) -> Result<(), crate::DataError> {
+                check_finite!(a);
+                check_finite!(b);
                 self.count += 1;
                 let n = self.count as $ty;
 
@@ -117,6 +124,7 @@ macro_rules! impl_cross_correlation {
                 // Store A in circular buffer
                 self.buffer_a[self.head] = a;
                 self.head = (self.head + 1) % LAG;
+                Ok(())
             }
 
             /// Cross-correlation at the given lag, or `None` if not primed.
@@ -264,7 +272,7 @@ mod tests {
         let mut cc = CrossCorrelationF64::<1>::new();
         for i in 0..1000u64 {
             let x = i as f64;
-            cc.update(x, x);
+            cc.update(x, x).unwrap();
         }
         let r = cc.correlation(0).unwrap();
         assert!(
@@ -278,7 +286,7 @@ mod tests {
         let mut cc = CrossCorrelationF64::<1>::new();
         for i in 0..1000u64 {
             let x = i as f64;
-            cc.update(x, -x);
+            cc.update(x, -x).unwrap();
         }
         let r = cc.correlation(0).unwrap();
         assert!(
@@ -292,12 +300,10 @@ mod tests {
         let mut cc = CrossCorrelationF64::<10>::new();
         let shift = 3;
         // A is a sine wave, B is A shifted by 3
-        let a: Vec<f64> = (0..1000)
-            .map(|i| ((i as f64) * 0.1).sin())
-            .collect();
+        let a: Vec<f64> = (0..1000).map(|i| ((i as f64) * 0.1).sin()).collect();
         for i in 0..1000 {
             let b = if i >= shift { a[i - shift] } else { 0.0 };
-            cc.update(a[i], b);
+            cc.update(a[i], b).unwrap();
         }
         let peak = cc.peak_lag().unwrap();
         assert!(
@@ -315,7 +321,7 @@ mod tests {
         for i in 0..500u64 {
             let x = i as f64;
             let y = x * 2.0 + 1.0;
-            cc.update(x, y);
+            cc.update(x, y).unwrap();
             cov.update(x, y);
         }
 
@@ -335,10 +341,10 @@ mod tests {
     fn not_primed_until_enough_samples() {
         let mut cc = CrossCorrelationF64::<5>::new();
         for i in 0..5 {
-            cc.update(i as f64, i as f64);
+            cc.update(i as f64, i as f64).unwrap();
             assert!(!cc.is_primed());
         }
-        cc.update(5.0, 5.0);
+        cc.update(5.0, 5.0).unwrap();
         assert!(cc.is_primed());
     }
 
@@ -346,7 +352,7 @@ mod tests {
     fn lag_out_of_range_returns_none() {
         let mut cc = CrossCorrelationF64::<5>::new();
         for i in 0..20 {
-            cc.update(i as f64, i as f64);
+            cc.update(i as f64, i as f64).unwrap();
         }
         assert!(cc.correlation(5).is_none()); // LAG=5, max valid lag is 4
         assert!(cc.covariance(5).is_none());
@@ -360,7 +366,7 @@ mod tests {
     fn zero_variance_returns_none() {
         let mut cc = CrossCorrelationF64::<1>::new();
         for _ in 0..100 {
-            cc.update(42.0, 42.0);
+            cc.update(42.0, 42.0).unwrap();
         }
         assert!(cc.correlation(0).is_none());
     }
@@ -373,7 +379,7 @@ mod tests {
     fn reset_clears_state() {
         let mut cc = CrossCorrelationF64::<3>::new();
         for i in 0..100 {
-            cc.update(i as f64, (i * 2) as f64);
+            cc.update(i as f64, (i * 2) as f64).unwrap();
         }
         cc.reset();
         assert_eq!(cc.count(), 0);
@@ -388,7 +394,7 @@ mod tests {
     fn f32_basic() {
         let mut cc = CrossCorrelationF32::<1>::new();
         for i in 0..200u32 {
-            cc.update(i as f32, (i * 2) as f32);
+            cc.update(i as f32, (i * 2) as f32).unwrap();
         }
         let r = cc.correlation(0).unwrap();
         assert!(r > 0.9, "f32 perfect linear should be near 1.0, got {r}");
@@ -401,6 +407,17 @@ mod tests {
     #[test]
     fn default_is_empty() {
         let cc = CrossCorrelationF64::<5>::default();
+        assert_eq!(cc.count(), 0);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut cc = CrossCorrelationF64::<1>::new();
+        assert_eq!(cc.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            cc.update(1.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
         assert_eq!(cc.count(), 0);
     }
 }

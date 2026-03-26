@@ -9,6 +9,7 @@ signal processing primitives.
 | Memory | 8 bytes | 16 bytes |
 | Types | All (f32, f64, i32, i64) | All |
 | Output | `Option<T>` — None until 2nd/3rd sample |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What They Do
 
@@ -35,10 +36,10 @@ let mut rate = FirstDiffF64::new();
 let mut accel = SecondDiffF64::new();
 
 for sample in stream {
-    if let Some(dx) = rate.update(sample) {
+    if let Some(dx) = rate.update(sample).unwrap() {
         // dx = rate of change from previous sample
     }
-    if let Some(ddx) = accel.update(sample) {
+    if let Some(ddx) = accel.update(sample).unwrap() {
         // ddx = acceleration (positive = speeding up, negative = slowing down)
     }
 }

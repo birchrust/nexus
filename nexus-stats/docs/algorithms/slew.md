@@ -9,6 +9,7 @@ smoothing — this is a hard constraint, not a filter.
 | Memory | ~16 bytes |
 | Types | `SlewF64`, `SlewF32`, `SlewI64`, `SlewI32` |
 | Output | Rate-limited value |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -41,10 +42,10 @@ Spikes are slew-limited to a ramp. Gradual changes pass through unchanged.
 ```rust
 let mut slew = SlewF64::new(5.0);  // max change of 5.0 per sample
 
-slew.update(0.0);    // → 0.0
-slew.update(100.0);  // → 5.0 (clamped)
-slew.update(100.0);  // → 10.0 (clamped)
-slew.update(10.0);   // → 10.0 (within range, passes through)
+slew.update(0.0).unwrap();    // → 0.0
+slew.update(100.0).unwrap();  // → 5.0 (clamped)
+slew.update(100.0).unwrap();  // → 10.0 (clamped)
+slew.update(10.0).unwrap();   // → 10.0 (within range, passes through)
 ```
 
 ## Performance

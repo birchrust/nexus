@@ -93,6 +93,7 @@ impl LogisticRegressionF64 {
     /// Panics if `features.len() != self.dimensions()`.
     #[inline]
     pub fn update(&mut self, features: &[f64], outcome: bool) {
+        debug_assert!(features.iter().all(|f| f.is_finite()), "features must be finite");
         assert_eq!(
             features.len(),
             self.dims,
@@ -141,6 +142,13 @@ impl LogisticRegressionF64 {
         self.count
     }
 
+    /// Whether any updates have been performed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Zeros all weights, keeping configuration intact.
     #[inline]
     pub fn reset(&mut self) {
@@ -176,9 +184,7 @@ impl LogisticRegressionF64Builder {
             .learning_rate
             .ok_or(crate::ConfigError::Missing("learning_rate"))?;
         if dims < 1 {
-            return Err(crate::ConfigError::Invalid(
-                "dimensions must be >= 1",
-            ));
+            return Err(crate::ConfigError::Invalid("dimensions must be >= 1"));
         }
         if lr <= 0.0 {
             return Err(crate::ConfigError::Invalid(
@@ -312,9 +318,7 @@ mod tests {
 
     #[test]
     fn builder_missing_dimensions() {
-        let result = LogisticRegressionF64::builder()
-            .learning_rate(0.1)
-            .build();
+        let result = LogisticRegressionF64::builder().learning_rate(0.1).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("dimensions"))
@@ -323,9 +327,7 @@ mod tests {
 
     #[test]
     fn builder_missing_learning_rate() {
-        let result = LogisticRegressionF64::builder()
-            .dimensions(2)
-            .build();
+        let result = LogisticRegressionF64::builder().dimensions(2).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("learning_rate"))

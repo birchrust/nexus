@@ -29,17 +29,24 @@ macro_rules! impl_harmonic_mean {
 
             /// Feeds a sample. Must be positive and non-zero.
             ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
+            ///
             /// # Panics
             ///
             /// Panics if sample is zero or negative.
             #[inline]
-            pub fn update(&mut self, sample: $ty) {
+            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
+                check_finite!(sample);
                 assert!(
                     sample > 0.0 as $ty,
                     "harmonic mean requires positive values"
                 );
                 self.count += 1;
                 self.reciprocal_sum += 1.0 as $ty / sample;
+                Ok(())
             }
 
             /// Harmonic mean, or `None` if empty.
@@ -94,8 +101,8 @@ mod tests {
     fn known_values() {
         let mut hm = HarmonicMeanF64::new();
         // HM(1, 4) = 2 / (1/1 + 1/4) = 2 / 1.25 = 1.6
-        hm.update(1.0);
-        hm.update(4.0);
+        hm.update(1.0).unwrap();
+        hm.update(4.0).unwrap();
         let m = hm.mean().unwrap();
         assert!((m - 1.6).abs() < 1e-10, "expected 1.6, got {m}");
     }
@@ -106,7 +113,7 @@ mod tests {
         let vals = [2.0, 4.0, 8.0];
         let mut sum = 0.0;
         for &v in &vals {
-            hm.update(v);
+            hm.update(v).unwrap();
             sum += v;
         }
         let arithmetic = sum / vals.len() as f64;
@@ -121,7 +128,7 @@ mod tests {
     fn equal_values() {
         let mut hm = HarmonicMeanF64::new();
         for _ in 0..100 {
-            hm.update(5.0);
+            hm.update(5.0).unwrap();
         }
         let m = hm.mean().unwrap();
         assert!(
@@ -133,7 +140,7 @@ mod tests {
     #[test]
     fn reset() {
         let mut hm = HarmonicMeanF64::new();
-        hm.update(1.0);
+        hm.update(1.0).unwrap();
         hm.reset();
         assert_eq!(hm.count(), 0);
         assert!(hm.mean().is_none());
@@ -142,8 +149,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut hm = HarmonicMeanF32::new();
-        hm.update(2.0);
-        hm.update(4.0);
+        hm.update(2.0).unwrap();
+        hm.update(4.0).unwrap();
         assert!(hm.mean().is_some());
     }
 
@@ -157,6 +164,18 @@ mod tests {
     #[should_panic(expected = "positive values")]
     fn panics_on_zero() {
         let mut hm = HarmonicMeanF64::new();
-        hm.update(0.0);
+        hm.update(0.0).unwrap();
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut hm = HarmonicMeanF64::new();
+        assert_eq!(hm.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(hm.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            hm.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(hm.count(), 0);
     }
 }

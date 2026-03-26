@@ -50,9 +50,14 @@ macro_rules! impl_holt {
             /// Feeds a sample. Returns `(level, trend)` once primed.
             ///
             /// First sample sets the level. Second sample initializes the trend.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<($ty, $ty)> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<($ty, $ty)>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if self.count == 1 {
@@ -77,9 +82,9 @@ macro_rules! impl_holt {
                 }
 
                 if self.count >= self.min_samples {
-                    Option::Some((self.level, self.trend))
+                    Ok(Option::Some((self.level, self.trend)))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -222,7 +227,7 @@ mod tests {
         let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
 
         for _ in 0..100 {
-            let _ = h.update(50.0);
+            h.update(50.0).unwrap();
         }
 
         let trend = h.trend().unwrap();
@@ -238,7 +243,7 @@ mod tests {
 
         // Feed linear data: 0, 10, 20, 30, ...
         for i in 0..100 {
-            let _ = h.update(i as f64 * 10.0);
+            h.update(i as f64 * 10.0).unwrap();
         }
 
         let trend = h.trend().unwrap();
@@ -254,7 +259,7 @@ mod tests {
         let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build().unwrap();
 
         for i in 0..50 {
-            let _ = h.update(i as f64 * 10.0);
+            h.update(i as f64 * 10.0).unwrap();
         }
 
         let forecast_5 = h.forecast(5).unwrap();
@@ -270,15 +275,15 @@ mod tests {
     fn priming_needs_two_samples() {
         let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
 
-        assert!(h.update(10.0).is_none()); // first sample — not primed
-        assert!(h.update(20.0).is_some()); // second sample — primed
+        assert!(h.update(10.0).unwrap().is_none()); // first sample — not primed
+        assert!(h.update(20.0).unwrap().is_some()); // second sample — primed
     }
 
     #[test]
     fn reset_clears() {
         let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
-        let _ = h.update(10.0);
-        let _ = h.update(20.0);
+        h.update(10.0).unwrap();
+        h.update(20.0).unwrap();
 
         h.reset();
         assert_eq!(h.count(), 0);
@@ -289,8 +294,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut h = HoltF32::builder().alpha(0.3).beta(0.1).build().unwrap();
-        let _ = h.update(10.0);
-        let result = h.update(20.0);
+        h.update(10.0).unwrap();
+        let result = h.update(20.0).unwrap();
         assert!(result.is_some());
     }
 
@@ -318,5 +323,23 @@ mod tests {
     fn errors_without_beta() {
         let result = HoltF64::builder().alpha(0.3).build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("beta"))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+        assert!(matches!(
+            h.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            h.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            h.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert_eq!(h.count(), 0);
     }
 }

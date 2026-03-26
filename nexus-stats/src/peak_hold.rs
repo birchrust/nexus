@@ -43,22 +43,27 @@ macro_rules! impl_peak_hold_float {
             /// New peaks are captured instantly. During the hold period, the
             /// peak is maintained. After hold expires, the envelope decays
             /// multiplicatively each sample.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> $ty {
+            pub fn update(&mut self, sample: $ty) -> Result<$ty, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 // Instant attack — new peak
                 if sample >= self.peak {
                     self.peak = sample;
                     self.hold_remaining = self.hold_samples;
-                    return self.peak;
+                    return Ok(self.peak);
                 }
 
                 // Hold period
                 if self.hold_remaining > 0 {
                     self.hold_remaining -= 1;
-                    return self.peak;
+                    return Ok(self.peak);
                 }
 
                 // Decay
@@ -70,7 +75,7 @@ macro_rules! impl_peak_hold_float {
                     self.hold_remaining = self.hold_samples;
                 }
 
-                self.peak
+                Ok(self.peak)
             }
 
             /// Current envelope value.
@@ -260,8 +265,8 @@ mod tests {
             .hold_samples(5)
             .build()
             .unwrap();
-        assert_eq!(ph.update(50.0), 50.0);
-        assert_eq!(ph.update(100.0), 100.0); // instant capture
+        assert_eq!(ph.update(50.0).unwrap(), 50.0);
+        assert_eq!(ph.update(100.0).unwrap(), 100.0); // instant capture
     }
 
     #[test]
@@ -272,10 +277,10 @@ mod tests {
             .hold_samples(3)
             .build()
             .unwrap();
-        let _ = ph.update(100.0);
-        assert_eq!(ph.update(50.0), 100.0); // held
-        assert_eq!(ph.update(50.0), 100.0); // held
-        assert_eq!(ph.update(50.0), 100.0); // held (3rd hold sample)
+        let _ = ph.update(100.0).unwrap();
+        assert_eq!(ph.update(50.0).unwrap(), 100.0); // held
+        assert_eq!(ph.update(50.0).unwrap(), 100.0); // held
+        assert_eq!(ph.update(50.0).unwrap(), 100.0); // held (3rd hold sample)
     }
 
     #[test]
@@ -285,8 +290,8 @@ mod tests {
             .hold_samples(0)
             .build()
             .unwrap();
-        let _ = ph.update(100.0);
-        let v = ph.update(0.0); // decay immediately (no hold)
+        let _ = ph.update(100.0).unwrap();
+        let v = ph.update(0.0).unwrap(); // decay immediately (no hold)
         assert!(v < 100.0, "should have decayed, got {v}");
     }
 
@@ -298,9 +303,9 @@ mod tests {
             .hold_samples(10)
             .build()
             .unwrap();
-        let _ = ph.update(100.0);
-        let _ = ph.update(50.0); // holding at 100
-        assert_eq!(ph.update(200.0), 200.0); // new peak resets hold
+        let _ = ph.update(100.0).unwrap();
+        let _ = ph.update(50.0).unwrap(); // holding at 100
+        assert_eq!(ph.update(200.0).unwrap(), 200.0); // new peak resets hold
     }
 
     #[test]
@@ -316,7 +321,7 @@ mod tests {
     #[test]
     fn reset() {
         let mut ph = PeakHoldF64::builder().decay_rate(0.95).build().unwrap();
-        let _ = ph.update(100.0);
+        let _ = ph.update(100.0).unwrap();
         ph.reset();
         assert_eq!(ph.count(), 0);
     }
@@ -335,5 +340,28 @@ mod tests {
         let mut ph = PeakHoldI128::builder().hold_samples(3).build().unwrap();
         let _ = ph.update(100);
         assert_eq!(ph.update(50), 100); // held
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut ph = PeakHoldF64::builder().decay_rate(0.95).build().unwrap();
+        assert!(matches!(
+            ph.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            ph.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            ph.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+
+        let mut ph32 = PeakHoldF32::builder().decay_rate(0.95).build().unwrap();
+        assert!(matches!(
+            ph32.update(f32::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
     }
 }

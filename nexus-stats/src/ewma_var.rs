@@ -45,9 +45,14 @@ macro_rules! impl_ewma_var {
             }
 
             /// Feeds a sample. Returns `(mean, variance)` once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<($ty, $ty)> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<($ty, $ty)>, crate::DataError> {
+                check_finite!(sample);
                 self.count += 1;
 
                 if self.count == 1 {
@@ -63,9 +68,9 @@ macro_rules! impl_ewma_var {
                 }
 
                 if self.count >= self.min_samples {
-                    Option::Some((self.mean, self.variance))
+                    Ok(Option::Some((self.mean, self.variance)))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -227,7 +232,7 @@ mod tests {
         let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
 
         for _ in 0..100 {
-            let _ = ev.update(100.0);
+            let _ = ev.update(100.0).unwrap();
         }
 
         let var = ev.variance().unwrap();
@@ -242,7 +247,7 @@ mod tests {
         let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
 
         for i in 0..100 {
-            let _ = ev.update(if i % 2 == 0 { 100.0 } else { 110.0 });
+            let _ = ev.update(if i % 2 == 0 { 100.0 } else { 110.0 }).unwrap();
         }
 
         let var = ev.variance().unwrap();
@@ -261,9 +266,9 @@ mod tests {
             .unwrap();
 
         for _ in 0..4 {
-            assert!(ev.update(100.0).is_none());
+            assert!(ev.update(100.0).unwrap().is_none());
         }
-        assert!(ev.update(100.0).is_some());
+        assert!(ev.update(100.0).unwrap().is_some());
         assert!(ev.is_primed());
     }
 
@@ -271,7 +276,7 @@ mod tests {
     fn reset_clears_state() {
         let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
         for i in 0..50 {
-            let _ = ev.update(i as f64);
+            let _ = ev.update(i as f64).unwrap();
         }
 
         ev.reset();
@@ -284,7 +289,7 @@ mod tests {
     fn std_dev_is_sqrt_of_variance() {
         let mut ev = EwmaVarF64::builder().alpha(0.3).build().unwrap();
         for i in 0..50 {
-            let _ = ev.update(100.0 + (i % 10) as f64);
+            let _ = ev.update(100.0 + (i % 10) as f64).unwrap();
         }
 
         let var = ev.variance().unwrap();
@@ -296,8 +301,8 @@ mod tests {
     #[test]
     fn f32_basic() {
         let mut ev = EwmaVarF32::builder().alpha(0.1).build().unwrap();
-        let _ = ev.update(100.0);
-        let _ = ev.update(110.0);
+        let _ = ev.update(100.0).unwrap();
+        let _ = ev.update(110.0).unwrap();
         assert!(ev.variance().is_some());
     }
 
@@ -318,5 +323,17 @@ mod tests {
     fn errors_without_alpha() {
         let result = EwmaVarF64::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+        assert_eq!(ev.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(ev.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            ev.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(ev.count(), 0);
     }
 }

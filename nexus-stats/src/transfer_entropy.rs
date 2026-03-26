@@ -47,7 +47,7 @@ use alloc::vec;
 /// - Detecting leading/lagging relationships between discretized signals
 ///
 /// # Complexity
-/// - O(1) per observation, O(bins³) per entropy query.
+/// - O(1) per update, O(bins³) per entropy query.
 ///
 /// # Examples
 ///
@@ -66,7 +66,7 @@ use alloc::vec;
 ///     rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
 ///     let x_bin = ((rng >> 62) as usize) % 4;
 ///     let y_bin = prev_x;
-///     te.observe(x_bin, y_bin);
+///     te.update(x_bin, y_bin);
 ///     prev_x = x_bin;
 /// }
 /// let te_xy = te.te_x_to_y().unwrap();
@@ -129,7 +129,7 @@ impl TransferEntropyF64 {
         a * self.bins + b
     }
 
-    /// Feed discretized observations from both streams.
+    /// Updates with discretized observations from both streams.
     ///
     /// `x_bin` and `y_bin` must be in `0..bins`.
     ///
@@ -137,7 +137,7 @@ impl TransferEntropyF64 {
     ///
     /// Panics if `x_bin >= bins` or `y_bin >= bins`.
     #[inline]
-    pub fn observe(&mut self, x_bin: usize, y_bin: usize) {
+    pub fn update(&mut self, x_bin: usize, y_bin: usize) {
         let bins = self.bins;
         assert!(x_bin < bins, "x_bin {x_bin} out of range (bins={bins})");
         assert!(y_bin < bins, "y_bin {y_bin} out of range (bins={bins})");
@@ -335,26 +335,29 @@ impl TransferEntropyF64Builder {
     /// Returns `ConfigError::Missing` if `bins` or `lag` not set.
     /// Returns `ConfigError::Invalid` if `bins < 2` or `lag < 1`.
     pub fn build(self) -> Result<TransferEntropyF64, crate::ConfigError> {
-        let bins = self
-            .bins
-            .ok_or(crate::ConfigError::Missing("bins"))?;
-        let lag = self
-            .lag
-            .ok_or(crate::ConfigError::Missing("lag"))?;
+        let bins = self.bins.ok_or(crate::ConfigError::Missing("bins"))?;
+        let lag = self.lag.ok_or(crate::ConfigError::Missing("lag"))?;
 
         if bins < 2 {
             return Err(crate::ConfigError::Invalid("bins must be >= 2"));
+        }
+        if bins > 32 {
+            return Err(crate::ConfigError::Invalid(
+                "bins must be <= 32 (bins^3 table growth; 16 or fewer recommended)",
+            ));
         }
         if lag < 1 {
             return Err(crate::ConfigError::Invalid("lag must be >= 1"));
         }
 
-        let bins_sq = bins
-            .checked_mul(bins)
-            .ok_or(crate::ConfigError::Invalid("bins too large (bins² overflows)"))?;
+        let bins_sq = bins.checked_mul(bins).ok_or(crate::ConfigError::Invalid(
+            "bins too large (bins² overflows)",
+        ))?;
         let bins_cu = bins_sq
             .checked_mul(bins)
-            .ok_or(crate::ConfigError::Invalid("bins too large (bins³ overflows)"))?;
+            .ok_or(crate::ConfigError::Invalid(
+                "bins too large (bins³ overflows)",
+            ))?;
 
         Ok(TransferEntropyF64 {
             joint_xy: vec![0u64; bins_cu].into_boxed_slice(),
@@ -397,10 +400,12 @@ mod tests {
         let mut prev_x = 0usize;
         let mut rng = 12345u64;
         for _ in 0..20000 {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let x_bin = ((rng >> 62) as usize) % 4;
             let y_bin = prev_x;
-            te.observe(x_bin, y_bin);
+            te.update(x_bin, y_bin);
             prev_x = x_bin;
         }
         let te_xy = te.te_x_to_y().unwrap();
@@ -424,10 +429,12 @@ mod tests {
         let mut hpos = 0usize;
         let mut rng = 99999u64;
         for i in 0..30000u32 {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let x_bin = ((rng >> 62) as usize) % 4;
             let y_bin = if i >= 3 { hist[hpos] } else { 0 };
-            te.observe(x_bin, y_bin);
+            te.update(x_bin, y_bin);
             hist[hpos] = x_bin;
             hpos = (hpos + 1) % 3;
         }
@@ -450,7 +457,7 @@ mod tests {
         for i in 0..10000u32 {
             let x_bin = (i as usize) % 4;
             let y_bin = ((i as usize) * 3 + 1) % 4;
-            te.observe(x_bin, y_bin);
+            te.update(x_bin, y_bin);
         }
         let te_xy = te.te_x_to_y().unwrap();
         let te_yx = te.te_y_to_x().unwrap();
@@ -470,10 +477,12 @@ mod tests {
         let mut prev_x = 0usize;
         let mut rng = 54321u64;
         for _ in 0..20000 {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let x_bin = ((rng >> 62) as usize) % 4;
             let y_bin = prev_x;
-            te.observe(x_bin, y_bin);
+            te.update(x_bin, y_bin);
             prev_x = x_bin;
         }
         let nf = te.net_flow().unwrap();
@@ -488,7 +497,7 @@ mod tests {
         for _ in 0..10000 {
             let new_x = y;
             let new_y = x;
-            te.observe(x, y);
+            te.update(x, y);
             x = new_x % 2;
             y = new_y % 2;
         }
@@ -516,13 +525,13 @@ mod tests {
     fn not_primed_until_lag_plus_1() {
         let mut te = te_builder(4, 3);
         // Need LAG observations to fill history, then 1 more to get a transition
-        te.observe(0, 0);
+        te.update(0, 0);
         assert!(!te.is_primed());
-        te.observe(1, 1);
+        te.update(1, 1);
         assert!(!te.is_primed());
-        te.observe(2, 2);
+        te.update(2, 2);
         assert!(!te.is_primed());
-        te.observe(3, 3); // LAG=3: now have full history + current → first transition
+        te.update(3, 3); // LAG=3: now have full history + current → first transition
         assert!(te.is_primed());
         assert_eq!(te.count(), 1);
     }
@@ -531,14 +540,14 @@ mod tests {
     #[should_panic(expected = "out of range")]
     fn x_out_of_range_panics() {
         let mut te = te_builder(4, 1);
-        te.observe(4, 0);
+        te.update(4, 0);
     }
 
     #[test]
     #[should_panic(expected = "out of range")]
     fn y_out_of_range_panics() {
         let mut te = te_builder(4, 1);
-        te.observe(0, 4);
+        te.update(0, 4);
     }
 
     // =========================================================================
@@ -591,7 +600,7 @@ mod tests {
         let mut prev_x = 0usize;
         for i in 0..1000u32 {
             let x_bin = (i as usize) % 4;
-            te.observe(x_bin, prev_x);
+            te.update(x_bin, prev_x);
             prev_x = x_bin;
         }
         te.reset();

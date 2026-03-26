@@ -91,14 +91,22 @@ macro_rules! impl_linear_regression {
             }
 
             /// Feeds an (x, y) observation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if either value is NaN, or
+            /// `DataError::Infinite` if either value is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 self.count += 1;
                 self.sum_x += x;
                 self.sum_x2 += x * x;
                 self.sum_y += y;
                 self.sum_xy += x * y;
                 self.sum_y2 += y * y;
+                Ok(())
             }
 
             /// Slope of the fit, or `None` if not primed.
@@ -315,8 +323,15 @@ macro_rules! impl_ew_linear_regression {
             }
 
             /// Feeds an (x, y) observation.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if either value is NaN, or
+            /// `DataError::Infinite` if either value is infinite.
             #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) {
+            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
+                check_finite!(x);
+                check_finite!(y);
                 self.count += 1;
                 self.effective_n = self.one_minus_alpha * self.effective_n + 1.0 as $ty;
                 self.sum_x = self.one_minus_alpha * self.sum_x + x;
@@ -324,6 +339,7 @@ macro_rules! impl_ew_linear_regression {
                 self.sum_y = self.one_minus_alpha * self.sum_y + y;
                 self.sum_xy = self.one_minus_alpha * self.sum_xy + x * y;
                 self.sum_y2 = self.one_minus_alpha * self.sum_y2 + y * y;
+                Ok(())
             }
 
             /// Slope, or `None` if not primed.
@@ -506,7 +522,7 @@ mod tests {
     fn linear_exact_fit() {
         let mut r = LinearRegressionF64::new();
         for x in 0..100 {
-            r.update(x as f64, 2.0 * x as f64 + 3.0);
+            r.update(x as f64, 2.0 * x as f64 + 3.0).unwrap();
         }
         assert!((r.slope().unwrap() - 2.0).abs() < 1e-8);
         assert!((r.intercept_value().unwrap() - 3.0).abs() < 1e-8);
@@ -517,7 +533,7 @@ mod tests {
     fn through_origin() {
         let mut r = LinearRegressionF64::through_origin();
         for x in 1..100 {
-            r.update(x as f64, 5.0 * x as f64);
+            r.update(x as f64, 5.0 * x as f64).unwrap();
         }
         assert!((r.slope().unwrap() - 5.0).abs() < 1e-8);
         assert!(r.intercept_value().is_none());
@@ -528,7 +544,7 @@ mod tests {
     fn predict_linear() {
         let mut r = LinearRegressionF64::new();
         for x in 0..100 {
-            r.update(x as f64, 2.0 * x as f64 + 3.0);
+            r.update(x as f64, 2.0 * x as f64 + 3.0).unwrap();
         }
         let y = r.predict(50.0).unwrap();
         assert!((y - 103.0).abs() < 1e-6, "predict(50) = {y}");
@@ -543,7 +559,7 @@ mod tests {
             rng ^= rng >> 7;
             rng ^= rng << 17;
             let noise = (rng % 100) as f64 - 50.0;
-            r.update(x as f64, 2.0 * x as f64 + noise);
+            r.update(x as f64, 2.0 * x as f64 + noise).unwrap();
         }
         let r2 = r.r_squared().unwrap();
         assert!(r2 > 0.9 && r2 < 1.0, "R² with noise = {r2}");
@@ -553,7 +569,7 @@ mod tests {
     fn constant_y_r_squared_none() {
         let mut r = LinearRegressionF64::new();
         for x in 0..100 {
-            r.update(x as f64, 42.0);
+            r.update(x as f64, 42.0).unwrap();
         }
         assert!(r.r_squared().is_none());
     }
@@ -562,9 +578,9 @@ mod tests {
     fn not_primed_returns_none() {
         let mut r = LinearRegressionF64::new();
         assert!(r.slope().is_none());
-        r.update(1.0, 2.0);
+        r.update(1.0, 2.0).unwrap();
         assert!(r.slope().is_none()); // need 2 with intercept
-        r.update(2.0, 4.0);
+        r.update(2.0, 4.0).unwrap();
         assert!(r.slope().is_some());
     }
 
@@ -572,7 +588,7 @@ mod tests {
     fn through_origin_primes_at_1() {
         let mut r = LinearRegressionF64::through_origin();
         assert!(!r.is_primed());
-        r.update(1.0, 5.0);
+        r.update(1.0, 5.0).unwrap();
         assert!(r.is_primed());
         assert!((r.slope().unwrap() - 5.0).abs() < 1e-10);
     }
@@ -581,7 +597,7 @@ mod tests {
     fn reset_clears_state() {
         let mut r = LinearRegressionF64::new();
         for x in 0..100 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         r.reset();
         assert_eq!(r.count(), 0);
@@ -611,7 +627,7 @@ mod tests {
     fn f32_basic() {
         let mut r = LinearRegressionF32::new();
         for x in 0..100u32 {
-            r.update(x as f32, 2.0 * x as f32 + 3.0);
+            r.update(x as f32, 2.0 * x as f32 + 3.0).unwrap();
         }
         assert!((r.slope().unwrap() - 2.0).abs() < 0.01);
     }
@@ -634,7 +650,7 @@ mod tests {
             .build()
             .unwrap();
         for x in 0..500 {
-            r.update(x as f64, 2.0 * x as f64 + 3.0);
+            r.update(x as f64, 2.0 * x as f64 + 3.0).unwrap();
         }
         let slope = r.slope().unwrap();
         assert!((slope - 2.0).abs() < 0.5, "ew slope = {slope}");
@@ -647,10 +663,10 @@ mod tests {
             .build()
             .unwrap();
         for x in 0..200 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         for x in 200..500 {
-            r.update(x as f64, -(x as f64) + 400.0);
+            r.update(x as f64, -(x as f64) + 400.0).unwrap();
         }
         let slope = r.slope().unwrap();
         assert!(slope < 0.0, "slope should be negative, got {slope}");
@@ -674,7 +690,7 @@ mod tests {
             .build()
             .unwrap();
         for x in 0..100 {
-            r.update(x as f64, x as f64);
+            r.update(x as f64, x as f64).unwrap();
         }
         r.reset();
         assert_eq!(r.count(), 0);
@@ -688,8 +704,33 @@ mod tests {
             .build()
             .unwrap();
         for x in 0..200u32 {
-            r.update(x as f32, x as f32);
+            r.update(x as f32, x as f32).unwrap();
         }
         assert!(r.is_primed());
+    }
+
+    #[test]
+    fn ols_rejects_nan_and_inf() {
+        let mut r = LinearRegressionF64::new();
+        assert_eq!(r.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            r.update(1.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(r.count(), 0);
+    }
+
+    #[test]
+    fn ew_rejects_nan_and_inf() {
+        let mut r = EwLinearRegressionF64::builder()
+            .alpha(0.05)
+            .build()
+            .unwrap();
+        assert_eq!(r.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            r.update(1.0, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(r.count(), 0);
     }
 }

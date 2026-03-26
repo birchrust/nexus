@@ -9,6 +9,7 @@ using only 3 stored samples. From Linux kernel `win_minmax.h` (TCP BBR).
 | Memory | ~48 bytes |
 | Types | `WindowedMaxF64`, `WindowedMinF64`, and F32/I64/I32 variants |
 | Output | Current window extremum |
+| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
 
@@ -54,7 +55,7 @@ ticks. When the best candidate expires, the next is promoted. Only
 ```rust
 let mut max = WindowedMaxF64::new(1_000_000_000);  // 1-second window in nanoseconds
 
-let current_max = max.update(now_ns, sample);
+let current_max = max.update(now_ns, sample).unwrap();
 ```
 
 Timestamps are `u64`. The user defines what the units mean (nanoseconds,

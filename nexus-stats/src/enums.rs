@@ -42,3 +42,31 @@ impl core::fmt::Display for ConfigError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for ConfigError {}
+
+/// Error returned when a streaming update receives invalid data.
+///
+/// The library distinguishes two failure categories:
+/// - **Data errors** (NaN, Inf) → returned as `Result<_, DataError>`
+/// - **Programmer errors** (wrong dimensions, out-of-range) → panic
+///
+/// The library makes no assumptions about the caller's policy.
+/// Each system has different implications for bad data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataError {
+    /// Input contained NaN.
+    NotANumber,
+    /// Input contained positive or negative infinity.
+    Infinite,
+}
+
+impl core::fmt::Display for DataError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotANumber => write!(f, "input contained NaN"),
+            Self::Infinite => write!(f, "input contained infinity"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for DataError {}

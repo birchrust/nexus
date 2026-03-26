@@ -1,7 +1,81 @@
 use crate::Direction;
 
+/// Generates the CUSUM update method — float variant validates input,
+/// integer variant passes through without validation.
+macro_rules! impl_cusum_update {
+    (float, $ty:ty) => {
+        /// Feeds a sample. Returns shift direction once primed.
+        ///
+        /// Returns `Ok(None)` until `min_samples` have been processed.
+        /// After priming, returns `Ok(Some(Direction::Rising))`, `Ok(Some(Direction::Falling))`,
+        /// or `Ok(Some(Direction::Neutral))`.
+        ///
+        /// # Errors
+        ///
+        /// Returns `DataError::NotANumber` if the sample is NaN, or
+        /// `DataError::Infinite` if the sample is infinite.
+        #[inline]
+        pub fn update(&mut self, sample: $ty) -> Result<Option<Direction>, crate::DataError> {
+            check_finite!(sample);
+            self.count += 1;
+
+            let diff = sample - self.target;
+
+            let s_high = self.upper + diff - self.slack_upper;
+            self.upper = s_high.max(0 as $ty);
+
+            let s_low = self.lower - diff - self.slack_lower;
+            self.lower = s_low.max(0 as $ty);
+
+            if self.count < self.min_samples {
+                return Ok(Option::None);
+            }
+
+            Ok(if self.upper > self.threshold_upper {
+                Option::Some(Direction::Rising)
+            } else if self.lower > self.threshold_lower {
+                Option::Some(Direction::Falling)
+            } else {
+                Option::Some(Direction::Neutral)
+            })
+        }
+    };
+    (int, $ty:ty) => {
+        /// Feeds a sample. Returns shift direction once primed.
+        ///
+        /// Returns `None` until `min_samples` have been processed.
+        /// After priming, returns `Some(Direction::Rising)`, `Some(Direction::Falling)`,
+        /// or `Some(Direction::Neutral)`.
+        #[inline]
+        #[must_use]
+        pub fn update(&mut self, sample: $ty) -> Option<Direction> {
+            self.count += 1;
+
+            let diff = sample - self.target;
+
+            let s_high = self.upper + diff - self.slack_upper;
+            self.upper = s_high.max(0 as $ty);
+
+            let s_low = self.lower - diff - self.slack_lower;
+            self.lower = s_low.max(0 as $ty);
+
+            if self.count < self.min_samples {
+                return Option::None;
+            }
+
+            if self.upper > self.threshold_upper {
+                Option::Some(Direction::Rising)
+            } else if self.lower > self.threshold_lower {
+                Option::Some(Direction::Falling)
+            } else {
+                Option::Some(Direction::Neutral)
+            }
+        }
+    };
+}
+
 macro_rules! impl_cusum {
-    ($name:ident, $builder:ident, $ty:ty, min_slack = $min_slack:expr) => {
+    ($name:ident, $builder:ident, $ty:ty, $kind:tt, min_slack = $min_slack:expr) => {
         /// CUSUM — Cumulative Sum change detector (Page, 1954).
         ///
         /// Detects persistent shifts in the mean of a streaming process
@@ -78,39 +152,7 @@ macro_rules! impl_cusum {
                 }
             }
 
-            /// Feeds a sample. Returns shift direction once primed.
-            ///
-            /// Returns `None` until `min_samples` have been processed.
-            /// After priming, returns `Some(Direction::Rising)`, `Some(Direction::Falling)`,
-            /// or `Some(Direction::Neutral)`.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<Direction> {
-                self.count += 1;
-
-                let diff = sample - self.target;
-
-                // S_high = max(0, S_high + (x - target) - slack_upper)
-                // .max(0) compiles to branchless maxsd (float) / cmov (int)
-                let s_high = self.upper + diff - self.slack_upper;
-                self.upper = s_high.max(0 as $ty);
-
-                // S_low = max(0, S_low + (target - x) - slack_lower)
-                let s_low = self.lower - diff - self.slack_lower;
-                self.lower = s_low.max(0 as $ty);
-
-                if self.count < self.min_samples {
-                    return Option::None;
-                }
-
-                if self.upper > self.threshold_upper {
-                    Option::Some(Direction::Rising)
-                } else if self.lower > self.threshold_lower {
-                    Option::Some(Direction::Falling)
-                } else {
-                    Option::Some(Direction::Neutral)
-                }
-            }
+            impl_cusum_update!($kind, $ty);
 
             /// Upper cumulative sum (tracks upward drift).
             #[inline]
@@ -419,11 +461,11 @@ macro_rules! impl_cusum {
     };
 }
 
-impl_cusum!(CusumF64, CusumF64Builder, f64, min_slack = 0.0);
-impl_cusum!(CusumF32, CusumF32Builder, f32, min_slack = 0.0);
-impl_cusum!(CusumI64, CusumI64Builder, i64, min_slack = 1);
-impl_cusum!(CusumI32, CusumI32Builder, i32, min_slack = 1);
-impl_cusum!(CusumI128, CusumI128Builder, i128, min_slack = 1);
+impl_cusum!(CusumF64, CusumF64Builder, f64, float, min_slack = 0.0);
+impl_cusum!(CusumF32, CusumF32Builder, f32, float, min_slack = 0.0);
+impl_cusum!(CusumI64, CusumI64Builder, i64, int, min_slack = 1);
+impl_cusum!(CusumI32, CusumI32Builder, i32, int, min_slack = 1);
+impl_cusum!(CusumI128, CusumI128Builder, i128, int, min_slack = 1);
 
 #[cfg(test)]
 mod tests {
@@ -443,14 +485,14 @@ mod tests {
 
         // Feed normal samples — should not trigger
         for _ in 0..10 {
-            let result = cusum.update(100.0);
+            let result = cusum.update(100.0).unwrap();
             assert_eq!(result, Some(Direction::Neutral));
         }
 
         // Feed elevated samples — should eventually trigger upper
         let mut triggered = false;
         for _ in 0..100 {
-            if cusum.update(120.0) == Some(Direction::Rising) {
+            if cusum.update(120.0).unwrap() == Some(Direction::Rising) {
                 triggered = true;
                 break;
             }
@@ -469,7 +511,7 @@ mod tests {
         // Feed depressed samples — should eventually trigger lower
         let mut triggered = false;
         for _ in 0..100 {
-            if cusum.update(80.0) == Some(Direction::Falling) {
+            if cusum.update(80.0).unwrap() == Some(Direction::Falling) {
                 triggered = true;
                 break;
             }
@@ -486,7 +528,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..1000 {
-            assert_eq!(cusum.update(100.0), Some(Direction::Neutral));
+            assert_eq!(cusum.update(100.0).unwrap(), Some(Direction::Neutral));
         }
     }
 
@@ -504,12 +546,12 @@ mod tests {
             .unwrap();
 
         for _ in 0..9 {
-            assert_eq!(cusum.update(200.0), None);
+            assert_eq!(cusum.update(200.0).unwrap(), None);
         }
         assert!(!cusum.is_primed());
 
         // 10th sample should be primed
-        let result = cusum.update(200.0);
+        let result = cusum.update(200.0).unwrap();
         assert!(result.is_some());
         assert!(cusum.is_primed());
     }
@@ -524,7 +566,7 @@ mod tests {
 
         assert_eq!(cusum.min_samples(), 0);
         // First sample should return Some
-        assert!(cusum.update(100.0).is_some());
+        assert!(cusum.update(100.0).unwrap().is_some());
     }
 
     // =========================================================================
@@ -630,7 +672,7 @@ mod tests {
         // Upward shift should trigger quickly
         let mut upper_triggered = false;
         for _ in 0..20 {
-            if cusum.update(120.0) == Some(Direction::Rising) {
+            if cusum.update(120.0).unwrap() == Some(Direction::Rising) {
                 upper_triggered = true;
                 break;
             }
@@ -642,7 +684,7 @@ mod tests {
         cusum.reset();
         let mut lower_triggered = false;
         for _ in 0..20 {
-            if cusum.update(80.0) == Some(Direction::Falling) {
+            if cusum.update(80.0).unwrap() == Some(Direction::Falling) {
                 lower_triggered = true;
                 break;
             }
@@ -760,7 +802,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(cusum.update(100.0), Some(Direction::Neutral));
+        assert_eq!(cusum.update(100.0).unwrap(), Some(Direction::Neutral));
     }
 
     // =========================================================================
@@ -882,5 +924,29 @@ mod tests {
         // Larger target: 100/20 = 5, no floor needed
         let cusum = CusumI64::builder(100).threshold(50).build().unwrap();
         assert_eq!(cusum.slack_upper(), 5);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut cusum = CusumF64::builder(100.0)
+            .slack(5.0)
+            .threshold(50.0)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            cusum.update(f64::NAN).unwrap_err(),
+            crate::DataError::NotANumber
+        );
+        assert_eq!(
+            cusum.update(f64::INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        assert_eq!(
+            cusum.update(f64::NEG_INFINITY).unwrap_err(),
+            crate::DataError::Infinite
+        );
+        // State unchanged after rejected inputs
+        assert_eq!(cusum.count(), 0);
     }
 }

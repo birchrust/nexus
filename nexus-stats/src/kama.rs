@@ -75,9 +75,14 @@ macro_rules! impl_kama {
             }
 
             /// Feeds a sample. Returns the adaptive smoothed value once primed.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the sample is NaN, or
+            /// `DataError::Infinite` if the sample is infinite.
             #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
+            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
+                check_finite!(sample);
                 let n = self.window;
                 let idx = (self.count as usize) % n;
                 // SAFETY: idx is in [0, window), buffer exclusively owned
@@ -86,12 +91,12 @@ macro_rules! impl_kama {
 
                 if self.count == 1 {
                     self.value = sample;
-                    return if self.count >= self.min_samples { Option::Some(self.value) } else { Option::None };
+                    return if self.count >= self.min_samples { Ok(Option::Some(self.value)) } else { Ok(Option::None) };
                 }
 
                 if self.count <= n as u64 {
                     self.value = sample;
-                    return if self.count >= self.min_samples { Option::Some(self.value) } else { Option::None };
+                    return if self.count >= self.min_samples { Ok(Option::Some(self.value)) } else { Ok(Option::None) };
                 }
 
                 // Window is full — compute ER from the ring buffer
@@ -139,9 +144,9 @@ macro_rules! impl_kama {
                 self.value = alpha.fma(sample - self.value, self.value);
 
                 if self.count >= self.min_samples {
-                    Option::Some(self.value)
+                    Ok(Option::Some(self.value))
                 } else {
-                    Option::None
+                    Ok(Option::None)
                 }
             }
 
@@ -325,7 +330,7 @@ mod tests {
 
         // Linear trend — ER should be high, KAMA should track closely
         for i in 0..50 {
-            let _ = kama.update(i as f64);
+            kama.update(i as f64).unwrap();
         }
 
         let er = kama.efficiency_ratio().unwrap();
@@ -339,7 +344,7 @@ mod tests {
         // Oscillating — ER should be low
         for i in 0..50 {
             let v = if i % 2 == 0 { 100.0 } else { 0.0 };
-            let _ = kama.update(v);
+            kama.update(v).unwrap();
         }
 
         let er = kama.efficiency_ratio().unwrap();
@@ -350,7 +355,7 @@ mod tests {
     fn er_bounds() {
         let mut kama = KamaF64::builder().window_size(10).build().unwrap();
         for i in 0..20 {
-            let _ = kama.update(i as f64);
+            kama.update(i as f64).unwrap();
         }
         let er = kama.efficiency_ratio().unwrap();
         assert!(
@@ -363,16 +368,16 @@ mod tests {
     fn priming() {
         let mut kama = KamaF64::builder().window_size(10).build().unwrap();
         for i in 0..9 {
-            assert!(kama.update(i as f64).is_none());
+            assert!(kama.update(i as f64).unwrap().is_none());
         }
-        assert!(kama.update(9.0).is_some());
+        assert!(kama.update(9.0).unwrap().is_some());
     }
 
     #[test]
     fn reset() {
         let mut kama = KamaF64::builder().window_size(10).build().unwrap();
         for i in 0..20 {
-            let _ = kama.update(i as f64);
+            kama.update(i as f64).unwrap();
         }
         kama.reset();
         assert_eq!(kama.count(), 0);
@@ -382,7 +387,7 @@ mod tests {
     fn f32_basic() {
         let mut kama = KamaF32::builder().window_size(5).build().unwrap();
         for i in 0..10 {
-            let _ = kama.update(i as f32);
+            kama.update(i as f32).unwrap();
         }
         assert!(kama.value().is_some());
     }
@@ -391,5 +396,23 @@ mod tests {
     fn window_size_accessor() {
         let kama = KamaF64::builder().window_size(10).build().unwrap();
         assert_eq!(kama.window_size(), 10);
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        assert!(matches!(
+            kama.update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            kama.update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert!(matches!(
+            kama.update(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        ));
+        assert_eq!(kama.count(), 0);
     }
 }

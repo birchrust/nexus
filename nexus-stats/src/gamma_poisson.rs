@@ -6,7 +6,11 @@
 //
 // 32 bytes per instance. Zero allocation.
 
-#![allow(clippy::suboptimal_flops, clippy::float_cmp, clippy::neg_cmp_op_on_partial_ord)]
+#![allow(
+    clippy::suboptimal_flops,
+    clippy::float_cmp,
+    clippy::neg_cmp_op_on_partial_ord
+)]
 
 macro_rules! impl_gamma_poisson {
     ($name:ident, $builder:ident, $ty:ty) => {
@@ -31,7 +35,7 @@ macro_rules! impl_gamma_poisson {
         #[doc = concat!("use nexus_stats::", stringify!($name), ";")]
         ///
         #[doc = concat!("let mut gp = ", stringify!($name), "::new();")]
-        /// gp.observe(100, 10.0);  // 100 events in 10 seconds
+        /// gp.update(100, 10.0);  // 100 events in 10 seconds
         /// let rate = gp.rate();
         /// // With weak prior (1,1), rate ≈ 101/11 ≈ 9.18
         #[doc = concat!("assert!((rate - 9.18 as ", stringify!($ty), ").abs() < 0.01 as ", stringify!($ty), ");")]
@@ -97,20 +101,20 @@ macro_rules! impl_gamma_poisson {
                 })
             }
 
-            /// Feeds an observation: `count` events observed over `exposure` time.
+            /// Updates with an observation: `count` events observed over `exposure` time.
             ///
             /// Updates the posterior: alpha += count, beta += exposure.
+            ///
+            /// # Errors
+            ///
+            /// Returns `DataError::NotANumber` if the exposure is NaN, or
+            /// `DataError::Infinite` if the exposure is infinite.
             #[inline]
-            pub fn observe(&mut self, count: u64, exposure: $ty) {
-                debug_assert!(
-                    exposure.is_finite() && exposure >= 0.0 as $ty,
-                    "invalid exposure: must be non-negative and finite"
-                );
-                if !exposure.is_finite() || exposure < 0.0 as $ty {
-                    return;
-                }
+            pub fn update(&mut self, count: u64, exposure: $ty) -> Result<(), crate::DataError> {
+                check_finite!(exposure);
                 self.alpha += count as $ty;
                 self.beta += exposure;
+                Ok(())
             }
 
             /// Posterior mean rate (alpha / beta).
@@ -261,7 +265,7 @@ mod tests {
     #[test]
     fn rate_after_observation() {
         let mut gp = GammaPoissonF64::new();
-        gp.observe(100, 10.0);
+        gp.update(100, 10.0).unwrap();
         // Posterior: Gamma(1+100, 1+10) = Gamma(101, 11)
         // Mean = 101/11 ≈ 9.1818...
         let rate = gp.rate();
@@ -271,9 +275,9 @@ mod tests {
     #[test]
     fn variance_decreases_with_exposure() {
         let mut gp = GammaPoissonF64::new();
-        gp.observe(10, 1.0);
+        gp.update(10, 1.0).unwrap();
         let v1 = gp.variance();
-        gp.observe(100, 10.0);
+        gp.update(100, 10.0).unwrap();
         let v2 = gp.variance();
         assert!(v2 < v1, "variance should decrease with more exposure");
     }
@@ -282,11 +286,11 @@ mod tests {
     #[test]
     fn credible_interval_narrows_with_data() {
         let mut gp = GammaPoissonF64::new();
-        gp.observe(10, 1.0);
+        gp.update(10, 1.0).unwrap();
         let (lo1, hi1) = gp.credible_interval(0.95).unwrap();
         let width1 = hi1 - lo1;
 
-        gp.observe(1000, 100.0);
+        gp.update(1000, 100.0).unwrap();
         let (lo2, hi2) = gp.credible_interval(0.95).unwrap();
         let width2 = hi2 - lo2;
 
@@ -299,7 +303,7 @@ mod tests {
     #[test]
     fn reset_restores_prior() {
         let mut gp = GammaPoissonF64::with_prior(2.0, 3.0).unwrap();
-        gp.observe(50, 5.0);
+        gp.update(50, 5.0).unwrap();
         assert!(gp.count() > 0);
         gp.reset();
         assert_eq!(gp.count(), 0);
@@ -321,7 +325,7 @@ mod tests {
     #[test]
     fn f32_variant() {
         let mut gp = GammaPoissonF32::new();
-        gp.observe(50, 5.0);
+        gp.update(50, 5.0).unwrap();
         let rate = gp.rate();
         // Gamma(51, 6) → 51/6 = 8.5
         assert!((rate - 8.5_f32).abs() < 0.01);
@@ -338,9 +342,9 @@ mod tests {
     #[test]
     fn batch_observation_accumulates() {
         let mut gp = GammaPoissonF64::new();
-        gp.observe(10, 1.0);
-        gp.observe(20, 2.0);
-        gp.observe(30, 3.0);
+        gp.update(10, 1.0).unwrap();
+        gp.update(20, 2.0).unwrap();
+        gp.update(30, 3.0).unwrap();
         // Total: 60 events, 6.0 exposure
         assert_eq!(gp.count(), 60);
         assert!((gp.total_exposure() - 6.0).abs() < 1e-10);
@@ -359,7 +363,7 @@ mod tests {
     #[test]
     fn credible_interval_none_for_invalid_confidence() {
         let mut gp = GammaPoissonF64::new();
-        gp.observe(10, 1.0);
+        gp.update(10, 1.0).unwrap();
         assert!(gp.credible_interval(0.0).is_none());
         assert!(gp.credible_interval(1.0).is_none());
         assert!(gp.credible_interval(-0.5).is_none());
@@ -386,5 +390,19 @@ mod tests {
     fn builder_validation() {
         assert!(GammaPoissonF64::builder().alpha(0.0).build().is_err());
         assert!(GammaPoissonF64::builder().beta(-1.0).build().is_err());
+    }
+
+    #[test]
+    fn rejects_nan_and_inf_exposure() {
+        let mut gp = GammaPoissonF64::new();
+        assert_eq!(
+            gp.update(10, f64::NAN),
+            Err(crate::DataError::NotANumber)
+        );
+        assert_eq!(
+            gp.update(10, f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(gp.count(), 0);
     }
 }
