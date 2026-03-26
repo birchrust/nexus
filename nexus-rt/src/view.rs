@@ -772,4 +772,34 @@ mod tests {
         });
         assert!(result.is_none());
     }
+
+    #[test]
+    fn guard_short_circuits_subsequent_tap() {
+        // guard BEFORE tap — if guard rejects, tap should NOT fire
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        wb.register(RiskLimits { max_qty: 100 });
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+                .guard(check_risk, reg)   // guard FIRST
+                .tap(log_order, reg)      // tap AFTER — should NOT fire on rejection
+            .end_view_guarded();
+
+        // Accepted: guard passes, tap fires
+        let result = p.run(&mut world, NewOrderCommand {
+            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
+        });
+        assert!(result.is_some());
+        assert_eq!(world.resource::<AuditLog>().0.len(), 1);
+
+        // Rejected: guard fails, tap does NOT fire (short-circuit)
+        let result = p.run(&mut world, NewOrderCommand {
+            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
+        });
+        assert!(result.is_none());
+        assert_eq!(world.resource::<AuditLog>().0.len(), 1); // still 1, not 2
+    }
 }
