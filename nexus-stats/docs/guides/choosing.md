@@ -174,6 +174,17 @@ Start with your problem. Follow the tree to find the right primitive.
 - Classify into regimes/clusters → [**OnlineKMeans**](../algorithms/adaptive-filters.md#online-k-means--streaming-clustering)
 - Track correlated states with uncertainty → [**Kalman2D/3D**](../algorithms/kalman.md)
 
+## "I want to optimize parameters from gradients"
+
+- Simple, no tuning needed → [**OnlineGD**](../algorithms/optimizers.md)
+- Sparse features, different scales → [**AdaGrad**](../algorithms/optimizers.md)
+- Best default, works everywhere → [**Adam**](../algorithms/optimizers.md)
+- Need regularization → [**Adam with weight_decay**](../algorithms/optimizers.md)
+
+Note: these are background-thread types, not hot-path. If your loss
+is squared error, use [LinearRegression](../algorithms/linear-regression.md)
+or [RLS](../algorithms/adaptive-filters.md) instead.
+
 ## Still not sure?
 
 Common combinations:

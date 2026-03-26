@@ -60,6 +60,9 @@ examples.
 - [Kalman2D / Kalman3D](algorithms/kalman.md) — Multivariate Kalman filters with time-varying observation
 - [Kalman1D](algorithms/kalman1d.md) — Scalar Kalman filter
 
+### Optimization
+- [Optimizers](algorithms/optimizers.md) — OnlineGD, AdaGrad, Adam/AdamW (background thread, not hot path)
+
 ### Information Theory
 - [Entropy](algorithms/entropy.md) — Shannon entropy over categorical distributions
 - [TransferEntropy](algorithms/transfer-entropy.md) — Directed information flow (Granger causality)
