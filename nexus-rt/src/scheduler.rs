@@ -101,16 +101,22 @@ use crate::world::{Registry, ResourceId, Sequence, World, WorldBuilder};
 /// # Examples
 ///
 /// ```
-/// use nexus_rt::{Res, ResMut};
+/// use nexus_rt::{Res, ResMut, Resource};
 /// use nexus_rt::scheduler::SchedulerTick;
 ///
+/// #[derive(Resource)]
+/// struct Counter(u64);
+///
+/// #[derive(Resource)]
+/// struct Flag(bool);
+///
 /// fn detect_and_reconcile(
-///     val: Res<u64>,
+///     val: Res<Counter>,
 ///     tick: Res<SchedulerTick>,
-///     mut out: ResMut<bool>,
+///     mut out: ResMut<Flag>,
 /// ) -> bool {
 ///     if val.changed_after(tick.last()) {
-///         *out = *val > 100;
+///         out.0 = val.0 > 100;
 ///         true
 ///     } else {
 ///         false

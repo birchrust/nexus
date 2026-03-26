@@ -79,12 +79,15 @@ use crate::world::{Registry, World};
 ///
 /// ```
 /// use nexus_rt::template::Blueprint;
-/// use nexus_rt::ResMut;
+/// use nexus_rt::{ResMut, Resource};
+///
+/// #[derive(Resource)]
+/// struct Counter(u64);
 ///
 /// struct OnTick;
 /// impl Blueprint for OnTick {
 ///     type Event = u32;
-///     type Params = (ResMut<'static, u64>,);
+///     type Params = (ResMut<'static, Counter>,);
 /// }
 /// ```
 ///

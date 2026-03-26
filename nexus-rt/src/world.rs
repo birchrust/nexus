@@ -292,7 +292,7 @@ impl Registry {
     /// # Panics
     ///
     /// Panics if the resource type was not registered.
-    pub fn id<T: 'static>(&self) -> ResourceId {
+    pub fn id<T: Resource>(&self) -> ResourceId {
         *self
             .indices
             .get(&TypeId::of::<T>())
@@ -307,12 +307,12 @@ impl Registry {
 
     /// Try to resolve the [`ResourceId`] for a type. Returns `None` if the
     /// type was not registered.
-    pub fn try_id<T: 'static>(&self) -> Option<ResourceId> {
+    pub fn try_id<T: Resource>(&self) -> Option<ResourceId> {
         self.indices.get(&TypeId::of::<T>()).copied()
     }
 
     /// Returns `true` if a resource of type `T` has been registered.
-    pub fn contains<T: 'static>(&self) -> bool {
+    pub fn contains<T: Resource>(&self) -> bool {
         self.indices.contains_key(&TypeId::of::<T>())
     }
 
@@ -597,7 +597,7 @@ impl WorldBuilder {
     }
 
     /// Returns `true` if a resource of type `T` has been registered.
-    pub fn contains<T: 'static>(&self) -> bool {
+    pub fn contains<T: Resource>(&self) -> bool {
         self.registry.contains::<T>()
     }
 
@@ -713,13 +713,13 @@ impl World {
     /// # Panics
     ///
     /// Panics if the resource type was not registered.
-    pub fn id<T: 'static>(&self) -> ResourceId {
+    pub fn id<T: Resource>(&self) -> ResourceId {
         self.registry.id::<T>()
     }
 
     /// Try to resolve the [`ResourceId`] for a type. Returns `None` if the
     /// type was not registered.
-    pub fn try_id<T: 'static>(&self) -> Option<ResourceId> {
+    pub fn try_id<T: Resource>(&self) -> Option<ResourceId> {
         self.registry.try_id::<T>()
     }
 
@@ -734,7 +734,7 @@ impl World {
     }
 
     /// Returns `true` if a resource of type `T` is stored.
-    pub fn contains<T: 'static>(&self) -> bool {
+    pub fn contains<T: Resource>(&self) -> bool {
         self.registry.contains::<T>()
     }
 
@@ -751,7 +751,7 @@ impl World {
     /// # Panics
     ///
     /// Panics if the resource type was not registered.
-    pub fn resource<T: 'static>(&self) -> &T {
+    pub fn resource<T: Resource>(&self) -> &T {
         let id = self.registry.id::<T>();
         // SAFETY: id resolved from our own registry. &self prevents mutable
         // aliases — resource_mut takes &mut self.
@@ -763,7 +763,7 @@ impl World {
     /// # Panics
     ///
     /// Panics if the resource type was not registered.
-    pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
+    pub fn resource_mut<T: Resource>(&mut self) -> &mut T {
         let id = self.registry.id::<T>();
         // Cold path — stamp unconditionally. If you request &mut, you're writing.
         // SAFETY: id resolved from our own registry.
