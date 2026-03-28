@@ -441,7 +441,7 @@ impl FrameReader {
             RawOpcode::Pong => Ok(Some(Message::Pong(payload))),
             RawOpcode::Close => Self::parse_close_from(payload),
             RawOpcode::Text => {
-                let s = std::str::from_utf8(payload)
+                let s = simdutf8::basic::from_utf8(payload)
                     .map_err(|_| ProtocolError::InvalidUtf8)?;
                 Ok(Some(Message::Text(s)))
             }
@@ -566,7 +566,7 @@ impl FrameReader {
         let raw_code = u16::from_be_bytes([buf[0], buf[1]]);
         let code = CloseCode::from_u16(raw_code)?;
         let reason_bytes = &buf[2..];
-        let reason = std::str::from_utf8(reason_bytes)
+        let reason = simdutf8::compat::from_utf8(reason_bytes)
             .map_err(|_| ProtocolError::InvalidUtf8InCloseReason)?;
         Ok(Some(Message::Close(CloseFrame { code, reason })))
     }
@@ -604,11 +604,11 @@ fn validate_utf8_incremental(
     }
 
     if is_final {
-        std::str::from_utf8(data).map_err(|_| ProtocolError::InvalidUtf8)?;
+        simdutf8::compat::from_utf8(data).map_err(|_| ProtocolError::InvalidUtf8)?;
         return Ok(0);
     }
 
-    match std::str::from_utf8(data) {
+    match simdutf8::compat::from_utf8(data) {
         Ok(_) => Ok(0),
         Err(e) => {
             let valid_up_to = e.valid_up_to();

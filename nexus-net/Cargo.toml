@@ -11,6 +11,7 @@ categories.workspace = true
 [dependencies]
 httparse = "1"
 sha1 = "0.10"
+simdutf8 = "0.1"
 
 [[example]]
 name = "perf_buf"

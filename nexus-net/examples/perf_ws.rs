@@ -184,6 +184,24 @@ fn bench_utf8_cycles(samples: &mut [u64], size: usize) {
     print_row(&format!("std::str::from_utf8 ({size}B)"), samples);
 }
 
+fn bench_simdutf8_cycles(samples: &mut [u64], size: usize) {
+    let data = vec![b'x'; size];
+
+    for _ in 0..10_000 {
+        black_box(simdutf8::basic::from_utf8(&data).unwrap());
+    }
+
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            black_box(simdutf8::basic::from_utf8(&data).unwrap());
+        }
+        let end = rdtsc_end();
+        *s = (end - start) / BATCH;
+    }
+    print_row(&format!("simdutf8::basic::from_utf8 ({size}B)"), samples);
+}
+
 fn bench_encode_cycles(samples: &mut [u64], size: usize, role: Role) {
     let writer = FrameWriter::new(role);
     let payload = vec![b'x'; size];
@@ -293,9 +311,14 @@ fn main() {
         bench_unmask_cycles(&mut buf, size);
     }
 
-    section("Components — UTF-8 validation");
+    section("Components — UTF-8 validation (std)");
     for size in [64, 128, 256, 512, 1024, 4096] {
         bench_utf8_cycles(&mut buf, size);
+    }
+
+    section("Components — UTF-8 validation (simdutf8)");
+    for size in [64, 128, 256, 512, 1024, 4096] {
+        bench_simdutf8_cycles(&mut buf, size);
     }
 
     section("FrameWriter — encode");
