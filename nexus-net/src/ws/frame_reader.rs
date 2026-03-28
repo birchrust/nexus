@@ -56,7 +56,6 @@ impl std::error::Error for ReadError {}
 pub struct FrameReader {
     buf: ReadBuf,
     msg_buf: Vec<u8>,
-    ctrl_buf: Vec<u8>,  // control frame payload (max 125 bytes)
     prealloc_capacity: usize,
     compact_threshold: usize,
 
@@ -67,29 +66,42 @@ pub struct FrameReader {
 
     assembling: bool,
     assembly_opcode: Option<RawOpcode>,
-    utf8_valid_up_to: usize, // index into msg_buf up to which UTF-8 is validated
+    utf8_valid_up_to: usize,
 
     role: Role,
     max_frame_size: u64,
     max_message_size: usize,
 
-    // Flag: msg_buf contains data from a previously returned Message.
-    // Cleared at the start of next().
-    needs_clear: bool,
-    // Flag: last completed message used ctrl_buf (control frame during assembly).
-    used_ctrl: bool,
-    // Set by poll() when a message is ready but not yet returned.
+    /// Tracks what to clean up when next()/poll() is called again.
+    pending_cleanup: PendingCleanup,
+    /// Opcode of the pending message (set by poll, consumed by next).
     pending_opcode: Option<RawOpcode>,
+    /// For control frames during assembly that span reads: the offset
+    /// in msg_buf where the control payload starts (after assembly data).
+    ctrl_payload_offset: usize,
+}
+
+/// What to clean up from the previously returned Message.
+#[derive(Clone, Copy, Default)]
+enum PendingCleanup {
+    #[default]
+    None,
+    /// Single-frame: advance ReadBuf past the payload.
+    AdvanceReadBuf(usize),
+    /// Assembled: clear msg_buf (and compact if oversized).
+    ClearMsgBuf,
+    /// Control frame during assembly: truncate msg_buf back to assembly data.
+    TruncateMsgBuf(usize),
 }
 
 #[derive(Clone, Copy, Default)]
 enum ParseState {
     #[default]
     Head,
+    /// Payload spans reads — always goes to msg_buf.
     Payload {
         opcode: RawOpcode,
         fin: bool,
-        use_ctrl: bool, // control frame during assembly → write to ctrl_buf
     },
 }
 
@@ -110,7 +122,7 @@ impl FrameReader {
     #[must_use]
     pub fn builder() -> FrameReaderBuilder {
         FrameReaderBuilder {
-            buffer_capacity: 1024 * 1024, // 1MB default
+            buffer_capacity: 1024 * 1024,
             pre_padding: 16,
             post_padding: 4,
             prealloc_capacity: 4096,
@@ -122,9 +134,6 @@ impl FrameReader {
     }
 
     /// Buffer wire bytes from a source.
-    ///
-    /// Copies `src` into the internal ReadBuf. For zero-copy I/O, use
-    /// [`spare()`](Self::spare) + [`filled()`](Self::filled) instead.
     pub fn read(&mut self, src: &[u8]) -> Result<(), ReadError> {
         let spare = self.buf.spare();
         if src.len() > spare.len() {
@@ -151,63 +160,119 @@ impl FrameReader {
     }
 
     /// Parse the next complete message.
-    ///
-    /// Returns validated `Message` (UTF-8 for Text, parsed CloseFrame for
-    /// Close). Never returns Continuation.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Message<'_>>, ProtocolError> {
         // If poll() already prepared a message, return it
         if let Some(opcode) = self.pending_opcode.take() {
-            self.needs_clear = true;
             return self.make_message(opcode);
         }
 
-        // Clear buffers from previous message
-        if self.needs_clear {
-            if self.used_ctrl {
-                self.ctrl_buf.clear();
-            } else {
+        // Clean up from previously returned message
+        self.do_cleanup();
+
+        self.pump()?
+            .map_or(Ok(None), |opcode| self.make_message(opcode))
+    }
+
+    /// Advance the parser without constructing a Message.
+    /// Returns `true` if the next call to `next()` will return a message.
+    pub(crate) fn poll(&mut self) -> Result<bool, ProtocolError> {
+        if self.pending_opcode.is_some() {
+            return Ok(true);
+        }
+
+        self.do_cleanup();
+
+        match self.pump()? {
+            None => Ok(false),
+            Some(opcode) => {
+                self.pending_opcode = Some(opcode);
+                Ok(true)
+            }
+        }
+    }
+
+    /// Bytes of buffer space remaining.
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.buf.remaining()
+    }
+
+    /// Bytes of unconsumed data in the buffer.
+    #[inline]
+    pub fn buffered(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Reset all state.
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.msg_buf.clear();
+        self.state = ParseState::Head;
+        self.remaining_payload = 0;
+        self.mask_key = None;
+        self.mask_offset = 0;
+        self.assembling = false;
+        self.assembly_opcode = None;
+        self.utf8_valid_up_to = 0;
+        self.pending_cleanup = PendingCleanup::None;
+        self.pending_opcode = None;
+        self.ctrl_payload_offset = 0;
+    }
+
+    // =========================================================================
+    // Internals
+    // =========================================================================
+
+    /// Execute pending cleanup from the previously returned Message.
+    fn do_cleanup(&mut self) {
+        match self.pending_cleanup {
+            PendingCleanup::None => {}
+            PendingCleanup::AdvanceReadBuf(n) => {
+                self.buf.advance(n);
+            }
+            PendingCleanup::ClearMsgBuf => {
                 self.msg_buf.clear();
                 if self.msg_buf.capacity() > self.compact_threshold {
                     self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
                 }
             }
-            self.needs_clear = false;
-        }
-
-        let completed = self.pump()?;
-
-        match completed {
-            None => Ok(None),
-            Some(opcode) => {
-                self.needs_clear = true;
-                self.make_message(opcode)
+            PendingCleanup::TruncateMsgBuf(len) => {
+                // Remove control frame payload, keep assembly data
+                self.msg_buf.truncate(len);
             }
         }
+        self.pending_cleanup = PendingCleanup::None;
     }
 
-    /// State machine: consume bytes from ReadBuf, populate msg_buf.
-    /// Returns the opcode of a completed message, or None if more bytes needed.
+    /// State machine: consume frames from ReadBuf.
+    /// Returns opcode of a completed message, or None if more bytes needed.
+    ///
+    /// For single-frame messages: payload stays in ReadBuf (zero-copy).
+    /// For assembled messages: payload accumulated in msg_buf.
     fn pump(&mut self) -> Result<Option<RawOpcode>, ProtocolError> {
         loop {
             let state = self.state;
             match state {
-                ParseState::Payload { opcode, fin, use_ctrl } => {
+                ParseState::Payload { opcode, fin } => {
+                    // Payload spans reads — goes to msg_buf
                     let available = self.buf.len();
                     if available == 0 {
                         return Ok(None);
                     }
 
                     let take = available.min(self.remaining_payload);
-                    if use_ctrl {
-                        self.consume_partial_payload_ctrl(take);
-                    } else {
-                        self.consume_partial_payload(take);
-                    }
+                    self.consume_partial_payload(take);
 
                     if self.remaining_payload == 0 {
                         self.state = ParseState::Head;
-                        if let Some(completed) = self.route_opcode(opcode, fin)? {
+                        if let Some(completed) = self.route_opcode(opcode, fin, false)? {
+                            if opcode.is_control() && self.assembling {
+                                // Control during assembly: payload appended after assembly data
+                                self.pending_cleanup = PendingCleanup::TruncateMsgBuf(self.ctrl_payload_offset);
+                            } else {
+                                self.pending_cleanup = PendingCleanup::ClearMsgBuf;
+                            }
                             return Ok(Some(completed));
                         }
                         continue;
@@ -242,46 +307,68 @@ impl FrameReader {
                         }
                     }
 
+                    // Advance past header
                     self.buf.advance(header_size);
 
-                    // Control frames during assembly: route to ctrl_buf
-                    let use_ctrl = parsed.opcode.is_control() && self.assembling;
-
                     let available = self.buf.len();
+
                     if available >= parsed.payload_len {
-                        if use_ctrl {
-                            self.consume_payload_into_ctrl(parsed.mask_key, parsed.payload_len);
-                        } else {
-                            self.consume_payload(parsed.mask_key, parsed.payload_len);
+                        // Full payload in ReadBuf
+                        let payload_len = parsed.payload_len;
+
+                        // Unmask in-place if needed
+                        if let Some(mask) = parsed.mask_key {
+                            if payload_len > 0 {
+                                let data = &mut self.buf.data_mut()[..payload_len];
+                                apply_mask(data, mask);
+                            }
                         }
-                        if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin)? {
+
+                        let is_single = parsed.fin && !self.assembling;
+                        let is_control = parsed.opcode.is_control();
+
+                        if is_single || is_control {
+                            // ZERO-COPY: leave payload in ReadBuf, borrow directly.
+                            // Don't advance ReadBuf — cleanup will do it.
+                            if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin, true)? {
+                                self.pending_cleanup = PendingCleanup::AdvanceReadBuf(payload_len);
+                                return Ok(Some(completed));
+                            }
+                            // route_opcode returned None for a control frame? Shouldn't happen.
+                            // Advance and continue.
+                            self.buf.advance(payload_len);
+                            continue;
+                        }
+
+                        // Assembly path: copy to msg_buf, advance ReadBuf
+                        let data = &self.buf.data()[..payload_len];
+                        self.msg_buf.extend_from_slice(data);
+                        self.buf.advance(payload_len);
+
+                        if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin, false)? {
+                            self.pending_cleanup = PendingCleanup::ClearMsgBuf;
                             return Ok(Some(completed));
                         }
                         continue;
                     }
 
-                    // Partial payload
-                    let use_ctrl = parsed.opcode.is_control() && self.assembling;
+                    // Partial payload — goes to msg_buf
                     self.remaining_payload = parsed.payload_len;
                     self.mask_key = parsed.mask_key;
                     self.mask_offset = 0;
 
-                    if use_ctrl {
-                        self.ctrl_buf.clear();
+                    // Track where control payload starts during assembly
+                    if parsed.opcode.is_control() && self.assembling {
+                        self.ctrl_payload_offset = self.msg_buf.len();
                     }
 
                     if available > 0 {
-                        if use_ctrl {
-                            self.consume_partial_payload_ctrl(available);
-                        } else {
-                            self.consume_partial_payload(available);
-                        }
+                        self.consume_partial_payload(available);
                     }
 
                     self.state = ParseState::Payload {
                         opcode: parsed.opcode,
                         fin: parsed.fin,
-                        use_ctrl,
                     };
                     return Ok(None);
                 }
@@ -289,19 +376,17 @@ impl FrameReader {
         }
     }
 
-    /// Route a completed frame. Returns the final opcode to surface as a
-    /// Message, or None if the frame was consumed internally (assembly).
+    /// Route a completed frame. `zero_copy` indicates the payload is in
+    /// ReadBuf (true) or msg_buf (false).
     fn route_opcode(
         &mut self,
         opcode: RawOpcode,
         fin: bool,
+        zero_copy: bool,
     ) -> Result<Option<RawOpcode>, ProtocolError> {
-        // Control frames: always immediate
         if opcode.is_control() {
-            self.used_ctrl = self.assembling; // ctrl_buf used during assembly
             return Ok(Some(opcode));
         }
-        self.used_ctrl = false;
 
         match opcode {
             RawOpcode::Text | RawOpcode::Binary => {
@@ -311,12 +396,11 @@ impl FrameReader {
                 if fin {
                     return Ok(Some(opcode));
                 }
-                // Start assembly
+                // Start assembly — payload already in msg_buf (not zero_copy for fragments)
                 self.assembling = true;
                 self.assembly_opcode = Some(opcode);
                 self.utf8_valid_up_to = 0;
-                // Incremental UTF-8 validation on first fragment
-                if opcode == RawOpcode::Text {
+                if opcode == RawOpcode::Text && !zero_copy {
                     let pending = validate_utf8_incremental(&self.msg_buf, false)?;
                     self.utf8_valid_up_to = self.msg_buf.len() - pending as usize;
                 }
@@ -326,7 +410,6 @@ impl FrameReader {
                 if !self.assembling {
                     return Err(ProtocolError::ContinuationWithoutStart);
                 }
-                // Incremental UTF-8 validation for Text assembly
                 if self.assembly_opcode == Some(RawOpcode::Text) {
                     let to_check = &self.msg_buf[self.utf8_valid_up_to..];
                     let pending = validate_utf8_incremental(to_check, fin)?;
@@ -344,72 +427,28 @@ impl FrameReader {
         }
     }
 
-    /// Bytes of buffer space remaining.
-    #[inline]
-    pub fn remaining(&self) -> usize {
-        self.buf.remaining()
-    }
+    /// Construct a Message. For zero-copy: borrows from ReadBuf.
+    /// For assembled: borrows from msg_buf.
+    fn make_message(&self, opcode: RawOpcode) -> Result<Option<Message<'_>>, ProtocolError> {
+        let payload = match self.pending_cleanup {
+            PendingCleanup::AdvanceReadBuf(n) => &self.buf.data()[..n],
+            PendingCleanup::TruncateMsgBuf(offset) => &self.msg_buf[offset..],
+            PendingCleanup::ClearMsgBuf | PendingCleanup::None => &self.msg_buf[..],
+        };
 
-    /// Bytes of unconsumed data in the buffer.
-    #[inline]
-    pub fn buffered(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Advance the parser without constructing a Message.
-    ///
-    /// Returns `true` if a message is now ready — the next call to
-    /// `next()` will return it immediately. Returns `false` if more
-    /// bytes needed.
-    ///
-    /// Used by `WsStream` to fill bytes until a message is ready,
-    /// then call `next()` exactly once to get the `Message<'_>`.
-    pub(crate) fn poll(&mut self) -> Result<bool, ProtocolError> {
-        if self.pending_opcode.is_some() {
-            return Ok(true); // already have a pending message
-        }
-
-        if self.needs_clear {
-            if self.used_ctrl {
-                self.ctrl_buf.clear();
-            } else {
-                self.msg_buf.clear();
-                if self.msg_buf.capacity() > self.compact_threshold {
-                    self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
-                }
+        match opcode {
+            RawOpcode::Ping => Ok(Some(Message::Ping(payload))),
+            RawOpcode::Pong => Ok(Some(Message::Pong(payload))),
+            RawOpcode::Close => Self::parse_close_from(payload),
+            RawOpcode::Text => {
+                let s = std::str::from_utf8(payload)
+                    .map_err(|_| ProtocolError::InvalidUtf8)?;
+                Ok(Some(Message::Text(s)))
             }
-            self.needs_clear = false;
-        }
-
-        match self.pump()? {
-            None => Ok(false),
-            Some(opcode) => {
-                self.pending_opcode = Some(opcode);
-                Ok(true)
-            }
+            RawOpcode::Binary => Ok(Some(Message::Binary(payload))),
+            RawOpcode::Continuation => unreachable!("pump never returns Continuation"),
         }
     }
-
-    /// Reset all state.
-    pub fn reset(&mut self) {
-        self.buf.clear();
-        self.msg_buf.clear();
-        self.ctrl_buf.clear();
-        self.state = ParseState::Head;
-        self.remaining_payload = 0;
-        self.mask_key = None;
-        self.mask_offset = 0;
-        self.assembling = false;
-        self.assembly_opcode = None;
-        self.utf8_valid_up_to = 0;
-        self.needs_clear = false;
-        self.used_ctrl = false;
-        self.pending_opcode = None;
-    }
-
-    // =========================================================================
-    // Internals
-    // =========================================================================
 
     fn header_size(byte1: u8) -> usize {
         let masked = byte1 & 0x80 != 0;
@@ -425,7 +464,6 @@ impl FrameReader {
     fn parse_header(&self, header: &[u8]) -> Result<ParsedHeader, ProtocolError> {
         let byte0 = header[0];
         let byte1 = header[1];
-
         let fin = byte0 & 0x80 != 0;
         let rsv = (byte0 >> 4) & 0x07;
         let opcode_raw = byte0 & 0x0F;
@@ -492,40 +530,8 @@ impl FrameReader {
         })
     }
 
-    /// Consume a full control frame payload from ReadBuf → ctrl_buf.
-    fn consume_payload_into_ctrl(&mut self, mask_key: Option<[u8; 4]>, payload_len: usize) {
-        self.ctrl_buf.clear();
-        if payload_len == 0 {
-            return;
-        }
-        if let Some(mask) = mask_key {
-            let data = &mut self.buf.data_mut()[..payload_len];
-            apply_mask(data, mask);
-        }
-        let data = &self.buf.data()[..payload_len];
-        self.ctrl_buf.extend_from_slice(data);
-        self.buf.advance(payload_len);
-    }
-
-    /// Consume a full payload from ReadBuf → msg_buf.
-    fn consume_payload(&mut self, mask_key: Option<[u8; 4]>, payload_len: usize) {
-        if payload_len == 0 {
-            return;
-        }
-
-        if let Some(mask) = mask_key {
-            // Unmask in-place in ReadBuf then copy
-            let data = &mut self.buf.data_mut()[..payload_len];
-            apply_mask(data, mask);
-        }
-
-        let data = &self.buf.data()[..payload_len];
-        self.msg_buf.extend_from_slice(data);
-        self.buf.advance(payload_len);
-    }
-
-    /// Consume partial payload into ctrl_buf (control frame during assembly).
-    fn consume_partial_payload_ctrl(&mut self, n: usize) {
+    /// Consume partial payload from ReadBuf → msg_buf (for frames spanning reads).
+    fn consume_partial_payload(&mut self, n: usize) {
         if n == 0 {
             return;
         }
@@ -542,54 +548,9 @@ impl FrameReader {
             self.mask_offset = ((offset + n) % 4) as u8;
         }
         let data = &self.buf.data()[..n];
-        self.ctrl_buf.extend_from_slice(data);
-        self.buf.advance(n);
-        self.remaining_payload -= n;
-    }
-
-    /// Consume partial payload (for frames spanning reads).
-    fn consume_partial_payload(&mut self, n: usize) {
-        if n == 0 {
-            return;
-        }
-
-        // Unmask with rotated key
-        if let Some(key) = self.mask_key {
-            let data = &mut self.buf.data_mut()[..n];
-            let offset = self.mask_offset as usize;
-            let rotated = [
-                key[(offset) % 4],
-                key[(offset + 1) % 4],
-                key[(offset + 2) % 4],
-                key[(offset + 3) % 4],
-            ];
-            apply_mask(data, rotated);
-            self.mask_offset = ((offset + n) % 4) as u8;
-        }
-
-        let data = &self.buf.data()[..n];
         self.msg_buf.extend_from_slice(data);
         self.buf.advance(n);
         self.remaining_payload -= n;
-    }
-
-    /// Construct a Message from the completed msg_buf contents.
-    fn make_message(&self, opcode: RawOpcode) -> Result<Option<Message<'_>>, ProtocolError> {
-        // Control frames may use ctrl_buf if they arrived during assembly
-        let payload_buf = if self.used_ctrl { &self.ctrl_buf } else { &self.msg_buf };
-
-        match opcode {
-            RawOpcode::Ping => Ok(Some(Message::Ping(payload_buf))),
-            RawOpcode::Pong => Ok(Some(Message::Pong(payload_buf))),
-            RawOpcode::Close => Self::parse_close_from(payload_buf),
-            RawOpcode::Text => {
-                let s = std::str::from_utf8(&self.msg_buf)
-                    .map_err(|_| ProtocolError::InvalidUtf8)?;
-                Ok(Some(Message::Text(s)))
-            }
-            RawOpcode::Binary => Ok(Some(Message::Binary(&self.msg_buf))),
-            RawOpcode::Continuation => unreachable!("pump never returns Continuation"),
-        }
     }
 
     fn parse_close_from(buf: &[u8]) -> Result<Option<Message<'_>>, ProtocolError> {
@@ -599,17 +560,14 @@ impl FrameReader {
                 reason: "",
             })));
         }
-
         if buf.len() == 1 {
             return Err(ProtocolError::CloseFrameTooShort);
         }
-
         let raw_code = u16::from_be_bytes([buf[0], buf[1]]);
         let code = CloseCode::from_u16(raw_code)?;
         let reason_bytes = &buf[2..];
         let reason = std::str::from_utf8(reason_bytes)
             .map_err(|_| ProtocolError::InvalidUtf8InCloseReason)?;
-
         Ok(Some(Message::Close(CloseFrame { code, reason })))
     }
 }
@@ -626,7 +584,6 @@ impl std::fmt::Debug for FrameReader {
         f.debug_struct("FrameReader")
             .field("buffered", &self.buf.len())
             .field("remaining", &self.buf.remaining())
-            .field("msg_buf_len", &self.msg_buf.len())
             .field("assembling", &self.assembling)
             .field("role", &self.role)
             .finish()
@@ -732,7 +689,6 @@ impl FrameReaderBuilder {
         FrameReader {
             buf: ReadBuf::new(self.buffer_capacity, self.pre_padding, self.post_padding),
             msg_buf: Vec::with_capacity(self.prealloc_capacity),
-            ctrl_buf: Vec::with_capacity(125),
             prealloc_capacity: self.prealloc_capacity,
             compact_threshold: self.compact_threshold,
             state: ParseState::Head,
@@ -745,9 +701,9 @@ impl FrameReaderBuilder {
             role: self.role,
             max_frame_size: self.max_frame_size,
             max_message_size: self.max_message_size,
-            needs_clear: false,
-            used_ctrl: false,
+            pending_cleanup: PendingCleanup::None,
             pending_opcode: None,
+            ctrl_payload_offset: 0,
         }
     }
 }

@@ -106,29 +106,42 @@ fn make_masked_frame(fin: bool, opcode: u8, payload: &[u8], mask: [u8; 4]) -> Ve
 // ============================================================================
 
 fn bench_read_next(samples: &mut [u64], label: &str, frame: &[u8], role: Role) {
+    // Batch multiple frames into one read(), drain via next() loop.
+    // This is the real-world pattern: socket delivers N frames, parser drains all.
+    // Cleanup happens at the start of each next() call — amortized naturally.
+    let batch = 16usize;
+    let mut wire = Vec::with_capacity(frame.len() * batch);
+    for _ in 0..batch {
+        wire.extend_from_slice(frame);
+    }
+
     let mut reader = FrameReader::builder()
         .role(role)
-        .buffer_capacity(64 * 1024)
+        .buffer_capacity(wire.len() + 4096)
         .build();
 
     // Warmup
-    for _ in 0..10_000 {
-        reader.read(frame).unwrap();
-        let msg = reader.next().unwrap().unwrap();
-        black_box(&msg);
-        drop(msg);
+    for _ in 0..1000 {
+        reader.read(&wire).unwrap();
+        for _ in 0..batch {
+            let msg = reader.next().unwrap().unwrap();
+            black_box(&msg);
+        }
+        // Flush cleanup from last message
+        let _ = reader.next();
     }
 
     for s in samples.iter_mut() {
+        // Flush any pending cleanup before reading
+        let _ = reader.next();
+        reader.read(&wire).unwrap();
         let start = rdtsc_start();
-        for _ in 0..BATCH {
-            reader.read(frame).unwrap();
+        for _ in 0..batch {
             let msg = reader.next().unwrap().unwrap();
             black_box(&msg);
-            drop(msg);
         }
         let end = rdtsc_end();
-        *s = (end - start) / BATCH;
+        *s = (end - start) / batch as u64;
     }
     print_row(label, samples);
 }
