@@ -15,5 +15,19 @@ sha1 = "0.10"
 [[example]]
 name = "perf_buf"
 
+[[example]]
+name = "perf_ws"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "frame_reader"
+harness = false
+
+[[bench]]
+name = "frame_writer"
+harness = false
+
 [lints]
 workspace = true

@@ -1378,4 +1378,175 @@ mod tests {
             other => panic!("expected Text, got {other:?}"),
         }
     }
+
+    // === FIFO ordering tests ===
+
+    fn assert_text(result: Result<Option<Message<'_>>, ProtocolError>, expected: &str) {
+        match result.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, expected),
+            other => panic!("expected Text({expected:?}), got {other:?}"),
+        }
+    }
+
+    fn assert_binary(result: Result<Option<Message<'_>>, ProtocolError>, expected: &[u8]) {
+        match result.unwrap().unwrap() {
+            Message::Binary(b) => assert_eq!(b, expected),
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    fn assert_ping(result: Result<Option<Message<'_>>, ProtocolError>, expected: &[u8]) {
+        match result.unwrap().unwrap() {
+            Message::Ping(b) => assert_eq!(b, expected),
+            other => panic!("expected Ping, got {other:?}"),
+        }
+    }
+
+    fn assert_pong(result: Result<Option<Message<'_>>, ProtocolError>, expected: &[u8]) {
+        match result.unwrap().unwrap() {
+            Message::Pong(b) => assert_eq!(b, expected),
+            other => panic!("expected Pong, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fifo_three_texts_one_read() {
+        let mut r = client_reader();
+        let mut data = make_frame(true, 0x1, b"first");
+        data.extend(&make_frame(true, 0x1, b"second"));
+        data.extend(&make_frame(true, 0x1, b"third"));
+        r.read(&data).unwrap();
+        assert_text(r.next(), "first");
+        assert_text(r.next(), "second");
+        assert_text(r.next(), "third");
+    }
+
+    #[test]
+    fn fifo_mixed_text_binary() {
+        let mut r = client_reader();
+        let mut data = make_frame(true, 0x1, b"text1");
+        data.extend(&make_frame(true, 0x2, &[0x01]));
+        data.extend(&make_frame(true, 0x1, b"text2"));
+        data.extend(&make_frame(true, 0x2, &[0x02]));
+        r.read(&data).unwrap();
+        assert_text(r.next(), "text1");
+        assert_binary(r.next(), &[0x01]);
+        assert_text(r.next(), "text2");
+        assert_binary(r.next(), &[0x02]);
+    }
+
+    #[test]
+    fn fifo_single_assembled_single() {
+        let mut r = client_reader();
+        let mut data = make_frame(true, 0x1, b"before");
+        data.extend(&make_frame(false, 0x1, b"frag"));
+        data.extend(&make_frame(true, 0x0, b"mented"));
+        data.extend(&make_frame(true, 0x1, b"after"));
+        r.read(&data).unwrap();
+        assert_text(r.next(), "before");
+        assert_text(r.next(), "fragmented");
+        assert_text(r.next(), "after");
+    }
+
+    #[test]
+    fn fifo_assembled_then_single() {
+        let mut r = client_reader();
+        let mut data = make_frame(false, 0x2, &[0xAA]);
+        data.extend(&make_frame(true, 0x0, &[0xBB]));
+        data.extend(&make_frame(true, 0x1, b"after"));
+        r.read(&data).unwrap();
+        assert_binary(r.next(), &[0xAA, 0xBB]);
+        assert_text(r.next(), "after");
+    }
+
+    #[test]
+    fn fifo_data_ping_data() {
+        let mut r = client_reader();
+        let mut data = make_frame(true, 0x1, b"msg1");
+        data.extend(&make_frame(true, 0x9, b"ping"));
+        data.extend(&make_frame(true, 0x1, b"msg2"));
+        r.read(&data).unwrap();
+        assert_text(r.next(), "msg1");
+        assert_ping(r.next(), b"ping");
+        assert_text(r.next(), "msg2");
+    }
+
+    #[test]
+    fn fifo_assembly_with_control_then_data() {
+        let mut r = client_reader();
+        let mut data = make_frame(false, 0x1, b"hel");
+        data.extend(&make_frame(true, 0x9, b"ping"));
+        data.extend(&make_frame(true, 0x0, b"lo"));
+        data.extend(&make_frame(true, 0x1, b"next"));
+        r.read(&data).unwrap();
+        assert_ping(r.next(), b"ping");
+        assert_text(r.next(), "hello");
+        assert_text(r.next(), "next");
+    }
+
+    #[test]
+    fn fifo_assembly_with_multiple_controls() {
+        let mut r = client_reader();
+        let mut data = make_frame(false, 0x2, &[0x01]);
+        data.extend(&make_frame(true, 0x9, b"p1"));
+        data.extend(&make_frame(true, 0xA, b"p2"));
+        data.extend(&make_frame(true, 0x0, &[0x02]));
+        data.extend(&make_frame(true, 0x1, b"after"));
+        r.read(&data).unwrap();
+        assert_ping(r.next(), b"p1");
+        assert_pong(r.next(), b"p2");
+        assert_binary(r.next(), &[0x01, 0x02]);
+        assert_text(r.next(), "after");
+    }
+
+    #[test]
+    fn fifo_across_reads() {
+        let mut r = client_reader();
+        let frame1 = make_frame(true, 0x1, b"first");
+        let frame2 = make_frame(true, 0x1, b"second");
+        r.read(&frame1).unwrap();
+        assert_text(r.next(), "first");
+        r.read(&frame2).unwrap();
+        assert_text(r.next(), "second");
+    }
+
+    #[test]
+    fn fifo_partial_then_complete() {
+        let mut r = client_reader();
+        let frame1 = make_frame(true, 0x1, b"first");
+        let frame2 = make_frame(true, 0x1, b"second");
+        let mut all = frame1.clone();
+        all.extend(&frame2);
+        r.read(&all[..3]).unwrap();
+        assert!(r.next().unwrap().is_none());
+        r.read(&all[3..]).unwrap();
+        assert_text(r.next(), "first");
+        assert_text(r.next(), "second");
+    }
+
+    #[test]
+    fn fifo_100_messages_one_read() {
+        let mut r = FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(256 * 1024)
+            .build();
+
+        let mut data = Vec::new();
+        for i in 0u32..100 {
+            let payload = i.to_be_bytes();
+            data.extend(&make_frame(true, 0x2, &payload));
+        }
+        r.read(&data).unwrap();
+
+        for i in 0u32..100 {
+            match r.next().unwrap().unwrap() {
+                Message::Binary(b) => {
+                    let val = u32::from_be_bytes(b.try_into().unwrap());
+                    assert_eq!(val, i, "message {i} out of order");
+                }
+                other => panic!("expected Binary, got {other:?}"),
+            }
+        }
+        assert!(r.next().unwrap().is_none());
+    }
 }
