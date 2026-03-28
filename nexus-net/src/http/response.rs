@@ -1,0 +1,362 @@
+use crate::buf::ReadBuf;
+use super::error::HttpError;
+
+/// A parsed HTTP/1.x response. Borrows from the reader's buffer.
+pub struct Response<'a> {
+    /// HTTP status code (e.g., 101, 200, 404).
+    pub status: u16,
+    /// Reason phrase (e.g., "Switching Protocols", "OK").
+    pub reason: &'a str,
+    /// HTTP version (0 = HTTP/1.0, 1 = HTTP/1.1).
+    pub version: u8,
+    data: &'a [u8],
+    header_offsets: &'a [(usize, usize, usize, usize)],
+}
+
+impl<'a> Response<'a> {
+    /// Look up a header by name (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&'a str> {
+        for &(ns, nl, vs, vl) in self.header_offsets {
+            let hname = &self.data[ns..ns + nl];
+            if hname.eq_ignore_ascii_case(name.as_bytes()) {
+                return std::str::from_utf8(&self.data[vs..vs + vl]).ok();
+            }
+        }
+        None
+    }
+
+    /// Iterate over headers as (name, value) pairs.
+    pub fn headers(&self) -> impl Iterator<Item = (&'a str, &'a str)> {
+        self.header_offsets.iter().filter_map(|&(ns, nl, vs, vl)| {
+            let name = std::str::from_utf8(&self.data[ns..ns + nl]).ok()?;
+            let value = std::str::from_utf8(&self.data[vs..vs + vl]).ok()?;
+            Some((name, value))
+        })
+    }
+
+    /// Number of headers.
+    pub fn header_count(&self) -> usize {
+        self.header_offsets.len()
+    }
+}
+
+impl std::fmt::Debug for Response<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("reason", &self.reason)
+            .field("version", &self.version)
+            .field("headers", &self.header_count())
+            .finish()
+    }
+}
+
+/// Sans-IO HTTP/1.x response parser.
+///
+/// # Usage
+///
+/// ```
+/// use nexus_net::http::ResponseReader;
+///
+/// let mut reader = ResponseReader::new(4096);
+/// reader.read(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n").unwrap();
+/// let resp = reader.next().unwrap().unwrap();
+/// assert_eq!(resp.status, 101);
+/// assert_eq!(resp.header("Upgrade"), Some("websocket"));
+/// ```
+pub struct ResponseReader {
+    buf: ReadBuf,
+    max_headers: usize,
+    max_head_size: usize,
+    head_len: Option<usize>,
+    header_offsets: Vec<(usize, usize, usize, usize)>,
+    status: u16,
+    reason_start: usize,
+    reason_end: usize,
+    version: u8,
+}
+
+impl ResponseReader {
+    /// Create with the given buffer capacity.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buf: ReadBuf::with_capacity(capacity),
+            max_headers: 64,
+            max_head_size: 8192,
+            head_len: None,
+            header_offsets: Vec::new(),
+            status: 0,
+            reason_start: 0,
+            reason_end: 0,
+            version: 1,
+        }
+    }
+
+    /// Set maximum number of headers. Default: 64.
+    #[must_use]
+    pub fn max_headers(mut self, n: usize) -> Self {
+        self.max_headers = n;
+        self
+    }
+
+    /// Set maximum head size. Default: 8KB.
+    #[must_use]
+    pub fn max_head_size(mut self, n: usize) -> Self {
+        self.max_head_size = n;
+        self
+    }
+
+    /// Buffer wire bytes.
+    pub fn read(&mut self, src: &[u8]) -> Result<(), HttpError> {
+        let spare = self.buf.spare();
+        if src.len() > spare.len() {
+            return Err(HttpError::BufferFull {
+                needed: src.len(),
+                available: spare.len(),
+            });
+        }
+        spare[..src.len()].copy_from_slice(src);
+        self.buf.filled(src.len());
+        Ok(())
+    }
+
+    /// Parse the next response.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<Response<'_>>, HttpError> {
+        if self.head_len.is_none() {
+            self.try_parse()?;
+        }
+
+        if self.head_len.is_none() {
+            return Ok(None);
+        }
+
+        let data = self.buf.data();
+        let reason = std::str::from_utf8(&data[self.reason_start..self.reason_end])
+            .map_err(|_| HttpError::Malformed)?;
+
+        Ok(Some(Response {
+            status: self.status,
+            reason,
+            version: self.version,
+            data,
+            header_offsets: &self.header_offsets,
+        }))
+    }
+
+    /// Bytes after the parsed head.
+    pub fn remainder(&self) -> &[u8] {
+        match self.head_len {
+            Some(n) => &self.buf.data()[n..],
+            None => &[],
+        }
+    }
+
+    /// Reset for a new response.
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.head_len = None;
+        self.header_offsets.clear();
+    }
+
+    fn try_parse(&mut self) -> Result<(), HttpError> {
+        let data = self.buf.data();
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data.len() > self.max_head_size {
+            return Err(HttpError::HeadTooLarge { max: self.max_head_size });
+        }
+
+        let mut headers = vec![httparse::EMPTY_HEADER; self.max_headers];
+        let mut resp = httparse::Response::new(&mut headers);
+
+        match resp.parse(data) {
+            Ok(httparse::Status::Complete(head_len)) => {
+                let status = resp.code.ok_or(HttpError::Malformed)?;
+                let reason = resp.reason.ok_or(HttpError::Malformed)?;
+                let version = resp.version.ok_or(HttpError::Malformed)?;
+
+                let data_ptr = data.as_ptr();
+                self.status = status;
+                // SAFETY: reason ptr is within data (same allocation).
+                self.reason_start = unsafe { reason.as_ptr().offset_from(data_ptr) } as usize;
+                self.reason_end = self.reason_start + reason.len();
+                self.version = version;
+
+                self.header_offsets.clear();
+                for h in resp.headers.iter() {
+                    // SAFETY: header name/value pointers are within data (same allocation).
+                    let ns = unsafe { h.name.as_ptr().offset_from(data_ptr) } as usize;
+                    let nl = h.name.len();
+                    let vs = unsafe { h.value.as_ptr().offset_from(data_ptr) } as usize;
+                    let vl = h.value.len();
+                    self.header_offsets.push((ns, nl, vs, vl));
+                }
+
+                self.head_len = Some(head_len);
+                Ok(())
+            }
+            Ok(httparse::Status::Partial) => Ok(()),
+            Err(_) => Err(HttpError::Malformed),
+        }
+    }
+}
+
+fn copy_to(dst: &mut [u8], offset: usize, src: &[u8]) -> usize {
+    dst[offset..offset + src.len()].copy_from_slice(src);
+    src.len()
+}
+
+fn write_u16(dst: &mut [u8], offset: usize, val: u16) -> usize {
+    if val >= 100 {
+        dst[offset] = (val / 100) as u8 + b'0';
+        dst[offset + 1] = ((val / 10) % 10) as u8 + b'0';
+        dst[offset + 2] = (val % 10) as u8 + b'0';
+        3
+    } else if val >= 10 {
+        dst[offset] = (val / 10) as u8 + b'0';
+        dst[offset + 1] = (val % 10) as u8 + b'0';
+        2
+    } else {
+        dst[offset] = val as u8 + b'0';
+        1
+    }
+}
+
+/// Write an HTTP/1.1 request into a byte buffer. Returns bytes written.
+/// Zero allocation — writes directly into `dst`.
+pub fn write_request(
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    dst: &mut [u8],
+) -> usize {
+    let mut offset = 0;
+    offset += copy_to(dst, offset, method.as_bytes());
+    offset += copy_to(dst, offset, b" ");
+    offset += copy_to(dst, offset, path.as_bytes());
+    offset += copy_to(dst, offset, b" HTTP/1.1\r\n");
+    for &(name, value) in headers {
+        offset += copy_to(dst, offset, name.as_bytes());
+        offset += copy_to(dst, offset, b": ");
+        offset += copy_to(dst, offset, value.as_bytes());
+        offset += copy_to(dst, offset, b"\r\n");
+    }
+    offset += copy_to(dst, offset, b"\r\n");
+    offset
+}
+
+/// Write an HTTP/1.1 response into a byte buffer. Returns bytes written.
+/// Zero allocation — writes directly into `dst`.
+pub fn write_response(
+    status: u16,
+    reason: &str,
+    headers: &[(&str, &str)],
+    dst: &mut [u8],
+) -> usize {
+    let mut offset = 0;
+    offset += copy_to(dst, offset, b"HTTP/1.1 ");
+    offset += write_u16(dst, offset, status);
+    offset += copy_to(dst, offset, b" ");
+    offset += copy_to(dst, offset, reason.as_bytes());
+    offset += copy_to(dst, offset, b"\r\n");
+    for &(name, value) in headers {
+        offset += copy_to(dst, offset, name.as_bytes());
+        offset += copy_to(dst, offset, b": ");
+        offset += copy_to(dst, offset, value.as_bytes());
+        offset += copy_to(dst, offset, b"\r\n");
+    }
+    offset += copy_to(dst, offset, b"\r\n");
+    offset
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_101_response() {
+        let mut r = ResponseReader::new(4096);
+        r.read(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 101);
+        assert_eq!(resp.reason, "Switching Protocols");
+        assert_eq!(resp.version, 1);
+        assert_eq!(resp.header("Upgrade"), Some("websocket"));
+        assert_eq!(resp.header("Connection"), Some("Upgrade"));
+    }
+
+    #[test]
+    fn basic_200_response() {
+        let mut r = ResponseReader::new(4096);
+        r.read(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello").unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.reason, "OK");
+        assert_eq!(resp.header("Content-Length"), Some("5"));
+    }
+
+    #[test]
+    fn response_remainder() {
+        let mut r = ResponseReader::new(4096);
+        r.read(b"HTTP/1.1 200 OK\r\n\r\nbody data").unwrap();
+        let _resp = r.next().unwrap().unwrap();
+        assert_eq!(r.remainder(), b"body data");
+    }
+
+    #[test]
+    fn partial_response() {
+        let mut r = ResponseReader::new(4096);
+        r.read(b"HTTP/1.1 200 OK\r\nHost: ").unwrap();
+        assert!(r.next().unwrap().is_none());
+        r.read(b"example.com\r\n\r\n").unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.header("Host"), Some("example.com"));
+    }
+
+    #[test]
+    fn write_request_round_trip() {
+        use crate::http::RequestReader;
+        let mut dst = [0u8; 256];
+        let n = write_request("GET", "/ws", &[
+            ("Host", "localhost:8080"),
+            ("Upgrade", "websocket"),
+        ], &mut dst);
+
+        let mut r = RequestReader::new(4096);
+        r.read(&dst[..n]).unwrap();
+        let req = r.next().unwrap().unwrap();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/ws");
+        assert_eq!(req.header("Upgrade"), Some("websocket"));
+    }
+
+    #[test]
+    fn write_response_round_trip() {
+        let mut dst = [0u8; 256];
+        let n = write_response(101, "Switching Protocols", &[
+            ("Upgrade", "websocket"),
+            ("Connection", "Upgrade"),
+        ], &mut dst);
+
+        let mut r = ResponseReader::new(4096);
+        r.read(&dst[..n]).unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 101);
+        assert_eq!(resp.header("Connection"), Some("Upgrade"));
+    }
+
+    #[test]
+    fn reset_then_reuse() {
+        let mut r = ResponseReader::new(4096);
+        r.read(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+        let _ = r.next().unwrap().unwrap();
+        r.reset();
+        r.read(b"HTTP/1.1 404 Not Found\r\n\r\n").unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 404);
+    }
+}
