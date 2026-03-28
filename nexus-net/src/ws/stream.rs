@@ -2,9 +2,10 @@
 
 use std::io::{Read, Write};
 
+use crate::buf::WriteBuf;
 use super::error::ProtocolError;
 use super::frame::Role;
-use super::frame_reader::FrameReader;
+use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
 use super::message::{CloseCode, Message};
@@ -42,7 +43,59 @@ impl From<HandshakeError> for WsError {
     fn from(e: HandshakeError) -> Self { Self::Handshake(e) }
 }
 
-/// WebSocket stream — owns a socket, reader, and writer.
+/// Builder for [`WsStream`].
+pub struct WsStreamBuilder {
+    reader_builder: FrameReaderBuilder,
+    write_buf_capacity: usize,
+    write_buf_headroom: usize,
+}
+
+impl WsStreamBuilder {
+    /// ReadBuf capacity. Default: 1MB.
+    #[must_use]
+    pub fn buffer_capacity(mut self, n: usize) -> Self {
+        self.reader_builder = self.reader_builder.buffer_capacity(n);
+        self
+    }
+
+    /// Maximum single frame payload. Default: 16MB.
+    #[must_use]
+    pub fn max_frame_size(mut self, n: u64) -> Self {
+        self.reader_builder = self.reader_builder.max_frame_size(n);
+        self
+    }
+
+    /// Maximum assembled message size. Default: 16MB.
+    #[must_use]
+    pub fn max_message_size(mut self, n: usize) -> Self {
+        self.reader_builder = self.reader_builder.max_message_size(n);
+        self
+    }
+
+    /// Write buffer capacity. Default: 4KB.
+    #[must_use]
+    pub fn write_buffer_capacity(mut self, n: usize) -> Self {
+        self.write_buf_capacity = n;
+        self
+    }
+
+    /// Connect as WebSocket client with configured buffers.
+    pub fn connect<S: Read + Write>(
+        self,
+        stream: S,
+        host: &str,
+        path: &str,
+    ) -> Result<WsStream<S>, WsError> {
+        WsStream::connect_impl(stream, host, path, self.reader_builder, self.write_buf_capacity, self.write_buf_headroom)
+    }
+
+    /// Accept as WebSocket server with configured buffers.
+    pub fn accept<S: Read + Write>(self, stream: S) -> Result<WsStream<S>, WsError> {
+        WsStream::accept_impl(stream, self.reader_builder, self.write_buf_capacity, self.write_buf_headroom)
+    }
+}
+
+/// WebSocket stream — owns a socket, reader, writer, and buffers.
 ///
 /// Generic over `S: Read + Write` so it works with plain TCP, rustls,
 /// or any other byte stream.
@@ -51,7 +104,7 @@ impl From<HandshakeError> for WsError {
 ///
 /// ```no_run
 /// use std::net::TcpStream;
-/// use nexus_net::ws::{WsStream, Message};
+/// use nexus_net::ws::{WsStream, OwnedMessage};
 ///
 /// let tcp = TcpStream::connect("echo.websocket.org:80").unwrap();
 /// let mut ws = WsStream::connect(tcp, "echo.websocket.org", "/").unwrap();
@@ -61,9 +114,9 @@ impl From<HandshakeError> for WsError {
 /// while let Some(msg) = ws.next().unwrap() {
 ///     let owned = msg.into_owned();
 ///     match &owned {
-///         nexus_net::ws::OwnedMessage::Text(s) => println!("received: {s}"),
-///         nexus_net::ws::OwnedMessage::Ping(p) => ws.send_pong(p).unwrap(),
-///         nexus_net::ws::OwnedMessage::Close(_) => break,
+///         OwnedMessage::Text(s) => println!("received: {s}"),
+///         OwnedMessage::Ping(p) => ws.send_pong(p).unwrap(),
+///         OwnedMessage::Close(_) => break,
 ///         _ => {}
 ///     }
 /// }
@@ -72,18 +125,155 @@ pub struct WsStream<S> {
     stream: S,
     reader: FrameReader,
     writer: FrameWriter,
+    write_buf: WriteBuf,
+}
+
+impl WsStreamBuilder {
+    /// Create a new builder with defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            reader_builder: FrameReader::builder(),
+            write_buf_capacity: 4096,
+            write_buf_headroom: 14,
+        }
+    }
+}
+
+impl Default for WsStreamBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<S: Read + Write> WsStream<S> {
-    /// Connect as WebSocket client.
-    ///
-    /// Performs the HTTP/1.1 upgrade handshake, then returns a ready stream.
-    pub fn connect(mut stream: S, host: &str, path: &str) -> Result<Self, WsError> {
-        // Generate key
+    /// Create a builder for configuring buffer sizes.
+    #[must_use]
+    pub fn builder() -> WsStreamBuilder {
+        WsStreamBuilder::new()
+    }
+
+    /// Create from pre-existing parts. For testing or custom handshakes.
+    pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
+        Self {
+            stream,
+            reader,
+            writer,
+            write_buf: WriteBuf::new(4096, 14),
+        }
+    }
+
+    /// Connect as WebSocket client with default configuration.
+    pub fn connect(stream: S, host: &str, path: &str) -> Result<Self, WsError> {
+        Self::connect_impl(stream, host, path, FrameReader::builder(), 4096, 14)
+    }
+
+    /// Connect with a pre-configured FrameReader.
+    pub fn connect_with_reader(
+        stream: S,
+        host: &str,
+        path: &str,
+        reader_builder: FrameReaderBuilder,
+    ) -> Result<Self, WsError> {
+        Self::connect_impl(stream, host, path, reader_builder, 4096, 14)
+    }
+
+    /// Accept as WebSocket server with default configuration.
+    pub fn accept(stream: S) -> Result<Self, WsError> {
+        Self::accept_impl(stream, FrameReader::builder(), 4096, 14)
+    }
+
+    /// Accept with a pre-configured FrameReader.
+    pub fn accept_with_reader(
+        stream: S,
+        reader_builder: FrameReaderBuilder,
+    ) -> Result<Self, WsError> {
+        Self::accept_impl(stream, reader_builder, 4096, 14)
+    }
+
+    /// Read the next message. Reads from the socket as needed.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<Message<'_>>, WsError> {
+        // Use poll() to advance the parser without borrowing the return.
+        // Once poll() returns true, call next() once to get Message<'_>.
+        loop {
+            if self.reader.poll()? {
+                // Message ready — next() will return it immediately
+                return Ok(self.reader.next()?);
+            }
+
+            // Need more bytes from socket
+            let spare = self.reader.spare();
+            if spare.is_empty() {
+                return Ok(None); // buffer full
+            }
+            let n = self.stream.read(spare)?;
+            if n == 0 {
+                return Ok(None); // EOF
+            }
+            self.reader.filled(n);
+        }
+    }
+
+    /// Send a text message. Zero allocation — uses internal WriteBuf.
+    pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
+        self.writer.encode_text_into(text.as_bytes(), &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data())?;
+        Ok(())
+    }
+
+    /// Send a binary message.
+    pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
+        self.writer.encode_binary_into(data, &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data())?;
+        Ok(())
+    }
+
+    /// Send a ping.
+    pub fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
+        self.writer.encode_ping_into(data, &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data())?;
+        Ok(())
+    }
+
+    /// Send a pong.
+    pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
+        self.writer.encode_pong_into(data, &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data())?;
+        Ok(())
+    }
+
+    /// Initiate close handshake.
+    pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
+        self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data())?;
+        Ok(())
+    }
+
+    /// Access the underlying stream.
+    pub fn stream(&self) -> &S { &self.stream }
+    /// Mutable access to the underlying stream.
+    pub fn stream_mut(&mut self) -> &mut S { &mut self.stream }
+    /// Access the FrameReader.
+    pub fn reader(&self) -> &FrameReader { &self.reader }
+    /// Access the FrameWriter.
+    pub fn writer(&self) -> &FrameWriter { &self.writer }
+
+    // =========================================================================
+    // Internal
+    // =========================================================================
+
+    fn connect_impl(
+        mut stream: S,
+        host: &str,
+        path: &str,
+        reader_builder: FrameReaderBuilder,
+        write_cap: usize,
+        write_headroom: usize,
+    ) -> Result<Self, WsError> {
         let key = handshake::generate_key();
         let key_str = std::str::from_utf8(&key).unwrap();
 
-        // Write upgrade request
         let mut req_buf = [0u8; 512];
         let n = crate::http::write_request("GET", path, &[
             ("Host", host),
@@ -94,7 +284,6 @@ impl<S: Read + Write> WsStream<S> {
         ], &mut req_buf);
         stream.write_all(&req_buf[..n])?;
 
-        // Read response
         let mut resp_reader = crate::http::ResponseReader::new(4096);
         let mut tmp = [0u8; 4096];
         loop {
@@ -105,11 +294,9 @@ impl<S: Read + Write> WsStream<S> {
             resp_reader.read(&tmp[..n]).map_err(|_| HandshakeError::MalformedHttp)?;
             match resp_reader.next() {
                 Ok(Some(resp)) => {
-                    // Validate 101
                     if resp.status != 101 {
                         return Err(HandshakeError::UnexpectedStatus(resp.status).into());
                     }
-                    // Validate headers
                     let upgrade = resp.header("Upgrade")
                         .ok_or(HandshakeError::MissingUpgrade)?;
                     if !upgrade.eq_ignore_ascii_case("websocket") {
@@ -126,8 +313,7 @@ impl<S: Read + Write> WsStream<S> {
                         return Err(HandshakeError::InvalidAcceptKey.into());
                     }
 
-                    // Feed any remainder to the frame reader
-                    let mut reader = FrameReader::builder().role(Role::Client).build();
+                    let mut reader = reader_builder.role(Role::Client).build();
                     let remainder = resp_reader.remainder();
                     if !remainder.is_empty() {
                         reader.read(remainder).map_err(|_| HandshakeError::MalformedHttp)?;
@@ -137,6 +323,7 @@ impl<S: Read + Write> WsStream<S> {
                         stream,
                         reader,
                         writer: FrameWriter::new(Role::Client),
+                        write_buf: WriteBuf::new(write_cap, write_headroom),
                     });
                 }
                 Ok(None) => {} // need more bytes
@@ -145,10 +332,12 @@ impl<S: Read + Write> WsStream<S> {
         }
     }
 
-    /// Accept as WebSocket server.
-    ///
-    /// Reads the upgrade request, validates it, sends the 101 response.
-    pub fn accept(mut stream: S) -> Result<Self, WsError> {
+    fn accept_impl(
+        mut stream: S,
+        reader_builder: FrameReaderBuilder,
+        write_cap: usize,
+        write_headroom: usize,
+    ) -> Result<Self, WsError> {
         let mut req_reader = crate::http::RequestReader::new(4096);
         let mut tmp = [0u8; 4096];
 
@@ -161,7 +350,6 @@ impl<S: Read + Write> WsStream<S> {
             req_reader.read(&tmp[..n]).map_err(|_| HandshakeError::MalformedHttp)?;
             match req_reader.next() {
                 Ok(Some(req)) => {
-                    // Validate upgrade request
                     if req.method != "GET" {
                         return Err(HandshakeError::MalformedHttp.into());
                     }
@@ -185,16 +373,14 @@ impl<S: Read + Write> WsStream<S> {
                     ws_key = key.to_owned();
                     break;
                 }
-                Ok(None) => {}
+                Ok(None) => {} // need more bytes
                 Err(_) => return Err(HandshakeError::MalformedHttp.into()),
             }
         }
 
-        // Compute accept key
         let accept = handshake::compute_accept_key(&ws_key);
         let accept_str = std::str::from_utf8(&accept).unwrap();
 
-        // Write 101 response
         let mut resp_buf = [0u8; 256];
         let n = crate::http::write_response(101, "Switching Protocols", &[
             ("Upgrade", "websocket"),
@@ -203,8 +389,7 @@ impl<S: Read + Write> WsStream<S> {
         ], &mut resp_buf);
         stream.write_all(&resp_buf[..n])?;
 
-        // Feed any remainder to frame reader
-        let mut reader = FrameReader::builder().role(Role::Server).build();
+        let mut reader = reader_builder.role(Role::Server).build();
         let remainder = req_reader.remainder();
         if !remainder.is_empty() {
             reader.read(remainder).map_err(|_| HandshakeError::MalformedHttp)?;
@@ -214,97 +399,145 @@ impl<S: Read + Write> WsStream<S> {
             stream,
             reader,
             writer: FrameWriter::new(Role::Server),
+            write_buf: WriteBuf::new(write_cap, write_headroom),
         })
     }
-
-    /// Read the next message. Reads from the socket as needed.
-    ///
-    /// Blocks until a complete message is available or the connection closes.
-    /// Call in a loop to process messages.
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Result<Option<Message<'_>>, WsError> {
-        // Ensure there's data to parse — read from socket if needed.
-        // We do this BEFORE calling next() to avoid the borrow overlap.
-        while !self.has_buffered_frame() {
-            let spare = self.reader.spare();
-            if spare.is_empty() {
-                return Ok(None);
-            }
-            let n = self.stream.read(spare)?;
-            if n == 0 {
-                return Ok(None);
-            }
-            self.reader.filled(n);
-        }
-
-        // Now parse — the Message borrows from self.reader, no more
-        // socket reads needed.
-        Ok(self.reader.next()?)
-    }
-
-    /// Quick check if there's enough data for at least a partial parse.
-    /// This doesn't consume anything — just checks if data is available.
-    fn has_buffered_frame(&self) -> bool {
-        self.reader.buffered() >= 2 // minimum WS frame is 2 bytes
-    }
-
-    /// Send a text message.
-    pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        let mut dst = vec![0u8; self.writer.max_encoded_len(text.len())];
-        let n = self.writer.encode_text(text.as_bytes(), &mut dst);
-        self.stream.write_all(&dst[..n])?;
-        Ok(())
-    }
-
-    /// Send a binary message.
-    pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
-        let mut dst = vec![0u8; self.writer.max_encoded_len(data.len())];
-        let n = self.writer.encode_binary(data, &mut dst);
-        self.stream.write_all(&dst[..n])?;
-        Ok(())
-    }
-
-    /// Send a ping.
-    pub fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
-        let mut dst = vec![0u8; self.writer.max_encoded_len(data.len())];
-        let n = self.writer.encode_ping(data, &mut dst);
-        self.stream.write_all(&dst[..n])?;
-        Ok(())
-    }
-
-    /// Send a pong.
-    pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
-        let mut dst = vec![0u8; self.writer.max_encoded_len(data.len())];
-        let n = self.writer.encode_pong(data, &mut dst);
-        self.stream.write_all(&dst[..n])?;
-        Ok(())
-    }
-
-    /// Initiate close handshake.
-    pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
-        let mut dst = vec![0u8; self.writer.max_encoded_len(2 + reason.len())];
-        let n = self.writer.encode_close(code.as_u16(), reason.as_bytes(), &mut dst);
-        self.stream.write_all(&dst[..n])?;
-        Ok(())
-    }
-
-    /// Access the underlying stream.
-    pub fn stream(&self) -> &S { &self.stream }
-
-    /// Mutable access to the underlying stream.
-    pub fn stream_mut(&mut self) -> &mut S { &mut self.stream }
-
-    /// Access the FrameReader.
-    pub fn reader(&self) -> &FrameReader { &self.reader }
-
-    /// Access the FrameWriter.
-    pub fn writer(&self) -> &FrameWriter { &self.writer }
 }
 
-/// Case-insensitive substring check without allocation.
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     haystack
         .as_bytes()
         .windows(needle.len())
         .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::mask::apply_mask;
+
+    // Helper: build unmasked WS frame
+    fn make_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        let byte0 = if fin { 0x80 } else { 0x00 } | opcode;
+        frame.push(byte0);
+        if payload.len() <= 125 {
+            frame.push(payload.len() as u8);
+        } else if payload.len() <= 65535 {
+            frame.push(126);
+            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            frame.push(127);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Mock stream: delivers one byte at a time (for byte-at-a-time tests).
+    struct ByteAtATimeStream {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl ByteAtATimeStream {
+        fn new(data: Vec<u8>) -> Self { Self { data, pos: 0 } }
+    }
+
+    impl Read for ByteAtATimeStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            buf[0] = self.data[self.pos];
+            self.pos += 1;
+            Ok(1)
+        }
+    }
+
+    impl Write for ByteAtATimeStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { Ok(buf.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    fn ws_from_bytes(data: Vec<u8>) -> WsStream<ByteAtATimeStream> {
+        let mock = ByteAtATimeStream::new(data);
+        let reader = FrameReader::builder().role(Role::Client).build();
+        let writer = FrameWriter::new(Role::Client);
+        WsStream::from_parts(mock, reader, writer)
+    }
+
+    // === Byte-at-a-time delivery (Autobahn 2.6, 5.5, 5.8) ===
+
+    #[test]
+    fn byte_at_a_time_ping() {
+        let frame = make_frame(true, 0x9, &[0x42; 125]);
+        let mut ws = ws_from_bytes(frame);
+        match ws.next().unwrap().unwrap() {
+            Message::Ping(p) => assert_eq!(p.len(), 125),
+            other => panic!("expected Ping, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn byte_at_a_time_text() {
+        let frame = make_frame(true, 0x1, b"Hello");
+        let mut ws = ws_from_bytes(frame);
+        match ws.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn byte_at_a_time_fragmented_text() {
+        let mut data = make_frame(false, 0x1, b"Hel");
+        data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
+        let mut ws = ws_from_bytes(data);
+        match ws.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn byte_at_a_time_fragment_with_ping() {
+        let mut data = make_frame(false, 0x1, b"Hel");
+        data.extend_from_slice(&make_frame(true, 0x9, b"ping"));
+        data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
+        let mut ws = ws_from_bytes(data);
+        // Ping first
+        match ws.next().unwrap().unwrap() {
+            Message::Ping(p) => assert_eq!(p, b"ping"),
+            other => panic!("expected Ping, got {other:?}"),
+        }
+        // Then assembled text
+        match ws.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn byte_at_a_time_close() {
+        let mut payload = vec![];
+        payload.extend_from_slice(&1000u16.to_be_bytes());
+        payload.extend_from_slice(b"bye");
+        let frame = make_frame(true, 0x8, &payload);
+        let mut ws = ws_from_bytes(frame);
+        match ws.next().unwrap().unwrap() {
+            Message::Close(cf) => {
+                assert_eq!(cf.code, CloseCode::Normal);
+                assert_eq!(cf.reason, "bye");
+            }
+            other => panic!("expected Close, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eof_returns_none() {
+        let ws_data = Vec::new(); // empty — immediate EOF
+        let mut ws = ws_from_bytes(ws_data);
+        assert!(ws.next().unwrap().is_none());
+    }
 }

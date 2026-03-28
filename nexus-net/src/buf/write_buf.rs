@@ -109,6 +109,13 @@ impl WriteBuf {
         &self.buf[self.head..self.tail]
     }
 
+    /// Mutable access to outbound data.
+    /// For in-place operations like XOR masking.
+    #[inline]
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[self.head..self.tail]
+    }
+
     /// Consume `n` bytes from front after a partial write.
     ///
     /// # Panics

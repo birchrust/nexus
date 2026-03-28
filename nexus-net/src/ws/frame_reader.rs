@@ -67,6 +67,7 @@ pub struct FrameReader {
 
     assembling: bool,
     assembly_opcode: Option<RawOpcode>,
+    utf8_valid_up_to: usize, // index into msg_buf up to which UTF-8 is validated
 
     role: Role,
     max_frame_size: u64,
@@ -77,6 +78,8 @@ pub struct FrameReader {
     needs_clear: bool,
     // Flag: last completed message used ctrl_buf (control frame during assembly).
     used_ctrl: bool,
+    // Set by poll() when a message is ready but not yet returned.
+    pending_opcode: Option<RawOpcode>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -86,6 +89,7 @@ enum ParseState {
     Payload {
         opcode: RawOpcode,
         fin: bool,
+        use_ctrl: bool, // control frame during assembly → write to ctrl_buf
     },
 }
 
@@ -106,7 +110,7 @@ impl FrameReader {
     #[must_use]
     pub fn builder() -> FrameReaderBuilder {
         FrameReaderBuilder {
-            buffer_capacity: 65_536,
+            buffer_capacity: 1024 * 1024, // 1MB default
             pre_padding: 16,
             post_padding: 4,
             prealloc_capacity: 4096,
@@ -152,13 +156,17 @@ impl FrameReader {
     /// Close). Never returns Continuation.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Message<'_>>, ProtocolError> {
+        // If poll() already prepared a message, return it
+        if let Some(opcode) = self.pending_opcode.take() {
+            self.needs_clear = true;
+            return self.make_message(opcode);
+        }
+
         // Clear buffers from previous message
         if self.needs_clear {
             if self.used_ctrl {
-                // Control frame used ctrl_buf — don't touch msg_buf (assembly in progress)
                 self.ctrl_buf.clear();
             } else {
-                // Data message used msg_buf — clear it
                 self.msg_buf.clear();
                 if self.msg_buf.capacity() > self.compact_threshold {
                     self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
@@ -167,9 +175,6 @@ impl FrameReader {
             self.needs_clear = false;
         }
 
-        // Run the state machine. Returns the opcode of a completed message
-        // or None if more bytes needed. msg_buf is populated by the time
-        // this returns Some.
         let completed = self.pump()?;
 
         match completed {
@@ -187,14 +192,18 @@ impl FrameReader {
         loop {
             let state = self.state;
             match state {
-                ParseState::Payload { opcode, fin } => {
+                ParseState::Payload { opcode, fin, use_ctrl } => {
                     let available = self.buf.len();
                     if available == 0 {
                         return Ok(None);
                     }
 
                     let take = available.min(self.remaining_payload);
-                    self.consume_partial_payload(take);
+                    if use_ctrl {
+                        self.consume_partial_payload_ctrl(take);
+                    } else {
+                        self.consume_partial_payload(take);
+                    }
 
                     if self.remaining_payload == 0 {
                         self.state = ParseState::Head;
@@ -252,18 +261,28 @@ impl FrameReader {
                     }
 
                     // Partial payload
+                    let use_ctrl = parsed.opcode.is_control() && self.assembling;
                     self.remaining_payload = parsed.payload_len;
                     self.mask_key = parsed.mask_key;
                     self.mask_offset = 0;
 
-                        if available > 0 {
+                    if use_ctrl {
+                        self.ctrl_buf.clear();
+                    }
+
+                    if available > 0 {
+                        if use_ctrl {
+                            self.consume_partial_payload_ctrl(available);
+                        } else {
                             self.consume_partial_payload(available);
                         }
+                    }
 
-                        self.state = ParseState::Payload {
-                            opcode: parsed.opcode,
-                            fin: parsed.fin,
-                        };
+                    self.state = ParseState::Payload {
+                        opcode: parsed.opcode,
+                        fin: parsed.fin,
+                        use_ctrl,
+                    };
                     return Ok(None);
                 }
             }
@@ -292,17 +311,31 @@ impl FrameReader {
                 if fin {
                     return Ok(Some(opcode));
                 }
+                // Start assembly
                 self.assembling = true;
                 self.assembly_opcode = Some(opcode);
+                self.utf8_valid_up_to = 0;
+                // Incremental UTF-8 validation on first fragment
+                if opcode == RawOpcode::Text {
+                    let pending = validate_utf8_incremental(&self.msg_buf, false)?;
+                    self.utf8_valid_up_to = self.msg_buf.len() - pending as usize;
+                }
                 Ok(None)
             }
             RawOpcode::Continuation => {
                 if !self.assembling {
                     return Err(ProtocolError::ContinuationWithoutStart);
                 }
+                // Incremental UTF-8 validation for Text assembly
+                if self.assembly_opcode == Some(RawOpcode::Text) {
+                    let to_check = &self.msg_buf[self.utf8_valid_up_to..];
+                    let pending = validate_utf8_incremental(to_check, fin)?;
+                    self.utf8_valid_up_to = self.msg_buf.len() - pending as usize;
+                }
                 if fin {
                     self.assembling = false;
                     let opcode = self.assembly_opcode.take().unwrap();
+                    self.utf8_valid_up_to = 0;
                     return Ok(Some(opcode));
                 }
                 Ok(None)
@@ -323,6 +356,40 @@ impl FrameReader {
         self.buf.len()
     }
 
+    /// Advance the parser without constructing a Message.
+    ///
+    /// Returns `true` if a message is now ready — the next call to
+    /// `next()` will return it immediately. Returns `false` if more
+    /// bytes needed.
+    ///
+    /// Used by `WsStream` to fill bytes until a message is ready,
+    /// then call `next()` exactly once to get the `Message<'_>`.
+    pub(crate) fn poll(&mut self) -> Result<bool, ProtocolError> {
+        if self.pending_opcode.is_some() {
+            return Ok(true); // already have a pending message
+        }
+
+        if self.needs_clear {
+            if self.used_ctrl {
+                self.ctrl_buf.clear();
+            } else {
+                self.msg_buf.clear();
+                if self.msg_buf.capacity() > self.compact_threshold {
+                    self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
+                }
+            }
+            self.needs_clear = false;
+        }
+
+        match self.pump()? {
+            None => Ok(false),
+            Some(opcode) => {
+                self.pending_opcode = Some(opcode);
+                Ok(true)
+            }
+        }
+    }
+
     /// Reset all state.
     pub fn reset(&mut self) {
         self.buf.clear();
@@ -334,8 +401,10 @@ impl FrameReader {
         self.mask_offset = 0;
         self.assembling = false;
         self.assembly_opcode = None;
+        self.utf8_valid_up_to = 0;
         self.needs_clear = false;
         self.used_ctrl = false;
+        self.pending_opcode = None;
     }
 
     // =========================================================================
@@ -455,6 +524,29 @@ impl FrameReader {
         self.buf.advance(payload_len);
     }
 
+    /// Consume partial payload into ctrl_buf (control frame during assembly).
+    fn consume_partial_payload_ctrl(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if let Some(key) = self.mask_key {
+            let data = &mut self.buf.data_mut()[..n];
+            let offset = self.mask_offset as usize;
+            let rotated = [
+                key[offset % 4],
+                key[(offset + 1) % 4],
+                key[(offset + 2) % 4],
+                key[(offset + 3) % 4],
+            ];
+            apply_mask(data, rotated);
+            self.mask_offset = ((offset + n) % 4) as u8;
+        }
+        let data = &self.buf.data()[..n];
+        self.ctrl_buf.extend_from_slice(data);
+        self.buf.advance(n);
+        self.remaining_payload -= n;
+    }
+
     /// Consume partial payload (for frames spanning reads).
     fn consume_partial_payload(&mut self, n: usize) {
         if n == 0 {
@@ -541,6 +633,42 @@ impl std::fmt::Debug for FrameReader {
     }
 }
 
+/// Validate UTF-8 incrementally. Returns the number of trailing bytes
+/// that might be an incomplete codepoint (0-3).
+///
+/// On `is_final=true`, no trailing bytes are allowed — the entire
+/// buffer must be valid UTF-8.
+fn validate_utf8_incremental(
+    data: &[u8],
+    is_final: bool,
+) -> Result<u8, ProtocolError> {
+    if data.is_empty() {
+        return Ok(0);
+    }
+
+    if is_final {
+        std::str::from_utf8(data).map_err(|_| ProtocolError::InvalidUtf8)?;
+        return Ok(0);
+    }
+
+    match std::str::from_utf8(data) {
+        Ok(_) => Ok(0),
+        Err(e) => {
+            let valid_up_to = e.valid_up_to();
+            if e.error_len().is_some() {
+                // Definitively invalid byte sequence
+                return Err(ProtocolError::InvalidUtf8);
+            }
+            // error_len() is None → incomplete sequence at the end
+            let pending = data.len() - valid_up_to;
+            if pending > 3 {
+                return Err(ProtocolError::InvalidUtf8);
+            }
+            Ok(pending as u8)
+        }
+    }
+}
+
 impl FrameReaderBuilder {
     /// ReadBuf capacity. Default: 64KB.
     #[must_use]
@@ -613,11 +741,13 @@ impl FrameReaderBuilder {
             mask_offset: 0,
             assembling: false,
             assembly_opcode: None,
+            utf8_valid_up_to: 0,
             role: self.role,
             max_frame_size: self.max_frame_size,
             max_message_size: self.max_message_size,
             needs_clear: false,
             used_ctrl: false,
+            pending_opcode: None,
         }
     }
 }
@@ -1103,6 +1233,149 @@ mod tests {
                 assert_eq!(available, 16);
             }
             other => panic!("expected BufferFull, got {other:?}"),
+        }
+    }
+
+    // === Autobahn regression tests ===
+
+    /// Autobahn 7.9.4: Close code 1005 must be rejected on the wire.
+    #[test]
+    fn close_code_1005_rejected_on_wire() {
+        let mut r = client_reader();
+        r.read(&make_frame(true, 0x8, &1005u16.to_be_bytes())).unwrap();
+        assert!(matches!(r.next(), Err(ProtocolError::InvalidCloseCode(1005))));
+    }
+
+    /// Autobahn 6.4.1: Invalid UTF-8 split across fragments.
+    #[test]
+    fn invalid_utf8_across_fragments() {
+        let mut r = client_reader();
+        r.read(&make_frame(false, 0x1, b"valid")).unwrap();
+        r.read(&make_frame(true, 0x0, &[0xFF])).unwrap();
+        assert!(matches!(r.next(), Err(ProtocolError::InvalidUtf8)));
+    }
+
+    /// Autobahn 6.4.2: Valid UTF-8 in first fragment, invalid continuation.
+    #[test]
+    fn invalid_utf8_in_continuation() {
+        let mut r = client_reader();
+        r.read(&make_frame(false, 0x1, &[0xCE, 0xBA])).unwrap(); // valid "κ"
+        r.read(&make_frame(false, 0x0, &[0xE1, 0xBD])).unwrap(); // incomplete 3-byte
+        r.read(&make_frame(true, 0x0, &[0xFF])).unwrap(); // invalid continuation byte
+        assert!(matches!(r.next(), Err(ProtocolError::InvalidUtf8)));
+    }
+
+    /// Autobahn 1.1.6: 65535-byte text (16-bit length boundary).
+    #[test]
+    fn text_65535_bytes() {
+        let mut r = FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(128 * 1024)
+            .max_message_size(128 * 1024)
+            .build();
+        let payload = vec![b'x'; 65535];
+        r.read(&make_frame(true, 0x1, &payload)).unwrap();
+        match r.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s.len(), 65535),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    /// Autobahn 1.1.7: 65536-byte text (crosses into 64-bit length encoding).
+    #[test]
+    fn text_65536_bytes() {
+        let mut r = FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(128 * 1024)
+            .max_message_size(128 * 1024)
+            .build();
+        let payload = vec![b'x'; 65536];
+        r.read(&make_frame(true, 0x1, &payload)).unwrap();
+        match r.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s.len(), 65536),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    // === Incremental UTF-8 validation ===
+
+    /// Invalid UTF-8 detected on first non-final Text fragment.
+    #[test]
+    fn invalid_utf8_detected_on_first_fragment() {
+        let mut r = client_reader();
+        r.read(&make_frame(false, 0x1, &[0xFF, 0xFE])).unwrap();
+        assert!(matches!(r.next(), Err(ProtocolError::InvalidUtf8)));
+    }
+
+    /// Invalid UTF-8 detected on continuation (before final).
+    #[test]
+    fn invalid_utf8_detected_mid_assembly() {
+        let mut r = client_reader();
+        r.read(&make_frame(false, 0x1, b"valid")).unwrap();
+        r.read(&make_frame(false, 0x0, &[0xFF])).unwrap();
+        // Should fail immediately, not wait for final fragment
+        assert!(matches!(r.next(), Err(ProtocolError::InvalidUtf8)));
+    }
+
+    /// Multi-byte codepoint split across two fragments is OK.
+    #[test]
+    fn split_codepoint_across_fragments() {
+        let mut r = client_reader();
+        // "é" = [0xC3, 0xA9]
+        r.read(&make_frame(false, 0x1, &[0xC3])).unwrap();
+        r.read(&make_frame(true, 0x0, &[0xA9])).unwrap();
+        match r.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "é"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    /// 4-byte codepoint split 1+3 across fragments.
+    #[test]
+    fn split_4byte_codepoint() {
+        let mut r = client_reader();
+        // U+1F600 (😀) = [0xF0, 0x9F, 0x98, 0x80]
+        r.read(&make_frame(false, 0x1, &[0xF0])).unwrap();
+        r.read(&make_frame(true, 0x0, &[0x9F, 0x98, 0x80])).unwrap();
+        match r.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "😀"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    /// Incomplete codepoint at end of final fragment is invalid.
+    #[test]
+    fn incomplete_codepoint_at_end() {
+        let mut r = client_reader();
+        // Start of 2-byte sequence [0xC3] but message ends
+        r.read(&make_frame(true, 0x1, &[0xC3])).unwrap();
+        assert!(matches!(r.next(), Err(ProtocolError::InvalidUtf8)));
+    }
+
+    /// Binary fragments are NOT UTF-8 validated.
+    #[test]
+    fn binary_fragments_skip_utf8() {
+        let mut r = client_reader();
+        r.read(&make_frame(false, 0x2, &[0xFF, 0xFE])).unwrap();
+        r.read(&make_frame(true, 0x0, &[0xFD])).unwrap();
+        match r.next().unwrap().unwrap() {
+            Message::Binary(b) => assert_eq!(b, &[0xFF, 0xFE, 0xFD]),
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    /// Three fragments with valid UTF-8 split at boundaries.
+    #[test]
+    fn three_fragments_valid_utf8() {
+        let mut r = client_reader();
+        // "Héllo" = [72, 0xC3, 0xA9, 108, 108, 111]
+        // Split: "H" + [0xC3] | [0xA9] + "ll" | "o"
+        r.read(&make_frame(false, 0x1, &[72, 0xC3])).unwrap();
+        r.read(&make_frame(false, 0x0, &[0xA9, 108, 108])).unwrap();
+        r.read(&make_frame(true, 0x0, &[111])).unwrap();
+        match r.next().unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Héllo"),
+            other => panic!("expected Text, got {other:?}"),
         }
     }
 }

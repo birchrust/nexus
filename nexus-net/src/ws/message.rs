@@ -39,7 +39,7 @@ impl CloseCode {
             1001 => Ok(Self::GoingAway),
             1002 => Ok(Self::Protocol),
             1003 => Ok(Self::Unsupported),
-            1005 => Ok(Self::NoStatus),
+            // 1005 is reserved — MUST NOT appear on the wire (RFC 6455 §7.4.1)
             1007 => Ok(Self::InvalidPayload),
             1008 => Ok(Self::PolicyViolation),
             1009 => Ok(Self::MessageTooBig),
@@ -149,7 +149,6 @@ mod tests {
             (1001, CloseCode::GoingAway),
             (1002, CloseCode::Protocol),
             (1003, CloseCode::Unsupported),
-            (1005, CloseCode::NoStatus),
             (1007, CloseCode::InvalidPayload),
             (1008, CloseCode::PolicyViolation),
             (1009, CloseCode::MessageTooBig),
@@ -167,7 +166,7 @@ mod tests {
 
     #[test]
     fn close_code_rejects_invalid() {
-        let invalid = [0, 999, 1004, 1006, 1015, 1016, 2999, 5000, u16::MAX];
+        let invalid = [0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, u16::MAX];
         for code in &invalid {
             assert!(
                 CloseCode::from_u16(*code).is_err(),

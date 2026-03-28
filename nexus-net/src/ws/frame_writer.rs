@@ -1,5 +1,28 @@
 use super::frame::Role;
 
+/// Frame header bytes (stack-allocated, max 14 bytes).
+pub struct FrameHeader {
+    bytes: [u8; 14],
+    len: u8,
+}
+
+impl FrameHeader {
+    /// The header bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// Header length in bytes.
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Whether the header is empty (shouldn't happen in practice).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// WebSocket frame encoder.
 ///
 /// Encodes messages into RFC 6455 wire format. If the role is Client,
@@ -98,6 +121,88 @@ impl FrameWriter {
         dst: &mut [u8],
     ) -> usize {
         self.encode_close(code.as_u16(), reason.as_bytes(), dst)
+    }
+
+    /// Build just the frame header. Returns (header_bytes, length, optional mask_key).
+    ///
+    /// For use with WriteBuf: append payload, apply mask if Some, prepend header.
+    pub fn build_header(&self, byte0: u8, payload_len: usize) -> (FrameHeader, Option<[u8; 4]>) {
+        let mask_bit: u8 = if self.role == Role::Client { 0x80 } else { 0 };
+        let mut hdr = FrameHeader { bytes: [0; 14], len: 0 };
+
+        hdr.bytes[0] = byte0;
+        hdr.len = 1;
+
+        if payload_len <= 125 {
+            hdr.bytes[1] = mask_bit | (payload_len as u8);
+            hdr.len = 2;
+        } else if payload_len <= 65535 {
+            hdr.bytes[1] = mask_bit | 0x7E;
+            hdr.bytes[2..4].copy_from_slice(&(payload_len as u16).to_be_bytes());
+            hdr.len = 4;
+        } else {
+            hdr.bytes[1] = mask_bit | 0x7F;
+            hdr.bytes[2..10].copy_from_slice(&(payload_len as u64).to_be_bytes());
+            hdr.len = 10;
+        }
+
+        let mask_key = if self.role == Role::Client {
+            let mask = generate_mask();
+            hdr.bytes[hdr.len as usize..hdr.len as usize + 4].copy_from_slice(&mask);
+            hdr.len += 4;
+            Some(mask)
+        } else {
+            None
+        };
+
+        (hdr, mask_key)
+    }
+
+    /// Encode a complete frame into a WriteBuf.
+    ///
+    /// Clears the WriteBuf, appends payload, applies mask if client,
+    /// prepends header. Result: contiguous `[header | masked_payload]`.
+    pub fn encode_text_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+        self.encode_into(0x81, payload, dst);
+    }
+
+    /// Encode a binary frame into a WriteBuf.
+    pub fn encode_binary_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+        self.encode_into(0x82, payload, dst);
+    }
+
+    /// Encode a ping frame into a WriteBuf.
+    pub fn encode_ping_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+        self.encode_into(0x89, payload, dst);
+    }
+
+    /// Encode a pong frame into a WriteBuf.
+    pub fn encode_pong_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+        self.encode_into(0x8A, payload, dst);
+    }
+
+    /// Encode a close frame into a WriteBuf.
+    pub fn encode_close_into(&self, code: u16, reason: &[u8], dst: &mut crate::buf::WriteBuf) {
+        let payload_len = 2 + reason.len();
+        assert!(payload_len <= 125, "close payload must be <= 125 bytes");
+        dst.clear();
+        dst.append(&code.to_be_bytes());
+        dst.append(reason);
+        let (hdr, mask_key) = self.build_header(0x88, payload_len);
+        if let Some(mask) = mask_key {
+            super::mask::apply_mask(dst.data_mut(), mask);
+        }
+        dst.prepend(hdr.as_bytes());
+    }
+
+    fn encode_into(&self, byte0: u8, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+        dst.clear();
+        dst.append(payload);
+        let (hdr, mask_key) = self.build_header(byte0, payload.len());
+        if let Some(mask) = mask_key {
+            super::mask::apply_mask(dst.data_mut(), mask);
+        }
+        dst.prepend(hdr.as_bytes());
     }
 
     // =========================================================================

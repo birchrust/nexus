@@ -1,6 +1,6 @@
 //! Autobahn WebSocket conformance test.
 //!
-//! Runs against Autobahn's `fuzzingserver` via Docker.
+//! Runs against Autobahn's `fuzzingserver` via Docker/Podman.
 //!
 //! Prerequisites:
 //!   docker pull crossbario/autobahn-testsuite
@@ -9,47 +9,42 @@
 //!   cargo test -p nexus-net --test autobahn -- --ignored --nocapture
 
 use std::net::TcpStream;
-use nexus_net::ws::{Message, OwnedMessage, WsStream};
+use nexus_net::ws::{
+    CloseCode, Message, OwnedMessage, ProtocolError, WsError, WsStream,
+};
 
 const AUTOBAHN_HOST: &str = "127.0.0.1:9001";
 const AGENT: &str = "nexus-net";
 
-/// Connect to the Autobahn fuzzingserver and run all test cases.
-///
-/// The server must be started separately:
-/// ```bash
-/// docker run -it --rm \
-///     -v "${PWD}/tests/autobahn:/config" \
-///     -v "${PWD}/target/autobahn-reports:/reports" \
-///     -p 9001:9001 \
-///     crossbario/autobahn-testsuite \
-///     wstest -m fuzzingserver -s /config/fuzzingserver.json
-/// ```
+fn make_ws(path: &str) -> WsStream<TcpStream> {
+    let tcp = TcpStream::connect(AUTOBAHN_HOST).expect("connect failed");
+    nexus_net::ws::WsStreamBuilder::new()
+        .buffer_capacity(16 * 1024 * 1024 + 4096) // 16MB + header room
+        .max_frame_size(16 * 1024 * 1024)
+        .max_message_size(16 * 1024 * 1024)
+        .write_buffer_capacity(16 * 1024 * 1024 + 4096) // match read capacity for echo
+        .connect(tcp, AUTOBAHN_HOST, path)
+        .expect("handshake failed")
+}
+
 #[test]
 #[ignore]
 fn autobahn_conformance() {
-    // Get case count
     let case_count = get_case_count();
     println!("Autobahn: {case_count} test cases");
 
-    // Run each case
     for case in 1..=case_count {
         print!("  Case {case}/{case_count}...");
         run_case(case);
         println!(" ok");
     }
 
-    // Request update report
     update_reports();
     println!("Autobahn: reports generated. Check target/autobahn-reports/");
 }
 
 fn get_case_count() -> u32 {
-    let tcp = TcpStream::connect(AUTOBAHN_HOST)
-        .expect("failed to connect to Autobahn server — is it running?");
-    let mut ws = WsStream::connect(tcp, AUTOBAHN_HOST, "/getCaseCount")
-        .expect("handshake failed");
-
+    let mut ws = make_ws("/getCaseCount");
     match ws.next().expect("read failed").expect("no message") {
         Message::Text(s) => s.parse().expect("invalid case count"),
         other => panic!("expected Text, got {other:?}"),
@@ -58,14 +53,20 @@ fn get_case_count() -> u32 {
 
 fn run_case(case: u32) {
     let path = format!("/runCase?case={case}&agent={AGENT}");
-    let tcp = TcpStream::connect(AUTOBAHN_HOST).expect("connect failed");
-    let mut ws = WsStream::connect(tcp, AUTOBAHN_HOST, &path).expect("handshake failed");
+    let mut ws = make_ws(&path);
 
-    // Echo loop: echo back text/binary, respond to pings, handle close
     loop {
         let msg = match ws.next() {
             Ok(Some(msg)) => msg.into_owned(),
             Ok(None) => break,
+            Err(WsError::Protocol(ProtocolError::InvalidUtf8)) => {
+                let _ = ws.close(CloseCode::InvalidPayload, "invalid UTF-8");
+                break;
+            }
+            Err(WsError::Protocol(_)) => {
+                let _ = ws.close(CloseCode::Protocol, "protocol error");
+                break;
+            }
             Err(_) => break,
         };
 
@@ -80,7 +81,7 @@ fn run_case(case: u32) {
                 if ws.send_pong(&p).is_err() { break; }
             }
             OwnedMessage::Close(_) => {
-                let _ = ws.close(nexus_net::ws::CloseCode::Normal, "");
+                let _ = ws.close(CloseCode::Normal, "");
                 break;
             }
             _ => {}
@@ -90,8 +91,6 @@ fn run_case(case: u32) {
 
 fn update_reports() {
     let path = format!("/updateReports?agent={AGENT}");
-    let tcp = TcpStream::connect(AUTOBAHN_HOST).expect("connect failed");
-    let mut ws = WsStream::connect(tcp, AUTOBAHN_HOST, &path).expect("handshake failed");
-    // Server closes after generating reports
+    let mut ws = make_ws(&path);
     let _ = ws.next();
 }
