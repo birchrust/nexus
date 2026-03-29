@@ -559,11 +559,18 @@ impl FrameReader {
             None
         };
 
+        let payload_len = usize::try_from(payload_len).map_err(|_| {
+            ProtocolError::PayloadTooLarge {
+                size: payload_len,
+                max: self.max_frame_size,
+            }
+        })?;
+
         Ok(ParsedHeader {
             fin,
             opcode,
             mask_key,
-            payload_len: payload_len as usize,
+            payload_len,
         })
     }
 
@@ -664,7 +671,7 @@ fn validate_utf8_incremental(
 }
 
 impl FrameReaderBuilder {
-    /// ReadBuf capacity. Default: 64KB.
+    /// ReadBuf capacity. Default: 1MB.
     #[must_use]
     pub fn buffer_capacity(mut self, n: usize) -> Self {
         self.buffer_capacity = n;

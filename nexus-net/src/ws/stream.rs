@@ -26,6 +26,18 @@ pub(crate) struct ParsedUrl<'a> {
     pub path: &'a str,
 }
 
+impl ParsedUrl<'_> {
+    /// Host header value: includes port if non-default.
+    pub fn host_header(&self) -> String {
+        let default = if self.tls { 443 } else { 80 };
+        if self.port == default {
+            self.host.to_string()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+
 pub(crate) fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
     let (tls, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
@@ -278,9 +290,10 @@ impl WsStreamBuilder {
             return Err(WsError::TlsNotEnabled);
         }
 
+        let host_header = parsed.host_header();
         WsStream::connect_impl(
             stream,
-            parsed.host,
+            &host_header,
             parsed.path,
             self.reader_builder,
             self.write_buf_capacity,
@@ -498,7 +511,11 @@ impl<S: Read + Write> WsStream<S> {
     fn read_into_reader(&mut self) -> io::Result<usize> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
-            loop {
+            // TLS may consume records without producing plaintext (e.g.
+            // session tickets after handshake). Retry a bounded number
+            // of times, then return Ok(0) to let the caller's event
+            // loop re-poll rather than spinning.
+            for _ in 0..4 {
                 let tls_n = tls.read_tls_from(&mut self.stream)?;
                 if tls_n == 0 {
                     return Ok(0); // EOF
@@ -511,9 +528,9 @@ impl<S: Read + Write> WsStream<S> {
                 if plaintext_n > 0 {
                     return Ok(plaintext_n);
                 }
-                // TLS records consumed but no plaintext yet (e.g. session
-                // tickets after handshake). Read more TLS data.
             }
+            // No plaintext after retries — let caller re-poll
+            return Ok(0);
         }
 
         #[cfg(not(feature = "tls"))]

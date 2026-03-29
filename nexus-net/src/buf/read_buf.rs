@@ -391,6 +391,45 @@ mod tests {
     }
 
     #[test]
+    fn head_drift_spare_exhaustion() {
+        // Simulate the audit finding: repeated partial drains
+        // where head advances but never equals tail (partial frame
+        // left behind). Verify that spare() eventually reports 0
+        // remaining and the caller can detect it.
+        let mut buf = ReadBuf::with_capacity(32);
+
+        // Fill 20 bytes
+        buf.spare()[..20].copy_from_slice(&[0xAA; 20]);
+        buf.filled(20);
+
+        // Consume 15 — leaves 5 bytes unconsumed, head at 15
+        buf.advance(15);
+        assert_eq!(buf.len(), 5);
+        assert_eq!(buf.remaining(), 12); // 32 - 15(head) - 5(data) = 12? No: remaining = capacity - tail
+        // Actually: remaining = pre_padding + capacity - tail = 0 + 32 - 20 = 12
+        assert_eq!(buf.remaining(), 12);
+
+        // Fill 12 more — tail at 32, head at 15
+        buf.spare()[..12].copy_from_slice(&[0xBB; 12]);
+        buf.filled(12);
+        assert_eq!(buf.remaining(), 0); // full!
+        assert_eq!(buf.len(), 17); // 5 old + 12 new
+
+        // Consume 10 — head at 25, tail at 32
+        buf.advance(10);
+        assert_eq!(buf.len(), 7);
+        assert_eq!(buf.remaining(), 0); // still 0! head drifted, can't reclaim
+
+        // spare() is empty even though 25 bytes of the buffer are consumed
+        assert!(buf.spare().is_empty());
+
+        // Consume the remaining 7 — head == tail, auto-reset triggers
+        buf.advance(7);
+        assert_eq!(buf.len(), 0);
+        assert_eq!(buf.remaining(), 32); // fully reclaimed
+    }
+
+    #[test]
     fn with_padding_smoke() {
         let mut buf = ReadBuf::new(64, 16, 32);
         assert_eq!(buf.buf.len(), 112); // 16 + 64 + 32
