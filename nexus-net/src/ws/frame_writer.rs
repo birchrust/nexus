@@ -1,5 +1,24 @@
 use super::frame::Role;
 
+/// Error from WebSocket frame encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeError {
+    /// Control frame payload exceeds 125 bytes (RFC 6455 §5.5).
+    ControlPayloadTooLarge(usize),
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ControlPayloadTooLarge(n) => {
+                write!(f, "control frame payload too large: {n} bytes (max 125)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
 /// Frame header bytes (stack-allocated, max 14 bytes).
 pub struct FrameHeader {
     bytes: [u8; 14],
@@ -64,35 +83,38 @@ impl FrameWriter {
 
     /// Encode a ping control frame. Returns bytes written.
     ///
-    /// # Panics
-    /// Panics if payload exceeds 125 bytes (RFC 6455 §5.5).
-    pub fn encode_ping(&self, payload: &[u8], dst: &mut [u8]) -> usize {
-        assert!(payload.len() <= 125, "ping payload must be <= 125 bytes");
-        self.encode(0x89, payload, dst) // FIN + Ping
+    /// Returns `Err` if payload exceeds 125 bytes (RFC 6455 §5.5).
+    pub fn encode_ping(&self, payload: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
+        if payload.len() > 125 {
+            return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
+        }
+        Ok(self.encode(0x89, payload, dst)) // FIN + Ping
     }
 
     /// Encode a pong control frame. Returns bytes written.
     ///
-    /// # Panics
-    /// Panics if payload exceeds 125 bytes.
-    pub fn encode_pong(&self, payload: &[u8], dst: &mut [u8]) -> usize {
-        assert!(payload.len() <= 125, "pong payload must be <= 125 bytes");
-        self.encode(0x8A, payload, dst) // FIN + Pong
+    /// Returns `Err` if payload exceeds 125 bytes (RFC 6455 §5.5).
+    pub fn encode_pong(&self, payload: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
+        if payload.len() > 125 {
+            return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
+        }
+        Ok(self.encode(0x8A, payload, dst)) // FIN + Pong
     }
 
     /// Encode a close frame. Returns bytes written.
     ///
-    /// # Panics
-    /// Panics if code + reason exceeds 125 bytes.
-    pub fn encode_close(&self, code: u16, reason: &[u8], dst: &mut [u8]) -> usize {
+    /// Returns `Err` if code + reason exceeds 125 bytes.
+    pub fn encode_close(&self, code: u16, reason: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
         let payload_len = 2 + reason.len();
-        assert!(payload_len <= 125, "close payload must be <= 125 bytes");
+        if payload_len > 125 {
+            return Err(EncodeError::ControlPayloadTooLarge(payload_len));
+        }
 
         let mut close_payload = [0u8; 125];
         close_payload[..2].copy_from_slice(&code.to_be_bytes());
         close_payload[2..payload_len].copy_from_slice(reason);
 
-        self.encode(0x88, &close_payload[..payload_len], dst)
+        Ok(self.encode(0x88, &close_payload[..payload_len], dst))
     }
 
     /// Maximum encoded size for a given payload length.
@@ -129,7 +151,7 @@ impl FrameWriter {
         code: super::message::CloseCode,
         reason: &str,
         dst: &mut [u8],
-    ) -> usize {
+    ) -> Result<usize, EncodeError> {
         assert!(
             code != super::message::CloseCode::NoStatus,
             "CloseCode::NoStatus cannot be sent on the wire — use encode_empty_close()"
@@ -186,19 +208,29 @@ impl FrameWriter {
     }
 
     /// Encode a ping frame into a WriteBuf.
-    pub fn encode_ping_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+    pub fn encode_ping_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) -> Result<(), EncodeError> {
+        if payload.len() > 125 {
+            return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
+        }
         self.encode_into(0x89, payload, dst);
+        Ok(())
     }
 
     /// Encode a pong frame into a WriteBuf.
-    pub fn encode_pong_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+    pub fn encode_pong_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) -> Result<(), EncodeError> {
+        if payload.len() > 125 {
+            return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
+        }
         self.encode_into(0x8A, payload, dst);
+        Ok(())
     }
 
     /// Encode a close frame into a WriteBuf.
-    pub fn encode_close_into(&self, code: u16, reason: &[u8], dst: &mut crate::buf::WriteBuf) {
+    pub fn encode_close_into(&self, code: u16, reason: &[u8], dst: &mut crate::buf::WriteBuf) -> Result<(), EncodeError> {
         let payload_len = 2 + reason.len();
-        assert!(payload_len <= 125, "close payload must be <= 125 bytes");
+        if payload_len > 125 {
+            return Err(EncodeError::ControlPayloadTooLarge(payload_len));
+        }
         dst.clear();
         dst.append(&code.to_be_bytes());
         dst.append(reason);
@@ -207,6 +239,7 @@ impl FrameWriter {
             super::mask::apply_mask(dst.data_mut(), mask);
         }
         dst.prepend(hdr.as_bytes());
+        Ok(())
     }
 
     fn encode_into(&self, byte0: u8, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
@@ -306,7 +339,7 @@ mod tests {
     fn encode_close_server() {
         let writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(9)];
-        let n = writer.encode_close(1000, b"goodbye", &mut dst);
+        let n = writer.encode_close(1000, b"goodbye", &mut dst).unwrap();
         assert_eq!(dst[0], 0x88); // FIN + Close
         assert_eq!(&dst[2..4], &1000u16.to_be_bytes());
         assert_eq!(&dst[4..n], b"goodbye");
@@ -316,7 +349,7 @@ mod tests {
     fn encode_ping_server() {
         let writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(4)];
-        let n = writer.encode_ping(b"ping", &mut dst);
+        let n = writer.encode_ping(b"ping", &mut dst).unwrap();
         assert_eq!(dst[0], 0x89); // FIN + Ping
         assert_eq!(&dst[2..n], b"ping");
     }
@@ -325,7 +358,7 @@ mod tests {
     fn encode_pong_server() {
         let writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(4)];
-        let n = writer.encode_pong(b"pong", &mut dst);
+        let n = writer.encode_pong(b"pong", &mut dst).unwrap();
         assert_eq!(dst[0], 0x8A); // FIN + Pong
         assert_eq!(&dst[2..n], b"pong");
     }
@@ -396,7 +429,7 @@ mod tests {
         use crate::ws::{FrameReader, Message, CloseCode};
         let writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; 64];
-        let n = writer.encode_close_code(CloseCode::Normal, "goodbye", &mut dst);
+        let n = writer.encode_close_code(CloseCode::Normal, "goodbye", &mut dst).unwrap();
 
         let mut reader = FrameReader::builder().role(Role::Client).build();
         reader.read(&dst[..n]).unwrap();
@@ -410,10 +443,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ping payload must be <= 125")]
-    fn ping_too_large() {
+    fn ping_too_large_returns_err() {
         let writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; 256];
-        writer.encode_ping(&[0; 126], &mut dst);
+        assert!(matches!(
+            writer.encode_ping(&[0; 126], &mut dst),
+            Err(super::EncodeError::ControlPayloadTooLarge(126))
+        ));
     }
 }

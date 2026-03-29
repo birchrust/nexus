@@ -369,11 +369,16 @@ impl<S: Read + Write> WsConnecting<S> {
     }
 
     /// Read bytes through TLS or direct.
+    /// Returns Ok(n) for data, Err(WouldBlock) for non-blocking no-data,
+    /// Err(UnexpectedEof) for connection closed during handshake.
     fn read_bytes(&mut self, dst: &mut [u8]) -> Result<usize, WsError> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             return match tls.read_tls_from(&mut *self.stream) {
-                Ok(0) => Ok(0),
+                Ok(0) => Err(WsError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed during TLS handshake",
+                ))),
                 Ok(_) => {
                     tls.process_new_packets()?;
                     tls.read_plaintext(dst).map_err(WsError::Tls)

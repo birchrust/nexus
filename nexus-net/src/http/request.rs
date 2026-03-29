@@ -195,8 +195,17 @@ impl RequestReader {
             return Err(HttpError::HeadTooLarge { max: self.max_head_size });
         }
 
-        let mut headers = vec![httparse::EMPTY_HEADER; self.max_headers];
-        let mut req = httparse::Request::new(&mut headers);
+        // Stack-allocate for the common case (≤ 64 headers).
+        // Fall back to heap for larger max_headers configurations.
+        let mut stack_headers = [httparse::EMPTY_HEADER; 64];
+        let mut heap_headers;
+        let headers: &mut [httparse::Header<'_>] = if self.max_headers <= 64 {
+            &mut stack_headers[..self.max_headers]
+        } else {
+            heap_headers = vec![httparse::EMPTY_HEADER; self.max_headers];
+            &mut heap_headers
+        };
+        let mut req = httparse::Request::new(headers);
 
         match req.parse(data) {
             Ok(httparse::Status::Complete(head_len)) => {

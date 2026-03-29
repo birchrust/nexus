@@ -472,13 +472,13 @@ impl<S: Read + Write> WsStream<S> {
 
     /// Send a ping.
     pub fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.encode_ping_into(data, &mut self.write_buf);
+        self.writer.encode_ping_into(data, &mut self.write_buf).map_err(|e| WsError::Io(io::Error::other(e)))?;
         self.flush_write_buf()
     }
 
     /// Send a pong.
     pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.encode_pong_into(data, &mut self.write_buf);
+        self.writer.encode_pong_into(data, &mut self.write_buf).map_err(|e| WsError::Io(io::Error::other(e)))?;
         self.flush_write_buf()
     }
 
@@ -489,7 +489,7 @@ impl<S: Read + Write> WsStream<S> {
             let n = self.writer.encode_empty_close(&mut dst);
             self.write_raw(&dst[..n])
         } else {
-            self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf);
+            self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf).map_err(|e| WsError::Io(io::Error::other(e)))?;
             self.flush_write_buf()
         }
     }

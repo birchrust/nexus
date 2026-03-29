@@ -5,17 +5,18 @@ Framework-agnostic — works with mio, io_uring, tokio, or raw syscalls.
 
 ## Performance
 
-**5-9x faster than tungstenite** for WebSocket frame parsing.
-**4.6x faster** including TLS decrypt (same rustls backend).
+**7-14x faster than tungstenite** for WebSocket frame parsing.
+**1.5x faster** end-to-end over TLS with JSON deserialization.
 
 | Path | nexus-net | tungstenite | Speedup |
 |------|----------|-------------|---------|
-| ws:// text 128B parse | 45 cycles | 497 cycles | 11x |
-| ws:// binary 128B parse | 41 cycles | 467 cycles | 11x |
-| ws:// throughput (batch) | 36 cycles/msg | 182 cycles/msg | 5x |
-| wss:// decrypt+parse 128B | 723 cycles | 3,336 cycles | 4.6x |
+| ws:// text 128B parse | 38 cycles | 497 cycles | 13x |
+| ws:// binary 128B parse | 34 cycles | 467 cycles | 14x |
+| ws:// throughput (batch) | 26 cycles/msg | 182 cycles/msg | 7x |
+| wss:// 77B JSON quote tick | 185ns, 5.4M/s | 281ns, 3.6M/s | 1.5x |
+| TCP loopback 40B binary | 24ns, 42M/s | 68ns, 15M/s | 2.8x |
 
-At 3GHz: 45 cycles = **15ns per message**. 36 cycles batched = **~83M msg/sec**.
+At 3GHz: 38 cycles = **12.7ns per message**. 26 cycles batched = **~115M msg/sec**.
 
 517/517 Autobahn conformance tests passed (0 failed, 216 unimplemented
 compression — intentionally unsupported).
@@ -52,16 +53,14 @@ nexus-net = { version = "0.1", features = ["full"] }
 ### WebSocket Client (ws://)
 
 ```rust
-use std::net::TcpStream;
 use nexus_net::ws::{WsStream, Message, CloseCode};
 
-let tcp = TcpStream::connect("exchange.com:80")?;
-let mut ws = WsStream::connect(tcp, "ws://exchange.com/ws/v1")?;
+let mut ws = WsStream::connect("ws://exchange.com:80/ws/v1")?;
 
 ws.send_text(r#"{"subscribe":"trades.BTC-USD"}"#)?;
 
 loop {
-    match ws.next()? {
+    match ws.recv()? {
         Some(Message::Text(json)) => process(json),     // &str, zero-copy
         Some(Message::Binary(data)) => process(data),   // &[u8], zero-copy
         Some(Message::Ping(p)) => ws.send_pong(p)?,
@@ -78,27 +77,33 @@ loop {
 ### WebSocket Client (wss://)
 
 ```rust
-use std::net::TcpStream;
+use nexus_net::ws::WsStream;
+
+// TLS detected from wss:// scheme — automatic with system root certs
+let mut ws = WsStream::connect("wss://exchange.com/ws/v1")?;
+
+// Same API — recv(), send_text(), send_binary(), etc.
+```
+
+Or with custom TLS config:
+
+```rust
+use nexus_net::ws::WsStream;
 use nexus_net::tls::TlsConfig;
-use nexus_net::ws::{WsTlsStream, Message};
 
-let tls = TlsConfig::new()?;  // system root certs, TLS 1.2+1.3
-let tcp = TcpStream::connect("exchange.com:443")?;
-let mut ws = WsTlsStream::connect(tcp, &tls, "wss://exchange.com/ws/v1")?;
-
-// Same API from here — next(), send_text(), send_binary(), etc.
+let tls = TlsConfig::builder().tls13_only().build()?;
+let mut ws = WsStream::builder()
+    .tls(&tls)
+    .disable_nagle()
+    .connect("wss://exchange.com/ws/v1")?;
 ```
 
 ### Sans-IO (decoupled from sockets)
 
 ```rust
-use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
+use nexus_net::ws::{self, Message, Role};
 
-let mut reader = FrameReader::builder()
-    .role(Role::Client)
-    .buffer_capacity(256 * 1024)
-    .build();
-let writer = FrameWriter::new(Role::Client);
+let (mut reader, writer) = ws::pair(Role::Client);
 
 // You own the I/O — feed bytes however you want
 reader.read_from(&mut socket)?;
@@ -109,7 +114,7 @@ for _ in 0..8 {
         Some(Message::Text(s)) => handle(s),
         Some(Message::Ping(p)) => {
             let mut dst = [0u8; 131];
-            let n = writer.encode_pong(p, &mut dst);
+            let n = writer.encode_pong(p, &mut dst)?;
             socket.write_all(&dst[..n])?;
         }
         None => break,
@@ -169,16 +174,17 @@ archive.write(&order)?;               // still yours — archive after send
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `tls` | No | TLS support via rustls + aws-lc-rs |
+| `socket-opts` | No | Socket options (SO_RCVBUF, SO_SNDBUF) via socket2 |
 | `full` | No | All features enabled |
 
-Without `tls`: zero TLS-related compile time. The `ws` and `http`
+Without features: zero TLS compile time. The `ws` and `http`
 modules work standalone.
 
 ## Design Decisions
 
 **Zero-copy inbound.** `Message::Text(&str)` borrows from the reader's
 internal buffer. No heap allocation per message. Drop the message,
-call `next()` again.
+call `recv()` again.
 
 **Borrow, don't own.** Send APIs take `&str` / `&[u8]`. You keep
 ownership for archival after send. Works across `.await` points.

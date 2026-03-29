@@ -22,7 +22,7 @@ mod stream;
 pub use error::ProtocolError;
 pub use frame::Role;
 pub use frame_reader::{FrameReader, FrameReaderBuilder, ReadError};
-pub use frame_writer::{FrameHeader, FrameWriter};
+pub use frame_writer::{EncodeError, FrameHeader, FrameWriter};
 pub use handshake::HandshakeError;
 pub use mask::apply_mask;
 pub use message::{CloseCode, CloseFrame, Message, OwnedCloseFrame, OwnedMessage};
