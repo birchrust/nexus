@@ -43,6 +43,15 @@ pub struct WsStream<S> {
 
 impl WsStream<MaybeTls> {
     /// Connect to a WebSocket server. TLS detected from URL scheme.
+    ///
+    /// For `wss://` URLs without a custom TLS config, this loads system
+    /// root certificates on every call (blocking file I/O). For production,
+    /// create a [`TlsConfig`] once at startup and pass it via the builder:
+    ///
+    /// ```ignore
+    /// let tls = TlsConfig::new()?;  // once, at startup
+    /// let ws = WsStream::builder().tls(&tls).connect("wss://...").await?;
+    /// ```
     pub async fn connect(url: &str) -> Result<Self, WsError> {
         WsStreamBuilder::new().connect(url).await
     }

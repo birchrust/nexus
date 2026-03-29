@@ -1,0 +1,92 @@
+use std::fmt;
+
+use crate::http::HttpError;
+
+/// REST client error.
+#[derive(Debug)]
+pub enum RestError {
+    /// I/O error.
+    Io(std::io::Error),
+    /// HTTP protocol error.
+    Http(HttpError),
+    /// Response body exceeds max size.
+    BodyTooLarge { size: usize, max: usize },
+    /// Request exceeds WriteBuf capacity.
+    RequestTooLarge { capacity: usize },
+    /// Server sent chunked transfer encoding (not supported).
+    ChunkedNotSupported,
+    /// Header name/value or query parameter contains CR/LF bytes.
+    CrlfInjection,
+    /// Connection is poisoned after an I/O error mid-response.
+    ConnectionPoisoned,
+    /// Connection closed before response complete.
+    ConnectionClosed,
+    /// Invalid URL.
+    InvalidUrl(String),
+    /// `https://` URL used without the `tls` feature enabled.
+    TlsNotEnabled,
+    /// TLS error.
+    #[cfg(feature = "tls")]
+    Tls(crate::tls::TlsError),
+}
+
+impl fmt::Display for RestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Http(e) => write!(f, "HTTP error: {e}"),
+            Self::BodyTooLarge { size, max } => {
+                write!(f, "response body too large: {size} bytes (max: {max})")
+            }
+            Self::RequestTooLarge { capacity } => {
+                write!(f, "request exceeds write buffer capacity ({capacity} bytes)")
+            }
+            Self::ChunkedNotSupported => {
+                write!(f, "chunked transfer encoding not supported")
+            }
+            Self::CrlfInjection => {
+                write!(f, "header or query parameter contains CR/LF")
+            }
+            Self::ConnectionPoisoned => write!(f, "connection poisoned after I/O error"),
+            Self::TlsNotEnabled => write!(f, "https:// requires the `tls` feature"),
+            Self::ConnectionClosed => write!(f, "connection closed"),
+            Self::InvalidUrl(u) => write!(f, "invalid URL: {u}"),
+            #[cfg(feature = "tls")]
+            Self::Tls(e) => write!(f, "TLS error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Http(e) => Some(e),
+            #[cfg(feature = "tls")]
+            Self::Tls(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for RestError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<HttpError> for RestError {
+    fn from(e: HttpError) -> Self {
+        Self::Http(e)
+    }
+}
+
+#[cfg(feature = "tls")]
+impl From<crate::tls::TlsError> for RestError {
+    fn from(e: crate::tls::TlsError) -> Self {
+        match e {
+            crate::tls::TlsError::Io(io) => Self::Io(io),
+            other => Self::Tls(other),
+        }
+    }
+}

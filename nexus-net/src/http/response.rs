@@ -93,6 +93,9 @@ pub struct ResponseReader {
     reason_start: usize,
     reason_end: usize,
     version: u8,
+    // Cached during try_parse to avoid post-parse header scans.
+    cached_content_length: Option<Result<usize, ()>>,
+    cached_is_chunked: bool,
 }
 
 impl ResponseReader {
@@ -104,11 +107,13 @@ impl ResponseReader {
             max_headers: 64,
             max_head_size: 8192,
             head_len: None,
-            header_offsets: Vec::new(),
+            header_offsets: Vec::with_capacity(16),
             status: 0,
             reason_start: 0,
             reason_end: 0,
             version: 1,
+            cached_content_length: None,
+            cached_is_chunked: false,
         }
     }
 
@@ -130,14 +135,58 @@ impl ResponseReader {
     pub fn read(&mut self, src: &[u8]) -> Result<(), HttpError> {
         let spare = self.buf.spare();
         if src.len() > spare.len() {
-            return Err(HttpError::BufferFull {
-                needed: src.len(),
-                available: spare.len(),
-            });
+            self.buf.compact();
+            let spare = self.buf.spare();
+            if src.len() > spare.len() {
+                return Err(HttpError::BufferFull {
+                    needed: src.len(),
+                    available: spare.len(),
+                });
+            }
         }
+        let spare = self.buf.spare();
         spare[..src.len()].copy_from_slice(src);
         self.buf.filled(src.len());
         Ok(())
+    }
+
+    /// Read bytes from a source directly into the internal buffer.
+    ///
+    /// Returns bytes read, or 0 on EOF.
+    pub fn read_from<R: std::io::Read>(&mut self, src: &mut R) -> std::io::Result<usize> {
+        let spare = self.buf.spare();
+        if spare.is_empty() {
+            self.buf.compact();
+        }
+        let spare = self.buf.spare();
+        if spare.is_empty() {
+            return Ok(0);
+        }
+        let n = src.read(spare)?;
+        self.buf.filled(n);
+        Ok(n)
+    }
+
+    /// Bytes of data buffered beyond the parsed headers (body bytes).
+    /// Available after `next()` returns `Some`.
+    pub fn body_remaining(&self) -> usize {
+        self.head_len
+            .map_or(0, |n| self.buf.data().len().saturating_sub(n))
+    }
+
+    /// Look up a parsed response header by name (case-insensitive).
+    ///
+    /// Returns `None` if headers haven't been parsed yet or the header
+    /// is not found. Only valid after `next()` returns `Some`.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.head_len?;
+        let data = self.buf.data();
+        for &(ns, nl, vs, vl) in &self.header_offsets {
+            if data[ns..ns + nl].eq_ignore_ascii_case(name.as_bytes()) {
+                return std::str::from_utf8(&data[vs..vs + vl]).ok();
+            }
+        }
+        None
     }
 
     /// Parse the next response.
@@ -172,11 +221,58 @@ impl ResponseReader {
         }
     }
 
-    /// Reset for a new response.
+    /// HTTP status code from parsed headers.
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Number of parsed headers.
+    pub fn header_count(&self) -> usize {
+        self.header_offsets.len()
+    }
+
+    /// Cached Content-Length from parsed headers.
+    /// `None` = header absent, `Some(Ok(n))` = valid, `Some(Err(()))` = present but malformed.
+    pub fn content_length(&self) -> Option<Result<usize, ()>> {
+        self.cached_content_length
+    }
+
+    /// Whether Transfer-Encoding includes "chunked" (cached from parse).
+    pub fn is_chunked(&self) -> bool {
+        self.cached_is_chunked
+    }
+
+    /// Advance past a consumed response (headers + body), preserving
+    /// any pipelined bytes from the next response.
+    ///
+    /// Uses the cached content_length from the parsed headers. For
+    /// bodyless responses (1xx/204/304), pass 0 via `consume_with_body_len`.
+    pub fn consume_response(&mut self) {
+        if let Some(head_len) = self.head_len {
+            let body_len = self
+                .cached_content_length
+                .and_then(Result::ok)
+                .unwrap_or(0);
+            let consumed = head_len + body_len;
+            if consumed <= self.buf.data().len() {
+                self.buf.advance(consumed);
+            } else {
+                self.buf.clear();
+            }
+        }
+        self.head_len = None;
+        self.header_offsets.clear();
+        self.cached_content_length = None;
+        self.cached_is_chunked = false;
+    }
+
+    /// Reset for a new response. Discards all buffered data.
     pub fn reset(&mut self) {
         self.buf.clear();
         self.head_len = None;
         self.header_offsets.clear();
+        self.cached_content_length = None;
+        self.cached_is_chunked = false;
     }
 
     fn try_parse(&mut self) -> Result<(), HttpError> {
@@ -214,13 +310,35 @@ impl ResponseReader {
                 self.version = version;
 
                 self.header_offsets.clear();
+                self.cached_content_length = None;
+                self.cached_is_chunked = false;
+
                 for h in resp.headers.iter() {
                     // SAFETY: header name/value pointers are within data (same allocation).
                     let ns = unsafe { h.name.as_ptr().offset_from(data_ptr) } as usize;
                     let nl = h.name.len();
                     let vs = unsafe { h.value.as_ptr().offset_from(data_ptr) } as usize;
                     let vl = h.value.len();
+                    debug_assert!(ns + nl <= data.len(), "header name offset out of bounds");
+                    debug_assert!(vs + vl <= data.len(), "header value offset out of bounds");
                     self.header_offsets.push((ns, nl, vs, vl));
+
+                    // Cache Content-Length and Transfer-Encoding during parse
+                    // to avoid post-parse linear scans.
+                    if h.name.eq_ignore_ascii_case("Content-Length") {
+                        self.cached_content_length = Some(
+                            std::str::from_utf8(h.value)
+                                .ok()
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                                .ok_or(()),
+                        );
+                    } else if h.name.eq_ignore_ascii_case("Transfer-Encoding") {
+                        if let Ok(te) = std::str::from_utf8(h.value) {
+                            self.cached_is_chunked = te
+                                .split(',')
+                                .any(|t| t.trim().eq_ignore_ascii_case("chunked"));
+                        }
+                    }
                 }
 
                 self.head_len = Some(head_len);
