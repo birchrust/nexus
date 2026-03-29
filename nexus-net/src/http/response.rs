@@ -14,7 +14,10 @@ pub struct Response<'a> {
 }
 
 impl<'a> Response<'a> {
-    /// Look up a header by name (case-insensitive).
+    /// Look up a header value by name (case-insensitive).
+    ///
+    /// Returns `None` if the header is not found or if the value is not valid UTF-8.
+    /// Use [`header_bytes`](Self::header_bytes) for raw access to non-UTF-8 values.
     pub fn header(&self, name: &str) -> Option<&'a str> {
         for &(ns, nl, vs, vl) in self.header_offsets {
             let hname = &self.data[ns..ns + nl];
@@ -25,7 +28,23 @@ impl<'a> Response<'a> {
         None
     }
 
+    /// Look up a raw header value by name (case-insensitive).
+    ///
+    /// Returns the value as raw bytes without UTF-8 validation.
+    pub fn header_bytes(&self, name: &str) -> Option<&'a [u8]> {
+        for &(ns, nl, vs, vl) in self.header_offsets {
+            let hname = &self.data[ns..ns + nl];
+            if hname.eq_ignore_ascii_case(name.as_bytes()) {
+                return Some(&self.data[vs..vs + vl]);
+            }
+        }
+        None
+    }
+
     /// Iterate over headers as (name, value) pairs.
+    ///
+    /// Skips headers with non-UTF-8 names or values.
+    /// Use [`header_count`](Self::header_count) for the total count including non-UTF-8.
     pub fn headers(&self) -> impl Iterator<Item = (&'a str, &'a str)> {
         self.header_offsets.iter().filter_map(|&(ns, nl, vs, vl)| {
             let name = std::str::from_utf8(&self.data[ns..ns + nl]).ok()?;
@@ -34,7 +53,7 @@ impl<'a> Response<'a> {
         })
     }
 
-    /// Number of headers.
+    /// Number of parsed headers (including non-UTF-8).
     pub fn header_count(&self) -> usize {
         self.header_offsets.len()
     }
@@ -205,72 +224,113 @@ impl ResponseReader {
     }
 }
 
-fn copy_to(dst: &mut [u8], offset: usize, src: &[u8]) -> usize {
-    dst[offset..offset + src.len()].copy_from_slice(src);
-    src.len()
+/// Validate that a header name or value contains no CRLF characters.
+fn validate_header_value(s: &str) -> Result<(), super::error::HttpError> {
+    if s.bytes().any(|b| b == b'\r' || b == b'\n') {
+        return Err(super::error::HttpError::InvalidHeaderValue);
+    }
+    Ok(())
 }
 
-fn write_u16(dst: &mut [u8], offset: usize, val: u16) -> usize {
-    if val >= 100 {
-        dst[offset] = (val / 100) as u8 + b'0';
-        dst[offset + 1] = ((val / 10) % 10) as u8 + b'0';
-        dst[offset + 2] = (val % 10) as u8 + b'0';
-        3
-    } else if val >= 10 {
-        dst[offset] = (val / 10) as u8 + b'0';
-        dst[offset + 1] = (val % 10) as u8 + b'0';
-        2
-    } else {
-        dst[offset] = val as u8 + b'0';
-        1
+fn copy_to(dst: &mut [u8], offset: usize, src: &[u8]) -> Result<usize, super::error::HttpError> {
+    let end = offset + src.len();
+    if end > dst.len() {
+        return Err(super::error::HttpError::BufferTooSmall {
+            needed: end,
+            available: dst.len(),
+        });
     }
+    dst[offset..end].copy_from_slice(src);
+    Ok(src.len())
+}
+
+fn write_u16(dst: &mut [u8], offset: usize, val: u16) -> Result<usize, super::error::HttpError> {
+    debug_assert!(val >= 100 && val <= 999, "HTTP status must be 3 digits: {val}");
+    if offset + 3 > dst.len() {
+        return Err(super::error::HttpError::BufferTooSmall {
+            needed: offset + 3,
+            available: dst.len(),
+        });
+    }
+    dst[offset] = (val / 100) as u8 + b'0';
+    dst[offset + 1] = ((val / 10) % 10) as u8 + b'0';
+    dst[offset + 2] = (val % 10) as u8 + b'0';
+    Ok(3)
+}
+
+/// Compute the exact size needed for a request.
+#[must_use]
+pub fn request_size(method: &str, path: &str, headers: &[(&str, &str)]) -> usize {
+    let mut size = method.len() + 1 + path.len() + 11; // " HTTP/1.1\r\n"
+    for &(name, value) in headers {
+        size += name.len() + 2 + value.len() + 2; // ": " + "\r\n"
+    }
+    size + 2 // final "\r\n"
+}
+
+/// Compute the exact size needed for a response.
+#[must_use]
+pub fn response_size(reason: &str, headers: &[(&str, &str)]) -> usize {
+    let mut size = 9 + 3 + 1 + reason.len() + 2; // "HTTP/1.1 " + status + " " + reason + "\r\n"
+    for &(name, value) in headers {
+        size += name.len() + 2 + value.len() + 2;
+    }
+    size + 2
 }
 
 /// Write an HTTP/1.1 request into a byte buffer. Returns bytes written.
-/// Zero allocation — writes directly into `dst`.
+///
+/// Returns `HttpError::BufferTooSmall` if `dst` is undersized.
+/// Use [`request_size`] to compute the exact size needed.
 pub fn write_request(
     method: &str,
     path: &str,
     headers: &[(&str, &str)],
     dst: &mut [u8],
-) -> usize {
+) -> Result<usize, super::error::HttpError> {
     let mut offset = 0;
-    offset += copy_to(dst, offset, method.as_bytes());
-    offset += copy_to(dst, offset, b" ");
-    offset += copy_to(dst, offset, path.as_bytes());
-    offset += copy_to(dst, offset, b" HTTP/1.1\r\n");
+    offset += copy_to(dst, offset, method.as_bytes())?;
+    offset += copy_to(dst, offset, b" ")?;
+    offset += copy_to(dst, offset, path.as_bytes())?;
+    offset += copy_to(dst, offset, b" HTTP/1.1\r\n")?;
     for &(name, value) in headers {
-        offset += copy_to(dst, offset, name.as_bytes());
-        offset += copy_to(dst, offset, b": ");
-        offset += copy_to(dst, offset, value.as_bytes());
-        offset += copy_to(dst, offset, b"\r\n");
+        validate_header_value(name)?;
+        validate_header_value(value)?;
+        offset += copy_to(dst, offset, name.as_bytes())?;
+        offset += copy_to(dst, offset, b": ")?;
+        offset += copy_to(dst, offset, value.as_bytes())?;
+        offset += copy_to(dst, offset, b"\r\n")?;
     }
-    offset += copy_to(dst, offset, b"\r\n");
-    offset
+    offset += copy_to(dst, offset, b"\r\n")?;
+    Ok(offset)
 }
 
 /// Write an HTTP/1.1 response into a byte buffer. Returns bytes written.
-/// Zero allocation — writes directly into `dst`.
+///
+/// Returns `HttpError::BufferTooSmall` if `dst` is undersized.
+/// Use [`response_size`] to compute the exact size needed.
 pub fn write_response(
     status: u16,
     reason: &str,
     headers: &[(&str, &str)],
     dst: &mut [u8],
-) -> usize {
+) -> Result<usize, super::error::HttpError> {
     let mut offset = 0;
-    offset += copy_to(dst, offset, b"HTTP/1.1 ");
-    offset += write_u16(dst, offset, status);
-    offset += copy_to(dst, offset, b" ");
-    offset += copy_to(dst, offset, reason.as_bytes());
-    offset += copy_to(dst, offset, b"\r\n");
+    offset += copy_to(dst, offset, b"HTTP/1.1 ")?;
+    offset += write_u16(dst, offset, status)?;
+    offset += copy_to(dst, offset, b" ")?;
+    offset += copy_to(dst, offset, reason.as_bytes())?;
+    offset += copy_to(dst, offset, b"\r\n")?;
     for &(name, value) in headers {
-        offset += copy_to(dst, offset, name.as_bytes());
-        offset += copy_to(dst, offset, b": ");
-        offset += copy_to(dst, offset, value.as_bytes());
-        offset += copy_to(dst, offset, b"\r\n");
+        validate_header_value(name)?;
+        validate_header_value(value)?;
+        offset += copy_to(dst, offset, name.as_bytes())?;
+        offset += copy_to(dst, offset, b": ")?;
+        offset += copy_to(dst, offset, value.as_bytes())?;
+        offset += copy_to(dst, offset, b"\r\n")?;
     }
-    offset += copy_to(dst, offset, b"\r\n");
-    offset
+    offset += copy_to(dst, offset, b"\r\n")?;
+    Ok(offset)
 }
 
 #[cfg(test)]
@@ -325,7 +385,7 @@ mod tests {
         let n = write_request("GET", "/ws", &[
             ("Host", "localhost:8080"),
             ("Upgrade", "websocket"),
-        ], &mut dst);
+        ], &mut dst).unwrap();
 
         let mut r = RequestReader::new(4096);
         r.read(&dst[..n]).unwrap();
@@ -341,7 +401,7 @@ mod tests {
         let n = write_response(101, "Switching Protocols", &[
             ("Upgrade", "websocket"),
             ("Connection", "Upgrade"),
-        ], &mut dst);
+        ], &mut dst).unwrap();
 
         let mut r = ResponseReader::new(4096);
         r.read(&dst[..n]).unwrap();

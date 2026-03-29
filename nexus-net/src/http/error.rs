@@ -9,6 +9,10 @@ pub enum HttpError {
     HeadTooLarge { max: usize },
     /// Read buffer full.
     BufferFull { needed: usize, available: usize },
+    /// Write buffer too small for the HTTP message.
+    BufferTooSmall { needed: usize, available: usize },
+    /// Header name or value contains invalid characters (CR/LF).
+    InvalidHeaderValue,
 }
 
 impl std::fmt::Display for HttpError {
@@ -19,6 +23,12 @@ impl std::fmt::Display for HttpError {
             Self::HeadTooLarge { max } => write!(f, "HTTP head exceeds {max} bytes"),
             Self::BufferFull { needed, available } => {
                 write!(f, "buffer full: need {needed}, {available} available")
+            }
+            Self::BufferTooSmall { needed, available } => {
+                write!(f, "write buffer too small: need {needed} bytes, have {available}")
+            }
+            Self::InvalidHeaderValue => {
+                write!(f, "header name or value contains CR/LF")
             }
         }
     }

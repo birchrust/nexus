@@ -231,7 +231,12 @@ impl<S: Read + Write> WsConnecting<S> {
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
                             Err(e) => return Err(e.into()),
                         };
-                        if n == 0 { return Ok(None); }
+                        if n == 0 {
+                            return Err(WsError::Io(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "write returned 0 during handshake",
+                            )));
+                        }
                         self.req_offset += n;
                         if self.req_offset >= self.req_buf.len() {
                             self.state = ConnectState::HttpRecv;
@@ -282,7 +287,7 @@ impl<S: Read + Write> WsConnecting<S> {
                     }
                 }
                 ConnectState::Done => {
-                    return Ok(Some(self.finish()));
+                    return Ok(Some(self.finish()?));
                 }
             }
         }
@@ -316,19 +321,22 @@ impl<S: Read + Write> WsConnecting<S> {
 
     fn prepare_http_request(&mut self, path: &str) {
         let key_str = std::str::from_utf8(&self.ws_key).unwrap();
-        let mut buf = [0u8; 512];
-        let n = crate::http::write_request("GET", path, &[
-            ("Host", &self.host),
+        let headers = [
+            ("Host", self.host.as_str()),
             ("Upgrade", "websocket"),
             ("Connection", "Upgrade"),
             ("Sec-WebSocket-Key", key_str),
             ("Sec-WebSocket-Version", "13"),
-        ], &mut buf);
+        ];
+        let size = crate::http::request_size("GET", path, &headers);
+        let mut buf = vec![0u8; size];
+        // unwrap is safe: buffer is exactly the right size
+        let n = crate::http::write_request("GET", path, &headers, &mut buf).unwrap();
         self.req_buf = buf[..n].to_vec();
         self.req_offset = 0;
     }
 
-    fn finish(&mut self) -> WsStream<S> {
+    fn finish(&mut self) -> Result<WsStream<S>, WsError> {
         self.finished = true;
 
         let reader_builder = std::mem::replace(
@@ -338,7 +346,8 @@ impl<S: Read + Write> WsConnecting<S> {
         let mut reader = reader_builder.role(Role::Client).build();
         let remainder = self.resp_reader.remainder();
         if !remainder.is_empty() {
-            let _ = reader.read(remainder);
+            reader.read(remainder)
+                .map_err(|_| WsError::Handshake(HandshakeError::MalformedHttp))?;
         }
 
         // SAFETY: stream is ManuallyDrop. We take ownership here.
@@ -349,14 +358,14 @@ impl<S: Read + Write> WsConnecting<S> {
         #[cfg(feature = "tls")]
         let tls = self.tls.take();
 
-        WsStream::from_parts_internal(
+        Ok(WsStream::from_parts_internal(
             stream,
             #[cfg(feature = "tls")]
             tls,
             reader,
             FrameWriter::new(Role::Client),
             WriteBuf::new(self.write_buf_capacity, self.write_buf_headroom),
-        )
+        ))
     }
 
     /// Read bytes through TLS or direct.

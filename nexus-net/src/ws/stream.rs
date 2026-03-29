@@ -512,10 +512,14 @@ impl<S: Read + Write> WsStream<S> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             // TLS may consume records without producing plaintext (e.g.
-            // session tickets after handshake). Retry a bounded number
-            // of times, then return Ok(0) to let the caller's event
-            // loop re-poll rather than spinning.
-            for _ in 0..4 {
+            // session tickets after handshake, key updates). Loop until
+            // we get plaintext or EOF.
+            //
+            // On blocking sockets: read_tls_from blocks until data
+            // arrives, so this can't spin.
+            // On non-blocking sockets: read_tls_from returns WouldBlock
+            // which propagates via `?`, breaking the loop.
+            loop {
                 let tls_n = tls.read_tls_from(&mut self.stream)?;
                 if tls_n == 0 {
                     return Ok(0); // EOF
@@ -528,9 +532,9 @@ impl<S: Read + Write> WsStream<S> {
                 if plaintext_n > 0 {
                     return Ok(plaintext_n);
                 }
+                // No plaintext produced — TLS consumed a non-application
+                // record (session ticket, key update). Loop to read more.
             }
-            // No plaintext after retries — let caller re-poll
-            return Ok(0);
         }
 
         #[cfg(not(feature = "tls"))]
@@ -600,14 +604,17 @@ impl<S: Read + Write> WsStream<S> {
         let key = handshake::generate_key();
         let key_str = std::str::from_utf8(&key).unwrap();
 
-        let mut req_buf = [0u8; 512];
-        let n = crate::http::write_request("GET", path, &[
+        let headers = [
             ("Host", host),
             ("Upgrade", "websocket"),
             ("Connection", "Upgrade"),
             ("Sec-WebSocket-Key", key_str),
             ("Sec-WebSocket-Version", "13"),
-        ], &mut req_buf);
+        ];
+        let req_size = crate::http::request_size("GET", path, &headers);
+        let mut req_buf = vec![0u8; req_size];
+        let n = crate::http::write_request("GET", path, &headers, &mut req_buf)
+            .map_err(|_| HandshakeError::MalformedHttp)?;
 
         // Write HTTP request (through TLS if present)
         #[cfg(feature = "tls")]
@@ -627,12 +634,24 @@ impl<S: Read + Write> WsStream<S> {
         loop {
             #[cfg(feature = "tls")]
             let bytes_read = if let Some(tls) = &mut tls {
-                tls.read_tls_from(&mut stream)?;
-                tls.process_new_packets()?;
-                match tls.read_plaintext(&mut tmp) {
-                    Ok(n) => n,
-                    Err(e) => return Err(WsError::Tls(e)),
+                // TLS may consume records without producing plaintext
+                // (e.g. session tickets after handshake). Retry bounded.
+                let mut plaintext_n = 0;
+                for _ in 0..4 {
+                    let tls_n = tls.read_tls_from(&mut stream)?;
+                    if tls_n == 0 {
+                        break; // EOF
+                    }
+                    tls.process_new_packets()?;
+                    plaintext_n = match tls.read_plaintext(&mut tmp) {
+                        Ok(n) => n,
+                        Err(e) => return Err(WsError::Tls(e)),
+                    };
+                    if plaintext_n > 0 {
+                        break;
+                    }
                 }
+                plaintext_n
             } else {
                 stream.read(&mut tmp)?
             };
@@ -736,12 +755,15 @@ impl<S: Read + Write> WsStream<S> {
         let accept = handshake::compute_accept_key(&ws_key);
         let accept_str = std::str::from_utf8(&accept).unwrap();
 
-        let mut resp_buf = [0u8; 256];
-        let n = crate::http::write_response(101, "Switching Protocols", &[
+        let resp_headers = [
             ("Upgrade", "websocket"),
             ("Connection", "Upgrade"),
             ("Sec-WebSocket-Accept", accept_str),
-        ], &mut resp_buf);
+        ];
+        let resp_size = crate::http::response_size("Switching Protocols", &resp_headers);
+        let mut resp_buf = vec![0u8; resp_size];
+        let n = crate::http::write_response(101, "Switching Protocols", &resp_headers, &mut resp_buf)
+            .map_err(|_| HandshakeError::MalformedHttp)?;
         stream.write_all(&resp_buf[..n])?;
 
         let mut reader = reader_builder.role(Role::Server).build();

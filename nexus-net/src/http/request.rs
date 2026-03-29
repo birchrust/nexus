@@ -14,7 +14,10 @@ pub struct Request<'a> {
 }
 
 impl<'a> Request<'a> {
-    /// Look up a header by name (case-insensitive).
+    /// Look up a header value by name (case-insensitive).
+    ///
+    /// Returns `None` if the header is not found or if the value is not valid UTF-8.
+    /// Use [`header_bytes`](Self::header_bytes) for raw access to non-UTF-8 values.
     pub fn header(&self, name: &str) -> Option<&'a str> {
         for &(ns, nl, vs, vl) in self.header_offsets {
             let hname = &self.data[ns..ns + nl];
@@ -25,7 +28,23 @@ impl<'a> Request<'a> {
         None
     }
 
+    /// Look up a raw header value by name (case-insensitive).
+    ///
+    /// Returns the value as raw bytes without UTF-8 validation.
+    pub fn header_bytes(&self, name: &str) -> Option<&'a [u8]> {
+        for &(ns, nl, vs, vl) in self.header_offsets {
+            let hname = &self.data[ns..ns + nl];
+            if hname.eq_ignore_ascii_case(name.as_bytes()) {
+                return Some(&self.data[vs..vs + vl]);
+            }
+        }
+        None
+    }
+
     /// Iterate over headers as (name, value) pairs.
+    ///
+    /// Skips headers with non-UTF-8 names or values.
+    /// Use [`header_count`](Self::header_count) for the total count including non-UTF-8.
     pub fn headers(&self) -> impl Iterator<Item = (&'a str, &'a str)> {
         self.header_offsets.iter().filter_map(|&(ns, nl, vs, vl)| {
             let name = std::str::from_utf8(&self.data[ns..ns + nl]).ok()?;
@@ -34,7 +53,7 @@ impl<'a> Request<'a> {
         })
     }
 
-    /// Number of headers.
+    /// Number of parsed headers (including non-UTF-8).
     pub fn header_count(&self) -> usize {
         self.header_offsets.len()
     }

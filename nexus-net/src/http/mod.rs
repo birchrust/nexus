@@ -13,4 +13,4 @@ mod response;
 
 pub use error::HttpError;
 pub use request::{Request, RequestReader};
-pub use response::{Response, ResponseReader, write_request, write_response};
+pub use response::{Response, ResponseReader, write_request, write_response, request_size, response_size};

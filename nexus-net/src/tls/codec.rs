@@ -87,12 +87,26 @@ impl TlsCodec {
     pub fn process_into(&mut self, reader: &mut FrameReader) -> Result<usize, TlsError> {
         self.inner.process_new_packets()?;
 
+        // Use BufRead::fill_buf to avoid ChunkVecBuffer::read overhead.
+        // fill_buf returns a reference to buffered plaintext — one fewer
+        // copy than Read::read which copies into an intermediate buffer.
         let mut rd = self.inner.reader();
-        match reader.read_from(&mut rd) {
-            Ok(n) => Ok(n),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(0),
-            Err(e) => Err(TlsError::Io(e)),
+        let chunk = match std::io::BufRead::fill_buf(&mut rd) {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(0),
+            Err(e) => return Err(TlsError::Io(e)),
+        };
+        if chunk.is_empty() {
+            return Ok(0);
         }
+        let n = chunk.len();
+        if let Err(e) = reader.read(chunk) {
+            return Err(TlsError::Io(io::Error::other(
+                format!("FrameReader buffer full: {e}"),
+            )));
+        }
+        std::io::BufRead::consume(&mut rd, n);
+        Ok(n)
     }
 
     /// Read decrypted plaintext into a buffer (sans-IO path).

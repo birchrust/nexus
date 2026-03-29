@@ -121,6 +121,8 @@ impl FrameWriter {
     /// Encode a close frame with structured [`CloseCode`](super::CloseCode) and UTF-8 reason.
     ///
     /// # Panics
+    /// Panics if `code` is `CloseCode::NoStatus` (RFC 6455 reserves 1005
+    /// from appearing on the wire — use [`encode_empty_close`](Self::encode_empty_close)).
     /// Panics if 2 + reason.len() exceeds 125 bytes.
     pub fn encode_close_code(
         &self,
@@ -128,6 +130,10 @@ impl FrameWriter {
         reason: &str,
         dst: &mut [u8],
     ) -> usize {
+        assert!(
+            code != super::message::CloseCode::NoStatus,
+            "CloseCode::NoStatus cannot be sent on the wire — use encode_empty_close()"
+        );
         self.encode_close(code.as_u16(), reason.as_bytes(), dst)
     }
 
@@ -261,35 +267,14 @@ impl FrameWriter {
 
 }
 
-/// Generate a random 4-byte mask key.
-/// Uses a simple LCG for speed — mask quality doesn't affect security
-/// (it's only to prevent proxy cache poisoning per RFC 6455 §10.3).
+/// Generate a random 4-byte mask key using OS randomness.
+///
+/// RFC 6455 §10.3 requires unpredictable masking keys to prevent
+/// proxy cache poisoning attacks.
 fn generate_mask() -> [u8; 4] {
-    thread_local! {
-        static STATE: std::cell::Cell<u64> = {
-            // Non-deterministic seed: mix thread ID + timestamp
-            let time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            let tid = {
-                let mut h = 0u64;
-                for b in format!("{:?}", std::thread::current().id()).bytes() {
-                    h = h.wrapping_mul(31).wrapping_add(u64::from(b));
-                }
-                h
-            };
-            std::cell::Cell::new(time ^ tid)
-        };
-    }
-
-    STATE.with(|s| {
-        let mut state = s.get();
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-        s.set(state);
-        let bytes = state.to_ne_bytes();
-        [bytes[0], bytes[1], bytes[2], bytes[3]]
-    })
+    let mut mask = [0u8; 4];
+    getrandom::fill(&mut mask).expect("OS randomness unavailable");
+    mask
 }
 
 #[cfg(test)]

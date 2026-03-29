@@ -135,12 +135,17 @@ impl FrameReader {
 
     /// Buffer wire bytes from a source.
     pub fn read(&mut self, src: &[u8]) -> Result<(), ReadError> {
-        let spare = self.buf.spare();
+        let mut spare = self.buf.spare();
         if src.len() > spare.len() {
-            return Err(ReadError::BufferFull {
-                needed: src.len(),
-                available: spare.len(),
-            });
+            // Try compacting before giving up
+            self.buf.compact();
+            spare = self.buf.spare();
+            if src.len() > spare.len() {
+                return Err(ReadError::BufferFull {
+                    needed: src.len(),
+                    available: spare.len(),
+                });
+            }
         }
         spare[..src.len()].copy_from_slice(src);
         self.buf.filled(src.len());
@@ -156,9 +161,14 @@ impl FrameReader {
     /// let n = reader.read_from(&mut socket)?;
     /// ```
     pub fn read_from<R: std::io::Read>(&mut self, src: &mut R) -> std::io::Result<usize> {
-        let spare = self.buf.spare();
+        let mut spare = self.buf.spare();
         if spare.is_empty() {
-            return Ok(0);
+            // Reclaim consumed space (partial frame at end of buffer)
+            self.buf.compact();
+            spare = self.buf.spare();
+            if spare.is_empty() {
+                return Ok(0); // genuinely full
+            }
         }
         let n = src.read(spare)?;
         self.buf.filled(n);

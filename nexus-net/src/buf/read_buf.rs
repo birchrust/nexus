@@ -41,7 +41,7 @@
 /// assert!(buf.is_empty()); // cursors auto-reset
 /// ```
 pub struct ReadBuf {
-    buf: Vec<u8>,
+    buf: Box<[u8]>,
     head: usize,
     tail: usize,
     capacity: usize,
@@ -52,11 +52,12 @@ impl ReadBuf {
     /// Create a ReadBuf with explicit padding.
     ///
     /// Total allocation: `pre_padding + capacity + post_padding`.
+    /// The buffer is fixed-size — it never reallocates.
     #[must_use]
     pub fn new(capacity: usize, pre_padding: usize, post_padding: usize) -> Self {
         let total = pre_padding + capacity + post_padding;
         Self {
-            buf: vec![0u8; total],
+            buf: vec![0u8; total].into_boxed_slice(),
             head: pre_padding,
             tail: pre_padding,
             capacity,
@@ -188,6 +189,26 @@ impl ReadBuf {
     pub fn clear(&mut self) {
         self.head = self.pre_padding;
         self.tail = self.pre_padding;
+    }
+
+    /// Reclaim consumed space by moving unconsumed data to the front.
+    ///
+    /// Call when [`spare()`](Self::spare) is empty but there is consumed
+    /// space before [`head`] that can be reclaimed. The unconsumed data
+    /// (typically a partial frame) is moved to the pre_padding offset.
+    ///
+    /// Cost: O(unconsumed bytes). For a partial frame this is typically
+    /// a few hundred bytes — under 100ns.
+    ///
+    /// No-op if the buffer is already at the front or empty.
+    pub fn compact(&mut self) {
+        if self.head <= self.pre_padding || self.head == self.tail {
+            return; // already at front, or empty (auto-reset handles empty)
+        }
+        let len = self.tail - self.head;
+        self.buf.copy_within(self.head..self.tail, self.pre_padding);
+        self.head = self.pre_padding;
+        self.tail = self.pre_padding + len;
     }
 
     #[cold]
@@ -391,11 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn head_drift_spare_exhaustion() {
-        // Simulate the audit finding: repeated partial drains
-        // where head advances but never equals tail (partial frame
-        // left behind). Verify that spare() eventually reports 0
-        // remaining and the caller can detect it.
+    fn head_drift_and_compact() {
         let mut buf = ReadBuf::with_capacity(32);
 
         // Fill 20 bytes
@@ -405,28 +422,47 @@ mod tests {
         // Consume 15 — leaves 5 bytes unconsumed, head at 15
         buf.advance(15);
         assert_eq!(buf.len(), 5);
-        assert_eq!(buf.remaining(), 12); // 32 - 15(head) - 5(data) = 12? No: remaining = capacity - tail
-        // Actually: remaining = pre_padding + capacity - tail = 0 + 32 - 20 = 12
         assert_eq!(buf.remaining(), 12);
 
         // Fill 12 more — tail at 32, head at 15
         buf.spare()[..12].copy_from_slice(&[0xBB; 12]);
         buf.filled(12);
         assert_eq!(buf.remaining(), 0); // full!
-        assert_eq!(buf.len(), 17); // 5 old + 12 new
+        assert_eq!(buf.len(), 17);
 
         // Consume 10 — head at 25, tail at 32
         buf.advance(10);
         assert_eq!(buf.len(), 7);
-        assert_eq!(buf.remaining(), 0); // still 0! head drifted, can't reclaim
+        assert_eq!(buf.remaining(), 0); // tail at capacity, can't write
 
-        // spare() is empty even though 25 bytes of the buffer are consumed
+        // spare() is empty
         assert!(buf.spare().is_empty());
 
-        // Consume the remaining 7 — head == tail, auto-reset triggers
-        buf.advance(7);
-        assert_eq!(buf.len(), 0);
-        assert_eq!(buf.remaining(), 32); // fully reclaimed
+        // Compact reclaims consumed space — moves 7 bytes to front
+        buf.compact();
+        assert_eq!(buf.len(), 7); // data preserved
+        assert_eq!(buf.remaining(), 25); // 32 - 7 = 25 bytes reclaimed
+
+        // Data is intact after compaction
+        assert_eq!(&buf.data()[..5], &[0xBB; 5]); // last 5 of the BB fill
+    }
+
+    #[test]
+    fn compact_noop_when_at_front() {
+        let mut buf = ReadBuf::with_capacity(32);
+        buf.spare()[..10].copy_from_slice(&[0x42; 10]);
+        buf.filled(10);
+        // head is at front — compact is a no-op
+        buf.compact();
+        assert_eq!(buf.len(), 10);
+        assert_eq!(buf.remaining(), 22);
+    }
+
+    #[test]
+    fn compact_noop_when_empty() {
+        let mut buf = ReadBuf::with_capacity(32);
+        buf.compact(); // empty — no-op
+        assert_eq!(buf.remaining(), 32);
     }
 
     #[test]

@@ -36,7 +36,7 @@
 /// // wbuf.advance(n);
 /// ```
 pub struct WriteBuf {
-    buf: Vec<u8>,
+    buf: Box<[u8]>,
     head: usize,
     tail: usize,
     reset_offset: usize,
@@ -56,7 +56,7 @@ impl WriteBuf {
             "headroom ({headroom}) must be less than capacity ({capacity})"
         );
         Self {
-            buf: vec![0u8; capacity],
+            buf: vec![0u8; capacity].into_boxed_slice(),
             head: headroom,
             tail: headroom,
             reset_offset: headroom,
