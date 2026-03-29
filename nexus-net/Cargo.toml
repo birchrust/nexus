@@ -1,6 +1,8 @@
 [package]
 name = "nexus-net"
 version = "0.1.0"
+description = "Low-latency WebSocket, HTTP/1.1, and TLS primitives. Sans-IO, zero-copy, SIMD-accelerated."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -1,5 +1,5 @@
-use crate::buf::ReadBuf;
 use super::error::HttpError;
+use crate::buf::ReadBuf;
 
 /// A parsed HTTP/1.x response. Borrows from the reader's buffer.
 pub struct Response<'a> {
@@ -185,7 +185,9 @@ impl ResponseReader {
             return Ok(());
         }
         if data.len() > self.max_head_size {
-            return Err(HttpError::HeadTooLarge { max: self.max_head_size });
+            return Err(HttpError::HeadTooLarge {
+                max: self.max_head_size,
+            });
         }
 
         let mut stack_headers = [httparse::EMPTY_HEADER; 64];
@@ -252,7 +254,10 @@ fn copy_to(dst: &mut [u8], offset: usize, src: &[u8]) -> Result<usize, super::er
 }
 
 fn write_u16(dst: &mut [u8], offset: usize, val: u16) -> Result<usize, super::error::HttpError> {
-    debug_assert!(val >= 100 && val <= 999, "HTTP status must be 3 digits: {val}");
+    debug_assert!(
+        val >= 100 && val <= 999,
+        "HTTP status must be 3 digits: {val}"
+    );
     if offset + 3 > dst.len() {
         return Err(super::error::HttpError::BufferTooSmall {
             needed: offset + 3,
@@ -359,7 +364,8 @@ mod tests {
     #[test]
     fn basic_200_response() {
         let mut r = ResponseReader::new(4096);
-        r.read(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello").unwrap();
+        r.read(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello")
+            .unwrap();
         let resp = r.next().unwrap().unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.reason, "OK");
@@ -389,10 +395,13 @@ mod tests {
     fn write_request_round_trip() {
         use crate::http::RequestReader;
         let mut dst = [0u8; 256];
-        let n = write_request("GET", "/ws", &[
-            ("Host", "localhost:8080"),
-            ("Upgrade", "websocket"),
-        ], &mut dst).unwrap();
+        let n = write_request(
+            "GET",
+            "/ws",
+            &[("Host", "localhost:8080"), ("Upgrade", "websocket")],
+            &mut dst,
+        )
+        .unwrap();
 
         let mut r = RequestReader::new(4096);
         r.read(&dst[..n]).unwrap();
@@ -405,10 +414,13 @@ mod tests {
     #[test]
     fn write_response_round_trip() {
         let mut dst = [0u8; 256];
-        let n = write_response(101, "Switching Protocols", &[
-            ("Upgrade", "websocket"),
-            ("Connection", "Upgrade"),
-        ], &mut dst).unwrap();
+        let n = write_response(
+            101,
+            "Switching Protocols",
+            &[("Upgrade", "websocket"), ("Connection", "Upgrade")],
+            &mut dst,
+        )
+        .unwrap();
 
         let mut r = ResponseReader::new(4096);
         r.read(&dst[..n]).unwrap();

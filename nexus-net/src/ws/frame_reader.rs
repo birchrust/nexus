@@ -1,8 +1,8 @@
-use crate::buf::ReadBuf;
 use super::error::ProtocolError;
 use super::frame::{RawOpcode, Role};
 use super::mask::apply_mask;
 use super::message::{CloseCode, CloseFrame, Message};
+use crate::buf::ReadBuf;
 
 /// Error from [`FrameReader::read`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,10 +99,7 @@ enum ParseState {
     #[default]
     Head,
     /// Payload spans reads — always goes to msg_buf.
-    Payload {
-        opcode: RawOpcode,
-        fin: bool,
-    },
+    Payload { opcode: RawOpcode, fin: bool },
 }
 
 /// Builder for [`FrameReader`].
@@ -303,7 +300,8 @@ impl FrameReader {
                         if let Some(completed) = self.route_opcode(opcode, fin)? {
                             if opcode.is_control() && self.assembling {
                                 // Control during assembly: payload appended after assembly data
-                                self.pending_cleanup = PendingCleanup::TruncateMsgBuf(self.ctrl_payload_offset);
+                                self.pending_cleanup =
+                                    PendingCleanup::TruncateMsgBuf(self.ctrl_payload_offset);
                             } else {
                                 self.pending_cleanup = PendingCleanup::ClearMsgBuf;
                             }
@@ -523,8 +521,8 @@ impl FrameReader {
             return Err(ProtocolError::ReservedBitsSet { bits: rsv });
         }
 
-        let opcode = RawOpcode::from_u8(opcode_raw)
-            .ok_or(ProtocolError::InvalidOpcode(opcode_raw))?;
+        let opcode =
+            RawOpcode::from_u8(opcode_raw).ok_or(ProtocolError::InvalidOpcode(opcode_raw))?;
 
         match self.role {
             Role::Server if !masked => return Err(ProtocolError::UnmaskedFrameFromClient),
@@ -571,12 +569,11 @@ impl FrameReader {
             None
         };
 
-        let payload_len = usize::try_from(payload_len).map_err(|_| {
-            ProtocolError::PayloadTooLarge {
+        let payload_len =
+            usize::try_from(payload_len).map_err(|_| ProtocolError::PayloadTooLarge {
                 size: payload_len,
                 max: self.max_frame_size,
-            }
-        })?;
+            })?;
 
         Ok(ParsedHeader {
             fin,
@@ -653,10 +650,7 @@ impl std::fmt::Debug for FrameReader {
 ///
 /// On `is_final=true`, no trailing bytes are allowed — the entire
 /// buffer must be valid UTF-8.
-fn validate_utf8_incremental(
-    data: &[u8],
-    is_final: bool,
-) -> Result<u8, ProtocolError> {
+fn validate_utf8_incremental(data: &[u8], is_final: bool) -> Result<u8, ProtocolError> {
     if data.is_empty() {
         return Ok(0);
     }
@@ -855,7 +849,8 @@ mod tests {
     fn masked_text() {
         let mut r = server_reader();
         let mask = [0x37, 0xFA, 0x21, 0x3D];
-        r.read(&make_masked_frame(true, 0x1, b"Hello", mask)).unwrap();
+        r.read(&make_masked_frame(true, 0x1, b"Hello", mask))
+            .unwrap();
         match r.next().unwrap().unwrap() {
             Message::Text(s) => assert_eq!(s, "Hello"),
             other => panic!("expected Text, got {other:?}"),
@@ -944,7 +939,8 @@ mod tests {
     #[test]
     fn close_code_only() {
         let mut r = client_reader();
-        r.read(&make_frame(true, 0x8, &1001u16.to_be_bytes())).unwrap();
+        r.read(&make_frame(true, 0x8, &1001u16.to_be_bytes()))
+            .unwrap();
         match r.next().unwrap().unwrap() {
             Message::Close(cf) => {
                 assert_eq!(cf.code, CloseCode::GoingAway);
@@ -957,8 +953,12 @@ mod tests {
     #[test]
     fn close_invalid_code() {
         let mut r = client_reader();
-        r.read(&make_frame(true, 0x8, &999u16.to_be_bytes())).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::InvalidCloseCode(999))));
+        r.read(&make_frame(true, 0x8, &999u16.to_be_bytes()))
+            .unwrap();
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::InvalidCloseCode(999))
+        ));
     }
 
     #[test]
@@ -968,7 +968,10 @@ mod tests {
         payload.extend_from_slice(&1000u16.to_be_bytes());
         payload.extend_from_slice(&[0xFF, 0xFE]); // invalid UTF-8
         r.read(&make_frame(true, 0x8, &payload)).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::InvalidUtf8InCloseReason)));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::InvalidUtf8InCloseReason)
+        ));
     }
 
     #[test]
@@ -1019,7 +1022,10 @@ mod tests {
         r.read(&frame[..7]).unwrap();
         assert!(r.next().unwrap().is_none());
         r.read(&frame[7..]).unwrap();
-        assert!(matches!(r.next().unwrap().unwrap(), Message::Text("Hello, World!")));
+        assert!(matches!(
+            r.next().unwrap().unwrap(),
+            Message::Text("Hello, World!")
+        ));
     }
 
     // === Multiple messages ===
@@ -1040,15 +1046,22 @@ mod tests {
     #[test]
     fn masked_from_server() {
         let mut r = client_reader();
-        r.read(&make_masked_frame(true, 0x1, b"x", [1, 2, 3, 4])).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::MaskedFrameFromServer)));
+        r.read(&make_masked_frame(true, 0x1, b"x", [1, 2, 3, 4]))
+            .unwrap();
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::MaskedFrameFromServer)
+        ));
     }
 
     #[test]
     fn unmasked_from_client() {
         let mut r = server_reader();
         r.read(&make_frame(true, 0x1, b"x")).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::UnmaskedFrameFromClient)));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::UnmaskedFrameFromClient)
+        ));
     }
 
     #[test]
@@ -1057,14 +1070,20 @@ mod tests {
         let mut frame = make_frame(true, 0x1, b"x");
         frame[0] |= 0x40;
         r.read(&frame).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::ReservedBitsSet { .. })));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::ReservedBitsSet { .. })
+        ));
     }
 
     #[test]
     fn continuation_without_start() {
         let mut r = client_reader();
         r.read(&make_frame(true, 0x0, b"orphan")).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::ContinuationWithoutStart)));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::ContinuationWithoutStart)
+        ));
     }
 
     #[test]
@@ -1073,7 +1092,10 @@ mod tests {
         r.read(&make_frame(false, 0x1, b"start")).unwrap();
         r.read(&make_frame(true, 0x1, b"new")).unwrap();
         // pump() encounters the error during assembly
-        assert!(matches!(r.next(), Err(ProtocolError::NewMessageDuringAssembly)));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::NewMessageDuringAssembly)
+        ));
     }
 
     #[test]
@@ -1083,21 +1105,30 @@ mod tests {
             .max_message_size(10)
             .build();
         r.read(&make_frame(true, 0x1, b"way too long!!")).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::MessageTooLarge { .. })));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::MessageTooLarge { .. })
+        ));
     }
 
     #[test]
     fn control_frame_too_large() {
         let mut r = client_reader();
         r.read(&make_frame(true, 0x9, &[0; 126])).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::ControlFrameTooLarge { .. })));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::ControlFrameTooLarge { .. })
+        ));
     }
 
     #[test]
     fn fragmented_control() {
         let mut r = client_reader();
         r.read(&make_frame(false, 0x9, b"ping")).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::FragmentedControlFrame)));
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::FragmentedControlFrame)
+        ));
     }
 
     // === into_owned ===
@@ -1119,7 +1150,10 @@ mod tests {
             .role(Role::Client)
             .buffer_capacity(16)
             .build();
-        assert!(matches!(r.read(&[0; 32]), Err(ReadError::BufferFull { .. })));
+        assert!(matches!(
+            r.read(&[0; 32]),
+            Err(ReadError::BufferFull { .. })
+        ));
     }
 
     // === Reset ===
@@ -1145,7 +1179,10 @@ mod tests {
         let spare = r.spare();
         spare[..frame.len()].copy_from_slice(&frame);
         r.filled(frame.len());
-        assert!(matches!(r.next().unwrap().unwrap(), Message::Text("direct")));
+        assert!(matches!(
+            r.next().unwrap().unwrap(),
+            Message::Text("direct")
+        ));
     }
 
     // === Masked payload spanning reads (#8) ===
@@ -1160,7 +1197,10 @@ mod tests {
         r.read(&frame[..split]).unwrap();
         assert!(r.next().unwrap().is_none());
         r.read(&frame[split..]).unwrap();
-        assert!(matches!(r.next().unwrap().unwrap(), Message::Text("Hello, World!")));
+        assert!(matches!(
+            r.next().unwrap().unwrap(),
+            Message::Text("Hello, World!")
+        ));
     }
 
     // === Multiple control frames during assembly (#9) ===
@@ -1201,7 +1241,8 @@ mod tests {
             .build();
 
         let big_payload = vec![0x42; 512];
-        r.read(&make_frame(false, 0x2, &big_payload[..256])).unwrap();
+        r.read(&make_frame(false, 0x2, &big_payload[..256]))
+            .unwrap();
         r.read(&make_frame(true, 0x0, &big_payload[256..])).unwrap();
 
         let msg = r.next().unwrap().unwrap();
@@ -1256,8 +1297,12 @@ mod tests {
     #[test]
     fn close_code_1005_rejected_on_wire() {
         let mut r = client_reader();
-        r.read(&make_frame(true, 0x8, &1005u16.to_be_bytes())).unwrap();
-        assert!(matches!(r.next(), Err(ProtocolError::InvalidCloseCode(1005))));
+        r.read(&make_frame(true, 0x8, &1005u16.to_be_bytes()))
+            .unwrap();
+        assert!(matches!(
+            r.next(),
+            Err(ProtocolError::InvalidCloseCode(1005))
+        ));
     }
 
     /// Autobahn 6.4.1: Invalid UTF-8 split across fragments.

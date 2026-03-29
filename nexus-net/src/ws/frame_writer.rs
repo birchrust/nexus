@@ -104,7 +104,12 @@ impl FrameWriter {
     /// Encode a close frame. Returns bytes written.
     ///
     /// Returns `Err` if code + reason exceeds 125 bytes.
-    pub fn encode_close(&self, code: u16, reason: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
+    pub fn encode_close(
+        &self,
+        code: u16,
+        reason: &[u8],
+        dst: &mut [u8],
+    ) -> Result<usize, EncodeError> {
         let payload_len = 2 + reason.len();
         if payload_len > 125 {
             return Err(EncodeError::ControlPayloadTooLarge(payload_len));
@@ -164,7 +169,10 @@ impl FrameWriter {
     /// For use with WriteBuf: append payload, apply mask if Some, prepend header.
     pub fn build_header(&self, byte0: u8, payload_len: usize) -> (FrameHeader, Option<[u8; 4]>) {
         let mask_bit: u8 = if self.role == Role::Client { 0x80 } else { 0 };
-        let mut hdr = FrameHeader { bytes: [0; 14], len: 0 };
+        let mut hdr = FrameHeader {
+            bytes: [0; 14],
+            len: 0,
+        };
 
         hdr.bytes[0] = byte0;
         hdr.len = 1;
@@ -208,7 +216,11 @@ impl FrameWriter {
     }
 
     /// Encode a ping frame into a WriteBuf.
-    pub fn encode_ping_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) -> Result<(), EncodeError> {
+    pub fn encode_ping_into(
+        &self,
+        payload: &[u8],
+        dst: &mut crate::buf::WriteBuf,
+    ) -> Result<(), EncodeError> {
         if payload.len() > 125 {
             return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
         }
@@ -217,7 +229,11 @@ impl FrameWriter {
     }
 
     /// Encode a pong frame into a WriteBuf.
-    pub fn encode_pong_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) -> Result<(), EncodeError> {
+    pub fn encode_pong_into(
+        &self,
+        payload: &[u8],
+        dst: &mut crate::buf::WriteBuf,
+    ) -> Result<(), EncodeError> {
         if payload.len() > 125 {
             return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
         }
@@ -226,7 +242,12 @@ impl FrameWriter {
     }
 
     /// Encode a close frame into a WriteBuf.
-    pub fn encode_close_into(&self, code: u16, reason: &[u8], dst: &mut crate::buf::WriteBuf) -> Result<(), EncodeError> {
+    pub fn encode_close_into(
+        &self,
+        code: u16,
+        reason: &[u8],
+        dst: &mut crate::buf::WriteBuf,
+    ) -> Result<(), EncodeError> {
         let payload_len = 2 + reason.len();
         if payload_len > 125 {
             return Err(EncodeError::ControlPayloadTooLarge(payload_len));
@@ -297,7 +318,6 @@ impl FrameWriter {
 
         offset + payload_len
     }
-
 }
 
 /// Generate a random 4-byte mask key using OS randomness.
@@ -409,7 +429,10 @@ mod tests {
 
         let mut reader = FrameReader::builder().role(Role::Client).build();
         reader.read(&dst[..n]).unwrap();
-        assert!(matches!(reader.next().unwrap().unwrap(), Message::Text("Hello")));
+        assert!(matches!(
+            reader.next().unwrap().unwrap(),
+            Message::Text("Hello")
+        ));
     }
 
     #[test]
@@ -421,15 +444,20 @@ mod tests {
 
         let mut reader = FrameReader::builder().role(Role::Server).build();
         reader.read(&dst[..n]).unwrap();
-        assert!(matches!(reader.next().unwrap().unwrap(), Message::Text("Hello")));
+        assert!(matches!(
+            reader.next().unwrap().unwrap(),
+            Message::Text("Hello")
+        ));
     }
 
     #[test]
     fn encode_close_code_round_trip() {
-        use crate::ws::{FrameReader, Message, CloseCode};
+        use crate::ws::{CloseCode, FrameReader, Message};
         let writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; 64];
-        let n = writer.encode_close_code(CloseCode::Normal, "goodbye", &mut dst).unwrap();
+        let n = writer
+            .encode_close_code(CloseCode::Normal, "goodbye", &mut dst)
+            .unwrap();
 
         let mut reader = FrameReader::builder().role(Role::Client).build();
         reader.read(&dst[..n]).unwrap();

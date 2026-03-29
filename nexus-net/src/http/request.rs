@@ -1,5 +1,5 @@
-use crate::buf::ReadBuf;
 use super::error::HttpError;
+use crate::buf::ReadBuf;
 
 /// A parsed HTTP/1.x request. Borrows from the reader's buffer.
 pub struct Request<'a> {
@@ -157,8 +157,8 @@ impl RequestReader {
         }
 
         let data = self.buf.data();
-        let method = std::str::from_utf8(&data[..self.method_end])
-            .map_err(|_| HttpError::Malformed)?;
+        let method =
+            std::str::from_utf8(&data[..self.method_end]).map_err(|_| HttpError::Malformed)?;
         let path = std::str::from_utf8(&data[self.path_start..self.path_end])
             .map_err(|_| HttpError::Malformed)?;
 
@@ -192,7 +192,9 @@ impl RequestReader {
             return Ok(());
         }
         if data.len() > self.max_head_size {
-            return Err(HttpError::HeadTooLarge { max: self.max_head_size });
+            return Err(HttpError::HeadTooLarge {
+                max: self.max_head_size,
+            });
         }
 
         // Stack-allocate for the common case (≤ 64 headers).
@@ -248,7 +250,8 @@ mod tests {
     #[test]
     fn basic_get() {
         let mut r = RequestReader::new(4096);
-        r.read(b"GET /path HTTP/1.1\r\nHost: example.com\r\n\r\n").unwrap();
+        r.read(b"GET /path HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .unwrap();
         let req = r.next().unwrap().unwrap();
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/path");
@@ -280,7 +283,8 @@ mod tests {
     #[test]
     fn remainder_after_head() {
         let mut r = RequestReader::new(4096);
-        r.read(b"GET / HTTP/1.1\r\nHost: a.com\r\n\r\nextra bytes").unwrap();
+        r.read(b"GET / HTTP/1.1\r\nHost: a.com\r\n\r\nextra bytes")
+            .unwrap();
         let _req = r.next().unwrap().unwrap();
         assert_eq!(r.remainder(), b"extra bytes");
     }
@@ -288,7 +292,8 @@ mod tests {
     #[test]
     fn head_too_large() {
         let mut r = RequestReader::new(4096).max_head_size(32);
-        r.read(b"GET / HTTP/1.1\r\nHost: a-very-long-hostname.example.com\r\n\r\n").unwrap();
+        r.read(b"GET / HTTP/1.1\r\nHost: a-very-long-hostname.example.com\r\n\r\n")
+            .unwrap();
         assert!(matches!(r.next(), Err(HttpError::HeadTooLarge { .. })));
     }
 
@@ -302,26 +307,34 @@ mod tests {
     #[test]
     fn buffer_full() {
         let mut r = RequestReader::new(16);
-        let err = r.read(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n").unwrap_err();
+        let err = r
+            .read(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .unwrap_err();
         assert!(matches!(err, HttpError::BufferFull { .. }));
     }
 
     #[test]
     fn ws_upgrade_request() {
         let mut r = RequestReader::new(4096);
-        r.read(b"GET /ws HTTP/1.1\r\n\
+        r.read(
+            b"GET /ws HTTP/1.1\r\n\
                   Host: localhost:8080\r\n\
                   Upgrade: websocket\r\n\
                   Connection: Upgrade\r\n\
                   Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
                   Sec-WebSocket-Version: 13\r\n\
-                  \r\n").unwrap();
+                  \r\n",
+        )
+        .unwrap();
         let req = r.next().unwrap().unwrap();
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/ws");
         assert_eq!(req.header("Upgrade"), Some("websocket"));
         assert_eq!(req.header("Connection"), Some("Upgrade"));
-        assert_eq!(req.header("Sec-WebSocket-Key"), Some("dGhlIHNhbXBsZSBub25jZQ=="));
+        assert_eq!(
+            req.header("Sec-WebSocket-Key"),
+            Some("dGhlIHNhbXBsZSBub25jZQ==")
+        );
         assert_eq!(req.header("Sec-WebSocket-Version"), Some("13"));
     }
 

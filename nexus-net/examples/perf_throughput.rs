@@ -65,8 +65,16 @@ fn book_snapshot_json() -> String {
     let mut bids = Vec::new();
     let mut asks = Vec::new();
     for i in 0..20 {
-        bids.push(format!("[{:.2},{:.1}]", 67234.50 - i as f64 * 0.25, 1.0 + i as f64 * 0.3));
-        asks.push(format!("[{:.2},{:.1}]", 67234.75 + i as f64 * 0.25, 1.0 + i as f64 * 0.2));
+        bids.push(format!(
+            "[{:.2},{:.1}]",
+            67234.50 - i as f64 * 0.25,
+            1.0 + i as f64 * 0.3
+        ));
+        asks.push(format!(
+            "[{:.2},{:.1}]",
+            67234.75 + i as f64 * 0.25,
+            1.0 + i as f64 * 0.2
+        ));
     }
     format!(
         r#"{{"s":"BTC-USD","bids":[{}],"asks":[{}],"t":1700000000000,"u":42,"type":"snapshot"}}"#,
@@ -138,20 +146,32 @@ fn build_binary_wire(payload_size: usize, msg_count: u64) -> Vec<u8> {
 
 struct CursorWrap<'a>(Cursor<&'a [u8]>);
 impl Read for CursorWrap<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> { self.0.read(buf) }
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
 }
 impl Write for CursorWrap<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { Ok(buf.len()) }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 struct ReadWriteWrap(Cursor<Vec<u8>>);
 impl Read for ReadWriteWrap {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> { self.0.read(buf) }
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
 }
 impl Write for ReadWriteWrap {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { Ok(buf.len()) }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 // =============================================================================
@@ -172,7 +192,10 @@ fn bench_parse_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().unwrap() {
-            Some(Message::Binary(d)) => { black_box(&d); received += 1; }
+            Some(Message::Binary(d)) => {
+                black_box(&d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -194,7 +217,10 @@ fn bench_parse_tungstenite(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     let mut received = 0u64;
     while received < msg_count {
         match ws.read() {
-            Ok(msg) => { black_box(&msg); received += 1; }
+            Ok(msg) => {
+                black_box(&msg);
+                received += 1;
+            }
             Err(_) => break,
         }
     }
@@ -256,7 +282,9 @@ fn bench_parse_deser_tungstenite<T: for<'de> Deserialize<'de>>(
                 black_box(&val);
                 received += 1;
             }
-            Ok(_) => { received += 1; }
+            Ok(_) => {
+                received += 1;
+            }
             Err(_) => break,
         }
     }
@@ -315,7 +343,10 @@ fn loopback_nexus_client(tcp: TcpStream, msg_count: u64) -> (Duration, u64) {
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().unwrap() {
-            Some(Message::Binary(d)) => { black_box(&d); received += 1; }
+            Some(Message::Binary(d)) => {
+                black_box(&d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -329,7 +360,10 @@ fn loopback_tungstenite_client(tcp: TcpStream, msg_count: u64) -> (Duration, u64
     let mut received = 0u64;
     while received < msg_count {
         match ws.read() {
-            Ok(msg) => { black_box(&msg); received += 1; }
+            Ok(msg) => {
+                black_box(&msg);
+                received += 1;
+            }
             Err(_) => break,
         }
     }
@@ -358,12 +392,14 @@ fn run_tls_loopback(
         rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
-                vec![rustls::pki_types::CertificateDer::from(cert_der_bytes.clone())],
+                vec![rustls::pki_types::CertificateDer::from(
+                    cert_der_bytes.clone(),
+                )],
                 rustls::pki_types::PrivateKeyDer::Pkcs8(
                     rustls::pki_types::PrivatePkcs8KeyDer::from(key_der_bytes),
                 ),
             )
-            .unwrap()
+            .unwrap(),
     );
 
     let client_tls_config = nexus_net::tls::TlsConfig::builder()
@@ -454,7 +490,9 @@ fn tls_loopback_tungstenite_json_client<T: for<'de> Deserialize<'de>>(
         .with_custom_certificate_verifier(std::sync::Arc::new(NoVerifyBench))
         .with_no_client_auth();
 
-    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap().to_owned();
+    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+        .unwrap()
+        .to_owned();
     let tls_conn = rustls::ClientConnection::new(std::sync::Arc::new(config), server_name).unwrap();
     let tls_stream = rustls::StreamOwned::new(tls_conn, tcp);
 
@@ -470,7 +508,9 @@ fn tls_loopback_tungstenite_json_client<T: for<'de> Deserialize<'de>>(
                 black_box(&val);
                 received += 1;
             }
-            Ok(_) => { received += 1; }
+            Ok(_) => {
+                received += 1;
+            }
             Err(_) => break,
         }
     }
@@ -483,18 +523,28 @@ struct NoVerifyBench;
 
 impl rustls::client::danger::ServerCertVerifier for NoVerifyBench {
     fn verify_server_cert(
-        &self, _: &rustls::pki_types::CertificateDer<'_>, _: &[rustls::pki_types::CertificateDer<'_>],
-        _: &rustls::pki_types::ServerName<'_>, _: &[u8], _: rustls::pki_types::UnixTime,
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
     fn verify_tls12_signature(
-        &self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct,
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
     fn verify_tls13_signature(
-        &self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct,
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
@@ -638,9 +688,19 @@ fn main() {
         section(&format!("quote tick ({}B JSON) over TLS", json.len()));
         let wire = build_text_wire(&json, tls_n);
 
-        let (e, c) = run_tls_loopback(19200, &wire, tls_n, tls_loopback_nexus_json_client::<QuoteTick>);
+        let (e, c) = run_tls_loopback(
+            19200,
+            &wire,
+            tls_n,
+            tls_loopback_nexus_json_client::<QuoteTick>,
+        );
         report("nexus-net  (TLS+parse+deser)", e, c);
-        let (e, c) = run_tls_loopback(19201, &wire, tls_n, tls_loopback_tungstenite_json_client::<QuoteTick>);
+        let (e, c) = run_tls_loopback(
+            19201,
+            &wire,
+            tls_n,
+            tls_loopback_tungstenite_json_client::<QuoteTick>,
+        );
         report("tungstenite (TLS+parse+deser)", e, c);
         let (e, c) = bench_deser_only::<QuoteTick>(&json, tls_n);
         report("sonic-rs only (deser)", e, c);
@@ -652,9 +712,19 @@ fn main() {
         section(&format!("order update ({}B JSON) over TLS", json.len()));
         let wire = build_text_wire(&json, tls_n);
 
-        let (e, c) = run_tls_loopback(19202, &wire, tls_n, tls_loopback_nexus_json_client::<OrderUpdate>);
+        let (e, c) = run_tls_loopback(
+            19202,
+            &wire,
+            tls_n,
+            tls_loopback_nexus_json_client::<OrderUpdate>,
+        );
         report("nexus-net  (TLS+parse+deser)", e, c);
-        let (e, c) = run_tls_loopback(19203, &wire, tls_n, tls_loopback_tungstenite_json_client::<OrderUpdate>);
+        let (e, c) = run_tls_loopback(
+            19203,
+            &wire,
+            tls_n,
+            tls_loopback_tungstenite_json_client::<OrderUpdate>,
+        );
         report("tungstenite (TLS+parse+deser)", e, c);
         let (e, c) = bench_deser_only::<OrderUpdate>(&json, tls_n);
         report("sonic-rs only (deser)", e, c);
@@ -667,9 +737,19 @@ fn main() {
         section(&format!("book snapshot ({}B JSON) over TLS", json.len()));
         let wire = build_text_wire(&json, snap_tls_n);
 
-        let (e, c) = run_tls_loopback(19204, &wire, snap_tls_n, tls_loopback_nexus_json_client::<BookSnapshot>);
+        let (e, c) = run_tls_loopback(
+            19204,
+            &wire,
+            snap_tls_n,
+            tls_loopback_nexus_json_client::<BookSnapshot>,
+        );
         report("nexus-net  (TLS+parse+deser)", e, c);
-        let (e, c) = run_tls_loopback(19205, &wire, snap_tls_n, tls_loopback_tungstenite_json_client::<BookSnapshot>);
+        let (e, c) = run_tls_loopback(
+            19205,
+            &wire,
+            snap_tls_n,
+            tls_loopback_tungstenite_json_client::<BookSnapshot>,
+        );
         report("tungstenite (TLS+parse+deser)", e, c);
         let (e, c) = bench_deser_only::<BookSnapshot>(&json, snap_tls_n);
         report("sonic-rs only (deser)", e, c);

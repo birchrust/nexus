@@ -33,7 +33,9 @@ pub fn generate_key() -> [u8; 24] {
     STATE.with(|s| {
         let mut state = s.get();
         for byte in &mut raw {
-            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             *byte = (state >> 33) as u8;
         }
         s.set(state);
@@ -115,7 +117,8 @@ fn base64_encode_into(input: &[u8], out: &mut [u8]) {
     let mut i = 0;
     let mut o = 0;
     while i + 3 <= input.len() {
-        let n = (u32::from(input[i]) << 16) | (u32::from(input[i + 1]) << 8) | u32::from(input[i + 2]);
+        let n =
+            (u32::from(input[i]) << 16) | (u32::from(input[i + 1]) << 8) | u32::from(input[i + 2]);
         out[o] = B64[((n >> 18) & 0x3F) as usize];
         out[o + 1] = B64[((n >> 12) & 0x3F) as usize];
         out[o + 2] = B64[((n >> 6) & 0x3F) as usize];
@@ -191,6 +194,9 @@ mod tests {
     fn base64_encode_16_known() {
         let input = [0u8; 16];
         let encoded = base64_encode_16(&input);
-        assert_eq!(std::str::from_utf8(&encoded).unwrap(), "AAAAAAAAAAAAAAAAAAAAAA==");
+        assert_eq!(
+            std::str::from_utf8(&encoded).unwrap(),
+            "AAAAAAAAAAAAAAAAAAAAAA=="
+        );
     }
 }

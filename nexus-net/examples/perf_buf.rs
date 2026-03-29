@@ -6,8 +6,8 @@
 //!   cargo build --release -p nexus-net --example perf_buf
 //!   taskset -c 0 ./target/release/examples/perf_buf
 
-use std::hint::black_box;
 use nexus_net::buf::{ReadBuf, WriteBuf};
+use std::hint::black_box;
 
 // ============================================================================
 // Timing
@@ -326,7 +326,10 @@ fn bench_writebuf_large_payload(samples: &mut [u64]) {
 // ============================================================================
 
 fn main() {
-    println!("\n  nexus-net buffer performance (rdtsc, batch={})\n", BATCH);
+    println!(
+        "\n  nexus-net buffer performance (rdtsc, batch={})\n",
+        BATCH
+    );
     print_header();
 
     let mut buf = vec![0u64; SAMPLES];

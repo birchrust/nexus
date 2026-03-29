@@ -3,11 +3,9 @@
 //! Run with:
 //!   cargo bench -p nexus-net --bench frame_writer
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use nexus_net::ws::{FrameWriter, Role};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nexus_net::buf::WriteBuf;
+use nexus_net::ws::{FrameWriter, Role};
 
 fn bench_encode_text_server(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_text_server");
@@ -16,16 +14,12 @@ fn bench_encode_text_server(c: &mut Criterion) {
         let payload = vec![b'x'; size];
         let mut dst = vec![0u8; writer.max_encoded_len(size)];
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &payload,
-            |b, payload| {
-                b.iter(|| {
-                    let n = writer.encode_text(payload, &mut dst);
-                    black_box(n);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &payload, |b, payload| {
+            b.iter(|| {
+                let n = writer.encode_text(payload, &mut dst);
+                black_box(n);
+            });
+        });
     }
     group.finish();
 }
@@ -37,16 +31,12 @@ fn bench_encode_text_client(c: &mut Criterion) {
         let payload = vec![b'x'; size];
         let mut dst = vec![0u8; writer.max_encoded_len(size)];
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &payload,
-            |b, payload| {
-                b.iter(|| {
-                    let n = writer.encode_text(payload, &mut dst);
-                    black_box(n);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &payload, |b, payload| {
+            b.iter(|| {
+                let n = writer.encode_text(payload, &mut dst);
+                black_box(n);
+            });
+        });
     }
     group.finish();
 }
@@ -58,16 +48,12 @@ fn bench_encode_into_writebuf(c: &mut Criterion) {
         let payload = vec![b'x'; size];
         let mut wbuf = WriteBuf::new(size + 14, 14);
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &payload,
-            |b, payload| {
-                b.iter(|| {
-                    writer.encode_text_into(payload, &mut wbuf);
-                    black_box(wbuf.data());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &payload, |b, payload| {
+            b.iter(|| {
+                writer.encode_text_into(payload, &mut wbuf);
+                black_box(wbuf.data());
+            });
+        });
     }
     group.finish();
 }

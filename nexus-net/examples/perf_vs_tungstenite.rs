@@ -170,17 +170,16 @@ fn bench_tungstenite(label: &str, frame: &[u8], n_frames: usize) {
         let cursor = ReadWriteCursor {
             read: Cursor::new(wire.clone()),
         };
-        let mut ws = tungstenite::protocol::WebSocket::from_raw_socket(
-            cursor,
-            Role::Client,
-            Some(config),
-        );
+        let mut ws =
+            tungstenite::protocol::WebSocket::from_raw_socket(cursor, Role::Client, Some(config));
 
         // Time only the parsing
         let t0 = rdtsc_start();
         for _ in 0..total {
             match ws.read() {
-                Ok(msg) => { black_box(&msg); }
+                Ok(msg) => {
+                    black_box(&msg);
+                }
                 Err(_) => break,
             }
         }
@@ -213,10 +212,7 @@ fn main() {
         bench_tungstenite(label, &frame, 1);
     }
 
-    for &(size, label) in &[
-        (128, "binary 128B"),
-        (1024, "binary 1024B"),
-    ] {
+    for &(size, label) in &[(128, "binary 128B"), (1024, "binary 1024B")] {
         section(label);
         let payload = vec![0x42u8; size];
         let frame = make_frame(true, 0x2, &payload);
@@ -252,10 +248,7 @@ fn main() {
         bench_tungstenite_write(label, &payload, false);
     }
 
-    for &(size, label) in &[
-        (128, "binary 128B"),
-        (1024, "binary 1024B"),
-    ] {
+    for &(size, label) in &[(128, "binary 128B"), (1024, "binary 1024B")] {
         section(label);
         let payload = vec![0x42u8; size];
         bench_nexus_write(label, &payload, true);
@@ -314,8 +307,8 @@ fn bench_nexus_write(label: &str, payload: &[u8], binary: bool) {
 }
 
 fn bench_tungstenite_write(label: &str, payload: &[u8], binary: bool) {
-    use tungstenite::protocol::Role;
     use tungstenite::Message;
+    use tungstenite::protocol::Role;
 
     // tungstenite needs a Read+Write socket. We only care about write.
     // Use a Vec-backed sink.
@@ -333,7 +326,7 @@ fn bench_tungstenite_write(label: &str, payload: &[u8], binary: bool) {
         };
         let mut ws = tungstenite::protocol::WebSocket::from_raw_socket(
             sink,
-            Role::Client,  // Client = masked
+            Role::Client, // Client = masked
             None,
         );
 

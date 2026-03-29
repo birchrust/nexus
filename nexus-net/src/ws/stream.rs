@@ -3,13 +3,13 @@
 use std::io::{self, Read, Write};
 use std::time::Duration;
 
-use crate::buf::WriteBuf;
 use super::error::ProtocolError;
 use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
 use super::message::{CloseCode, Message};
+use crate::buf::WriteBuf;
 
 #[cfg(feature = "tls")]
 use crate::tls::{TlsCodec, TlsConfig, TlsError};
@@ -47,16 +47,24 @@ pub(crate) fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
         return Err(WsError::InvalidUrl(url.to_string()));
     };
 
-    let (host_port, path) = rest.find('/')
+    let (host_port, path) = rest
+        .find('/')
         .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
 
     let default_port = if tls { 443 } else { 80 };
     let (host, port) = host_port.rfind(':').map_or((host_port, default_port), |i| {
         let port_str = &host_port[i + 1..];
-        port_str.parse::<u16>().map_or((host_port, default_port), |p| (&host_port[..i], p))
+        port_str
+            .parse::<u16>()
+            .map_or((host_port, default_port), |p| (&host_port[..i], p))
     });
 
-    Ok(ParsedUrl { tls, host, port, path })
+    Ok(ParsedUrl {
+        tls,
+        host,
+        port,
+        path,
+    })
 }
 
 // =============================================================================
@@ -98,13 +106,19 @@ impl std::fmt::Display for WsError {
 impl std::error::Error for WsError {}
 
 impl From<std::io::Error> for WsError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 impl From<ProtocolError> for WsError {
-    fn from(e: ProtocolError) -> Self { Self::Protocol(e) }
+    fn from(e: ProtocolError) -> Self {
+        Self::Protocol(e)
+    }
 }
 impl From<HandshakeError> for WsError {
-    fn from(e: HandshakeError) -> Self { Self::Handshake(e) }
+    fn from(e: HandshakeError) -> Self {
+        Self::Handshake(e)
+    }
 }
 #[cfg(feature = "tls")]
 impl From<TlsError> for WsError {
@@ -252,10 +266,12 @@ impl WsStreamBuilder {
 
         let tcp = match self.connect_timeout {
             Some(timeout) => {
-                let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&addr)
-                    .map_err(WsError::Io)?
-                    .collect();
-                let first = addrs.first()
+                let addrs: Vec<std::net::SocketAddr> =
+                    std::net::ToSocketAddrs::to_socket_addrs(&addr)
+                        .map_err(WsError::Io)?
+                        .collect();
+                let first = addrs
+                    .first()
                     .ok_or_else(|| WsError::Io(io::Error::other("DNS resolution failed")))?;
                 std::net::TcpStream::connect_timeout(first, timeout)?
             }
@@ -427,7 +443,13 @@ impl<S: Read + Write> WsStream<S> {
         writer: FrameWriter,
         write_buf: WriteBuf,
     ) -> Self {
-        Self { stream, tls, reader, writer, write_buf }
+        Self {
+            stream,
+            tls,
+            reader,
+            writer,
+            write_buf,
+        }
     }
 
     /// Internal constructor with all fields. Used by WsConnecting::finish().
@@ -438,7 +460,12 @@ impl<S: Read + Write> WsStream<S> {
         writer: FrameWriter,
         write_buf: WriteBuf,
     ) -> Self {
-        Self { stream, reader, writer, write_buf }
+        Self {
+            stream,
+            reader,
+            writer,
+            write_buf,
+        }
     }
 
     /// Receive the next message. Reads from the socket as needed.
@@ -460,7 +487,8 @@ impl<S: Read + Write> WsStream<S> {
 
     /// Send a text message.
     pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        self.writer.encode_text_into(text.as_bytes(), &mut self.write_buf);
+        self.writer
+            .encode_text_into(text.as_bytes(), &mut self.write_buf);
         self.flush_write_buf()
     }
 
@@ -472,13 +500,17 @@ impl<S: Read + Write> WsStream<S> {
 
     /// Send a ping.
     pub fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.encode_ping_into(data, &mut self.write_buf).map_err(|e| WsError::Io(io::Error::other(e)))?;
+        self.writer
+            .encode_ping_into(data, &mut self.write_buf)
+            .map_err(|e| WsError::Io(io::Error::other(e)))?;
         self.flush_write_buf()
     }
 
     /// Send a pong.
     pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.encode_pong_into(data, &mut self.write_buf).map_err(|e| WsError::Io(io::Error::other(e)))?;
+        self.writer
+            .encode_pong_into(data, &mut self.write_buf)
+            .map_err(|e| WsError::Io(io::Error::other(e)))?;
         self.flush_write_buf()
     }
 
@@ -489,19 +521,29 @@ impl<S: Read + Write> WsStream<S> {
             let n = self.writer.encode_empty_close(&mut dst);
             self.write_raw(&dst[..n])
         } else {
-            self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf).map_err(|e| WsError::Io(io::Error::other(e)))?;
+            self.writer
+                .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
+                .map_err(|e| WsError::Io(io::Error::other(e)))?;
             self.flush_write_buf()
         }
     }
 
     /// Access the underlying stream.
-    pub fn stream(&self) -> &S { &self.stream }
+    pub fn stream(&self) -> &S {
+        &self.stream
+    }
     /// Mutable access to the underlying stream.
-    pub fn stream_mut(&mut self) -> &mut S { &mut self.stream }
+    pub fn stream_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
     /// Access the FrameReader.
-    pub fn reader(&self) -> &FrameReader { &self.reader }
+    pub fn reader(&self) -> &FrameReader {
+        &self.reader
+    }
     /// Access the FrameWriter.
-    pub fn frame_writer(&self) -> &FrameWriter { &self.writer }
+    pub fn frame_writer(&self) -> &FrameWriter {
+        &self.writer
+    }
 
     // =========================================================================
     // Internal — read/write with optional TLS
@@ -524,11 +566,10 @@ impl<S: Read + Write> WsStream<S> {
                 if tls_n == 0 {
                     return Ok(0); // EOF
                 }
-                let plaintext_n = tls.process_into(&mut self.reader)
-                    .map_err(|e| match e {
-                        TlsError::Io(io) => io,
-                        other => io::Error::other(other),
-                    })?;
+                let plaintext_n = tls.process_into(&mut self.reader).map_err(|e| match e {
+                    TlsError::Io(io) => io,
+                    other => io::Error::other(other),
+                })?;
                 if plaintext_n > 0 {
                     return Ok(plaintext_n);
                 }
@@ -580,8 +621,7 @@ impl<S: Read + Write> WsStream<S> {
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
         write_headroom: usize,
-        #[cfg(feature = "tls")]
-        mut tls: Option<TlsCodec>,
+        #[cfg(feature = "tls")] mut tls: Option<TlsCodec>,
     ) -> Result<Self, WsError> {
         // Phase 1: TLS handshake (if wss://)
         #[cfg(feature = "tls")]
@@ -663,23 +703,28 @@ impl<S: Read + Write> WsStream<S> {
                 return Err(HandshakeError::MalformedHttp.into());
             }
 
-            resp_reader.read(&tmp[..bytes_read]).map_err(|_| HandshakeError::MalformedHttp)?;
+            resp_reader
+                .read(&tmp[..bytes_read])
+                .map_err(|_| HandshakeError::MalformedHttp)?;
             match resp_reader.next() {
                 Ok(Some(resp)) => {
                     if resp.status != 101 {
                         return Err(HandshakeError::UnexpectedStatus(resp.status).into());
                     }
-                    let upgrade = resp.header("Upgrade")
+                    let upgrade = resp
+                        .header("Upgrade")
                         .ok_or(HandshakeError::MissingUpgrade)?;
                     if !upgrade.eq_ignore_ascii_case("websocket") {
                         return Err(HandshakeError::MissingUpgrade.into());
                     }
-                    let conn = resp.header("Connection")
+                    let conn = resp
+                        .header("Connection")
                         .ok_or(HandshakeError::MissingConnection)?;
                     if !contains_ignore_case(conn, "upgrade") {
                         return Err(HandshakeError::MissingConnection.into());
                     }
-                    let accept = resp.header("Sec-WebSocket-Accept")
+                    let accept = resp
+                        .header("Sec-WebSocket-Accept")
                         .ok_or(HandshakeError::InvalidAcceptKey)?;
                     if !handshake::validate_accept(key_str, accept) {
                         return Err(HandshakeError::InvalidAcceptKey.into());
@@ -688,7 +733,9 @@ impl<S: Read + Write> WsStream<S> {
                     let mut reader = reader_builder.role(Role::Client).build();
                     let remainder = resp_reader.remainder();
                     if !remainder.is_empty() {
-                        reader.read(remainder).map_err(|_| HandshakeError::MalformedHttp)?;
+                        reader
+                            .read(remainder)
+                            .map_err(|_| HandshakeError::MalformedHttp)?;
                     }
 
                     return Ok(Self {
@@ -721,28 +768,34 @@ impl<S: Read + Write> WsStream<S> {
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
             }
-            req_reader.read(&tmp[..n]).map_err(|_| HandshakeError::MalformedHttp)?;
+            req_reader
+                .read(&tmp[..n])
+                .map_err(|_| HandshakeError::MalformedHttp)?;
             match req_reader.next() {
                 Ok(Some(req)) => {
                     if req.method != "GET" {
                         return Err(HandshakeError::MalformedHttp.into());
                     }
-                    let upgrade = req.header("Upgrade")
+                    let upgrade = req
+                        .header("Upgrade")
                         .ok_or(HandshakeError::MissingUpgrade)?;
                     if !upgrade.eq_ignore_ascii_case("websocket") {
                         return Err(HandshakeError::MissingUpgrade.into());
                     }
-                    let conn = req.header("Connection")
+                    let conn = req
+                        .header("Connection")
                         .ok_or(HandshakeError::MissingConnection)?;
                     if !contains_ignore_case(conn, "upgrade") {
                         return Err(HandshakeError::MissingConnection.into());
                     }
-                    let version = req.header("Sec-WebSocket-Version")
+                    let version = req
+                        .header("Sec-WebSocket-Version")
                         .ok_or(HandshakeError::UnsupportedVersion)?;
                     if version != "13" {
                         return Err(HandshakeError::UnsupportedVersion.into());
                     }
-                    let key = req.header("Sec-WebSocket-Key")
+                    let key = req
+                        .header("Sec-WebSocket-Key")
                         .ok_or(HandshakeError::MissingKey)?;
                     ws_key = key.to_owned();
                     break;
@@ -762,14 +815,17 @@ impl<S: Read + Write> WsStream<S> {
         ];
         let resp_size = crate::http::response_size("Switching Protocols", &resp_headers);
         let mut resp_buf = vec![0u8; resp_size];
-        let n = crate::http::write_response(101, "Switching Protocols", &resp_headers, &mut resp_buf)
-            .map_err(|_| HandshakeError::MalformedHttp)?;
+        let n =
+            crate::http::write_response(101, "Switching Protocols", &resp_headers, &mut resp_buf)
+                .map_err(|_| HandshakeError::MalformedHttp)?;
         stream.write_all(&resp_buf[..n])?;
 
         let mut reader = reader_builder.role(Role::Server).build();
         let remainder = req_reader.remainder();
         if !remainder.is_empty() {
-            reader.read(remainder).map_err(|_| HandshakeError::MalformedHttp)?;
+            reader
+                .read(remainder)
+                .map_err(|_| HandshakeError::MalformedHttp)?;
         }
 
         Ok(Self {
@@ -787,7 +843,10 @@ impl<S: Read + Write> WsStream<S> {
 ///
 /// Prevents mismatched roles between reader and writer.
 pub fn pair(role: Role) -> (FrameReader, FrameWriter) {
-    (FrameReader::builder().role(role).build(), FrameWriter::new(role))
+    (
+        FrameReader::builder().role(role).build(),
+        FrameWriter::new(role),
+    )
 }
 
 /// Create a pair with a configured FrameReader.
@@ -874,7 +933,9 @@ mod tests {
     }
 
     impl ByteAtATimeStream {
-        fn new(data: Vec<u8>) -> Self { Self { data, pos: 0 } }
+        fn new(data: Vec<u8>) -> Self {
+            Self { data, pos: 0 }
+        }
     }
 
     impl Read for ByteAtATimeStream {
@@ -889,8 +950,12 @@ mod tests {
     }
 
     impl Write for ByteAtATimeStream {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     fn make_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
@@ -995,8 +1060,12 @@ mod tests {
             }
         }
         impl Write for WouldBlockStream {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
 
         let reader = FrameReader::builder().role(Role::Client).build();

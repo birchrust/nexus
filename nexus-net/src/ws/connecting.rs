@@ -2,12 +2,12 @@
 
 use std::io::{self, Read, Write};
 
-use crate::buf::WriteBuf;
 use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
 use super::stream::{WsError, WsStream, WsStreamBuilder, parse_ws_url};
+use crate::buf::WriteBuf;
 
 #[cfg(feature = "tls")]
 use crate::tls::TlsCodec;
@@ -247,9 +247,12 @@ impl<S: Read + Write> WsConnecting<S> {
                 ConnectState::HttpRecv => {
                     let mut tmp = [0u8; 4096];
                     let n = self.read_bytes(&mut tmp)?;
-                    if n == 0 { return Ok(None); }
+                    if n == 0 {
+                        return Ok(None);
+                    }
 
-                    self.resp_reader.read(&tmp[..n])
+                    self.resp_reader
+                        .read(&tmp[..n])
                         .map_err(|_| HandshakeError::MalformedHttp)?;
 
                     // Check if we have a complete response.
@@ -261,20 +264,25 @@ impl<S: Read + Write> WsConnecting<S> {
                             if resp.status != 101 {
                                 return Err(HandshakeError::UnexpectedStatus(resp.status).into());
                             }
-                            let upgrade = resp.header("Upgrade")
+                            let upgrade = resp
+                                .header("Upgrade")
                                 .ok_or(HandshakeError::MissingUpgrade)?;
                             if !upgrade.eq_ignore_ascii_case("websocket") {
                                 return Err(HandshakeError::MissingUpgrade.into());
                             }
-                            let conn = resp.header("Connection")
+                            let conn = resp
+                                .header("Connection")
                                 .ok_or(HandshakeError::MissingConnection)?;
-                            if !conn.as_bytes().windows(7)
+                            if !conn
+                                .as_bytes()
+                                .windows(7)
                                 .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
                             {
                                 return Err(HandshakeError::MissingConnection.into());
                             }
                             let key_str = std::str::from_utf8(&self.ws_key).unwrap();
-                            let accept = resp.header("Sec-WebSocket-Accept")
+                            let accept = resp
+                                .header("Sec-WebSocket-Accept")
                                 .ok_or(HandshakeError::InvalidAcceptKey)?;
                             if !handshake::validate_accept(key_str, accept) {
                                 return Err(HandshakeError::InvalidAcceptKey.into());
@@ -295,25 +303,29 @@ impl<S: Read + Write> WsConnecting<S> {
 
     /// Whether the handshake needs to write to the socket.
     pub fn wants_write(&self) -> bool {
-        matches!(self.state,
-            ConnectState::HttpSend
-            | if_tls!(ConnectState::TlsWrite)
+        matches!(
+            self.state,
+            ConnectState::HttpSend | if_tls!(ConnectState::TlsWrite)
         )
     }
 
     /// Whether the handshake needs to read from the socket.
     pub fn wants_read(&self) -> bool {
-        matches!(self.state,
-            ConnectState::HttpRecv
-            | if_tls!(ConnectState::TlsRead)
+        matches!(
+            self.state,
+            ConnectState::HttpRecv | if_tls!(ConnectState::TlsRead)
         )
     }
 
     /// Access the underlying stream (for mio registration).
-    pub fn stream(&self) -> &S { &self.stream }
+    pub fn stream(&self) -> &S {
+        &self.stream
+    }
 
     /// Mutable access to the underlying stream.
-    pub fn stream_mut(&mut self) -> &mut S { &mut self.stream }
+    pub fn stream_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
 
     // =========================================================================
     // Internal
@@ -339,14 +351,12 @@ impl<S: Read + Write> WsConnecting<S> {
     fn finish(&mut self) -> Result<WsStream<S>, WsError> {
         self.finished = true;
 
-        let reader_builder = std::mem::replace(
-            &mut self.reader_builder,
-            FrameReader::builder(),
-        );
+        let reader_builder = std::mem::replace(&mut self.reader_builder, FrameReader::builder());
         let mut reader = reader_builder.role(Role::Client).build();
         let remainder = self.resp_reader.remainder();
         if !remainder.is_empty() {
-            reader.read(remainder)
+            reader
+                .read(remainder)
                 .map_err(|_| WsError::Handshake(HandshakeError::MalformedHttp))?;
         }
 
@@ -400,7 +410,9 @@ impl<S> Drop for WsConnecting<S> {
         if !self.finished {
             // finish() was never called — drop the stream manually.
             // SAFETY: stream hasn't been taken via ManuallyDrop::take.
-            unsafe { std::mem::ManuallyDrop::drop(&mut self.stream); }
+            unsafe {
+                std::mem::ManuallyDrop::drop(&mut self.stream);
+            }
         }
         // tls is Option — dropped normally by the compiler.
     }
@@ -409,10 +421,14 @@ impl<S> Drop for WsConnecting<S> {
 // Macro to conditionally include TLS variants in matches!()
 #[cfg(feature = "tls")]
 macro_rules! if_tls {
-    ($pat:pat) => { $pat };
+    ($pat:pat) => {
+        $pat
+    };
 }
 #[cfg(not(feature = "tls"))]
 macro_rules! if_tls {
-    ($pat:pat) => { ConnectState::Done }; // never matches Done twice, but unused
+    ($pat:pat) => {
+        ConnectState::Done
+    }; // never matches Done twice, but unused
 }
 use if_tls;

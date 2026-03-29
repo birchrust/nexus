@@ -122,9 +122,7 @@ impl TlsConfigBuilder {
             }
 
             for cert in self.custom_roots {
-                root_store
-                    .add(cert)
-                    .map_err(TlsError::Rustls)?;
+                root_store.add(cert).map_err(TlsError::Rustls)?;
             }
 
             if root_store.is_empty() {

@@ -6,9 +6,9 @@
 //!   cargo build --release -p nexus-net --example perf_ws
 //!   taskset -c 0 ./target/release/examples/perf_ws
 
-use std::hint::black_box;
-use nexus_net::ws::{apply_mask, FrameReader, FrameWriter, Role};
 use nexus_net::buf::WriteBuf;
+use nexus_net::ws::{FrameReader, FrameWriter, Role, apply_mask};
+use std::hint::black_box;
 
 // ============================================================================
 // Timing
@@ -89,7 +89,11 @@ fn make_masked_frame(fin: bool, opcode: u8, payload: &[u8], mask: [u8; 4]) -> Ve
     let mut frame = Vec::new();
     let byte0 = if fin { 0x80 } else { 0x00 } | opcode;
     frame.push(byte0);
-    let len_byte = if payload.len() <= 125 { payload.len() as u8 } else { 126 };
+    let len_byte = if payload.len() <= 125 {
+        payload.len() as u8
+    } else {
+        126
+    };
     frame.push(0x80 | len_byte);
     if payload.len() > 125 {
         frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
@@ -220,7 +224,14 @@ fn bench_encode_cycles(samples: &mut [u64], size: usize, role: Role) {
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
     }
-    let label = format!("encode_text ({size}B, {})", if role == Role::Server { "server" } else { "client" });
+    let label = format!(
+        "encode_text ({size}B, {})",
+        if role == Role::Server {
+            "server"
+        } else {
+            "client"
+        }
+    );
     print_row(&label, samples);
 }
 
@@ -274,7 +285,10 @@ fn bench_throughput_cycles(samples: &mut [u64], msg_count: usize) {
         assert_eq!(count, msg_count);
         *s = (end - start) / count as u64;
     }
-    print_row(&format!("throughput ({msg_count}× 128B binary, /msg)"), samples);
+    print_row(
+        &format!("throughput ({msg_count}× 128B binary, /msg)"),
+        samples,
+    );
 }
 
 // ============================================================================
@@ -290,20 +304,35 @@ fn main() {
     section("FrameReader — single frame, unmasked (client role)");
     for size in [32, 128, 512, 2048] {
         let frame = make_frame(true, 0x1, &vec![b'x'; size]);
-        bench_read_next(&mut buf, &format!("text unmasked ({size}B)"), &frame, Role::Client);
+        bench_read_next(
+            &mut buf,
+            &format!("text unmasked ({size}B)"),
+            &frame,
+            Role::Client,
+        );
     }
 
     section("FrameReader — single frame, binary unmasked");
     for size in [128, 1024] {
         let frame = make_frame(true, 0x2, &vec![0x42; size]);
-        bench_read_next(&mut buf, &format!("binary unmasked ({size}B)"), &frame, Role::Client);
+        bench_read_next(
+            &mut buf,
+            &format!("binary unmasked ({size}B)"),
+            &frame,
+            Role::Client,
+        );
     }
 
     section("FrameReader — single frame, masked (server role)");
     let mask = [0x37, 0xFA, 0x21, 0x3D];
     for size in [128, 512, 2048] {
         let frame = make_masked_frame(true, 0x1, &vec![b'x'; size], mask);
-        bench_read_next(&mut buf, &format!("text masked ({size}B)"), &frame, Role::Server);
+        bench_read_next(
+            &mut buf,
+            &format!("text masked ({size}B)"),
+            &frame,
+            Role::Server,
+        );
     }
 
     section("Components — apply_mask");

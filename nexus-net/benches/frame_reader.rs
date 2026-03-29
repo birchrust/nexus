@@ -3,10 +3,8 @@
 //! Baseline before optimizations. Run with:
 //!   cargo bench -p nexus-net --bench frame_reader
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use nexus_net::ws::{apply_mask, FrameReader, Role};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use nexus_net::ws::{FrameReader, Role, apply_mask};
 
 // =============================================================================
 // Helpers
@@ -63,22 +61,18 @@ fn bench_text_unmasked(c: &mut Criterion) {
         let payload = vec![b'x'; size];
         let frame = make_frame(true, 0x1, &payload);
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &frame,
-            |b, frame| {
-                let mut reader = FrameReader::builder()
-                    .role(Role::Client)
-                    .buffer_capacity(64 * 1024)
-                    .build();
-                b.iter(|| {
-                    reader.read(frame).unwrap();
-                    let msg = reader.next().unwrap().unwrap();
-                    black_box(&msg);
-                    drop(msg);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &frame, |b, frame| {
+            let mut reader = FrameReader::builder()
+                .role(Role::Client)
+                .buffer_capacity(64 * 1024)
+                .build();
+            b.iter(|| {
+                reader.read(frame).unwrap();
+                let msg = reader.next().unwrap().unwrap();
+                black_box(&msg);
+                drop(msg);
+            });
+        });
     }
     group.finish();
 }
@@ -89,22 +83,18 @@ fn bench_binary_unmasked(c: &mut Criterion) {
         let payload = vec![0x42u8; size];
         let frame = make_frame(true, 0x2, &payload);
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &frame,
-            |b, frame| {
-                let mut reader = FrameReader::builder()
-                    .role(Role::Client)
-                    .buffer_capacity(64 * 1024)
-                    .build();
-                b.iter(|| {
-                    reader.read(frame).unwrap();
-                    let msg = reader.next().unwrap().unwrap();
-                    black_box(&msg);
-                    drop(msg);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &frame, |b, frame| {
+            let mut reader = FrameReader::builder()
+                .role(Role::Client)
+                .buffer_capacity(64 * 1024)
+                .build();
+            b.iter(|| {
+                reader.read(frame).unwrap();
+                let msg = reader.next().unwrap().unwrap();
+                black_box(&msg);
+                drop(msg);
+            });
+        });
     }
     group.finish();
 }
@@ -116,22 +106,18 @@ fn bench_text_masked(c: &mut Criterion) {
         let payload = vec![b'x'; size];
         let frame = make_masked_frame(true, 0x1, &payload, mask);
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &frame,
-            |b, frame| {
-                let mut reader = FrameReader::builder()
-                    .role(Role::Server)
-                    .buffer_capacity(64 * 1024)
-                    .build();
-                b.iter(|| {
-                    reader.read(frame).unwrap();
-                    let msg = reader.next().unwrap().unwrap();
-                    black_box(&msg);
-                    drop(msg);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &frame, |b, frame| {
+            let mut reader = FrameReader::builder()
+                .role(Role::Server)
+                .buffer_capacity(64 * 1024)
+                .build();
+            b.iter(|| {
+                reader.read(frame).unwrap();
+                let msg = reader.next().unwrap().unwrap();
+                black_box(&msg);
+                drop(msg);
+            });
+        });
     }
     group.finish();
 }
@@ -148,22 +134,18 @@ fn bench_assembly_2_fragments(c: &mut Criterion) {
         let mut wire = make_frame(false, 0x2, &payload[..half]);
         wire.extend(&make_frame(true, 0x0, &payload[half..]));
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &wire,
-            |b, wire| {
-                let mut reader = FrameReader::builder()
-                    .role(Role::Client)
-                    .buffer_capacity(64 * 1024)
-                    .build();
-                b.iter(|| {
-                    reader.read(wire).unwrap();
-                    let msg = reader.next().unwrap().unwrap();
-                    black_box(&msg);
-                    drop(msg);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &wire, |b, wire| {
+            let mut reader = FrameReader::builder()
+                .role(Role::Client)
+                .buffer_capacity(64 * 1024)
+                .build();
+            b.iter(|| {
+                reader.read(wire).unwrap();
+                let msg = reader.next().unwrap().unwrap();
+                black_box(&msg);
+                drop(msg);
+            });
+        });
     }
     group.finish();
 }
@@ -215,16 +197,12 @@ fn bench_unmask(c: &mut Criterion) {
         let mut data = vec![0x42u8; size];
         let mask = [0x37, 0xFA, 0x21, 0x3D];
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    apply_mask(&mut data, mask);
-                    black_box(&data);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+            b.iter(|| {
+                apply_mask(&mut data, mask);
+                black_box(&data);
+            });
+        });
     }
     group.finish();
 }
@@ -234,15 +212,11 @@ fn bench_utf8_validate(c: &mut Criterion) {
     for size in [64, 128, 256, 512, 1024, 4096] {
         let data = vec![b'x'; size]; // valid ASCII
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    black_box(std::str::from_utf8(data).unwrap());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &data, |b, data| {
+            b.iter(|| {
+                black_box(std::str::from_utf8(data).unwrap());
+            });
+        });
     }
     group.finish();
 }

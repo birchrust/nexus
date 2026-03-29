@@ -3,8 +3,8 @@ use std::io::{self, Read, Write};
 use rustls::ClientConnection;
 use rustls::pki_types::ServerName;
 
-use crate::ws::FrameReader;
 use super::{TlsConfig, TlsError};
+use crate::ws::FrameReader;
 
 /// Sans-IO TLS codec. Decrypts inbound bytes, encrypts outbound bytes.
 ///
@@ -101,9 +101,9 @@ impl TlsCodec {
         }
         let n = chunk.len();
         if let Err(e) = reader.read(chunk) {
-            return Err(TlsError::Io(io::Error::other(
-                format!("FrameReader buffer full: {e}"),
-            )));
+            return Err(TlsError::Io(io::Error::other(format!(
+                "FrameReader buffer full: {e}"
+            ))));
         }
         std::io::BufRead::consume(&mut rd, n);
         Ok(n)

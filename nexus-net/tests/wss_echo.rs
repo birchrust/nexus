@@ -12,15 +12,16 @@
 
 #![cfg(feature = "tls")]
 
-use std::net::TcpStream;
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{CloseCode, Message, WsStream};
+use std::net::TcpStream;
 
 fn connect_echo(host: &str, port: u16, url: &str) -> WsStream<TcpStream> {
     let tls_config = TlsConfig::new().expect("TLS config with system certs");
     let tcp = TcpStream::connect((host, port)).expect("TCP connect");
     tcp.set_nodelay(true).ok();
-    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
     nexus_net::ws::WsStreamBuilder::new()
         .tls(&tls_config)
         .write_buffer_capacity(64 * 1024)
@@ -31,10 +32,7 @@ fn connect_echo(host: &str, port: u16, url: &str) -> WsStream<TcpStream> {
 #[test]
 #[ignore]
 fn postman_echo_text() {
-    let mut ws = connect_echo(
-        "ws.postman-echo.com", 443,
-        "wss://ws.postman-echo.com/raw",
-    );
+    let mut ws = connect_echo("ws.postman-echo.com", 443, "wss://ws.postman-echo.com/raw");
 
     // Text echo
     ws.send_text("Hello from nexus-net!").unwrap();

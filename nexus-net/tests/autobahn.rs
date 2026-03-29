@@ -23,10 +23,8 @@
 //! podman stop autobahn
 //! ```
 
+use nexus_net::ws::{CloseCode, Message, OwnedMessage, ProtocolError, WsError, WsStream};
 use std::net::TcpStream;
-use nexus_net::ws::{
-    CloseCode, Message, OwnedMessage, ProtocolError, WsError, WsStream,
-};
 
 const AUTOBAHN_HOST: &str = "127.0.0.1:9001";
 const AGENT: &str = "nexus-net";
@@ -88,13 +86,19 @@ fn run_case(case: u32) {
 
         match msg {
             OwnedMessage::Text(s) => {
-                if ws.send_text(&s).is_err() { break; }
+                if ws.send_text(&s).is_err() {
+                    break;
+                }
             }
             OwnedMessage::Binary(b) => {
-                if ws.send_binary(&b).is_err() { break; }
+                if ws.send_binary(&b).is_err() {
+                    break;
+                }
             }
             OwnedMessage::Ping(p) => {
-                if ws.send_pong(&p).is_err() { break; }
+                if ws.send_pong(&p).is_err() {
+                    break;
+                }
             }
             OwnedMessage::Close(_) => {
                 let _ = ws.close(CloseCode::Normal, "");

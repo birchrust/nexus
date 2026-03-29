@@ -19,6 +19,7 @@ mod message;
 mod stream;
 
 // User-facing types
+pub use connecting::WsConnecting;
 pub use error::ProtocolError;
 pub use frame::Role;
 pub use frame_reader::{FrameReader, FrameReaderBuilder, ReadError};
@@ -26,5 +27,4 @@ pub use frame_writer::{EncodeError, FrameHeader, FrameWriter};
 pub use handshake::HandshakeError;
 pub use mask::apply_mask;
 pub use message::{CloseCode, CloseFrame, Message, OwnedCloseFrame, OwnedMessage};
-pub use connecting::WsConnecting;
 pub use stream::{WsError, WsStream, WsStreamBuilder, pair, pair_with};

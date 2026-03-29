@@ -25,7 +25,10 @@ impl std::fmt::Display for HttpError {
                 write!(f, "buffer full: need {needed}, {available} available")
             }
             Self::BufferTooSmall { needed, available } => {
-                write!(f, "write buffer too small: need {needed} bytes, have {available}")
+                write!(
+                    f,
+                    "write buffer too small: need {needed} bytes, have {available}"
+                )
             }
             Self::InvalidHeaderValue => {
                 write!(f, "header name or value contains CR/LF")

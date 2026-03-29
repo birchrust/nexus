@@ -78,7 +78,10 @@ impl std::fmt::Display for ProtocolError {
             }
             Self::InvalidUtf8 => write!(f, "text message contains invalid UTF-8"),
             Self::MessageTooLarge { accumulated, max } => {
-                write!(f, "assembled message too large: {accumulated} bytes (max {max})")
+                write!(
+                    f,
+                    "assembled message too large: {accumulated} bytes (max {max})"
+                )
             }
         }
     }

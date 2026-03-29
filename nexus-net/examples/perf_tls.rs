@@ -68,8 +68,8 @@ const BATCH: u64 = 8;
 // ============================================================================
 
 fn generate_self_signed() -> (Vec<u8>, Vec<u8>) {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .expect("cert generation");
+    let cert =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert generation");
     (cert.cert.der().to_vec(), cert.key_pair.serialize_der())
 }
 
@@ -80,7 +80,9 @@ struct MemPipe {
 }
 
 impl MemPipe {
-    fn new() -> Self { Self { buf: Vec::new() } }
+    fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
 
     fn write_to(&mut self, data: &[u8]) {
         self.buf.extend_from_slice(data);
@@ -93,7 +95,9 @@ impl MemPipe {
         n
     }
 
-    fn len(&self) -> usize { self.buf.len() }
+    fn len(&self) -> usize {
+        self.buf.len()
+    }
 }
 
 /// Do the TLS handshake over in-memory pipes.
@@ -166,10 +170,7 @@ fn handshake_in_memory(
 }
 
 /// Use the server connection to encrypt a WS frame into a TLS record.
-fn encrypt_ws_frame(
-    server: &mut rustls::ServerConnection,
-    ws_frame: &[u8],
-) -> Vec<u8> {
+fn encrypt_ws_frame(server: &mut rustls::ServerConnection, ws_frame: &[u8]) -> Vec<u8> {
     server.writer().write_all(ws_frame).unwrap();
     let mut out = Vec::new();
     server.write_tls(&mut out).unwrap();
@@ -225,7 +226,9 @@ fn bench_nexus(
 
         let t0 = rdtsc_start();
         for record in &records {
-            client.read_tls(&mut Cursor::new(record.as_slice())).unwrap();
+            client
+                .read_tls(&mut Cursor::new(record.as_slice()))
+                .unwrap();
             client.process_new_packets().unwrap();
             let mut rd = client.reader();
             let _ = reader.read_from(&mut rd);
@@ -265,15 +268,21 @@ impl Read for TlsRecordFeeder<'_> {
         }
         let record = &self.records[idx];
         self.idx.set(idx + 1);
-        self.client.read_tls(&mut Cursor::new(record.as_slice())).unwrap();
+        self.client
+            .read_tls(&mut Cursor::new(record.as_slice()))
+            .unwrap();
         self.client.process_new_packets().unwrap();
         self.client.reader().read(buf)
     }
 }
 
 impl Write for TlsRecordFeeder<'_> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn bench_tungstenite(
@@ -312,7 +321,9 @@ fn bench_tungstenite(
         let t0 = rdtsc_start();
         for _ in 0..BATCH {
             match ws.read() {
-                Ok(msg) => { black_box(&msg); }
+                Ok(msg) => {
+                    black_box(&msg);
+                }
                 Err(_) => break,
             }
         }
@@ -329,18 +340,28 @@ fn bench_tungstenite(
 struct NoVerify;
 impl rustls::client::danger::ServerCertVerifier for NoVerify {
     fn verify_server_cert(
-        &self, _: &rustls::pki_types::CertificateDer<'_>, _: &[rustls::pki_types::CertificateDer<'_>],
-        _: &rustls::pki_types::ServerName<'_>, _: &[u8], _: rustls::pki_types::UnixTime,
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
     fn verify_tls12_signature(
-        &self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct,
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
     fn verify_tls13_signature(
-        &self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct,
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
