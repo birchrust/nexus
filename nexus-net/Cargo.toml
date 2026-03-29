@@ -19,8 +19,12 @@ name = "perf_buf"
 [[example]]
 name = "perf_ws"
 
+[[example]]
+name = "perf_vs_tungstenite"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tungstenite = "0.29"
 
 [[bench]]
 name = "frame_reader"

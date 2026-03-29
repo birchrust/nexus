@@ -147,6 +147,24 @@ impl FrameReader {
         Ok(())
     }
 
+    /// Read bytes from a source directly into the internal buffer.
+    ///
+    /// Convenience for `spare()` + `filled()`. Returns bytes read,
+    /// or 0 on EOF.
+    ///
+    /// ```ignore
+    /// let n = reader.read_from(&mut socket)?;
+    /// ```
+    pub fn read_from<R: std::io::Read>(&mut self, src: &mut R) -> std::io::Result<usize> {
+        let spare = self.buf.spare();
+        if spare.is_empty() {
+            return Ok(0);
+        }
+        let n = src.read(spare)?;
+        self.buf.filled(n);
+        Ok(n)
+    }
+
     /// Writable region for direct socket reads.
     #[inline]
     pub fn spare(&mut self) -> &mut [u8] {

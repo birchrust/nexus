@@ -10,6 +10,17 @@ use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
 use super::message::{CloseCode, Message};
 
+/// Parse a WebSocket URL into (host, path).
+///
+/// Accepts: `ws://host/path`, `wss://host/path`, or `host/path`.
+/// If no path is present, defaults to `"/"`.
+fn parse_ws_url(url: &str) -> (&str, &str) {
+    let stripped = url.strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://"))
+        .unwrap_or(url);
+    stripped.find('/').map_or((stripped, "/"), |i| (&stripped[..i], &stripped[i..]))
+}
+
 /// Unified error type for WsStream operations.
 #[derive(Debug)]
 pub enum WsError {
@@ -83,9 +94,9 @@ impl WsStreamBuilder {
     pub fn connect<S: Read + Write>(
         self,
         stream: S,
-        host: &str,
-        path: &str,
+        url: &str,
     ) -> Result<WsStream<S>, WsError> {
+        let (host, path) = parse_ws_url(url);
         WsStream::connect_impl(stream, host, path, self.reader_builder, self.write_buf_capacity, self.write_buf_headroom)
     }
 
@@ -107,7 +118,7 @@ impl WsStreamBuilder {
 /// use nexus_net::ws::{WsStream, OwnedMessage};
 ///
 /// let tcp = TcpStream::connect("echo.websocket.org:80").unwrap();
-/// let mut ws = WsStream::connect(tcp, "echo.websocket.org", "/").unwrap();
+/// let mut ws = WsStream::connect(tcp, "ws://echo.websocket.org/").unwrap();
 ///
 /// ws.send_text("Hello!").unwrap();
 ///
@@ -164,17 +175,28 @@ impl<S: Read + Write> WsStream<S> {
     }
 
     /// Connect as WebSocket client with default configuration.
-    pub fn connect(stream: S, host: &str, path: &str) -> Result<Self, WsError> {
+    ///
+    /// `url` is a WebSocket URL: `ws://host/path` or `wss://host/path`.
+    /// The scheme prefix is optional — `host/path` works too.
+    ///
+    /// ```no_run
+    /// # use std::net::TcpStream;
+    /// # use nexus_net::ws::WsStream;
+    /// let tcp = TcpStream::connect("exchange.com:443").unwrap();
+    /// let ws = WsStream::connect(tcp, "wss://exchange.com/ws/v1").unwrap();
+    /// ```
+    pub fn connect(stream: S, url: &str) -> Result<Self, WsError> {
+        let (host, path) = parse_ws_url(url);
         Self::connect_impl(stream, host, path, FrameReader::builder(), 4096, 14)
     }
 
     /// Connect with a pre-configured FrameReader.
     pub fn connect_with_reader(
         stream: S,
-        host: &str,
-        path: &str,
+        url: &str,
         reader_builder: FrameReaderBuilder,
     ) -> Result<Self, WsError> {
+        let (host, path) = parse_ws_url(url);
         Self::connect_impl(stream, host, path, reader_builder, 4096, 14)
     }
 

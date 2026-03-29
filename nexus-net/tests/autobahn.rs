@@ -18,12 +18,13 @@ const AGENT: &str = "nexus-net";
 
 fn make_ws(path: &str) -> WsStream<TcpStream> {
     let tcp = TcpStream::connect(AUTOBAHN_HOST).expect("connect failed");
+    let url = format!("ws://{AUTOBAHN_HOST}{path}");
     nexus_net::ws::WsStreamBuilder::new()
         .buffer_capacity(16 * 1024 * 1024 + 4096) // 16MB + header room
         .max_frame_size(16 * 1024 * 1024)
         .max_message_size(16 * 1024 * 1024)
         .write_buffer_capacity(16 * 1024 * 1024 + 4096) // match read capacity for echo
-        .connect(tcp, AUTOBAHN_HOST, path)
+        .connect(tcp, &url)
         .expect("handshake failed")
 }
 

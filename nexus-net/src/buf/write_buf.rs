@@ -72,13 +72,11 @@ impl WriteBuf {
     ///
     /// # Panics
     /// Panics if `src.len() > self.headroom()`.
+    #[inline]
     pub fn prepend(&mut self, src: &[u8]) {
-        assert!(
-            src.len() <= self.headroom(),
-            "prepend: {} bytes exceeds headroom ({})",
-            src.len(),
-            self.headroom()
-        );
+        if src.len() > self.headroom() {
+            Self::panic_headroom(src.len(), self.headroom());
+        }
         let new_head = self.head - src.len();
         self.buf[new_head..self.head].copy_from_slice(src);
         self.head = new_head;
@@ -88,13 +86,11 @@ impl WriteBuf {
     ///
     /// # Panics
     /// Panics if `src.len() > self.tailroom()`.
+    #[inline]
     pub fn append(&mut self, src: &[u8]) {
-        assert!(
-            src.len() <= self.tailroom(),
-            "append: {} bytes exceeds tailroom ({})",
-            src.len(),
-            self.tailroom()
-        );
+        if src.len() > self.tailroom() {
+            Self::panic_tailroom(src.len(), self.tailroom());
+        }
         self.buf[self.tail..self.tail + src.len()].copy_from_slice(src);
         self.tail += src.len();
     }
@@ -161,6 +157,18 @@ impl WriteBuf {
     pub fn clear(&mut self) {
         self.head = self.reset_offset;
         self.tail = self.reset_offset;
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_headroom(needed: usize, available: usize) -> ! {
+        panic!("prepend: {needed} bytes exceeds headroom ({available})")
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_tailroom(needed: usize, available: usize) -> ! {
+        panic!("append: {needed} bytes exceeds tailroom ({available})")
     }
 }
 

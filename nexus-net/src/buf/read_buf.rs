@@ -96,11 +96,9 @@ impl ReadBuf {
     /// Panics if `n > self.len()`.
     #[inline]
     pub fn advance(&mut self, n: usize) {
-        assert!(
-            n <= self.len(),
-            "advance({n}) exceeds buffered data ({})",
-            self.len()
-        );
+        if n > self.len() {
+            Self::panic_advance(n, self.len());
+        }
         self.head += n;
         if self.head == self.tail {
             self.head = self.pre_padding;
@@ -135,11 +133,9 @@ impl ReadBuf {
     pub fn filled(&mut self, n: usize) {
         let new_tail = self.tail + n;
         let end = self.pre_padding + self.capacity;
-        assert!(
-            new_tail <= end,
-            "filled({n}) would exceed capacity (tail={}, end={end})",
-            self.tail
-        );
+        if new_tail > end {
+            Self::panic_filled(n, self.tail, end);
+        }
         self.tail = new_tail;
     }
 
@@ -192,6 +188,18 @@ impl ReadBuf {
     pub fn clear(&mut self) {
         self.head = self.pre_padding;
         self.tail = self.pre_padding;
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_advance(n: usize, len: usize) -> ! {
+        panic!("advance({n}) exceeds buffered data ({len})")
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_filled(n: usize, tail: usize, end: usize) -> ! {
+        panic!("filled({n}) would exceed capacity (tail={tail}, end={end})")
     }
 }
 
