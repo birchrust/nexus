@@ -225,24 +225,30 @@ impl FrameReader {
     // =========================================================================
 
     /// Execute pending cleanup from the previously returned Message.
+    #[inline]
     fn do_cleanup(&mut self) {
         match self.pending_cleanup {
-            PendingCleanup::None => {}
+            PendingCleanup::None => return,
             PendingCleanup::AdvanceReadBuf(n) => {
                 self.buf.advance(n);
             }
             PendingCleanup::ClearMsgBuf => {
-                self.msg_buf.clear();
-                if self.msg_buf.capacity() > self.compact_threshold {
-                    self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
-                }
+                self.do_cleanup_msg_buf();
             }
             PendingCleanup::TruncateMsgBuf(len) => {
-                // Remove control frame payload, keep assembly data
                 self.msg_buf.truncate(len);
             }
         }
         self.pending_cleanup = PendingCleanup::None;
+    }
+
+    /// Cold path: clear msg_buf with potential compaction.
+    #[cold]
+    fn do_cleanup_msg_buf(&mut self) {
+        self.msg_buf.clear();
+        if self.msg_buf.capacity() > self.compact_threshold {
+            self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
+        }
     }
 
     /// State machine: consume frames from ReadBuf.
@@ -266,7 +272,7 @@ impl FrameReader {
 
                     if self.remaining_payload == 0 {
                         self.state = ParseState::Head;
-                        if let Some(completed) = self.route_opcode(opcode, fin, false)? {
+                        if let Some(completed) = self.route_opcode(opcode, fin)? {
                             if opcode.is_control() && self.assembling {
                                 // Control during assembly: payload appended after assembly data
                                 self.pending_cleanup = PendingCleanup::TruncateMsgBuf(self.ctrl_payload_offset);
@@ -297,7 +303,9 @@ impl FrameReader {
                         self.parse_header(&data[..header_size])?
                     };
 
-                    if !parsed.opcode.is_control() {
+                    let is_control = parsed.opcode.is_control();
+
+                    if !is_control {
                         let total = self.msg_buf.len() + parsed.payload_len;
                         if total > self.max_message_size {
                             return Err(ProtocolError::MessageTooLarge {
@@ -325,12 +333,11 @@ impl FrameReader {
                         }
 
                         let is_single = parsed.fin && !self.assembling;
-                        let is_control = parsed.opcode.is_control();
 
                         if is_single || is_control {
                             // ZERO-COPY: leave payload in ReadBuf, borrow directly.
                             // Don't advance ReadBuf — cleanup will do it.
-                            if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin, true)? {
+                            if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin)? {
                                 self.pending_cleanup = PendingCleanup::AdvanceReadBuf(payload_len);
                                 return Ok(Some(completed));
                             }
@@ -345,7 +352,7 @@ impl FrameReader {
                         self.msg_buf.extend_from_slice(data);
                         self.buf.advance(payload_len);
 
-                        if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin, false)? {
+                        if let Some(completed) = self.route_opcode(parsed.opcode, parsed.fin)? {
                             self.pending_cleanup = PendingCleanup::ClearMsgBuf;
                             return Ok(Some(completed));
                         }
@@ -376,13 +383,12 @@ impl FrameReader {
         }
     }
 
-    /// Route a completed frame. `zero_copy` indicates the payload is in
-    /// ReadBuf (true) or msg_buf (false).
+    /// Route a completed frame. Returns the opcode to surface as a
+    /// Message, or None if the frame was consumed internally (assembly).
     fn route_opcode(
         &mut self,
         opcode: RawOpcode,
         fin: bool,
-        zero_copy: bool,
     ) -> Result<Option<RawOpcode>, ProtocolError> {
         if opcode.is_control() {
             return Ok(Some(opcode));
@@ -396,11 +402,11 @@ impl FrameReader {
                 if fin {
                     return Ok(Some(opcode));
                 }
-                // Start assembly — payload already in msg_buf (not zero_copy for fragments)
+                // Start assembly — payload already in msg_buf
                 self.assembling = true;
                 self.assembly_opcode = Some(opcode);
                 self.utf8_valid_up_to = 0;
-                if opcode == RawOpcode::Text && !zero_copy {
+                if opcode == RawOpcode::Text {
                     let pending = validate_utf8_incremental(&self.msg_buf, false)?;
                     self.utf8_valid_up_to = self.msg_buf.len() - pending as usize;
                 }
@@ -441,8 +447,21 @@ impl FrameReader {
             RawOpcode::Pong => Ok(Some(Message::Pong(payload))),
             RawOpcode::Close => Self::parse_close_from(payload),
             RawOpcode::Text => {
-                let s = simdutf8::basic::from_utf8(payload)
-                    .map_err(|_| ProtocolError::InvalidUtf8)?;
+                let s = match self.pending_cleanup {
+                    PendingCleanup::ClearMsgBuf => {
+                        // SAFETY: Assembled text messages were incrementally
+                        // validated via validate_utf8_incremental() on every
+                        // fragment, with a final fin=true validation that
+                        // rejects incomplete codepoints. All bytes in msg_buf
+                        // are proven valid UTF-8.
+                        unsafe { std::str::from_utf8_unchecked(payload) }
+                    }
+                    _ => {
+                        // Single-frame zero-copy: first and only validation.
+                        simdutf8::basic::from_utf8(payload)
+                            .map_err(|_| ProtocolError::InvalidUtf8)?
+                    }
+                };
                 Ok(Some(Message::Text(s)))
             }
             RawOpcode::Binary => Ok(Some(Message::Binary(payload))),
