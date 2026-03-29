@@ -19,6 +19,10 @@ pub enum RestError {
     CrlfInjection,
     /// Connection is poisoned after an I/O error mid-response.
     ConnectionPoisoned,
+    /// Read timed out waiting for response.
+    ReadTimeout,
+    /// Connection is stale (dead socket detected after timeout).
+    ConnectionStale,
     /// Connection closed before response complete.
     ConnectionClosed,
     /// Invalid URL.
@@ -48,6 +52,8 @@ impl fmt::Display for RestError {
                 write!(f, "header or query parameter contains CR/LF")
             }
             Self::ConnectionPoisoned => write!(f, "connection poisoned after I/O error"),
+            Self::ReadTimeout => write!(f, "read timed out waiting for response"),
+            Self::ConnectionStale => write!(f, "connection stale (dead socket)"),
             Self::TlsNotEnabled => write!(f, "https:// requires the `tls` feature"),
             Self::ConnectionClosed => write!(f, "connection closed"),
             Self::InvalidUrl(u) => write!(f, "invalid URL: {u}"),

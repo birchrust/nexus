@@ -106,7 +106,7 @@ fn bench_nexus() {
     use nexus_net::rest::{HttpConnection, RequestWriter};
 
     let mock = MockRestStream::new();
-    let mut writer = RequestWriter::new("api.binance.com");
+    let mut writer = RequestWriter::new("api.binance.com").unwrap();
     writer
         .default_header(
             "X-MBX-APIKEY",
@@ -136,7 +136,7 @@ fn bench_nexus() {
             .body(order_body.as_bytes())
             .finish()
             .unwrap();
-        let _ = conn.send(&req, &mut reader, 32 * 1024);
+        let _ = conn.send(&req, &mut reader);
     }
 
     // Benchmark: full send path — build request + write + read response
@@ -151,7 +151,7 @@ fn bench_nexus() {
                 .body(order_body.as_bytes())
                 .finish()
                 .unwrap();
-            let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+            let resp = conn.send(&req, &mut reader).unwrap();
             black_box(resp.status());
         }
         let t1 = rdtsc_end();

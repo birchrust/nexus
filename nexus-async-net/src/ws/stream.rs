@@ -9,7 +9,7 @@ use nexus_net::ws::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::maybe_tls::MaybeTls;
+use crate::maybe_tls::MaybeTls;
 
 // =============================================================================
 // WsStream

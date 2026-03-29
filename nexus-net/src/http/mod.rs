@@ -7,10 +7,12 @@
 //! - [`ResponseReader`] — parse inbound HTTP responses
 //! - [`write_request`] / [`write_response`] — construct outbound HTTP messages
 
+mod chunked;
 mod error;
 mod request;
 mod response;
 
+pub use chunked::ChunkedDecoder;
 pub use error::HttpError;
 pub use request::{Request, RequestReader};
 pub use response::{

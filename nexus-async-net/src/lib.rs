@@ -1,21 +1,15 @@
-//! nexus-async-net — async WebSocket adapter for nexus-net.
+//! nexus-async-net — async adapters for nexus-net.
 //!
-//! Thin tokio wrapper over nexus-net's synchronous WebSocket primitives.
-//! Same zero-copy FrameReader, same Message type, same performance.
+//! Thin tokio wrappers over nexus-net's synchronous protocol primitives.
+//! Same zero-copy parsing, same performance — just `.await` on I/O.
 //!
-//! # Usage
+//! # Modules
 //!
-//! ```ignore
-//! use nexus_async_net::ws::WsStream;
-//!
-//! let mut ws = WsStream::connect("wss://exchange.com/ws").await?;
-//! ws.send_text("Hello!").await?;
-//!
-//! while let Some(msg) = ws.recv().await? {
-//!     // msg is nexus_net::ws::Message<'_>
-//! }
-//! ```
+//! - [`ws`] — Async WebSocket (wraps FrameReader/FrameWriter)
+//! - [`rest`] — Async HTTP REST client (wraps RequestWriter/ResponseReader)
 
+pub mod maybe_tls;
+pub mod rest;
 pub mod ws;
 
 // Re-export nexus-net types for convenience

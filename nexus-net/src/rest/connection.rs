@@ -21,7 +21,7 @@ use crate::tls::{TlsCodec, TlsConfig, TlsError};
 // =============================================================================
 
 /// Parsed HTTP URL.
-pub(crate) struct ParsedUrl<'a> {
+pub struct ParsedUrl<'a> {
     pub tls: bool,
     pub host: &'a str,
     pub port: u16,
@@ -40,7 +40,7 @@ impl ParsedUrl<'_> {
     }
 }
 
-pub(crate) fn parse_base_url(url: &str) -> Result<ParsedUrl<'_>, RestError> {
+pub fn parse_base_url(url: &str) -> Result<ParsedUrl<'_>, RestError> {
     let (tls, rest) = if let Some(r) = url.strip_prefix("https://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("http://") {
@@ -195,9 +195,10 @@ impl HttpConnectionBuilder {
     }
 
     /// Connect using a pre-connected socket.
+    #[allow(unused_mut)]
     pub fn connect_with<S: Read + Write>(
         self,
-        stream: S,
+        mut stream: S,
         url: &str,
     ) -> Result<HttpConnection<S>, RestError> {
         let parsed = parse_base_url(url)?;
@@ -208,7 +209,22 @@ impl HttpConnectionBuilder {
                 Some(c) => c,
                 None => TlsConfig::new().map_err(RestError::Tls)?,
             };
-            Some(TlsCodec::new(&config, parsed.host)?)
+            let mut codec = TlsCodec::new(&config, parsed.host)?;
+            // Drive the TLS handshake to completion.
+            while codec.is_handshaking() {
+                if codec.wants_write() {
+                    codec.write_tls_to(&mut stream)?;
+                }
+                if codec.wants_read() {
+                    codec.read_tls_from(&mut stream)?;
+                    codec.process_new_packets()?;
+                }
+            }
+            // Flush any remaining handshake data.
+            if codec.wants_write() {
+                codec.write_tls_to(&mut stream)?;
+            }
+            Some(codec)
         } else {
             None
         };
@@ -233,7 +249,7 @@ impl HttpConnectionBuilder {
     pub fn writer_for(url: &str) -> Result<RequestWriter, RestError> {
         let parsed = parse_base_url(url)?;
         let host_header = parsed.host_header();
-        let mut writer = RequestWriter::new(&host_header);
+        let mut writer = RequestWriter::new(&host_header)?;
         if !parsed.path.is_empty() {
             writer.set_base_path(parsed.path)?;
         }
@@ -264,7 +280,7 @@ impl Default for HttpConnectionBuilder {
 /// use nexus_net::http::ResponseReader;
 ///
 /// // Protocol (sans-IO)
-/// let mut writer = RequestWriter::new("api.binance.com");
+/// let mut writer = RequestWriter::new("api.binance.com").unwrap();
 /// let mut reader = ResponseReader::new(32 * 1024);
 ///
 /// // Transport
@@ -292,6 +308,32 @@ impl HttpConnection<std::net::TcpStream> {
     pub fn builder() -> HttpConnectionBuilder {
         HttpConnectionBuilder::new()
     }
+
+    /// Set TCP keepalive on the underlying socket.
+    ///
+    /// Enables OS-level dead connection detection. The kernel sends
+    /// probes after `idle` of inactivity.
+    /// Set read timeout on the socket.
+    ///
+    /// **Strongly recommended for production.** Without a timeout, reads
+    /// block indefinitely on stale connections.
+    pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> Result<(), RestError> {
+        self.stream.set_read_timeout(timeout).map_err(RestError::Io)
+    }
+
+    /// Set TCP keepalive on the underlying socket.
+    ///
+    /// Enables OS-level dead connection detection. The kernel sends
+    /// probes after `idle` of inactivity.
+    #[cfg(feature = "socket-opts")]
+    pub fn set_tcp_keepalive(
+        &self,
+        idle: std::time::Duration,
+    ) -> Result<(), RestError> {
+        let sock = socket2::SockRef::from(&self.stream);
+        let keepalive = socket2::TcpKeepalive::new().with_time(idle);
+        sock.set_tcp_keepalive(&keepalive).map_err(RestError::Io)
+    }
 }
 
 impl<S: Read + Write> HttpConnection<S> {
@@ -308,15 +350,18 @@ impl<S: Read + Write> HttpConnection<S> {
     /// Send a request and read the response.
     ///
     /// `req` provides the outbound bytes (from [`RequestWriter`]).
-    /// `reader` receives and parses the response.
-    /// `max_body_size` limits the response body (0 = no limit).
+    /// `reader` receives and parses the response (body size limit
+    /// configured on the reader via [`ResponseReader::max_body_size`]).
+    ///
+    /// Read timeout is a stream-level concern — configure via the builder
+    /// (`read_timeout`) or `conn.stream().set_read_timeout()` for
+    /// `TcpStream`. Without a timeout, reads block indefinitely.
     ///
     /// `Response` borrows from `reader` — drop before next send.
     pub fn send<'r>(
         &mut self,
         req: &Request<'_>,
         reader: &'r mut ResponseReader,
-        max_body_size: usize,
     ) -> Result<RestResponse<'r>, RestError> {
         if self.poisoned {
             return Err(RestError::ConnectionPoisoned);
@@ -329,7 +374,44 @@ impl<S: Read + Write> HttpConnection<S> {
         }
 
         // Read response
-        self.read_response(reader, max_body_size)
+        match self.read_response(reader) {
+            Ok(resp) => Ok(resp),
+            Err(e) => self.handle_send_error(e),
+        }
+    }
+
+    /// Cold path: diagnose send failure.
+    #[cold]
+    fn handle_send_error<T>(&mut self, err: RestError) -> Result<T, RestError> {
+        self.poisoned = true;
+        // On timeout, check if the socket is actually dead (stale connection)
+        // vs the server just being slow.
+        if let RestError::Io(ref io_err) = err {
+            if io_err.kind() == std::io::ErrorKind::TimedOut
+                || io_err.kind() == std::io::ErrorKind::WouldBlock
+            {
+                if self.peek_is_dead() {
+                    return Err(RestError::ConnectionStale);
+                }
+                return Err(RestError::ReadTimeout);
+            }
+        }
+        Err(err)
+    }
+
+    /// Check if the socket has been closed by the peer.
+    ///
+    /// For generic streams we can't peek, so we assume alive and
+    /// report `ReadTimeout`. The connection is poisoned either way.
+    fn peek_is_dead(&self) -> bool {
+        #[cfg(feature = "tls")]
+        if self.tls.is_some() {
+            // Can't peek through TLS — conservatively report stale.
+            return true;
+        }
+        // For generic S, assume alive (report ReadTimeout not ConnectionStale).
+        // The caller still gets an error; it's just less specific.
+        false
     }
 
     /// Whether the connection is poisoned (I/O error occurred).
@@ -399,7 +481,6 @@ impl<S: Read + Write> HttpConnection<S> {
     fn read_response<'r>(
         &mut self,
         reader: &'r mut ResponseReader,
-        max_body_size: usize,
     ) -> Result<RestResponse<'r>, RestError> {
         // Consume previous response, preserving pipelined bytes.
         reader.consume_response();
@@ -430,28 +511,38 @@ impl<S: Read + Write> HttpConnection<S> {
         // Validate using cached values from try_parse.
         let status = reader.status();
 
-        if reader.is_chunked() {
-            return Err(RestError::ChunkedNotSupported);
+        // RFC 7230: 1xx, 204, 304 have no body.
+        if matches!(status, 100..=199 | 204 | 304) {
+            return Ok(RestResponse::new(status, 0, reader));
         }
 
-        let content_length = if matches!(status, 100..=199 | 204 | 304) {
-            0
-        } else {
-            match reader.content_length() {
-                Some(Ok(n)) => n,
-                Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
-                None => 0,
+        if reader.is_chunked() {
+            // Chunked transfer encoding: decode chunk framing.
+            let body = self.read_chunked_body(reader)?;
+            return Ok(RestResponse::new_chunked(status, body, reader));
+        }
+
+        let content_length = match reader.content_length() {
+            Some(Ok(n)) => n,
+            Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
+            None => {
+                // No Content-Length on a body-bearing response.
+                // Can't determine body boundaries for keep-alive.
+                self.poisoned = true;
+                0
             }
         };
 
-        if max_body_size > 0 && content_length > max_body_size {
+        let max_body = reader.max_body_size_limit();
+        if max_body > 0 && content_length > max_body {
+            self.poisoned = true;
             return Err(RestError::BodyTooLarge {
                 size: content_length,
-                max: max_body_size,
+                max: max_body,
             });
         }
 
-        // Read remaining body bytes.
+        // Read remaining body bytes (Content-Length delimited).
         while reader.body_remaining() < content_length {
             match self.read_into_reader(reader) {
                 Ok(0) => {
@@ -466,11 +557,104 @@ impl<S: Read + Write> HttpConnection<S> {
             }
         }
 
-        Ok(RestResponse {
-            status,
-            body_len: content_length,
-            resp_reader: reader,
-        })
+        Ok(RestResponse::new(status, content_length, reader))
+    }
+
+    /// Read a chunked transfer-encoded body. Returns decoded body bytes.
+    ///
+    /// One allocation: the Vec for the decoded body. The chunk framing
+    /// is stripped and only payload bytes are accumulated.
+    fn read_chunked_body(
+        &mut self,
+        reader: &ResponseReader,
+    ) -> Result<Vec<u8>, RestError> {
+        use crate::http::ChunkedDecoder;
+
+        let max_body = reader.max_body_size_limit();
+        let mut decoder = ChunkedDecoder::new();
+        let mut body = Vec::with_capacity(4096);
+        let mut wire_buf = [0u8; 4096];
+        let mut decode_buf = [0u8; 4096];
+
+        // Decode any chunk data that arrived with the headers.
+        let remainder = reader.remainder();
+        if !remainder.is_empty() {
+            let mut pos = 0;
+            while pos < remainder.len() && !decoder.is_done() {
+                let (consumed, produced) = decoder
+                    .decode(&remainder[pos..], &mut decode_buf)
+                    .map_err(|_| RestError::Http(HttpError::Malformed))?;
+                pos += consumed;
+                if produced > 0 {
+                    body.extend_from_slice(&decode_buf[..produced]);
+                }
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+            }
+        }
+
+        // Read from socket until all chunks decoded.
+        while !decoder.is_done() {
+            if max_body > 0 && decoder.total_decoded() > max_body {
+                self.poisoned = true;
+                return Err(RestError::BodyTooLarge {
+                    size: decoder.total_decoded(),
+                    max: max_body,
+                });
+            }
+
+            let n = self.read_wire_bytes(&mut wire_buf)?;
+            if n == 0 {
+                self.poisoned = true;
+                return Err(RestError::ConnectionClosed);
+            }
+
+            let mut pos = 0;
+            while pos < n && !decoder.is_done() {
+                let (consumed, produced) = decoder
+                    .decode(&wire_buf[pos..n], &mut decode_buf)
+                    .map_err(|_| RestError::Http(HttpError::Malformed))?;
+                pos += consumed;
+                if produced > 0 {
+                    body.extend_from_slice(&decode_buf[..produced]);
+                }
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+            }
+        }
+
+        Ok(body)
+    }
+
+    /// Read raw bytes from the socket (through TLS if present).
+    fn read_wire_bytes(&mut self, buf: &mut [u8]) -> Result<usize, RestError> {
+        #[cfg(feature = "tls")]
+        if let Some(tls) = &mut self.tls {
+            for _ in 0..32 {
+                let tls_n = tls.read_tls_from(&mut self.stream)?;
+                if tls_n == 0 {
+                    return Ok(0);
+                }
+                tls.process_new_packets()?;
+                let n = tls.read_plaintext(buf).map_err(|e| match e {
+                    crate::tls::TlsError::Io(io) => RestError::Io(io),
+                    other => RestError::Tls(other),
+                })?;
+                if n > 0 {
+                    return Ok(n);
+                }
+            }
+            return Err(RestError::Io(io::Error::other(
+                "TLS: too many non-data records",
+            )));
+        }
+
+        #[cfg(not(feature = "tls"))]
+        { /* fall through */ }
+
+        Ok(self.stream.read(buf)?)
     }
 }
 
@@ -535,7 +719,7 @@ mod tests {
         path: &str,
     ) -> Result<RestResponse<'r>, RestError> {
         let req = writer.get(path).finish()?;
-        conn.send(&req, reader, 32 * 1024)
+        conn.send(&req, reader)
     }
 
     // --- Request format ---
@@ -544,12 +728,12 @@ mod tests {
     fn get_request_format() {
         let resp = ok_response(r#"{"ok":true}"#);
         let mock = MockStream::new(&resp);
-        let mut writer = RequestWriter::new("api.example.com");
+        let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/api/v1/status").finish().unwrap();
-        let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), r#"{"ok":true}"#);
 
@@ -564,13 +748,13 @@ mod tests {
     fn post_with_body() {
         let resp = ok_response(r#"{"filled":true}"#);
         let mock = MockStream::new(&resp);
-        let mut writer = RequestWriter::new("api.example.com");
+        let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let body = br#"{"symbol":"BTC","side":"buy"}"#;
         let req = writer.post("/api/v3/order").body(body).finish().unwrap();
-        let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
         assert_eq!(resp.status(), 200);
 
         let written = conn.stream().written_str();
@@ -588,12 +772,12 @@ mod tests {
         ] {
             let resp = ok_response("{}");
             let mock = MockStream::new(&resp);
-            let mut writer = RequestWriter::new("host");
+            let mut writer = RequestWriter::new("host").unwrap();
             let mut reader = ResponseReader::new(4096);
             let mut conn = HttpConnection::new(mock);
 
             let req = writer.request(method, "/test").finish().unwrap();
-            let _ = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+            let _ = conn.send(&req, &mut reader).unwrap();
             assert!(conn
                 .stream()
                 .written_str()
@@ -605,7 +789,7 @@ mod tests {
     fn default_headers_included() {
         let resp = ok_response("{}");
         let mock = MockStream::new(&resp);
-        let mut writer = RequestWriter::new("api.example.com");
+        let mut writer = RequestWriter::new("api.example.com").unwrap();
         writer.default_header("X-API-KEY", "secret123").unwrap();
         writer
             .default_header("Content-Type", "application/json")
@@ -614,7 +798,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let _ = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let _ = conn.send(&req, &mut reader).unwrap();
 
         let written = conn.stream().written_str();
         assert!(written.contains("X-API-KEY: secret123\r\n"));
@@ -625,7 +809,7 @@ mod tests {
     fn extra_headers() {
         let resp = ok_response("{}");
         let mock = MockStream::new(&resp);
-        let mut writer = RequestWriter::new("api.example.com");
+        let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
@@ -635,7 +819,7 @@ mod tests {
             .header("Authorization", "Bearer tok")
             .finish()
             .unwrap();
-        let _ = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let _ = conn.send(&req, &mut reader).unwrap();
 
         let written = conn.stream().written_str();
         assert!(written.contains("X-Custom: value1\r\n"));
@@ -646,7 +830,7 @@ mod tests {
 
     #[test]
     fn query_params_encoded() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let req = writer
             .get("/orders")
             .query("symbol", "BTC-USD")
@@ -659,7 +843,7 @@ mod tests {
 
     #[test]
     fn query_encodes_special_chars() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let req = writer
             .get("/search")
             .query("q", "hello world&more=yes")
@@ -671,7 +855,7 @@ mod tests {
 
     #[test]
     fn query_raw_no_encoding() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let req = writer
             .get("/orders")
             .query_raw("symbol", "BTC-USD")
@@ -683,7 +867,7 @@ mod tests {
 
     #[test]
     fn query_then_header() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let req = writer
             .get("/orders")
             .query("sym", "ETH")
@@ -697,7 +881,7 @@ mod tests {
 
     #[test]
     fn path_with_existing_query() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let req = writer
             .get("/path?existing=true")
             .query("extra", "val")
@@ -709,7 +893,7 @@ mod tests {
 
     #[test]
     fn base_path_prepended() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         writer.set_base_path("/api/v3").unwrap();
         let req = writer.get("/orders").finish().unwrap();
         let data = std::str::from_utf8(req.data()).unwrap();
@@ -718,7 +902,7 @@ mod tests {
 
     #[test]
     fn get_raw_skips_query_phase() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let req = writer
             .get_raw("/orders?symbol=BTC&limit=100")
             .finish()
@@ -731,21 +915,21 @@ mod tests {
 
     #[test]
     fn crlf_in_header_rejected() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let result = writer.get("/test").header("X-Bad\r\n", "val").finish();
         assert!(matches!(result, Err(RestError::CrlfInjection)));
     }
 
     #[test]
     fn crlf_in_path_rejected() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let result = writer.get("/path\r\nEvil: yes").finish();
         assert!(matches!(result, Err(RestError::CrlfInjection)));
     }
 
     #[test]
     fn crlf_in_default_header_rejected() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         assert!(matches!(
             writer.default_header("X-Bad\n", "val"),
             Err(RestError::CrlfInjection)
@@ -754,15 +938,17 @@ mod tests {
 
     #[test]
     fn crlf_in_query_raw_rejected() {
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let result = writer.get("/test").query_raw("k", "v\r\n").finish();
         assert!(matches!(result, Err(RestError::CrlfInjection)));
     }
 
     #[test]
-    #[should_panic(expected = "CR/LF")]
-    fn crlf_in_host_panics() {
-        let _ = RequestWriter::new("evil.com\r\nX-Injected: yes");
+    fn crlf_in_host_rejected() {
+        assert!(matches!(
+            RequestWriter::new("evil.com\r\nX-Injected: yes"),
+            Err(RestError::CrlfInjection)
+        ));
     }
 
     // --- Response handling ---
@@ -771,52 +957,72 @@ mod tests {
     fn response_headers_accessible() {
         let resp_bytes = b"HTTP/1.1 200 OK\r\nX-Request-Id: abc123\r\nX-RateLimit-Remaining: 42\r\nContent-Length: 2\r\n\r\n{}";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
         assert_eq!(resp.header("X-Request-Id"), Some("abc123"));
         assert_eq!(resp.header("X-RateLimit-Remaining"), Some("42"));
     }
 
     #[test]
-    fn chunked_encoding_rejected() {
-        let resp_bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    fn chunked_encoding_decoded() {
+        let resp_bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper Network\r\n0\r\n\r\n";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader, 32 * 1024);
-        assert!(matches!(result, Err(RestError::ChunkedNotSupported)));
+        let resp = conn.send(&req, &mut reader).unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.body_str().unwrap(), "MozillaDeveloper Network");
     }
 
     #[test]
-    fn transfer_encoding_multi_value_rejected() {
-        let resp_bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n";
+    fn chunked_empty_body() {
+        let resp_bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader, 32 * 1024);
-        assert!(matches!(result, Err(RestError::ChunkedNotSupported)));
+        let resp = conn.send(&req, &mut reader).unwrap();
+        assert_eq!(resp.body().len(), 0);
+    }
+
+    #[test]
+    fn chunked_json_response() {
+        // Simulates a CDN/proxy chunking a JSON response
+        let body = r#"{"orderId":12345,"status":"FILLED"}"#;
+        let chunked = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            body.len(),
+            body
+        );
+        let mock = MockStream::new(chunked.as_bytes());
+        let mut writer = RequestWriter::new("host").unwrap();
+        let mut reader = ResponseReader::new(4096);
+        let mut conn = HttpConnection::new(mock);
+
+        let req = writer.get("/test").finish().unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
+        assert_eq!(resp.body_str().unwrap(), body);
     }
 
     #[test]
     fn malformed_content_length_rejected() {
         let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\nbody";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader, 32 * 1024);
+        let result = conn.send(&req, &mut reader);
         assert!(matches!(result, Err(RestError::Http(_))));
     }
 
@@ -824,12 +1030,12 @@ mod tests {
     fn body_too_large_rejected() {
         let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\n";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
-        let mut reader = ResponseReader::new(4096);
+        let mut writer = RequestWriter::new("host").unwrap();
+        let mut reader = ResponseReader::new(4096).max_body_size(32 * 1024);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader, 32 * 1024);
+        let result = conn.send(&req, &mut reader);
         assert!(matches!(
             result,
             Err(RestError::BodyTooLarge { size: 999999, .. })
@@ -840,12 +1046,12 @@ mod tests {
     fn status_204_no_body() {
         let resp_bytes = b"HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nxxxxx";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
         assert_eq!(resp.status(), 204);
         assert_eq!(resp.body().len(), 0);
     }
@@ -854,16 +1060,16 @@ mod tests {
     fn connection_poisoned_after_io_error() {
         let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial";
         let mock = MockStream::new(resp_bytes);
-        let mut writer = RequestWriter::new("host");
+        let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader, 32 * 1024);
+        let result = conn.send(&req, &mut reader);
         assert!(matches!(result, Err(RestError::ConnectionClosed)));
 
         let req = writer.get("/test2").finish().unwrap();
-        let result = conn.send(&req, &mut reader, 32 * 1024);
+        let result = conn.send(&req, &mut reader);
         assert!(matches!(result, Err(RestError::ConnectionPoisoned)));
     }
 
@@ -935,17 +1141,17 @@ mod tests {
         });
 
         let tcp = TcpStream::connect(addr).unwrap();
-        let mut writer = RequestWriter::new("localhost");
+        let mut writer = RequestWriter::new("localhost").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(tcp);
 
         let req = writer.get("/first").finish().unwrap();
-        let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
         assert_eq!(resp.body_str().unwrap(), r#"{"id":1}"#);
         drop(resp);
 
         let req = writer.get("/second").finish().unwrap();
-        let resp = conn.send(&req, &mut reader, 32 * 1024).unwrap();
+        let resp = conn.send(&req, &mut reader).unwrap();
         assert_eq!(resp.body_str().unwrap(), r#"{"id":2}"#);
 
         server.join().unwrap();

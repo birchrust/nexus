@@ -10,9 +10,35 @@ pub struct RestResponse<'a> {
     pub(crate) status: u16,
     pub(crate) body_len: usize,
     pub(crate) resp_reader: &'a ResponseReader,
+    /// Decoded body for chunked responses. None = use reader remainder.
+    pub(crate) chunked_body: Option<Vec<u8>>,
 }
 
-impl RestResponse<'_> {
+impl<'a> RestResponse<'a> {
+    /// Create a response from parsed data (Content-Length delimited).
+    ///
+    /// Typically called by transport layers after reading and parsing
+    /// the response.
+    pub fn new(status: u16, body_len: usize, resp_reader: &'a ResponseReader) -> Self {
+        Self {
+            status,
+            body_len,
+            resp_reader,
+            chunked_body: None,
+        }
+    }
+
+    /// Create a response with a decoded chunked body.
+    pub fn new_chunked(status: u16, body: Vec<u8>, resp_reader: &'a ResponseReader) -> Self {
+        let body_len = body.len();
+        Self {
+            status,
+            body_len,
+            resp_reader,
+            chunked_body: Some(body),
+        }
+    }
+
     /// HTTP status code.
     pub fn status(&self) -> u16 {
         self.status
@@ -25,6 +51,9 @@ impl RestResponse<'_> {
 
     /// Response body as bytes.
     pub fn body(&self) -> &[u8] {
+        if let Some(ref chunked) = self.chunked_body {
+            return chunked;
+        }
         let remainder = self.resp_reader.remainder();
         &remainder[..self.body_len.min(remainder.len())]
     }

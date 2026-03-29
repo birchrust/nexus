@@ -87,6 +87,7 @@ pub struct ResponseReader {
     buf: ReadBuf,
     max_headers: usize,
     max_head_size: usize,
+    max_body_size: usize,
     head_len: Option<usize>,
     header_offsets: Vec<(usize, usize, usize, usize)>,
     status: u16,
@@ -106,6 +107,7 @@ impl ResponseReader {
             buf: ReadBuf::with_capacity(capacity),
             max_headers: 64,
             max_head_size: 8192,
+            max_body_size: 0,
             head_len: None,
             header_offsets: Vec::with_capacity(16),
             status: 0,
@@ -129,6 +131,21 @@ impl ResponseReader {
     pub fn max_head_size(mut self, n: usize) -> Self {
         self.max_head_size = n;
         self
+    }
+
+    /// Set maximum response body size. Default: 0 (no limit).
+    ///
+    /// When set, responses with Content-Length exceeding this value
+    /// will be rejected during validation.
+    #[must_use]
+    pub fn max_body_size(mut self, n: usize) -> Self {
+        self.max_body_size = n;
+        self
+    }
+
+    /// Configured maximum body size (0 = no limit).
+    pub fn max_body_size_limit(&self) -> usize {
+        self.max_body_size
     }
 
     /// Buffer wire bytes.
@@ -201,6 +218,9 @@ impl ResponseReader {
         }
 
         let data = self.buf.data();
+        if self.reason_end > data.len() || self.reason_start > self.reason_end {
+            return Err(HttpError::Malformed);
+        }
         let reason = std::str::from_utf8(&data[self.reason_start..self.reason_end])
             .map_err(|_| HttpError::Malformed)?;
 

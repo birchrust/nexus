@@ -244,7 +244,7 @@ fn write_body(
 /// ```ignore
 /// use nexus_net::rest::RequestWriter;
 ///
-/// let mut writer = RequestWriter::new("api.binance.com");
+/// let mut writer = RequestWriter::new("api.binance.com")?;
 /// writer.set_base_path("/api/v3")?;
 /// writer.default_header("X-API-KEY", &key)?;
 ///
@@ -270,26 +270,25 @@ impl RequestWriter {
     /// Pre-serializes the Host and Connection: keep-alive headers.
     /// Default write buffer: 32KB.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `host` contains CR/LF.
-    pub fn new(host: &str) -> Self {
-        assert!(
-            !host.bytes().any(|b| b == b'\r' || b == b'\n'),
-            "host contains CR/LF: {host:?}"
-        );
+    /// Returns [`RestError::CrlfInjection`] if `host` contains CR/LF.
+    pub fn new(host: &str) -> Result<Self, RestError> {
+        if host.bytes().any(|b| b == b'\r' || b == b'\n') {
+            return Err(RestError::CrlfInjection);
+        }
 
         let mut host_wire = Vec::with_capacity(host.len() + 32);
         host_wire.extend_from_slice(b"Host: ");
         host_wire.extend_from_slice(host.as_bytes());
         host_wire.extend_from_slice(b"\r\nConnection: keep-alive\r\n");
 
-        Self {
+        Ok(Self {
             write_buf: WriteBuf::new(32 * 1024, 0),
             host_wire,
             default_headers_wire: Vec::new(),
             base_path: Vec::new(),
-        }
+        })
     }
 
     /// Set the write buffer capacity. Default: 32KB.
