@@ -19,7 +19,7 @@ use crate::tls::{TlsCodec, TlsConfig, TlsError};
 // =============================================================================
 
 /// Parsed WebSocket URL.
-pub(crate) struct ParsedUrl<'a> {
+pub struct ParsedUrl<'a> {
     pub tls: bool,
     pub host: &'a str,
     pub port: u16,
@@ -38,7 +38,7 @@ impl ParsedUrl<'_> {
     }
 }
 
-pub(crate) fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
+pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
     let (tls, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("ws://") {

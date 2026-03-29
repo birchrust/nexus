@@ -36,6 +36,14 @@ impl TlsConfig {
         Self::builder().build()
     }
 
+    /// Access the underlying rustls `ClientConfig`.
+    ///
+    /// Useful for creating a `tokio_rustls::TlsConnector` or other
+    /// rustls-based adapters.
+    pub fn client_config(&self) -> &Arc<ClientConfig> {
+        &self.inner
+    }
+
     /// Create a builder for custom configuration.
     #[must_use]
     pub fn builder() -> TlsConfigBuilder {

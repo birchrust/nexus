@@ -1,0 +1,34 @@
+[package]
+name = "nexus-async-net"
+version = "0.1.0"
+description = "Async WebSocket adapter for nexus-net. Tokio-compatible."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+nexus-net = { path = "../nexus-net", features = ["tls"] }
+tokio = { version = "1", features = ["io-util", "net", "rt"] }
+tokio-rustls = "0.26"
+futures-core = "0.3"
+futures-sink = "0.3"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+tokio-tungstenite = "0.26"
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+sonic-rs = "0.3"
+rcgen = "0.13"
+rustls = { version = "0.23", features = ["std", "tls12", "aws_lc_rs"] }
+tokio-rustls = "0.26"
+
+[[example]]
+name = "perf_async_ws"
+
+[lints]
+workspace = true
