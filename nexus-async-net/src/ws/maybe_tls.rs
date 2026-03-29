@@ -10,7 +10,7 @@ use tokio_rustls::client::TlsStream;
 
 /// Async stream that may or may not be TLS-wrapped.
 ///
-/// Created by [`AsyncWsStream::connect()`](super::AsyncWsStream::connect)
+/// Created by [`WsStream::connect()`](super::WsStream::connect)
 /// based on the URL scheme (ws:// vs wss://).
 pub enum MaybeTls {
     /// Plain TCP (ws://).

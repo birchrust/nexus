@@ -456,8 +456,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
                 if cf.code == CloseCode::NoStatus {
                     let mut dst = [0u8; 14];
                     let n = this.writer.encode_empty_close(&mut dst);
-                    // For close, write directly — it's small enough
-                    this.write_buf = WriteBuf::new(14, 0);
+                    this.write_buf.clear();
                     this.write_buf.append(&dst[..n]);
                 } else {
                     this.writer
@@ -471,37 +470,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        let data = this.write_buf.data();
-        if data.is_empty() {
-            return Poll::Ready(Ok(()));
-        }
-        // Write all buffered data
-        match Pin::new(&mut this.stream).poll_write(cx, data) {
-            Poll::Ready(Ok(n)) => {
-                if n == 0 {
+        // Write all buffered data, handling partial writes
+        while !this.write_buf.is_empty() {
+            let data = this.write_buf.data();
+            match Pin::new(&mut this.stream).poll_write(cx, data) {
+                Poll::Ready(Ok(0)) => {
                     return Poll::Ready(Err(WsError::Io(std::io::Error::new(
                         std::io::ErrorKind::WriteZero,
                         "write returned 0",
                     ))));
                 }
-                // WriteBuf doesn't support partial advance, so we need
-                // to flush everything. For simplicity, use poll_flush on
-                // the underlying stream after write.
-                Pin::new(&mut this.stream).poll_flush(cx).map_err(WsError::Io)
+                Poll::Ready(Ok(n)) => {
+                    this.write_buf.advance(n);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Pending => Poll::Pending,
         }
+        // All data written — flush the underlying stream
+        Pin::new(&mut this.stream).poll_flush(cx).map_err(WsError::Io)
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // Flush then shutdown
-        let this = self.get_mut();
-        match Pin::new(&mut this.stream).poll_shutdown(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Pending => Poll::Pending,
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // Flush pending data first, then shutdown
+        match <Self as Sink<OwnedMessage>>::poll_flush(self.as_mut(), cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Ok(())) => {}
         }
+        let this = self.get_mut();
+        Pin::new(&mut this.stream).poll_shutdown(cx).map_err(WsError::Io)
     }
 }
 
