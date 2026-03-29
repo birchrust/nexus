@@ -39,10 +39,14 @@ raw `libc::read`, kernel bypass.
 ## Quick Start
 
 ```toml
-[dependencies]
-nexus-net = "0.1"                      # ws:// only
-nexus-net = { version = "0.1", features = ["full"] }  # everything including TLS
-nexus-net = { version = "0.1", features = ["tls"] }   # ws:// + wss://
+# ws:// only (no TLS dependency)
+nexus-net = "0.1"
+
+# ws:// + wss:// (TLS via rustls)
+nexus-net = { version = "0.1", features = ["tls"] }
+
+# Everything
+nexus-net = { version = "0.1", features = ["full"] }
 ```
 
 ### WebSocket Client (ws://)

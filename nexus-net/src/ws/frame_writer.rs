@@ -110,6 +110,14 @@ impl FrameWriter {
         header + mask + payload_len
     }
 
+    /// Encode an empty close frame (no status code on the wire).
+    ///
+    /// Used when `CloseCode::NoStatus` is intended — RFC 6455 §7.4.1
+    /// reserves code 1005 from appearing in close frame payloads.
+    pub fn encode_empty_close(&self, dst: &mut [u8]) -> usize {
+        self.encode(0x88, &[], dst) // FIN + Close, zero payload
+    }
+
     /// Encode a close frame with structured [`CloseCode`](super::CloseCode) and UTF-8 reason.
     ///
     /// # Panics

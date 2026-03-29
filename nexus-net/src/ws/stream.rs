@@ -271,9 +271,19 @@ impl<S: Read + Write> WsStream<S> {
     }
 
     /// Initiate close handshake.
+    ///
+    /// `CloseCode::NoStatus` sends an empty close frame (no code on wire),
+    /// per RFC 6455 §7.4.1 which reserves 1005 from appearing in frames.
     pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
-        self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf);
-        self.stream.write_all(self.write_buf.data())?;
+        if code == CloseCode::NoStatus {
+            // Empty close frame — no status code on the wire
+            let mut dst = [0u8; 14]; // max header size (masked)
+            let n = self.writer.encode_empty_close(&mut dst);
+            self.stream.write_all(&dst[..n])?;
+        } else {
+            self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf);
+            self.stream.write_all(self.write_buf.data())?;
+        }
         Ok(())
     }
 

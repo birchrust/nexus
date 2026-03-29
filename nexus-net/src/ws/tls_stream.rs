@@ -136,8 +136,14 @@ impl<S: Read + Write> WsTlsStream<S> {
 
     /// Initiate close handshake.
     pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
-        self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf);
-        self.tls.encrypt(self.write_buf.data())?;
+        if code == CloseCode::NoStatus {
+            let mut dst = [0u8; 14];
+            let n = self.writer.encode_empty_close(&mut dst);
+            self.tls.encrypt(&dst[..n])?;
+        } else {
+            self.writer.encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf);
+            self.tls.encrypt(self.write_buf.data())?;
+        }
         self.tls.write_tls_to(&mut self.stream)?;
         Ok(())
     }

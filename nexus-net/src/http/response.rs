@@ -199,6 +199,7 @@ impl ResponseReader {
                 Ok(())
             }
             Ok(httparse::Status::Partial) => Ok(()),
+            Err(httparse::Error::TooManyHeaders) => Err(HttpError::TooManyHeaders),
             Err(_) => Err(HttpError::Malformed),
         }
     }

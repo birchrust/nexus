@@ -41,14 +41,22 @@ fn apply_mask_scalar(buf: &mut [u8], mask: [u8; 4]) {
     }
 
     // Bulk XOR 8 bytes at a time
-    // Adjust mask alignment based on prefix length
+    // Rotate mask to align with prefix offset (no allocation)
     let offset = prefix.len() % 4;
     let aligned_mask = if offset == 0 {
         mask_u64
     } else {
-        let m = mask.repeat(3);
-        let start = offset;
-        u64::from_ne_bytes(m[start..start + 8].try_into().unwrap())
+        let rotated: [u8; 8] = [
+            mask[offset % 4],
+            mask[(offset + 1) % 4],
+            mask[(offset + 2) % 4],
+            mask[(offset + 3) % 4],
+            mask[offset % 4],
+            mask[(offset + 1) % 4],
+            mask[(offset + 2) % 4],
+            mask[(offset + 3) % 4],
+        ];
+        u64::from_ne_bytes(rotated)
     };
     for word in middle.iter_mut() {
         *word ^= aligned_mask;
