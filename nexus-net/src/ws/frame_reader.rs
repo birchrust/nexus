@@ -184,6 +184,15 @@ impl FrameReader {
         self.buf.filled(n);
     }
 
+    /// Reclaim consumed buffer space by moving unconsumed data to the front.
+    ///
+    /// Call when [`spare()`](Self::spare) is empty but there's still data to read.
+    /// This is O(n) in the amount of unconsumed data.
+    #[inline]
+    pub fn compact(&mut self) {
+        self.buf.compact();
+    }
+
     /// Parse the next complete message.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Message<'_>>, ProtocolError> {
@@ -201,7 +210,7 @@ impl FrameReader {
 
     /// Advance the parser without constructing a Message.
     /// Returns `true` if the next call to `next()` will return a message.
-    pub(crate) fn poll(&mut self) -> Result<bool, ProtocolError> {
+    pub fn poll(&mut self) -> Result<bool, ProtocolError> {
         if self.pending_opcode.is_some() {
             return Ok(true);
         }

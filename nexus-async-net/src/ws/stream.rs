@@ -1,0 +1,715 @@
+//! Async WebSocket stream — thin wrapper over nexus-net primitives.
+
+use nexus_net::buf::WriteBuf;
+use nexus_net::tls::TlsConfig;
+use nexus_net::ws::{
+    CloseCode, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError,
+    Message, Role, WsError, parse_ws_url,
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+use super::maybe_tls::MaybeTls;
+
+// =============================================================================
+// WsStream
+// =============================================================================
+
+/// Async WebSocket stream.
+///
+/// Wraps nexus-net's synchronous FrameReader/FrameWriter with async I/O.
+/// Same zero-copy parsing, same Message type — just `.await` on socket ops.
+///
+/// # Usage
+///
+/// ```ignore
+/// use nexus_async_net::ws::WsStream;
+///
+/// let mut ws = WsStream::connect("wss://exchange.com/ws").await?;
+///
+/// ws.send_text("Hello!").await?;
+/// while let Some(msg) = ws.recv().await? {
+///     // msg is nexus_net::ws::Message<'_>
+/// }
+/// ```
+pub struct WsStream<S> {
+    stream: S,
+    reader: FrameReader,
+    writer: FrameWriter,
+    write_buf: WriteBuf,
+}
+
+// -- Connect on MaybeTls (creates TCP socket) --------------------------------
+
+impl WsStream<MaybeTls> {
+    /// Connect to a WebSocket server. TLS detected from URL scheme.
+    pub async fn connect(url: &str) -> Result<Self, WsError> {
+        WsStreamBuilder::new().connect(url).await
+    }
+}
+
+// -- Generic impl for any async stream ---------------------------------------
+
+impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
+    /// Connect with a pre-connected async stream.
+    pub async fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
+        WsStreamBuilder::new().connect_with(stream, url).await
+    }
+
+    /// Create from pre-existing parts. For testing or custom handshakes.
+    pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
+        Self {
+            stream,
+            reader,
+            writer,
+            write_buf: WriteBuf::new(65_536, 14),
+        }
+    }
+
+    /// Receive the next message.
+    pub async fn recv(&mut self) -> Result<Option<Message<'_>>, WsError> {
+        loop {
+            if self.reader.poll()? {
+                return Ok(self.reader.next()?);
+            }
+
+            let spare = self.reader.spare();
+            if spare.is_empty() {
+                self.reader.compact();
+                let spare = self.reader.spare();
+                if spare.is_empty() {
+                    return Ok(None); // buffer genuinely full
+                }
+            }
+
+            let spare = self.reader.spare();
+            let n = self.stream.read(spare).await?;
+            if n == 0 {
+                return Ok(None); // EOF
+            }
+            self.reader.filled(n);
+        }
+    }
+
+    /// Send a text message.
+    pub async fn send_text(&mut self, text: &str) -> Result<(), WsError> {
+        self.writer
+            .encode_text_into(text.as_bytes(), &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data()).await?;
+        Ok(())
+    }
+
+    /// Send a binary message.
+    pub async fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
+        self.writer.encode_binary_into(data, &mut self.write_buf);
+        self.stream.write_all(self.write_buf.data()).await?;
+        Ok(())
+    }
+
+    /// Send a ping.
+    pub async fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
+        self.writer
+            .encode_ping_into(data, &mut self.write_buf)
+            .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+        self.stream.write_all(self.write_buf.data()).await?;
+        Ok(())
+    }
+
+    /// Send a pong.
+    pub async fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
+        self.writer
+            .encode_pong_into(data, &mut self.write_buf)
+            .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+        self.stream.write_all(self.write_buf.data()).await?;
+        Ok(())
+    }
+
+    /// Initiate close handshake.
+    pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
+        if code == CloseCode::NoStatus {
+            let mut dst = [0u8; 14];
+            let n = self.writer.encode_empty_close(&mut dst);
+            self.stream.write_all(&dst[..n]).await?;
+        } else {
+            self.writer
+                .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
+                .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+            self.stream.write_all(self.write_buf.data()).await?;
+        }
+        Ok(())
+    }
+
+    /// Access the underlying stream.
+    pub fn stream(&self) -> &S {
+        &self.stream
+    }
+
+    /// Mutable access to the underlying stream.
+    pub fn stream_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+
+    /// Access the FrameReader.
+    pub fn reader(&self) -> &FrameReader {
+        &self.reader
+    }
+
+    /// Access the FrameWriter.
+    pub fn frame_writer(&self) -> &FrameWriter {
+        &self.writer
+    }
+
+    // =========================================================================
+    // Internal — async handshake
+    // =========================================================================
+
+    async fn connect_impl(
+        mut stream: S,
+        url: &str,
+        reader_builder: FrameReaderBuilder,
+        write_cap: usize,
+    ) -> Result<Self, WsError> {
+        let parsed = parse_ws_url(url)?;
+        let host_header = parsed.host_header();
+
+        let key = nexus_net::ws::handshake::generate_key();
+        let key_str = std::str::from_utf8(&key).unwrap();
+
+        let headers: [(&str, &str); 5] = [
+            ("Host", &host_header),
+            ("Upgrade", "websocket"),
+            ("Connection", "Upgrade"),
+            ("Sec-WebSocket-Key", key_str),
+            ("Sec-WebSocket-Version", "13"),
+        ];
+        let req_size = nexus_net::http::request_size("GET", parsed.path, &headers);
+        let mut req_buf = vec![0u8; req_size];
+        let n = nexus_net::http::write_request("GET", parsed.path, &headers, &mut req_buf)
+            .map_err(|_| HandshakeError::MalformedHttp)?;
+
+        stream.write_all(&req_buf[..n]).await?;
+
+        let mut resp_reader = nexus_net::http::ResponseReader::new(4096);
+        let mut tmp = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                return Err(HandshakeError::MalformedHttp.into());
+            }
+            resp_reader
+                .read(&tmp[..n])
+                .map_err(|_| HandshakeError::MalformedHttp)?;
+            match resp_reader.next() {
+                Ok(Some(resp)) => {
+                    if resp.status != 101 {
+                        return Err(HandshakeError::UnexpectedStatus(resp.status).into());
+                    }
+                    let upgrade = resp
+                        .header("Upgrade")
+                        .ok_or(HandshakeError::MissingUpgrade)?;
+                    if !upgrade.eq_ignore_ascii_case("websocket") {
+                        return Err(HandshakeError::MissingUpgrade.into());
+                    }
+                    let conn = resp
+                        .header("Connection")
+                        .ok_or(HandshakeError::MissingConnection)?;
+                    if !conn
+                        .as_bytes()
+                        .windows(7)
+                        .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
+                    {
+                        return Err(HandshakeError::MissingConnection.into());
+                    }
+                    let accept = resp
+                        .header("Sec-WebSocket-Accept")
+                        .ok_or(HandshakeError::InvalidAcceptKey)?;
+                    if !nexus_net::ws::handshake::validate_accept(key_str, accept) {
+                        return Err(HandshakeError::InvalidAcceptKey.into());
+                    }
+
+                    let mut reader = reader_builder.role(Role::Client).build();
+                    let remainder = resp_reader.remainder();
+                    if !remainder.is_empty() {
+                        reader
+                            .read(remainder)
+                            .map_err(|_| HandshakeError::MalformedHttp)?;
+                    }
+
+                    return Ok(Self {
+                        stream,
+                        reader,
+                        writer: FrameWriter::new(Role::Client),
+                        write_buf: WriteBuf::new(write_cap, 14),
+                    });
+                }
+                Ok(None) => {} // need more bytes
+                Err(_) => return Err(HandshakeError::MalformedHttp.into()),
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Builder
+// =============================================================================
+
+/// Builder for [`WsStream`].
+pub struct WsStreamBuilder {
+    reader_builder: FrameReaderBuilder,
+    write_buf_capacity: usize,
+    tls_config: Option<TlsConfig>,
+    nodelay: bool,
+}
+
+impl WsStreamBuilder {
+    /// Create a new builder with defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            reader_builder: FrameReader::builder(),
+            write_buf_capacity: 65_536,
+            tls_config: None,
+            nodelay: false,
+        }
+    }
+
+    /// ReadBuf capacity. Default: 1MB.
+    #[must_use]
+    pub fn buffer_capacity(mut self, n: usize) -> Self {
+        self.reader_builder = self.reader_builder.buffer_capacity(n);
+        self
+    }
+
+    /// Maximum single frame payload. Default: 16MB.
+    #[must_use]
+    pub fn max_frame_size(mut self, n: u64) -> Self {
+        self.reader_builder = self.reader_builder.max_frame_size(n);
+        self
+    }
+
+    /// Maximum assembled message size. Default: 16MB.
+    #[must_use]
+    pub fn max_message_size(mut self, n: usize) -> Self {
+        self.reader_builder = self.reader_builder.max_message_size(n);
+        self
+    }
+
+    /// Write buffer capacity. Default: 64KB.
+    #[must_use]
+    pub fn write_buffer_capacity(mut self, n: usize) -> Self {
+        self.write_buf_capacity = n;
+        self
+    }
+
+    /// Custom TLS configuration.
+    #[must_use]
+    pub fn tls(mut self, config: &TlsConfig) -> Self {
+        self.tls_config = Some(config.clone());
+        self
+    }
+
+    /// Set TCP_NODELAY.
+    #[must_use]
+    pub fn disable_nagle(mut self) -> Self {
+        self.nodelay = true;
+        self
+    }
+
+    /// Connect to a WebSocket server. Creates TCP socket, handles TLS.
+    pub async fn connect(self, url: &str) -> Result<WsStream<MaybeTls>, WsError> {
+        let parsed = parse_ws_url(url)?;
+        let addr = format!("{}:{}", parsed.host, parsed.port);
+
+        let tcp = TcpStream::connect(&addr).await?;
+        if self.nodelay {
+            tcp.set_nodelay(true)?;
+        }
+
+        let stream = if parsed.tls {
+            let tls_config = match &self.tls_config {
+                Some(c) => c.clone(),
+                None => TlsConfig::new().map_err(WsError::Tls)?,
+            };
+
+            let connector = tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
+            let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
+                .map_err(|_| {
+                    WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
+                        parsed.host.to_string(),
+                    ))
+                })?;
+            let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
+                WsError::Tls(nexus_net::tls::TlsError::Io(e))
+            })?;
+            MaybeTls::Tls(Box::new(tls_stream))
+        } else {
+            MaybeTls::Plain(tcp)
+        };
+
+        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity)
+            .await
+    }
+
+    /// Connect with a pre-connected async stream.
+    pub async fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(
+        self,
+        stream: S,
+        url: &str,
+    ) -> Result<WsStream<S>, WsError> {
+        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity)
+            .await
+    }
+}
+
+impl Default for WsStreamBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// Stream + Sink (ergonomic path — allocates per message)
+// =============================================================================
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures_core::Stream;
+use futures_sink::Sink;
+use nexus_net::ws::OwnedMessage;
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Stream for WsStream<S> {
+    type Item = Result<OwnedMessage, WsError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        // Try parsing from buffered data (synchronous, no I/O)
+        loop {
+            match this.reader.poll() {
+                Ok(true) => {
+                    return match this.reader.next() {
+                        Ok(Some(msg)) => Poll::Ready(Some(Ok(msg.into_owned()))),
+                        Ok(None) => Poll::Ready(None),
+                        Err(e) => Poll::Ready(Some(Err(e.into()))),
+                    };
+                }
+                Ok(false) => {} // need more bytes
+                Err(e) => return Poll::Ready(Some(Err(e.into()))),
+            }
+
+            // Need bytes from socket — try a non-blocking read
+            let spare = this.reader.spare();
+            if spare.is_empty() {
+                this.reader.compact();
+                let spare = this.reader.spare();
+                if spare.is_empty() {
+                    return Poll::Ready(None); // buffer full
+                }
+            }
+
+            let spare = this.reader.spare();
+            let mut read_buf = tokio::io::ReadBuf::new(spare);
+            match Pin::new(&mut this.stream).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => {
+                    let n = read_buf.filled().len();
+                    if n == 0 {
+                        return Poll::Ready(None); // EOF
+                    }
+                    this.reader.filled(n);
+                    // Loop back to try parsing
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Some(Err(e.into()))),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
+    type Error = WsError;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: OwnedMessage) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        match &item {
+            OwnedMessage::Text(s) => {
+                this.writer.encode_text_into(s.as_bytes(), &mut this.write_buf);
+            }
+            OwnedMessage::Binary(b) => {
+                this.writer.encode_binary_into(b, &mut this.write_buf);
+            }
+            OwnedMessage::Ping(b) => {
+                this.writer
+                    .encode_ping_into(b, &mut this.write_buf)
+                    .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+            }
+            OwnedMessage::Pong(b) => {
+                this.writer
+                    .encode_pong_into(b, &mut this.write_buf)
+                    .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+            }
+            OwnedMessage::Close(cf) => {
+                if cf.code == CloseCode::NoStatus {
+                    let mut dst = [0u8; 14];
+                    let n = this.writer.encode_empty_close(&mut dst);
+                    this.write_buf.clear();
+                    this.write_buf.append(&dst[..n]);
+                } else {
+                    this.writer
+                        .encode_close_into(cf.code.as_u16(), cf.reason.as_bytes(), &mut this.write_buf)
+                        .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        // Write all buffered data, handling partial writes
+        while !this.write_buf.is_empty() {
+            let data = this.write_buf.data();
+            match Pin::new(&mut this.stream).poll_write(cx, data) {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(WsError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "write returned 0",
+                    ))));
+                }
+                Poll::Ready(Ok(n)) => {
+                    this.write_buf.advance(n);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        // All data written — flush the underlying stream
+        Pin::new(&mut this.stream).poll_flush(cx).map_err(WsError::Io)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // Flush pending data first, then shutdown
+        match <Self as Sink<OwnedMessage>>::poll_flush(self.as_mut(), cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Ok(())) => {}
+        }
+        let this = self.get_mut();
+        Pin::new(&mut this.stream).poll_shutdown(cx).map_err(WsError::Io)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::ReadBuf;
+
+    /// Mock async stream backed by a byte buffer.
+    struct MockStream(Cursor<Vec<u8>>);
+
+    impl AsyncRead for MockStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let n = std::io::Read::read(&mut self.0, buf.initialize_unfilled())?;
+            buf.advance(n);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for MockStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn make_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        let byte0 = if fin { 0x80 } else { 0x00 } | opcode;
+        frame.push(byte0);
+        if payload.len() <= 125 {
+            frame.push(payload.len() as u8);
+        } else if payload.len() <= 65535 {
+            frame.push(126);
+            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            frame.push(127);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    fn ws_from_bytes(data: Vec<u8>) -> WsStream<MockStream> {
+        let mock = MockStream(Cursor::new(data));
+        let reader = FrameReader::builder().role(Role::Client).build();
+        let writer = FrameWriter::new(Role::Client);
+        WsStream::from_parts(mock, reader, writer)
+    }
+
+    #[tokio::test]
+    async fn recv_text() {
+        let frame = make_frame(true, 0x1, b"Hello");
+        let mut ws = ws_from_bytes(frame);
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_binary() {
+        let frame = make_frame(true, 0x2, &[0x42; 100]);
+        let mut ws = ws_from_bytes(frame);
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Binary(b) => assert_eq!(b.len(), 100),
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_ping() {
+        let frame = make_frame(true, 0x9, b"ping");
+        let mut ws = ws_from_bytes(frame);
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Ping(p) => assert_eq!(p, b"ping"),
+            other => panic!("expected Ping, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_fragmented_text() {
+        let mut data = make_frame(false, 0x1, b"Hel");
+        data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
+        let mut ws = ws_from_bytes(data);
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_fragment_with_control() {
+        let mut data = make_frame(false, 0x1, b"Hel");
+        data.extend_from_slice(&make_frame(true, 0x9, b"ping"));
+        data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
+        let mut ws = ws_from_bytes(data);
+        // Ping first
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Ping(p) => assert_eq!(p, b"ping"),
+            other => panic!("expected Ping, got {other:?}"),
+        }
+        // Then assembled text
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "Hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_close() {
+        let mut payload = vec![];
+        payload.extend_from_slice(&1000u16.to_be_bytes());
+        payload.extend_from_slice(b"bye");
+        let frame = make_frame(true, 0x8, &payload);
+        let mut ws = ws_from_bytes(frame);
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Close(cf) => {
+                assert_eq!(cf.code, CloseCode::Normal);
+                assert_eq!(cf.reason, "bye");
+            }
+            other => panic!("expected Close, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn eof_returns_none() {
+        let mut ws = ws_from_bytes(Vec::new());
+        assert!(ws.recv().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn fifo_three_messages() {
+        let mut data = make_frame(true, 0x1, b"first");
+        data.extend_from_slice(&make_frame(true, 0x1, b"second"));
+        data.extend_from_slice(&make_frame(true, 0x1, b"third"));
+        let mut ws = ws_from_bytes(data);
+
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "first"),
+            other => panic!("expected first, got {other:?}"),
+        }
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "second"),
+            other => panic!("expected second, got {other:?}"),
+        }
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "third"),
+            other => panic!("expected third, got {other:?}"),
+        }
+    }
+
+    // =====================================================================
+    // Stream trait tests
+    // =====================================================================
+
+    use futures_core::Stream as _;
+
+    #[tokio::test]
+    async fn stream_yields_owned_messages() {
+        use std::pin::pin;
+
+        let mut data = make_frame(true, 0x1, b"hello");
+        data.extend_from_slice(&make_frame(true, 0x2, &[0x42]));
+        let ws = ws_from_bytes(data);
+        let mut ws = pin!(ws);
+
+        // Poll via Stream trait
+        let poll_result = futures_core::Stream::poll_next(ws.as_mut(), &mut noop_cx());
+        match poll_result {
+            Poll::Ready(Some(Ok(OwnedMessage::Text(s)))) => assert_eq!(s, "hello"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+        let poll_result = futures_core::Stream::poll_next(ws.as_mut(), &mut noop_cx());
+        match poll_result {
+            Poll::Ready(Some(Ok(OwnedMessage::Binary(b)))) => assert_eq!(b, vec![0x42]),
+            other => panic!("expected Binary, got {other:?}"),
+        }
+        let poll_result = futures_core::Stream::poll_next(ws.as_mut(), &mut noop_cx());
+        assert!(matches!(poll_result, Poll::Ready(None))); // EOF
+    }
+
+    /// Create a no-op waker context for synchronous poll testing.
+    fn noop_cx() -> Context<'static> {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |p| RawWaker::new(p, &VTABLE),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+        // Leak the waker to get 'static — fine for tests
+        let waker = Box::leak(Box::new(waker));
+        Context::from_waker(waker)
+    }
+}

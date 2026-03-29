@@ -20,7 +20,7 @@ members = [
 	"nexus-rate",
 	"nexus-notify",
 	"nexus-decimal",
-	"nexus-net",
+	"nexus-net", "nexus-async-net",
 ]
 
 [workspace.package]

@@ -19,7 +19,7 @@ use crate::tls::{TlsCodec, TlsConfig, TlsError};
 // =============================================================================
 
 /// Parsed WebSocket URL.
-pub(crate) struct ParsedUrl<'a> {
+pub struct ParsedUrl<'a> {
     pub tls: bool,
     pub host: &'a str,
     pub port: u16,
@@ -38,7 +38,7 @@ impl ParsedUrl<'_> {
     }
 }
 
-pub(crate) fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
+pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
     let (tls, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("ws://") {
@@ -52,12 +52,21 @@ pub(crate) fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
         .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
 
     let default_port = if tls { 443 } else { 80 };
-    let (host, port) = host_port.rfind(':').map_or((host_port, default_port), |i| {
-        let port_str = &host_port[i + 1..];
-        port_str
-            .parse::<u16>()
-            .map_or((host_port, default_port), |p| (&host_port[..i], p))
-    });
+    let (host, port) = match host_port.rfind(':') {
+        None => (host_port, default_port),
+        Some(i) => {
+            let port_str = &host_port[i + 1..];
+            if port_str.is_empty() {
+                // Trailing colon with no port — use default
+                (&host_port[..i], default_port)
+            } else {
+                let p = port_str.parse::<u16>().map_err(|_| {
+                    WsError::InvalidUrl(format!("invalid port in URL: {url}"))
+                })?;
+                (&host_port[..i], p)
+            }
+        }
+    };
 
     Ok(ParsedUrl {
         tls,

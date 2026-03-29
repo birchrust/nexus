@@ -5,18 +5,31 @@ Framework-agnostic — works with mio, io_uring, tokio, or raw syscalls.
 
 ## Performance
 
-**7-14x faster than tungstenite** for WebSocket frame parsing.
-**1.5x faster** end-to-end over TLS with JSON deserialization.
+### vs tungstenite (blocking, in-memory parse)
 
-| Path | nexus-net | tungstenite | Speedup |
-|------|----------|-------------|---------|
-| ws:// text 128B parse | 38 cycles | 497 cycles | 13x |
-| ws:// binary 128B parse | 34 cycles | 467 cycles | 14x |
-| ws:// throughput (batch) | 26 cycles/msg | 182 cycles/msg | 7x |
-| wss:// 77B JSON quote tick | 185ns, 5.4M/s | 281ns, 3.6M/s | 1.5x |
-| TCP loopback 40B binary | 24ns, 42M/s | 68ns, 15M/s | 2.8x |
+| Payload | Type | nexus-net | tungstenite | Speedup |
+|---------|------|-----------|-------------|---------|
+| 40B | binary parse | 18ns | 61ns | **3.4x** |
+| 128B | binary parse | 23ns | 76ns | **3.3x** |
+| 512B | binary parse | 49ns | 106ns | **2.2x** |
+| 77B | JSON quote parse+deser | 142ns | 204ns | **1.4x** |
+| 148B | JSON order parse+deser | 326ns | 374ns | **1.1x** |
+| 40B | binary TCP loopback | 25ns | 62ns | **2.5x** |
+| 77B | JSON TLS+parse+deser | 179ns | 244ns | **1.4x** |
 
-At 3GHz: 38 cycles = **12.7ns per message**. 26 cycles batched = **~115M msg/sec**.
+JSON deserialization uses sonic-rs. At the quote tick hot path (77B),
+WS framing is 18% of nexus-net's total vs 43% of tungstenite's.
+
+### TLS loopback (all three: async, blocking, tokio-tungstenite)
+
+| Payload | nexus-async-net | nexus-net (blocking) | tokio-tungstenite |
+|---------|-----------------|---------------------|-------------------|
+| 40B | 32ns (31M/s) | 34ns (29M/s) | 112ns (9.0M/s) |
+| 128B | 80ns (13M/s) | 78ns (13M/s) | 183ns (5.5M/s) |
+
+3.5x faster than tokio-tungstenite over TLS. No meaningful async overhead —
+the async path matches blocking. See [nexus-async-net](../nexus-async-net)
+for the tokio adapter.
 
 517/517 Autobahn conformance tests passed (0 failed, 216 unimplemented
 compression — intentionally unsupported).
@@ -149,8 +162,8 @@ archive.write(&order)?;               // still yours — archive after send
   or `WriteBuf`.
 - **`WsStream<S>`** — convenience I/O wrapper over any `Read + Write`.
   HTTP upgrade handshake built in.
-- **`WsTlsStream<S>`** — same as `WsStream` but with TLS. Requires
-  `tls` feature.
+- **`WsStream<S>` with TLS** — `wss://` URLs enable TLS transparently.
+  Requires `tls` feature.
 - **`Message<'a>`** — `Text(&str)`, `Binary(&[u8])`, `Ping(&[u8])`,
   `Pong(&[u8])`, `Close(CloseFrame)`. Text is validated UTF-8. Close
   codes are parsed into `CloseCode` enum.
