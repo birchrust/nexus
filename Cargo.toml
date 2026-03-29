@@ -20,6 +20,7 @@ members = [
 	"nexus-rate",
 	"nexus-notify",
 	"nexus-decimal",
+	"nexus-net",
 ]
 
 [workspace.package]
