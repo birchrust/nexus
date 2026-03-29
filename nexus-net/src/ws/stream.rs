@@ -60,9 +60,9 @@ pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
                 // Trailing colon with no port — use default
                 (&host_port[..i], default_port)
             } else {
-                let p = port_str.parse::<u16>().map_err(|_| {
-                    WsError::InvalidUrl(format!("invalid port in URL: {url}"))
-                })?;
+                let p = port_str
+                    .parse::<u16>()
+                    .map_err(|_| WsError::InvalidUrl(format!("invalid port in URL: {url}")))?;
                 (&host_port[..i], p)
             }
         }

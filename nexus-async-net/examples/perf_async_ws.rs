@@ -100,7 +100,11 @@ impl AsyncRead for MockAsyncReader<'_> {
 }
 
 impl AsyncWrite for MockAsyncReader<'_> {
-    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Poll::Ready(Ok(buf.len()))
     }
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -134,8 +138,14 @@ async fn bench_inmemory_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().await.unwrap() {
-            Some(Message::Binary(_d)) => { black_box(&_d); received += 1; }
-            Some(Message::Text(_s)) => { black_box(&_s); received += 1; }
+            Some(Message::Binary(_d)) => {
+                black_box(&_d);
+                received += 1;
+            }
+            Some(Message::Text(_s)) => {
+                black_box(&_s);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -151,14 +161,18 @@ async fn bench_inmemory_tungstenite(wire: &[u8], msg_count: u64) -> (Duration, u
         mock,
         tokio_tungstenite::tungstenite::protocol::Role::Client,
         None,
-    ).await;
+    )
+    .await;
     let mut ws = ws;
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
         match ws.next().await {
-            Some(Ok(msg)) => { black_box(&msg); received += 1; }
+            Some(Ok(msg)) => {
+                black_box(&msg);
+                received += 1;
+            }
             _ => break,
         }
     }
@@ -171,33 +185,50 @@ async fn bench_inmemory_tungstenite(wire: &[u8], msg_count: u64) -> (Duration, u
 
 #[derive(Deserialize)]
 struct QuoteTick {
-    #[allow(dead_code)] s: String,
-    #[allow(dead_code)] b: f64,
-    #[allow(dead_code)] a: f64,
-    #[allow(dead_code)] bs: f64,
+    #[allow(dead_code)]
+    s: String,
+    #[allow(dead_code)]
+    b: f64,
+    #[allow(dead_code)]
+    a: f64,
+    #[allow(dead_code)]
+    bs: f64,
     #[serde(rename = "as")]
-    #[allow(dead_code)] as_: f64,
-    #[allow(dead_code)] t: u64,
+    #[allow(dead_code)]
+    as_: f64,
+    #[allow(dead_code)]
+    t: u64,
 }
 
 #[derive(Deserialize)]
 struct OrderUpdate {
-    #[allow(dead_code)] s: String,
-    #[allow(dead_code)] bids: Vec<[f64; 2]>,
-    #[allow(dead_code)] asks: Vec<[f64; 2]>,
-    #[allow(dead_code)] t: u64,
-    #[allow(dead_code)] u: u64,
+    #[allow(dead_code)]
+    s: String,
+    #[allow(dead_code)]
+    bids: Vec<[f64; 2]>,
+    #[allow(dead_code)]
+    asks: Vec<[f64; 2]>,
+    #[allow(dead_code)]
+    t: u64,
+    #[allow(dead_code)]
+    u: u64,
 }
 
 #[derive(Deserialize)]
 struct BookSnapshot {
-    #[allow(dead_code)] s: String,
-    #[allow(dead_code)] bids: Vec<[f64; 2]>,
-    #[allow(dead_code)] asks: Vec<[f64; 2]>,
-    #[allow(dead_code)] t: u64,
-    #[allow(dead_code)] u: u64,
+    #[allow(dead_code)]
+    s: String,
+    #[allow(dead_code)]
+    bids: Vec<[f64; 2]>,
+    #[allow(dead_code)]
+    asks: Vec<[f64; 2]>,
+    #[allow(dead_code)]
+    t: u64,
+    #[allow(dead_code)]
+    u: u64,
     #[serde(rename = "type")]
-    #[allow(dead_code)] type_: String,
+    #[allow(dead_code)]
+    type_: String,
 }
 
 fn quote_tick_json() -> String {
@@ -212,8 +243,16 @@ fn book_snapshot_json() -> String {
     let mut bids = Vec::new();
     let mut asks = Vec::new();
     for i in 0..20 {
-        bids.push(format!("[{:.2},{:.1}]", 67234.50 - i as f64 * 0.25, 1.0 + i as f64 * 0.3));
-        asks.push(format!("[{:.2},{:.1}]", 67234.75 + i as f64 * 0.25, 1.0 + i as f64 * 0.2));
+        bids.push(format!(
+            "[{:.2},{:.1}]",
+            67234.50 - i as f64 * 0.25,
+            1.0 + i as f64 * 0.3
+        ));
+        asks.push(format!(
+            "[{:.2},{:.1}]",
+            67234.75 + i as f64 * 0.25,
+            1.0 + i as f64 * 0.2
+        ));
     }
     format!(
         r#"{{"s":"BTC-USD","bids":[{}],"asks":[{}],"t":1700000000000,"u":42,"type":"snapshot"}}"#,
@@ -226,7 +265,10 @@ fn book_snapshot_json() -> String {
 // JSON parse+deser benchmarks
 // =============================================================================
 
-async fn bench_json_nexus<T: for<'de> Deserialize<'de>>(wire: &[u8], msg_count: u64) -> (Duration, u64) {
+async fn bench_json_nexus<T: for<'de> Deserialize<'de>>(
+    wire: &[u8],
+    msg_count: u64,
+) -> (Duration, u64) {
     use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
 
     let mock = MockAsyncReader { data: wire, pos: 0 };
@@ -234,7 +276,8 @@ async fn bench_json_nexus<T: for<'de> Deserialize<'de>>(wire: &[u8], msg_count: 
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = nexus_async_net::ws::WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
+    let mut ws =
+        nexus_async_net::ws::WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
 
     let start = Instant::now();
     let mut received = 0u64;
@@ -252,7 +295,10 @@ async fn bench_json_nexus<T: for<'de> Deserialize<'de>>(wire: &[u8], msg_count: 
     (start.elapsed(), received)
 }
 
-async fn bench_json_tungstenite<T: for<'de> Deserialize<'de>>(wire: &[u8], msg_count: u64) -> (Duration, u64) {
+async fn bench_json_tungstenite<T: for<'de> Deserialize<'de>>(
+    wire: &[u8],
+    msg_count: u64,
+) -> (Duration, u64) {
     use futures_util::StreamExt;
 
     let mock = MockAsyncReader { data: wire, pos: 0 };
@@ -260,7 +306,8 @@ async fn bench_json_tungstenite<T: for<'de> Deserialize<'de>>(wire: &[u8], msg_c
         mock,
         tokio_tungstenite::tungstenite::protocol::Role::Client,
         None,
-    ).await;
+    )
+    .await;
     let mut ws = ws;
 
     let start = Instant::now();
@@ -272,14 +319,19 @@ async fn bench_json_tungstenite<T: for<'de> Deserialize<'de>>(wire: &[u8], msg_c
                 black_box(&val);
                 received += 1;
             }
-            Some(Ok(_)) => { received += 1; }
+            Some(Ok(_)) => {
+                received += 1;
+            }
             _ => break,
         }
     }
     (start.elapsed(), received)
 }
 
-async fn bench_deser_only<T: for<'de> Deserialize<'de>>(json: &str, msg_count: u64) -> (Duration, u64) {
+async fn bench_deser_only<T: for<'de> Deserialize<'de>>(
+    json: &str,
+    msg_count: u64,
+) -> (Duration, u64) {
     let start = Instant::now();
     for _ in 0..msg_count {
         let val: T = sonic_rs::from_str(json).unwrap();
@@ -301,13 +353,17 @@ async fn bench_stream_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = nexus_async_net::ws::WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
+    let mut ws =
+        nexus_async_net::ws::WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
         match ws.next().await {
-            Some(Ok(msg)) => { black_box(&msg); received += 1; }
+            Some(Ok(msg)) => {
+                black_box(&msg);
+                received += 1;
+            }
             _ => break,
         }
     }
@@ -323,7 +379,8 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
     use nexus_net::ws::Message;
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
@@ -332,7 +389,9 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
         // Get raw stream, blast frames
         let raw = ws.get_mut();
-        tokio::io::AsyncWriteExt::write_all(raw, &wire).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(raw, &wire)
+            .await
+            .unwrap();
         tokio::io::AsyncWriteExt::flush(raw).await.unwrap();
         tokio::time::sleep(Duration::from_secs(5)).await;
     });
@@ -340,16 +399,21 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
-        .await.unwrap();
+        .await
+        .unwrap();
     tcp.set_nodelay(true).unwrap();
     let mut ws = WsStream::connect_with(tcp, &format!("ws://127.0.0.1:{port}/"))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().await.unwrap() {
-            Some(Message::Binary(_d)) => { black_box(&_d); received += 1; }
+            Some(Message::Binary(_d)) => {
+                black_box(&_d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -364,14 +428,17 @@ async fn bench_loopback_tungstenite(port: u16, wire: Vec<u8>, msg_count: u64) ->
     use futures_util::StreamExt;
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         tcp.set_nodelay(true).unwrap();
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
         let raw = ws.get_mut();
-        tokio::io::AsyncWriteExt::write_all(raw, &wire).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(raw, &wire)
+            .await
+            .unwrap();
         tokio::io::AsyncWriteExt::flush(raw).await.unwrap();
         tokio::time::sleep(Duration::from_secs(5)).await;
     });
@@ -379,18 +446,21 @@ async fn bench_loopback_tungstenite(port: u16, wire: Vec<u8>, msg_count: u64) ->
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
-        .await.unwrap();
+        .await
+        .unwrap();
     tcp.set_nodelay(true).unwrap();
-    let (mut ws, _) = tokio_tungstenite::client_async(
-        format!("ws://127.0.0.1:{port}/"),
-        tcp,
-    ).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}/"), tcp)
+        .await
+        .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
         match ws.next().await {
-            Some(Ok(msg)) => { black_box(&msg); received += 1; }
+            Some(Ok(msg)) => {
+                black_box(&msg);
+                received += 1;
+            }
             _ => break,
         }
     }
@@ -615,8 +685,8 @@ fn main() {
 }
 
 fn bench_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duration, u64) {
-    use std::net::{TcpListener, TcpStream};
     use nexus_net::ws::{Message, WsStream};
+    use std::net::{TcpListener, TcpStream};
 
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr).unwrap();
@@ -642,7 +712,10 @@ fn bench_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duratio
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().unwrap() {
-            Some(Message::Binary(d)) => { black_box(&d); received += 1; }
+            Some(Message::Binary(d)) => {
+                black_box(&d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -686,18 +759,28 @@ fn make_no_verify_client_config() -> std::sync::Arc<rustls::ClientConfig> {
 struct NoVerifyBench;
 impl rustls::client::danger::ServerCertVerifier for NoVerifyBench {
     fn verify_server_cert(
-        &self, _: &rustls::pki_types::CertificateDer<'_>, _: &[rustls::pki_types::CertificateDer<'_>],
-        _: &rustls::pki_types::ServerName<'_>, _: &[u8], _: rustls::pki_types::UnixTime,
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
     fn verify_tls12_signature(
-        &self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct,
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
     fn verify_tls13_signature(
-        &self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct,
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
@@ -720,7 +803,9 @@ async fn tls_accept_and_blast(
     // WS accept over TLS, then blast raw frames
     let mut ws = tokio_tungstenite::accept_async(tls).await.unwrap();
     let raw = ws.get_mut();
-    tokio::io::AsyncWriteExt::write_all(raw, &wire).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(raw, &wire)
+        .await
+        .unwrap();
     tokio::io::AsyncWriteExt::flush(raw).await.unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
 }
@@ -741,16 +826,23 @@ async fn bench_tls_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (
 
     let client_config = make_no_verify_client_config();
     let connector = tokio_rustls::TlsConnector::from(client_config);
-    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap().to_owned();
+    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+        .unwrap()
+        .to_owned();
     let tls_stream = connector.connect(server_name, tcp).await.unwrap();
 
-    let mut ws = WsStream::connect_with(tls_stream, "ws://localhost/").await.unwrap();
+    let mut ws = WsStream::connect_with(tls_stream, "ws://localhost/")
+        .await
+        .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().await.unwrap() {
-            Some(Message::Binary(_d)) => { black_box(&_d); received += 1; }
+            Some(Message::Binary(_d)) => {
+                black_box(&_d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -760,7 +852,11 @@ async fn bench_tls_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (
     (elapsed, received)
 }
 
-async fn bench_tls_loopback_tungstenite(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duration, u64) {
+async fn bench_tls_loopback_tungstenite(
+    port: u16,
+    wire: Vec<u8>,
+    msg_count: u64,
+) -> (Duration, u64) {
     use futures_util::StreamExt;
 
     let addr = format!("127.0.0.1:{port}");
@@ -775,16 +871,23 @@ async fn bench_tls_loopback_tungstenite(port: u16, wire: Vec<u8>, msg_count: u64
 
     let client_config = make_no_verify_client_config();
     let connector = tokio_rustls::TlsConnector::from(client_config);
-    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap().to_owned();
+    let server_name = rustls::pki_types::ServerName::try_from("localhost")
+        .unwrap()
+        .to_owned();
     let tls_stream = connector.connect(server_name, tcp).await.unwrap();
 
-    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost/", tls_stream).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost/", tls_stream)
+        .await
+        .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
         match ws.next().await {
-            Some(Ok(msg)) => { black_box(&msg); received += 1; }
+            Some(Ok(msg)) => {
+                black_box(&msg);
+                received += 1;
+            }
             _ => break,
         }
     }
@@ -830,7 +933,10 @@ fn bench_tls_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dur
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().unwrap() {
-            Some(Message::Binary(d)) => { black_box(&d); received += 1; }
+            Some(Message::Binary(d)) => {
+                black_box(&d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }
@@ -845,16 +951,22 @@ fn bench_tls_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dur
 // =============================================================================
 
 fn bench_blocking_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
-    use std::io::{Cursor, Read, Write};
     use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, WsStream};
+    use std::io::{Cursor, Read, Write};
 
     struct CursorWrap<'a>(Cursor<&'a [u8]>);
     impl Read for CursorWrap<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buf)
+        }
     }
     impl Write for CursorWrap<'_> {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     let cursor = CursorWrap(Cursor::new(wire));
@@ -868,7 +980,10 @@ fn bench_blocking_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().unwrap() {
-            Some(Message::Binary(d)) => { black_box(&d); received += 1; }
+            Some(Message::Binary(d)) => {
+                black_box(&d);
+                received += 1;
+            }
             Some(_) => {}
             None => break,
         }

@@ -3,8 +3,8 @@
 use nexus_net::buf::WriteBuf;
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{
-    CloseCode, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError,
-    Message, Role, WsError, parse_ws_url,
+    CloseCode, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError, Message, Role,
+    WsError, parse_ws_url,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -332,22 +332,23 @@ impl WsStreamBuilder {
             };
 
             let connector = tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
-            let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
-                .map_err(|_| {
-                    WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
-                        parsed.host.to_string(),
-                    ))
-                })?;
-            let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
-                WsError::Tls(nexus_net::tls::TlsError::Io(e))
-            })?;
+            let server_name =
+                tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
+                    .map_err(|_| {
+                        WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
+                            parsed.host.to_string(),
+                        ))
+                    })?;
+            let tls_stream = connector
+                .connect(server_name, tcp)
+                .await
+                .map_err(|e| WsError::Tls(nexus_net::tls::TlsError::Io(e)))?;
             MaybeTls::Tls(Box::new(tls_stream))
         } else {
             MaybeTls::Plain(tcp)
         };
 
-        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity)
-            .await
+        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity).await
     }
 
     /// Connect with a pre-connected async stream.
@@ -356,8 +357,7 @@ impl WsStreamBuilder {
         stream: S,
         url: &str,
     ) -> Result<WsStream<S>, WsError> {
-        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity)
-            .await
+        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity).await
     }
 }
 
@@ -437,7 +437,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
         let this = self.get_mut();
         match &item {
             OwnedMessage::Text(s) => {
-                this.writer.encode_text_into(s.as_bytes(), &mut this.write_buf);
+                this.writer
+                    .encode_text_into(s.as_bytes(), &mut this.write_buf);
             }
             OwnedMessage::Binary(b) => {
                 this.writer.encode_binary_into(b, &mut this.write_buf);
@@ -460,7 +461,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
                     this.write_buf.append(&dst[..n]);
                 } else {
                     this.writer
-                        .encode_close_into(cf.code.as_u16(), cf.reason.as_bytes(), &mut this.write_buf)
+                        .encode_close_into(
+                            cf.code.as_u16(),
+                            cf.reason.as_bytes(),
+                            &mut this.write_buf,
+                        )
                         .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
                 }
             }
@@ -488,7 +493,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
             }
         }
         // All data written — flush the underlying stream
-        Pin::new(&mut this.stream).poll_flush(cx).map_err(WsError::Io)
+        Pin::new(&mut this.stream)
+            .poll_flush(cx)
+            .map_err(WsError::Io)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -499,7 +506,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
             Poll::Ready(Ok(())) => {}
         }
         let this = self.get_mut();
-        Pin::new(&mut this.stream).poll_shutdown(cx).map_err(WsError::Io)
+        Pin::new(&mut this.stream)
+            .poll_shutdown(cx)
+            .map_err(WsError::Io)
     }
 }
 
@@ -701,12 +710,8 @@ mod tests {
     /// Create a no-op waker context for synchronous poll testing.
     fn noop_cx() -> Context<'static> {
         use std::task::{RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |p| RawWaker::new(p, &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
+        const VTABLE: RawWakerVTable =
+            RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), |_| {}, |_| {}, |_| {});
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
         // Leak the waker to get 'static — fine for tests
         let waker = Box::leak(Box::new(waker));
