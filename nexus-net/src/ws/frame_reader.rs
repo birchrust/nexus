@@ -403,6 +403,7 @@ impl FrameReader {
 
     /// Route a completed frame. Returns the opcode to surface as a
     /// Message, or None if the frame was consumed internally (assembly).
+    #[inline(always)]
     fn route_opcode(
         &mut self,
         opcode: RawOpcode,
@@ -453,6 +454,7 @@ impl FrameReader {
 
     /// Construct a Message. For zero-copy: borrows from ReadBuf.
     /// For assembled: borrows from msg_buf.
+    #[inline(always)]
     fn make_message(&self, opcode: RawOpcode) -> Result<Option<Message<'_>>, ProtocolError> {
         let payload = match self.pending_cleanup {
             PendingCleanup::AdvanceReadBuf(n) => &self.buf.data()[..n],
@@ -575,6 +577,7 @@ impl FrameReader {
     }
 
     /// Consume partial payload from ReadBuf → msg_buf (for frames spanning reads).
+    #[cold]
     fn consume_partial_payload(&mut self, n: usize) {
         if n == 0 {
             return;
@@ -597,6 +600,7 @@ impl FrameReader {
         self.remaining_payload -= n;
     }
 
+    #[cold]
     fn parse_close_from(buf: &[u8]) -> Result<Option<Message<'_>>, ProtocolError> {
         if buf.is_empty() {
             return Ok(Some(Message::Close(CloseFrame {
