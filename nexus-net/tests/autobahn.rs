@@ -39,7 +39,7 @@ fn make_ws(path: &str) -> WsStream<TcpStream> {
         .max_frame_size(16 * 1024 * 1024)
         .max_message_size(16 * 1024 * 1024)
         .write_buffer_capacity(16 * 1024 * 1024 + 4096) // match read capacity for echo
-        .connect(tcp, &url)
+        .connect_with(tcp, &url)
         .expect("handshake failed")
 }
 
@@ -61,7 +61,7 @@ fn autobahn_conformance() {
 
 fn get_case_count() -> u32 {
     let mut ws = make_ws("/getCaseCount");
-    match ws.next().expect("read failed").expect("no message") {
+    match ws.recv().expect("read failed").expect("no message") {
         Message::Text(s) => s.parse().expect("invalid case count"),
         other => panic!("expected Text, got {other:?}"),
     }
@@ -72,7 +72,7 @@ fn run_case(case: u32) {
     let mut ws = make_ws(&path);
 
     loop {
-        let msg = match ws.next() {
+        let msg = match ws.recv() {
             Ok(Some(msg)) => msg.into_owned(),
             Ok(None) => break,
             Err(WsError::Protocol(ProtocolError::InvalidUtf8)) => {
@@ -108,5 +108,5 @@ fn run_case(case: u32) {
 fn update_reports() {
     let path = format!("/updateReports?agent={AGENT}");
     let mut ws = make_ws(&path);
-    let _ = ws.next();
+    let _ = ws.recv();
 }

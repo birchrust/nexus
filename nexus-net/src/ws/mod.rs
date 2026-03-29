@@ -8,6 +8,7 @@
 //! Use `FrameReader`/`FrameWriter` directly for sans-IO integration.
 //! Use `WsStream` for the convenience path with built-in HTTP upgrade.
 
+mod connecting;
 mod error;
 pub(crate) mod frame;
 mod frame_reader;
@@ -16,8 +17,6 @@ pub(crate) mod handshake;
 pub(crate) mod mask;
 mod message;
 mod stream;
-#[cfg(feature = "tls")]
-mod tls_stream;
 
 // User-facing types
 pub use error::ProtocolError;
@@ -27,6 +26,5 @@ pub use frame_writer::{FrameHeader, FrameWriter};
 pub use handshake::HandshakeError;
 pub use mask::apply_mask;
 pub use message::{CloseCode, CloseFrame, Message, OwnedCloseFrame, OwnedMessage};
-pub use stream::{WsError, WsStream, WsStreamBuilder};
-#[cfg(feature = "tls")]
-pub use tls_stream::WsTlsStream;
+pub use connecting::WsConnecting;
+pub use stream::{WsError, WsStream, WsStreamBuilder, pair, pair_with};

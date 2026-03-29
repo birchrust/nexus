@@ -3,7 +3,7 @@
 //! Verifies the full stack: TLS handshake → HTTP upgrade → WS framing.
 //! Requires network access. Skipped in normal `cargo test` and CI.
 //!
-//! **Run after any changes to:** `tls/`, `ws/stream.rs`, `ws/tls_stream.rs`,
+//! **Run after any changes to:** `tls/`, `ws/stream.rs`,
 //! `ws/handshake.rs`, `http/`, or buffer primitives.
 //!
 //! ```bash
@@ -14,16 +14,17 @@
 
 use std::net::TcpStream;
 use nexus_net::tls::TlsConfig;
-use nexus_net::ws::{CloseCode, Message, WsTlsStream};
+use nexus_net::ws::{CloseCode, Message, WsStream};
 
-fn connect_echo(host: &str, port: u16, url: &str) -> WsTlsStream<TcpStream> {
+fn connect_echo(host: &str, port: u16, url: &str) -> WsStream<TcpStream> {
     let tls_config = TlsConfig::new().expect("TLS config with system certs");
     let tcp = TcpStream::connect((host, port)).expect("TCP connect");
     tcp.set_nodelay(true).ok();
     tcp.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
     nexus_net::ws::WsStreamBuilder::new()
+        .tls(&tls_config)
         .write_buffer_capacity(64 * 1024)
-        .connect_tls(tcp, &tls_config, url)
+        .connect_with(tcp, url)
         .expect("WSS connect + upgrade")
 }
 
@@ -37,7 +38,7 @@ fn postman_echo_text() {
 
     // Text echo
     ws.send_text("Hello from nexus-net!").unwrap();
-    match ws.next().unwrap().unwrap() {
+    match ws.recv().unwrap().unwrap() {
         Message::Text(s) => assert_eq!(s, "Hello from nexus-net!"),
         other => panic!("expected Text echo, got {other:?}"),
     }
@@ -46,7 +47,7 @@ fn postman_echo_text() {
     for i in 0..10 {
         let msg = format!("message {i}");
         ws.send_text(&msg).unwrap();
-        match ws.next().unwrap().unwrap() {
+        match ws.recv().unwrap().unwrap() {
             Message::Text(s) => assert_eq!(s, msg),
             other => panic!("expected Text echo #{i}, got {other:?}"),
         }
@@ -55,7 +56,7 @@ fn postman_echo_text() {
     // Larger payload
     let big = "x".repeat(4096);
     ws.send_text(&big).unwrap();
-    match ws.next().unwrap().unwrap() {
+    match ws.recv().unwrap().unwrap() {
         Message::Text(s) => assert_eq!(s.len(), 4096),
         other => panic!("expected Text echo, got {other:?}"),
     }
