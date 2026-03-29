@@ -16,6 +16,8 @@ pub(crate) mod handshake;
 pub(crate) mod mask;
 mod message;
 mod stream;
+#[cfg(feature = "tls")]
+mod tls_stream;
 
 // User-facing types
 pub use error::ProtocolError;
@@ -26,3 +28,5 @@ pub use handshake::HandshakeError;
 pub use mask::apply_mask;
 pub use message::{CloseCode, CloseFrame, Message, OwnedCloseFrame, OwnedMessage};
 pub use stream::{WsError, WsStream, WsStreamBuilder};
+#[cfg(feature = "tls")]
+pub use tls_stream::WsTlsStream;

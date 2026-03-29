@@ -7,7 +7,10 @@
 //!
 //! - [`buf`] — Buffer primitives (ReadBuf, WriteBuf)
 //! - [`ws`] — WebSocket framing (RFC 6455)
+//! - [`tls`] — TLS codec via rustls (feature: `tls`)
 
 pub mod buf;
 pub mod http;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod ws;

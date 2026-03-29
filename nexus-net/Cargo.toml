@@ -8,10 +8,17 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+full = ["tls"]
+tls = ["dep:rustls", "dep:rustls-native-certs"]
+
 [dependencies]
 httparse = "1"
 sha1 = "0.10"
 simdutf8 = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 
 [[example]]
 name = "perf_buf"
@@ -22,9 +29,16 @@ name = "perf_ws"
 [[example]]
 name = "perf_vs_tungstenite"
 
+[[example]]
+name = "perf_tls"
+required-features = ["tls"]
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-tungstenite = "0.29"
+tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+rcgen = "0.13"
+rustls = { version = "0.23", features = ["std", "tls12", "aws_lc_rs"] }
+rustls-pemfile = "2"
 
 [[bench]]
 name = "frame_reader"

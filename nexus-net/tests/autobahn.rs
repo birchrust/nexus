@@ -1,12 +1,27 @@
-//! Autobahn WebSocket conformance test.
+//! Autobahn WebSocket conformance test (517 cases).
 //!
-//! Runs against Autobahn's `fuzzingserver` via Docker/Podman.
+//! Runs against Autobahn's `fuzzingserver` via Podman.
+//! Skipped in normal `cargo test` and CI.
 //!
-//! Prerequisites:
-//!   docker pull crossbario/autobahn-testsuite
+//! **Run after any changes to:** `ws/frame_reader.rs`, `ws/frame_writer.rs`,
+//! `ws/message.rs`, `ws/stream.rs`, `ws/mask.rs`, `ws/handshake.rs`,
+//! or buffer primitives.
 //!
-//! Run:
-//!   cargo test -p nexus-net --test autobahn -- --ignored --nocapture
+//! ```bash
+//! # Start Autobahn (requires Podman)
+//! podman run --rm -d --network=host \
+//!     -v "${PWD}/nexus-net/tests/autobahn:/config:Z" \
+//!     -v "${PWD}/target/autobahn-reports:/reports:Z" \
+//!     --name autobahn \
+//!     docker.io/crossbario/autobahn-testsuite \
+//!     wstest -m fuzzingserver -s /config/fuzzingserver.json
+//!
+//! # Run tests
+//! cargo test -p nexus-net --test autobahn -- --ignored --nocapture
+//!
+//! # Stop
+//! podman stop autobahn
+//! ```
 
 use std::net::TcpStream;
 use nexus_net::ws::{

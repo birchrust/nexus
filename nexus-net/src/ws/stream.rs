@@ -30,6 +30,9 @@ pub enum WsError {
     Protocol(ProtocolError),
     /// HTTP handshake failed.
     Handshake(HandshakeError),
+    /// TLS error.
+    #[cfg(feature = "tls")]
+    Tls(crate::tls::TlsError),
 }
 
 impl std::fmt::Display for WsError {
@@ -38,6 +41,8 @@ impl std::fmt::Display for WsError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
             Self::Handshake(e) => write!(f, "handshake error: {e}"),
+            #[cfg(feature = "tls")]
+            Self::Tls(e) => write!(f, "TLS error: {e}"),
         }
     }
 }
@@ -56,9 +61,9 @@ impl From<HandshakeError> for WsError {
 
 /// Builder for [`WsStream`].
 pub struct WsStreamBuilder {
-    reader_builder: FrameReaderBuilder,
-    write_buf_capacity: usize,
-    write_buf_headroom: usize,
+    pub(crate) reader_builder: FrameReaderBuilder,
+    pub(crate) write_buf_capacity: usize,
+    pub(crate) write_buf_headroom: usize,
 }
 
 impl WsStreamBuilder {
@@ -145,7 +150,7 @@ impl WsStreamBuilder {
     pub fn new() -> Self {
         Self {
             reader_builder: FrameReader::builder(),
-            write_buf_capacity: 4096,
+            write_buf_capacity: 65_536,
             write_buf_headroom: 14,
         }
     }
@@ -170,7 +175,7 @@ impl<S: Read + Write> WsStream<S> {
             stream,
             reader,
             writer,
-            write_buf: WriteBuf::new(4096, 14),
+            write_buf: WriteBuf::new(65_536, 14),
         }
     }
 
@@ -187,7 +192,7 @@ impl<S: Read + Write> WsStream<S> {
     /// ```
     pub fn connect(stream: S, url: &str) -> Result<Self, WsError> {
         let (host, path) = parse_ws_url(url);
-        Self::connect_impl(stream, host, path, FrameReader::builder(), 4096, 14)
+        Self::connect_impl(stream, host, path, FrameReader::builder(), 65_536, 14)
     }
 
     /// Connect with a pre-configured FrameReader.
@@ -197,12 +202,12 @@ impl<S: Read + Write> WsStream<S> {
         reader_builder: FrameReaderBuilder,
     ) -> Result<Self, WsError> {
         let (host, path) = parse_ws_url(url);
-        Self::connect_impl(stream, host, path, reader_builder, 4096, 14)
+        Self::connect_impl(stream, host, path, reader_builder, 65_536, 14)
     }
 
     /// Accept as WebSocket server with default configuration.
     pub fn accept(stream: S) -> Result<Self, WsError> {
-        Self::accept_impl(stream, FrameReader::builder(), 4096, 14)
+        Self::accept_impl(stream, FrameReader::builder(), 65_536, 14)
     }
 
     /// Accept with a pre-configured FrameReader.
@@ -210,7 +215,7 @@ impl<S: Read + Write> WsStream<S> {
         stream: S,
         reader_builder: FrameReaderBuilder,
     ) -> Result<Self, WsError> {
-        Self::accept_impl(stream, reader_builder, 4096, 14)
+        Self::accept_impl(stream, reader_builder, 65_536, 14)
     }
 
     /// Read the next message. Reads from the socket as needed.
