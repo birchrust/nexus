@@ -10,11 +10,15 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = ["tls"]
+tls = ["nexus-net/tls", "dep:tokio-rustls"]
+
 [dependencies]
-nexus-net = { version = "0.2.0", path = "../nexus-net", features = ["tls"] }
+nexus-net = { version = "0.2.0", path = "../nexus-net" }
 nexus-pool = { version = "1.0.0", path = "../nexus-pool" }
 tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
-tokio-rustls = "0.26"
+tokio-rustls = { version = "0.26", optional = true }
 futures-core = "0.3"
 futures-sink = "0.3"
 

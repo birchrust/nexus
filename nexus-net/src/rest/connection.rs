@@ -21,6 +21,7 @@ use crate::tls::{TlsCodec, TlsConfig, TlsError};
 // =============================================================================
 
 /// Parsed HTTP URL.
+#[non_exhaustive]
 pub struct ParsedUrl<'a> {
     pub tls: bool,
     pub host: &'a str,
@@ -436,7 +437,9 @@ impl<S: Read + Write> HttpConnection<S> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             tls.encrypt(data)?;
-            tls.write_tls_to(&mut self.stream)?;
+            while tls.wants_write() {
+                tls.write_tls_to(&mut self.stream)?;
+            }
             self.stream.flush()?;
             return Ok(());
         }

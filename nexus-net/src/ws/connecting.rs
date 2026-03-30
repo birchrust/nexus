@@ -161,7 +161,7 @@ impl<S: Read + Write> WsConnecting<S> {
             match self.state {
                 #[cfg(feature = "tls")]
                 ConnectState::TlsWrite => {
-                    let tls = self.tls.as_mut().unwrap();
+                    let tls = self.tls.as_mut().expect("TLS codec must exist in TLS handshake state");
                     match tls.write_tls_to(&mut *self.stream) {
                         Ok(_) => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
@@ -177,7 +177,7 @@ impl<S: Read + Write> WsConnecting<S> {
                 }
                 #[cfg(feature = "tls")]
                 ConnectState::TlsRead => {
-                    let tls = self.tls.as_mut().unwrap();
+                    let tls = self.tls.as_mut().expect("TLS codec must exist in TLS handshake state");
                     match tls.read_tls_from(&mut *self.stream) {
                         Ok(0) => return Err(WsError::Handshake(HandshakeError::MalformedHttp)),
                         Ok(_) => {}
@@ -280,7 +280,7 @@ impl<S: Read + Write> WsConnecting<S> {
                             {
                                 return Err(HandshakeError::MissingConnection.into());
                             }
-                            let key_str = std::str::from_utf8(&self.ws_key).unwrap();
+                            let key_str = std::str::from_utf8(&self.ws_key).expect("base64 output is valid ASCII");
                             let accept = resp
                                 .header("Sec-WebSocket-Accept")
                                 .ok_or(HandshakeError::InvalidAcceptKey)?;
@@ -332,7 +332,7 @@ impl<S: Read + Write> WsConnecting<S> {
     // =========================================================================
 
     fn prepare_http_request(&mut self, path: &str) {
-        let key_str = std::str::from_utf8(&self.ws_key).unwrap();
+        let key_str = std::str::from_utf8(&self.ws_key).expect("base64 output is valid ASCII");
         let headers = [
             ("Host", self.host.as_str()),
             ("Upgrade", "websocket"),
@@ -343,7 +343,7 @@ impl<S: Read + Write> WsConnecting<S> {
         let size = crate::http::request_size("GET", path, &headers);
         let mut buf = vec![0u8; size];
         // unwrap is safe: buffer is exactly the right size
-        let n = crate::http::write_request("GET", path, &headers, &mut buf).unwrap();
+        let n = crate::http::write_request("GET", path, &headers, &mut buf).expect("request fits in handshake buffer");
         self.req_buf = buf[..n].to_vec();
         self.req_offset = 0;
     }

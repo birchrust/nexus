@@ -48,7 +48,7 @@ let mut conn = AsyncHttpConnection::connect("https://httpbin.org").await?;
 let req = writer.get("/get")
     .query("symbol", "BTC-USD")
     .finish()?;
-let resp = conn.send(&req, &mut reader).await?;
+let resp = conn.send(req, &mut reader).await?;
 println!("{}", resp.body_str()?);
 drop(resp);
 
@@ -57,11 +57,39 @@ let req = writer.post("/post")
     .header("Content-Type", "application/json")
     .body(br#"{"action":"buy"}"#)
     .finish()?;
-let resp = conn.send(&req, &mut reader).await?;
+let resp = conn.send(req, &mut reader).await?;
 ```
 
 The `RequestWriter` and `ResponseReader` are the same types used by
 blocking `nexus-net`. The only difference is `.await` on the transport.
+
+### REST Builder (connect timeout, TLS, socket options)
+
+```rust
+use std::time::Duration;
+use nexus_async_net::rest::AsyncHttpConnectionBuilder;
+
+let mut conn = AsyncHttpConnectionBuilder::new()
+    .connect_timeout(Duration::from_secs(5))
+    .disable_nagle()
+    .connect("https://api.binance.com")
+    .await?;
+```
+
+### Server-Side WebSocket (accept)
+
+```rust
+use nexus_async_net::ws::WsStream;
+use tokio::net::TcpListener;
+
+let listener = TcpListener::bind("127.0.0.1:8080").await?;
+let (tcp, _addr) = listener.accept().await?;
+let mut ws = WsStream::accept(tcp).await?;
+
+while let Some(msg) = ws.recv().await? {
+    // handle messages
+}
+```
 
 ### Client Pool (connection reuse)
 
@@ -75,7 +103,7 @@ let pool = ClientPool::builder()
     .default_header("X-API-KEY", &key)?
     .default_header("Content-Type", "application/json")?
     .connections(4)
-    .tls(&tls)
+    .tls(&tls)           // requires "tls" feature (enabled by default)
     .disable_nagle()
     .build()
     .await?;
@@ -91,7 +119,7 @@ let req = slot.writer.post("/order")
 
 // Send using the slot's connection + reader (split borrow)
 let (conn, reader) = slot.conn_and_reader()?;
-let resp = conn.send(&req, reader).await?;
+let resp = conn.send(req, reader).await?;
 println!("{}", resp.body_str()?);
 
 // drop(slot) — returns to pool. If poisoned, reconnects on next acquire.
@@ -206,59 +234,68 @@ while let Some(msg) = ws.next().await {
 
 | Payload | nexus-async-net | tokio-tungstenite | Speedup |
 |---------|-----------------|-------------------|---------|
-| 40B     | 19ns            | 103ns             | **5.4x** |
-| 128B    | 24ns            | 114ns             | **4.8x** |
-| 512B    | 49ns            | 143ns             | **2.9x** |
+| 40B     | 19ns (52M/s)    | 61ns (16M/s)      | **3.2x** |
+| 128B    | 24ns (42M/s)    | 75ns (13M/s)      | **3.1x** |
+| 512B    | 49ns (20M/s)    | 105ns (10M/s)     | **2.1x** |
 
 ### vs tokio-tungstenite (JSON parse + sonic-rs deserialize)
 
 | Payload | nexus-async-net | tokio-tungstenite | Speedup |
 |---------|-----------------|-------------------|---------|
-| 77B quote tick  | 149ns  | 245ns             | **1.6x** |
-| 148B order update | 326ns | 424ns            | **1.3x** |
-| 676B book snapshot | 1671ns | 1759ns          | **1.1x** |
+| 77B quote tick  | 146ns (6.9M/s) | 205ns (4.9M/s) | **1.4x** |
+| 148B order update | 331ns (3.0M/s) | 382ns (2.6M/s) | **1.2x** |
+| 676B book snapshot | 1637ns (611K/s) | 1720ns (581K/s) | **1.1x** |
 
 ### Three-way comparison: async vs blocking vs tokio-tungstenite
 
-**TCP loopback (no TLS):**
+**TCP loopback (no TLS, pinned to cores 0,2):**
 
 | Payload | nexus-async-net | nexus-net (blocking) | tokio-tungstenite |
 |---------|-----------------|---------------------|-------------------|
-| 40B     | 21ns (49M/s)    | 24ns (41M/s)        | 104ns (9.6M/s)    |
-| 128B    | 33ns (30M/s)    | 45ns (22M/s)        | 119ns (8.4M/s)    |
+| 40B     | 21ns (49M/s)    | 30ns (33M/s)        | 66ns (15M/s)      |
 
-**TLS loopback:**
+**TLS loopback (pinned to cores 0,2):**
 
 | Payload | nexus-async-net | nexus-net (blocking) | tokio-tungstenite |
 |---------|-----------------|---------------------|-------------------|
 | 40B     | 32ns (31M/s)    | 34ns (29M/s)        | 112ns (9.0M/s)    |
 | 128B    | 80ns (13M/s)    | 78ns (13M/s)        | 183ns (5.5M/s)    |
 
-**There is no meaningful tokio overhead.** The async path matches or beats blocking across all configurations — TCP and TLS. Both nexus paths are 3-5x faster than tokio-tungstenite.
+**There is no meaningful tokio overhead.** The async path matches or beats blocking across all configurations — TCP and TLS. Both nexus paths are 2-3x faster than tungstenite.
 
 Teams already on tokio should use nexus-async-net directly. There is no performance reason to avoid async.
 
 ## Builder
 
 ```rust
+use std::time::Duration;
 use nexus_async_net::ws::WsStreamBuilder;
 use nexus_net::tls::TlsConfig;
 
 let tls = TlsConfig::new()?;
 let mut ws = WsStreamBuilder::new()
-    .tls(&tls)
+    .tls(&tls)                              // requires "tls" feature (default)
     .disable_nagle()
     .buffer_capacity(2 * 1024 * 1024)
+    .connect_timeout(Duration::from_secs(5))
     .connect("wss://exchange.com/ws")
     .await?;
 ```
 
 ## Features
 
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `tls` | **Yes** | TLS support via tokio-rustls + aws-lc-rs. `wss://` and `https://` URLs auto-detected. |
+
+Disable with `default-features = false` for TLS-free builds.
+
 - **Zero-copy WebSocket** — `Message<'_>` borrows from the internal buffer via `recv()`
 - **Stream/Sink** — `OwnedMessage` for `StreamExt`/`SinkExt` ergonomics
 - **Zero-alloc REST** — same `RequestWriter`/`ResponseReader` as blocking, just `.await` on I/O
 - **Automatic TLS** — `wss://` and `https://` URLs handled transparently via tokio-rustls
+- **Connect timeout** — `WsStreamBuilder::connect_timeout()` and `AsyncHttpConnectionBuilder::connect_timeout()`
+- **Server-side WebSocket** — `WsStream::accept(stream)` for incoming connections
 - **Chunked transfer encoding** — decoded transparently for REST responses
 - **Same sans-IO primitives** — identical parse path as blocking nexus-net
 - **Single-threaded friendly** — works with `current_thread` runtime + `LocalSet`

@@ -7,6 +7,7 @@
 
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
+#[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_pool::sync::{Pool, Pooled};
 
@@ -17,43 +18,9 @@ use crate::maybe_tls::MaybeTls;
 // AtomicClientSlot
 // =============================================================================
 
-/// Thread-safe client slot: writer + reader + transport.
-///
-/// Fields are public for split borrows (same pattern as [`super::ClientSlot`]).
-/// See [`ClientSlot`](super::ClientSlot) docs for the usage pattern.
-pub struct AtomicClientSlot {
-    /// Request encoder (sans-IO).
-    pub writer: RequestWriter,
-    /// Response parser.
-    pub reader: ResponseReader,
-    /// Transport. `None` if connection died.
-    pub conn: Option<AsyncHttpConnection<MaybeTls>>,
-}
-
-impl AtomicClientSlot {
-    /// Whether the connection is dead and needs reconnect.
-    pub fn needs_reconnect(&self) -> bool {
-        self.conn
-            .as_ref()
-            .is_none_or(AsyncHttpConnection::is_poisoned)
-    }
-
-    /// Split borrow: get mutable references to conn + reader
-    /// while writer is borrowed by a `Request<'_>`.
-    pub fn conn_and_reader(
-        &mut self,
-    ) -> Result<
-        (
-            &mut AsyncHttpConnection<MaybeTls>,
-            &mut ResponseReader,
-        ),
-        RestError,
-    > {
-        let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
-        Ok((conn, &mut self.reader))
-    }
-
-}
+/// Thread-safe client slot. Same type as [`ClientSlot`](super::ClientSlot) —
+/// the slot is identical regardless of pool type.
+pub type AtomicClientSlot = super::ClientSlot;
 
 // =============================================================================
 // AtomicClientPool
@@ -94,6 +61,7 @@ pub struct AtomicClientPool {
 #[derive(Clone)]
 struct ReconnectConfig {
     url: String,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
 }
@@ -135,6 +103,7 @@ impl AtomicClientPool {
 
     async fn connect_one(&self) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let mut builder = AsyncHttpConnectionBuilder::new();
+        #[cfg(feature = "tls")]
         if let Some(ref tls) = self.reconnect_config.tls_config {
             builder = builder.tls(tls);
         }
@@ -155,6 +124,7 @@ pub struct AtomicClientPoolBuilder {
     base_path: String,
     default_headers: Vec<(String, String)>,
     connections: usize,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
     write_buffer_capacity: usize,
@@ -170,6 +140,7 @@ impl AtomicClientPoolBuilder {
             base_path: String::new(),
             default_headers: Vec::new(),
             connections: 1,
+            #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
             write_buffer_capacity: 32 * 1024,
@@ -213,6 +184,7 @@ impl AtomicClientPoolBuilder {
 
     /// Custom TLS configuration.
     #[must_use]
+    #[cfg(feature = "tls")]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
         self
@@ -260,6 +232,7 @@ impl AtomicClientPoolBuilder {
 
         let reconnect_config = ReconnectConfig {
             url: self.url.clone(),
+            #[cfg(feature = "tls")]
             tls_config: self.tls_config.clone(),
             nodelay: self.nodelay,
         };
@@ -310,6 +283,7 @@ impl AtomicClientPoolBuilder {
                 let mut slot = pool.try_acquire()
                     .expect("pool should have slots during initial setup");
                 let mut builder = AsyncHttpConnectionBuilder::new();
+            #[cfg(feature = "tls")]
                 if let Some(ref tls) = self.tls_config {
                     builder = builder.tls(tls);
                 }

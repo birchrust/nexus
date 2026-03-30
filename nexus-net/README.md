@@ -5,20 +5,35 @@ Framework-agnostic — works with mio, io_uring, tokio, or raw syscalls.
 
 ## Performance
 
-### vs tungstenite (blocking, in-memory parse)
+### vs tungstenite (in-memory parse, pinned to cores 0,2)
 
 | Payload | Type | nexus-net | tungstenite | Speedup |
 |---------|------|-----------|-------------|---------|
-| 40B | binary parse | 18ns | 61ns | **3.4x** |
-| 128B | binary parse | 23ns | 76ns | **3.3x** |
-| 512B | binary parse | 49ns | 106ns | **2.2x** |
-| 77B | JSON quote parse+deser | 142ns | 204ns | **1.4x** |
-| 148B | JSON order parse+deser | 326ns | 374ns | **1.1x** |
-| 40B | binary TCP loopback | 25ns | 62ns | **2.5x** |
-| 77B | JSON TLS+parse+deser | 179ns | 244ns | **1.4x** |
+| 40B | binary parse | 19ns (52M/s) | 61ns (16M/s) | **3.2x** |
+| 128B | binary parse | 24ns (42M/s) | 75ns (13M/s) | **3.1x** |
+| 512B | binary parse | 49ns (20M/s) | 105ns (10M/s) | **2.1x** |
+| 77B | JSON quote parse+deser | 146ns (6.9M/s) | 205ns (4.9M/s) | **1.4x** |
+| 148B | JSON order parse+deser | 331ns (3.0M/s) | 382ns (2.6M/s) | **1.2x** |
+| 40B | binary TCP loopback | 30ns (33M/s) | 66ns (15M/s) | **2.2x** |
+| 77B | JSON TLS+parse+deser | 165ns (6.1M/s) | 221ns (4.5M/s) | **1.3x** |
 
 JSON deserialization uses sonic-rs. At the quote tick hot path (77B),
 WS framing is 18% of nexus-net's total vs 43% of tungstenite's.
+
+### rdtsc cycle distribution (pinned to core 0, batch=64)
+
+| Path | p50 | p90 | p99 | p99.9 |
+|------|-----|-----|-----|-------|
+| text unmasked 128B | 39 | 39 | 43 | 65 |
+| binary unmasked 128B | 35 | 36 | 44 | 129 |
+| text masked 128B | 52 | 53 | 58 | 124 |
+| apply_mask 128B | 12 | 12 | 16 | 31 |
+| encode_text 128B server | 10 | 11 | 22 | 39 |
+| throughput 100×128B /msg | 28 | 28 | 44 | 91 |
+
+At 3GHz: 39 cycles = 13ns. In-memory throughput: 107M msg/sec (28 cycles/msg).
+TCP loopback throughput: 33M msg/sec (30ns/msg, 40B binary, pinned cores 0,2).
+The gap is kernel TCP overhead — protocol parsing is ~13ns of the 30ns round-trip.
 
 ### TLS loopback (all three: async, blocking, tokio-tungstenite)
 
@@ -38,16 +53,17 @@ compression — intentionally unsupported).
 
 | Benchmark | nexus-net | reqwest | Speedup |
 |-----------|-----------|---------|---------|
-| POST build+write+parse (mock) p50 | 471 cycles (157ns) | 1,484 cycles (495ns) build-only | **3.1x** |
-| POST build+write+parse (mock) p99 | 745 cycles (248ns) | 2,035 cycles (678ns) build-only | **2.7x** |
-| Protocol throughput (mock, single-threaded) | 5.05M req/sec | N/A | — |
-| TCP loopback round-trip p50 | 24,822 cycles (8.3μs) | 64,334 cycles (21.4μs) | **2.6x** |
-| TCP loopback round-trip p99.9 | 97,204 cycles (32.4μs) | 215,146 cycles (71.7μs) | **2.2x** |
-| TCP loopback throughput | 108,108 req/sec | 37,798 req/sec | **2.9x** |
+| POST build+write+parse (mock) p50 | 494 cycles (165ns) | 1,549 cycles (516ns) build-only | **3.1x** |
+| POST build+write+parse (mock) p99 | 763 cycles (254ns) | 2,445 cycles (815ns) build-only | **3.2x** |
+| Protocol throughput (mock, single-threaded) | 5.3M req/sec | N/A | — |
+| TCP loopback round-trip p50 | 22,924 cycles (7.6μs) | 62,802 cycles (20.9μs) | **2.7x** |
+| TCP loopback round-trip p99.9 | 59,860 cycles (20.0μs) | 198,120 cycles (66.0μs) | **3.3x** |
+| TCP loopback throughput | 114K req/sec | 39K req/sec | **2.9x** |
 
-Workload: Binance-style order entry — POST + 4 headers + JSON body (~100B) + 200 OK
-JSON response. Zero per-request allocation. nexus-net measures full round-trip;
-reqwest measures build-only (no write/parse).
+All measurements pinned to physical P-cores (taskset -c 0 for mock, -c 0,2 for
+loopback). Workload: Binance-style order entry — POST + 4 headers + JSON body
+(~100B) + 200 OK JSON response. Zero per-request allocation. nexus-net measures
+full round-trip; reqwest measures build-only (no write/parse).
 
 16/16 httpbin.org conformance tests passed (GET, POST, PUT, DELETE, PATCH, query
 params, custom headers, keep-alive, status codes, chunked transfer encoding).
@@ -155,7 +171,7 @@ let req = writer.get("/get")
     .query("symbol", "BTC-USD")
     .query("limit", "100")
     .finish()?;
-let resp = conn.send(&req, &mut reader)?;
+let resp = conn.send(req, &mut reader)?;
 println!("status: {}", resp.status());
 println!("body: {}", resp.body_str()?);
 drop(resp);  // release reader borrow before next request
@@ -166,8 +182,23 @@ let req = writer.post("/post")
     .header("Content-Type", "application/json")
     .body(json)
     .finish()?;
-let resp = conn.send(&req, &mut reader)?;
+let resp = conn.send(req, &mut reader)?;
 println!("rate limit: {:?}", resp.header("X-RateLimit-Remaining"));
+
+// POST with body_writer (serialize directly into wire buffer)
+let req = writer.post("/order")
+    .header("Content-Type", "application/json")
+    .body_writer(|w| serde_json::to_writer(w, &order))
+    .finish()?;
+let resp = conn.send(req, &mut reader)?;
+
+// POST with body_fixed (known-size binary, zero-copy write)
+let req = writer.post("/order")
+    .body_fixed(128, |buf| {
+        order.encode_sbe(buf);
+    })
+    .finish()?;
+let resp = conn.send(req, &mut reader)?;
 ```
 
 Three objects, clear ownership:
@@ -238,9 +269,12 @@ archive.write(&order)?;               // still yours — archive after send
 
 - **`RequestWriter`** — sans-IO request encoder with typestate builder.
   Produces `Request<'a>` (zero-copy borrow of wire bytes). Supports
-  query params (percent-encoded), per-request headers, body, base path.
+  query params (percent-encoded), per-request headers, `body()` (slice),
+  `body_writer()` (serialize directly via `std::io::Write`),
+  `body_fixed()` (known-size direct write), base path.
 - **`HttpConnection<S>`** — pure transport. 3 fields: stream, TLS,
-  poisoned. `send(&req, &mut reader)` is the whole API.
+  poisoned. `send(req, &mut reader)` is the whole API (request moved
+  on send).
 - **`RestResponse<'a>`** — borrows from `ResponseReader`. Status, headers,
   body. Supports Content-Length and chunked transfer encoding.
 

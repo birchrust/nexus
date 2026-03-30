@@ -7,6 +7,7 @@
 
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
+#[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_pool::local::{Pool, Pooled};
 
@@ -103,6 +104,7 @@ pub struct ClientPool {
 #[derive(Clone)]
 struct ReconnectConfig {
     url: String,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
 }
@@ -147,6 +149,7 @@ impl ClientPool {
 
     async fn connect_one(&self) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let mut builder = AsyncHttpConnectionBuilder::new();
+        #[cfg(feature = "tls")]
         if let Some(ref tls) = self.reconnect_config.tls_config {
             builder = builder.tls(tls);
         }
@@ -167,6 +170,7 @@ pub struct ClientPoolBuilder {
     base_path: String,
     default_headers: Vec<(String, String)>,
     connections: usize,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
     write_buffer_capacity: usize,
@@ -182,6 +186,7 @@ impl ClientPoolBuilder {
             base_path: String::new(),
             default_headers: Vec::new(),
             connections: 1,
+            #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
             write_buffer_capacity: 32 * 1024,
@@ -225,6 +230,7 @@ impl ClientPoolBuilder {
 
     /// Custom TLS configuration.
     #[must_use]
+    #[cfg(feature = "tls")]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
         self
@@ -272,6 +278,7 @@ impl ClientPoolBuilder {
 
         let reconnect_config = ReconnectConfig {
             url: self.url.clone(),
+            #[cfg(feature = "tls")]
             tls_config: self.tls_config.clone(),
             nodelay: self.nodelay,
         };
@@ -280,6 +287,7 @@ impl ClientPoolBuilder {
         let mut initial_slots = Vec::with_capacity(self.connections);
         for _ in 0..self.connections {
             let mut builder = AsyncHttpConnectionBuilder::new();
+            #[cfg(feature = "tls")]
             if let Some(ref tls) = self.tls_config {
                 builder = builder.tls(tls);
             }

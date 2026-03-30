@@ -18,28 +18,12 @@ pub fn compute_accept_key(key: &str) -> [u8; 28] {
 }
 
 /// Generate a random 16-byte Sec-WebSocket-Key, base64-encoded (24 chars).
+///
+/// Uses OS randomness via `getrandom` per RFC 6455 §4.1 which requires
+/// the key to be randomly selected.
 pub fn generate_key() -> [u8; 24] {
     let mut raw = [0u8; 16];
-    // Simple LCG — not crypto, just needs to be unpredictable per RFC 6455 §4.1
-    thread_local! {
-        static STATE: std::cell::Cell<u64> = {
-            let time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            std::cell::Cell::new(time)
-        };
-    }
-    STATE.with(|s| {
-        let mut state = s.get();
-        for byte in &mut raw {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1);
-            *byte = (state >> 33) as u8;
-        }
-        s.set(state);
-    });
+    getrandom::fill(&mut raw).expect("OS randomness unavailable");
     base64_encode_16(&raw)
 }
 

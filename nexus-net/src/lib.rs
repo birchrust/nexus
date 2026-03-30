@@ -5,8 +5,10 @@
 //!
 //! # Modules
 //!
-//! - [`buf`] — Buffer primitives (ReadBuf, WriteBuf)
+//! - [`buf`] — Buffer primitives (`ReadBuf`, `WriteBuf`, `WriteBufWriter`)
 //! - [`ws`] — WebSocket framing (RFC 6455)
+//! - [`http`] — HTTP/1.1 response parsing, chunked decoding, request/response writers
+//! - [`rest`] — HTTP/1.1 REST client (`RequestWriter`, `HttpConnection`, typestate builder)
 //! - [`tls`] — TLS codec via rustls (feature: `tls`)
 
 pub mod buf;

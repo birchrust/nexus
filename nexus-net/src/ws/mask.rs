@@ -12,10 +12,22 @@ pub fn apply_mask(buf: &mut [u8], mask: [u8; 4]) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
-            // SAFETY: checked avx2 support
+        // Compile-time AVX2 detection (when built with -C target-cpu=native
+        // or -C target-feature=+avx2). Zero runtime cost.
+        #[cfg(target_feature = "avx2")]
+        {
+            // SAFETY: AVX2 confirmed at compile time.
             unsafe { apply_mask_avx2(buf, mask) };
             return;
+        }
+        // Runtime AVX2 detection (cached global atomic, ~3 cycles).
+        #[cfg(not(target_feature = "avx2"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: checked avx2 support
+                unsafe { apply_mask_avx2(buf, mask) };
+                return;
+            }
         }
         // SSE2 is baseline on x86_64, always available
         // SAFETY: SSE2 is guaranteed on x86_64

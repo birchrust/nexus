@@ -2,6 +2,7 @@
 
 use nexus_net::http::{HttpError, ResponseReader};
 use nexus_net::rest::{Request, RestError, RestResponse};
+#[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -14,8 +15,10 @@ use crate::maybe_tls::MaybeTls;
 
 /// Builder for [`AsyncHttpConnection`].
 pub struct AsyncHttpConnectionBuilder {
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    connect_timeout: Option<std::time::Duration>,
 }
 
 impl AsyncHttpConnectionBuilder {
@@ -23,12 +26,15 @@ impl AsyncHttpConnectionBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
+            connect_timeout: None,
         }
     }
 
     /// Custom TLS configuration.
+    #[cfg(feature = "tls")]
     #[must_use]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
@@ -42,33 +48,59 @@ impl AsyncHttpConnectionBuilder {
         self
     }
 
+    /// TCP connect timeout.
+    #[must_use]
+    pub fn connect_timeout(mut self, d: std::time::Duration) -> Self {
+        self.connect_timeout = Some(d);
+        self
+    }
+
     /// Connect to an HTTP(S) endpoint. TLS auto-detected from scheme.
     pub async fn connect(self, url: &str) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let parsed = nexus_net::rest::parse_base_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
-        let tcp = TcpStream::connect(&addr).await?;
+        let tcp = match self.connect_timeout {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, TcpStream::connect(&addr))
+                    .await
+                    .map_err(|_| RestError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "connect timeout",
+                    )))?
+                    ?
+            }
+            None => TcpStream::connect(&addr).await?,
+        };
         if self.nodelay {
             tcp.set_nodelay(true)?;
         }
 
         let stream = if parsed.tls {
-            let tls_config = match &self.tls_config {
-                Some(c) => c.clone(),
-                None => TlsConfig::new().map_err(RestError::Tls)?,
-            };
+            #[cfg(feature = "tls")]
+            {
+                let tls_config = match &self.tls_config {
+                    Some(c) => c.clone(),
+                    None => TlsConfig::new().map_err(RestError::Tls)?,
+                };
 
-            let connector =
-                tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
-            let server_name =
-                tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
+                let connector =
+                    tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
+                let server_name =
+                    tokio_rustls::rustls::pki_types::ServerName::try_from(
+                        parsed.host.to_owned(),
+                    )
                     .map_err(|_| {
                         RestError::InvalidUrl(format!("invalid hostname: {}", parsed.host))
                     })?;
-            let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
-                RestError::Io(e)
-            })?;
-            MaybeTls::Tls(Box::new(tls_stream))
+                let tls_stream =
+                    connector.connect(server_name, tcp).await.map_err(RestError::Io)?;
+                MaybeTls::Tls(Box::new(tls_stream))
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                return Err(RestError::TlsNotEnabled);
+            }
         } else {
             MaybeTls::Plain(tcp)
         };

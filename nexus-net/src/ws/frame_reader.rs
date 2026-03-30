@@ -459,7 +459,8 @@ impl FrameReader {
                 }
                 if fin {
                     self.assembling = false;
-                    let opcode = self.assembly_opcode.take().unwrap();
+                    let opcode = self.assembly_opcode.take()
+                        .expect("assembly_opcode must be Some when assembling is true");
                     self.utf8_valid_up_to = 0;
                     return Ok(Some(opcode));
                 }
@@ -486,11 +487,15 @@ impl FrameReader {
             RawOpcode::Text => {
                 let s = match self.pending_cleanup {
                     PendingCleanup::ClearMsgBuf => {
-                        // SAFETY: Assembled text messages were incrementally
-                        // validated via validate_utf8_incremental() on every
-                        // fragment, with a final fin=true validation that
-                        // rejects incomplete codepoints. All bytes in msg_buf
-                        // are proven valid UTF-8.
+                        // SAFETY: Every byte in msg_buf was validated via
+                        // validate_utf8_incremental() in route_opcode():
+                        //   1. Initial text frame: validated on entry (line 435)
+                        //   2. Each continuation: validated on append (line 447)
+                        //   3. Final frame (fin=true): validated with is_final=true
+                        //      which rejects incomplete codepoints at the boundary
+                        // No bytes enter msg_buf without passing through this
+                        // validation chain. Re-validating here would waste cycles
+                        // on the hot path (~5-20 cycles for 128B via simdutf8).
                         unsafe { std::str::from_utf8_unchecked(payload) }
                     }
                     _ => {
@@ -506,6 +511,7 @@ impl FrameReader {
         }
     }
 
+    #[inline]
     fn header_size(byte1: u8) -> usize {
         let masked = byte1 & 0x80 != 0;
         let len_code = byte1 & 0x7F;
@@ -517,6 +523,7 @@ impl FrameReader {
         if masked { base + 4 } else { base }
     }
 
+    #[inline]
     fn parse_header(&self, header: &[u8]) -> Result<ParsedHeader, ProtocolError> {
         let byte0 = header[0];
         let byte1 = header[1];
@@ -546,7 +553,9 @@ impl FrameReader {
                 (u64::from(len), 4)
             }
             _ => {
-                let len = u64::from_be_bytes(header[2..10].try_into().unwrap());
+                let len = u64::from_be_bytes(
+                    header[2..10].try_into().expect("64-bit length field is 8 bytes"),
+                );
                 (len, 10)
             }
         };
