@@ -92,7 +92,7 @@ impl std::fmt::Display for Method {
 /// let req = writer.post("/order").body(json).finish()?;
 /// let archived = req.clone();
 /// conn.send(req, &mut reader)?;
-/// archive_log.write(archived.data());
+/// archive_log.write(archived.as_bytes());
 /// ```
 #[derive(Clone)]
 pub struct Request<'a> {
@@ -101,11 +101,6 @@ pub struct Request<'a> {
 
 impl<'a> Request<'a> {
     /// The complete HTTP request as wire bytes.
-    pub fn data(&self) -> &[u8] {
-        self.data
-    }
-
-    /// The request as a byte slice (alias for [`data`](Self::data)).
     pub fn as_bytes(&self) -> &[u8] {
         self.data
     }
@@ -117,8 +112,8 @@ impl<'a> Request<'a> {
     /// is used again).
     ///
     /// ```ignore
-    /// let bytes = writer.post("/order").body(json).finish()?.into_bytes();
-    /// archive_log.write(bytes);
+    /// let payload = writer.post("/order").body(json).finish()?.into_bytes();
+    /// archive_log.write(payload);
     /// ```
     pub fn into_bytes(self) -> &'a [u8] {
         self.data
@@ -282,7 +277,7 @@ fn write_body(
 ///     .query("symbol", "BTC-USD")
 ///     .finish()?;
 ///
-/// // req.data() contains the complete HTTP request wire bytes
+/// // req.as_bytes() contains the complete HTTP request wire bytes
 /// ```
 pub struct RequestWriter {
     write_buf: WriteBuf,

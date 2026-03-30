@@ -163,7 +163,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
         }
 
         // Send request bytes
-        if let Err(e) = self.stream.write_all(req.data()).await {
+        if let Err(e) = self.stream.write_all(req.as_bytes()).await {
             self.poisoned = true;
             return Err(RestError::Io(e));
         }

@@ -366,7 +366,7 @@ impl<S: Read + Write> HttpConnection<S> {
         }
 
         // Send request bytes
-        if let Err(e) = self.write_all(req.data()) {
+        if let Err(e) = self.write_all(req.as_bytes()) {
             self.poisoned = true;
             return Err(e);
         }
@@ -401,6 +401,7 @@ impl<S: Read + Write> HttpConnection<S> {
     ///
     /// For generic streams we can't peek, so we assume alive and
     /// report `ReadTimeout`. The connection is poisoned either way.
+    #[allow(clippy::unused_self)]
     fn peek_is_dead(&self) -> bool {
         #[cfg(feature = "tls")]
         if self.tls.is_some() {
@@ -851,7 +852,7 @@ mod tests {
             .query("limit", "100")
             .finish()
             .unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /orders?symbol=BTC-USD&limit=100 HTTP/1.1\r\n"));
     }
 
@@ -863,7 +864,7 @@ mod tests {
             .query("q", "hello world&more=yes")
             .finish()
             .unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /search?q=hello%20world%26more%3Dyes HTTP/1.1\r\n"));
     }
 
@@ -875,7 +876,7 @@ mod tests {
             .query_raw("symbol", "BTC-USD")
             .finish()
             .unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /orders?symbol=BTC-USD HTTP/1.1\r\n"));
     }
 
@@ -888,7 +889,7 @@ mod tests {
             .header("X-Nonce", "123")
             .finish()
             .unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /orders?sym=ETH HTTP/1.1\r\n"));
         assert!(data.contains("X-Nonce: 123\r\n"));
     }
@@ -901,7 +902,7 @@ mod tests {
             .query("extra", "val")
             .finish()
             .unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /path?existing=true&extra=val HTTP/1.1\r\n"));
     }
 
@@ -910,7 +911,7 @@ mod tests {
         let mut writer = RequestWriter::new("host").unwrap();
         writer.set_base_path("/api/v3").unwrap();
         let req = writer.get("/orders").finish().unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /api/v3/orders HTTP/1.1\r\n"));
     }
 
@@ -921,7 +922,7 @@ mod tests {
             .get_raw("/orders?symbol=BTC&limit=100")
             .finish()
             .unwrap();
-        let data = std::str::from_utf8(req.data()).unwrap();
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
         assert!(data.starts_with("GET /orders?symbol=BTC&limit=100 HTTP/1.1\r\n"));
     }
 

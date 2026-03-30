@@ -121,10 +121,10 @@ impl<'a> Message<'a> {
         }
     }
 
-    /// Consume the message, returning the payload bytes.
+    /// Consume the message, returning the payload as a byte slice.
     ///
     /// Releases the borrow on the `FrameReader` while keeping access
-    /// to the bytes (valid until the reader is advanced).
+    /// to the payload (valid until the reader is advanced).
     pub fn into_bytes(self) -> &'a [u8] {
         match self {
             Self::Text(s) => s.as_bytes(),
@@ -161,6 +161,38 @@ pub enum OwnedMessage {
     Pong(Vec<u8>),
     /// Connection close.
     Close(OwnedCloseFrame),
+}
+
+impl OwnedMessage {
+    /// Payload as bytes, regardless of message type.
+    ///
+    /// - `Text` → UTF-8 bytes
+    /// - `Binary` / `Ping` / `Pong` → raw bytes
+    /// - `Close` → reason string as bytes (excludes the 2-byte status code)
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(s) => s.as_bytes(),
+            Self::Binary(b) | Self::Ping(b) | Self::Pong(b) => b,
+            Self::Close(cf) => cf.reason.as_bytes(),
+        }
+    }
+
+    /// Convert to `bytes::Bytes`. Zero-copy — takes ownership of the
+    /// underlying `Vec`/`String` allocation without copying.
+    ///
+    /// ```ignore
+    /// let msg = ws.recv()?.unwrap().into_owned();
+    /// let shared: Bytes = msg.to_bytes();
+    /// tx.send(shared)?;  // Send + Clone, cheap to share
+    /// ```
+    #[cfg(feature = "bytes")]
+    pub fn to_bytes(self) -> bytes::Bytes {
+        match self {
+            Self::Text(s) => bytes::Bytes::from(s.into_bytes()),
+            Self::Binary(b) | Self::Ping(b) | Self::Pong(b) => bytes::Bytes::from(b),
+            Self::Close(cf) => bytes::Bytes::from(cf.reason.into_bytes()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -219,5 +251,43 @@ mod tests {
             owned,
             OwnedMessage::Close(OwnedCloseFrame { code: CloseCode::Normal, reason }) if reason == "bye"
         ));
+    }
+
+    #[test]
+    fn owned_message_as_bytes() {
+        assert_eq!(OwnedMessage::Text("hello".into()).as_bytes(), b"hello");
+        assert_eq!(OwnedMessage::Binary(vec![1, 2, 3]).as_bytes(), &[1, 2, 3]);
+        assert_eq!(OwnedMessage::Ping(vec![4, 5]).as_bytes(), &[4, 5]);
+        assert_eq!(OwnedMessage::Pong(vec![6]).as_bytes(), &[6]);
+        // Close returns reason bytes only (excludes 2-byte status code)
+        let close = OwnedMessage::Close(OwnedCloseFrame {
+            code: CloseCode::Normal,
+            reason: "bye".into(),
+        });
+        assert_eq!(close.as_bytes(), b"bye");
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn owned_message_to_bytes() {
+        let text = OwnedMessage::Text("hello".into());
+        let b = text.to_bytes();
+        assert_eq!(&b[..], b"hello");
+
+        let binary = OwnedMessage::Binary(vec![1, 2, 3]);
+        let b = binary.to_bytes();
+        assert_eq!(&b[..], &[1, 2, 3]);
+
+        let ping = OwnedMessage::Ping(vec![4, 5]);
+        let b = ping.to_bytes();
+        assert_eq!(&b[..], &[4, 5]);
+
+        // Close → reason bytes only
+        let close = OwnedMessage::Close(OwnedCloseFrame {
+            code: CloseCode::Normal,
+            reason: "bye".into(),
+        });
+        let b = close.to_bytes();
+        assert_eq!(&b[..], b"bye");
     }
 }

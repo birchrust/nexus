@@ -1,6 +1,6 @@
 [package]
 name = "nexus-async-net"
-version = "0.1.0"
+version = "0.2.0"
 description = "Async WebSocket adapter for nexus-net. Tokio-compatible, zero-copy, SIMD-accelerated."
 readme = "README.md"
 edition.workspace = true
@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-nexus-net = { version = "0.1.1", path = "../nexus-net", features = ["tls"] }
+nexus-net = { version = "0.2.0", path = "../nexus-net", features = ["tls"] }
 nexus-pool = { version = "1.0.0", path = "../nexus-pool" }
 tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
 tokio-rustls = "0.26"

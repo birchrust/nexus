@@ -68,6 +68,21 @@ impl<'a> RestResponse<'a> {
         self.body_len
     }
 
+    /// Copy the response body into `bytes::Bytes`.
+    ///
+    /// Allocates once — copies the body slice into a `Bytes` handle
+    /// that is `Send + Clone` for cross-thread passing.
+    ///
+    /// ```ignore
+    /// let resp = conn.send(req, &mut reader)?;
+    /// let body: Bytes = resp.body_to_bytes();
+    /// tx.send(body)?;
+    /// ```
+    #[cfg(feature = "bytes")]
+    pub fn body_to_bytes(&self) -> bytes::Bytes {
+        bytes::Bytes::copy_from_slice(self.body())
+    }
+
     /// Number of response headers.
     pub fn header_count(&self) -> usize {
         self.resp_reader.header_count()
