@@ -134,20 +134,27 @@ impl ClientPool {
 
     /// Acquire a client slot (LIFO).
     ///
+    /// Returns an error if all slots are currently in use.
     /// If the acquired slot has a dead connection, reconnects inline.
-    /// Returns `Pooled<ClientSlot>` — an RAII guard that auto-returns
-    /// to the pool on drop.
+    ///
+    /// The pool is bounded — it will never create connections beyond
+    /// the configured `connections` count.
     pub async fn acquire(&self) -> Result<Pooled<ClientSlot>, RestError> {
-        let mut slot = self.pool.acquire();
-
-        if slot.needs_reconnect() {
-            self.reconnect(&mut slot).await?;
+        match self.pool.try_acquire() {
+            Some(mut slot) => {
+                if slot.needs_reconnect() {
+                    self.reconnect(&mut slot).await?;
+                }
+                Ok(slot)
+            }
+            None => Err(RestError::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "all pool connections in use",
+            ))),
         }
-
-        Ok(slot)
     }
 
-    /// Try to acquire without waiting. Returns `None` if all slots
+    /// Try to acquire without error. Returns `None` if all slots
     /// are currently in use.
     pub async fn try_acquire(&self) -> Result<Option<Pooled<ClientSlot>>, RestError> {
         match self.pool.try_acquire() {
@@ -479,7 +486,7 @@ mod tests {
 
     // Integration test with real TCP is in tests/httpbin.rs (ignored, needs network).
     // The loopback test below uses tokio to verify the full send path.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn pool_loopback_send() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -523,7 +530,7 @@ mod tests {
         assert!(pool.try_acquire().is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn pool_keep_alive_multiple_requests() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -587,7 +594,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builder_validates_empty_url() {
         let result = ClientPool::builder()
             .connections(1)
@@ -596,7 +603,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builder_validates_zero_connections() {
         let result = ClientPool::builder()
             .url("http://localhost")
@@ -609,7 +616,7 @@ mod tests {
     /// Reproduces the reqwest connection pool bug: server closes the
     /// connection while idle, client writes into the dead socket,
     /// read hangs forever. Our timeout prevents the hang.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn stale_connection_timeout_not_hang() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;

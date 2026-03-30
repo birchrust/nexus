@@ -322,7 +322,9 @@ impl AtomicClientPoolBuilder {
 
         // Replace disconnected slots with connected ones.
         for _ in 0..self.connections {
-            if let Some(mut slot) = pool.try_acquire() {
+            {
+                let mut slot = pool.try_acquire()
+                    .expect("pool should have slots during initial setup");
                 let mut builder = AsyncHttpConnectionBuilder::new();
                 if let Some(ref tls) = self.tls_config {
                     builder = builder.tls(tls);

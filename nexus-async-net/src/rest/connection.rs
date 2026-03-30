@@ -316,6 +316,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
+                    if max_body > 0 && body.len() > max_body {
+                        self.poisoned = true;
+                        return Err(RestError::BodyTooLarge {
+                            size: body.len(),
+                            max: max_body,
+                        });
+                    }
                 }
                 if consumed == 0 && produced == 0 {
                     break;

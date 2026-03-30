@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use nexus_async_net::maybe_tls::MaybeTls;
-use nexus_async_net::rest::{AsyncHttpConnection, ClientPool, ClientSlot};
+use nexus_async_net::rest::{AsyncHttpConnection, ClientSlot};
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::RequestWriter;
 use nexus_pool::local::Pool;
