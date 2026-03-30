@@ -63,5 +63,9 @@ harness = false
 name = "frame_writer"
 harness = false
 
+[[bench]]
+name = "rest"
+harness = false
+
 [lints]
 workspace = true
