@@ -1,8 +1,11 @@
 # nexus-async-net
 
-Async WebSocket adapter for [nexus-net](../nexus-net). Tokio-compatible.
+Async adapters for [nexus-net](../nexus-net). Tokio-compatible.
 
-Same zero-copy FrameReader, same `Message` type, same performance — just `.await` on socket I/O.
+Same sans-IO primitives, same performance — just `.await` on socket I/O.
+
+- **WebSocket** — `WsStream<S>` wrapping nexus-net's FrameReader/FrameWriter
+- **REST HTTP/1.1** — `AsyncHttpConnection<S>` wrapping nexus-net's RequestWriter/ResponseReader
 
 ## Quick Start
 
@@ -25,7 +28,41 @@ while let Some(msg) = ws.recv().await? {
 }
 ```
 
-## Two API Paths
+### REST Client (async)
+
+```rust
+use nexus_net::rest::RequestWriter;
+use nexus_net::http::ResponseReader;
+use nexus_async_net::rest::AsyncHttpConnection;
+
+// Same sans-IO primitives as blocking nexus-net
+let mut writer = RequestWriter::new("httpbin.org")?;
+writer.default_header("Accept", "application/json")?;
+let mut reader = ResponseReader::new(32 * 1024).max_body_size(32 * 1024);
+
+// Async transport — TLS auto-detected from URL scheme
+let mut conn = AsyncHttpConnection::connect("https://httpbin.org").await?;
+
+// GET with query params
+let req = writer.get("/get")
+    .query("symbol", "BTC-USD")
+    .finish()?;
+let resp = conn.send(&req, &mut reader).await?;
+println!("{}", resp.body_str()?);
+drop(resp);
+
+// POST with body
+let req = writer.post("/post")
+    .header("Content-Type", "application/json")
+    .body(br#"{"action":"buy"}"#)
+    .finish()?;
+let resp = conn.send(&req, &mut reader).await?;
+```
+
+The `RequestWriter` and `ResponseReader` are the same types used by
+blocking `nexus-net`. The only difference is `.await` on the transport.
+
+## Two API Paths (WebSocket)
 
 ### Zero-copy `recv()` (recommended)
 
@@ -111,15 +148,17 @@ let mut ws = WsStreamBuilder::new()
 
 ## Features
 
-- **Zero-copy parsing** — `Message<'_>` borrows from the internal buffer via `recv()`
+- **Zero-copy WebSocket** — `Message<'_>` borrows from the internal buffer via `recv()`
 - **Stream/Sink** — `OwnedMessage` for `StreamExt`/`SinkExt` ergonomics
-- **Automatic TLS** — `wss://` URLs handled transparently via tokio-rustls
-- **Same FrameReader** — identical parse path as blocking nexus-net
+- **Zero-alloc REST** — same `RequestWriter`/`ResponseReader` as blocking, just `.await` on I/O
+- **Automatic TLS** — `wss://` and `https://` URLs handled transparently via tokio-rustls
+- **Chunked transfer encoding** — decoded transparently for REST responses
+- **Same sans-IO primitives** — identical parse path as blocking nexus-net
 - **Single-threaded friendly** — works with `current_thread` runtime + `LocalSet`
 
 ## Dependencies
 
-- `nexus-net` — sans-IO WebSocket primitives
+- `nexus-net` — sans-IO WebSocket + HTTP primitives
 - `tokio` — async runtime (io-util, net, rt)
 - `tokio-rustls` — async TLS
 - `futures-core` / `futures-sink` — Stream + Sink traits

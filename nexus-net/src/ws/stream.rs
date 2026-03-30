@@ -403,8 +403,15 @@ pub struct WsStream<S> {
 impl WsStream<std::net::TcpStream> {
     /// Blocking connect — creates TCP socket and performs full handshake.
     ///
-    /// For `wss://` URLs, TLS is handled automatically with system defaults.
-    /// Use [`WsStreamBuilder`] for custom TLS configuration or socket options.
+    /// For `wss://` URLs without a custom TLS config, this loads system
+    /// root certificates on every call. For production, create a
+    /// [`TlsConfig`](crate::tls::TlsConfig) once at startup and pass
+    /// it via the builder:
+    ///
+    /// ```ignore
+    /// let tls = TlsConfig::new()?;  // once, at startup
+    /// let ws = WsStream::builder().tls(&tls).connect("wss://...")?;
+    /// ```
     ///
     /// IPv6 addresses must use bracket notation: `ws://[::1]:8080/path`.
     pub fn connect(url: &str) -> Result<Self, WsError> {
