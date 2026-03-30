@@ -84,13 +84,43 @@ impl std::fmt::Display for Method {
 ///
 /// Must be consumed or dropped before the next request on the same writer.
 /// Same lifecycle as [`Message<'_>`](crate::ws::Message) in WebSocket.
+///
+/// `Clone` is cheap (copies a pointer + length, no allocation). Use it
+/// to archive request bytes before sending:
+///
+/// ```ignore
+/// let req = writer.post("/order").body(json).finish()?;
+/// let archived = req.clone();
+/// conn.send(req, &mut reader)?;
+/// archive_log.write(archived.data());
+/// ```
+#[derive(Clone)]
 pub struct Request<'a> {
     data: &'a [u8],
 }
 
-impl Request<'_> {
+impl<'a> Request<'a> {
     /// The complete HTTP request as wire bytes.
     pub fn data(&self) -> &[u8] {
+        self.data
+    }
+
+    /// The request as a byte slice (alias for [`data`](Self::data)).
+    pub fn as_bytes(&self) -> &[u8] {
+        self.data
+    }
+
+    /// Consume the request, returning the raw wire bytes.
+    ///
+    /// Releases the borrow on the `RequestWriter` while keeping
+    /// access to the bytes (they remain valid until the writer
+    /// is used again).
+    ///
+    /// ```ignore
+    /// let bytes = writer.post("/order").body(json).finish()?.into_bytes();
+    /// archive_log.write(bytes);
+    /// ```
+    pub fn into_bytes(self) -> &'a [u8] {
         self.data
     }
 

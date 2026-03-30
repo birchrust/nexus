@@ -289,7 +289,7 @@ impl Default for HttpConnectionBuilder {
 ///
 /// // Build + send
 /// let req = writer.get("/orders").query("symbol", "BTC").finish()?;
-/// let resp = conn.send(&req, &mut reader)?;
+/// let resp = conn.send(req, &mut reader)?;
 /// ```
 pub struct HttpConnection<S> {
     stream: S,
@@ -310,10 +310,6 @@ impl HttpConnection<std::net::TcpStream> {
         HttpConnectionBuilder::new()
     }
 
-    /// Set TCP keepalive on the underlying socket.
-    ///
-    /// Enables OS-level dead connection detection. The kernel sends
-    /// probes after `idle` of inactivity.
     /// Set read timeout on the socket.
     ///
     /// **Strongly recommended for production.** Without a timeout, reads
@@ -359,9 +355,10 @@ impl<S: Read + Write> HttpConnection<S> {
     /// `TcpStream`. Without a timeout, reads block indefinitely.
     ///
     /// `Response` borrows from `reader` — drop before next send.
+    #[allow(clippy::needless_pass_by_value)] // Move by design — request is consumed after send.
     pub fn send<'r>(
         &mut self,
-        req: &Request<'_>,
+        req: Request<'_>,
         reader: &'r mut ResponseReader,
     ) -> Result<RestResponse<'r>, RestError> {
         if self.poisoned {
@@ -535,8 +532,10 @@ impl<S: Read + Write> HttpConnection<S> {
             Some(Ok(n)) => n,
             Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
             None => {
+                // No Content-Length and not chunked — can't determine body
+                // boundaries for keep-alive. Error instead of silent empty body.
                 self.poisoned = true;
-                0
+                return Err(RestError::Http(HttpError::Malformed));
             }
         };
 
@@ -595,6 +594,13 @@ impl<S: Read + Write> HttpConnection<S> {
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
+                    if max_body > 0 && body.len() > max_body {
+                        self.poisoned = true;
+                        return Err(RestError::BodyTooLarge {
+                            size: body.len(),
+                            max: max_body,
+                        });
+                    }
                 }
                 if consumed == 0 && produced == 0 {
                     break;
@@ -604,14 +610,6 @@ impl<S: Read + Write> HttpConnection<S> {
 
         // Read from socket until all chunks decoded.
         while !decoder.is_done() {
-            if max_body > 0 && decoder.total_decoded() > max_body {
-                self.poisoned = true;
-                return Err(RestError::BodyTooLarge {
-                    size: decoder.total_decoded(),
-                    max: max_body,
-                });
-            }
-
             let n = self.read_wire_bytes(&mut wire_buf)?;
             if n == 0 {
                 self.poisoned = true;
@@ -626,6 +624,14 @@ impl<S: Read + Write> HttpConnection<S> {
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
+                    // Check body size limit after each decode, not per read.
+                    if max_body > 0 && body.len() > max_body {
+                        self.poisoned = true;
+                        return Err(RestError::BodyTooLarge {
+                            size: body.len(),
+                            max: max_body,
+                        });
+                    }
                 }
                 if consumed == 0 && produced == 0 {
                     break;
@@ -727,7 +733,7 @@ mod tests {
         path: &str,
     ) -> Result<RestResponse<'r>, RestError> {
         let req = writer.get(path).finish()?;
-        conn.send(&req, reader)
+        conn.send(req, reader)
     }
 
     // --- Request format ---
@@ -741,7 +747,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/api/v1/status").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), r#"{"ok":true}"#);
 
@@ -762,7 +768,7 @@ mod tests {
 
         let body = br#"{"symbol":"BTC","side":"buy"}"#;
         let req = writer.post("/api/v3/order").body(body).finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.status(), 200);
 
         let written = conn.stream().written_str();
@@ -785,7 +791,7 @@ mod tests {
             let mut conn = HttpConnection::new(mock);
 
             let req = writer.request(method, "/test").finish().unwrap();
-            let _ = conn.send(&req, &mut reader).unwrap();
+            let _ = conn.send(req, &mut reader).unwrap();
             assert!(conn
                 .stream()
                 .written_str()
@@ -806,7 +812,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let _ = conn.send(&req, &mut reader).unwrap();
+        let _ = conn.send(req, &mut reader).unwrap();
 
         let written = conn.stream().written_str();
         assert!(written.contains("X-API-KEY: secret123\r\n"));
@@ -827,7 +833,7 @@ mod tests {
             .header("Authorization", "Bearer tok")
             .finish()
             .unwrap();
-        let _ = conn.send(&req, &mut reader).unwrap();
+        let _ = conn.send(req, &mut reader).unwrap();
 
         let written = conn.stream().written_str();
         assert!(written.contains("X-Custom: value1\r\n"));
@@ -970,7 +976,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.header("X-Request-Id"), Some("abc123"));
         assert_eq!(resp.header("X-RateLimit-Remaining"), Some("42"));
     }
@@ -984,7 +990,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), "MozillaDeveloper Network");
     }
@@ -998,7 +1004,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.body().len(), 0);
     }
 
@@ -1017,7 +1023,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.body_str().unwrap(), body);
     }
 
@@ -1030,7 +1036,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader);
+        let result = conn.send(req, &mut reader);
         assert!(matches!(result, Err(RestError::Http(_))));
     }
 
@@ -1043,7 +1049,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader);
+        let result = conn.send(req, &mut reader);
         assert!(matches!(
             result,
             Err(RestError::BodyTooLarge { size: 999999, .. })
@@ -1059,7 +1065,7 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.status(), 204);
         assert_eq!(resp.body().len(), 0);
     }
@@ -1073,11 +1079,11 @@ mod tests {
         let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader);
+        let result = conn.send(req, &mut reader);
         assert!(matches!(result, Err(RestError::ConnectionClosed)));
 
         let req = writer.get("/test2").finish().unwrap();
-        let result = conn.send(&req, &mut reader);
+        let result = conn.send(req, &mut reader);
         assert!(matches!(result, Err(RestError::ConnectionPoisoned)));
     }
 
@@ -1154,12 +1160,12 @@ mod tests {
         let mut conn = HttpConnection::new(tcp);
 
         let req = writer.get("/first").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.body_str().unwrap(), r#"{"id":1}"#);
         drop(resp);
 
         let req = writer.get("/second").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         assert_eq!(resp.body_str().unwrap(), r#"{"id":2}"#);
 
         server.join().unwrap();

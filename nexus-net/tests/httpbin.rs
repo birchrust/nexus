@@ -45,7 +45,7 @@ fn httpbin_get() {
     let (mut writer, mut reader, mut conn) = setup();
 
     let req = writer.get("/get").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -64,7 +64,7 @@ fn httpbin_get_with_query_params() {
         .query("limit", "100")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -84,7 +84,7 @@ fn httpbin_get_with_special_chars_in_query() {
         .query("q", "hello world&more=yes")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -107,7 +107,7 @@ fn httpbin_post_json() {
         .body(json.as_bytes())
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -126,7 +126,7 @@ fn httpbin_post_with_custom_headers() {
         .body(b"{}")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -148,7 +148,7 @@ fn httpbin_put() {
         .body(b"{\"update\":true}")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     assert!(resp.body_str().unwrap().contains("update"));
@@ -160,7 +160,7 @@ fn httpbin_delete() {
     let (mut writer, mut reader, mut conn) = setup();
 
     let req = writer.delete("/delete").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
 }
@@ -175,7 +175,7 @@ fn httpbin_patch() {
         .body(b"{\"patch\":true}")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     assert!(resp.body_str().unwrap().contains("patch"));
@@ -191,7 +191,7 @@ fn httpbin_status_404() {
     let (mut writer, mut reader, mut conn) = setup();
 
     let req = writer.get("/status/404").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -201,7 +201,7 @@ fn httpbin_status_500() {
     let (mut writer, mut reader, mut conn) = setup();
 
     let req = writer.get("/status/500").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 500);
 }
 
@@ -211,7 +211,7 @@ fn httpbin_status_204() {
     let (mut writer, mut reader, mut conn) = setup();
 
     let req = writer.get("/status/204").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 204);
     assert_eq!(resp.body().len(), 0);
 }
@@ -230,7 +230,7 @@ fn httpbin_response_headers() {
         .query("X-Test-Header", "nexus-net")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.header("X-Test-Header"), Some("nexus-net"));
@@ -247,7 +247,7 @@ fn httpbin_keep_alive() {
 
     // First request
     let req = writer.get("/get").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 200);
     drop(resp);
 
@@ -257,14 +257,14 @@ fn httpbin_keep_alive() {
         .query("req", "2")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 200);
     assert!(resp.body_str().unwrap().contains("\"req\""));
     drop(resp);
 
     // Third request — POST
     let req = writer.post("/post").body(b"third").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 200);
     assert!(resp.body_str().unwrap().contains("third"));
 }
@@ -280,7 +280,7 @@ fn httpbin_large_response() {
     let mut reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);
 
     let req = writer.get("/bytes/16384").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.body().len(), 16384);
@@ -299,7 +299,7 @@ fn httpbin_raw_url() {
         .get_raw("/get?pre=formed&url=true")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -327,7 +327,7 @@ fn httpbin_default_headers_sent() {
         .unwrap();
 
     let req = writer.get("/headers").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).unwrap();
+    let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();

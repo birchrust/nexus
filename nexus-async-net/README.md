@@ -6,6 +6,7 @@ Same sans-IO primitives, same performance — just `.await` on socket I/O.
 
 - **WebSocket** — `WsStream<S>` wrapping nexus-net's FrameReader/FrameWriter
 - **REST HTTP/1.1** — `AsyncHttpConnection<S>` wrapping nexus-net's RequestWriter/ResponseReader
+- **Client Pool** — `ClientPool` (single-threaded) and `AtomicClientPool` (thread-safe) for connection reuse with LIFO acquire, inline reconnect, and RAII guards
 
 ## Quick Start
 
@@ -61,6 +62,112 @@ let resp = conn.send(&req, &mut reader).await?;
 
 The `RequestWriter` and `ResponseReader` are the same types used by
 blocking `nexus-net`. The only difference is `.await` on the transport.
+
+### Client Pool (connection reuse)
+
+```rust
+use nexus_async_net::rest::ClientPool;
+
+// Build pool — connects all slots at startup
+let pool = ClientPool::builder()
+    .url("https://api.binance.com")
+    .base_path("/api/v3")
+    .default_header("X-API-KEY", &key)?
+    .default_header("Content-Type", "application/json")?
+    .connections(4)
+    .tls(&tls)
+    .disable_nagle()
+    .build()
+    .await?;
+
+// Acquire slot — LIFO, auto-reconnects if connection died
+let mut slot = pool.acquire().await?;
+
+// Build request using the slot's writer
+let req = slot.writer.post("/order")
+    .header("X-Timestamp", &ts)
+    .body(order_json)
+    .finish()?;
+
+// Send using the slot's connection + reader (split borrow)
+let (conn, reader) = slot.conn_and_reader()?;
+let resp = conn.send(&req, reader).await?;
+println!("{}", resp.body_str()?);
+
+// drop(slot) — returns to pool. If poisoned, reconnects on next acquire.
+```
+
+Each slot owns a complete pipeline: `RequestWriter` + `ResponseReader` +
+`AsyncHttpConnection`. No shared state between slots.
+
+## Client Pool Performance
+
+| Config | Throughput | Pool Overhead |
+|--------|-----------|---------------|
+| Single connection (no pool) | 255K req/sec | — |
+| Pool (1 conn, sequential) | 248K req/sec | ~0% |
+| Pool (4 conn, 4 concurrent tasks) | 279K req/sec | **+9.5%** throughput |
+| Pool (8 conn, 8 concurrent tasks) | 289K req/sec | **+13.3%** throughput |
+
+Pool acquire/release: **26 cycles** (local), **42 cycles** (atomic).
+
+Measured on localhost TCP where the round-trip is ~9μs. On a real
+network (1-10ms round-trip), the concurrency benefit is dramatically
+larger — overlapping I/O wait across N connections gives close to Nx
+throughput. The localhost benchmark is bottlenecked by the echo server,
+not the client.
+
+## Client Pool Design
+
+### Two variants
+
+**`ClientPool`** — single-threaded (`!Send`). Uses `Rc`-based
+`nexus_pool::local::Pool`. For `current_thread` runtime + `LocalSet`.
+26-cycle acquire/release. This is the primary variant for trading
+systems where the hot path runs on a dedicated thread.
+
+**`AtomicClientPool`** — thread-safe (`Send`). Uses atomic CAS-based
+`nexus_pool::sync::Pool`. 42-cycle acquire/release. **Single acquirer,
+any returner** — one task dispatches requests, guards can be dropped
+from any thread.
+
+The `AtomicClientPool` is designed for an architecture where a single
+task owns the pool and dispatches requests. It is NOT a global pool
+that arbitrary tasks acquire from concurrently — `sync::Pool` is
+`Send` but not `Sync`. If you need shared acquire, wrap in a `Mutex`,
+but consider whether a single dispatcher task is the better design.
+
+### Failure model
+
+1. **Request fails** — caller gets the error. No retry. The request is
+   late (stale timestamp, wrong nonce). Caller decides: log, resubmit
+   with fresh params, escalate to another venue.
+
+2. **Connection dies** — slot is poisoned. On drop, the guard returns
+   the slot to the pool and the reset closure clears the dead connection
+   and response buffer. Next `acquire()` reconnects inline.
+
+3. **Reconnect fails** — `acquire()` returns the error. Slot stays
+   disconnected in the pool. Next `acquire()` tries again. When the
+   server comes back, the first successful acquire recovers.
+
+4. **All connections dead** — every `acquire()` attempts reconnect.
+   Natural recovery when the server returns. No circuit breaker state
+   machine — the reconnect-on-acquire pattern IS the recovery.
+
+### Invariants
+
+- The pool **never hands out a poisoned connection**. Every `acquire()`
+  checks `needs_reconnect()` and reconnects inline if needed.
+- The **reset closure clears stale state** — dead connections are
+  dropped and the response reader buffer is reset on return.
+- **Writer + reader survive reconnect** — only the transport is replaced.
+  Host headers, default headers, base path, buffer capacity are preserved.
+- **LIFO acquire** — the most recently used (warmest cache lines)
+  connection is acquired first.
+- Slots have **public fields** for split borrows through `Pooled<T>`'s
+  `DerefMut`. Use `conn_and_reader()` for the common pattern, or
+  `let s: &mut ClientSlot = &mut slot;` for direct field access.
 
 ## Two API Paths (WebSocket)
 

@@ -135,7 +135,7 @@ fn bench_nexus(addr: std::net::SocketAddr) {
             .body(order_body)
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         std::hint::black_box(resp.status());
     }
 
@@ -150,7 +150,7 @@ fn bench_nexus(addr: std::net::SocketAddr) {
             .body(order_body)
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         std::hint::black_box(resp.status());
         let t1 = rdtsc_end();
         *s = t1 - t0;
@@ -169,7 +169,7 @@ fn bench_nexus(addr: std::net::SocketAddr) {
             .body(order_body)
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         std::hint::black_box(resp.status());
     }
     let elapsed = start.elapsed();

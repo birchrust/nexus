@@ -69,7 +69,7 @@ impl CloseCode {
 }
 
 /// Parsed close frame: status code + UTF-8 reason.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CloseFrame<'a> {
     /// The close status code.
     pub code: CloseCode,
@@ -93,7 +93,7 @@ pub struct OwnedCloseFrame {
 ///
 /// Borrows from the reader's internal buffer — drop before calling
 /// [`FrameReader::next()`](super::FrameReader) again.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Message<'a> {
     /// UTF-8 text message (validated).
     Text(&'a str),
@@ -107,7 +107,32 @@ pub enum Message<'a> {
     Close(CloseFrame<'a>),
 }
 
-impl Message<'_> {
+impl<'a> Message<'a> {
+    /// Payload as bytes, regardless of message type.
+    ///
+    /// - `Text` → UTF-8 bytes
+    /// - `Binary` / `Ping` / `Pong` → raw bytes
+    /// - `Close` → reason string as bytes (excludes the 2-byte status code)
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(s) => s.as_bytes(),
+            Self::Binary(b) | Self::Ping(b) | Self::Pong(b) => b,
+            Self::Close(cf) => cf.reason.as_bytes(),
+        }
+    }
+
+    /// Consume the message, returning the payload bytes.
+    ///
+    /// Releases the borrow on the `FrameReader` while keeping access
+    /// to the bytes (valid until the reader is advanced).
+    pub fn into_bytes(self) -> &'a [u8] {
+        match self {
+            Self::Text(s) => s.as_bytes(),
+            Self::Binary(b) | Self::Ping(b) | Self::Pong(b) => b,
+            Self::Close(cf) => cf.reason.as_bytes(),
+        }
+    }
+
     /// Take ownership. Copies payload out of borrowed buffer.
     pub fn into_owned(self) -> OwnedMessage {
         match self {

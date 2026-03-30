@@ -17,10 +17,15 @@
 //! let mut conn = AsyncHttpConnection::connect("https://api.binance.com").await?;
 //!
 //! let req = writer.get("/orders").query("symbol", "BTC").finish()?;
-//! let resp = conn.send(&req, &mut reader).await?;
+//! let resp = conn.send(req, &mut reader).await?;
 //! println!("{}", resp.body_str()?);
 //! ```
 
+mod atomic_pool;
 mod connection;
+mod pool;
 
+pub use atomic_pool::{AtomicClientPool, AtomicClientPoolBuilder, AtomicClientSlot};
+pub use crate::maybe_tls::MaybeTls;
 pub use connection::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+pub use pool::{ClientPool, ClientPoolBuilder, ClientSlot};

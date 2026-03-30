@@ -12,7 +12,8 @@ categories.workspace = true
 
 [dependencies]
 nexus-net = { version = "0.1.1", path = "../nexus-net", features = ["tls"] }
-tokio = { version = "1", features = ["io-util", "net", "rt"] }
+nexus-pool = { version = "1.0.0", path = "../nexus-pool" }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
 tokio-rustls = "0.26"
 futures-core = "0.3"
 futures-sink = "0.3"
