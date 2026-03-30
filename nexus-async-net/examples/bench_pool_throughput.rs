@@ -59,14 +59,14 @@ async fn bench_single_connection(addr: std::net::SocketAddr, iterations: u64) {
     // Warmup
     for _ in 0..1000 {
         let req = writer.post("/order").body(body).finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         std::hint::black_box(resp.status());
     }
 
     let start = Instant::now();
     for _ in 0..iterations {
         let req = writer.post("/order").body(body).finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         std::hint::black_box(resp.status());
     }
     let elapsed = start.elapsed();
@@ -117,7 +117,7 @@ async fn bench_pool(addr: std::net::SocketAddr, pool_size: usize, iterations: u6
         let s: &mut ClientSlot = &mut slot;
         let req = s.writer.post("/order").body(body).finish().unwrap();
         let conn = s.conn.as_mut().unwrap();
-        let resp = conn.send(&req, &mut s.reader).await.unwrap();
+        let resp = conn.send(req, &mut s.reader).await.unwrap();
         std::hint::black_box(resp.status());
     }
 
@@ -127,7 +127,7 @@ async fn bench_pool(addr: std::net::SocketAddr, pool_size: usize, iterations: u6
         let s: &mut ClientSlot = &mut slot;
         let req = s.writer.post("/order").body(body).finish().unwrap();
         let conn = s.conn.as_mut().unwrap();
-        let resp = conn.send(&req, &mut s.reader).await.unwrap();
+        let resp = conn.send(req, &mut s.reader).await.unwrap();
         std::hint::black_box(resp.status());
     }
     let elapsed = start.elapsed();
@@ -183,7 +183,7 @@ async fn bench_pool_concurrent(
         let s: &mut ClientSlot = &mut slot;
         let req = s.writer.post("/order").body(body).finish().unwrap();
         let conn = s.conn.as_mut().unwrap();
-        let resp = conn.send(&req, &mut s.reader).await.unwrap();
+        let resp = conn.send(req, &mut s.reader).await.unwrap();
         std::hint::black_box(resp.status());
     }
 
@@ -199,7 +199,7 @@ async fn bench_pool_concurrent(
                 let s: &mut ClientSlot = &mut slot;
                 let req = s.writer.post("/order").body(body).finish().unwrap();
                 let conn = s.conn.as_mut().unwrap();
-                let resp = conn.send(&req, &mut s.reader).await.unwrap();
+                let resp = conn.send(req, &mut s.reader).await.unwrap();
                 std::hint::black_box(resp.status());
             }
         }));

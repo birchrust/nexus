@@ -31,7 +31,7 @@ async fn async_httpbin_get() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
     let req = writer.get("/get").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).await.unwrap();
+    let resp = conn.send(req, &mut reader).await.unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -50,7 +50,7 @@ async fn async_httpbin_get_with_query() {
         .query("limit", "50")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).await.unwrap();
+    let resp = conn.send(req, &mut reader).await.unwrap();
 
     assert_eq!(resp.status(), 200);
     let body = resp.body_str().unwrap();
@@ -70,7 +70,7 @@ async fn async_httpbin_post_json() {
         .body(json.as_bytes())
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).await.unwrap();
+    let resp = conn.send(req, &mut reader).await.unwrap();
 
     assert_eq!(resp.status(), 200);
     assert!(resp.body_str().unwrap().contains("place_order"));
@@ -88,7 +88,7 @@ async fn async_httpbin_keep_alive() {
             .query("req", &i.to_string())
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.status(), 200);
         drop(resp);
     }
@@ -101,7 +101,7 @@ async fn async_httpbin_status_codes() {
 
     for (path, expected) in [("/status/200", 200), ("/status/404", 404), ("/status/204", 204)] {
         let req = writer.get(path).finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.status(), expected, "failed for {path}");
         drop(resp);
     }
@@ -117,7 +117,7 @@ async fn async_httpbin_response_headers() {
         .query("X-Async-Test", "works")
         .finish()
         .unwrap();
-    let resp = conn.send(&req, &mut reader).await.unwrap();
+    let resp = conn.send(req, &mut reader).await.unwrap();
 
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.header("X-Async-Test"), Some("works"));
@@ -130,7 +130,7 @@ async fn async_httpbin_large_response() {
     let mut reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);
 
     let req = writer.get("/bytes/8192").finish().unwrap();
-    let resp = conn.send(&req, &mut reader).await.unwrap();
+    let resp = conn.send(req, &mut reader).await.unwrap();
 
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.body().len(), 8192);

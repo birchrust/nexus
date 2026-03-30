@@ -25,7 +25,7 @@
 //! let req = writer.get("/api/v1/orders")
 //!     .query("symbol", "BTC-USD")
 //!     .finish()?;
-//! let resp = conn.send(&req, &mut reader)?;
+//! let resp = conn.send(req, &mut reader)?;
 //!
 //! println!("status: {}", resp.status());
 //! println!("body: {}", resp.body_str()?);

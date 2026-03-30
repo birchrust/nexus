@@ -119,7 +119,7 @@ impl Default for AsyncHttpConnectionBuilder {
 /// let mut conn = AsyncHttpConnection::connect("https://api.binance.com").await?;
 ///
 /// let req = writer.get("/orders").query("symbol", "BTC").finish()?;
-/// let resp = conn.send(&req, &mut reader).await?;
+/// let resp = conn.send(req, &mut reader).await?;
 /// ```
 pub struct AsyncHttpConnection<S> {
     stream: S,
@@ -152,9 +152,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
     ///
     /// Same API as [`HttpConnection::send`](nexus_net::rest::HttpConnection::send)
     /// but with `.await` on I/O.
+    #[allow(clippy::needless_pass_by_value)] // Move by design — request is consumed after send.
     pub async fn send<'r>(
         &mut self,
-        req: &Request<'_>,
+        req: Request<'_>,
         reader: &'r mut ResponseReader,
     ) -> Result<RestResponse<'r>, RestError> {
         if self.poisoned {
@@ -450,7 +451,7 @@ mod tests {
         let mut conn = AsyncHttpConnection::new(mock);
 
         let req = writer.get("/status").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), r#"{"ok":true}"#);
 
@@ -470,7 +471,7 @@ mod tests {
 
         let body = br#"{"symbol":"BTC","side":"buy"}"#;
         let req = writer.post("/order").body(body).finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.status(), 200);
 
         let written = conn.stream().written_str();
@@ -489,7 +490,7 @@ mod tests {
         let mut conn = AsyncHttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.header("X-Request-Id"), Some("abc"));
     }
 
@@ -505,11 +506,11 @@ mod tests {
         let mut conn = AsyncHttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let result = conn.send(&req, &mut reader).await;
+        let result = conn.send(req, &mut reader).await;
         assert!(matches!(result, Err(RestError::ConnectionClosed)));
 
         let req = writer.get("/test2").finish().unwrap();
-        let result = conn.send(&req, &mut reader).await;
+        let result = conn.send(req, &mut reader).await;
         assert!(matches!(result, Err(RestError::ConnectionPoisoned)));
     }
 
@@ -524,7 +525,7 @@ mod tests {
         let mut conn = AsyncHttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
-        let resp = conn.send(&req, &mut reader).await.unwrap();
+        let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.body_str().unwrap(), "hello");
     }
 }

@@ -74,7 +74,7 @@ fn main() {
             .body(order_body)
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         std::hint::black_box(resp.status());
     }
 
@@ -91,7 +91,7 @@ fn main() {
             .body(order_body)
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         std::hint::black_box(resp.status());
     }
 

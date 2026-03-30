@@ -22,13 +22,19 @@ use crate::maybe_tls::MaybeTls;
 /// Each slot in the pool owns its own set of protocol primitives.
 /// Acquired via [`ClientPool::acquire`], auto-returned on drop.
 ///
-/// Fields are public to allow split borrows — build a `Request<'_>`
-/// from `writer`, then send via `conn` + `reader` without conflict:
+/// Fields are public for split borrows through `Pooled<T>`'s `DerefMut`.
+/// Deref explicitly to split, then build + send:
 ///
 /// ```ignore
-/// let req = slot.writer.post("/order").body(json).finish()?;
-/// let conn = slot.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
-/// let resp = conn.send(&req, &mut slot.reader).await?;
+/// let s: &mut ClientSlot = &mut slot;  // explicit deref, enables split borrows
+/// let req = s.writer.post("/order").body(json).finish()?;
+/// let (conn, reader) = (s.conn.as_mut().unwrap(), &mut s.reader);
+///
+/// // With timeout (recommended for production):
+/// let resp = tokio::time::timeout(timeout, conn.send(req, reader)).await??;
+///
+/// // Without timeout (prototyping only):
+/// let resp = conn.send(req, reader).await?;
 /// ```
 pub struct ClientSlot {
     /// Request encoder (sans-IO). Build requests here.
@@ -59,30 +65,6 @@ impl ClientSlot {
         Ok((conn, &mut self.reader))
     }
 
-    /// Send a request with a timeout.
-    ///
-    /// Wraps the send in `tokio::time::timeout`. If the timeout elapses,
-    /// the connection is dropped (poisoned) and `RestError::ReadTimeout`
-    /// is returned. Next acquire will reconnect transparently.
-    ///
-    /// This prevents the reqwest connection pool bug where a stale
-    /// connection hangs forever on read.
-    pub async fn send_with_timeout(
-        &mut self,
-        req: &nexus_net::rest::Request<'_>,
-        timeout: std::time::Duration,
-    ) -> Result<nexus_net::rest::RestResponse<'_>, RestError> {
-        let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
-        match tokio::time::timeout(timeout, conn.send(req, &mut self.reader)).await {
-            Ok(result) => result,
-            Err(_elapsed) => {
-                // Timeout — drop the connection so needs_reconnect() fires
-                // on return to pool.
-                self.conn = None;
-                Err(RestError::ReadTimeout)
-            }
-        }
-    }
 }
 
 // =============================================================================
@@ -107,9 +89,10 @@ impl ClientSlot {
 ///     .build()
 ///     .await?;
 ///
-/// let mut slot = pool.acquire().await?;
+/// let mut slot = pool.try_acquire().await?.unwrap();
 /// let req = slot.writer().post("/order").body(json).finish()?;
-/// let resp = slot.send(&req).await?;
+/// let (conn, reader) = (s.conn.as_mut().unwrap(), &mut s.reader);
+/// let resp = conn.send(req, reader).await?;
 /// // drop(slot) returns to pool
 /// ```
 pub struct ClientPool {
@@ -134,28 +117,11 @@ impl ClientPool {
 
     /// Acquire a client slot (LIFO).
     ///
-    /// Returns an error if all slots are currently in use.
+    /// Returns `None` if all slots are currently in use.
     /// If the acquired slot has a dead connection, reconnects inline.
     ///
     /// The pool is bounded — it will never create connections beyond
     /// the configured `connections` count.
-    pub async fn acquire(&self) -> Result<Pooled<ClientSlot>, RestError> {
-        match self.pool.try_acquire() {
-            Some(mut slot) => {
-                if slot.needs_reconnect() {
-                    self.reconnect(&mut slot).await?;
-                }
-                Ok(slot)
-            }
-            None => Err(RestError::Io(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "all pool connections in use",
-            ))),
-        }
-    }
-
-    /// Try to acquire without error. Returns `None` if all slots
-    /// are currently in use.
     pub async fn try_acquire(&self) -> Result<Option<Pooled<ClientSlot>>, RestError> {
         match self.pool.try_acquire() {
             Some(mut slot) => {
@@ -516,7 +482,7 @@ mod tests {
 
         let req = slot.writer.get("/test").finish().unwrap();
         let conn = slot.conn.as_mut().unwrap();
-        let resp = conn.send(&req, &mut slot.reader).await.unwrap();
+        let resp = conn.send(req, &mut slot.reader).await.unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), r#"{"orderId":123}"#);
     }
@@ -579,7 +545,7 @@ mod tests {
             let s: &mut ClientSlot = &mut slot;
             let req = s.writer.get("/first").finish().unwrap();
             let conn = s.conn.as_mut().unwrap();
-            let resp = conn.send(&req, &mut s.reader).await.unwrap();
+            let resp = conn.send(req, &mut s.reader).await.unwrap();
             assert_eq!(resp.body_str().unwrap(), r#"{"r":1}"#);
         } // slot returned
 
@@ -589,7 +555,7 @@ mod tests {
             let s: &mut ClientSlot = &mut slot;
             let req = s.writer.get("/second").finish().unwrap();
             let conn = s.conn.as_mut().unwrap();
-            let resp = conn.send(&req, &mut s.reader).await.unwrap();
+            let resp = conn.send(req, &mut s.reader).await.unwrap();
             assert_eq!(resp.body_str().unwrap(), r#"{"r":2}"#);
         }
     }
@@ -665,7 +631,7 @@ mod tests {
             let s: &mut ClientSlot = &mut slot;
             let req = s.writer.get("/first").finish().unwrap();
             let conn = s.conn.as_mut().unwrap();
-            let resp = conn.send(&req, &mut s.reader).await.unwrap();
+            let resp = conn.send(req, &mut s.reader).await.unwrap();
             assert_eq!(resp.status(), 200);
         }
 
@@ -681,7 +647,7 @@ mod tests {
             let conn = s.conn.as_mut().unwrap();
 
             let timeout = std::time::Duration::from_millis(500);
-            let result = tokio::time::timeout(timeout, conn.send(&req, &mut s.reader)).await;
+            let result = tokio::time::timeout(timeout, conn.send(req, &mut s.reader)).await;
 
             match result {
                 Ok(Ok(_)) => panic!("stale connection should not succeed"),

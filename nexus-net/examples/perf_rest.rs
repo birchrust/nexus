@@ -136,7 +136,7 @@ fn bench_nexus() {
             .body(order_body.as_bytes())
             .finish()
             .unwrap();
-        let _ = conn.send(&req, &mut reader);
+        let _ = conn.send(req, &mut reader);
     }
 
     // Benchmark: full send path — build request + write + read response
@@ -151,7 +151,7 @@ fn bench_nexus() {
                 .body(order_body.as_bytes())
                 .finish()
                 .unwrap();
-            let resp = conn.send(&req, &mut reader).unwrap();
+            let resp = conn.send(req, &mut reader).unwrap();
             black_box(resp.status());
         }
         let t1 = rdtsc_end();

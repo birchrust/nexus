@@ -20,6 +20,7 @@ use crate::maybe_tls::MaybeTls;
 /// Thread-safe client slot: writer + reader + transport.
 ///
 /// Fields are public for split borrows (same pattern as [`super::ClientSlot`]).
+/// See [`ClientSlot`](super::ClientSlot) docs for the usage pattern.
 pub struct AtomicClientSlot {
     /// Request encoder (sans-IO).
     pub writer: RequestWriter,
@@ -52,23 +53,6 @@ impl AtomicClientSlot {
         Ok((conn, &mut self.reader))
     }
 
-    /// Send a request with a timeout.
-    ///
-    /// Same as [`ClientSlot::send_with_timeout`](super::ClientSlot::send_with_timeout).
-    pub async fn send_with_timeout(
-        &mut self,
-        req: &nexus_net::rest::Request<'_>,
-        timeout: std::time::Duration,
-    ) -> Result<nexus_net::rest::RestResponse<'_>, RestError> {
-        let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
-        match tokio::time::timeout(timeout, conn.send(req, &mut self.reader)).await {
-            Ok(result) => result,
-            Err(_elapsed) => {
-                self.conn = None;
-                Err(RestError::ReadTimeout)
-            }
-        }
-    }
 }
 
 // =============================================================================
@@ -99,7 +83,7 @@ impl AtomicClientSlot {
 /// let mut slot = pool.try_acquire().unwrap();
 /// let req = slot.writer.post("/order").body(json).finish()?;
 /// let conn = slot.conn.as_mut().unwrap();
-/// let resp = conn.send(&req, &mut slot.reader).await?;
+/// let resp = conn.send(req, &mut slot.reader).await?;
 /// // drop(slot) returns to pool from any thread
 /// ```
 pub struct AtomicClientPool {
@@ -433,7 +417,7 @@ mod tests {
         let s: &mut AtomicClientSlot = &mut slot;
         let req = s.writer.get("/test").finish().unwrap();
         let conn = s.conn.as_mut().unwrap();
-        let resp = conn.send(&req, &mut s.reader).await.unwrap();
+        let resp = conn.send(req, &mut s.reader).await.unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), "ok");
     }
