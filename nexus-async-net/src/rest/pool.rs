@@ -58,6 +58,31 @@ impl ClientSlot {
         let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
         Ok((conn, &mut self.reader))
     }
+
+    /// Send a request with a timeout.
+    ///
+    /// Wraps the send in `tokio::time::timeout`. If the timeout elapses,
+    /// the connection is dropped (poisoned) and `RestError::ReadTimeout`
+    /// is returned. Next acquire will reconnect transparently.
+    ///
+    /// This prevents the reqwest connection pool bug where a stale
+    /// connection hangs forever on read.
+    pub async fn send_with_timeout(
+        &mut self,
+        req: &nexus_net::rest::Request<'_>,
+        timeout: std::time::Duration,
+    ) -> Result<nexus_net::rest::RestResponse<'_>, RestError> {
+        let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
+        match tokio::time::timeout(timeout, conn.send(req, &mut self.reader)).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                // Timeout — drop the connection so needs_reconnect() fires
+                // on return to pool.
+                self.conn = None;
+                Err(RestError::ReadTimeout)
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -579,5 +604,92 @@ mod tests {
             .build()
             .await;
         assert!(result.is_err());
+    }
+
+    /// Reproduces the reqwest connection pool bug: server closes the
+    /// connection while idle, client writes into the dead socket,
+    /// read hangs forever. Our timeout prevents the hang.
+    #[tokio::test]
+    async fn stale_connection_timeout_not_hang() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server: accept, respond to first request, then close the connection.
+        tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+
+            // First request — respond normally.
+            let _ = tcp.read(&mut buf).await.unwrap();
+            tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+
+            // Close the connection — simulates server idle timeout.
+            drop(tcp);
+        });
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tcp.set_nodelay(true).unwrap();
+        let stream = MaybeTls::Plain(tcp);
+        let conn = AsyncHttpConnection::new(stream);
+
+        let pool = Pool::new(
+            make_disconnected_slot,
+            |slot| {
+                if slot.needs_reconnect() {
+                    slot.conn = None;
+                    slot.reader.reset();
+                }
+            },
+        );
+        pool.put(ClientSlot {
+            writer: RequestWriter::new(&addr.to_string()).unwrap(),
+            reader: ResponseReader::new(4096),
+            conn: Some(conn),
+        });
+
+        // First request — succeeds.
+        {
+            let mut slot = pool.acquire();
+            let s: &mut ClientSlot = &mut slot;
+            let req = s.writer.get("/first").finish().unwrap();
+            let conn = s.conn.as_mut().unwrap();
+            let resp = conn.send(&req, &mut s.reader).await.unwrap();
+            assert_eq!(resp.status(), 200);
+        }
+
+        // Small delay to let server close.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Second request — server has closed. Without timeout this hangs.
+        // With tokio::time::timeout, it fails fast.
+        {
+            let mut slot = pool.acquire();
+            let s: &mut ClientSlot = &mut slot;
+            let req = s.writer.get("/second").finish().unwrap();
+            let conn = s.conn.as_mut().unwrap();
+
+            let timeout = std::time::Duration::from_millis(500);
+            let result = tokio::time::timeout(timeout, conn.send(&req, &mut s.reader)).await;
+
+            match result {
+                Ok(Ok(_)) => panic!("stale connection should not succeed"),
+                Ok(Err(_)) => {} // Connection error — correct (ConnectionClosed)
+                Err(_elapsed) => {
+                    // Timeout — also correct. This is what reqwest hangs on.
+                    // We don't hang — we fail.
+                }
+            }
+
+            // The connection should be dead.
+            assert!(
+                s.needs_reconnect(),
+                "slot should be poisoned after stale connection"
+            );
+        }
     }
 }

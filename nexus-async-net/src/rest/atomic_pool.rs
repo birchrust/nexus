@@ -51,6 +51,24 @@ impl AtomicClientSlot {
         let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
         Ok((conn, &mut self.reader))
     }
+
+    /// Send a request with a timeout.
+    ///
+    /// Same as [`ClientSlot::send_with_timeout`](super::ClientSlot::send_with_timeout).
+    pub async fn send_with_timeout(
+        &mut self,
+        req: &nexus_net::rest::Request<'_>,
+        timeout: std::time::Duration,
+    ) -> Result<nexus_net::rest::RestResponse<'_>, RestError> {
+        let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
+        match tokio::time::timeout(timeout, conn.send(req, &mut self.reader)).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                self.conn = None;
+                Err(RestError::ReadTimeout)
+            }
+        }
+    }
 }
 
 // =============================================================================
