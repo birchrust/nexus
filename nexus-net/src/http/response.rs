@@ -97,6 +97,9 @@ pub struct ResponseReader {
     // Cached during try_parse to avoid post-parse header scans.
     cached_content_length: Option<Result<usize, ()>>,
     cached_is_chunked: bool,
+    /// Raw wire bytes consumed for the last response body.
+    /// Used by `consume_response` to advance past the correct number of bytes.
+    last_raw_body_bytes: usize,
 }
 
 impl ResponseReader {
@@ -116,6 +119,7 @@ impl ResponseReader {
             version: 1,
             cached_content_length: None,
             cached_is_chunked: false,
+            last_raw_body_bytes: 0,
         }
     }
 
@@ -262,18 +266,25 @@ impl ResponseReader {
         self.cached_is_chunked
     }
 
-    /// Advance past a consumed response (headers + body), preserving
-    /// any pipelined bytes from the next response.
+    /// Set the raw wire bytes consumed for the response body.
     ///
-    /// Uses the cached content_length from the parsed headers. For
-    /// bodyless responses (1xx/204/304), pass 0 via `consume_with_body_len`.
+    /// For Content-Length responses: equals Content-Length.
+    /// For chunked responses: includes chunk framing overhead.
+    /// For bodyless (1xx/204/304): 0.
+    ///
+    /// Must be called before `consume_response()`.
+    pub fn set_body_consumed(&mut self, raw_bytes: usize) {
+        self.last_raw_body_bytes = raw_bytes;
+    }
+
+    /// Advance past a consumed response, preserving any pipelined bytes.
+    ///
+    /// Uses `last_raw_body_bytes` (set via [`set_body_consumed`]) to
+    /// determine how many wire bytes to skip. Call before parsing the
+    /// next response on a keep-alive connection.
     pub fn consume_response(&mut self) {
         if let Some(head_len) = self.head_len {
-            let body_len = self
-                .cached_content_length
-                .and_then(Result::ok)
-                .unwrap_or(0);
-            let consumed = head_len + body_len;
+            let consumed = head_len + self.last_raw_body_bytes;
             if consumed <= self.buf.data().len() {
                 self.buf.advance(consumed);
             } else {
@@ -284,6 +295,7 @@ impl ResponseReader {
         self.header_offsets.clear();
         self.cached_content_length = None;
         self.cached_is_chunked = false;
+        self.last_raw_body_bytes = 0;
     }
 
     /// Reset for a new response. Discards all buffered data.
@@ -293,6 +305,7 @@ impl ResponseReader {
         self.header_offsets.clear();
         self.cached_content_length = None;
         self.cached_is_chunked = false;
+        self.last_raw_body_bytes = 0;
     }
 
     fn try_parse(&mut self) -> Result<(), HttpError> {

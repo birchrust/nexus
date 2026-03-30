@@ -45,7 +45,10 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    let mut writer = RequestWriter::new(host_candidate);
+    let mut writer = match RequestWriter::new(host_candidate) {
+        Ok(w) => w,
+        Err(_) => return,
+    };
 
     // Optional base path
     if has_base_path {

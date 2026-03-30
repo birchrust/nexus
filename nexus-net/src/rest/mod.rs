@@ -14,7 +14,7 @@
 //! use nexus_net::http::ResponseReader;
 //!
 //! // Protocol (sans-IO)
-//! let mut writer = RequestWriter::new("api.exchange.com");
+//! let mut writer = RequestWriter::new("api.exchange.com")?;
 //! writer.default_header("Authorization", "Bearer token123")?;
 //! let mut reader = ResponseReader::new(32 * 1024);
 //!
@@ -24,8 +24,8 @@
 //! // Build + send
 //! let req = writer.get("/api/v1/orders")
 //!     .query("symbol", "BTC-USD")
-//!     .send()?;
-//! let resp = conn.send(req, &mut reader, 32 * 1024)?;
+//!     .finish()?;
+//! let resp = conn.send(&req, &mut reader)?;
 //!
 //! println!("status: {}", resp.status());
 //! println!("body: {}", resp.body_str()?);

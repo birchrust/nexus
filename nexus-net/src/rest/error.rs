@@ -13,8 +13,6 @@ pub enum RestError {
     BodyTooLarge { size: usize, max: usize },
     /// Request exceeds WriteBuf capacity.
     RequestTooLarge { capacity: usize },
-    /// Server sent chunked transfer encoding (not supported).
-    ChunkedNotSupported,
     /// Header name/value or query parameter contains CR/LF bytes.
     CrlfInjection,
     /// Connection is poisoned after an I/O error mid-response.
@@ -44,9 +42,6 @@ impl fmt::Display for RestError {
             }
             Self::RequestTooLarge { capacity } => {
                 write!(f, "request exceeds write buffer capacity ({capacity} bytes)")
-            }
-            Self::ChunkedNotSupported => {
-                write!(f, "chunked transfer encoding not supported")
             }
             Self::CrlfInjection => {
                 write!(f, "header or query parameter contains CR/LF")

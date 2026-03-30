@@ -239,11 +239,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
         let status = reader.status();
 
         if matches!(status, 100..=199 | 204 | 304) {
+            reader.set_body_consumed(0);
             return Ok(RestResponse::new(status, 0, reader));
         }
 
         if reader.is_chunked() {
             let body = self.read_chunked_body(reader).await?;
+            reader.set_body_consumed(reader.body_remaining());
             return Ok(RestResponse::new_chunked(status, body, reader));
         }
 
@@ -285,6 +287,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             }
         }
 
+        reader.set_body_consumed(content_length);
         Ok(RestResponse::new(status, content_length, reader))
     }
 

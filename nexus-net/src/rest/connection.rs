@@ -83,7 +83,8 @@ pub fn parse_base_url(url: &str) -> Result<ParsedUrl<'_>, RestError> {
             Some(i) => {
                 let port_str = &host_port[i + 1..];
                 if port_str.is_empty() {
-                    (host_port, default_port)
+                    // Trailing colon with no port: "host:" → strip colon
+                    (&host_port[..i], default_port)
                 } else {
                     let p = port_str
                         .parse::<u16>()
@@ -513,12 +514,20 @@ impl<S: Read + Write> HttpConnection<S> {
 
         // RFC 7230: 1xx, 204, 304 have no body.
         if matches!(status, 100..=199 | 204 | 304) {
+            reader.set_body_consumed(0);
             return Ok(RestResponse::new(status, 0, reader));
         }
 
         if reader.is_chunked() {
-            // Chunked transfer encoding: decode chunk framing.
             let body = self.read_chunked_body(reader)?;
+            // All remainder bytes were consumed (decoded or framing),
+            // plus whatever was read from the socket during decode.
+            // For consume_response, we need the total raw bytes in the
+            // reader's buffer that belong to this response's body.
+            // Since chunked body goes into a Vec (not the reader), the
+            // remainder bytes are all raw chunked wire data that should
+            // be skipped on consume.
+            reader.set_body_consumed(reader.body_remaining());
             return Ok(RestResponse::new_chunked(status, body, reader));
         }
 
@@ -526,8 +535,6 @@ impl<S: Read + Write> HttpConnection<S> {
             Some(Ok(n)) => n,
             Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
             None => {
-                // No Content-Length on a body-bearing response.
-                // Can't determine body boundaries for keep-alive.
                 self.poisoned = true;
                 0
             }
@@ -557,6 +564,7 @@ impl<S: Read + Write> HttpConnection<S> {
             }
         }
 
+        reader.set_body_consumed(content_length);
         Ok(RestResponse::new(status, content_length, reader))
     }
 

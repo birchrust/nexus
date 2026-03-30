@@ -14,9 +14,11 @@ enum State {
     ChunkData { remaining: usize },
     /// Reading the \r\n after chunk data.
     ChunkDataTrailer,
-    /// Reading the \r\n after the zero-length terminator chunk.
-    FinalTrailer,
-    /// Final zero-length chunk and its trailer consumed. Done.
+    /// Consuming optional trailer headers after the zero chunk.
+    /// RFC 7230 §4.1: trailers end with an empty line (\r\n).
+    /// `prev_was_lf` tracks if the previous byte was \n.
+    Trailers { prev_was_lf: bool },
+    /// Final zero-length chunk and trailers consumed. Done.
     Done,
 }
 
@@ -96,8 +98,9 @@ impl ChunkedDecoder {
                         self.size_len = 0;
 
                         if chunk_size == 0 {
-                            // Zero chunk = end of body. Consume trailing \r\n.
-                            self.state = State::FinalTrailer;
+                            // Zero chunk = end of body. Consume optional
+                            // trailer headers + terminating empty line.
+                            self.state = State::Trailers { prev_was_lf: true };
                         } else {
                             self.state = State::ChunkData {
                                 remaining: chunk_size,
@@ -150,12 +153,25 @@ impl ChunkedDecoder {
                     }
                 }
 
-                State::FinalTrailer => {
-                    // Consume \r\n after zero-length chunk → done.
+                State::Trailers { prev_was_lf } => {
+                    // Consume optional trailer headers until empty line.
+                    // Empty line = \n immediately after \n (with optional
+                    // \r between). Detects both \r\n\r\n and \n\n.
                     let b = input[in_pos];
                     in_pos += 1;
                     if b == b'\n' {
-                        self.state = State::Done;
+                        if prev_was_lf {
+                            // \n\n — empty line, done.
+                            self.state = State::Done;
+                        } else {
+                            self.state = State::Trailers { prev_was_lf: true };
+                        }
+                    } else if b == b'\r' {
+                        // \r doesn't reset the \n flag — \n\r\n is valid.
+                        self.state = State::Trailers { prev_was_lf };
+                    } else {
+                        // Non-CRLF byte — part of a trailer header line.
+                        self.state = State::Trailers { prev_was_lf: false };
                     }
                 }
 
@@ -294,5 +310,31 @@ mod tests {
         let mut output = [0u8; 64];
 
         assert!(dec.decode(input, &mut output).is_err());
+    }
+
+    #[test]
+    fn trailer_headers_consumed() {
+        let mut dec = ChunkedDecoder::new();
+        let input = b"5\r\nhello\r\n0\r\nTrailer: value\r\nAnother: hdr\r\n\r\n";
+        let mut output = [0u8; 64];
+
+        let (consumed, produced) = dec.decode(input, &mut output).unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(produced, 5);
+        assert_eq!(&output[..5], b"hello");
+        assert!(dec.is_done());
+    }
+
+    #[test]
+    fn trailer_no_headers_just_crlf() {
+        let mut dec = ChunkedDecoder::new();
+        // No trailer headers — just the standard terminator
+        let input = b"3\r\nabc\r\n0\r\n\r\n";
+        let mut output = [0u8; 64];
+
+        let (consumed, produced) = dec.decode(input, &mut output).unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(produced, 3);
+        assert!(dec.is_done());
     }
 }
