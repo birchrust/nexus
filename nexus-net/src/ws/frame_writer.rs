@@ -576,4 +576,63 @@ mod tests {
             Err(super::EncodeError::ControlPayloadTooLarge(126))
         ));
     }
+
+    #[test]
+    fn encode_text_writer_matches_into() {
+        use crate::buf::WriteBuf;
+        let writer = FrameWriter::new(Role::Server);
+        let payload = b"Hello, world!";
+
+        let mut wbuf1 = WriteBuf::new(128, 14);
+        writer.encode_text_into(payload, &mut wbuf1);
+
+        let mut wbuf2 = WriteBuf::new(128, 14);
+        writer
+            .encode_text_writer(&mut wbuf2, |w| {
+                use std::io::Write;
+                w.write_all(payload)
+            })
+            .unwrap();
+
+        assert_eq!(wbuf1.data(), wbuf2.data());
+    }
+
+    #[test]
+    fn encode_binary_fixed_matches_into() {
+        use crate::buf::WriteBuf;
+        let writer = FrameWriter::new(Role::Server);
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF];
+
+        let mut wbuf1 = WriteBuf::new(128, 14);
+        writer.encode_binary_into(&payload, &mut wbuf1);
+
+        let mut wbuf2 = WriteBuf::new(128, 14);
+        writer.encode_binary_fixed(&mut wbuf2, payload.len(), |buf| {
+            buf.copy_from_slice(&payload);
+        });
+
+        assert_eq!(wbuf1.data(), wbuf2.data());
+    }
+
+    #[test]
+    fn encode_text_writer_round_trip() {
+        use crate::buf::WriteBuf;
+        use crate::ws::{FrameReader, Message};
+
+        let writer = FrameWriter::new(Role::Server);
+        let mut wbuf = WriteBuf::new(128, 14);
+        writer
+            .encode_text_writer(&mut wbuf, |w| {
+                use std::io::Write;
+                w.write_all(b"test message")
+            })
+            .unwrap();
+
+        let mut reader = FrameReader::builder().role(Role::Client).build();
+        reader.read(wbuf.data()).unwrap();
+        assert!(matches!(
+            reader.next().unwrap().unwrap(),
+            Message::Text("test message")
+        ));
+    }
 }

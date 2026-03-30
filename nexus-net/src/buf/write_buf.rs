@@ -172,7 +172,7 @@ impl WriteBuf {
     ///
     /// # Panics
     /// Panics if `n > self.len()`.
-    pub fn truncate(&mut self, n: usize) {
+    pub fn shrink_tail(&mut self, n: usize) {
         assert!(
             n <= self.len(),
             "truncate({n}) exceeds data length ({})",
@@ -228,7 +228,7 @@ impl std::io::Write for WriteBufWriter<'_> {
         if data.len() > available {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,
-                "body exceeds write buffer capacity",
+                "write exceeds buffer capacity",
             ));
         }
         self.buf.append(data);

@@ -797,7 +797,7 @@ mod tests {
             .unwrap();
 
         let written_before = std::str::from_utf8(req.as_bytes()).unwrap().to_string();
-        // Verify Content-Length is backfilled correctly (space-padded)
+        // Verify Content-Length is backfilled correctly (exact digits)
         assert!(written_before.contains("Content-Length:"));
         assert!(written_before.contains(&format!("{}", body.len())));
         assert!(written_before.ends_with(std::str::from_utf8(body).unwrap()));
@@ -836,7 +836,7 @@ mod tests {
             .unwrap();
 
         let data = std::str::from_utf8(req.as_bytes()).unwrap();
-        // Content-Length should be 0 (space-padded)
+        // Content-Length should be 0
         assert!(data.contains("Content-Length:"));
         assert!(data.contains("0\r\n\r\n"));
     }
@@ -859,15 +859,10 @@ mod tests {
             .finish()
             .unwrap();
 
-        // The Content-Length format differs (exact digits vs space-padded)
-        // but the body content and other headers should match.
+        // Both paths produce identical wire format.
         let d1 = std::str::from_utf8(req1.as_bytes()).unwrap();
         let d2 = std::str::from_utf8(req2.as_bytes()).unwrap();
-        assert!(d1.ends_with("identical-content"));
-        assert!(d2.ends_with("identical-content"));
-        // Both have Content-Length with the right value
-        assert!(d1.contains("17"));
-        assert!(d2.contains("17"));
+        assert_eq!(d1, d2);
     }
 
     #[test]

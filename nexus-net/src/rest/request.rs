@@ -268,7 +268,7 @@ fn write_body_header(
 /// Content-Length placeholder: "Content-Length: XXXXXXXXXX\r\n\r\n"
 /// 10 digits supports bodies up to 9,999,999,999 bytes (~9.3GB).
 const CL_PREFIX: &[u8] = b"Content-Length: ";
-const CL_PAD_LEN: usize = 10;
+const CL_PAD_LEN: usize = 20;
 const CL_SUFFIX: &[u8] = b"\r\n\r\n";
 /// Write a padded Content-Length placeholder. Returns the offset
 /// within the WriteBuf where the 10-digit number starts.
@@ -278,7 +278,7 @@ fn write_content_length_placeholder(
 ) -> usize {
     checked_append(buf, CL_PREFIX, error);
     let num_offset = buf.len();
-    checked_append(buf, b"0000000000", error); // 10 zeros as placeholder
+    checked_append(buf, b"00000000000000000000", error); // 20 zeros
     checked_append(buf, CL_SUFFIX, error);
     num_offset
 }
@@ -336,7 +336,7 @@ fn backfill_content_length(buf: &mut WriteBuf, num_offset: usize, body_len: usiz
 
     // Shrink the buffer to remove the gap bytes.
     if gap > 0 {
-        buf.truncate(gap);
+        buf.shrink_tail(gap);
     }
 }
 
@@ -669,7 +669,14 @@ impl<'a> RequestBuilder<'a, Query> {
         let body_len = {
             let mut bw = BodyWriter::new(&mut self.writer.write_buf);
             if let Err(e) = f(&mut bw) {
-                self.error = Some(RestError::Io(std::io::Error::other(e)));
+                // If the buffer is full, this is a capacity issue.
+                self.error = Some(if self.writer.write_buf.tailroom() == 0 {
+                    RestError::RequestTooLarge {
+                        capacity: self.writer.write_buf.len() + self.writer.write_buf.tailroom(),
+                    }
+                } else {
+                    RestError::Io(std::io::Error::other(e))
+                });
                 0
             } else {
                 bw.written()
@@ -723,7 +730,7 @@ impl<'a> RequestBuilder<'a, Query> {
         } else {
             let start = buf.len();
             // Extend the buffer with zeros, then give the closure mutable access.
-            buf.append(&vec![0u8; len]);
+            buf.extend_zeroed(len);
             let data = buf.data_mut();
             f(&mut data[start..start + len]);
         }
@@ -801,7 +808,14 @@ impl<'a> RequestBuilder<'a, Headers> {
         let body_len = {
             let mut bw = BodyWriter::new(&mut self.writer.write_buf);
             if let Err(e) = f(&mut bw) {
-                self.error = Some(RestError::Io(std::io::Error::other(e)));
+                // If the buffer is full, this is a capacity issue.
+                self.error = Some(if self.writer.write_buf.tailroom() == 0 {
+                    RestError::RequestTooLarge {
+                        capacity: self.writer.write_buf.len() + self.writer.write_buf.tailroom(),
+                    }
+                } else {
+                    RestError::Io(std::io::Error::other(e))
+                });
                 0
             } else {
                 bw.written()
