@@ -11,7 +11,7 @@ use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use nexus_async_net::maybe_tls::MaybeTls;
+use nexus_async_net::rest::MaybeTls;
 use nexus_async_net::rest::{AsyncHttpConnection, ClientSlot};
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::RequestWriter;

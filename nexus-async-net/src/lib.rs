@@ -8,7 +8,7 @@
 //! - [`ws`] — Async WebSocket (wraps FrameReader/FrameWriter)
 //! - [`rest`] — Async HTTP REST client (wraps RequestWriter/ResponseReader)
 
-pub mod maybe_tls;
+pub(crate) mod maybe_tls;
 pub mod rest;
 pub mod ws;
 

@@ -7,6 +7,7 @@
 
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
+#[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_pool::local::{Pool, Pooled};
 
@@ -103,8 +104,15 @@ pub struct ClientPool {
 #[derive(Clone)]
 struct ReconnectConfig {
     url: String,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
 }
 
 #[allow(clippy::future_not_send)] // Intentionally !Send — single-threaded pool for LocalSet.
@@ -147,11 +155,24 @@ impl ClientPool {
 
     async fn connect_one(&self) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let mut builder = AsyncHttpConnectionBuilder::new();
+        #[cfg(feature = "tls")]
         if let Some(ref tls) = self.reconnect_config.tls_config {
             builder = builder.tls(tls);
         }
         if self.reconnect_config.nodelay {
             builder = builder.disable_nagle();
+        }
+        #[cfg(feature = "socket-opts")]
+        {
+            if let Some(idle) = self.reconnect_config.tcp_keepalive {
+                builder = builder.tcp_keepalive(idle);
+            }
+            if let Some(size) = self.reconnect_config.recv_buf_size {
+                builder = builder.recv_buffer_size(size);
+            }
+            if let Some(size) = self.reconnect_config.send_buf_size {
+                builder = builder.send_buffer_size(size);
+            }
         }
         builder.connect(&self.reconnect_config.url).await
     }
@@ -167,8 +188,15 @@ pub struct ClientPoolBuilder {
     base_path: String,
     default_headers: Vec<(String, String)>,
     connections: usize,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
     write_buffer_capacity: usize,
     response_buffer_capacity: usize,
     max_body_size: usize,
@@ -182,8 +210,15 @@ impl ClientPoolBuilder {
             base_path: String::new(),
             default_headers: Vec::new(),
             connections: 1,
+            #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: None,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: None,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: None,
             write_buffer_capacity: 32 * 1024,
             response_buffer_capacity: 32 * 1024,
             max_body_size: 0,
@@ -225,6 +260,7 @@ impl ClientPoolBuilder {
 
     /// Custom TLS configuration.
     #[must_use]
+    #[cfg(feature = "tls")]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
         self
@@ -234,6 +270,30 @@ impl ClientPoolBuilder {
     #[must_use]
     pub fn disable_nagle(mut self) -> Self {
         self.nodelay = true;
+        self
+    }
+
+    /// Set TCP keepalive idle time on each connection.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn tcp_keepalive(mut self, idle: std::time::Duration) -> Self {
+        self.tcp_keepalive = Some(idle);
+        self
+    }
+
+    /// Set `SO_RCVBUF` on each connection.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn recv_buffer_size(mut self, n: usize) -> Self {
+        self.recv_buf_size = Some(n);
+        self
+    }
+
+    /// Set `SO_SNDBUF` on each connection.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn send_buffer_size(mut self, n: usize) -> Self {
+        self.send_buf_size = Some(n);
         self
     }
 
@@ -272,19 +332,39 @@ impl ClientPoolBuilder {
 
         let reconnect_config = ReconnectConfig {
             url: self.url.clone(),
+            #[cfg(feature = "tls")]
             tls_config: self.tls_config.clone(),
             nodelay: self.nodelay,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: self.tcp_keepalive,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: self.recv_buf_size,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: self.send_buf_size,
         };
 
         // Connect all slots sequentially (cold path — startup only).
         let mut initial_slots = Vec::with_capacity(self.connections);
         for _ in 0..self.connections {
             let mut builder = AsyncHttpConnectionBuilder::new();
+            #[cfg(feature = "tls")]
             if let Some(ref tls) = self.tls_config {
                 builder = builder.tls(tls);
             }
             if self.nodelay {
                 builder = builder.disable_nagle();
+            }
+            #[cfg(feature = "socket-opts")]
+            {
+                if let Some(idle) = self.tcp_keepalive {
+                    builder = builder.tcp_keepalive(idle);
+                }
+                if let Some(size) = self.recv_buf_size {
+                    builder = builder.recv_buffer_size(size);
+                }
+                if let Some(size) = self.send_buf_size {
+                    builder = builder.send_buffer_size(size);
+                }
             }
             let conn = builder.connect(&self.url).await?;
 

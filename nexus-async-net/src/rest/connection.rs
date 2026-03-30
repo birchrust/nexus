@@ -2,6 +2,7 @@
 
 use nexus_net::http::{HttpError, ResponseReader};
 use nexus_net::rest::{Request, RestError, RestResponse};
+#[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -14,8 +15,16 @@ use crate::maybe_tls::MaybeTls;
 
 /// Builder for [`AsyncHttpConnection`].
 pub struct AsyncHttpConnectionBuilder {
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    connect_timeout: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
 }
 
 impl AsyncHttpConnectionBuilder {
@@ -23,12 +32,21 @@ impl AsyncHttpConnectionBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
+            connect_timeout: None,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: None,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: None,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: None,
         }
     }
 
     /// Custom TLS configuration.
+    #[cfg(feature = "tls")]
     #[must_use]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
@@ -42,33 +60,88 @@ impl AsyncHttpConnectionBuilder {
         self
     }
 
+    /// TCP connect timeout.
+    #[must_use]
+    pub fn connect_timeout(mut self, d: std::time::Duration) -> Self {
+        self.connect_timeout = Some(d);
+        self
+    }
+
+    /// Set TCP keepalive idle time.
+    ///
+    /// Enables OS-level dead connection detection. The kernel sends
+    /// probes after `idle` of inactivity.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn tcp_keepalive(mut self, idle: std::time::Duration) -> Self {
+        self.tcp_keepalive = Some(idle);
+        self
+    }
+
+    /// Set `SO_RCVBUF` (socket receive buffer size).
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn recv_buffer_size(mut self, n: usize) -> Self {
+        self.recv_buf_size = Some(n);
+        self
+    }
+
+    /// Set `SO_SNDBUF` (socket send buffer size).
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn send_buffer_size(mut self, n: usize) -> Self {
+        self.send_buf_size = Some(n);
+        self
+    }
+
     /// Connect to an HTTP(S) endpoint. TLS auto-detected from scheme.
     pub async fn connect(self, url: &str) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let parsed = nexus_net::rest::parse_base_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
-        let tcp = TcpStream::connect(&addr).await?;
+        let tcp = match self.connect_timeout {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, TcpStream::connect(&addr))
+                    .await
+                    .map_err(|_| RestError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "connect timeout",
+                    )))?
+                    ?
+            }
+            None => TcpStream::connect(&addr).await?,
+        };
         if self.nodelay {
             tcp.set_nodelay(true)?;
         }
+        #[cfg(feature = "socket-opts")]
+        self.apply_socket_opts(&tcp)?;
 
         let stream = if parsed.tls {
-            let tls_config = match &self.tls_config {
-                Some(c) => c.clone(),
-                None => TlsConfig::new().map_err(RestError::Tls)?,
-            };
+            #[cfg(feature = "tls")]
+            {
+                let tls_config = match &self.tls_config {
+                    Some(c) => c.clone(),
+                    None => TlsConfig::new().map_err(RestError::Tls)?,
+                };
 
-            let connector =
-                tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
-            let server_name =
-                tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
+                let connector =
+                    tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
+                let server_name =
+                    tokio_rustls::rustls::pki_types::ServerName::try_from(
+                        parsed.host.to_owned(),
+                    )
                     .map_err(|_| {
                         RestError::InvalidUrl(format!("invalid hostname: {}", parsed.host))
                     })?;
-            let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
-                RestError::Io(e)
-            })?;
-            MaybeTls::Tls(Box::new(tls_stream))
+                let tls_stream =
+                    connector.connect(server_name, tcp).await.map_err(RestError::Io)?;
+                MaybeTls::Tls(Box::new(tls_stream))
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                return Err(RestError::TlsNotEnabled);
+            }
         } else {
             MaybeTls::Plain(tcp)
         };
@@ -88,6 +161,24 @@ impl AsyncHttpConnectionBuilder {
             stream,
             poisoned: false,
         }
+    }
+}
+
+#[cfg(feature = "socket-opts")]
+impl AsyncHttpConnectionBuilder {
+    fn apply_socket_opts(&self, tcp: &TcpStream) -> Result<(), RestError> {
+        let sock = socket2::SockRef::from(tcp);
+        if let Some(idle) = self.tcp_keepalive {
+            let keepalive = socket2::TcpKeepalive::new().with_time(idle);
+            sock.set_tcp_keepalive(&keepalive).map_err(RestError::Io)?;
+        }
+        if let Some(size) = self.recv_buf_size {
+            sock.set_recv_buffer_size(size).map_err(RestError::Io)?;
+        }
+        if let Some(size) = self.send_buf_size {
+            sock.set_send_buffer_size(size).map_err(RestError::Io)?;
+        }
+        Ok(())
     }
 }
 

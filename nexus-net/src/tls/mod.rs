@@ -1,23 +1,24 @@
 //! TLS codec — sans-IO encrypt/decrypt via rustls.
 //!
-//! Sits between the socket and [`FrameReader`](crate::ws::FrameReader)/[`FrameWriter`](crate::ws::FrameWriter):
+//! Sits between the socket and protocol parsers:
 //!
 //! ```text
-//! socket → TlsCodec (decrypt) → FrameReader → Message
-//! Message → FrameWriter → TlsCodec (encrypt) → socket
+//! socket → TlsCodec (decrypt) → FrameReader / ResponseReader → Message
+//! Request → TlsCodec (encrypt) → socket
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
 //! use nexus_net::tls::TlsConfig;
-//! use nexus_net::ws::WsTlsStream;
+//! use nexus_net::ws::WsStream;
 //!
-//! let tcp = TcpStream::connect("exchange.com:443")?;
-//! let tls_config = TlsConfig::new()?;
-//! let mut ws = WsTlsStream::connect(tcp, &tls_config, "wss://exchange.com/ws/v1")?;
+//! let tls = TlsConfig::new()?;
+//! let mut ws = WsStream::builder()
+//!     .tls(&tls)
+//!     .connect("wss://exchange.com/ws/v1")?;
 //!
-//! while let Some(msg) = ws.next()? {
+//! while let Some(msg) = ws.recv()? {
 //!     process(msg);
 //! }
 //! ```

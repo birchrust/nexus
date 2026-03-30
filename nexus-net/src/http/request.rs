@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Internal module — some methods kept for completeness.
+
 use super::error::HttpError;
 use crate::buf::ReadBuf;
 

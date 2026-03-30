@@ -159,18 +159,33 @@ const UNRESERVED: [bool; 256] = {
 const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 /// Percent-encode `input` per RFC 3986 directly into the WriteBuf.
+/// Percent-encode `input` per RFC 3986 directly into the WriteBuf.
+/// Batch-scans for runs of unreserved bytes to minimize checked_append calls.
 fn append_percent_encoded(
     buf: &mut WriteBuf,
     input: &[u8],
     error: &mut Option<RestError>,
 ) {
-    for &b in input {
-        if error.is_some() {
-            return;
+    if error.is_some() {
+        return;
+    }
+    let mut i = 0;
+    while i < input.len() {
+        // Scan for a run of unreserved bytes.
+        let run_start = i;
+        while i < input.len() && UNRESERVED[input[i] as usize] {
+            i += 1;
         }
-        if UNRESERVED[b as usize] {
-            checked_append(buf, &[b], error);
-        } else {
+        // Append the unreserved run in one bulk copy.
+        if i > run_start {
+            checked_append(buf, &input[run_start..i], error);
+            if error.is_some() {
+                return;
+            }
+        }
+        // Encode the next reserved byte (if any).
+        if i < input.len() {
+            let b = input[i];
             checked_append(
                 buf,
                 &[
@@ -180,6 +195,10 @@ fn append_percent_encoded(
                 ],
                 error,
             );
+            if error.is_some() {
+                return;
+            }
+            i += 1;
         }
     }
 }
@@ -266,7 +285,7 @@ fn write_body_header(
 }
 
 /// Content-Length placeholder: "Content-Length: XXXXXXXXXX\r\n\r\n"
-/// 10 digits supports bodies up to 9,999,999,999 bytes (~9.3GB).
+/// 20 digits supports all possible `usize` values on 64-bit.
 const CL_PREFIX: &[u8] = b"Content-Length: ";
 const CL_PAD_LEN: usize = 20;
 const CL_SUFFIX: &[u8] = b"\r\n\r\n";

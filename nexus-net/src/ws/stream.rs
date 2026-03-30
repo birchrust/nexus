@@ -19,6 +19,7 @@ use crate::tls::{TlsCodec, TlsConfig, TlsError};
 // =============================================================================
 
 /// Parsed WebSocket URL.
+#[non_exhaustive]
 pub struct ParsedUrl<'a> {
     pub tls: bool,
     pub host: &'a str,
@@ -51,19 +52,42 @@ pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
         .find('/')
         .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
 
+    if host_port.is_empty() {
+        return Err(WsError::InvalidUrl(format!("empty host: {url}")));
+    }
+
     let default_port = if tls { 443 } else { 80 };
-    let (host, port) = match host_port.rfind(':') {
-        None => (host_port, default_port),
-        Some(i) => {
-            let port_str = &host_port[i + 1..];
-            if port_str.is_empty() {
-                // Trailing colon with no port — use default
-                (&host_port[..i], default_port)
-            } else {
-                let p = port_str
-                    .parse::<u16>()
-                    .map_err(|_| WsError::InvalidUrl(format!("invalid port in URL: {url}")))?;
-                (&host_port[..i], p)
+
+    // IPv6 bracket notation: [::1]:8080
+    let (host, port) = if host_port.starts_with('[') {
+        match host_port.find(']') {
+            Some(end) => {
+                let h = &host_port[1..end];
+                let rest = &host_port[end + 1..];
+                if let Some(port_str) = rest.strip_prefix(':') {
+                    let p = port_str
+                        .parse::<u16>()
+                        .map_err(|_| WsError::InvalidUrl(format!("invalid port: {url}")))?;
+                    (h, p)
+                } else {
+                    (h, default_port)
+                }
+            }
+            None => return Err(WsError::InvalidUrl(format!("unclosed bracket: {url}"))),
+        }
+    } else {
+        match host_port.rfind(':') {
+            None => (host_port, default_port),
+            Some(i) => {
+                let port_str = &host_port[i + 1..];
+                if port_str.is_empty() {
+                    (&host_port[..i], default_port)
+                } else {
+                    let p = port_str
+                        .parse::<u16>()
+                        .map_err(|_| WsError::InvalidUrl(format!("invalid port: {url}")))?;
+                    (&host_port[..i], p)
+                }
             }
         }
     };
@@ -87,6 +111,8 @@ pub enum WsError {
     Io(std::io::Error),
     /// WebSocket protocol error.
     Protocol(ProtocolError),
+    /// Encoding error (e.g., control frame payload too large).
+    Encode(super::frame_writer::EncodeError),
     /// HTTP handshake failed.
     Handshake(HandshakeError),
     /// TLS error.
@@ -103,6 +129,7 @@ impl std::fmt::Display for WsError {
         match self {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
+            Self::Encode(e) => write!(f, "encode error: {e}"),
             Self::Handshake(e) => write!(f, "handshake error: {e}"),
             #[cfg(feature = "tls")]
             Self::Tls(e) => write!(f, "TLS error: {e}"),
@@ -122,6 +149,11 @@ impl From<std::io::Error> for WsError {
 impl From<ProtocolError> for WsError {
     fn from(e: ProtocolError) -> Self {
         Self::Protocol(e)
+    }
+}
+impl From<super::frame_writer::EncodeError> for WsError {
+    fn from(e: super::frame_writer::EncodeError) -> Self {
+        Self::Encode(e)
     }
 }
 impl From<HandshakeError> for WsError {
@@ -518,7 +550,7 @@ impl<S: Read + Write> WsStream<S> {
     pub fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
         self.writer
             .encode_ping_into(data, &mut self.write_buf)
-            .map_err(|e| WsError::Io(io::Error::other(e)))?;
+            .map_err(WsError::Encode)?;
         self.flush_write_buf()
     }
 
@@ -526,7 +558,7 @@ impl<S: Read + Write> WsStream<S> {
     pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
         self.writer
             .encode_pong_into(data, &mut self.write_buf)
-            .map_err(|e| WsError::Io(io::Error::other(e)))?;
+            .map_err(WsError::Encode)?;
         self.flush_write_buf()
     }
 
@@ -539,7 +571,7 @@ impl<S: Read + Write> WsStream<S> {
         } else {
             self.writer
                 .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
-                .map_err(|e| WsError::Io(io::Error::other(e)))?;
+                .map_err(WsError::Encode)?;
             self.flush_write_buf()
         }
     }
@@ -605,7 +637,11 @@ impl<S: Read + Write> WsStream<S> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             tls.encrypt(self.write_buf.data())?;
-            tls.write_tls_to(&mut self.stream)?;
+            // Drain all buffered TLS records — write_tls_to may not
+            // flush everything in one call (partial write).
+            while tls.wants_write() {
+                tls.write_tls_to(&mut self.stream)?;
+            }
             return Ok(());
         }
 
@@ -658,7 +694,7 @@ impl<S: Read + Write> WsStream<S> {
 
         // Phase 2: HTTP upgrade
         let key = handshake::generate_key();
-        let key_str = std::str::from_utf8(&key).unwrap();
+        let key_str = std::str::from_utf8(&key).expect("base64 output is valid ASCII");
 
         let headers = [
             ("Host", host),
@@ -822,7 +858,7 @@ impl<S: Read + Write> WsStream<S> {
         }
 
         let accept = handshake::compute_accept_key(&ws_key);
-        let accept_str = std::str::from_utf8(&accept).unwrap();
+        let accept_str = std::str::from_utf8(&accept).expect("base64 output is valid ASCII");
 
         let resp_headers = [
             ("Upgrade", "websocket"),

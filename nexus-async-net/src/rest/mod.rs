@@ -10,7 +10,7 @@
 //! use nexus_net::http::ResponseReader;
 //! use nexus_async_net::rest::AsyncHttpConnection;
 //!
-//! let mut writer = RequestWriter::new("api.binance.com");
+//! let mut writer = RequestWriter::new("api.binance.com")?;
 //! writer.default_header("X-API-KEY", &key)?;
 //! let mut reader = ResponseReader::new(32 * 1024);
 //!

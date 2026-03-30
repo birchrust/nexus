@@ -181,7 +181,7 @@ impl ResponseReader {
         }
         let spare = self.buf.spare();
         if spare.is_empty() {
-            return Ok(0);
+            return Err(std::io::Error::other("response buffer full"));
         }
         let n = src.read(spare)?;
         self.buf.filled(n);

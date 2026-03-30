@@ -131,11 +131,9 @@ impl WriteBuf {
     /// # Panics
     /// Panics if `n > self.len()`.
     pub fn advance(&mut self, n: usize) {
-        assert!(
-            n <= self.len(),
-            "advance({n}) exceeds data length ({})",
-            self.len()
-        );
+        if n > self.len() {
+            Self::panic_advance(n, self.len());
+        }
         self.head += n;
     }
 
@@ -173,11 +171,9 @@ impl WriteBuf {
     /// # Panics
     /// Panics if `n > self.len()`.
     pub fn shrink_tail(&mut self, n: usize) {
-        assert!(
-            n <= self.len(),
-            "truncate({n}) exceeds data length ({})",
-            self.len()
-        );
+        if n > self.len() {
+            Self::panic_shrink(n, self.len());
+        }
         self.tail -= n;
     }
 
@@ -197,6 +193,18 @@ impl WriteBuf {
     #[inline(never)]
     fn panic_tailroom(needed: usize, available: usize) -> ! {
         panic!("append: {needed} bytes exceeds tailroom ({available})")
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_advance(n: usize, len: usize) -> ! {
+        panic!("advance({n}) exceeds data length ({len})")
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn panic_shrink(n: usize, len: usize) -> ! {
+        panic!("shrink_tail({n}) exceeds data length ({len})")
     }
 }
 

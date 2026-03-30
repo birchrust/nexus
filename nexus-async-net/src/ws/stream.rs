@@ -1,6 +1,7 @@
 //! Async WebSocket stream — thin wrapper over nexus-net primitives.
 
 use nexus_net::buf::WriteBuf;
+#[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{
     CloseCode, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError, Message, Role,
@@ -65,6 +66,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         WsStreamBuilder::new().connect_with(stream, url).await
     }
 
+    /// Accept an incoming WebSocket connection (server-side).
+    ///
+    /// Reads the client's HTTP upgrade request, validates it,
+    /// sends back 101 Switching Protocols, and returns a server-role
+    /// WsStream ready for recv/send.
+    pub async fn accept(stream: S) -> Result<Self, WsError> {
+        WsStreamBuilder::new().accept(stream).await
+    }
+
     /// Create from pre-existing parts. For testing or custom handshakes.
     pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
@@ -119,7 +129,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
     pub async fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
         self.writer
             .encode_ping_into(data, &mut self.write_buf)
-            .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+            .map_err(WsError::Encode)?;
         self.stream.write_all(self.write_buf.data()).await?;
         Ok(())
     }
@@ -128,7 +138,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
     pub async fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
         self.writer
             .encode_pong_into(data, &mut self.write_buf)
-            .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+            .map_err(WsError::Encode)?;
         self.stream.write_all(self.write_buf.data()).await?;
         Ok(())
     }
@@ -142,7 +152,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         } else {
             self.writer
                 .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
-                .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+                .map_err(WsError::Encode)?;
             self.stream.write_all(self.write_buf.data()).await?;
         }
         Ok(())
@@ -256,6 +266,102 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
             }
         }
     }
+
+    // =========================================================================
+    // Internal — async accept (server-side)
+    // =========================================================================
+
+    async fn accept_impl(
+        mut stream: S,
+        reader_builder: FrameReaderBuilder,
+        write_cap: usize,
+    ) -> Result<Self, WsError> {
+        let mut req_reader = nexus_net::http::RequestReader::new(4096);
+        let mut tmp = [0u8; 4096];
+
+        let ws_key;
+        loop {
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                return Err(HandshakeError::MalformedHttp.into());
+            }
+            req_reader
+                .read(&tmp[..n])
+                .map_err(|_| HandshakeError::MalformedHttp)?;
+            match req_reader.next() {
+                Ok(Some(req)) => {
+                    if req.method != "GET" {
+                        return Err(HandshakeError::MalformedHttp.into());
+                    }
+                    let upgrade = req
+                        .header("Upgrade")
+                        .ok_or(HandshakeError::MissingUpgrade)?;
+                    if !upgrade.eq_ignore_ascii_case("websocket") {
+                        return Err(HandshakeError::MissingUpgrade.into());
+                    }
+                    let conn = req
+                        .header("Connection")
+                        .ok_or(HandshakeError::MissingConnection)?;
+                    if !conn
+                        .as_bytes()
+                        .windows(7)
+                        .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
+                    {
+                        return Err(HandshakeError::MissingConnection.into());
+                    }
+                    let version = req
+                        .header("Sec-WebSocket-Version")
+                        .ok_or(HandshakeError::UnsupportedVersion)?;
+                    if version != "13" {
+                        return Err(HandshakeError::UnsupportedVersion.into());
+                    }
+                    let key = req
+                        .header("Sec-WebSocket-Key")
+                        .ok_or(HandshakeError::MissingKey)?;
+                    ws_key = key.to_owned();
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => return Err(HandshakeError::MalformedHttp.into()),
+            }
+        }
+
+        let accept = nexus_net::ws::handshake::compute_accept_key(&ws_key);
+        let accept_str =
+            std::str::from_utf8(&accept).expect("base64 output is valid ASCII");
+
+        let resp_headers = [
+            ("Upgrade", "websocket"),
+            ("Connection", "Upgrade"),
+            ("Sec-WebSocket-Accept", accept_str),
+        ];
+        let resp_size =
+            nexus_net::http::response_size("Switching Protocols", &resp_headers);
+        let mut resp_buf = vec![0u8; resp_size];
+        let n = nexus_net::http::write_response(
+            101,
+            "Switching Protocols",
+            &resp_headers,
+            &mut resp_buf,
+        )
+        .map_err(|_| HandshakeError::MalformedHttp)?;
+        stream.write_all(&resp_buf[..n]).await?;
+
+        let mut reader = reader_builder.role(Role::Server).build();
+        let remainder = req_reader.remainder();
+        if !remainder.is_empty() {
+            reader
+                .read(remainder)
+                .map_err(|_| HandshakeError::MalformedHttp)?;
+        }
+
+        Ok(Self {
+            stream,
+            reader,
+            writer: FrameWriter::new(Role::Server),
+            write_buf: WriteBuf::new(write_cap, 14),
+        })
+    }
 }
 
 // =============================================================================
@@ -266,8 +372,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
 pub struct WsStreamBuilder {
     reader_builder: FrameReaderBuilder,
     write_buf_capacity: usize,
+    #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    connect_timeout: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
 }
 
 impl WsStreamBuilder {
@@ -277,8 +391,16 @@ impl WsStreamBuilder {
         Self {
             reader_builder: FrameReader::builder(),
             write_buf_capacity: 65_536,
+            #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
+            connect_timeout: None,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: None,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: None,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: None,
         }
     }
 
@@ -311,6 +433,7 @@ impl WsStreamBuilder {
     }
 
     /// Custom TLS configuration.
+    #[cfg(feature = "tls")]
     #[must_use]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
@@ -324,35 +447,90 @@ impl WsStreamBuilder {
         self
     }
 
+    /// TCP connect timeout.
+    #[must_use]
+    pub fn connect_timeout(mut self, d: std::time::Duration) -> Self {
+        self.connect_timeout = Some(d);
+        self
+    }
+
+    /// Set TCP keepalive idle time.
+    ///
+    /// Enables OS-level dead connection detection. The kernel sends
+    /// probes after `idle` of inactivity.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn tcp_keepalive(mut self, idle: std::time::Duration) -> Self {
+        self.tcp_keepalive = Some(idle);
+        self
+    }
+
+    /// Set `SO_RCVBUF` (socket receive buffer size).
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn recv_buffer_size(mut self, n: usize) -> Self {
+        self.recv_buf_size = Some(n);
+        self
+    }
+
+    /// Set `SO_SNDBUF` (socket send buffer size).
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn send_buffer_size(mut self, n: usize) -> Self {
+        self.send_buf_size = Some(n);
+        self
+    }
+
     /// Connect to a WebSocket server. Creates TCP socket, handles TLS.
     pub async fn connect(self, url: &str) -> Result<WsStream<MaybeTls>, WsError> {
         let parsed = parse_ws_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
-        let tcp = TcpStream::connect(&addr).await?;
+        let tcp = match self.connect_timeout {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, TcpStream::connect(&addr))
+                    .await
+                    .map_err(|_| WsError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "connect timeout",
+                    )))?
+                    ?
+            }
+            None => TcpStream::connect(&addr).await?,
+        };
         if self.nodelay {
             tcp.set_nodelay(true)?;
         }
+        #[cfg(feature = "socket-opts")]
+        self.apply_socket_opts(&tcp)?;
 
         let stream = if parsed.tls {
-            let tls_config = match &self.tls_config {
-                Some(c) => c.clone(),
-                None => TlsConfig::new().map_err(WsError::Tls)?,
-            };
+            #[cfg(feature = "tls")]
+            {
+                let tls_config = match &self.tls_config {
+                    Some(c) => c.clone(),
+                    None => TlsConfig::new().map_err(WsError::Tls)?,
+                };
 
-            let connector = tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
-            let server_name =
-                tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
-                    .map_err(|_| {
-                        WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
-                            parsed.host.to_string(),
-                        ))
-                    })?;
-            let tls_stream = connector
-                .connect(server_name, tcp)
-                .await
-                .map_err(|e| WsError::Tls(nexus_net::tls::TlsError::Io(e)))?;
-            MaybeTls::Tls(Box::new(tls_stream))
+                let connector =
+                    tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
+                let server_name =
+                    tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
+                        .map_err(|_| {
+                            WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
+                                parsed.host.to_string(),
+                            ))
+                        })?;
+                let tls_stream = connector
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(|e| WsError::Tls(nexus_net::tls::TlsError::Io(e)))?;
+                MaybeTls::Tls(Box::new(tls_stream))
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                return Err(WsError::TlsNotEnabled);
+            }
         } else {
             MaybeTls::Plain(tcp)
         };
@@ -367,6 +545,32 @@ impl WsStreamBuilder {
         url: &str,
     ) -> Result<WsStream<S>, WsError> {
         WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity).await
+    }
+
+    /// Accept an incoming WebSocket connection (server-side).
+    pub async fn accept<S: AsyncRead + AsyncWrite + Unpin>(
+        self,
+        stream: S,
+    ) -> Result<WsStream<S>, WsError> {
+        WsStream::accept_impl(stream, self.reader_builder, self.write_buf_capacity).await
+    }
+}
+
+#[cfg(feature = "socket-opts")]
+impl WsStreamBuilder {
+    fn apply_socket_opts(&self, tcp: &TcpStream) -> Result<(), WsError> {
+        let sock = socket2::SockRef::from(tcp);
+        if let Some(idle) = self.tcp_keepalive {
+            let keepalive = socket2::TcpKeepalive::new().with_time(idle);
+            sock.set_tcp_keepalive(&keepalive)?;
+        }
+        if let Some(size) = self.recv_buf_size {
+            sock.set_recv_buffer_size(size)?;
+        }
+        if let Some(size) = self.send_buf_size {
+            sock.set_send_buffer_size(size)?;
+        }
+        Ok(())
     }
 }
 
@@ -455,12 +659,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
             OwnedMessage::Ping(b) => {
                 this.writer
                     .encode_ping_into(b, &mut this.write_buf)
-                    .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+                    .map_err(WsError::Encode)?;
             }
             OwnedMessage::Pong(b) => {
                 this.writer
                     .encode_pong_into(b, &mut this.write_buf)
-                    .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+                    .map_err(WsError::Encode)?;
             }
             OwnedMessage::Close(cf) => {
                 if cf.code == CloseCode::NoStatus {
@@ -475,7 +679,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Sink<OwnedMessage> for WsStream<S> {
                             cf.reason.as_bytes(),
                             &mut this.write_buf,
                         )
-                        .map_err(|e| WsError::Io(std::io::Error::other(e)))?;
+                        .map_err(WsError::Encode)?;
                 }
             }
         }
@@ -725,5 +929,43 @@ mod tests {
         // Leak the waker to get 'static — fine for tests
         let waker = Box::leak(Box::new(waker));
         Context::from_waker(waker)
+    }
+
+    #[tokio::test]
+    async fn accept_server_side() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server: accept WS upgrade
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = WsStream::accept(tcp).await.unwrap();
+            // Server receives a text message
+            match ws.recv().await.unwrap().unwrap() {
+                Message::Text(s) => assert_eq!(s, "hello from client"),
+                other => panic!("expected Text, got {other:?}"),
+            }
+            // Server sends a response
+            ws.send_text("hello from server").await.unwrap();
+        });
+
+        // Client: connect via raw TCP + manual handshake
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let url = format!("ws://127.0.0.1:{}/ws", addr.port());
+        let mut ws = WsStream::connect_with(tcp, &url).await.unwrap();
+
+        // Client sends
+        ws.send_text("hello from client").await.unwrap();
+
+        // Client receives
+        match ws.recv().await.unwrap().unwrap() {
+            Message::Text(s) => assert_eq!(s, "hello from server"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        server.await.unwrap();
     }
 }
