@@ -11,7 +11,7 @@ use nexus_net::rest::RequestWriter;
 use nexus_net::tls::TlsConfig;
 use nexus_async_net::rest::AsyncHttpConnection;
 
-async fn setup() -> (RequestWriter, ResponseReader, AsyncHttpConnection<nexus_async_net::maybe_tls::MaybeTls>) {
+async fn setup() -> (RequestWriter, ResponseReader, AsyncHttpConnection<nexus_async_net::rest::MaybeTls>) {
     let tls = TlsConfig::new().unwrap();
     let mut writer = RequestWriter::new("httpbin.org").unwrap();
     let _ = writer.default_header("Accept", "application/json");
