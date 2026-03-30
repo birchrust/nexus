@@ -223,10 +223,10 @@ impl ResponseReader {
 
         let data = self.buf.data();
         if self.reason_end > data.len() || self.reason_start > self.reason_end {
-            return Err(HttpError::Malformed);
+            return Err(HttpError::Malformed("reason phrase out of bounds"));
         }
         let reason = std::str::from_utf8(&data[self.reason_start..self.reason_end])
-            .map_err(|_| HttpError::Malformed)?;
+            .map_err(|_| HttpError::Malformed("invalid UTF-8 in reason phrase"))?;
 
         Ok(Some(Response {
             status: self.status,
@@ -331,9 +331,15 @@ impl ResponseReader {
 
         match resp.parse(data) {
             Ok(httparse::Status::Complete(head_len)) => {
-                let status = resp.code.ok_or(HttpError::Malformed)?;
-                let reason = resp.reason.ok_or(HttpError::Malformed)?;
-                let version = resp.version.ok_or(HttpError::Malformed)?;
+                let status = resp
+                    .code
+                    .ok_or(HttpError::Malformed("missing status code"))?;
+                let reason = resp
+                    .reason
+                    .ok_or(HttpError::Malformed("missing reason phrase"))?;
+                let version = resp
+                    .version
+                    .ok_or(HttpError::Malformed("missing HTTP version"))?;
 
                 let data_ptr = data.as_ptr();
                 self.status = status;
@@ -379,7 +385,7 @@ impl ResponseReader {
             }
             Ok(httparse::Status::Partial) => Ok(()),
             Err(httparse::Error::TooManyHeaders) => Err(HttpError::TooManyHeaders),
-            Err(_) => Err(HttpError::Malformed),
+            Err(_) => Err(HttpError::Malformed("httparse rejected response")),
         }
     }
 }

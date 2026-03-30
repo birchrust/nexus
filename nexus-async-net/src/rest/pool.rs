@@ -65,7 +65,6 @@ impl ClientSlot {
         let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
         Ok((conn, &mut self.reader))
     }
-
 }
 
 // =============================================================================
@@ -397,8 +396,7 @@ impl ClientPoolBuilder {
 
         let pool = Pool::new(
             move || {
-                let mut writer =
-                    RequestWriter::new(&host).expect("host already validated");
+                let mut writer = RequestWriter::new(&host).expect("host already validated");
                 if !base.is_empty() {
                     writer
                         .set_base_path(&base)
@@ -642,10 +640,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn builder_validates_empty_url() {
-        let result = ClientPool::builder()
-            .connections(1)
-            .build()
-            .await;
+        let result = ClientPool::builder().connections(1).build().await;
         assert!(result.is_err());
     }
 
@@ -690,15 +685,12 @@ mod tests {
         let stream = MaybeTls::Plain(tcp);
         let conn = AsyncHttpConnection::new(stream);
 
-        let pool = Pool::new(
-            make_disconnected_slot,
-            |slot| {
-                if slot.needs_reconnect() {
-                    slot.conn = None;
-                    slot.reader.reset();
-                }
-            },
-        );
+        let pool = Pool::new(make_disconnected_slot, |slot| {
+            if slot.needs_reconnect() {
+                slot.conn = None;
+                slot.reader.reset();
+            }
+        });
         pool.put(ClientSlot {
             writer: RequestWriter::new(&addr.to_string()).unwrap(),
             reader: ResponseReader::new(4096),

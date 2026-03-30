@@ -64,6 +64,7 @@ const SAMPLES: usize = 100_000;
 const WARMUP: usize = 10_000;
 const BATCH: u64 = 64;
 
+#[allow(dead_code)]
 #[inline(always)]
 fn next_val(state: &mut u64) -> u64 {
     *state ^= *state << 13;

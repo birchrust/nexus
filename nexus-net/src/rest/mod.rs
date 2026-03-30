@@ -38,5 +38,7 @@ mod response;
 
 pub use connection::{HttpConnection, HttpConnectionBuilder, ParsedUrl, parse_base_url};
 pub use error::RestError;
-pub use request::{BodyWriter, Headers, Method, Query, Ready, Request, RequestBuilder, RequestWriter};
+pub use request::{
+    BodyWriter, Headers, Method, Query, Ready, Request, RequestBuilder, RequestWriter,
+};
 pub use response::RestResponse;

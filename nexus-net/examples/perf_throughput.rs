@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 /// Small quote tick (~90 bytes JSON).
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct QuoteTick {
     s: String,
     b: f64,
@@ -37,6 +38,7 @@ fn quote_tick_json() -> String {
 
 /// Medium order update (~250 bytes JSON).
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct OrderUpdate {
     s: String,
     bids: Vec<[f64; 2]>,
@@ -51,6 +53,7 @@ fn order_update_json() -> String {
 
 /// Large book snapshot (~1KB JSON).
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct BookSnapshot {
     s: String,
     bids: Vec<[f64; 2]>,
@@ -67,13 +70,13 @@ fn book_snapshot_json() -> String {
     for i in 0..20 {
         bids.push(format!(
             "[{:.2},{:.1}]",
-            67234.50 - i as f64 * 0.25,
-            1.0 + i as f64 * 0.3
+            (i as f64).mul_add(-0.25, 67234.50),
+            (i as f64).mul_add(0.3, 1.0)
         ));
         asks.push(format!(
             "[{:.2},{:.1}]",
-            67234.75 + i as f64 * 0.25,
-            1.0 + i as f64 * 0.2
+            (i as f64).mul_add(0.25, 67234.75),
+            (i as f64).mul_add(0.2, 1.0)
         ));
     }
     format!(
@@ -436,6 +439,7 @@ fn run_tls_loopback(
     result
 }
 
+#[allow(clippy::needless_pass_by_value)] // signature constrained by run_tls_loopback callback
 fn tls_loopback_nexus_json_client<T: for<'de> Deserialize<'de>>(
     tcp: TcpStream,
     tls_config: nexus_net::tls::TlsConfig,

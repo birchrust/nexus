@@ -430,6 +430,7 @@ pub struct WsStream<S> {
     reader: FrameReader,
     writer: FrameWriter,
     write_buf: WriteBuf,
+    poisoned: bool,
 }
 
 impl WsStream<std::net::TcpStream> {
@@ -479,6 +480,7 @@ impl<S: Read + Write> WsStream<S> {
             reader,
             writer,
             write_buf: WriteBuf::new(65_536, 14),
+            poisoned: false,
         }
     }
 
@@ -497,6 +499,7 @@ impl<S: Read + Write> WsStream<S> {
             reader,
             writer,
             write_buf,
+            poisoned: false,
         }
     }
 
@@ -513,6 +516,7 @@ impl<S: Read + Write> WsStream<S> {
             reader,
             writer,
             write_buf,
+            poisoned: false,
         }
     }
 
@@ -533,17 +537,25 @@ impl<S: Read + Write> WsStream<S> {
         }
     }
 
+    /// Whether the stream is poisoned (I/O error occurred during send).
+    ///
+    /// A poisoned stream should not be reused — the connection may be
+    /// in an indeterminate state (partial frame written).
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
     /// Send a text message.
     pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
         self.writer
             .encode_text_into(text.as_bytes(), &mut self.write_buf);
-        self.flush_write_buf()
+        self.flush_write_buf_or_poison()
     }
 
     /// Send a binary message.
     pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
         self.writer.encode_binary_into(data, &mut self.write_buf);
-        self.flush_write_buf()
+        self.flush_write_buf_or_poison()
     }
 
     /// Send a ping.
@@ -551,7 +563,7 @@ impl<S: Read + Write> WsStream<S> {
         self.writer
             .encode_ping_into(data, &mut self.write_buf)
             .map_err(WsError::Encode)?;
-        self.flush_write_buf()
+        self.flush_write_buf_or_poison()
     }
 
     /// Send a pong.
@@ -559,7 +571,7 @@ impl<S: Read + Write> WsStream<S> {
         self.writer
             .encode_pong_into(data, &mut self.write_buf)
             .map_err(WsError::Encode)?;
-        self.flush_write_buf()
+        self.flush_write_buf_or_poison()
     }
 
     /// Initiate close handshake.
@@ -567,12 +579,14 @@ impl<S: Read + Write> WsStream<S> {
         if code == CloseCode::NoStatus {
             let mut dst = [0u8; 14];
             let n = self.writer.encode_empty_close(&mut dst);
-            self.write_raw(&dst[..n])
+            self.write_raw(&dst[..n]).inspect_err(|_| {
+                self.poisoned = true;
+            })
         } else {
             self.writer
                 .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
                 .map_err(WsError::Encode)?;
-            self.flush_write_buf()
+            self.flush_write_buf_or_poison()
         }
     }
 
@@ -630,6 +644,13 @@ impl<S: Read + Write> WsStream<S> {
         { /* fall through */ }
 
         self.reader.read_from(&mut self.stream)
+    }
+
+    /// Flush write_buf, poisoning on I/O error.
+    fn flush_write_buf_or_poison(&mut self) -> Result<(), WsError> {
+        self.flush_write_buf().inspect_err(|_| {
+            self.poisoned = true;
+        })
     }
 
     /// Flush the write_buf to the socket (through TLS if present).
@@ -737,6 +758,7 @@ impl<S: Read + Write> WsStream<S> {
                     tls.process_new_packets()?;
                     plaintext_n = match tls.read_plaintext(&mut tmp) {
                         Ok(n) => n,
+                        Err(TlsError::Io(io)) => return Err(WsError::Io(io)),
                         Err(e) => return Err(WsError::Tls(e)),
                     };
                     if plaintext_n > 0 {
@@ -797,6 +819,7 @@ impl<S: Read + Write> WsStream<S> {
                         reader,
                         writer: FrameWriter::new(Role::Client),
                         write_buf: WriteBuf::new(write_cap, write_headroom),
+                        poisoned: false,
                     });
                 }
                 Ok(None) => {} // need more bytes
@@ -887,6 +910,7 @@ impl<S: Read + Write> WsStream<S> {
             reader,
             writer: FrameWriter::new(Role::Server),
             write_buf: WriteBuf::new(write_cap, write_headroom),
+            poisoned: false,
         })
     }
 }

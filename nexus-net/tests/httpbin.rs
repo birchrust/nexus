@@ -40,7 +40,7 @@ fn setup() -> (
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_get() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -54,7 +54,7 @@ fn httpbin_get() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_get_with_query_params() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -75,7 +75,7 @@ fn httpbin_get_with_query_params() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_get_with_special_chars_in_query() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -96,7 +96,7 @@ fn httpbin_get_with_special_chars_in_query() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_post_json() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -115,7 +115,7 @@ fn httpbin_post_json() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_post_with_custom_headers() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -139,7 +139,7 @@ fn httpbin_post_with_custom_headers() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_put() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -155,7 +155,7 @@ fn httpbin_put() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_delete() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -166,7 +166,7 @@ fn httpbin_delete() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_patch() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -186,7 +186,7 @@ fn httpbin_patch() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_status_404() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -196,7 +196,7 @@ fn httpbin_status_404() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_status_500() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -206,7 +206,7 @@ fn httpbin_status_500() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_status_204() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -221,7 +221,7 @@ fn httpbin_status_204() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_response_headers() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -241,7 +241,7 @@ fn httpbin_response_headers() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_keep_alive() {
     let (mut writer, mut reader, mut conn) = setup();
 
@@ -252,11 +252,7 @@ fn httpbin_keep_alive() {
     drop(resp);
 
     // Second request on same connection
-    let req = writer
-        .get("/get")
-        .query("req", "2")
-        .finish()
-        .unwrap();
+    let req = writer.get("/get").query("req", "2").finish().unwrap();
     let resp = conn.send(req, &mut reader).unwrap();
     assert_eq!(resp.status(), 200);
     assert!(resp.body_str().unwrap().contains("\"req\""));
@@ -274,7 +270,7 @@ fn httpbin_keep_alive() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_large_response() {
     let (mut writer, _, mut conn) = setup();
     let mut reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);
@@ -291,14 +287,11 @@ fn httpbin_large_response() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_raw_url() {
     let (mut writer, mut reader, mut conn) = setup();
 
-    let req = writer
-        .get_raw("/get?pre=formed&url=true")
-        .finish()
-        .unwrap();
+    let req = writer.get_raw("/get?pre=formed&url=true").finish().unwrap();
     let resp = conn.send(req, &mut reader).unwrap();
 
     assert_eq!(resp.status(), 200);
@@ -312,7 +305,7 @@ fn httpbin_raw_url() {
 // =========================================================================
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 fn httpbin_default_headers_sent() {
     let tls = TlsConfig::new().unwrap();
     let mut writer = RequestWriter::new("httpbin.org").unwrap();

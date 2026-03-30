@@ -275,11 +275,7 @@ impl FrameWriter {
     ///     serde_json::to_writer(w, &msg)
     /// })?;
     /// ```
-    pub fn encode_text_writer<F, E>(
-        &self,
-        dst: &mut crate::buf::WriteBuf,
-        f: F,
-    ) -> Result<(), E>
+    pub fn encode_text_writer<F, E>(&self, dst: &mut crate::buf::WriteBuf, f: F) -> Result<(), E>
     where
         F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
     {
@@ -287,11 +283,7 @@ impl FrameWriter {
     }
 
     /// Encode a binary frame, writing the payload via a closure.
-    pub fn encode_binary_writer<F, E>(
-        &self,
-        dst: &mut crate::buf::WriteBuf,
-        f: F,
-    ) -> Result<(), E>
+    pub fn encode_binary_writer<F, E>(&self, dst: &mut crate::buf::WriteBuf, f: F) -> Result<(), E>
     where
         F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
     {

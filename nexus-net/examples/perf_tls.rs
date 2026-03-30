@@ -170,6 +170,7 @@ fn handshake_in_memory(
 }
 
 /// Use the server connection to encrypt a WS frame into a TLS record.
+#[allow(dead_code)]
 fn encrypt_ws_frame(server: &mut rustls::ServerConnection, ws_frame: &[u8]) -> Vec<u8> {
     server.writer().write_all(ws_frame).unwrap();
     let mut out = Vec::new();

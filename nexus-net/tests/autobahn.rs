@@ -42,7 +42,7 @@ fn make_ws(path: &str) -> WsStream<TcpStream> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires autobahn fuzzingserver via podman"]
 fn autobahn_conformance() {
     let case_count = get_case_count();
     println!("Autobahn: {case_count} test cases");
@@ -72,7 +72,6 @@ fn run_case(case: u32) {
     loop {
         let msg = match ws.recv() {
             Ok(Some(msg)) => msg.into_owned(),
-            Ok(None) => break,
             Err(WsError::Protocol(ProtocolError::InvalidUtf8)) => {
                 let _ = ws.close(CloseCode::InvalidPayload, "invalid UTF-8");
                 break;
@@ -81,7 +80,7 @@ fn run_case(case: u32) {
                 let _ = ws.close(CloseCode::Protocol, "protocol error");
                 break;
             }
-            Err(_) => break,
+            Ok(None) | Err(_) => break,
         };
 
         match msg {
@@ -104,7 +103,7 @@ fn run_case(case: u32) {
                 let _ = ws.close(CloseCode::Normal, "");
                 break;
             }
-            _ => {}
+            OwnedMessage::Pong(_) => {}
         }
     }
 }

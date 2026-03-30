@@ -6,12 +6,16 @@
 //! Run with:
 //!   cargo test -p nexus-async-net --test httpbin -- --ignored --nocapture
 
+use nexus_async_net::rest::AsyncHttpConnection;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::RequestWriter;
 use nexus_net::tls::TlsConfig;
-use nexus_async_net::rest::AsyncHttpConnection;
 
-async fn setup() -> (RequestWriter, ResponseReader, AsyncHttpConnection<nexus_async_net::rest::MaybeTls>) {
+async fn setup() -> (
+    RequestWriter,
+    ResponseReader,
+    AsyncHttpConnection<nexus_async_net::rest::MaybeTls>,
+) {
     let tls = TlsConfig::new().unwrap();
     let mut writer = RequestWriter::new("httpbin.org").unwrap();
     let _ = writer.default_header("Accept", "application/json");
@@ -26,7 +30,7 @@ async fn setup() -> (RequestWriter, ResponseReader, AsyncHttpConnection<nexus_as
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_get() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
@@ -40,7 +44,7 @@ async fn async_httpbin_get() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_get_with_query() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
@@ -59,7 +63,7 @@ async fn async_httpbin_get_with_query() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_post_json() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
@@ -77,7 +81,7 @@ async fn async_httpbin_post_json() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_keep_alive() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
@@ -95,11 +99,15 @@ async fn async_httpbin_keep_alive() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_status_codes() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
-    for (path, expected) in [("/status/200", 200), ("/status/404", 404), ("/status/204", 204)] {
+    for (path, expected) in [
+        ("/status/200", 200),
+        ("/status/404", 404),
+        ("/status/204", 204),
+    ] {
         let req = writer.get(path).finish().unwrap();
         let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.status(), expected, "failed for {path}");
@@ -108,7 +116,7 @@ async fn async_httpbin_status_codes() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_response_headers() {
     let (mut writer, mut reader, mut conn) = setup().await;
 
@@ -124,7 +132,7 @@ async fn async_httpbin_response_headers() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires network access to httpbin.org"]
 async fn async_httpbin_large_response() {
     let (mut writer, _, mut conn) = setup().await;
     let mut reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);

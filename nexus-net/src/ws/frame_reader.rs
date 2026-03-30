@@ -459,7 +459,9 @@ impl FrameReader {
                 }
                 if fin {
                     self.assembling = false;
-                    let opcode = self.assembly_opcode.take()
+                    let opcode = self
+                        .assembly_opcode
+                        .take()
                         .expect("assembly_opcode must be Some when assembling is true");
                     self.utf8_valid_up_to = 0;
                     return Ok(Some(opcode));
@@ -554,7 +556,9 @@ impl FrameReader {
             }
             _ => {
                 let len = u64::from_be_bytes(
-                    header[2..10].try_into().expect("64-bit length field is 8 bytes"),
+                    header[2..10]
+                        .try_into()
+                        .expect("64-bit length field is 8 bytes"),
                 );
                 (len, 10)
             }
@@ -1265,7 +1269,8 @@ mod tests {
 
         let msg = r.next().unwrap().unwrap();
         assert!(matches!(&msg, Message::Binary(b) if b.len() == 512));
-        drop(msg);
+        // Ensure msg is consumed before next call triggers cleanup
+        let _ = msg;
 
         // Next call triggers cleanup — msg_buf should compact
         assert!(r.next().unwrap().is_none());
@@ -1592,7 +1597,7 @@ mod tests {
         let mut r = client_reader();
         let frame1 = make_frame(true, 0x1, b"first");
         let frame2 = make_frame(true, 0x1, b"second");
-        let mut all = frame1.clone();
+        let mut all = frame1;
         all.extend(&frame2);
         r.read(&all[..3]).unwrap();
         assert!(r.next().unwrap().is_none());

@@ -262,7 +262,7 @@ mod tests {
         let mut scalar = original.clone();
         apply_mask_scalar(&mut scalar, mask);
 
-        let mut dispatch = original.clone();
+        let mut dispatch = original;
         apply_mask(&mut dispatch, mask);
 
         assert_eq!(scalar, dispatch, "SIMD path must match scalar");

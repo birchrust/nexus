@@ -22,7 +22,7 @@ pub enum RestError {
     /// Connection is stale (dead socket detected after timeout).
     ConnectionStale,
     /// Connection closed before response complete.
-    ConnectionClosed,
+    ConnectionClosed(&'static str),
     /// Invalid URL.
     InvalidUrl(String),
     /// `https://` URL used without the `tls` feature enabled.
@@ -41,7 +41,10 @@ impl fmt::Display for RestError {
                 write!(f, "response body too large: {size} bytes (max: {max})")
             }
             Self::RequestTooLarge { capacity } => {
-                write!(f, "request exceeds write buffer capacity ({capacity} bytes)")
+                write!(
+                    f,
+                    "request exceeds write buffer capacity ({capacity} bytes)"
+                )
             }
             Self::CrlfInjection => {
                 write!(f, "header or query parameter contains CR/LF")
@@ -50,7 +53,7 @@ impl fmt::Display for RestError {
             Self::ReadTimeout => write!(f, "read timed out waiting for response"),
             Self::ConnectionStale => write!(f, "connection stale (dead socket)"),
             Self::TlsNotEnabled => write!(f, "https:// requires the `tls` feature"),
-            Self::ConnectionClosed => write!(f, "connection closed"),
+            Self::ConnectionClosed(ctx) => write!(f, "connection closed: {ctx}"),
             Self::InvalidUrl(u) => write!(f, "invalid URL: {u}"),
             #[cfg(feature = "tls")]
             Self::Tls(e) => write!(f, "TLS error: {e}"),

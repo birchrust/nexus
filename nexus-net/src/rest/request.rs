@@ -22,8 +22,8 @@
 
 use std::marker::PhantomData;
 
-use crate::buf::WriteBuf;
 use super::error::RestError;
+use crate::buf::WriteBuf;
 
 // ---------------------------------------------------------------------------
 // Phase markers
@@ -161,11 +161,7 @@ const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 /// Percent-encode `input` per RFC 3986 directly into the WriteBuf.
 /// Percent-encode `input` per RFC 3986 directly into the WriteBuf.
 /// Batch-scans for runs of unreserved bytes to minimize checked_append calls.
-fn append_percent_encoded(
-    buf: &mut WriteBuf,
-    input: &[u8],
-    error: &mut Option<RestError>,
-) {
+fn append_percent_encoded(buf: &mut WriteBuf, input: &[u8], error: &mut Option<RestError>) {
     if error.is_some() {
         return;
     }
@@ -208,11 +204,7 @@ fn append_percent_encoded(
 // ---------------------------------------------------------------------------
 
 /// Append to WriteBuf with deferred overflow error.
-fn checked_append(
-    buf: &mut WriteBuf,
-    src: &[u8],
-    error: &mut Option<RestError>,
-) {
+fn checked_append(buf: &mut WriteBuf, src: &[u8], error: &mut Option<RestError>) {
     if error.is_some() {
         return;
     }
@@ -231,11 +223,7 @@ fn has_crlf(s: &str) -> bool {
 }
 
 /// Write a usize as ASCII digits without allocation.
-fn write_usize_ascii(
-    buf: &mut WriteBuf,
-    n: usize,
-    error: &mut Option<RestError>,
-) {
+fn write_usize_ascii(buf: &mut WriteBuf, n: usize, error: &mut Option<RestError>) {
     if n == 0 {
         checked_append(buf, b"0", error);
         return;
@@ -262,11 +250,7 @@ fn seal_request_line(writer: &mut RequestWriter, error: &mut Option<RestError>) 
 }
 
 /// Write Content-Length + \r\n separator + body bytes.
-fn write_body(
-    buf: &mut WriteBuf,
-    body: &[u8],
-    error: &mut Option<RestError>,
-) {
+fn write_body(buf: &mut WriteBuf, body: &[u8], error: &mut Option<RestError>) {
     checked_append(buf, b"Content-Length: ", error);
     write_usize_ascii(buf, body.len(), error);
     checked_append(buf, b"\r\n\r\n", error);
@@ -274,11 +258,7 @@ fn write_body(
 }
 
 /// Write Content-Length header + \r\n separator (no body).
-fn write_body_header(
-    buf: &mut WriteBuf,
-    body_len: usize,
-    error: &mut Option<RestError>,
-) {
+fn write_body_header(buf: &mut WriteBuf, body_len: usize, error: &mut Option<RestError>) {
     checked_append(buf, b"Content-Length: ", error);
     write_usize_ascii(buf, body_len, error);
     checked_append(buf, b"\r\n\r\n", error);
@@ -291,10 +271,7 @@ const CL_PAD_LEN: usize = 20;
 const CL_SUFFIX: &[u8] = b"\r\n\r\n";
 /// Write a padded Content-Length placeholder. Returns the offset
 /// within the WriteBuf where the 10-digit number starts.
-fn write_content_length_placeholder(
-    buf: &mut WriteBuf,
-    error: &mut Option<RestError>,
-) -> usize {
+fn write_content_length_placeholder(buf: &mut WriteBuf, error: &mut Option<RestError>) -> usize {
     checked_append(buf, CL_PREFIX, error);
     let num_offset = buf.len();
     checked_append(buf, b"00000000000000000000", error); // 20 zeros
@@ -445,7 +422,8 @@ impl RequestWriter {
         }
         self.default_headers_wire.extend_from_slice(name.as_bytes());
         self.default_headers_wire.extend_from_slice(b": ");
-        self.default_headers_wire.extend_from_slice(value.as_bytes());
+        self.default_headers_wire
+            .extend_from_slice(value.as_bytes());
         self.default_headers_wire.extend_from_slice(b"\r\n");
         Ok(())
     }
@@ -555,7 +533,11 @@ impl<'a> RequestBuilder<'a, Query> {
         } else {
             None
         };
-        checked_append(&mut writer.write_buf, method.as_str().as_bytes(), &mut error);
+        checked_append(
+            &mut writer.write_buf,
+            method.as_str().as_bytes(),
+            &mut error,
+        );
         checked_append(&mut writer.write_buf, b" ", &mut error);
         if !writer.base_path.is_empty() {
             checked_append(&mut writer.write_buf, &writer.base_path, &mut error);
@@ -580,7 +562,11 @@ impl<'a> RequestBuilder<'a, Query> {
         } else {
             None
         };
-        checked_append(&mut writer.write_buf, method.as_str().as_bytes(), &mut error);
+        checked_append(
+            &mut writer.write_buf,
+            method.as_str().as_bytes(),
+            &mut error,
+        );
         checked_append(&mut writer.write_buf, b" ", &mut error);
         if !writer.base_path.is_empty() {
             checked_append(&mut writer.write_buf, &writer.base_path, &mut error);
@@ -601,7 +587,11 @@ impl<'a> RequestBuilder<'a, Query> {
         checked_append(&mut self.writer.write_buf, sep, &mut self.error);
         append_percent_encoded(&mut self.writer.write_buf, key.as_bytes(), &mut self.error);
         checked_append(&mut self.writer.write_buf, b"=", &mut self.error);
-        append_percent_encoded(&mut self.writer.write_buf, value.as_bytes(), &mut self.error);
+        append_percent_encoded(
+            &mut self.writer.write_buf,
+            value.as_bytes(),
+            &mut self.error,
+        );
         self.has_query = true;
         self
     }
@@ -618,7 +608,11 @@ impl<'a> RequestBuilder<'a, Query> {
         checked_append(&mut self.writer.write_buf, sep, &mut self.error);
         checked_append(&mut self.writer.write_buf, key.as_bytes(), &mut self.error);
         checked_append(&mut self.writer.write_buf, b"=", &mut self.error);
-        checked_append(&mut self.writer.write_buf, value.as_bytes(), &mut self.error);
+        checked_append(
+            &mut self.writer.write_buf,
+            value.as_bytes(),
+            &mut self.error,
+        );
         self.has_query = true;
         self
     }
@@ -673,10 +667,8 @@ impl<'a> RequestBuilder<'a, Query> {
                 _phase: PhantomData,
             };
         }
-        let num_offset = write_content_length_placeholder(
-            &mut self.writer.write_buf,
-            &mut self.error,
-        );
+        let num_offset =
+            write_content_length_placeholder(&mut self.writer.write_buf, &mut self.error);
         if self.error.is_some() {
             return RequestBuilder {
                 writer: self.writer,
@@ -728,7 +720,11 @@ impl<'a> RequestBuilder<'a, Query> {
     ///     })
     ///     .finish()?;
     /// ```
-    pub fn body_fixed(mut self, len: usize, f: impl FnOnce(&mut [u8])) -> RequestBuilder<'a, Ready> {
+    pub fn body_fixed(
+        mut self,
+        len: usize,
+        f: impl FnOnce(&mut [u8]),
+    ) -> RequestBuilder<'a, Ready> {
         seal_request_line(self.writer, &mut self.error);
         // Write exact Content-Length (size known upfront).
         write_body_header(&mut self.writer.write_buf, len, &mut self.error);
@@ -812,10 +808,8 @@ impl<'a> RequestBuilder<'a, Headers> {
                 _phase: PhantomData,
             };
         }
-        let num_offset = write_content_length_placeholder(
-            &mut self.writer.write_buf,
-            &mut self.error,
-        );
+        let num_offset =
+            write_content_length_placeholder(&mut self.writer.write_buf, &mut self.error);
         if self.error.is_some() {
             return RequestBuilder {
                 writer: self.writer,
@@ -854,7 +848,11 @@ impl<'a> RequestBuilder<'a, Headers> {
     /// Write a fixed-size body via closure with direct `&mut [u8]` access.
     ///
     /// Same as [`RequestBuilder<Query>::body_fixed`] — see its docs.
-    pub fn body_fixed(mut self, len: usize, f: impl FnOnce(&mut [u8])) -> RequestBuilder<'a, Ready> {
+    pub fn body_fixed(
+        mut self,
+        len: usize,
+        f: impl FnOnce(&mut [u8]),
+    ) -> RequestBuilder<'a, Ready> {
         write_body_header(&mut self.writer.write_buf, len, &mut self.error);
         if self.error.is_some() {
             return RequestBuilder {
@@ -904,7 +902,11 @@ impl<'a> RequestBuilder<'a, Headers> {
         }
         checked_append(&mut self.writer.write_buf, name.as_bytes(), &mut self.error);
         checked_append(&mut self.writer.write_buf, b": ", &mut self.error);
-        checked_append(&mut self.writer.write_buf, value.as_bytes(), &mut self.error);
+        checked_append(
+            &mut self.writer.write_buf,
+            value.as_bytes(),
+            &mut self.error,
+        );
         checked_append(&mut self.writer.write_buf, b"\r\n", &mut self.error);
     }
 }

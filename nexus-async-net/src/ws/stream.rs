@@ -327,16 +327,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         }
 
         let accept = nexus_net::ws::handshake::compute_accept_key(&ws_key);
-        let accept_str =
-            std::str::from_utf8(&accept).expect("base64 output is valid ASCII");
+        let accept_str = std::str::from_utf8(&accept).expect("base64 output is valid ASCII");
 
         let resp_headers = [
             ("Upgrade", "websocket"),
             ("Connection", "Upgrade"),
             ("Sec-WebSocket-Accept", accept_str),
         ];
-        let resp_size =
-            nexus_net::http::response_size("Switching Protocols", &resp_headers);
+        let resp_size = nexus_net::http::response_size("Switching Protocols", &resp_headers);
         let mut resp_buf = vec![0u8; resp_size];
         let n = nexus_net::http::write_response(
             101,
@@ -487,15 +485,14 @@ impl WsStreamBuilder {
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
         let tcp = match self.connect_timeout {
-            Some(timeout) => {
-                tokio::time::timeout(timeout, TcpStream::connect(&addr))
-                    .await
-                    .map_err(|_| WsError::Io(std::io::Error::new(
+            Some(timeout) => tokio::time::timeout(timeout, TcpStream::connect(&addr))
+                .await
+                .map_err(|_| {
+                    WsError::Io(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "connect timeout",
-                    )))?
-                    ?
-            }
+                    ))
+                })??,
             None => TcpStream::connect(&addr).await?,
         };
         if self.nodelay {
@@ -517,10 +514,10 @@ impl WsStreamBuilder {
                 let server_name =
                     tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
                         .map_err(|_| {
-                            WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
-                                parsed.host.to_string(),
-                            ))
-                        })?;
+                        WsError::Tls(nexus_net::tls::TlsError::InvalidHostname(
+                            parsed.host.to_string(),
+                        ))
+                    })?;
                 let tls_stream = connector
                     .connect(server_name, tcp)
                     .await
@@ -894,8 +891,6 @@ mod tests {
     // Stream trait tests
     // =====================================================================
 
-    use futures_core::Stream as _;
-
     #[tokio::test]
     async fn stream_yields_owned_messages() {
         use std::pin::pin;
@@ -933,7 +928,6 @@ mod tests {
 
     #[tokio::test]
     async fn accept_server_side() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

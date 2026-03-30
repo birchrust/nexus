@@ -121,8 +121,7 @@ fn bench_nexus() {
 
     let order_body = r#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","timeInForce":"GTC","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";
-    let signature =
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let signature = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     let mut samples = vec![0u64; SAMPLES];
 
@@ -158,7 +157,10 @@ fn bench_nexus() {
         *s = (t1 - t0) / BATCH;
     }
 
-    print_row("nexus-net  POST body(&[u8])  (build+write+parse)", &mut samples);
+    print_row(
+        "nexus-net  POST body(&[u8])  (build+write+parse)",
+        &mut samples,
+    );
 
     // body_writer variant — direct write, no intermediate copy
     let mut samples_bw = vec![0u64; SAMPLES];
@@ -199,7 +201,10 @@ fn bench_nexus() {
         *s = (t1 - t0) / BATCH;
     }
 
-    print_row("nexus-net  POST body_writer (build+write+parse)", &mut samples_bw);
+    print_row(
+        "nexus-net  POST body_writer (build+write+parse)",
+        &mut samples_bw,
+    );
 }
 
 // ============================================================================
@@ -211,8 +216,7 @@ fn bench_reqwest() {
 
     let order_body = r#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","timeInForce":"GTC","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";
-    let signature =
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let signature = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     let mut samples = vec![0u64; SAMPLES];
 
