@@ -65,7 +65,7 @@ fn bench_request_construction(c: &mut Criterion) {
         let mut writer = RequestWriter::new("api.binance.com").unwrap();
         b.iter(|| {
             let req = writer.get("/api/v3/ticker/price").finish().unwrap();
-            black_box(req.data());
+            black_box(req.as_bytes());
         });
     });
 
@@ -78,7 +78,7 @@ fn bench_request_construction(c: &mut Criterion) {
                 .query("symbol", "BTCUSDT")
                 .finish()
                 .unwrap();
-            black_box(req.data());
+            black_box(req.as_bytes());
         });
     });
 
@@ -104,7 +104,7 @@ fn bench_request_construction(c: &mut Criterion) {
                 .body(body)
                 .finish()
                 .unwrap();
-            black_box(req.data());
+            black_box(req.as_bytes());
         });
     });
 
@@ -222,7 +222,7 @@ fn bench_query_encoding(c: &mut Criterion) {
                 .query("recvWindow", "5000")
                 .finish()
                 .unwrap();
-            black_box(req.data());
+            black_box(req.as_bytes());
         });
     });
 
@@ -236,7 +236,7 @@ fn bench_query_encoding(c: &mut Criterion) {
                 .query("note", "a=b&c=d")
                 .finish()
                 .unwrap();
-            black_box(req.data());
+            black_box(req.as_bytes());
         });
     });
 

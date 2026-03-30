@@ -401,8 +401,8 @@ impl<S: Read + Write> HttpConnection<S> {
     ///
     /// For generic streams we can't peek, so we assume alive and
     /// report `ReadTimeout`. The connection is poisoned either way.
+    #[allow(clippy::unused_self)]
     fn peek_is_dead(&self) -> bool {
-        let _ = &self.stream; // silence unused warning when only `bytes` feature is on
         #[cfg(feature = "tls")]
         if self.tls.is_some() {
             // Can't peek through TLS — conservatively report stale.
