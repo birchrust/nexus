@@ -115,9 +115,9 @@ impl AsyncWrite for MockAsyncReader<'_> {
     }
 }
 
-/// Same but for tungstenite (needs Read + Write, not AsyncRead + AsyncWrite).
-/// Wrap in a tokio::io::DuplexStream? No — tokio-tungstenite can work with
-/// any AsyncRead + AsyncWrite. Let's use the same mock.
+// Same but for tungstenite (needs Read + Write, not AsyncRead + AsyncWrite).
+// Wrap in a tokio::io::DuplexStream? No — tokio-tungstenite can work with
+// any AsyncRead + AsyncWrite. Let's use the same mock.
 
 // =============================================================================
 // In-memory benchmarks
@@ -138,12 +138,12 @@ async fn bench_inmemory_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().await.unwrap() {
-            Some(Message::Binary(_d)) => {
-                black_box(&_d);
+            Some(Message::Binary(d)) => {
+                black_box(&d);
                 received += 1;
             }
-            Some(Message::Text(_s)) => {
-                black_box(&_s);
+            Some(Message::Text(s)) => {
+                black_box(&s);
                 received += 1;
             }
             Some(_) => {}
@@ -245,13 +245,13 @@ fn book_snapshot_json() -> String {
     for i in 0..20 {
         bids.push(format!(
             "[{:.2},{:.1}]",
-            67234.50 - i as f64 * 0.25,
-            1.0 + i as f64 * 0.3
+            (i as f64).mul_add(-0.25, 67234.50),
+            (i as f64).mul_add(0.3, 1.0)
         ));
         asks.push(format!(
             "[{:.2},{:.1}]",
-            67234.75 + i as f64 * 0.25,
-            1.0 + i as f64 * 0.2
+            (i as f64).mul_add(0.25, 67234.75),
+            (i as f64).mul_add(0.2, 1.0)
         ));
     }
     format!(
@@ -328,10 +328,7 @@ async fn bench_json_tungstenite<T: for<'de> Deserialize<'de>>(
     (start.elapsed(), received)
 }
 
-async fn bench_deser_only<T: for<'de> Deserialize<'de>>(
-    json: &str,
-    msg_count: u64,
-) -> (Duration, u64) {
+fn bench_deser_only<T: for<'de> Deserialize<'de>>(json: &str, msg_count: u64) -> (Duration, u64) {
     let start = Instant::now();
     for _ in 0..msg_count {
         let val: T = sonic_rs::from_str(json).unwrap();
@@ -410,8 +407,8 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().await.unwrap() {
-            Some(Message::Binary(_d)) => {
-                black_box(&_d);
+            Some(Message::Binary(d)) => {
+                black_box(&d);
                 received += 1;
             }
             Some(_) => {}
@@ -559,7 +556,7 @@ fn main() {
             report("nexus (recv+deser)", e, c);
             let (e, c) = bench_json_tungstenite::<QuoteTick>(&wire, n).await;
             report("tungstenite (next+deser)", e, c);
-            let (e, c) = bench_deser_only::<QuoteTick>(&json, n).await;
+            let (e, c) = bench_deser_only::<QuoteTick>(&json, n);
             report("sonic-rs only", e, c);
         }
 
@@ -575,7 +572,7 @@ fn main() {
             report("nexus (recv+deser)", e, c);
             let (e, c) = bench_json_tungstenite::<OrderUpdate>(&wire, n).await;
             report("tungstenite (next+deser)", e, c);
-            let (e, c) = bench_deser_only::<OrderUpdate>(&json, n).await;
+            let (e, c) = bench_deser_only::<OrderUpdate>(&json, n);
             report("sonic-rs only", e, c);
         }
 
@@ -592,7 +589,7 @@ fn main() {
             report("nexus (recv+deser)", e, c);
             let (e, c) = bench_json_tungstenite::<BookSnapshot>(&wire, snap_n).await;
             report("tungstenite (next+deser)", e, c);
-            let (e, c) = bench_deser_only::<BookSnapshot>(&json, snap_n).await;
+            let (e, c) = bench_deser_only::<BookSnapshot>(&json, snap_n);
             report("sonic-rs only", e, c);
         }
 
@@ -839,8 +836,8 @@ async fn bench_tls_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (
     let mut received = 0u64;
     while received < msg_count {
         match ws.recv().await.unwrap() {
-            Some(Message::Binary(_d)) => {
-                black_box(&_d);
+            Some(Message::Binary(d)) => {
+                black_box(&d);
                 received += 1;
             }
             Some(_) => {}
@@ -897,7 +894,7 @@ async fn bench_tls_loopback_tungstenite(
 }
 
 fn bench_tls_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{Message, WsStream};
+    use nexus_net::ws::Message;
 
     let addr = format!("127.0.0.1:{port}");
     let server_config = make_tls_server_config();

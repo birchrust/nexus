@@ -355,7 +355,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "headroom")]
     fn headroom_ge_capacity_panics() {
-        WriteBuf::new(10, 10);
+        let _ = WriteBuf::new(10, 10);
     }
 
     #[test]

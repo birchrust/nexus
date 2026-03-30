@@ -30,7 +30,7 @@ fn connect_echo(host: &str, port: u16, url: &str) -> WsStream<TcpStream> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires network access to ws.postman-echo.com"]
 fn postman_echo_text() {
     let mut ws = connect_echo("ws.postman-echo.com", 443, "wss://ws.postman-echo.com/raw");
 

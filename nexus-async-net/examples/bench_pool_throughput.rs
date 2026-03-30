@@ -22,9 +22,8 @@ const RESPONSE: &[u8] =
 
 async fn run_server(listener: TcpListener) {
     loop {
-        let (mut tcp, _) = match listener.accept().await {
-            Ok(c) => c,
-            Err(_) => break,
+        let Ok((mut tcp, _)) = listener.accept().await else {
+            break;
         };
         tcp.set_nodelay(true).unwrap();
         tokio::task::spawn_local(async move {
@@ -77,6 +76,7 @@ async fn bench_single_connection(addr: std::net::SocketAddr, iterations: u64) {
     );
 }
 
+#[allow(clippy::future_not_send)] // intentionally uses non-Send pool + LocalSet
 async fn bench_pool(addr: std::net::SocketAddr, pool_size: usize, iterations: u64) {
     // Build pool manually with loopback connections.
     let pool: Pool<ClientSlot> = Pool::new(
@@ -138,6 +138,7 @@ async fn bench_pool(addr: std::net::SocketAddr, pool_size: usize, iterations: u6
     );
 }
 
+#[allow(clippy::future_not_send)] // intentionally uses Rc + LocalSet
 async fn bench_pool_concurrent(
     addr: std::net::SocketAddr,
     pool_size: usize,

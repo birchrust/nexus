@@ -2,7 +2,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpError {
     /// Request or response head is malformed.
-    Malformed,
+    Malformed(&'static str),
     /// Too many headers (exceeds configured limit).
     TooManyHeaders,
     /// Head section exceeds size limit.
@@ -18,7 +18,7 @@ pub enum HttpError {
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Malformed => write!(f, "malformed HTTP message"),
+            Self::Malformed(ctx) => write!(f, "malformed HTTP: {ctx}"),
             Self::TooManyHeaders => write!(f, "too many HTTP headers"),
             Self::HeadTooLarge { max } => write!(f, "HTTP head exceeds {max} bytes"),
             Self::BufferFull { needed, available } => {

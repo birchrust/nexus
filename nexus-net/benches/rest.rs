@@ -187,7 +187,9 @@ fn bench_throughput(c: &mut Criterion) {
         group.throughput(Throughput::Elements(1));
         group.bench_with_input(BenchmarkId::new("POST", name), &body_size, |b, &size| {
             let mut writer = RequestWriter::new("host").unwrap();
-            writer.default_header("Content-Type", "application/json").unwrap();
+            writer
+                .default_header("Content-Type", "application/json")
+                .unwrap();
             let mut reader = ResponseReader::new(4096);
             let mut conn = HttpConnection::new(MockStream::new(CANNED_RESPONSE));
 

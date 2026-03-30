@@ -12,7 +12,8 @@ use std::time::Instant;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{HttpConnection, RequestWriter};
 
-const CANNED_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nX-RateLimit-Remaining: 42\r\n\r\n{\"orderId\":123}";
+const CANNED_RESPONSE: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nX-RateLimit-Remaining: 42\r\n\r\n{\"orderId\":123}";
 
 struct MockStream {
     response: Cursor<&'static [u8]>,

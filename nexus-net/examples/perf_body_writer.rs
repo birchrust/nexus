@@ -164,7 +164,7 @@ fn main() {
         conn.stream_mut().reset();
         let req = writer
             .post("/order")
-            .body_writer(|w| serde_json::to_writer(w, &ORDER).map_err(|e| io::Error::other(e)))
+            .body_writer(|w| serde_json::to_writer(w, &ORDER).map_err(io::Error::other))
             .finish()
             .unwrap();
         let _ = conn.send(req, &mut reader);
@@ -176,7 +176,7 @@ fn main() {
             conn.stream_mut().reset();
             let req = writer
                 .post("/order")
-                .body_writer(|w| serde_json::to_writer(w, &ORDER).map_err(|e| io::Error::other(e)))
+                .body_writer(|w| serde_json::to_writer(w, &ORDER).map_err(io::Error::other))
                 .finish()
                 .unwrap();
             let resp = conn.send(req, &mut reader).unwrap();
@@ -210,7 +210,10 @@ fn main() {
         *s = (t1 - t0) / BATCH;
     }
 
-    print_row("pre-serialized body(&[u8]) (baseline, no serde)", &mut samples);
+    print_row(
+        "pre-serialized body(&[u8]) (baseline, no serde)",
+        &mut samples,
+    );
 
     // --- Path 4: manual write into body_writer (no serde overhead) ---
     let mut samples = vec![0u64; SAMPLES];
@@ -253,7 +256,10 @@ fn main() {
         *s = (t1 - t0) / BATCH;
     }
 
-    print_row("write!() → body_writer (manual format, no serde)", &mut samples);
+    print_row(
+        "write!() → body_writer (manual format, no serde)",
+        &mut samples,
+    );
 
     println!();
     println!("  At 3GHz: 100 cycles ≈ 33ns, 1000 cycles ≈ 333ns");

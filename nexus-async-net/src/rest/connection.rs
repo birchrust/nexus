@@ -100,15 +100,14 @@ impl AsyncHttpConnectionBuilder {
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
         let tcp = match self.connect_timeout {
-            Some(timeout) => {
-                tokio::time::timeout(timeout, TcpStream::connect(&addr))
-                    .await
-                    .map_err(|_| RestError::Io(std::io::Error::new(
+            Some(timeout) => tokio::time::timeout(timeout, TcpStream::connect(&addr))
+                .await
+                .map_err(|_| {
+                    RestError::Io(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "connect timeout",
-                    )))?
-                    ?
-            }
+                    ))
+                })??,
             None => TcpStream::connect(&addr).await?,
         };
         if self.nodelay {
@@ -128,14 +127,14 @@ impl AsyncHttpConnectionBuilder {
                 let connector =
                     tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
                 let server_name =
-                    tokio_rustls::rustls::pki_types::ServerName::try_from(
-                        parsed.host.to_owned(),
-                    )
-                    .map_err(|_| {
+                    tokio_rustls::rustls::pki_types::ServerName::try_from(parsed.host.to_owned())
+                        .map_err(|_| {
                         RestError::InvalidUrl(format!("invalid hostname: {}", parsed.host))
                     })?;
-                let tls_stream =
-                    connector.connect(server_name, tcp).await.map_err(RestError::Io)?;
+                let tls_stream = connector
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(RestError::Io)?;
                 MaybeTls::Tls(Box::new(tls_stream))
             }
             #[cfg(not(feature = "tls"))]
@@ -263,12 +262,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             return Err(RestError::Io(e));
         }
 
-        // Read response — poison on any error (matches sync handle_send_error)
+        // Read response — poison on any error, diagnose timeouts.
         match self.read_response(reader).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 self.poisoned = true;
-                Err(e)
+                Err(self.diagnose_error(e))
             }
         }
     }
@@ -276,6 +275,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
     /// Whether the connection is poisoned.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+
+    /// Cold path: diagnose send failure. Matches sync `handle_send_error`.
+    ///
+    /// On timeout, report `ConnectionStale` — for async, we can't peek
+    /// the socket, but a timeout during response read on a keep-alive
+    /// connection almost always means the server closed it.
+    #[cold]
+    #[allow(clippy::unused_self)] // Matches sync API; may use stream for peek in future.
+    fn diagnose_error(&self, err: RestError) -> RestError {
+        if let RestError::Io(ref io_err) = err {
+            if io_err.kind() == std::io::ErrorKind::TimedOut
+                || io_err.kind() == std::io::ErrorKind::WouldBlock
+            {
+                return RestError::ConnectionStale;
+            }
+        }
+        err
     }
 
     /// Access the underlying stream.
@@ -312,7 +329,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             match self.stream.read(&mut tmp).await {
                 Ok(0) => {
                     self.poisoned = true;
-                    return Err(RestError::ConnectionClosed);
+                    return Err(RestError::ConnectionClosed(
+                        "server closed before response headers",
+                    ));
                 }
                 Ok(n) => {
                     if let Err(e) = reader.read(&tmp[..n]) {
@@ -343,12 +362,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
 
         let content_length = match reader.content_length() {
             Some(Ok(n)) => n,
-            Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
+            Some(Err(())) => {
+                return Err(RestError::Http(HttpError::Malformed(
+                    "invalid Content-Length header",
+                )));
+            }
             None => {
                 // No Content-Length and not chunked — can't determine body
                 // boundaries for keep-alive. Error instead of silent empty body.
                 self.poisoned = true;
-                return Err(RestError::Http(HttpError::Malformed));
+                return Err(RestError::Http(HttpError::Malformed(
+                    "no Content-Length and not chunked",
+                )));
             }
         };
 
@@ -366,7 +391,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             match self.stream.read(&mut tmp).await {
                 Ok(0) => {
                     self.poisoned = true;
-                    return Err(RestError::ConnectionClosed);
+                    return Err(RestError::ConnectionClosed(
+                        "server closed during body read",
+                    ));
                 }
                 Ok(n) => {
                     if let Err(e) = reader.read(&tmp[..n]) {
@@ -385,10 +412,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
         Ok(RestResponse::new(status, content_length, reader))
     }
 
-    async fn read_chunked_body(
-        &mut self,
-        reader: &ResponseReader,
-    ) -> Result<Vec<u8>, RestError> {
+    async fn read_chunked_body(&mut self, reader: &ResponseReader) -> Result<Vec<u8>, RestError> {
         use nexus_net::http::ChunkedDecoder;
 
         let max_body = reader.max_body_size_limit();
@@ -404,7 +428,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             while pos < remainder.len() && !decoder.is_done() {
                 let (consumed, produced) = decoder
                     .decode(&remainder[pos..], &mut decode_buf)
-                    .map_err(|_| RestError::Http(HttpError::Malformed))?;
+                    .map_err(RestError::Http)?;
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
@@ -426,7 +450,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             let n = match self.stream.read(&mut wire_buf).await {
                 Ok(0) => {
                     self.poisoned = true;
-                    return Err(RestError::ConnectionClosed);
+                    return Err(RestError::ConnectionClosed(
+                        "server closed during chunked body",
+                    ));
                 }
                 Ok(n) => n,
                 Err(e) => {
@@ -439,7 +465,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             while pos < n && !decoder.is_done() {
                 let (consumed, produced) = decoder
                     .decode(&wire_buf[pos..n], &mut decode_buf)
-                    .map_err(|_| RestError::Http(HttpError::Malformed))?;
+                    .map_err(RestError::Http)?;
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
@@ -515,10 +541,7 @@ mod tests {
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
-        fn poll_shutdown(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -598,7 +621,7 @@ mod tests {
 
         let req = writer.get("/test").finish().unwrap();
         let result = conn.send(req, &mut reader).await;
-        assert!(matches!(result, Err(RestError::ConnectionClosed)));
+        assert!(matches!(result, Err(RestError::ConnectionClosed(_))));
 
         let req = writer.get("/test2").finish().unwrap();
         let result = conn.send(req, &mut reader).await;
@@ -609,7 +632,8 @@ mod tests {
     async fn async_chunked_decoded() {
         use nexus_net::rest::RequestWriter;
 
-        let resp_bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        let resp_bytes =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         let mock = MockAsyncStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);

@@ -159,10 +159,10 @@ impl RequestReader {
         }
 
         let data = self.buf.data();
-        let method =
-            std::str::from_utf8(&data[..self.method_end]).map_err(|_| HttpError::Malformed)?;
+        let method = std::str::from_utf8(&data[..self.method_end])
+            .map_err(|_| HttpError::Malformed("invalid UTF-8 in method"))?;
         let path = std::str::from_utf8(&data[self.path_start..self.path_end])
-            .map_err(|_| HttpError::Malformed)?;
+            .map_err(|_| HttpError::Malformed("invalid UTF-8 in path"))?;
 
         Ok(Some(Request {
             method,
@@ -213,9 +213,15 @@ impl RequestReader {
 
         match req.parse(data) {
             Ok(httparse::Status::Complete(head_len)) => {
-                let method = req.method.ok_or(HttpError::Malformed)?;
-                let path = req.path.ok_or(HttpError::Malformed)?;
-                let version = req.version.ok_or(HttpError::Malformed)?;
+                let method = req
+                    .method
+                    .ok_or(HttpError::Malformed("missing request method"))?;
+                let path = req
+                    .path
+                    .ok_or(HttpError::Malformed("missing request path"))?;
+                let version = req
+                    .version
+                    .ok_or(HttpError::Malformed("missing HTTP version"))?;
 
                 let data_ptr = data.as_ptr();
                 self.method_end = method.len();
@@ -240,7 +246,7 @@ impl RequestReader {
             }
             Ok(httparse::Status::Partial) => Ok(()),
             Err(httparse::Error::TooManyHeaders) => Err(HttpError::TooManyHeaders),
-            Err(_) => Err(HttpError::Malformed),
+            Err(_) => Err(HttpError::Malformed("httparse rejected request")),
         }
     }
 }
@@ -303,7 +309,7 @@ mod tests {
     fn malformed_request() {
         let mut r = RequestReader::new(4096);
         r.read(b"NOT_HTTP\r\n\r\n").unwrap();
-        assert!(matches!(r.next(), Err(HttpError::Malformed)));
+        assert!(matches!(r.next(), Err(HttpError::Malformed(_))));
     }
 
     #[test]
@@ -346,7 +352,8 @@ mod tests {
         r.read(b"GET /a HTTP/1.1\r\nHost: a\r\n\r\n").unwrap();
         let req = r.next().unwrap().unwrap();
         assert_eq!(req.path, "/a");
-        drop(req);
+        // Ensure req is consumed before reset
+        let _ = req;
 
         r.reset();
         r.read(b"GET /b HTTP/1.1\r\nHost: b\r\n\r\n").unwrap();

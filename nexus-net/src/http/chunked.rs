@@ -72,11 +72,7 @@ impl ChunkedDecoder {
     ///
     /// Call repeatedly as more wire bytes arrive. When `is_done()` returns
     /// true, the body is complete.
-    pub fn decode(
-        &mut self,
-        input: &[u8],
-        output: &mut [u8],
-    ) -> Result<(usize, usize), HttpError> {
+    pub fn decode(&mut self, input: &[u8], output: &mut [u8]) -> Result<(usize, usize), HttpError> {
         let mut in_pos = 0;
         let mut out_pos = 0;
 
@@ -90,10 +86,10 @@ impl ChunkedDecoder {
                     if b == b'\n' {
                         // Parse the hex size (ignore optional chunk extensions after ';')
                         let size_str = std::str::from_utf8(&self.size_buf[..self.size_len])
-                            .map_err(|_| HttpError::Malformed)?;
+                            .map_err(|_| HttpError::Malformed("invalid UTF-8 in chunk size"))?;
                         let hex_part = size_str.split(';').next().unwrap_or("").trim();
                         let chunk_size = usize::from_str_radix(hex_part, 16)
-                            .map_err(|_| HttpError::Malformed)?;
+                            .map_err(|_| HttpError::Malformed("invalid hex in chunk size"))?;
 
                         self.size_len = 0;
 
@@ -110,7 +106,7 @@ impl ChunkedDecoder {
                         // Skip CR before LF.
                     } else {
                         if self.size_len >= self.size_buf.len() {
-                            return Err(HttpError::Malformed);
+                            return Err(HttpError::Malformed("chunk size line too long"));
                         }
                         self.size_buf[self.size_len] = b;
                         self.size_len += 1;
@@ -233,7 +229,7 @@ mod tests {
         let mut output = [0u8; 64];
         let mut total_out = 0;
 
-        for &b in input.iter() {
+        for &b in input {
             let (_, produced) = dec.decode(&[b], &mut output[total_out..]).unwrap();
             total_out += produced;
         }
@@ -296,8 +292,9 @@ mod tests {
         assert_eq!(&output[..4], b"4567");
 
         // Third call
-        let (consumed3, produced3) =
-            dec.decode(&input[consumed1 + consumed2..], &mut output).unwrap();
+        let (_consumed3, produced3) = dec
+            .decode(&input[consumed1 + consumed2..], &mut output)
+            .unwrap();
         assert_eq!(produced3, 2);
         assert_eq!(&output[..2], b"89");
         assert!(dec.is_done());

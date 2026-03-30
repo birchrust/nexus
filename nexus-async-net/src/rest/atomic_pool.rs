@@ -82,9 +82,7 @@ impl AtomicClientPool {
     /// Try to acquire a slot. Returns `None` if all slots are in use.
     ///
     /// If the acquired slot has a dead connection, reconnects inline.
-    pub async fn try_acquire(
-        &self,
-    ) -> Result<Option<Pooled<AtomicClientSlot>>, RestError> {
+    pub async fn try_acquire(&self) -> Result<Option<Pooled<AtomicClientSlot>>, RestError> {
         match self.pool.try_acquire() {
             Some(mut slot) => {
                 if slot.needs_reconnect() {
@@ -309,8 +307,7 @@ impl AtomicClientPoolBuilder {
             self.connections,
             // Init — creates disconnected slots.
             move || {
-                let mut writer =
-                    RequestWriter::new(&host).expect("host already validated");
+                let mut writer = RequestWriter::new(&host).expect("host already validated");
                 if !base.is_empty() {
                     writer
                         .set_base_path(&base)
@@ -340,7 +337,8 @@ impl AtomicClientPoolBuilder {
         // Replace disconnected slots with connected ones.
         for _ in 0..self.connections {
             {
-                let mut slot = pool.try_acquire()
+                let mut slot = pool
+                    .try_acquire()
                     .expect("pool should have slots during initial setup");
                 let mut builder = AsyncHttpConnectionBuilder::new();
                 #[cfg(feature = "tls")]
@@ -484,10 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_builder_validates_empty_url() {
-        let result = AtomicClientPool::builder()
-            .connections(1)
-            .build()
-            .await;
+        let result = AtomicClientPool::builder().connections(1).build().await;
         assert!(result.is_err());
     }
 

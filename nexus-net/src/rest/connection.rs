@@ -8,10 +8,10 @@
 use std::io::{self, Read, Write};
 use std::time::Duration;
 
-use crate::http::{HttpError, ResponseReader};
 use super::error::RestError;
 use super::request::{Request, RequestWriter};
 use super::response::RestResponse;
+use crate::http::{HttpError, ResponseReader};
 
 #[cfg(feature = "tls")]
 use crate::tls::{TlsCodec, TlsConfig, TlsError};
@@ -324,10 +324,7 @@ impl HttpConnection<std::net::TcpStream> {
     /// Enables OS-level dead connection detection. The kernel sends
     /// probes after `idle` of inactivity.
     #[cfg(feature = "socket-opts")]
-    pub fn set_tcp_keepalive(
-        &self,
-        idle: std::time::Duration,
-    ) -> Result<(), RestError> {
+    pub fn set_tcp_keepalive(&self, idle: std::time::Duration) -> Result<(), RestError> {
         let sock = socket2::SockRef::from(&self.stream);
         let keepalive = socket2::TcpKeepalive::new().with_time(idle);
         sock.set_tcp_keepalive(&keepalive).map_err(RestError::Io)
@@ -500,7 +497,9 @@ impl<S: Read + Write> HttpConnection<S> {
             match self.read_into_reader(reader) {
                 Ok(0) => {
                     self.poisoned = true;
-                    return Err(RestError::ConnectionClosed);
+                    return Err(RestError::ConnectionClosed(
+                        "server closed before response headers",
+                    ));
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -534,12 +533,18 @@ impl<S: Read + Write> HttpConnection<S> {
 
         let content_length = match reader.content_length() {
             Some(Ok(n)) => n,
-            Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
+            Some(Err(())) => {
+                return Err(RestError::Http(HttpError::Malformed(
+                    "invalid Content-Length header",
+                )));
+            }
             None => {
                 // No Content-Length and not chunked — can't determine body
                 // boundaries for keep-alive. Error instead of silent empty body.
                 self.poisoned = true;
-                return Err(RestError::Http(HttpError::Malformed));
+                return Err(RestError::Http(HttpError::Malformed(
+                    "no Content-Length and not chunked",
+                )));
             }
         };
 
@@ -557,7 +562,9 @@ impl<S: Read + Write> HttpConnection<S> {
             match self.read_into_reader(reader) {
                 Ok(0) => {
                     self.poisoned = true;
-                    return Err(RestError::ConnectionClosed);
+                    return Err(RestError::ConnectionClosed(
+                        "server closed during body read",
+                    ));
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -575,10 +582,7 @@ impl<S: Read + Write> HttpConnection<S> {
     ///
     /// One allocation: the Vec for the decoded body. The chunk framing
     /// is stripped and only payload bytes are accumulated.
-    fn read_chunked_body(
-        &mut self,
-        reader: &ResponseReader,
-    ) -> Result<Vec<u8>, RestError> {
+    fn read_chunked_body(&mut self, reader: &ResponseReader) -> Result<Vec<u8>, RestError> {
         use crate::http::ChunkedDecoder;
 
         let max_body = reader.max_body_size_limit();
@@ -594,7 +598,7 @@ impl<S: Read + Write> HttpConnection<S> {
             while pos < remainder.len() && !decoder.is_done() {
                 let (consumed, produced) = decoder
                     .decode(&remainder[pos..], &mut decode_buf)
-                    .map_err(|_| RestError::Http(HttpError::Malformed))?;
+                    .map_err(RestError::Http)?;
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
@@ -617,14 +621,16 @@ impl<S: Read + Write> HttpConnection<S> {
             let n = self.read_wire_bytes(&mut wire_buf)?;
             if n == 0 {
                 self.poisoned = true;
-                return Err(RestError::ConnectionClosed);
+                return Err(RestError::ConnectionClosed(
+                    "server closed during chunked body",
+                ));
             }
 
             let mut pos = 0;
             while pos < n && !decoder.is_done() {
                 let (consumed, produced) = decoder
                     .decode(&wire_buf[pos..n], &mut decode_buf)
-                    .map_err(|_| RestError::Http(HttpError::Malformed))?;
+                    .map_err(RestError::Http)?;
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
@@ -730,6 +736,7 @@ mod tests {
     }
 
     /// Helper: build request + send via mock.
+    #[allow(dead_code)]
     fn send_get<'r>(
         writer: &mut RequestWriter,
         conn: &mut HttpConnection<MockStream>,
@@ -883,10 +890,11 @@ mod tests {
 
             let req = writer.request(method, "/test").finish().unwrap();
             let _ = conn.send(req, &mut reader).unwrap();
-            assert!(conn
-                .stream()
-                .written_str()
-                .starts_with(&format!("{expected} /test HTTP/1.1\r\n")));
+            assert!(
+                conn.stream()
+                    .written_str()
+                    .starts_with(&format!("{expected} /test HTTP/1.1\r\n"))
+            );
         }
     }
 
@@ -1143,7 +1151,7 @@ mod tests {
         let result = conn.send(req, &mut reader);
         assert!(matches!(
             result,
-            Err(RestError::BodyTooLarge { size: 999999, .. })
+            Err(RestError::BodyTooLarge { size: 999_999, .. })
         ));
     }
 
@@ -1171,7 +1179,7 @@ mod tests {
 
         let req = writer.get("/test").finish().unwrap();
         let result = conn.send(req, &mut reader);
-        assert!(matches!(result, Err(RestError::ConnectionClosed)));
+        assert!(matches!(result, Err(RestError::ConnectionClosed(_))));
 
         let req = writer.get("/test2").finish().unwrap();
         let result = conn.send(req, &mut reader);
@@ -1225,7 +1233,11 @@ mod tests {
             let mut buf = [0u8; 4096];
 
             let n = tcp.read(&mut buf).unwrap();
-            assert!(std::str::from_utf8(&buf[..n]).unwrap().contains("GET /first"));
+            assert!(
+                std::str::from_utf8(&buf[..n])
+                    .unwrap()
+                    .contains("GET /first")
+            );
             let body1 = r#"{"id":1}"#;
             let resp1 = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
@@ -1235,7 +1247,11 @@ mod tests {
             tcp.write_all(resp1.as_bytes()).unwrap();
 
             let n = tcp.read(&mut buf).unwrap();
-            assert!(std::str::from_utf8(&buf[..n]).unwrap().contains("GET /second"));
+            assert!(
+                std::str::from_utf8(&buf[..n])
+                    .unwrap()
+                    .contains("GET /second")
+            );
             let body2 = r#"{"id":2}"#;
             let resp2 = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",

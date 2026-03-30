@@ -64,6 +64,7 @@ fn print_header() {
 
 const RESPONSE_BODY: &[u8] = b"{\"orderId\":12345,\"status\":\"FILLED\"}";
 
+#[allow(clippy::needless_pass_by_value)] // moved into thread
 fn server_thread(listener: TcpListener) {
     let (mut tcp, _) = listener.accept().unwrap();
     tcp.set_nodelay(true).unwrap();
@@ -79,9 +80,8 @@ fn server_thread(listener: TcpListener) {
     loop {
         // Read until we see \r\n\r\n (end of request)
         let n = match tcp.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => n,
-            Err(_) => break,
         };
 
         // Simple: assume full request arrived in one read.
@@ -103,6 +103,9 @@ fn bench_nexus(addr: std::net::SocketAddr) {
     use nexus_net::http::ResponseReader;
     use nexus_net::rest::{HttpConnection, RequestWriter};
 
+    const WARMUP: usize = 5_000;
+    const SAMPLES: usize = 100_000;
+
     let tcp = TcpStream::connect(addr).unwrap();
     tcp.set_nodelay(true).unwrap();
 
@@ -122,9 +125,6 @@ fn bench_nexus(addr: std::net::SocketAddr) {
     let order_body = br#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";
     let signature = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
-    const WARMUP: usize = 5_000;
-    const SAMPLES: usize = 100_000;
 
     // Warmup
     for _ in 0..WARMUP {
@@ -185,6 +185,9 @@ fn bench_nexus(addr: std::net::SocketAddr) {
 // ============================================================================
 
 fn bench_reqwest(addr: std::net::SocketAddr) {
+    const WARMUP: usize = 1_000;
+    const SAMPLES: usize = 50_000;
+
     let client = reqwest::blocking::ClientBuilder::new()
         .no_proxy()
         .tcp_nodelay(true)
@@ -193,12 +196,10 @@ fn bench_reqwest(addr: std::net::SocketAddr) {
         .unwrap();
 
     let url = format!("http://{addr}/api/v3/order");
-    let order_body = r#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67234.50"}"#;
+    let order_body =
+        r#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";
     let signature = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
-    const WARMUP: usize = 1_000;
-    const SAMPLES: usize = 50_000;
 
     // Warmup
     for _ in 0..WARMUP {
