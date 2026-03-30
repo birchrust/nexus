@@ -31,18 +31,20 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 │            (Trading systems, event loops)               │
 └──────────────────────┬──────────────────────────────────┘
                        │
-         ┌─────────────┴────────────────┐
-         ▼                              ▼
-┌──────────────────┐          ┌──────────────────┐
-│    nexus-rt      │          │ nexus-stats      │
-│  (runtime)       │          │ nexus-rate       │
-│                  │          │ (monitoring &    │
-│  World, Handlers │          │  flow control)   │
-│  Pipelines, DAGs │          │                  │
-│  Drivers, Clock  │          │                  │
-└────────┬─────────┘          └──────────────────┘
-         │
-         ▼
+    ┌──────────────────┼──────────────────┐
+    ▼                  ▼                  ▼
+┌────────────┐  ┌────────────────┐  ┌──────────────────┐
+│  nexus-rt  │  │ nexus-async-net│  │ nexus-stats      │
+│  (runtime) │  │ nexus-net      │  │ nexus-rate       │
+│            │  │ (networking)   │  │ (monitoring &    │
+│  World     │  │                │  │  flow control)   │
+│  Handlers  │  │  WebSocket     │  │                  │
+│  Pipelines │  │  REST HTTP/1.1 │  │                  │
+│  Drivers   │  │  TLS, pools    │  │                  │
+└─────┬──────┘  └───────┬────────┘  └──────────────────┘
+      │                 │
+      └────────┬────────┘
+               ▼
 ┌─────────────────────────────────────────────────────────┐
 │                     Primitives                          │
 │                                                         │
@@ -68,6 +70,13 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 |-------|-------------|
 | [**nexus-stats**](./nexus-stats) | 45 streaming statistics algorithms. EMA, CUSUM, Welford, Kalman, KAMA, change detection, anomaly filtering, and more. O(1) per update, fixed memory, `no_std`. [Full docs](./nexus-stats/docs/INDEX.md). |
 | [**nexus-rate**](./nexus-rate) | Rate limiting. GCRA, token bucket, sliding window counter. Single-threaded and thread-safe variants. Weighted requests. ~2-4 cycle hot path. |
+
+### Networking
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-net**](./nexus-net) | Sans-IO WebSocket (RFC 6455) and HTTP/1.1 REST primitives. Zero-copy, SIMD-accelerated. 7-14x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
+| [**nexus-async-net**](./nexus-async-net) | Async adapters for nexus-net. Tokio-compatible. WebSocket `WsStream<S>`, HTTP `AsyncHttpConnection<S>`, and `ClientPool`/`AtomicClientPool` for connection reuse with LIFO acquire, inline reconnect, and RAII guards. 3.5x faster than tokio-tungstenite. |
 
 ### Communication & Notification
 

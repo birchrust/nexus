@@ -77,13 +77,13 @@ raw `libc::read`, kernel bypass.
 ```toml
 [dependencies]
 # WebSocket + HTTP, no TLS
-nexus-net = "0.1"
+nexus-net = "0.2"
 
 # With TLS (rustls + aws-lc-rs)
-nexus-net = { version = "0.1", features = ["tls"] }
+nexus-net = { version = "0.2", features = ["tls"] }
 
-# Everything (TLS + socket options)
-nexus-net = { version = "0.1", features = ["full"] }
+# Everything (TLS + socket options + bytes)
+nexus-net = { version = "0.2", features = ["full"] }
 ```
 
 ### WebSocket Client (ws://)
