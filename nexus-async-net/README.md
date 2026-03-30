@@ -287,8 +287,11 @@ let mut ws = WsStreamBuilder::new()
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `tls` | **Yes** | TLS support via tokio-rustls + aws-lc-rs. `wss://` and `https://` URLs auto-detected. |
+| `socket-opts` | No | Socket options (`SO_RCVBUF`, `SO_SNDBUF`, TCP keepalive) via socket2 on all builders. |
+| `bytes` | No | Pass-through — enables `bytes::Bytes` conversion on nexus-net types. |
+| `full` | No | All features enabled. |
 
-Disable with `default-features = false` for TLS-free builds.
+Disable TLS with `default-features = false` for TLS-free builds.
 
 - **Zero-copy WebSocket** — `Message<'_>` borrows from the internal buffer via `recv()`
 - **Stream/Sink** — `OwnedMessage` for `StreamExt`/`SinkExt` ergonomics

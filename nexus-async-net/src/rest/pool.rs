@@ -107,6 +107,12 @@ struct ReconnectConfig {
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
 }
 
 #[allow(clippy::future_not_send)] // Intentionally !Send — single-threaded pool for LocalSet.
@@ -156,6 +162,18 @@ impl ClientPool {
         if self.reconnect_config.nodelay {
             builder = builder.disable_nagle();
         }
+        #[cfg(feature = "socket-opts")]
+        {
+            if let Some(idle) = self.reconnect_config.tcp_keepalive {
+                builder = builder.tcp_keepalive(idle);
+            }
+            if let Some(size) = self.reconnect_config.recv_buf_size {
+                builder = builder.recv_buffer_size(size);
+            }
+            if let Some(size) = self.reconnect_config.send_buf_size {
+                builder = builder.send_buffer_size(size);
+            }
+        }
         builder.connect(&self.reconnect_config.url).await
     }
 }
@@ -173,6 +191,12 @@ pub struct ClientPoolBuilder {
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
     write_buffer_capacity: usize,
     response_buffer_capacity: usize,
     max_body_size: usize,
@@ -189,6 +213,12 @@ impl ClientPoolBuilder {
             #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: None,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: None,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: None,
             write_buffer_capacity: 32 * 1024,
             response_buffer_capacity: 32 * 1024,
             max_body_size: 0,
@@ -243,6 +273,30 @@ impl ClientPoolBuilder {
         self
     }
 
+    /// Set TCP keepalive idle time on each connection.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn tcp_keepalive(mut self, idle: std::time::Duration) -> Self {
+        self.tcp_keepalive = Some(idle);
+        self
+    }
+
+    /// Set `SO_RCVBUF` on each connection.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn recv_buffer_size(mut self, n: usize) -> Self {
+        self.recv_buf_size = Some(n);
+        self
+    }
+
+    /// Set `SO_SNDBUF` on each connection.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn send_buffer_size(mut self, n: usize) -> Self {
+        self.send_buf_size = Some(n);
+        self
+    }
+
     /// Write buffer capacity per slot. Default: 32KB.
     #[must_use]
     pub fn write_buffer_capacity(mut self, n: usize) -> Self {
@@ -281,6 +335,12 @@ impl ClientPoolBuilder {
             #[cfg(feature = "tls")]
             tls_config: self.tls_config.clone(),
             nodelay: self.nodelay,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: self.tcp_keepalive,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: self.recv_buf_size,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: self.send_buf_size,
         };
 
         // Connect all slots sequentially (cold path — startup only).
@@ -293,6 +353,18 @@ impl ClientPoolBuilder {
             }
             if self.nodelay {
                 builder = builder.disable_nagle();
+            }
+            #[cfg(feature = "socket-opts")]
+            {
+                if let Some(idle) = self.tcp_keepalive {
+                    builder = builder.tcp_keepalive(idle);
+                }
+                if let Some(size) = self.recv_buf_size {
+                    builder = builder.recv_buffer_size(size);
+                }
+                if let Some(size) = self.send_buf_size {
+                    builder = builder.send_buffer_size(size);
+                }
             }
             let conn = builder.connect(&self.url).await?;
 

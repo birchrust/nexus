@@ -376,6 +376,12 @@ pub struct WsStreamBuilder {
     tls_config: Option<TlsConfig>,
     nodelay: bool,
     connect_timeout: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    tcp_keepalive: Option<std::time::Duration>,
+    #[cfg(feature = "socket-opts")]
+    recv_buf_size: Option<usize>,
+    #[cfg(feature = "socket-opts")]
+    send_buf_size: Option<usize>,
 }
 
 impl WsStreamBuilder {
@@ -389,6 +395,12 @@ impl WsStreamBuilder {
             tls_config: None,
             nodelay: false,
             connect_timeout: None,
+            #[cfg(feature = "socket-opts")]
+            tcp_keepalive: None,
+            #[cfg(feature = "socket-opts")]
+            recv_buf_size: None,
+            #[cfg(feature = "socket-opts")]
+            send_buf_size: None,
         }
     }
 
@@ -442,6 +454,33 @@ impl WsStreamBuilder {
         self
     }
 
+    /// Set TCP keepalive idle time.
+    ///
+    /// Enables OS-level dead connection detection. The kernel sends
+    /// probes after `idle` of inactivity.
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn tcp_keepalive(mut self, idle: std::time::Duration) -> Self {
+        self.tcp_keepalive = Some(idle);
+        self
+    }
+
+    /// Set `SO_RCVBUF` (socket receive buffer size).
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn recv_buffer_size(mut self, n: usize) -> Self {
+        self.recv_buf_size = Some(n);
+        self
+    }
+
+    /// Set `SO_SNDBUF` (socket send buffer size).
+    #[cfg(feature = "socket-opts")]
+    #[must_use]
+    pub fn send_buffer_size(mut self, n: usize) -> Self {
+        self.send_buf_size = Some(n);
+        self
+    }
+
     /// Connect to a WebSocket server. Creates TCP socket, handles TLS.
     pub async fn connect(self, url: &str) -> Result<WsStream<MaybeTls>, WsError> {
         let parsed = parse_ws_url(url)?;
@@ -462,6 +501,8 @@ impl WsStreamBuilder {
         if self.nodelay {
             tcp.set_nodelay(true)?;
         }
+        #[cfg(feature = "socket-opts")]
+        self.apply_socket_opts(&tcp)?;
 
         let stream = if parsed.tls {
             #[cfg(feature = "tls")]
@@ -512,6 +553,24 @@ impl WsStreamBuilder {
         stream: S,
     ) -> Result<WsStream<S>, WsError> {
         WsStream::accept_impl(stream, self.reader_builder, self.write_buf_capacity).await
+    }
+}
+
+#[cfg(feature = "socket-opts")]
+impl WsStreamBuilder {
+    fn apply_socket_opts(&self, tcp: &TcpStream) -> Result<(), WsError> {
+        let sock = socket2::SockRef::from(tcp);
+        if let Some(idle) = self.tcp_keepalive {
+            let keepalive = socket2::TcpKeepalive::new().with_time(idle);
+            sock.set_tcp_keepalive(&keepalive)?;
+        }
+        if let Some(size) = self.recv_buf_size {
+            sock.set_recv_buffer_size(size)?;
+        }
+        if let Some(size) = self.send_buf_size {
+            sock.set_send_buffer_size(size)?;
+        }
+        Ok(())
     }
 }
 
