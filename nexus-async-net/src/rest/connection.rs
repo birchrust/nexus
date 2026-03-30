@@ -253,8 +253,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
             Some(Ok(n)) => n,
             Some(Err(())) => return Err(RestError::Http(HttpError::Malformed)),
             None => {
+                // No Content-Length and not chunked — can't determine body
+                // boundaries for keep-alive. Error instead of silent empty body.
                 self.poisoned = true;
-                0
+                return Err(RestError::Http(HttpError::Malformed));
             }
         };
 
@@ -322,14 +324,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
         }
 
         while !decoder.is_done() {
-            if max_body > 0 && decoder.total_decoded() > max_body {
-                self.poisoned = true;
-                return Err(RestError::BodyTooLarge {
-                    size: decoder.total_decoded(),
-                    max: max_body,
-                });
-            }
-
             let n = match self.stream.read(&mut wire_buf).await {
                 Ok(0) => {
                     self.poisoned = true;
@@ -350,6 +344,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
                 pos += consumed;
                 if produced > 0 {
                     body.extend_from_slice(&decode_buf[..produced]);
+                    if max_body > 0 && body.len() > max_body {
+                        self.poisoned = true;
+                        return Err(RestError::BodyTooLarge {
+                            size: body.len(),
+                            max: max_body,
+                        });
+                    }
                 }
                 if consumed == 0 && produced == 0 {
                     break;

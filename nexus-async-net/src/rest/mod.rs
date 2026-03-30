@@ -21,6 +21,10 @@
 //! println!("{}", resp.body_str()?);
 //! ```
 
+mod atomic_pool;
 mod connection;
+mod pool;
 
+pub use atomic_pool::{AtomicClientPool, AtomicClientPoolBuilder, AtomicClientSlot};
 pub use connection::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+pub use pool::{ClientPool, ClientPoolBuilder, ClientSlot};
