@@ -121,10 +121,10 @@ impl<'a> Message<'a> {
         }
     }
 
-    /// Consume the message, returning the payload bytes.
+    /// Consume the message, returning the payload as a byte slice.
     ///
     /// Releases the borrow on the `FrameReader` while keeping access
-    /// to the bytes (valid until the reader is advanced).
+    /// to the payload (valid until the reader is advanced).
     pub fn into_bytes(self) -> &'a [u8] {
         match self {
             Self::Text(s) => s.as_bytes(),
@@ -161,6 +161,34 @@ pub enum OwnedMessage {
     Pong(Vec<u8>),
     /// Connection close.
     Close(OwnedCloseFrame),
+}
+
+impl OwnedMessage {
+    /// Payload as bytes, regardless of message type.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(s) => s.as_bytes(),
+            Self::Binary(b) | Self::Ping(b) | Self::Pong(b) => b,
+            Self::Close(cf) => cf.reason.as_bytes(),
+        }
+    }
+
+    /// Convert to `bytes::Bytes`. Zero-copy — takes ownership of the
+    /// underlying `Vec`/`String` allocation without copying.
+    ///
+    /// ```ignore
+    /// let msg = ws.recv()?.unwrap().into_owned();
+    /// let shared: Bytes = msg.to_bytes();
+    /// tx.send(shared)?;  // Send + Clone, cheap to share
+    /// ```
+    #[cfg(feature = "bytes")]
+    pub fn to_bytes(self) -> bytes::Bytes {
+        match self {
+            Self::Text(s) => bytes::Bytes::from(s.into_bytes()),
+            Self::Binary(b) | Self::Ping(b) | Self::Pong(b) => bytes::Bytes::from(b),
+            Self::Close(cf) => bytes::Bytes::from(cf.reason.into_bytes()),
+        }
+    }
 }
 
 #[cfg(test)]

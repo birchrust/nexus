@@ -266,6 +266,7 @@ archive.write(&order)?;               // still yours — archive after send
 |---------|---------|-------------|
 | `tls` | No | TLS support via rustls + aws-lc-rs |
 | `socket-opts` | No | Socket options (SO_RCVBUF, SO_SNDBUF) via socket2 |
+| `bytes` | No | `bytes::Bytes` conversion on `OwnedMessage` and `RestResponse` |
 | `full` | No | All features enabled |
 
 Without features: zero TLS compile time. The `ws` and `http`
