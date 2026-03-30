@@ -254,6 +254,92 @@ fn write_body(
     checked_append(buf, body, error);
 }
 
+/// Write Content-Length header + \r\n separator (no body).
+fn write_body_header(
+    buf: &mut WriteBuf,
+    body_len: usize,
+    error: &mut Option<RestError>,
+) {
+    checked_append(buf, b"Content-Length: ", error);
+    write_usize_ascii(buf, body_len, error);
+    checked_append(buf, b"\r\n\r\n", error);
+}
+
+/// Content-Length placeholder: "Content-Length: XXXXXXXXXX\r\n\r\n"
+/// 10 digits supports bodies up to 9,999,999,999 bytes (~9.3GB).
+const CL_PREFIX: &[u8] = b"Content-Length: ";
+const CL_PAD_LEN: usize = 10;
+const CL_SUFFIX: &[u8] = b"\r\n\r\n";
+/// Write a padded Content-Length placeholder. Returns the offset
+/// within the WriteBuf where the 10-digit number starts.
+fn write_content_length_placeholder(
+    buf: &mut WriteBuf,
+    error: &mut Option<RestError>,
+) -> usize {
+    checked_append(buf, CL_PREFIX, error);
+    let num_offset = buf.len();
+    checked_append(buf, b"0000000000", error); // 10 zeros as placeholder
+    checked_append(buf, CL_SUFFIX, error);
+    num_offset
+}
+
+/// Write adapter for direct serialization into the request buffer.
+///
+/// Type alias for [`WriteBufWriter`](crate::buf::WriteBufWriter).
+/// Implements `std::io::Write`.
+pub type BodyWriter<'a> = crate::buf::WriteBufWriter<'a>;
+
+/// Backfill the Content-Length placeholder with the actual body length.
+/// Writes exact digits, shifts body left to close the gap.
+///
+/// Produces clean wire format: `Content-Length: 42\r\n\r\n` (no extra spaces).
+fn backfill_content_length(buf: &mut WriteBuf, num_offset: usize, body_len: usize) {
+    // Format the actual digits on the stack.
+    let mut digits = [0u8; 20];
+    let digit_len = if body_len == 0 {
+        digits[0] = b'0';
+        1
+    } else {
+        let mut val = body_len;
+        let mut i = 20;
+        while val > 0 {
+            i -= 1;
+            digits[i] = (val % 10) as u8 + b'0';
+            val /= 10;
+        }
+        let len = 20 - i;
+        digits.copy_within(i..20, 0);
+        len
+    };
+
+    let gap = CL_PAD_LEN - digit_len;
+
+    {
+        let data = buf.data_mut();
+
+        // Overwrite placeholder with actual digits.
+        data[num_offset..num_offset + digit_len].copy_from_slice(&digits[..digit_len]);
+
+        // Write \r\n\r\n right after the digits.
+        let suffix_dst = num_offset + digit_len;
+        data[suffix_dst..suffix_dst + CL_SUFFIX.len()].copy_from_slice(CL_SUFFIX);
+
+        // Shift body bytes left to close the gap.
+        if gap > 0 {
+            let body_start = num_offset + CL_PAD_LEN + CL_SUFFIX.len();
+            let body_end = data.len();
+            if body_start < body_end {
+                data.copy_within(body_start..body_end, body_start - gap);
+            }
+        }
+    }
+
+    // Shrink the buffer to remove the gap bytes.
+    if gap > 0 {
+        buf.truncate(gap);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RequestWriter
 // ---------------------------------------------------------------------------
@@ -543,6 +629,112 @@ impl<'a> RequestBuilder<'a, Query> {
         }
     }
 
+    /// Write the body directly into the buffer via a closure.
+    ///
+    /// Zero-alloc: the closure writes into the WriteBuf's spare region
+    /// via [`BodyWriter`] (implements `std::io::Write`). Content-Length
+    /// is computed and backfilled automatically.
+    ///
+    /// ```ignore
+    /// let req = writer.post("/order")
+    ///     .body_writer(|w| serde_json::to_writer(w, &order))
+    ///     .finish()?;
+    /// ```
+    pub fn body_writer<F, E>(mut self, f: F) -> RequestBuilder<'a, Ready>
+    where
+        F: FnOnce(&mut BodyWriter<'_>) -> Result<(), E>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        seal_request_line(self.writer, &mut self.error);
+        if self.error.is_some() {
+            return RequestBuilder {
+                writer: self.writer,
+                has_query: self.has_query,
+                error: self.error,
+                _phase: PhantomData,
+            };
+        }
+        let num_offset = write_content_length_placeholder(
+            &mut self.writer.write_buf,
+            &mut self.error,
+        );
+        if self.error.is_some() {
+            return RequestBuilder {
+                writer: self.writer,
+                has_query: self.has_query,
+                error: self.error,
+                _phase: PhantomData,
+            };
+        }
+        let body_len = {
+            let mut bw = BodyWriter::new(&mut self.writer.write_buf);
+            if let Err(e) = f(&mut bw) {
+                self.error = Some(RestError::Io(std::io::Error::other(e)));
+                0
+            } else {
+                bw.written()
+            }
+        }; // bw dropped here, releasing write_buf borrow
+        if self.error.is_none() {
+            backfill_content_length(&mut self.writer.write_buf, num_offset, body_len);
+        }
+        RequestBuilder {
+            writer: self.writer,
+            has_query: self.has_query,
+            error: self.error,
+            _phase: PhantomData,
+        }
+    }
+
+    /// Write a fixed-size body via closure with direct `&mut [u8]` access.
+    ///
+    /// The caller specifies the exact body size upfront. Content-Length
+    /// is written with exact digits (no backfill). The closure receives
+    /// a zeroed `&mut [u8]` slice of exactly `len` bytes to write into.
+    ///
+    /// For binary wire formats (SBE, FIX, protobuf) where the message
+    /// size is known at construction time.
+    ///
+    /// ```ignore
+    /// let req = writer.post("/order")
+    ///     .body_fixed(128, |buf| {
+    ///         order.encode_sbe(buf);
+    ///     })
+    ///     .finish()?;
+    /// ```
+    pub fn body_fixed(mut self, len: usize, f: impl FnOnce(&mut [u8])) -> RequestBuilder<'a, Ready> {
+        seal_request_line(self.writer, &mut self.error);
+        // Write exact Content-Length (size known upfront).
+        write_body_header(&mut self.writer.write_buf, len, &mut self.error);
+        if self.error.is_some() {
+            return RequestBuilder {
+                writer: self.writer,
+                has_query: self.has_query,
+                error: self.error,
+                _phase: PhantomData,
+            };
+        }
+        // Reserve `len` bytes in the WriteBuf and let the closure write.
+        let buf = &mut self.writer.write_buf;
+        if len > buf.tailroom() {
+            self.error = Some(RestError::RequestTooLarge {
+                capacity: buf.len() + buf.tailroom(),
+            });
+        } else {
+            let start = buf.len();
+            // Extend the buffer with zeros, then give the closure mutable access.
+            buf.append(&vec![0u8; len]);
+            let data = buf.data_mut();
+            f(&mut data[start..start + len]);
+        }
+        RequestBuilder {
+            writer: self.writer,
+            has_query: self.has_query,
+            error: self.error,
+            _phase: PhantomData,
+        }
+    }
+
     /// Finish building. Returns the assembled request bytes.
     pub fn finish(mut self) -> Result<Request<'a>, RestError> {
         seal_request_line(self.writer, &mut self.error);
@@ -570,6 +762,86 @@ impl<'a> RequestBuilder<'a, Headers> {
     /// Set the request body. Transitions to the ready phase.
     pub fn body(mut self, body: &[u8]) -> RequestBuilder<'a, Ready> {
         write_body(&mut self.writer.write_buf, body, &mut self.error);
+        RequestBuilder {
+            writer: self.writer,
+            has_query: self.has_query,
+            error: self.error,
+            _phase: PhantomData,
+        }
+    }
+
+    /// Write the body directly into the buffer via a closure.
+    ///
+    /// Same as [`RequestBuilder<Query>::body_writer`] — see its docs.
+    pub fn body_writer<F, E>(mut self, f: F) -> RequestBuilder<'a, Ready>
+    where
+        F: FnOnce(&mut BodyWriter<'_>) -> Result<(), E>,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        if self.error.is_some() {
+            return RequestBuilder {
+                writer: self.writer,
+                has_query: self.has_query,
+                error: self.error,
+                _phase: PhantomData,
+            };
+        }
+        let num_offset = write_content_length_placeholder(
+            &mut self.writer.write_buf,
+            &mut self.error,
+        );
+        if self.error.is_some() {
+            return RequestBuilder {
+                writer: self.writer,
+                has_query: self.has_query,
+                error: self.error,
+                _phase: PhantomData,
+            };
+        }
+        let body_len = {
+            let mut bw = BodyWriter::new(&mut self.writer.write_buf);
+            if let Err(e) = f(&mut bw) {
+                self.error = Some(RestError::Io(std::io::Error::other(e)));
+                0
+            } else {
+                bw.written()
+            }
+        }; // bw dropped here, releasing write_buf borrow
+        if self.error.is_none() {
+            backfill_content_length(&mut self.writer.write_buf, num_offset, body_len);
+        }
+        RequestBuilder {
+            writer: self.writer,
+            has_query: self.has_query,
+            error: self.error,
+            _phase: PhantomData,
+        }
+    }
+
+    /// Write a fixed-size body via closure with direct `&mut [u8]` access.
+    ///
+    /// Same as [`RequestBuilder<Query>::body_fixed`] — see its docs.
+    pub fn body_fixed(mut self, len: usize, f: impl FnOnce(&mut [u8])) -> RequestBuilder<'a, Ready> {
+        write_body_header(&mut self.writer.write_buf, len, &mut self.error);
+        if self.error.is_some() {
+            return RequestBuilder {
+                writer: self.writer,
+                has_query: self.has_query,
+                error: self.error,
+                _phase: PhantomData,
+            };
+        }
+        let buf = &mut self.writer.write_buf;
+        if len > buf.tailroom() {
+            self.error = Some(RestError::RequestTooLarge {
+                capacity: buf.len() + buf.tailroom(),
+            });
+        } else {
+            let start = buf.len();
+            buf.extend_zeroed(len);
+            let data = buf.data_mut();
+            f(&mut data[start..start + len]);
+        }
         RequestBuilder {
             writer: self.writer,
             has_query: self.has_query,

@@ -7,4 +7,4 @@ mod read_buf;
 mod write_buf;
 
 pub use read_buf::ReadBuf;
-pub use write_buf::WriteBuf;
+pub use write_buf::{WriteBuf, WriteBufWriter};

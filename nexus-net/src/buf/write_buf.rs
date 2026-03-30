@@ -95,6 +95,20 @@ impl WriteBuf {
         self.tail += src.len();
     }
 
+    /// Extend the buffer with `n` zeroed bytes at the tail.
+    /// No heap allocation — zeroes directly in the existing buffer.
+    ///
+    /// # Panics
+    /// Panics if `n > self.tailroom()`.
+    #[inline]
+    pub fn extend_zeroed(&mut self, n: usize) {
+        if n > self.tailroom() {
+            Self::panic_tailroom(n, self.tailroom());
+        }
+        self.buf[self.tail..self.tail + n].fill(0);
+        self.tail += n;
+    }
+
     // =========================================================================
     // Send side
     // =========================================================================
@@ -153,6 +167,20 @@ impl WriteBuf {
         self.head == self.tail
     }
 
+    /// Remove `n` bytes from the end. For Content-Length backfill
+    /// after shifting body bytes left.
+    ///
+    /// # Panics
+    /// Panics if `n > self.len()`.
+    pub fn truncate(&mut self, n: usize) {
+        assert!(
+            n <= self.len(),
+            "truncate({n}) exceeds data length ({})",
+            self.len()
+        );
+        self.tail -= n;
+    }
+
     /// Reset for next message. Cursors return to headroom offset.
     pub fn clear(&mut self) {
         self.head = self.reset_offset;
@@ -169,6 +197,47 @@ impl WriteBuf {
     #[inline(never)]
     fn panic_tailroom(needed: usize, available: usize) -> ! {
         panic!("append: {needed} bytes exceeds tailroom ({available})")
+    }
+}
+
+/// Write adapter over WriteBuf's spare region.
+///
+/// Implements `std::io::Write` for direct serialization into a
+/// pre-allocated buffer. Used by REST `body_writer` and WS
+/// `encode_text_writer` / `encode_binary_writer`.
+pub struct WriteBufWriter<'a> {
+    buf: &'a mut WriteBuf,
+    written: usize,
+}
+
+impl<'a> WriteBufWriter<'a> {
+    /// Create a writer over the WriteBuf's spare region.
+    pub fn new(buf: &'a mut WriteBuf) -> Self {
+        Self { buf, written: 0 }
+    }
+
+    /// Bytes written so far.
+    pub fn written(&self) -> usize {
+        self.written
+    }
+}
+
+impl std::io::Write for WriteBufWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let available = self.buf.tailroom();
+        if data.len() > available {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "body exceeds write buffer capacity",
+            ));
+        }
+        self.buf.append(data);
+        self.written += data.len();
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

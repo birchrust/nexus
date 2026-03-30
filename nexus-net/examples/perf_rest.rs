@@ -158,7 +158,48 @@ fn bench_nexus() {
         *s = (t1 - t0) / BATCH;
     }
 
-    print_row("nexus-net  POST (build+write+parse)", &mut samples);
+    print_row("nexus-net  POST body(&[u8])  (build+write+parse)", &mut samples);
+
+    // body_writer variant — direct write, no intermediate copy
+    let mut samples_bw = vec![0u64; SAMPLES];
+
+    for _ in 0..1000 {
+        conn.stream_mut().reset();
+        let req = writer
+            .post("/api/v3/order")
+            .header("X-MBX-TIMESTAMP", timestamp)
+            .header("X-MBX-SIGNATURE", signature)
+            .body_writer(|w| {
+                use std::io::Write;
+                w.write_all(order_body.as_bytes())
+            })
+            .finish()
+            .unwrap();
+        let _ = conn.send(req, &mut reader);
+    }
+
+    for s in &mut samples_bw {
+        let t0 = rdtsc_start();
+        for _ in 0..BATCH {
+            conn.stream_mut().reset();
+            let req = writer
+                .post("/api/v3/order")
+                .header("X-MBX-TIMESTAMP", timestamp)
+                .header("X-MBX-SIGNATURE", signature)
+                .body_writer(|w| {
+                    use std::io::Write;
+                    w.write_all(order_body.as_bytes())
+                })
+                .finish()
+                .unwrap();
+            let resp = conn.send(req, &mut reader).unwrap();
+            black_box(resp.status());
+        }
+        let t1 = rdtsc_end();
+        *s = (t1 - t0) / BATCH;
+    }
+
+    print_row("nexus-net  POST body_writer (build+write+parse)", &mut samples_bw);
 }
 
 // ============================================================================

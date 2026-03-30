@@ -779,6 +779,98 @@ mod tests {
     }
 
     #[test]
+    fn post_body_writer() {
+        let resp = ok_response(r#"{"ok":true}"#);
+        let mock = MockStream::new(&resp);
+        let mut writer = RequestWriter::new("host").unwrap();
+        let mut reader = ResponseReader::new(4096);
+        let mut conn = HttpConnection::new(mock);
+
+        let body = br#"{"symbol":"BTC","side":"buy"}"#;
+        let req = writer
+            .post("/order")
+            .body_writer(|w| {
+                use std::io::Write;
+                w.write_all(body)
+            })
+            .finish()
+            .unwrap();
+
+        let written_before = std::str::from_utf8(req.as_bytes()).unwrap().to_string();
+        // Verify Content-Length is backfilled correctly (space-padded)
+        assert!(written_before.contains("Content-Length:"));
+        assert!(written_before.contains(&format!("{}", body.len())));
+        assert!(written_before.ends_with(std::str::from_utf8(body).unwrap()));
+
+        let resp = conn.send(req, &mut reader).unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[test]
+    fn body_writer_from_headers_phase() {
+        let mut writer = RequestWriter::new("host").unwrap();
+        let body = b"test-body";
+        let req = writer
+            .post("/order")
+            .header("X-Custom", "val")
+            .body_writer(|w| {
+                use std::io::Write;
+                w.write_all(body)
+            })
+            .finish()
+            .unwrap();
+
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
+        assert!(data.contains("X-Custom: val\r\n"));
+        assert!(data.contains(&format!("{}", body.len())));
+        assert!(data.ends_with("test-body"));
+    }
+
+    #[test]
+    fn body_writer_empty() {
+        let mut writer = RequestWriter::new("host").unwrap();
+        let req = writer
+            .post("/order")
+            .body_writer(|_w| Ok::<(), std::io::Error>(()))
+            .finish()
+            .unwrap();
+
+        let data = std::str::from_utf8(req.as_bytes()).unwrap();
+        // Content-Length should be 0 (space-padded)
+        assert!(data.contains("Content-Length:"));
+        assert!(data.contains("0\r\n\r\n"));
+    }
+
+    #[test]
+    fn body_writer_matches_body() {
+        // Verify body_writer produces identical wire bytes to body()
+        let mut writer1 = RequestWriter::new("host").unwrap();
+        let mut writer2 = RequestWriter::new("host").unwrap();
+
+        let body = b"identical-content";
+
+        let req1 = writer1.post("/test").body(body).finish().unwrap();
+        let req2 = writer2
+            .post("/test")
+            .body_writer(|w| {
+                use std::io::Write;
+                w.write_all(body)
+            })
+            .finish()
+            .unwrap();
+
+        // The Content-Length format differs (exact digits vs space-padded)
+        // but the body content and other headers should match.
+        let d1 = std::str::from_utf8(req1.as_bytes()).unwrap();
+        let d2 = std::str::from_utf8(req2.as_bytes()).unwrap();
+        assert!(d1.ends_with("identical-content"));
+        assert!(d2.ends_with("identical-content"));
+        // Both have Content-Length with the right value
+        assert!(d1.contains("17"));
+        assert!(d2.contains("17"));
+    }
+
+    #[test]
     fn all_methods() {
         for (method, expected) in [
             (super::super::request::Method::Put, "PUT"),

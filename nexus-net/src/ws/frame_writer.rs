@@ -263,10 +263,107 @@ impl FrameWriter {
         Ok(())
     }
 
+    /// Encode a text frame, writing the payload via a closure.
+    ///
+    /// The closure writes directly into the WriteBuf — no intermediate
+    /// allocation. The WS frame header (including payload length) is
+    /// prepended after the closure returns.
+    ///
+    /// ```ignore
+    /// writer.encode_text_writer(&mut wbuf, |w| {
+    ///     use std::io::Write;
+    ///     serde_json::to_writer(w, &msg)
+    /// })?;
+    /// ```
+    pub fn encode_text_writer<F, E>(
+        &self,
+        dst: &mut crate::buf::WriteBuf,
+        f: F,
+    ) -> Result<(), E>
+    where
+        F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
+    {
+        self.encode_writer_into(0x81, dst, f)
+    }
+
+    /// Encode a binary frame, writing the payload via a closure.
+    pub fn encode_binary_writer<F, E>(
+        &self,
+        dst: &mut crate::buf::WriteBuf,
+        f: F,
+    ) -> Result<(), E>
+    where
+        F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
+    {
+        self.encode_writer_into(0x82, dst, f)
+    }
+
+    /// Encode a text frame with a fixed-size payload via closure.
+    ///
+    /// The closure receives `&mut [u8]` of exactly `len` bytes.
+    pub fn encode_text_fixed(
+        &self,
+        dst: &mut crate::buf::WriteBuf,
+        len: usize,
+        f: impl FnOnce(&mut [u8]),
+    ) {
+        self.encode_fixed_into(0x81, dst, len, f);
+    }
+
+    /// Encode a binary frame with a fixed-size payload via closure.
+    pub fn encode_binary_fixed(
+        &self,
+        dst: &mut crate::buf::WriteBuf,
+        len: usize,
+        f: impl FnOnce(&mut [u8]),
+    ) {
+        self.encode_fixed_into(0x82, dst, len, f);
+    }
+
     fn encode_into(&self, byte0: u8, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
         dst.clear();
         dst.append(payload);
         let (hdr, mask_key) = self.build_header(byte0, payload.len());
+        if let Some(mask) = mask_key {
+            super::mask::apply_mask(dst.data_mut(), mask);
+        }
+        dst.prepend(hdr.as_bytes());
+    }
+
+    fn encode_writer_into<F, E>(
+        &self,
+        byte0: u8,
+        dst: &mut crate::buf::WriteBuf,
+        f: F,
+    ) -> Result<(), E>
+    where
+        F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
+    {
+        dst.clear();
+        let payload_len = {
+            let mut bw = crate::buf::WriteBufWriter::new(dst);
+            f(&mut bw)?;
+            bw.written()
+        };
+        let (hdr, mask_key) = self.build_header(byte0, payload_len);
+        if let Some(mask) = mask_key {
+            super::mask::apply_mask(dst.data_mut(), mask);
+        }
+        dst.prepend(hdr.as_bytes());
+        Ok(())
+    }
+
+    fn encode_fixed_into(
+        &self,
+        byte0: u8,
+        dst: &mut crate::buf::WriteBuf,
+        len: usize,
+        f: impl FnOnce(&mut [u8]),
+    ) {
+        dst.clear();
+        dst.extend_zeroed(len);
+        f(dst.data_mut());
+        let (hdr, mask_key) = self.build_header(byte0, len);
         if let Some(mask) = mask_key {
             super::mask::apply_mask(dst.data_mut(), mask);
         }
