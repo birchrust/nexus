@@ -39,8 +39,8 @@
 //! # Re-export
 //!
 //! When the `regression` feature is enabled on `nexus-stats`, these types are
-//! re-exported under `nexus_stats_regression::regression::*`, `nexus_stats_regression::learning::*`,
-//! and `nexus_stats_regression::estimation::*`.
+//! available via `nexus_stats::regression::*`, `nexus_stats::learning::*`,
+//! and `nexus_stats::estimation::*`. Or depend on this crate directly.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

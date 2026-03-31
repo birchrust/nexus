@@ -20,7 +20,8 @@
 //! # Re-export
 //!
 //! When the `smoothing` feature is enabled on `nexus-stats`, these types are
-//! re-exported under `nexus_stats_core::smoothing::*` for a unified import path.
+//! available via `nexus_stats::smoothing::*`. Or depend on this crate directly
+//! for `nexus_stats_smoothing::*`.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
