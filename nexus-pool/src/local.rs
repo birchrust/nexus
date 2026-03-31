@@ -57,7 +57,8 @@ impl<T> Inner<T> {
 
     /// Try to pop from available stack. Used by both pool types.
     fn try_pop(&self) -> Option<T> {
-        // Safety: single-threaded access
+        // SAFETY: Single-threaded access enforced by !Sync on BoundedPool/Pool
+        // (both use Rc<Inner<T>> which is !Send + !Sync). No concurrent mutation.
         let data = unsafe { &mut *self.data.get() };
         data.pop()
     }
@@ -69,6 +70,9 @@ impl<T> Inner<T> {
     /// Caller must ensure factory was initialized (i.e., this is Pool, not BoundedPool)
     #[allow(clippy::option_if_let_else)]
     unsafe fn pop_or_create(&self) -> T {
+        // SAFETY: Single-threaded access enforced by !Sync on Pool (Rc-based).
+        // Caller guarantees factory is initialized (only called from Pool, not BoundedPool).
+        // assume_init_mut is sound because new_growable writes MaybeUninit::new(factory).
         unsafe {
             let data = &mut *self.data.get();
             if let Some(value) = data.pop() {
@@ -82,20 +86,23 @@ impl<T> Inner<T> {
 
     /// Reset and return value to available stack
     fn return_value(&self, value: &mut T) {
-        // Safety: single-threaded access
+        // SAFETY: Single-threaded access enforced by !Sync on BoundedPool/Pool (Rc-based).
+        // No concurrent mutation of the reset closure.
         let reset = unsafe { &mut *self.reset.get() };
         reset(value);
     }
 
     /// Push value back to available stack
     fn push(&self, value: T) {
-        // Safety: single-threaded access
+        // SAFETY: Single-threaded access enforced by !Sync on BoundedPool/Pool (Rc-based).
+        // No concurrent mutation of the data vec.
         let data = unsafe { &mut *self.data.get() };
         data.push(value);
     }
 
     fn available(&self) -> usize {
-        // Safety: single-threaded access
+        // SAFETY: Single-threaded access enforced by !Sync (Rc-based). Reading len
+        // while no concurrent mutation is possible.
         unsafe { (*self.data.get()).len() }
     }
 
@@ -249,7 +256,9 @@ impl<T> Pool<T> {
     ///
     /// This always succeeds but may allocate if the pool is empty.
     pub fn acquire(&self) -> Pooled<T> {
-        // Safety: Pool always initializes the factory
+        // SAFETY: Pool::new/with_capacity always calls new_growable, which
+        // initializes the factory via MaybeUninit::new. pop_or_create's
+        // precondition (factory initialized) is satisfied.
         let value = unsafe { self.inner.pop_or_create() };
         Pooled {
             value: ManuallyDrop::new(value),
@@ -287,7 +296,9 @@ impl<T> Pool<T> {
     /// pool.put(buf); // manual return, reset is called
     /// ```
     pub fn take(&self) -> T {
-        // Safety: Pool always initializes the factory
+        // SAFETY: Pool::new/with_capacity always calls new_growable, which
+        // initializes the factory via MaybeUninit::new. pop_or_create's
+        // precondition (factory initialized) is satisfied.
         unsafe { self.inner.pop_or_create() }
     }
 
@@ -316,8 +327,10 @@ impl<T> Pool<T> {
 
 impl<T> Drop for Pool<T> {
     fn drop(&mut self) {
-        // Drop the factory before Rc drops Inner
-        // Safety: Pool always initializes the factory
+        // SAFETY: Pool::new/with_capacity always calls new_growable, which
+        // initializes the factory via MaybeUninit::new. We must drop it here
+        // before Rc drops Inner, because Inner's Drop doesn't know whether
+        // factory was initialized (BoundedPool leaves it uninit).
         unsafe {
             let factory = &mut *self.inner.factory.get();
             factory.assume_init_drop();
@@ -359,12 +372,13 @@ impl<T> Drop for Pooled<T> {
         if let Some(inner) = self.inner.upgrade() {
             // Reset and return to pool
             inner.return_value(&mut self.value);
-            // Safety: value is valid, we're moving it back to the pool
+            // SAFETY: value is valid (ManuallyDrop preserves it until explicit take/drop).
+            // After take, self.value is consumed and we never touch it again.
             let value = unsafe { ManuallyDrop::take(&mut self.value) };
             inner.push(value);
         } else {
-            // Pool is gone, drop the value
-            // Safety: value is valid, needs to be dropped
+            // SAFETY: Pool is gone. Value is valid (ManuallyDrop preserves it) and must
+            // be dropped to avoid a leak. After drop, we never touch self.value again.
             unsafe { ManuallyDrop::drop(&mut self.value) };
         }
     }

@@ -305,6 +305,9 @@ impl<T> fmt::Debug for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
+        // SAFETY: producer is valid (ManuallyDrop preserves it). We drop it here to
+        // trigger the Producer's disconnect logic before unparking the receiver, so
+        // the receiver sees is_disconnected() == true after waking.
         unsafe { ManuallyDrop::drop(&mut self.producer) };
         self.receiver_unparker.unpark();
     }
@@ -509,6 +512,9 @@ impl<T> fmt::Debug for Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
+        // SAFETY: consumer is valid (ManuallyDrop preserves it). We drop it here to
+        // trigger the Consumer's disconnect logic before unparking the sender, so
+        // the sender sees is_disconnected() == true after waking.
         unsafe { ManuallyDrop::drop(&mut self.consumer) };
         self.sender_unparker.unpark();
     }

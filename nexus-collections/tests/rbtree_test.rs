@@ -273,8 +273,7 @@ fn reverse_comparator() {
 
 #[test]
 fn unbounded_insert() {
-    let slab: UnboundedSlab<RbNode<u64, u64>> =
-        unsafe { UnboundedSlab::with_chunk_capacity(8) };
+    let slab: UnboundedSlab<RbNode<u64, u64>> = unsafe { UnboundedSlab::with_chunk_capacity(8) };
     let mut tree = RbTree::new();
 
     for i in 0..50 {
@@ -305,10 +304,7 @@ fn unbounded_insert() {
 fn slab_free_trait_generic() {
     use nexus_collections::SlabFree;
 
-    fn insert_and_remove<S: SlabFree<RbNode<u64, u64>>>(
-        tree: &mut RbTree<u64, u64>,
-        slab: &S,
-    ) {
+    fn insert_and_remove<S: SlabFree<RbNode<u64, u64>>>(tree: &mut RbTree<u64, u64>, slab: &S) {
         // We can't insert generically (try_insert needs concrete slab type),
         // but we can remove and clear generically.
         tree.remove(slab, &1);

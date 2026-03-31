@@ -181,10 +181,16 @@ unsafe fn take_kv<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) -> (K, 
 /// Shifts keys/values/children right by one starting at index `i`, making
 /// room for an insertion. Does not update `len`.
 ///
-/// # Safety: `ptr` must be a valid node, `node.len < B-1` (room exists).
+/// # Safety
+///
+/// - `ptr` must be a valid node obtained from `Slot::into_raw()`.
+/// - `node.len < B-1` (room exists), so after the shift the last
+///   element lands at index `len` which is within the array of size B.
+/// - `i <= node.len`. Elements at [i..len) are initialized and moved to
+///   [i+1..len+1). The slot at `i` is left in a moved-from state.
 unsafe fn shift_right<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
     // SAFETY: ptr is a valid node per caller contract. ptr::copy handles
-    // overlapping regions correctly.
+    // overlapping regions correctly (memmove semantics).
     let node = unsafe { &mut *node_deref_mut(ptr) };
     let len = node.len as usize;
     if i < len {
@@ -206,7 +212,15 @@ unsafe fn shift_right<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
 /// Shifts keys/values/children left by one at index `i`, removing the
 /// element at `i`. Decrements `len`.
 ///
-/// # Safety: `ptr` must be a valid node, `i < node.len`.
+/// # Safety
+///
+/// - `ptr` must be a valid node obtained from `Slot::into_raw()`.
+/// - `i < node.len`. The caller must have already moved out (or dropped)
+///   keys[i] and values[i] before calling, since this function overwrites
+///   slot `i` with slot `i+1` via ptr::copy (no drop is run).
+/// - For internal nodes with children, children[i+1..=len] are shifted
+///   to [i..len-1], removing children[i+1]. This is correct after a merge
+///   where children[merge_idx+1] was freed and should be removed.
 unsafe fn shift_left<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
     // SAFETY: ptr is a valid node per caller contract.
     let node = unsafe { &mut *node_deref_mut(ptr) };
@@ -256,16 +270,24 @@ unsafe fn free_node<K, V, const B: usize>(
 ///
 /// # Safety
 ///
-/// `parent` must be a valid non-full internal node. `child_idx` must be
-/// a valid child index. `right_ptr` must be a freshly allocated empty node
-/// of the correct leaf/internal type.
+/// - `parent` must be a valid non-full internal node (len < B-1), obtained
+///   from `Slot::into_raw()` during a prior insert or root split.
+/// - `child_idx <= parent.len`, pointing to a valid child that is full
+///   (len == B-1).
+/// - `right_ptr` must be a freshly allocated empty node of the correct
+///   leaf/internal type, also from `Slot::into_raw()`.
 unsafe fn split_child_core<K, V, const B: usize>(
     parent: NodePtr<K, V, B>,
     child_idx: usize,
     right_ptr: NodePtr<K, V, B>,
 ) {
-    // SAFETY: parent and child are valid nodes per caller contract.
+    // SAFETY: parent is a valid internal node per caller contract.
+    // child_at reads children[child_idx] which is valid because
+    // child_idx <= parent.len for an internal node.
     let child = unsafe { child_at(parent, child_idx) };
+    // SAFETY: child was stored in parent.children during a prior insert or
+    // root init, so it points to an occupied SlotCell. right_ptr was just
+    // allocated by the caller. No other references exist to either node.
     let child_node = unsafe { &mut *node_deref_mut(child) };
     let right_node = unsafe { &mut *node_deref_mut(right_ptr) };
     let child_is_leaf = child_node.leaf;
@@ -273,9 +295,11 @@ unsafe fn split_child_core<K, V, const B: usize>(
     let mid = (B - 1) / 2;
     let right_len = B - 1 - mid - 1;
 
-    // SAFETY: copying initialized elements from the right half of child
-    // into the freshly allocated right node. Source indices [mid+1..B-1]
-    // are initialized because child was full (len == B-1).
+    // SAFETY: child was full (len == B-1), so keys[0..B-1] and values[0..B-1]
+    // are all initialized. We copy from indices [mid+1 .. B-1] which is
+    // right_len elements. Destination is a freshly allocated node with
+    // uninitialized arrays — no overlap. right_len + mid + 1 == B-1 so
+    // source indices are within [0, B-1).
     unsafe {
         ptr::copy_nonoverlapping(
             child_node.keys.as_ptr().add(mid + 1),
@@ -290,7 +314,10 @@ unsafe fn split_child_core<K, V, const B: usize>(
     }
 
     if !child_is_leaf {
-        // SAFETY: copying child pointers for the right half.
+        // SAFETY: an internal node with len == B-1 has B valid children at
+        // indices [0..B-1]. We copy children[mid+1 .. B-1] which is
+        // right_len + 1 pointers. All are valid non-null child pointers
+        // set during prior splits/inserts.
         unsafe {
             ptr::copy_nonoverlapping(
                 child_node.children.as_ptr().add(mid + 1),
@@ -302,14 +329,20 @@ unsafe fn split_child_core<K, V, const B: usize>(
     right_node.len = right_len as u16;
     right_node.leaf = child_is_leaf;
 
-    // SAFETY: keys[mid] and values[mid] are initialized (child was full).
+    // SAFETY: keys[mid] and values[mid] are initialized because child was
+    // full (len == B-1) and mid < B-1. assume_init_read moves the value
+    // out; the slot becomes logically uninitialized (child.len set to mid
+    // below, so it won't be accessed again).
     let median_key = unsafe { child_node.keys[mid].assume_init_read() };
     let median_value = unsafe { child_node.values[mid].assume_init_read() };
     child_node.len = mid as u16;
 
-    // SAFETY: parent has room (len < B-1) for the promoted median.
+    // SAFETY: parent.len < B-1 (caller contract: non-full parent), so
+    // shift_right has room to move elements right by one at child_idx.
     unsafe { shift_right(parent, child_idx) };
 
+    // SAFETY: parent is valid and we just made room at child_idx via
+    // shift_right. child_idx < B-1 after the shift.
     let parent_node = unsafe { &mut *node_deref_mut(parent) };
     parent_node.keys[child_idx] = MaybeUninit::new(median_key);
     parent_node.values[child_idx] = MaybeUninit::new(median_value);
@@ -794,8 +827,13 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     ///
     /// # Safety
     ///
-    /// `node` must be a valid B-tree node. `idx < node.len`. All unsafe
-    /// operations within access initialized elements at valid indices.
+    /// - `node` must be a valid B-tree node found by `remove_entry`'s
+    ///   traversal from the root (each hop follows `children[idx]` of a
+    ///   valid internal node).
+    /// - `idx < node.len`, so keys[idx] and values[idx] are initialized
+    ///   (the key was found at this position by `search_in_node`).
+    /// - `path[0..path_len]` contains valid (parent, child_idx) pairs
+    ///   collected during the downward traversal.
     unsafe fn remove_found(
         &mut self,
         slab: &impl SlabFree<BTreeNode<K, V, B>>,
@@ -805,42 +843,75 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         path_len: usize,
     ) -> (K, V) {
         if unsafe { node_is_leaf(node) } {
+            // SAFETY: idx < node.len, so take_kv reads initialized slots.
+            // shift_left closes the gap and decrements len.
             let result = unsafe { take_kv(node, idx) };
             unsafe { shift_left(node, idx) };
             self.fixup_after_remove(slab, node, path, path_len);
             result
         } else {
+            // Internal node: replace with in-order predecessor (rightmost
+            // key in the left subtree), then remove the predecessor from
+            // its leaf.
             let mut ext_path = *path;
             let mut ext_len = path_len;
             debug_assert!(ext_len < MAX_DEPTH);
             ext_path[ext_len] = (node, idx);
             ext_len += 1;
 
+            // SAFETY: node is internal, so children[idx] is a valid non-null
+            // child (B-tree invariant: internal node with len keys has len+1
+            // children). We walk down rightmost children until we hit a leaf.
             let mut pred_node = unsafe { child_at(node, idx) };
             while !unsafe { node_is_leaf(pred_node) } {
                 let plen = unsafe { node_len(pred_node) };
                 debug_assert!(ext_len < MAX_DEPTH);
                 ext_path[ext_len] = (pred_node, plen);
                 ext_len += 1;
+                // SAFETY: pred_node is internal with `plen` keys, so
+                // children[plen] is the rightmost valid child pointer.
                 pred_node = unsafe { child_at(pred_node, plen) };
             }
 
+            // SAFETY: pred_node is a leaf with at least 1 key (B-tree min
+            // occupancy). pred_idx = len-1 is the last initialized slot.
             let pred_idx = unsafe { node_len(pred_node) } - 1;
+            // SAFETY: idx < node.len — take_kv reads the target key-value
+            // to return. The slot at idx becomes uninitialized.
             let result = unsafe { take_kv(node, idx) };
 
+            // SAFETY: pred_idx < pred_node.len, so keys[pred_idx] and
+            // values[pred_idx] are initialized. assume_init_read moves
+            // the values out; we immediately write replacements into node.
             let pred_k = unsafe { (*node_deref(pred_node)).keys[pred_idx].assume_init_read() };
             let pred_v = unsafe { (*node_deref(pred_node)).values[pred_idx].assume_init_read() };
 
+            // SAFETY: node is valid, idx < node.len. We overwrite the
+            // uninitialized slot (from take_kv above) with the predecessor.
             let int_node = unsafe { &mut *node_deref_mut(node) };
             int_node.keys[idx] = MaybeUninit::new(pred_k);
             int_node.values[idx] = MaybeUninit::new(pred_v);
 
+            // SAFETY: pred_node is valid. Decrementing len logically removes
+            // the last key-value (already moved out by assume_init_read).
             unsafe { (*node_deref_mut(pred_node)).len -= 1 };
             self.fixup_after_remove(slab, pred_node, &ext_path, ext_len);
             result
         }
     }
 
+    /// Walks up the ancestor path after a removal, rebalancing any node
+    /// that has fallen below the minimum key count (B/2 - 1).
+    ///
+    /// Strategy at each underflowed node:
+    /// 1. If it's the root and empty: collapse (free or promote child).
+    /// 2. Try to borrow from left sibling (rotate_right).
+    /// 3. Try to borrow from right sibling (rotate_left).
+    /// 4. Merge with a sibling, pulling the separator from the parent.
+    ///    Then continue up to the parent (which lost a key).
+    ///
+    /// All path entries are valid (parent, child_idx) pairs collected
+    /// during the downward search in `remove_entry` / `remove_found`.
     fn fixup_after_remove(
         &mut self,
         slab: &impl SlabFree<BTreeNode<K, V, B>>,
@@ -852,15 +923,25 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         let mut depth = path_len;
 
         loop {
+            // SAFETY: node was either the leaf where we removed (valid from
+            // the initial traversal) or a parent we walked up to. All nodes
+            // in path[] were visited during the downward search and remain
+            // valid (no nodes freed yet on this upward pass except children
+            // of merge targets, which are below us).
             let len = unsafe { node_len(node) };
 
             if node == self.root {
                 if len == 0 {
                     if unsafe { node_is_leaf(node) } {
+                        // SAFETY: empty leaf root — tree is now empty.
+                        // free_node drops 0 elements (len == 0) and frees
+                        // the slab slot.
                         unsafe { free_node(node, slab) };
                         self.root = ptr::null_mut();
                         self.depth = 0;
                     } else {
+                        // SAFETY: internal root with 0 keys has exactly 1
+                        // child at children[0] (post-merge). Promote it.
                         let new_root = unsafe { child_at(node, 0) };
                         unsafe { free_node(node, slab) };
                         self.root = new_root;
@@ -874,10 +955,15 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 return;
             }
 
+            // SAFETY: depth > 0 here (node != root), so path[depth-1] is
+            // a valid (parent, child_idx) pair from the downward traversal.
             let (parent, child_idx) = path[depth - 1];
             let parent_len = unsafe { node_len(parent) };
 
+            // Try borrowing from left sibling.
             if child_idx > 0 {
+                // SAFETY: parent is a valid internal node and child_idx-1
+                // is a valid child index (child_idx > 0).
                 let left = unsafe { child_at(parent, child_idx - 1) };
                 if unsafe { node_len(left) } > min {
                     unsafe { Self::rotate_right(parent, child_idx) };
@@ -885,7 +971,10 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 }
             }
 
+            // Try borrowing from right sibling.
             if child_idx < parent_len {
+                // SAFETY: child_idx < parent_len, so child_idx+1 <= parent_len
+                // which is a valid child index for an internal node.
                 let right = unsafe { child_at(parent, child_idx + 1) };
                 if unsafe { node_len(right) } > min {
                     unsafe { Self::rotate_left(parent, child_idx) };
@@ -893,11 +982,14 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 }
             }
 
+            // Neither sibling can donate — merge with one of them.
             let merge_idx = if child_idx > 0 {
                 child_idx - 1
             } else {
                 child_idx
             };
+            // SAFETY: merge_idx < parent_len (either child_idx-1 or
+            // child_idx, both < parent_len since parent has enough children).
             unsafe { Self::merge_children(slab, parent, merge_idx) };
 
             node = parent;
@@ -907,15 +999,24 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
 
     /// B-tree right rotation: borrows from the left sibling through the parent.
     ///
+    /// Moves the parent's separator key down into the deficient child (at
+    /// position 0), and promotes the left sibling's last key into the
+    /// parent. If internal, the left sibling's rightmost child pointer
+    /// becomes the child's new leftmost child.
+    ///
     /// # Safety
     ///
-    /// `parent` must be a valid internal node. `child_idx > 0`. The left
-    /// sibling at `child_idx - 1` must have more than minimum keys.
-    /// All node_deref/node_deref_mut calls operate on valid allocated nodes.
-    /// assume_init_read is safe because the indices accessed are within
-    /// the initialized range of each node.
+    /// - `parent` must be a valid internal node obtained from traversal.
+    /// - `child_idx > 0` and `child_idx <= parent.len`, so both
+    ///   `children[child_idx]` and `children[child_idx - 1]` are valid.
+    /// - The left sibling must have more than minimum keys (checked by
+    ///   `fixup_after_remove` before calling).
+    /// - No aliasing: parent, child, and left are distinct slab-allocated
+    ///   nodes (B-tree structure invariant).
     unsafe fn rotate_right(parent: NodePtr<K, V, B>, child_idx: usize) {
-        // SAFETY: parent, child, and left are all valid B-tree nodes per caller.
+        // SAFETY: parent is a valid internal node per caller. children[child_idx]
+        // and children[child_idx-1] are valid child pointers (child_idx > 0,
+        // child_idx <= parent.len). All three are distinct slab allocations.
         let parent_node = unsafe { &mut *node_deref_mut(parent) };
         let child = parent_node.children[child_idx];
         let left = parent_node.children[child_idx - 1];
@@ -925,6 +1026,10 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         let left_len = left_node.len as usize;
         let p_idx = child_idx - 1;
 
+        // Shift child's keys/values right by 1 to make room at index 0.
+        // SAFETY: child has child_len initialized keys/values at [0..child_len).
+        // After shift, [1..child_len+1) are initialized. child_len < B-1
+        // (child was deficient), so index child_len is within the array.
         if child_len > 0 {
             unsafe {
                 let kp = child_node.keys.as_mut_ptr();
@@ -934,19 +1039,29 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             }
         }
         if !child_node.leaf {
+            // SAFETY: internal child has child_len+1 valid children at
+            // [0..child_len]. Shift to [1..child_len+1]. child_len+1 < B
+            // (deficient node), so destination is within bounds.
             unsafe {
                 let cp = child_node.children.as_mut_ptr();
                 ptr::copy(cp.cast_const(), cp.add(1), child_len + 1);
             }
         }
 
+        // SAFETY: p_idx < parent.len (p_idx = child_idx - 1 < parent.len),
+        // so keys[p_idx] and values[p_idx] are initialized. assume_init_read
+        // moves the value out; we immediately write a replacement below.
         child_node.keys[0] =
             MaybeUninit::new(unsafe { parent_node.keys[p_idx].assume_init_read() });
         child_node.values[0] =
             MaybeUninit::new(unsafe { parent_node.values[p_idx].assume_init_read() });
         if !child_node.leaf {
+            // SAFETY: left is internal with left_len keys, so
+            // children[left_len] is the rightmost valid child pointer.
             child_node.children[0] = left_node.children[left_len];
         }
+        // SAFETY: left_len > min (caller checked), so left_len - 1 >= 0
+        // and left.keys[left_len-1] is initialized. Promoting it into parent.
         parent_node.keys[p_idx] =
             MaybeUninit::new(unsafe { left_node.keys[left_len - 1].assume_init_read() });
         parent_node.values[p_idx] =
@@ -958,14 +1073,22 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
 
     /// B-tree left rotation: borrows from the right sibling through the parent.
     ///
+    /// Moves the parent's separator key down to the end of the deficient
+    /// child, and promotes the right sibling's first key into the parent.
+    /// If internal, the right sibling's leftmost child pointer moves to
+    /// the child's new rightmost position.
+    ///
     /// # Safety
     ///
-    /// `parent` must be a valid internal node. `child_idx < parent.len`.
-    /// The right sibling at `child_idx + 1` must have more than minimum keys.
-    /// All node_deref/node_deref_mut/assume_init_read calls are safe for the
-    /// same reasons as rotate_right.
+    /// - `parent` must be a valid internal node obtained from traversal.
+    /// - `child_idx < parent.len`, so both `children[child_idx]` and
+    ///   `children[child_idx + 1]` are valid child pointers.
+    /// - The right sibling must have more than minimum keys (checked by
+    ///   `fixup_after_remove` before calling).
+    /// - No aliasing: parent, child, and right are distinct slab allocations.
     unsafe fn rotate_left(parent: NodePtr<K, V, B>, child_idx: usize) {
-        // SAFETY: parent, child, and right are all valid B-tree nodes per caller.
+        // SAFETY: parent is a valid internal node. children[child_idx] and
+        // children[child_idx+1] are valid (child_idx < parent.len).
         let parent_node = unsafe { &mut *node_deref_mut(parent) };
         let child = parent_node.children[child_idx];
         let right = parent_node.children[child_idx + 1];
@@ -975,18 +1098,31 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         let right_len = right_node.len as usize;
         let p_idx = child_idx;
 
+        // SAFETY: p_idx < parent.len, so keys[p_idx] is initialized.
+        // assume_init_read moves the value; we write a replacement below.
+        // child_len < B-1 (child is deficient), so keys[child_len] is
+        // within the array bounds.
         child_node.keys[child_len] =
             MaybeUninit::new(unsafe { parent_node.keys[p_idx].assume_init_read() });
         child_node.values[child_len] =
             MaybeUninit::new(unsafe { parent_node.values[p_idx].assume_init_read() });
         if !child_node.leaf {
+            // SAFETY: right is internal, children[0] is a valid pointer.
+            // child_len + 1 < B (deficient child), so the destination is
+            // within bounds.
             child_node.children[child_len + 1] = right_node.children[0];
         }
+        // SAFETY: right_len > min (caller checked), so right.keys[0] is
+        // initialized. Promoting it into the parent at p_idx.
         parent_node.keys[p_idx] =
             MaybeUninit::new(unsafe { right_node.keys[0].assume_init_read() });
         parent_node.values[p_idx] =
             MaybeUninit::new(unsafe { right_node.values[0].assume_init_read() });
 
+        // Shift right sibling's keys/values left by 1 to close the gap.
+        // SAFETY: right_len > 1 (right_len > min >= 1), so [1..right_len)
+        // has right_len-1 initialized elements. ptr::copy handles the
+        // overlapping source/dest correctly.
         if right_len > 1 {
             unsafe {
                 let kp = right_node.keys.as_mut_ptr();
@@ -996,6 +1132,8 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             }
         }
         if !right_node.leaf {
+            // SAFETY: internal right has right_len+1 children at [0..right_len].
+            // Shift [1..right_len] to [0..right_len-1]. right_len elements.
             unsafe {
                 let cp = right_node.children.as_mut_ptr();
                 ptr::copy(cp.add(1).cast_const(), cp, right_len);
@@ -1009,30 +1147,46 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     /// Merges children at `merge_idx` and `merge_idx + 1` with the parent's
     /// separator key. The right child is freed after merging into the left.
     ///
+    /// After merge, left has: [left keys] + [separator] + [right keys],
+    /// totaling left_len + 1 + right_len = 2*min + 1 = B-1 keys (full node).
+    ///
     /// # Safety
     ///
-    /// `parent` must be a valid internal node. `merge_idx < parent.len`.
-    /// Both children must have exactly minimum keys. All node accesses are
-    /// on valid allocated nodes within their initialized ranges.
+    /// - `parent` must be a valid internal node from the traversal path.
+    /// - `merge_idx < parent.len`, so `children[merge_idx]` (left) and
+    ///   `children[merge_idx + 1]` (right) are both valid child pointers.
+    /// - Both children have exactly minimum keys (B/2 - 1). This ensures
+    ///   the merged result fits in a single node (2*min + 1 == B-1).
+    /// - No aliasing: parent, left, and right are distinct slab allocations.
     unsafe fn merge_children(
         slab: &impl SlabFree<BTreeNode<K, V, B>>,
         parent: NodePtr<K, V, B>,
         merge_idx: usize,
     ) {
-        // SAFETY: parent, left, and right are valid B-tree nodes per caller.
+        // SAFETY: parent is valid internal node. children[merge_idx] and
+        // children[merge_idx+1] are valid (merge_idx < parent.len).
         let parent_node = unsafe { &*node_deref(parent) };
         let left = parent_node.children[merge_idx];
         let right = parent_node.children[merge_idx + 1];
+        // SAFETY: left and right are distinct slab-allocated nodes. We take
+        // &mut of left (will be modified) and & of right (read-only, then freed).
         let left_node = unsafe { &mut *node_deref_mut(left) };
         let right_node = unsafe { &*node_deref(right) };
         let left_len = left_node.len as usize;
         let right_len = right_node.len as usize;
 
+        // SAFETY: merge_idx < parent.len, so keys[merge_idx] is initialized.
+        // assume_init_read moves the separator into left at index left_len.
+        // left_len == min < B-1, so keys[left_len] is within array bounds.
         left_node.keys[left_len] =
             MaybeUninit::new(unsafe { (*node_deref(parent)).keys[merge_idx].assume_init_read() });
         left_node.values[left_len] =
             MaybeUninit::new(unsafe { (*node_deref(parent)).values[merge_idx].assume_init_read() });
 
+        // SAFETY: right has right_len initialized keys/values at [0..right_len).
+        // Destination starts at left_len + 1. Total: left_len + 1 + right_len
+        // == 2*min + 1 == B-1, so destination indices are within [0, B-1).
+        // Source and destination are in different nodes — no overlap.
         if right_len > 0 {
             unsafe {
                 ptr::copy_nonoverlapping(
@@ -1048,6 +1202,10 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             }
         }
         if !left_node.leaf {
+            // SAFETY: right is internal with right_len+1 valid children.
+            // Destination starts at left_len + 1. Total children in merged
+            // node: left_len + 1 + right_len + 1 == B, which fits exactly
+            // in the children array of size B.
             unsafe {
                 ptr::copy_nonoverlapping(
                     right_node.children.as_ptr(),
@@ -1059,11 +1217,15 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
 
         left_node.len = (left_len + 1 + right_len) as u16;
 
-        // SAFETY: right was obtained from Slot::into_raw() during insert/split.
-        // Its contents have been moved to left; safe to reclaim.
+        // SAFETY: right was obtained from Slot::into_raw() during a prior
+        // insert or split. All its key/value data has been moved to left
+        // (via copy_nonoverlapping above), so right's slots are logically
+        // uninitialized. Slot::from_raw reconstitutes the handle for freeing.
+        // free_slot does NOT run drop on keys/values (they were moved, not copied).
         let slot = unsafe { Slot::from_raw(right) };
         slab.free_slot(slot);
-        // SAFETY: parent has merge_idx < parent.len.
+        // SAFETY: merge_idx < parent.len. shift_left removes the separator
+        // at merge_idx and shifts remaining keys/children left by one.
         unsafe { shift_left(parent, merge_idx) };
     }
 
@@ -1515,21 +1677,34 @@ impl<K, V, const B: usize, C> BTree<K, V, B, C> {
 
     /// Recursively frees all nodes in the subtree rooted at `ptr`.
     ///
-    /// # Safety: `ptr` must be a valid non-null B-tree node.
+    /// Post-order traversal: children are freed before their parent, so
+    /// no dangling pointers are dereferenced. `free_node` drops all
+    /// initialized keys/values in the node, then returns the slab slot.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid non-null B-tree node obtained from
+    /// `Slot::into_raw()` during insert/split. The entire subtree
+    /// must be exclusively owned (no concurrent readers/writers).
     unsafe fn clear_subtree(ptr: NodePtr<K, V, B>, slab: &impl SlabFree<BTreeNode<K, V, B>>) {
-        // SAFETY: ptr is a valid node per caller contract.
+        // SAFETY: ptr is a valid node per caller contract (root from self.root,
+        // or a child pointer from a valid parent node).
         let node = unsafe { &*node_deref(ptr) };
         let len = node.len as usize;
         if !node.leaf {
+            // SAFETY: an internal node with `len` keys has `len + 1` valid
+            // children at indices [0..=len]. Each child was stored via
+            // split_child_core or root init, pointing to occupied SlotCells.
             for i in 0..=len {
                 let child = node.children[i];
                 if !child.is_null() {
-                    // SAFETY: child is a valid non-null child node.
                     unsafe { Self::clear_subtree(child, slab) };
                 }
             }
         }
-        // SAFETY: all children freed above. ptr itself is safe to free.
+        // SAFETY: all children freed above (post-order). free_node drops
+        // keys[0..len] and values[0..len] (all initialized), then frees
+        // the slab slot via Slot::from_raw.
         unsafe { free_node(ptr, slab) };
     }
 }
