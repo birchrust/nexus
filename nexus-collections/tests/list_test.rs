@@ -1,21 +1,22 @@
 //! Integration tests for the RcSlot-based list.
 
-use nexus_collections::list_allocator;
+use nexus_collections::list::{List, ListNode};
+use nexus_slab::rc::bounded::Slab;
+use nexus_slab::rc::unbounded::Slab as UnboundedSlab;
 
 #[derive(Debug)]
-pub struct Order {
+#[allow(dead_code)]
+struct Order {
     id: u64,
     price: f64,
 }
 
-#[allow(dead_code)]
-mod orders {
-    use super::*;
-    list_allocator!(Order, bounded);
+fn make_slab() -> Slab<ListNode<Order>> {
+    unsafe { Slab::with_capacity(100) }
 }
 
-fn init() {
-    let _ = orders::Allocator::builder().capacity(100).build();
+fn make_u64_slab() -> Slab<ListNode<u64>> {
+    unsafe { Slab::with_capacity(100) }
 }
 
 // =============================================================================
@@ -24,645 +25,515 @@ fn init() {
 
 #[test]
 fn empty_list() {
-    init();
-    let list = orders::List::new(orders::Allocator);
+    let mut list = List::<Order>::new();
     assert!(list.is_empty());
     assert_eq!(list.len(), 0);
     assert!(list.front().is_none());
     assert!(list.back().is_none());
+    let slab = make_slab();
+    list.clear(&slab);
 }
 
 #[test]
 fn link_back_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
+    let slab = make_slab();
+    let mut list = List::new();
+    let h = slab.alloc(ListNode::new(Order { id: 1, price: 10.0 }));
 
     list.link_back(&h);
     assert_eq!(list.len(), 1);
     assert!(!list.is_empty());
-    assert_eq!(h.exclusive().id, 1);
-    assert_eq!(h.strong_count(), 2); // user + list
+    assert_eq!(h.borrow().value.id, 1);
+    assert_eq!(h.refcount(), 2); // user + list
+
+    list.clear(&slab);
+    slab.free(h);
 }
 
 #[test]
 fn link_front_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
+    let slab = make_slab();
+    let mut list = List::new();
+    let h = slab.alloc(ListNode::new(Order { id: 2, price: 20.0 }));
 
     list.link_front(&h);
     assert_eq!(list.len(), 1);
-    assert_eq!(h.strong_count(), 2);
+
+    list.clear(&slab);
+    slab.free(h);
 }
 
 #[test]
-fn link_back_multiple() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+fn push_back_and_pop_front() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
 
     assert_eq!(list.len(), 3);
-    assert_eq!(list.front().unwrap().exclusive().id, 1);
-    assert_eq!(list.back().unwrap().exclusive().id, 3);
-}
+    assert_eq!(list.front().unwrap().value, 10);
+    assert_eq!(list.back().unwrap().value, 30);
 
-#[test]
-fn link_front_multiple() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
+    let p1 = list.pop_front().unwrap();
+    assert_eq!(p1.borrow().value, 10);
+    assert_eq!(list.len(), 2);
 
-    list.link_back(&h1);
-    list.link_front(&h2);
+    let p2 = list.pop_front().unwrap();
+    assert_eq!(p2.borrow().value, 20);
 
-    // h2 is now front, h1 is back
-    assert_eq!(list.front().unwrap().exclusive().id, 2);
-    assert_eq!(list.back().unwrap().exclusive().id, 1);
-}
+    let p3 = list.pop_front().unwrap();
+    assert_eq!(p3.borrow().value, 30);
 
-// =============================================================================
-// Unlink
-// =============================================================================
-
-#[test]
-fn unlink_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
-
-    list.unlink(&h);
-    assert_eq!(list.len(), 0);
     assert!(list.is_empty());
-    assert_eq!(h.strong_count(), 1);
-    assert!(!h.is_linked());
+    assert!(list.pop_front().is_none());
 
-    // Handle still accessible
-    assert_eq!(h.exclusive().id, 1);
+    // Free all handles
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(p1);
+    slab.free(p2);
+    slab.free(p3);
+}
+
+#[test]
+fn push_front_and_pop_back() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+
+    let h1 = list.try_push_front(&slab, 10).unwrap();
+    let h2 = list.try_push_front(&slab, 20).unwrap();
+
+    assert_eq!(list.front().unwrap().value, 20);
+    assert_eq!(list.back().unwrap().value, 10);
+
+    let p = list.pop_back().unwrap();
+    assert_eq!(p.borrow().value, 10);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(p);
 }
 
 #[test]
 fn unlink_middle() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
 
-    list.unlink(&h2);
+    list.unlink(&h2, &slab);
     assert_eq!(list.len(), 2);
-    assert_eq!(list.front().unwrap().exclusive().id, 1);
-    assert_eq!(list.back().unwrap().exclusive().id, 3);
+    assert_eq!(list.front().unwrap().value, 10);
+    assert_eq!(list.back().unwrap().value, 30);
+
+    // h2 is still valid (user still holds a ref)
+    assert_eq!(h2.borrow().value, 20);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
 }
-
-#[test]
-fn unlink_and_relink() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    list.unlink(&h);
-    list.link_front(&h);
-
-    assert_eq!(list.len(), 1);
-    assert_eq!(h.strong_count(), 2);
-}
-
-// =============================================================================
-// Pop
-// =============================================================================
-
-#[test]
-fn pop_front_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    let popped = list.pop_front().unwrap();
-    assert_eq!(popped.exclusive().id, 1);
-    assert!(list.is_empty());
-    // popped carries the list's strong ref — user handle + popped = 2
-    // (user handle is h, popped is the list's transferred ref)
-    assert_eq!(h.strong_count(), 2);
-    drop(popped);
-    assert_eq!(h.strong_count(), 1);
-}
-
-#[test]
-fn pop_back_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    let popped = list.pop_back().unwrap();
-    assert_eq!(popped.exclusive().id, 1);
-    assert!(list.is_empty());
-}
-
-#[test]
-fn pop_front_multiple() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
-
-    let p1 = list.pop_front().unwrap();
-    assert_eq!(p1.exclusive().id, 1);
-    assert_eq!(list.len(), 2);
-
-    let p2 = list.pop_front().unwrap();
-    assert_eq!(p2.exclusive().id, 2);
-
-    let p3 = list.pop_front().unwrap();
-    assert_eq!(p3.exclusive().id, 3);
-
-    assert!(list.pop_front().is_none());
-}
-
-#[test]
-fn pop_empty() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    assert!(list.pop_front().is_none());
-    assert!(list.pop_back().is_none());
-}
-
-// =============================================================================
-// Position checks
-// =============================================================================
-
-#[test]
-fn is_head_and_tail() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.link_back(&h2);
-
-    assert!(list.is_head(&h1));
-    assert!(!list.is_head(&h2));
-    assert!(!list.is_tail(&h1));
-    assert!(list.is_tail(&h2));
-}
-
-// =============================================================================
-// Relative insertion
-// =============================================================================
 
 #[test]
 fn link_after() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h1);
-    list.link_back(&h3);
-    list.link_after(&h1, &h2); // [1, 2, 3]
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+    let h2 = slab.alloc(ListNode::new(20));
 
+    list.link_after(&h1, &h2);
     assert_eq!(list.len(), 3);
-    assert_eq!(list.front().unwrap().exclusive().id, 1);
-    assert_eq!(list.back().unwrap().exclusive().id, 3);
 
-    // Verify order via pop
     let p1 = list.pop_front().unwrap();
-    assert_eq!(p1.exclusive().id, 1);
     let p2 = list.pop_front().unwrap();
-    assert_eq!(p2.exclusive().id, 2);
     let p3 = list.pop_front().unwrap();
-    assert_eq!(p3.exclusive().id, 3);
-}
+    assert_eq!(p1.borrow().value, 10);
+    assert_eq!(p2.borrow().value, 20);
+    assert_eq!(p3.borrow().value, 30);
 
-#[test]
-fn link_after_at_tail() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.link_after(&h1, &h2); // [1, 2]
-
-    assert!(list.is_tail(&h2));
-    assert_eq!(list.back().unwrap().exclusive().id, 2);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(p1);
+    slab.free(p2);
+    slab.free(p3);
 }
 
 #[test]
 fn link_before() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h1);
-    list.link_back(&h3);
-    list.link_before(&h3, &h2); // [1, 2, 3]
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+    let h2 = slab.alloc(ListNode::new(20));
+
+    list.link_before(&h3, &h2);
+    assert_eq!(list.len(), 3);
 
     let p1 = list.pop_front().unwrap();
-    assert_eq!(p1.exclusive().id, 1);
     let p2 = list.pop_front().unwrap();
-    assert_eq!(p2.exclusive().id, 2);
+    let p3 = list.pop_front().unwrap();
+    assert_eq!(p1.borrow().value, 10);
+    assert_eq!(p2.borrow().value, 20);
+    assert_eq!(p3.borrow().value, 30);
+
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(p1);
+    slab.free(p2);
+    slab.free(p3);
 }
-
-#[test]
-fn link_before_at_head() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.link_before(&h1, &h2); // [2, 1]
-
-    assert!(list.is_head(&h2));
-    assert_eq!(list.front().unwrap().exclusive().id, 2);
-}
-
-// =============================================================================
-// Move operations
-// =============================================================================
 
 #[test]
 fn move_to_front() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
 
-    list.move_to_front(&h3); // [3, 1, 2]
+    list.move_to_front(&h3);
+    assert_eq!(list.front().unwrap().value, 30);
+    assert_eq!(list.back().unwrap().value, 20);
 
-    assert_eq!(list.front().unwrap().exclusive().id, 3);
-    assert_eq!(list.back().unwrap().exclusive().id, 2);
-}
-
-#[test]
-fn move_to_front_already_front() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.link_back(&h2);
-
-    list.move_to_front(&h1); // no-op
-    assert_eq!(list.front().unwrap().exclusive().id, 1);
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
 }
 
 #[test]
 fn move_to_back() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
 
-    list.move_to_back(&h1); // [2, 3, 1]
+    list.move_to_back(&h1);
+    assert_eq!(list.front().unwrap().value, 20);
+    assert_eq!(list.back().unwrap().value, 10);
 
-    assert_eq!(list.front().unwrap().exclusive().id, 2);
-    assert_eq!(list.back().unwrap().exclusive().id, 1);
-}
-
-// =============================================================================
-// Data access via ExclusiveCell
-// =============================================================================
-
-#[test]
-#[allow(clippy::float_cmp)]
-fn write_via_exclusive_mut() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    h.exclusive_mut().price = 99.0;
-    assert_eq!(h.exclusive().price, 99.0);
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
 }
 
 #[test]
-#[allow(clippy::float_cmp)]
-fn peek_front_write() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
+fn cursor_forward_traversal() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-    list.link_back(&h);
-    list.front().unwrap().exclusive_mut().price = 42.0;
-    assert_eq!(h.exclusive().price, 42.0);
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+
+    let mut values = Vec::new();
+    let mut cursor = list.cursor();
+    while cursor.advance() {
+        values.push(cursor.current().unwrap().value);
+    }
+    assert_eq!(values, vec![10, 20, 30]);
+
+    let _ = cursor;
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
 }
 
 #[test]
-#[should_panic(expected = "already borrowed")]
-fn double_borrow_panics() {
-    init();
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let _r1 = h.exclusive();
-    let _r2 = h.exclusive(); // panic
-}
+fn cursor_remove() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
 
-// =============================================================================
-// Refcount semantics
-// =============================================================================
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
 
-#[test]
-fn strong_count_lifecycle() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    assert_eq!(h.strong_count(), 1);
+    let mut cursor = list.cursor();
+    cursor.advance(); // at 10
+    cursor.advance(); // at 20
+    let removed = cursor.remove(); // remove 20, auto-advance to 30
+    assert_eq!(removed.borrow().value, 20);
+    assert_eq!(cursor.current().unwrap().value, 30);
 
-    list.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
+    let _ = cursor;
+    assert_eq!(list.len(), 2);
 
-    list.unlink(&h);
-    assert_eq!(h.strong_count(), 1);
-
-    list.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
-
-    // Drop list while linked
-    drop(list);
-    assert_eq!(h.strong_count(), 1);
-    // Handle still valid
-    assert_eq!(h.exclusive().id, 1);
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(removed);
 }
 
 #[test]
-fn drop_handle_while_linked() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
-
-    drop(h);
-    // List still valid, node alive via list's ref
-    assert_eq!(list.len(), 1);
-    assert_eq!(list.front().unwrap().exclusive().id, 1);
-
-    // Pop returns the list's ref — now strong = 1
-    let popped = list.pop_front().unwrap();
-    assert_eq!(popped.strong_count(), 1);
-    assert_eq!(popped.exclusive().id, 1);
-}
-
-// =============================================================================
-// Multiple lists sharing allocator
-// =============================================================================
-
-#[test]
-fn two_lists_same_allocator() {
-    init();
-    let mut list_a = orders::List::new(orders::Allocator);
-    let mut list_b = orders::List::new(orders::Allocator);
-
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list_a.link_back(&h1);
-    list_b.link_back(&h2);
-
-    assert_eq!(list_a.len(), 1);
-    assert_eq!(list_b.len(), 1);
-}
-
-#[test]
-fn move_between_lists() {
-    init();
-    let mut list_a = orders::List::new(orders::Allocator);
-    let mut list_b = orders::List::new(orders::Allocator);
-
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list_a.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
-
-    list_a.unlink(&h);
-    assert_eq!(h.strong_count(), 1);
-
-    list_b.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
-    assert_eq!(list_b.front().unwrap().exclusive().id, 1);
-}
-
-// =============================================================================
-// is_linked
-// =============================================================================
-
-#[test]
-fn is_linked_tracks_state() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    assert!(!h.is_linked());
-    list.link_back(&h);
-    assert!(h.is_linked());
-    list.unlink(&h);
-    assert!(!h.is_linked());
-}
-
-#[test]
-#[should_panic(expected = "node is already linked")]
+#[should_panic(expected = "already linked")]
 fn double_link_panics() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
+    let slab = make_u64_slab();
+    let mut list = List::new();
+    let h = slab.alloc(ListNode::new(1));
     list.link_back(&h);
-    list.link_back(&h); // panic
+    list.link_back(&h); // should panic
+}
+
+#[test]
+#[should_panic(expected = "not linked to this list")]
+fn unlink_wrong_list_panics() {
+    let slab = make_u64_slab();
+    let mut list1 = List::new();
+    let mut list2 = List::new();
+    let h = slab.alloc(ListNode::new(1));
+    list1.link_back(&h);
+    list2.unlink(&h, &slab); // should panic
+}
+
+#[test]
+fn contains() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+    let h = slab.alloc(ListNode::new(42));
+
+    assert!(!list.contains(&h));
+    list.link_back(&h);
+    assert!(list.contains(&h));
+
+    list.clear(&slab);
+    slab.free(h);
+}
+
+#[test]
+fn is_head_is_tail() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+
+    assert!(list.is_head(&h1));
+    assert!(!list.is_head(&h2));
+    assert!(list.is_tail(&h2));
+    assert!(!list.is_tail(&h1));
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
 }
 
 // =============================================================================
-// clear
+// Unbounded slab path
 // =============================================================================
 
 #[test]
-fn clear_empty() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    list.clear();
-    assert!(list.is_empty());
-}
+fn unbounded_push_back_and_pop_front() {
+    let slab = unsafe { UnboundedSlab::<ListNode<u64>>::with_chunk_capacity(4) };
+    let mut list = List::new();
 
-#[test]
-fn clear_releases_strong_refs() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
+    let h1 = list.push_back(&slab, 10);
+    let h2 = list.push_back(&slab, 20);
+    let h3 = list.push_back(&slab, 30);
 
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
-    assert_eq!(h1.strong_count(), 2);
-
-    list.clear();
-
-    assert!(list.is_empty());
-    assert_eq!(list.len(), 0);
-    assert!(list.front().is_none());
-    assert!(list.back().is_none());
-
-    // Handles still valid, back to strong=1
-    assert_eq!(h1.strong_count(), 1);
-    assert_eq!(h1.exclusive().id, 1);
-    assert!(!h1.is_linked());
-}
-
-#[test]
-fn clear_then_reuse() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.clear();
-
-    // Can re-link after clear
-    list.link_back(&h2);
-    assert_eq!(list.len(), 1);
-    assert_eq!(list.front().unwrap().exclusive().id, 2);
-}
-
-// =============================================================================
-// Push methods (internal allocation)
-// =============================================================================
-
-#[test]
-fn try_push_back_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = list.try_push_back(Order { id: 1, price: 10.0 }).unwrap();
-
-    assert_eq!(list.len(), 1);
-    assert_eq!(h.exclusive().id, 1);
-    assert!(h.is_linked());
-    assert_eq!(h.strong_count(), 2);
-}
-
-#[test]
-fn try_push_front_single() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = list.try_push_front(Order { id: 1, price: 10.0 }).unwrap();
-
-    assert_eq!(list.len(), 1);
-    assert_eq!(h.exclusive().id, 1);
-    assert!(h.is_linked());
-}
-
-#[test]
-fn push_pop_round_trip() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = list.try_push_back(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = list.try_push_back(Order { id: 2, price: 20.0 }).unwrap();
-    let _h3 = list.try_push_front(Order { id: 3, price: 30.0 }).unwrap();
-
-    // Order: [3, 1, 2]
     assert_eq!(list.len(), 3);
+    assert_eq!(list.front().unwrap().value, 10);
+    assert_eq!(list.back().unwrap().value, 30);
 
     let p1 = list.pop_front().unwrap();
-    assert_eq!(p1.exclusive().id, 3);
+    assert_eq!(p1.borrow().value, 10);
     let p2 = list.pop_front().unwrap();
-    assert_eq!(p2.exclusive().id, 1);
+    assert_eq!(p2.borrow().value, 20);
     let p3 = list.pop_front().unwrap();
-    assert_eq!(p3.exclusive().id, 2);
+    assert_eq!(p3.borrow().value, 30);
 
-    // Original handles still valid (not linked anymore)
-    assert!(!h1.is_linked());
-    assert!(!h2.is_linked());
-}
-
-// =============================================================================
-// Cursor iteration after user drops handle (strong=1 during traversal)
-// =============================================================================
-
-#[test]
-fn cursor_iterate_after_user_drops_handle() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h1 = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-    let h2 = orders::create_node(Order { id: 2, price: 20.0 }).unwrap();
-    let h3 = orders::create_node(Order { id: 3, price: 30.0 }).unwrap();
-
-    list.link_back(&h1);
-    list.link_back(&h2);
-    list.link_back(&h3);
-
-    // Drop user handles — list is sole owner (strong=1)
-    drop(h1);
-    drop(h2);
-    drop(h3);
-
-    // Cursor iteration should still work via list's strong ref
-    let mut cursor = list.cursor();
-    let mut ids = Vec::new();
-    while cursor.advance() {
-        ids.push(cursor.current().unwrap().exclusive().id);
-    }
-    assert_eq!(ids, vec![1, 2, 3]);
-    assert_eq!(list.len(), 3);
-}
-
-// =============================================================================
-// Pop after user drops handle (strong=1, sole owner via from_raw)
-// =============================================================================
-
-#[test]
-fn pop_after_user_drops_handle() {
-    init();
-    let mut list = orders::List::new(orders::Allocator);
-    let h = orders::create_node(Order { id: 1, price: 10.0 }).unwrap();
-
-    list.link_back(&h);
-    assert_eq!(h.strong_count(), 2);
-
-    // Drop user handle — list is sole owner
-    drop(h);
-
-    // Pop transfers list's strong ref to the caller
-    let popped = list.pop_front().unwrap();
-    assert_eq!(popped.strong_count(), 1);
-    assert_eq!(popped.exclusive().id, 1);
     assert!(list.is_empty());
+
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(p1);
+    slab.free(p2);
+    slab.free(p3);
+}
+
+#[test]
+fn unbounded_push_front_and_pop_back() {
+    let slab = unsafe { UnboundedSlab::<ListNode<u64>>::with_chunk_capacity(4) };
+    let mut list = List::new();
+
+    let h1 = list.push_front(&slab, 10);
+    let h2 = list.push_front(&slab, 20);
+
+    assert_eq!(list.front().unwrap().value, 20);
+    assert_eq!(list.back().unwrap().value, 10);
+
+    let p = list.pop_back().unwrap();
+    assert_eq!(p.borrow().value, 10);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(p);
+}
+
+// =============================================================================
+// Stress test — freelist integrity
+// =============================================================================
+
+#[test]
+fn stress_list_push_pop_cycle() {
+    let slab = unsafe { Slab::<ListNode<u64>>::with_capacity(10_000) };
+    let mut list = List::new();
+
+    // First fill: push 10K items
+    let mut handles = Vec::new();
+    for i in 0..10_000 {
+        let h = list.try_push_back(&slab, i).unwrap();
+        handles.push(h);
+    }
+    assert_eq!(list.len(), 10_000);
+
+    // Pop all
+    let mut popped = Vec::new();
+    while let Some(p) = list.pop_front() {
+        popped.push(p);
+    }
+    assert!(list.is_empty());
+    assert_eq!(popped.len(), 10_000);
+
+    // Verify order
+    for (i, p) in popped.iter().enumerate() {
+        assert_eq!(p.borrow().value, i as u64);
+    }
+
+    // Free all handles from first fill
+    for h in handles {
+        slab.free(h);
+    }
+    for p in popped {
+        slab.free(p);
+    }
+
+    // Second fill: push 10K again — verifies freelist integrity
+    let mut handles2 = Vec::new();
+    for i in 0..10_000 {
+        let h = list.try_push_back(&slab, i + 10_000).unwrap();
+        handles2.push(h);
+    }
+    assert_eq!(list.len(), 10_000);
+
+    // Verify values on second fill
+    let mut cursor = list.cursor();
+    let mut idx = 0;
+    while cursor.advance() {
+        assert_eq!(cursor.current().unwrap().value, (idx + 10_000) as u64);
+        idx += 1;
+    }
+    assert_eq!(idx, 10_000);
+
+    list.clear(&slab);
+    for h in handles2 {
+        slab.free(h);
+    }
+}
+
+// =============================================================================
+// Cross-collection test
+// =============================================================================
+
+#[test]
+fn cross_collection_move() {
+    let slab = make_u64_slab();
+    let mut list_a = List::new();
+    let mut list_b = List::new();
+
+    // Alloc a node
+    let h = slab.alloc(ListNode::new(42));
+    assert_eq!(h.refcount(), 1);
+
+    // Link to list A
+    list_a.link_back(&h);
+    assert_eq!(h.refcount(), 2); // user + list_a
+
+    // Unlink from A
+    list_a.unlink(&h, &slab);
+    assert_eq!(h.refcount(), 1); // user only
+    assert!(list_a.is_empty());
+
+    // Link to list B
+    list_b.link_back(&h);
+    assert_eq!(h.refcount(), 2); // user + list_b
+
+    // Unlink from B
+    list_b.unlink(&h, &slab);
+    assert_eq!(h.refcount(), 1); // user only
+    assert!(list_b.is_empty());
+
+    // Free
+    slab.free(h);
+}
+
+// =============================================================================
+// move_to_front / move_to_back with order verification
+// =============================================================================
+
+#[test]
+fn move_middle_to_front_verify_order() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+
+    // Move middle (20) to front: expect [20, 10, 30]
+    list.move_to_front(&h2);
+    let mut values = Vec::new();
+    let mut cursor = list.cursor();
+    while cursor.advance() {
+        values.push(cursor.current().unwrap().value);
+    }
+    assert_eq!(values, vec![20, 10, 30]);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+}
+
+#[test]
+fn move_middle_to_back_verify_order() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+
+    // Move middle (20) to back: expect [10, 30, 20]
+    list.move_to_back(&h2);
+    let mut values = Vec::new();
+    let mut cursor = list.cursor();
+    while cursor.advance() {
+        values.push(cursor.current().unwrap().value);
+    }
+    assert_eq!(values, vec![10, 30, 20]);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
 }

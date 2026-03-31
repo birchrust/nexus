@@ -528,3 +528,109 @@ fn miri_unbounded_claim_write() {
     // SAFETY: slot was allocated from this slab
     slab.free(slot);
 }
+
+// =============================================================================
+// Rc Slab — Memory Safety
+// =============================================================================
+
+#[cfg(feature = "rc")]
+mod rc_tests {
+    use super::*;
+    use nexus_slab::rc::bounded::Slab as RcSlab;
+
+    #[test]
+    fn miri_rc_alloc_clone_borrow_free() {
+        let slab = unsafe { RcSlab::<u64>::with_capacity(8) };
+
+        let h1 = slab.alloc(42);
+        assert_eq!(h1.refcount(), 1);
+
+        let h2 = h1.clone();
+        assert_eq!(h1.refcount(), 2);
+        assert_eq!(h2.refcount(), 2);
+
+        // Shared borrow via h1
+        {
+            let guard = h1.borrow();
+            assert_eq!(*guard, 42);
+        }
+
+        // Exclusive borrow via h2
+        {
+            let mut guard = h2.borrow_mut();
+            *guard = 99;
+        }
+
+        // Verify mutation visible through h1
+        {
+            let guard = h1.borrow();
+            assert_eq!(*guard, 99);
+        }
+
+        slab.free(h2);
+        assert_eq!(h1.refcount(), 1);
+        slab.free(h1);
+    }
+
+    #[test]
+    fn miri_rc_drop_counter() {
+        reset_drop_count();
+
+        let slab = unsafe { RcSlab::<DropTracker>::with_capacity(8) };
+
+        let h1 = slab.alloc(DropTracker(1));
+        let h2 = h1.clone();
+        let h3 = h1.clone();
+        assert_eq!(h1.refcount(), 3);
+        assert_eq!(get_drop_count(), 0);
+
+        // Freeing first two clones should NOT drop the value
+        slab.free(h3);
+        assert_eq!(get_drop_count(), 0);
+        slab.free(h2);
+        assert_eq!(get_drop_count(), 0);
+
+        // Freeing the last handle drops the value exactly once
+        slab.free(h1);
+        assert_eq!(get_drop_count(), 1);
+    }
+
+    #[test]
+    fn miri_rc_sequential_borrows_across_clones() {
+        let slab = unsafe { RcSlab::<String>::with_capacity(8) };
+
+        let h1 = slab.alloc(String::from("hello"));
+        let h2 = h1.clone();
+        let h3 = h1.clone();
+
+        // Sequential shared borrows through different handles
+        {
+            let g = h1.borrow();
+            assert_eq!(&*g, "hello");
+        }
+        {
+            let g = h2.borrow();
+            assert_eq!(&*g, "hello");
+        }
+
+        // Exclusive borrow through h3
+        {
+            let mut g = h3.borrow_mut();
+            g.push_str(" world");
+        }
+
+        // Verify mutation visible through all handles
+        {
+            let g = h1.borrow();
+            assert_eq!(&*g, "hello world");
+        }
+        {
+            let g = h2.borrow();
+            assert_eq!(&*g, "hello world");
+        }
+
+        slab.free(h3);
+        slab.free(h2);
+        slab.free(h1);
+    }
+}

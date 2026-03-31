@@ -28,7 +28,8 @@ fn rdtsc_start() -> u64 {
 #[inline(always)]
 fn rdtsc_end() -> u64 {
     unsafe {
-        let tsc = std::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
+        let mut aux: u32 = 0;
+        let tsc = std::arch::x86_64::__rdtscp(&raw mut aux);
         std::arch::x86_64::_mm_lfence();
         tsc
     }

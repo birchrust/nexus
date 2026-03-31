@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 exclude = [
-	"nexus-collections",
 	"nexus-timer",
 	"nexus-rt",
 	"nexus-rt-derive",
@@ -28,6 +27,7 @@ members = [
 	"nexus-notify",
 	"nexus-decimal",
 	"nexus-net", "nexus-async-net",
+	"nexus-collections",
 ]
 
 [workspace.package]

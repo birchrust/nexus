@@ -636,3 +636,75 @@ fn slab_debug_format() {
     assert!(debug.contains("Slab"));
     assert!(debug.contains("capacity"));
 }
+
+// =============================================================================
+// Slot::clone_ptr
+// =============================================================================
+
+#[test]
+fn slot_clone_ptr() {
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
+
+    let slot = slab.alloc(42);
+    // SAFETY: we will free the original before the clone becomes dangling,
+    // but clone_ptr's contract only requires the slot not be freed while
+    // any clone exists — we verify both point to the same value first.
+    let clone = unsafe { slot.clone_ptr() };
+
+    assert_eq!(*slot, 42);
+    assert_eq!(*clone, 42);
+    assert_eq!(slot.as_ptr(), clone.as_ptr());
+
+    // Free the original. The clone is now dangling — that's the unsafe
+    // contract. We disarm it via into_raw to avoid the debug drop detector.
+    slab.free(slot);
+    let _ = clone.into_raw();
+}
+
+// =============================================================================
+// Byte slab with Drop types
+// =============================================================================
+
+#[test]
+fn byte_slab_drop_type() {
+    use nexus_slab::byte::bounded::Slab as ByteSlab;
+
+    reset_drop_count();
+
+    let slab: ByteSlab<64> = unsafe { ByteSlab::with_capacity(4) };
+
+    // Alloc a String (heap-allocated, has Drop)
+    let slot = slab.alloc(String::from("hello byte slab"));
+    assert_eq!(&*slot, "hello byte slab");
+    assert_eq!(get_drop_count(), 0);
+
+    // Free should drop the String
+    slab.free(slot);
+    assert_eq!(get_drop_count(), 0); // String doesn't use our DropTracker
+
+    // Now test with our DropTracker
+    let slot = slab.alloc(DropTracker(99));
+    assert_eq!(get_drop_count(), 0);
+    slab.free(slot);
+    assert_eq!(get_drop_count(), 1);
+}
+
+#[test]
+fn byte_slab_drop_on_take() {
+    use nexus_slab::byte::bounded::Slab as ByteSlab;
+
+    reset_drop_count();
+
+    let slab: ByteSlab<64> = unsafe { ByteSlab::with_capacity(4) };
+
+    let slot = slab.alloc(DropTracker(1));
+    assert_eq!(get_drop_count(), 0);
+
+    // take extracts without dropping
+    let val = slab.take(slot);
+    assert_eq!(get_drop_count(), 0);
+
+    // dropping the returned value triggers the drop
+    drop(val);
+    assert_eq!(get_drop_count(), 1);
+}

@@ -10,9 +10,9 @@
 
 use std::hint::black_box;
 
-mod pq {
-    nexus_collections::heap_allocator!(u64, unbounded);
-}
+use nexus_collections::RcSlot;
+use nexus_collections::heap::{Heap, HeapNode};
+use nexus_slab::rc::unbounded::Slab;
 
 const COUNT: usize = 500_000;
 
@@ -34,20 +34,23 @@ impl Xorshift {
 }
 
 fn main() {
-    pq::Allocator::builder().chunk_size(8192).build().unwrap();
+    // SAFETY: single-threaded, no concurrent access
+    let slab = unsafe { Slab::<HeapNode<u64>>::with_chunk_capacity(8192) };
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
 
     // Pre-allocate all handles
-    let handles: Vec<pq::Handle> = (0..COUNT).map(|_| pq::create_node(rng.next())).collect();
+    let handles: Vec<RcSlot<HeapNode<u64>>> = (0..COUNT)
+        .map(|_| slab.alloc(HeapNode::new(rng.next())))
+        .collect();
 
-    let mut heap = pq::Heap::new(pq::Allocator);
+    let mut heap = Heap::new();
 
     // Warmup: push/clear to fault pages and warm TLB
     for handle in &handles {
         heap.link(handle);
     }
-    heap.clear();
+    heap.clear(&slab);
 
     // ---- Measured section: pure push, no cleanup ----
     for handle in &handles {
@@ -56,5 +59,10 @@ fn main() {
     }
 
     black_box(&heap);
-    heap.clear();
+    heap.clear(&slab);
+
+    // Free all handles to satisfy the slab contract
+    for handle in handles {
+        slab.free(handle);
+    }
 }
