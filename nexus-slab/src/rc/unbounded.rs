@@ -15,7 +15,7 @@ impl<T> Slab<T> {
     ///
     /// # Safety
     ///
-    /// See [`crate::bounded::Slab`] safety contract.
+    /// See [`crate::unbounded::Slab`] safety contract.
     #[inline]
     pub unsafe fn with_chunk_capacity(chunk_capacity: usize) -> Self {
         Self {
@@ -63,7 +63,10 @@ mod tests {
         let h2 = h1.clone();
 
         assert_eq!(h1.refcount(), 2);
-        { let g = h1.borrow(); assert_eq!(*g, 42); }
+        {
+            let g = h1.borrow();
+            assert_eq!(*g, 42);
+        }
 
         slab.free(h2);
         slab.free(h1);

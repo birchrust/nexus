@@ -64,16 +64,17 @@ use crate::shared::SlotCell;
 ///
 /// The `state` field is at offset 0 in the value region of the `SlotCell`
 /// union. When vacant, the `SlotCell::next_free` pointer occupies the
-/// same bytes. This works because `next_free` is pointer-sized (8 bytes)
-/// and `state` is also 8 bytes (`usize`).
+/// same bytes. This works because `next_free` is pointer-sized
+/// and `state` is also pointer-sized (`usize`).
 #[repr(C)]
 pub struct RcCell<T> {
     /// Bit 63: borrow active (1 = someone has a Ref/RefMut guard).
     /// Bits 0-62: reference count.
     state: Cell<usize>,
-    /// The value. ManuallyDrop because we manage the lifetime manually
-    /// (drop when refcount hits 0, not when RcCell is dropped).
-    value: ManuallyDrop<T>,
+    /// The value. Inside `UnsafeCell` to allow mutation through shared
+    /// references (same pattern as `RefCell`). `ManuallyDrop` because we
+    /// manage the lifetime manually (drop when refcount hits 0).
+    value: core::cell::UnsafeCell<ManuallyDrop<T>>,
 }
 
 /// Borrow flag — bit 63.
@@ -87,14 +88,14 @@ impl<T> RcCell<T> {
     pub(crate) fn new(value: T) -> Self {
         RcCell {
             state: Cell::new(1),
-            value: ManuallyDrop::new(value),
+            value: core::cell::UnsafeCell::new(ManuallyDrop::new(value)),
         }
     }
 
     /// Extracts the inner value, consuming the cell.
     #[inline]
     pub(crate) fn into_inner(self) -> T {
-        ManuallyDrop::into_inner(self.value)
+        ManuallyDrop::into_inner(self.value.into_inner())
     }
 
     /// Returns the current reference count (without borrow bit).
@@ -107,7 +108,7 @@ impl<T> RcCell<T> {
     #[inline]
     fn inc_ref(&self) {
         let state = self.state.get();
-        debug_assert!(
+        assert!(
             (state & REFCOUNT_MASK) < REFCOUNT_MASK,
             "RcSlot refcount overflow"
         );
@@ -151,7 +152,9 @@ impl<T> RcCell<T> {
     /// Caller must have acquired the borrow.
     #[inline]
     unsafe fn value_ref(&self) -> &T {
-        &self.value
+        // SAFETY: UnsafeCell::get() returns *mut ManuallyDrop<T>.
+        // Borrow bit guarantees no concurrent mutation.
+        unsafe { &*(self.value.get().cast::<T>()) }
     }
 
     /// Returns a mutable reference to the value.
@@ -162,10 +165,9 @@ impl<T> RcCell<T> {
     #[inline]
     #[allow(clippy::mut_from_ref)]
     unsafe fn value_mut(&self) -> &mut T {
-        // SAFETY: Borrow bit guarantees exclusive access. We go through
-        // a raw pointer to avoid needing &mut self (we only have &self
-        // because multiple RcSlots share the same RcCell).
-        unsafe { &mut *core::ptr::addr_of!(self.value).cast_mut().cast::<T>() }
+        // SAFETY: UnsafeCell::get() provides *mut with proper provenance.
+        // Borrow bit guarantees exclusive access.
+        unsafe { &mut *(self.value.get().cast::<T>()) }
     }
 
     /// Drops the value in place.
@@ -175,8 +177,9 @@ impl<T> RcCell<T> {
     /// Must only be called once, when refcount hits 0.
     #[inline]
     unsafe fn drop_value(&self) {
+        // SAFETY: UnsafeCell::get() provides *mut with write provenance.
         unsafe {
-            core::ptr::drop_in_place(core::ptr::addr_of!(self.value).cast_mut().cast::<T>());
+            core::ptr::drop_in_place(self.value.get().cast::<T>());
         }
     }
 }
@@ -391,8 +394,7 @@ impl<T> Deref for Ref<'_, T> {
 
     #[inline]
     fn deref(&self) -> &T {
-        // SAFETY: Borrow bit is set, guaranteeing exclusive access.
-        // The pointer is valid for the lifetime of the RcSlot.
+        // SAFETY: Borrow bit is set, guaranteeing no other active borrows.
         unsafe { (*self.cell).value_ref() }
     }
 }
@@ -452,4 +454,3 @@ impl<T: fmt::Debug> fmt::Debug for RefMut<'_, T> {
         f.debug_struct("RefMut").field("value", &**self).finish()
     }
 }
-

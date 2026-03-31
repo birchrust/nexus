@@ -1,7 +1,7 @@
 //! Fixed-capacity reference-counted slab.
 
-use crate::shared::Full;
 use super::{RcCell, RcSlot};
+use crate::shared::Full;
 
 /// Fixed-capacity slab with reference-counted handles.
 ///
@@ -138,8 +138,14 @@ mod tests {
         let h1 = slab.alloc(1u64);
         let h2 = h1.clone();
 
-        { let mut g = h1.borrow_mut(); *g = 99; }
-        { let g = h2.borrow(); assert_eq!(*g, 99); }
+        {
+            let mut g = h1.borrow_mut();
+            *g = 99;
+        }
+        {
+            let g = h2.borrow();
+            assert_eq!(*g, 99);
+        }
 
         slab.free(h2);
         slab.free(h1);
@@ -183,9 +189,13 @@ mod tests {
     fn drop_tracking() {
         use core::cell::Cell;
 
-        struct DropCounter<'a> { count: &'a Cell<u32> }
+        struct DropCounter<'a> {
+            count: &'a Cell<u32>,
+        }
         impl Drop for DropCounter<'_> {
-            fn drop(&mut self) { self.count.set(self.count.get() + 1); }
+            fn drop(&mut self) {
+                self.count.set(self.count.get() + 1);
+            }
         }
 
         let drops = Cell::new(0);
@@ -199,6 +209,94 @@ mod tests {
 
         slab.free(h1);
         assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn mut_while_borrow_panics() {
+        let slab = unsafe { Slab::with_capacity(10) };
+        let h1 = slab.alloc(42u64);
+        let h2 = h1.clone();
+
+        let _g1 = h1.borrow();
+        let _g2 = h2.borrow_mut(); // panics
+    }
+
+    #[test]
+    fn pin_and_pin_mut() {
+        let slab = unsafe { Slab::with_capacity(10) };
+        let handle = slab.alloc(42u64);
+
+        {
+            let pinned = handle.pin();
+            assert_eq!(*pinned, 42);
+        }
+        {
+            let mut pinned = handle.pin_mut();
+            *pinned = 99;
+        }
+        {
+            let g = handle.borrow();
+            assert_eq!(*g, 99);
+        }
+        slab.free(handle);
+    }
+
+    #[test]
+    fn into_raw_from_raw_roundtrip() {
+        let slab = unsafe { Slab::with_capacity(10) };
+        let handle = slab.alloc(42u64);
+
+        let raw = handle.into_raw();
+        let handle = unsafe { crate::RcSlot::from_raw(raw) };
+
+        {
+            let g = handle.borrow();
+            assert_eq!(*g, 42);
+        }
+        slab.free(handle);
+    }
+
+    #[test]
+    fn freelist_integrity_after_rc_cycle() {
+        let slab = unsafe { Slab::with_capacity(4) };
+
+        // Fill
+        let h1 = slab.alloc(1u64);
+        let h2 = slab.alloc(2u64);
+        let h3 = slab.alloc(3u64);
+        let h4 = slab.alloc(4u64);
+        assert!(slab.try_alloc(5u64).is_err());
+
+        // Free all
+        slab.free(h4);
+        slab.free(h3);
+        slab.free(h2);
+        slab.free(h1);
+
+        // Realloc — verify freelist is intact
+        let h1 = slab.alloc(10u64);
+        let h2 = slab.alloc(20u64);
+        let h3 = slab.alloc(30u64);
+        let h4 = slab.alloc(40u64);
+
+        {
+            assert_eq!(*h1.borrow(), 10);
+        }
+        {
+            assert_eq!(*h2.borrow(), 20);
+        }
+        {
+            assert_eq!(*h3.borrow(), 30);
+        }
+        {
+            assert_eq!(*h4.borrow(), 40);
+        }
+
+        slab.free(h4);
+        slab.free(h3);
+        slab.free(h2);
+        slab.free(h1);
     }
 
     #[cfg(debug_assertions)]
