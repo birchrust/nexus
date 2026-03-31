@@ -6,7 +6,7 @@
 
 #![allow(clippy::items_after_statements)]
 
-use nexus_slab::RawSlot;
+use nexus_slab::SlotPtr;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
@@ -140,7 +140,7 @@ fn bench_allocation() {
 
     // --- Slab allocation ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(POOL_SIZE * 2);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(POOL_SIZE * 2) };
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
@@ -152,7 +152,7 @@ fn bench_allocation() {
                 let s = alloc.alloc(val.clone());
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.free(s) };
+                alloc.free(s);
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
@@ -187,13 +187,13 @@ fn bench_deallocation() {
 
     // --- Slab deallocation ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(POOL_SIZE * 2);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(POOL_SIZE * 2) };
 
         let mut samples = Vec::with_capacity(SAMPLES);
 
         for i in 0..SAMPLES {
             // Pre-allocate slots
-            let slots: Vec<RawSlot<TestValue>> = (0..100)
+            let slots: Vec<SlotPtr<TestValue>> = (0..100)
                 .map(|j| alloc.alloc(TestValue::new((i * 100 + j) as u64)))
                 .collect();
 
@@ -202,13 +202,13 @@ fn bench_deallocation() {
             unroll_100!({
                 let slot = iter.next().unwrap();
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.free(slot) };
+                alloc.free(slot);
                 black_box(());
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
         }
-        print_stats("slab.free(RawSlot)", &mut samples);
+        print_stats("slab.free(SlotPtr)", &mut samples);
     }
 }
 
@@ -248,9 +248,9 @@ fn bench_access() {
 
     // --- Slab access ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(POOL_SIZE);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(POOL_SIZE) };
 
-        let slots: Vec<RawSlot<TestValue>> = (0..POOL_SIZE)
+        let slots: Vec<SlotPtr<TestValue>> = (0..POOL_SIZE)
             .map(|i| alloc.alloc(TestValue::new(i as u64)))
             .collect();
 
@@ -274,12 +274,12 @@ fn bench_access() {
             black_box(sum);
             samples.push((end - start) / 100);
         }
-        print_stats("RawSlot deref (random)", &mut samples);
+        print_stats("SlotPtr deref (random)", &mut samples);
 
         // Cleanup
         for slot in slots {
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.free(slot) };
+            alloc.free(slot);
         }
     }
 }
@@ -314,15 +314,15 @@ fn bench_churn() {
 
     // --- Slab churn ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(POOL_SIZE);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(POOL_SIZE) };
 
         // Pre-warm
-        let warmup: Vec<RawSlot<TestValue>> = (0..POOL_SIZE / 2)
+        let warmup: Vec<SlotPtr<TestValue>> = (0..POOL_SIZE / 2)
             .map(|i| alloc.alloc(TestValue::new(i as u64)))
             .collect();
         for slot in warmup {
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.free(slot) };
+            alloc.free(slot);
         }
 
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -334,12 +334,12 @@ fn bench_churn() {
                 let s = alloc.alloc(val.clone());
                 black_box(&*s);
                 // SAFETY: slot was allocated from this slab
-                unsafe { alloc.free(s) };
+                alloc.free(s);
             });
             let end = rdtsc_end();
             samples.push((end - start) / 100);
         }
-        print_stats("RawSlot insert+free", &mut samples);
+        print_stats("SlotPtr insert+free", &mut samples);
     }
 }
 
@@ -398,9 +398,9 @@ fn bench_realistic_workload() {
 
     // --- Slab workload ---
     {
-        let alloc: BoundedSlab<TestValue> = BoundedSlab::with_capacity(WORKING_SET * 2);
+        let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(WORKING_SET * 2) };
 
-        let mut slots: Vec<Option<RawSlot<TestValue>>> = (0..WORKING_SET)
+        let mut slots: Vec<Option<SlotPtr<TestValue>>> = (0..WORKING_SET)
             .map(|i| Some(alloc.alloc(TestValue::new(i as u64))))
             .collect();
 
@@ -431,7 +431,7 @@ fn bench_realistic_workload() {
                     // Remove (20%)
                     if let Some(slot) = slots[idx].take() {
                         // SAFETY: slot was allocated from this slab
-                        unsafe { alloc.free(slot) };
+                        alloc.free(slot);
                     }
                 }
             }
@@ -444,7 +444,7 @@ fn bench_realistic_workload() {
         // Cleanup remaining slots
         for slot in slots.into_iter().flatten() {
             // SAFETY: slot was allocated from this slab
-            unsafe { alloc.free(slot) };
+            alloc.free(slot);
         }
     }
 }

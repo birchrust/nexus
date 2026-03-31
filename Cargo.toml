@@ -1,19 +1,21 @@
 [workspace]
 resolver = "2"
+exclude = [
+	"nexus-collections",
+	"nexus-timer",
+	"nexus-rt",
+	"nexus-rt-derive",
+]
 members = [
 	"nexus-ascii",
 	"nexus-bits",
 	"nexus-bits-derive",
 	"nexus-channel",
-	"nexus-collections",
 	"nexus-id",
 	"nexus-logbuf",
 	"nexus-pool",
 	"nexus-queue",
-	"nexus-rt",
-	"nexus-rt-derive",
 	"nexus-slab",
-	"nexus-timer",
 	"nexus-slot",
 	"nexus-smartptr",
 	"nexus-stats",

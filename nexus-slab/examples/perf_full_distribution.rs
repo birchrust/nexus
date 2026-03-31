@@ -10,7 +10,7 @@
 #![allow(clippy::iter_with_drain)]
 
 use hdrhistogram::Histogram;
-use nexus_slab::RawSlot;
+use nexus_slab::SlotPtr;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use seq_macro::seq;
 use std::hint::black_box;
@@ -75,8 +75,8 @@ fn bench_get() {
     let mut slab_hot_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
-    let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
+    let entries: Vec<SlotPtr<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
     let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
@@ -143,7 +143,7 @@ fn bench_get() {
     // Cleanup - free all slots
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
     }
 }
 
@@ -159,8 +159,8 @@ fn bench_get_mut() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
-    let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let mut entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
+    let mut entries: Vec<SlotPtr<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
     let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
@@ -200,7 +200,7 @@ fn bench_get_mut() {
     // Cleanup
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
     }
 }
 
@@ -216,8 +216,8 @@ fn bench_insert() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slab insert - need to remove after each batch to make room
-    let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let mut temp_entries: Vec<RawSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
+    let mut temp_entries: Vec<SlotPtr<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         let start = rdtsc_start();
@@ -231,7 +231,7 @@ fn bench_insert() {
         // Cleanup batch
         for entry in temp_entries.drain(..) {
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(entry) };
+            slab.free(entry);
         }
     }
 
@@ -273,11 +273,11 @@ fn bench_remove() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slot free_take - insert batch, then remove batch
-    let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
 
     for _ in 0..OPS / BATCH_SIZE as usize {
         // Insert batch
-        let mut temp_entries: Vec<RawSlot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
+        let mut temp_entries: Vec<SlotPtr<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
         for _ in 0..BATCH_SIZE {
             temp_entries.push(slab.alloc(42u64));
         }
@@ -287,7 +287,7 @@ fn bench_remove() {
         unroll!(100, {
             let entry = temp_entries.pop().unwrap();
             // SAFETY: slot was allocated from this slab
-            black_box(unsafe { slab.take(entry) });
+            black_box(slab.take(entry));
         });
         let end = rdtsc_end();
         let _ = entry_hist.record((end - start) / BATCH_SIZE);
@@ -329,8 +329,8 @@ fn bench_replace() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
-    let slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-    let mut entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
+    let mut entries: Vec<SlotPtr<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
     // Setup slab crate
     let mut ext_slab = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
@@ -372,7 +372,7 @@ fn bench_replace() {
     // Cleanup
     for slot in entries {
         // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
     }
 }
 
@@ -391,23 +391,23 @@ fn main() {
     println!("All times in CPU cycles (lfence+rdtsc, loop overhead eliminated)");
     println!();
     println!(
-        "RawSlot<T> size: {} bytes (pointer wrapper, no RAII)",
-        std::mem::size_of::<RawSlot<u64>>()
+        "SlotPtr<T> size: {} bytes (pointer wrapper, no RAII)",
+        std::mem::size_of::<SlotPtr<u64>>()
     );
     println!();
 
     // Warmup: exercise slab and slab-crate paths to trigger page faults,
     // TLS init, and cache priming before timed measurements.
     {
-        let warmup_slab = BoundedSlab::<u64>::with_capacity(NUM_SLOTS);
-        let warmup_entries: Vec<RawSlot<u64>> = (0..NUM_SLOTS as u64)
+        let warmup_slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
+        let warmup_entries: Vec<SlotPtr<u64>> = (0..NUM_SLOTS as u64)
             .map(|i| warmup_slab.alloc(i))
             .collect();
         for slot in &warmup_entries {
             black_box(&**slot);
         }
         for slot in warmup_entries {
-            unsafe { warmup_slab.free(slot) };
+            warmup_slab.free(slot);
         }
         let mut warmup_ext = slab::Slab::<u64>::with_capacity(NUM_SLOTS);
         let warmup_keys: Vec<_> = (0..NUM_SLOTS as u64)
@@ -429,6 +429,6 @@ fn main() {
 
     println!("=========================================");
     println!("Legend:");
-    println!("  slot.*()              RawSlot<T> API (8-byte ptr, explicit free)");
+    println!("  slot.*()              SlotPtr<T> API (8-byte ptr, explicit free)");
     println!("  slab.*()              slab crate (baseline comparison)");
 }

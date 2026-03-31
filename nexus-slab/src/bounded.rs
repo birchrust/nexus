@@ -7,20 +7,21 @@
 //! ```
 //! use nexus_slab::bounded::Slab;
 //!
-//! let slab = Slab::with_capacity(1024);
+//! // SAFETY: caller guarantees slab contract (see struct docs)
+//! let slab = unsafe { Slab::with_capacity(1024) };
 //! let slot = slab.alloc(42u64);
 //! assert_eq!(*slot, 42);
-//! // SAFETY: slot was allocated from this slab
-//! unsafe { slab.free(slot) };
+//! slab.free(slot);
 //! ```
 
-use std::cell::Cell;
-use std::fmt;
-use std::mem;
-use std::ptr;
+use core::cell::Cell;
+use core::fmt;
+use core::mem;
+use core::ptr;
 
-use crate::alloc::Full;
-use crate::shared::{RawSlot, SlotCell};
+use alloc::vec::Vec;
+
+use crate::shared::{Full, SlotCell, SlotPtr};
 
 // =============================================================================
 // Claim
@@ -41,12 +42,12 @@ pub struct Claim<'a, T> {
 }
 
 impl<T> Claim<'_, T> {
-    /// Writes the value to the claimed slot and returns the [`RawSlot`] handle.
+    /// Writes the value to the claimed slot and returns the [`SlotPtr`] handle.
     ///
     /// This consumes the claim. The value is written directly to the slot's
     /// memory, which may enable placement new optimization.
     #[inline]
-    pub fn write(self, value: T) -> RawSlot<T> {
+    pub fn write(self, value: T) -> SlotPtr<T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
@@ -55,7 +56,7 @@ impl<T> Claim<'_, T> {
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
-        unsafe { RawSlot::from_ptr(slot_ptr) }
+        unsafe { SlotPtr::from_ptr(slot_ptr) }
     }
 }
 
@@ -83,19 +84,20 @@ impl<T> Drop for Claim<'_, T> {
 // Slab
 // =============================================================================
 
-/// Fixed-capacity slab allocator.
+/// Fixed-capacity slab allocator for manual memory management.
 ///
-/// Uses pointer-based freelist for O(1) allocation.
+/// Construction is `unsafe` — by creating a slab, you accept the contract:
 ///
-/// # Drop Behavior
+/// - **Free everything you allocate.** Dropping the slab does NOT drop
+///   values in occupied slots. Unfree'd slots leak silently.
+/// - **Free from the same slab.** Passing a [`SlotPtr`] to a different
+///   slab's `free()` corrupts the freelist.
+/// - **Don't share across threads.** The slab is `!Send` and `!Sync`.
 ///
-/// Dropping a `Slab` does **not** drop values in occupied slots. `SlotCell` is
-/// a union, so the compiler cannot know which slots contain live values. The
-/// caller must free all outstanding [`RawSlot`] handles before dropping the
-/// slab, or the values will be leaked.
+/// In practice, most systems have one slab per type in `thread_local!`
+/// storage. Cross-slab free is a programming error caught by `debug_assert`.
 ///
-/// This is acceptable for the primary use case (TLS via `thread_local!`) where
-/// thread exit leaks all TLS storage anyway.
+/// Uses pointer-based freelist for O(1) allocation. ~20-24 cycle operations.
 ///
 /// # Const Construction
 ///
@@ -104,8 +106,9 @@ impl<T> Drop for Claim<'_, T> {
 /// `thread_local!` using the `const { }` block syntax for zero-overhead TLS access.
 ///
 /// ```ignore
+/// // SAFETY: single slab per type, freed before thread exit
 /// thread_local! {
-///     static SLAB: Slab<MyType> = const { Slab::new() };
+///     static SLAB: Slab<MyType> = const { unsafe { Slab::new() } };
 /// }
 ///
 /// // Later, at runtime:
@@ -115,7 +118,7 @@ impl<T> Drop for Claim<'_, T> {
 /// For direct usage, prefer [`with_capacity()`](Self::with_capacity).
 pub struct Slab<T> {
     /// Slot storage. Wrapped in UnsafeCell for interior mutability.
-    slots: std::cell::UnsafeCell<Vec<SlotCell<T>>>,
+    slots: core::cell::UnsafeCell<Vec<SlotCell<T>>>,
     /// Capacity. Wrapped in Cell so it can be set during init.
     capacity: Cell<usize>,
     /// Head of freelist - raw pointer for fast allocation.
@@ -129,20 +132,22 @@ impl<T> Slab<T> {
     /// This is a const function that performs no allocation. Call [`init()`](Self::init)
     /// to allocate storage before use.
     ///
-    /// For direct usage, prefer [`with_capacity()`](Self::with_capacity).
+    /// # Safety
+    ///
+    /// See [struct-level safety contract](Self).
     ///
     /// # Example
     ///
     /// ```ignore
-    /// // For use with thread_local! const initialization
+    /// // SAFETY: single slab per type, freed before thread exit
     /// thread_local! {
-    ///     static SLAB: Slab<u64> = const { Slab::new() };
+    ///     static SLAB: Slab<u64> = const { unsafe { Slab::new() } };
     /// }
     /// ```
     #[inline]
-    pub const fn new() -> Self {
+    pub const unsafe fn new() -> Self {
         Self {
-            slots: std::cell::UnsafeCell::new(Vec::new()),
+            slots: core::cell::UnsafeCell::new(Vec::new()),
             capacity: Cell::new(0),
             free_head: Cell::new(ptr::null_mut()),
         }
@@ -150,13 +155,19 @@ impl<T> Slab<T> {
 
     /// Creates a new slab with the given capacity.
     ///
+    /// # Safety
+    ///
+    /// See [struct-level safety contract](Self).
+    ///
     /// # Panics
     ///
     /// Panics if capacity is zero.
     #[inline]
-    pub fn with_capacity(capacity: usize) -> Self {
-        let slab = Self::new();
-        slab.init(capacity);
+    pub unsafe fn with_capacity(capacity: usize) -> Self {
+        // SAFETY: caller upholds the slab contract
+        let slab = unsafe { Self::new() };
+        // SAFETY: caller upholds the slab contract
+        unsafe { slab.init(capacity) };
         slab
     }
 
@@ -165,11 +176,15 @@ impl<T> Slab<T> {
     /// This allocates slot storage and builds the freelist. Must be called
     /// exactly once before any allocations.
     ///
+    /// # Safety
+    ///
+    /// See [struct-level safety contract](Self).
+    ///
     /// # Panics
     ///
     /// - Panics if the slab is already initialized (capacity > 0)
     /// - Panics if capacity is zero
-    pub fn init(&self, capacity: usize) {
+    pub unsafe fn init(&self, capacity: usize) {
         assert!(self.capacity.get() == 0, "Slab already initialized");
         assert!(capacity > 0, "capacity must be non-zero");
 
@@ -223,7 +238,7 @@ impl<T> Slab<T> {
     #[inline]
     pub fn contains_ptr(&self, ptr: *const ()) -> bool {
         let base = self.slots_ptr() as usize;
-        let end = base + self.capacity.get() * std::mem::size_of::<SlotCell<T>>();
+        let end = base + self.capacity.get() * core::mem::size_of::<SlotCell<T>>();
         let addr = ptr as usize;
         addr >= base && addr < end
     }
@@ -245,12 +260,12 @@ impl<T> Slab<T> {
     /// ```
     /// use nexus_slab::bounded::Slab;
     ///
-    /// let slab = Slab::with_capacity(10);
+    /// // SAFETY: caller guarantees slab contract (see struct docs)
+    /// let slab = unsafe { Slab::with_capacity(10) };
     /// if let Some(claim) = slab.claim() {
     ///     let slot = claim.write(42u64);
     ///     assert_eq!(*slot, 42);
-    ///     // SAFETY: slot was allocated from this slab
-    ///     unsafe { slab.free(slot) };
+    ///     slab.free(slot);
     /// }
     /// ```
     #[inline]
@@ -296,38 +311,29 @@ impl<T> Slab<T> {
     ///
     /// Panics if the slab is full.
     #[inline]
-    pub fn alloc(&self, value: T) -> RawSlot<T> {
-        self.try_alloc(value)
-            .unwrap_or_else(|_| panic!("slab full"))
+    pub fn alloc(&self, value: T) -> SlotPtr<T> {
+        self.claim().expect("slab full").write(value)
     }
 
     /// Tries to allocate a slot and write the value.
     ///
     /// Returns `Err(Full(value))` if the slab is at capacity.
     #[inline]
-    pub fn try_alloc(&self, value: T) -> Result<RawSlot<T>, Full<T>> {
-        let Some(slot_ptr) = self.claim_ptr() else {
-            return Err(Full(value));
-        };
-
-        // SAFETY: Slot is claimed from freelist, we have exclusive access
-        unsafe {
-            (*slot_ptr).write_value(value);
+    pub fn try_alloc(&self, value: T) -> Result<SlotPtr<T>, Full<T>> {
+        match self.claim() {
+            Some(claim) => Ok(claim.write(value)),
+            None => Err(Full(value)),
         }
-
-        // SAFETY: slot_ptr is valid and occupied
-        Ok(unsafe { RawSlot::from_ptr(slot_ptr) })
     }
 
     /// Frees a slot, dropping the value and returning storage to the freelist.
     ///
-    /// # Safety
-    ///
-    /// - `slot` must have been allocated from **this** slab
-    /// - No references to the slot's value may exist
+    /// Consumes the handle — the slot cannot be used after this call.
+    /// The caller's safety obligation (free from the correct slab) was
+    /// accepted at construction time.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub unsafe fn free(&self, slot: RawSlot<T>) {
+    pub fn free(&self, slot: SlotPtr<T>) {
         let slot_ptr = slot.into_ptr();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
@@ -342,13 +348,10 @@ impl<T> Slab<T> {
 
     /// Frees a slot and returns the value without dropping it.
     ///
-    /// # Safety
-    ///
-    /// - `slot` must have been allocated from **this** slab
-    /// - No references to the slot's value may exist
+    /// Consumes the handle — the slot cannot be used after this call.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub unsafe fn take(&self, slot: RawSlot<T>) -> T {
+    pub fn take(&self, slot: SlotPtr<T>) -> T {
         let slot_ptr = slot.into_ptr();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
@@ -388,7 +391,9 @@ impl<T> Slab<T> {
 
 impl<T> Default for Slab<T> {
     fn default() -> Self {
-        Self::new()
+        // SAFETY: Default creates an uninitialized slab — caller must
+        // call init() and uphold the slab contract before use.
+        unsafe { Self::new() }
     }
 }
 
@@ -411,18 +416,17 @@ mod tests {
 
     #[test]
     fn slab_basic() {
-        let slab = Slab::<u64>::with_capacity(100);
+        let slab = unsafe { Slab::<u64>::with_capacity(100) };
         assert_eq!(slab.capacity(), 100);
 
         let slot = slab.alloc(42);
         assert_eq!(*slot, 42);
-        // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
     }
 
     #[test]
     fn slab_full() {
-        let slab = Slab::<u64>::with_capacity(2);
+        let slab = unsafe { Slab::<u64>::with_capacity(2) };
         let s1 = slab.alloc(1);
         let s2 = slab.alloc(2);
 
@@ -431,52 +435,46 @@ mod tests {
         let recovered = result.unwrap_err().into_inner();
         assert_eq!(recovered, 3);
 
-        // SAFETY: slots were allocated from this slab
-        unsafe {
-            slab.free(s1);
-            slab.free(s2);
-        }
+        slab.free(s1);
+        slab.free(s2);
     }
 
     #[test]
     fn slot_deref_mut() {
-        let slab = Slab::<String>::with_capacity(10);
+        let slab = unsafe { Slab::<String>::with_capacity(10) };
         let mut slot = slab.alloc("hello".to_string());
         slot.push_str(" world");
         assert_eq!(&*slot, "hello world");
-        // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
     }
 
     #[test]
     fn slot_dealloc_take() {
-        let slab = Slab::<String>::with_capacity(10);
+        let slab = unsafe { Slab::<String>::with_capacity(10) };
         let slot = slab.alloc("hello".to_string());
 
-        // SAFETY: slot was allocated from this slab
-        let value = unsafe { slab.take(slot) };
+        let value = slab.take(slot);
         assert_eq!(value, "hello");
     }
 
     #[test]
     fn slot_size() {
-        assert_eq!(std::mem::size_of::<RawSlot<u64>>(), 8);
+        assert_eq!(std::mem::size_of::<SlotPtr<u64>>(), 8);
     }
 
     #[test]
     fn slab_debug() {
-        let slab = Slab::<u64>::with_capacity(10);
+        let slab = unsafe { Slab::<u64>::with_capacity(10) };
         let s = slab.alloc(42);
         let debug = format!("{:?}", slab);
         assert!(debug.contains("Slab"));
         assert!(debug.contains("capacity"));
-        // SAFETY: slot was allocated from slab
-        unsafe { slab.free(s) };
+        slab.free(s);
     }
 
     #[test]
     fn borrow_traits() {
-        let slab = Slab::<u64>::with_capacity(10);
+        let slab = unsafe { Slab::<u64>::with_capacity(10) };
         let mut slot = slab.alloc(42);
 
         let borrowed: &u64 = slot.borrow();
@@ -486,39 +484,36 @@ mod tests {
         *borrowed_mut = 100;
         assert_eq!(*slot, 100);
 
-        // SAFETY: slot was allocated from slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    fn rawslot_debug_drop_panics() {
+    fn slotptr_debug_drop_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let slab = Slab::<u64>::with_capacity(10);
+            let slab = unsafe { Slab::<u64>::with_capacity(10) };
             let _slot = slab.alloc(42u64);
             // slot drops here without being freed
         }));
         assert!(
             result.is_err(),
-            "RawSlot should panic on drop in debug mode"
+            "SlotPtr should panic on drop in debug mode"
         );
     }
 
     #[test]
     fn capacity_one() {
-        let slab = Slab::<u64>::with_capacity(1);
+        let slab = unsafe { Slab::<u64>::with_capacity(1) };
 
         assert_eq!(slab.capacity(), 1);
 
         let slot = slab.alloc(42);
         assert!(slab.try_alloc(100).is_err());
 
-        // SAFETY: slot was allocated from this slab
-        unsafe { slab.free(slot) };
+        slab.free(slot);
 
         let slot2 = slab.alloc(100);
         assert_eq!(*slot2, 100);
-        // SAFETY: slot2 was allocated from this slab
-        unsafe { slab.free(slot2) };
+        slab.free(slot2);
     }
 }

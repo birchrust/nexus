@@ -98,7 +98,7 @@ fn main() {
     // 64B test
     {
         println!("\n  -- 64B SINGLE OP --");
-        let slab = BoundedSlab::<Pod64>::with_capacity(SAMPLES * 4);
+        let slab = unsafe { BoundedSlab::<Pod64>::with_capacity(SAMPLES * 4) };
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -121,7 +121,7 @@ fn main() {
                 let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
-                unsafe { slab.free(slot) };
+                slab.free(slot);
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
             } else {
@@ -131,7 +131,7 @@ fn main() {
                 let slot = slab.alloc(Pod64::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
-                unsafe { slab.free(slot) };
+                slab.free(slot);
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
 
@@ -152,7 +152,7 @@ fn main() {
     // 256B test
     {
         println!("\n  -- 256B SINGLE OP --");
-        let slab = BoundedSlab::<Pod256>::with_capacity(SAMPLES * 4);
+        let slab = unsafe { BoundedSlab::<Pod256>::with_capacity(SAMPLES * 4) };
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
         let mut slab_samples = Vec::with_capacity(SAMPLES);
@@ -173,7 +173,7 @@ fn main() {
                 let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
-                unsafe { slab.free(slot) };
+                slab.free(slot);
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
             } else {
@@ -182,7 +182,7 @@ fn main() {
                 let slot = slab.alloc(Pod256::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
-                unsafe { slab.free(slot) };
+                slab.free(slot);
                 let elapsed = rdtsc_end() - start;
                 slab_samples.push(elapsed);
 

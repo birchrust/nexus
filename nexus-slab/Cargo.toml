@@ -1,6 +1,6 @@
 [package]
 name = "nexus-slab"
-version = "1.1.0"
+version = "1.0.0"
 description = "A high-performance slab allocator optimized for predictable tail latency"
 readme = "README.md"
 edition.workspace = true
@@ -9,6 +9,11 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
 
 [dev-dependencies]
 hdrhistogram.workspace = true
