@@ -12,15 +12,25 @@ categories.workspace = true
 
 [features]
 default = ["std"]
-std = ["alloc"]
-alloc = []
+std = ["alloc", "nexus-stats-core/std", "nexus-stats-smoothing?/std", "nexus-stats-detection?/std", "nexus-stats-regression?/std", "nexus-stats-control?/std"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing?/alloc", "nexus-stats-detection?/alloc", "nexus-stats-regression?/alloc", "nexus-stats-control?/alloc"]
+libm = ["nexus-stats-core/libm", "nexus-stats-detection?/libm", "nexus-stats-regression?/libm", "nexus-stats-control?/libm"]
+smoothing = ["dep:nexus-stats-smoothing"]
+detection = ["dep:nexus-stats-detection", "smoothing"]
+regression = ["dep:nexus-stats-regression"]
+control = ["dep:nexus-stats-control"]
+full = ["smoothing", "detection", "regression", "control"]
 
 [dependencies]
-libm = { version = "0.2", optional = true }
+nexus-stats-core = { path = "../nexus-stats-core", default-features = false }
+nexus-stats-smoothing = { path = "../nexus-stats-smoothing", default-features = false, optional = true }
+nexus-stats-detection = { path = "../nexus-stats-detection", default-features = false, optional = true }
+nexus-stats-regression = { path = "../nexus-stats-regression", default-features = false, optional = true }
+nexus-stats-control = { path = "../nexus-stats-control", default-features = false, optional = true }
 
 [[example]]
 name = "perf_stats"
-required-features = ["std"]
+required-features = ["std", "full"]
 
 [[example]]
 name = "basic"
@@ -32,6 +42,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "update_bench"
 harness = false
+required-features = ["full"]
 
 [lints]
 workspace = true

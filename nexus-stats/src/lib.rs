@@ -15,9 +15,19 @@
 //! use nexus_stats::smoothing::EmaF64;
 //! use nexus_stats::detection::CusumF64;
 //! use nexus_stats::statistics::WelfordF64;
-//! use nexus_stats::regression::LinearRegressionF64;
-//! use nexus_stats::learning::AdamF64;
 //! use nexus_stats::{DataError, ConfigError, Direction};
+//! ```
+//!
+//! With the `full` feature (or individual subcrate features), advanced types
+//! are available through the same module paths:
+//!
+//! ```rust,ignore
+//! // Requires `smoothing` feature
+//! use nexus_stats::smoothing::KamaF64;
+//! // Requires `regression` feature
+//! use nexus_stats::regression::LinearRegressionF64;
+//! // Requires `detection` feature
+//! use nexus_stats::signal::AutocorrelationF64;
 //! ```
 //!
 //! # Data Quality & Error Policy
@@ -51,18 +61,30 @@
 //!
 //! # Categories
 //!
+//! ## Core (always available)
+//!
 //! | Module | Contents |
 //! |--------|----------|
-//! | [`smoothing`] | EMA, Holt, KAMA, Kalman1d, Spring, Slew, WindowedMedian |
-//! | [`detection`] | CUSUM, MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate |
+//! | [`smoothing`] | EMA, AsymEma, Slew |
+//! | [`detection`] | CUSUM |
 //! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile |
 //! | [`monitoring`] | Drawdown, Windowed Min/Max, CoDel, Liveness, EventRate, Jitter, ErrorRate, Saturation |
-//! | [`signal`] | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy |
-//! | [`regression`] | Linear, Polynomial, EW variants, Transformed fits, LogisticRegression |
-//! | [`estimation`] | Kalman 2d/3d, BetaBinomial, GammaPoisson, SPRT |
-//! | [`learning`] | LMS, NLMS, RLS, OnlineKMeans, GD, AdaGrad, Adam |
-//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow, Diff |
-//! | [`frequency`] | TopK, FlexProportion, DecayAccum |
+//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, Diff |
+//!
+//! ## Advanced (feature-gated, re-exported from subcrates)
+//!
+//! | Feature | Module | Contents |
+//! |---------|--------|----------|
+//! | `smoothing` | `smoothing` | + Holt, KAMA, Spring, Kalman1d, WindowedMedian |
+//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate |
+//! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy |
+//! | `detection` | `estimation` | + SPRT |
+//! | `regression` | `regression` | Linear, Polynomial, EW variants, Transformed, LogisticRegression |
+//! | `regression` | `learning` | LMS, NLMS, RLS, OnlineKMeans, GD, AdaGrad, Adam |
+//! | `regression` | `estimation` | + Kalman 2d/3d, BetaBinomial, GammaPoisson |
+//! | `control` | `control` | + PeakDetector, BoolWindow |
+//! | `control` | `frequency` | TopK, FlexProportion, DecayAccum |
+//! | `full` | all | Everything above |
 //!
 //! # Features
 //!
@@ -71,26 +93,108 @@
 //! | `std` | yes | `Instant`-based windowed/CoDel/liveness/event-rate types, `sqrt`/`exp` intrinsics |
 //! | `alloc` | with `std` | MOSUM, KAMA, WindowedMedian, BoolWindow, adaptive filters, optimizers |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables Shiryaev-Roberts, etc.) |
+//! | `smoothing` | no | Advanced smoothing types (Holt, KAMA, Spring, Kalman1d, WindowedMedian) |
+//! | `detection` | no | Advanced detection + signal analysis (implies `smoothing`) |
+//! | `regression` | no | Regression, learning, estimation types |
+//! | `control` | no | Advanced control + frequency types |
+//! | `full` | no | All subcrates |
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
+// Re-export core types at crate root
+pub use nexus_stats_core::{Condition, ConfigError, DataError, Direction};
 
-// Shared types at crate root
-mod enums;
-#[macro_use]
-mod math;
-mod feature_vector;
+// Re-export the math module (doc-hidden, for subcrate use)
+#[doc(hidden)]
+pub use nexus_stats_core::math;
 
-pub use enums::{Condition, ConfigError, DataError, Direction};
+// Re-export the feature_vector macro
+pub use nexus_stats_core::feature_vector;
 
-// Category modules
-pub mod smoothing;
-pub mod detection;
-pub mod statistics;
-pub mod monitoring;
-pub mod signal;
-pub mod regression;
-pub mod estimation;
-pub mod learning;
-pub mod control;
-pub mod frequency;
+// ---- Core modules (always available, from nexus-stats-core) ----
+
+/// Smoothing and filtering primitives.
+///
+/// Core types (EMA, AsymEma, Slew) are always available. Advanced types
+/// (Holt, KAMA, Spring, Kalman1d, WindowedMedian) require the `smoothing`
+/// feature.
+pub mod smoothing {
+    pub use nexus_stats_core::smoothing::*;
+
+    #[cfg(feature = "smoothing")]
+    pub use nexus_stats_smoothing::*;
+}
+
+/// Change detection and anomaly detection.
+///
+/// CUSUM is always available. Advanced types (MOSUM, Shiryaev-Roberts,
+/// AdaptiveThreshold, RobustZ, TrendAlert, MultiGate) require the
+/// `detection` feature.
+pub mod detection {
+    pub use nexus_stats_core::detection::*;
+
+    #[cfg(feature = "detection")]
+    pub use nexus_stats_detection::detection::*;
+}
+
+/// Core streaming statistics.
+pub use nexus_stats_core::statistics;
+
+/// Monitoring and health tracking.
+pub use nexus_stats_core::monitoring;
+
+/// Control, thresholding, and differencing.
+///
+/// Core types (DeadBand, Hysteresis, Debounce, LevelCrossing, Diff) are
+/// always available. PeakDetector and BoolWindow require the `control` feature.
+pub mod control {
+    pub use nexus_stats_core::control::*;
+
+    #[cfg(feature = "control")]
+    pub use nexus_stats_control::control::*;
+}
+
+// ---- Advanced modules (from subcrates, feature-gated) ----
+
+/// Signal analysis and information theory.
+///
+/// Requires the `detection` feature.
+#[cfg(feature = "detection")]
+pub mod signal {
+    pub use nexus_stats_detection::signal::*;
+}
+
+/// State estimation, Bayesian inference, and hypothesis testing.
+///
+/// Kalman1d is available via [`smoothing`] with the `smoothing` feature.
+/// Kalman2d/3d, BetaBinomial, GammaPoisson require the `regression` feature.
+/// SPRT requires the `detection` feature.
+#[cfg(any(feature = "regression", feature = "detection"))]
+pub mod estimation {
+    #[cfg(feature = "detection")]
+    pub use nexus_stats_detection::estimation::*;
+    #[cfg(feature = "regression")]
+    pub use nexus_stats_regression::estimation::*;
+}
+
+/// Regression and classification.
+///
+/// Requires the `regression` feature.
+#[cfg(feature = "regression")]
+pub mod regression {
+    pub use nexus_stats_regression::regression::*;
+}
+
+/// Adaptive filters, online learning, and optimization.
+///
+/// Requires the `regression` feature.
+#[cfg(feature = "regression")]
+pub mod learning {
+    pub use nexus_stats_regression::learning::*;
+}
+
+/// Frequency counting and scoring.
+///
+/// Requires the `control` feature.
+#[cfg(feature = "control")]
+pub mod frequency {
+    pub use nexus_stats_control::frequency::*;
+}

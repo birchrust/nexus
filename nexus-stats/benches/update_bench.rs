@@ -10,24 +10,25 @@
 //! echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_stats::{
     control::{DeadBandF64, FirstDiffF64, HysteresisF64, LevelCrossingF64, SecondDiffF64},
     detection::{
         AdaptiveThresholdF64, CusumF64, RobustZScoreF64, ShiryaevRobertsF64, TrendAlertF64,
     },
-    estimation::{Kalman1dF64, Kalman2dF64, Kalman3dF64},
+    estimation::{Kalman2dF64, Kalman3dF64},
     learning::{
         AdaGradF64, AdamF64, LmsFilterF64, NlmsFilterF64, OnlineGdF64, OnlineKMeansF64,
         RlsFilterF64,
     },
-    monitoring::{DrawdownF64, ErrorRateF64, JitterF64, RunningMaxF64, RunningMinF64, SaturationF64},
+    monitoring::{
+        DrawdownF64, ErrorRateF64, JitterF64, RunningMaxF64, RunningMinF64, SaturationF64,
+    },
     regression::{
-        EwLinearRegressionF64, LinearRegressionF64, LogisticRegressionF64,
-        PolynomialRegressionF64,
+        EwLinearRegressionF64, LinearRegressionF64, LogisticRegressionF64, PolynomialRegressionF64,
     },
     signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
-    smoothing::{AsymEmaF64, EmaF64, HoltF64, SlewF64, SpringF64},
+    smoothing::{AsymEmaF64, EmaF64, HoltF64, Kalman1dF64, SlewF64, SpringF64},
     statistics::{
         CovarianceF64, EwmaVarF64, HarmonicMeanF64, MomentsF64, PercentileF64, WelfordF64,
     },
@@ -382,7 +383,11 @@ fn bench_robust_z(c: &mut Criterion) {
 
 fn bench_error_rate(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut er = ErrorRateF64::builder().alpha(0.1).threshold(0.5).build().unwrap();
+    let mut er = ErrorRateF64::builder()
+        .alpha(0.1)
+        .threshold(0.5)
+        .build()
+        .unwrap();
     for _ in 0..1000 {
         er.update(rng.next_f64() > 50.0);
     }
@@ -547,13 +552,16 @@ fn bench_polynomial_regression(c: &mut Criterion) {
         for i in 0..1000 {
             let _ = pr.update(i as f64 * 0.01, rng.next_f64());
         }
-        c.bench_function(&format!("PolynomialRegressionF64::update (deg={degree})"), |b| {
-            let mut x = 10.0;
-            b.iter(|| {
-                x += 0.01;
-                pr.update(black_box(x), black_box(rng.next_f64())).unwrap()
-            })
-        });
+        c.bench_function(
+            &format!("PolynomialRegressionF64::update (deg={degree})"),
+            |b| {
+                let mut x = 10.0;
+                b.iter(|| {
+                    x += 0.01;
+                    pr.update(black_box(x), black_box(rng.next_f64())).unwrap()
+                })
+            },
+        );
     }
 }
 
@@ -567,7 +575,10 @@ fn bench_transfer_entropy(c: &mut Criterion) {
             .build()
             .unwrap();
         for _ in 0..1000 {
-            te.update((rng.next_f64() as usize) % bins, (rng.next_f64() as usize) % bins);
+            te.update(
+                (rng.next_f64() as usize) % bins,
+                (rng.next_f64() as usize) % bins,
+            );
         }
         c.bench_function(&format!("TransferEntropyF64::update (bins={bins})"), |b| {
             b.iter(|| {
@@ -688,10 +699,7 @@ fn bench_logistic_regression(c: &mut Criterion) {
             for v in features.iter_mut() {
                 *v = rng.next_feature();
             }
-            lr.update(
-                black_box(&features),
-                black_box(rng.next_f64() > 50.0),
-            )
+            lr.update(black_box(&features), black_box(rng.next_f64() > 50.0))
         })
     });
 }
@@ -756,14 +764,16 @@ fn bench_kalman2d(c: &mut Criterion) {
     c.bench_function("Kalman2dF64::predict+update", |b| {
         b.iter(|| {
             k.predict();
-            k.update(black_box(rng.next_f64()), black_box([1.0, 0.0])).unwrap()
+            k.update(black_box(rng.next_f64()), black_box([1.0, 0.0]))
+                .unwrap()
         })
     });
 
     c.bench_function("Kalman2dF64::predict_with_dynamics", |b| {
         b.iter(|| {
             k.predict_with_dynamics(black_box([[1.0, 1.0], [0.0, 1.0]]));
-            k.update(black_box(rng.next_f64()), black_box([1.0, 0.0])).unwrap()
+            k.update(black_box(rng.next_f64()), black_box([1.0, 0.0]))
+                .unwrap()
         })
     });
 }
@@ -782,7 +792,8 @@ fn bench_kalman3d(c: &mut Criterion) {
     c.bench_function("Kalman3dF64::predict+update", |b| {
         b.iter(|| {
             k.predict();
-            k.update(black_box(rng.next_f64()), black_box([1.0, 0.0, 0.0])).unwrap()
+            k.update(black_box(rng.next_f64()), black_box([1.0, 0.0, 0.0]))
+                .unwrap()
         })
     });
 }
@@ -905,11 +916,15 @@ fn bench_transfer_entropy_query(c: &mut Criterion) {
             .build()
             .unwrap();
         for _ in 0..1000 {
-            te.update((rng.next_f64() as usize) % bins, (rng.next_f64() as usize) % bins);
+            te.update(
+                (rng.next_f64() as usize) % bins,
+                (rng.next_f64() as usize) % bins,
+            );
         }
-        c.bench_function(&format!("TransferEntropyF64::te_x_to_y (bins={bins})"), |b| {
-            b.iter(|| te.te_x_to_y())
-        });
+        c.bench_function(
+            &format!("TransferEntropyF64::te_x_to_y (bins={bins})"),
+            |b| b.iter(|| te.te_x_to_y()),
+        );
     }
 }
 

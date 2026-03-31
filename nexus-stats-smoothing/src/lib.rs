@@ -1,0 +1,57 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+#![warn(missing_docs)]
+
+//! Advanced smoothing algorithms for [`nexus-stats`](https://docs.rs/nexus-stats).
+//!
+//! This crate provides smoothing types that are separated from the core
+//! `nexus-stats` crate to keep the base dependency lightweight. All types
+//! follow the same streaming, zero-allocation, O(1)-per-update design.
+//!
+//! # Types
+//!
+//! | Type | Description | Feature |
+//! |------|-------------|---------|
+//! | [`HoltF64`] / [`HoltF32`] | Double exponential smoothing (level + trend) | — |
+//! | [`SpringF64`] / [`SpringF32`] | Critically damped spring (chase without overshoot) | — |
+//! | [`Kalman1dF64`] / [`Kalman1dF32`] | 1D Kalman filter (position + velocity) | — |
+//! | [`KamaF64`] / [`KamaF32`] | Kaufman Adaptive Moving Average | `alloc` |
+//! | [`WindowedMedianF64`] / [`WindowedMedianF32`] | Running median over a sliding window | `alloc` |
+//!
+//! # Re-export
+//!
+//! When the `smoothing` feature is enabled on `nexus-stats`, these types are
+//! re-exported under `nexus_stats_core::smoothing::*` for a unified import path.
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+/// Validates that a float value is finite (not NaN, not Inf).
+macro_rules! check_finite {
+    ($val:expr) => {
+        if !$val.is_finite() {
+            return Err(if $val.is_nan() {
+                nexus_stats_core::DataError::NotANumber
+            } else {
+                nexus_stats_core::DataError::Infinite
+            });
+        }
+    };
+}
+
+mod holt;
+mod kalman1d;
+mod spring;
+
+#[cfg(feature = "alloc")]
+mod kama;
+#[cfg(feature = "alloc")]
+mod windowed_median;
+
+pub use holt::*;
+pub use kalman1d::*;
+pub use spring::*;
+
+#[cfg(feature = "alloc")]
+pub use kama::*;
+#[cfg(feature = "alloc")]
+pub use windowed_median::*;

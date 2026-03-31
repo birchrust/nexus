@@ -135,8 +135,8 @@ fn field_names_are_correct() {
     assert_eq!(
         WideVec::FIELD_NAMES,
         &[
-            "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-            "f13", "f14", "f15"
+            "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13",
+            "f14", "f15"
         ]
     );
 }
@@ -575,11 +575,7 @@ fn realistic_training_loop() {
     }
 
     let p = opt.parameters();
-    assert!(
-        (p[0] - 3.0).abs() < 0.1,
-        "weight = {}, expected ~3.0",
-        p[0]
-    );
+    assert!((p[0] - 3.0).abs() < 0.1, "weight = {}, expected ~3.0", p[0]);
     assert!((p[1] - 1.0).abs() < 0.1, "bias = {}, expected ~1.0", p[1]);
 }
 
