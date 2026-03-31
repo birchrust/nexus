@@ -137,7 +137,7 @@ TLS overhead tips the scale. In real workloads with contention, Slot still wins 
 
 ## Slot vs Box — Isolated Benchmarks
 
-Slot: `bounded::Slab`, 8-byte `SlotPtr` handle.
+Slot: `bounded::Slab`, 8-byte `Slot` handle.
 Box: Standard `Box::new()` / `drop()` through glibc malloc.
 
 ### CHURN (alloc + deref + drop, LIFO single-slot)

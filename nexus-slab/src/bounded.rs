@@ -21,7 +21,7 @@ use core::ptr;
 
 use alloc::vec::Vec;
 
-use crate::shared::{Full, SlotCell, SlotPtr};
+use crate::shared::{Full, Slot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -42,12 +42,12 @@ pub struct Claim<'a, T> {
 }
 
 impl<T> Claim<'_, T> {
-    /// Writes the value to the claimed slot and returns the [`SlotPtr`] handle.
+    /// Writes the value to the claimed slot and returns the [`Slot`] handle.
     ///
     /// This consumes the claim. The value is written directly to the slot's
     /// memory, which may enable placement new optimization.
     #[inline]
-    pub fn write(self, value: T) -> SlotPtr<T> {
+    pub fn write(self, value: T) -> Slot<T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
@@ -56,7 +56,7 @@ impl<T> Claim<'_, T> {
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
-        unsafe { SlotPtr::from_ptr(slot_ptr) }
+        unsafe { Slot::from_ptr(slot_ptr) }
     }
 }
 
@@ -90,7 +90,7 @@ impl<T> Drop for Claim<'_, T> {
 ///
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
 ///   values in occupied slots. Unfree'd slots leak silently.
-/// - **Free from the same slab.** Passing a [`SlotPtr`] to a different
+/// - **Free from the same slab.** Passing a [`Slot`] to a different
 ///   slab's `free()` corrupts the freelist.
 /// - **Don't share across threads.** The slab is `!Send` and `!Sync`.
 ///
@@ -317,7 +317,7 @@ impl<T> Slab<T> {
     ///
     /// Panics if the slab is full.
     #[inline]
-    pub fn alloc(&self, value: T) -> SlotPtr<T> {
+    pub fn alloc(&self, value: T) -> Slot<T> {
         self.claim().expect("slab full").write(value)
     }
 
@@ -325,7 +325,7 @@ impl<T> Slab<T> {
     ///
     /// Returns `Err(Full(value))` if the slab is at capacity.
     #[inline]
-    pub fn try_alloc(&self, value: T) -> Result<SlotPtr<T>, Full<T>> {
+    pub fn try_alloc(&self, value: T) -> Result<Slot<T>, Full<T>> {
         match self.claim() {
             Some(claim) => Ok(claim.write(value)),
             None => Err(Full(value)),
@@ -339,7 +339,7 @@ impl<T> Slab<T> {
     /// accepted at construction time.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn free(&self, slot: SlotPtr<T>) {
+    pub fn free(&self, slot: Slot<T>) {
         let slot_ptr = slot.into_raw();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
@@ -357,7 +357,7 @@ impl<T> Slab<T> {
     /// Consumes the handle — the slot cannot be used after this call.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn take(&self, slot: SlotPtr<T>) -> T {
+    pub fn take(&self, slot: Slot<T>) -> T {
         let slot_ptr = slot.into_raw();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn slot_size() {
-        assert_eq!(std::mem::size_of::<SlotPtr<u64>>(), 8);
+        assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
     }
 
     #[test]
@@ -487,16 +487,13 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    fn slotptr_debug_drop_panics() {
+    fn slot_debug_drop_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let slab = unsafe { Slab::<u64>::with_capacity(10) };
             let _slot = slab.alloc(42u64);
             // slot drops here without being freed
         }));
-        assert!(
-            result.is_err(),
-            "SlotPtr should panic on drop in debug mode"
-        );
+        assert!(result.is_err(), "Slot should panic on drop in debug mode");
     }
 
     #[test]

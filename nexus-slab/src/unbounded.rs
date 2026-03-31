@@ -23,7 +23,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::bounded::Slab as BoundedSlab;
-use crate::shared::{SlotCell, SlotPtr};
+use crate::shared::{Slot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -45,12 +45,12 @@ pub struct Claim<'a, T> {
 }
 
 impl<T> Claim<'_, T> {
-    /// Writes the value to the claimed slot and returns the [`SlotPtr`] handle.
+    /// Writes the value to the claimed slot and returns the [`Slot`] handle.
     ///
     /// This consumes the claim. The value is written directly to the slot's
     /// memory, which may enable placement new optimization.
     #[inline]
-    pub fn write(self, value: T) -> SlotPtr<T> {
+    pub fn write(self, value: T) -> Slot<T> {
         let slot_ptr = self.slot_ptr;
         // SAFETY: We own this slot from claim(), it's valid and vacant
         unsafe {
@@ -59,7 +59,7 @@ impl<T> Claim<'_, T> {
         // Don't run Drop - we're completing the allocation
         mem::forget(self);
         // SAFETY: slot_ptr is valid and now occupied
-        unsafe { SlotPtr::from_ptr(slot_ptr) }
+        unsafe { Slot::from_ptr(slot_ptr) }
     }
 }
 
@@ -124,7 +124,7 @@ struct ChunkEntry<T> {
 ///
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
 ///   values in occupied slots. Unfree'd slots leak silently.
-/// - **Free from the same slab.** Passing a [`SlotPtr`] to a different
+/// - **Free from the same slab.** Passing a [`Slot`] to a different
 ///   slab's `free()` corrupts the freelist.
 /// - **Don't share across threads.** The slab is `!Send` and `!Sync`.
 ///
@@ -390,7 +390,7 @@ impl<T> Slab<T> {
     ///
     /// Always succeeds — grows the slab if needed.
     #[inline]
-    pub fn alloc(&self, value: T) -> SlotPtr<T> {
+    pub fn alloc(&self, value: T) -> Slot<T> {
         self.claim().write(value)
     }
 
@@ -403,7 +403,7 @@ impl<T> Slab<T> {
     /// O(n) where n = chunk count, due to chunk lookup. Typically 1-5 chunks.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn free(&self, slot: SlotPtr<T>) {
+    pub fn free(&self, slot: Slot<T>) {
         let slot_ptr = slot.into_raw();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
@@ -425,7 +425,7 @@ impl<T> Slab<T> {
     /// O(n) where n = chunk count, due to chunk lookup. Typically 1-5 chunks.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn take(&self, slot: SlotPtr<T>) -> T {
+    pub fn take(&self, slot: Slot<T>) -> T {
         let slot_ptr = slot.into_raw();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
@@ -480,6 +480,7 @@ impl<T> Slab<T> {
         unreachable!("free_ptr: slot_ptr not found in any chunk");
     }
 }
+
 
 impl<T> fmt::Debug for Slab<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -564,7 +565,7 @@ mod tests {
 
     #[test]
     fn slot_size() {
-        assert_eq!(std::mem::size_of::<SlotPtr<u64>>(), 8);
+        assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
     }
 
     #[test]

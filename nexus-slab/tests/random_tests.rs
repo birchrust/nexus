@@ -7,7 +7,7 @@
 //! - Capacity bounds are respected
 //! - Drop counting matches expectations
 
-use nexus_slab::SlotPtr;
+use nexus_slab::Slot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 use proptest::prelude::*;
@@ -27,7 +27,7 @@ fn bounded_value_integrity_random() {
     );
 
     // Track expected values
-    let mut slots: Vec<(SlotPtr<u64>, u64)> = Vec::new();
+    let mut slots: Vec<(Slot<u64>, u64)> = Vec::new();
 
     for _ in 0..500 {
         let action: u8 = rng.random_range(0..10);
@@ -168,7 +168,7 @@ fn unbounded_value_integrity_random() {
         proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
-    let mut slots: Vec<(SlotPtr<u64>, u64)> = Vec::new();
+    let mut slots: Vec<(Slot<u64>, u64)> = Vec::new();
 
     for _ in 0..500 {
         let action: u8 = rng.random_range(0..10);
@@ -248,7 +248,7 @@ fn freelist_no_duplicates() {
         proptest::test_runner::RngAlgorithm::ChaCha,
     );
 
-    let mut slots: Vec<SlotPtr<u64>> = Vec::new();
+    let mut slots: Vec<Slot<u64>> = Vec::new();
     let mut seen_ptrs = HashSet::new();
 
     for _ in 0..200 {
@@ -285,7 +285,7 @@ fn freelist_no_duplicates() {
 fn freelist_reuses_freed_slots() {
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(10) };
 
-    let mut slots: Vec<SlotPtr<u64>> = Vec::new();
+    let mut slots: Vec<Slot<u64>> = Vec::new();
     let mut freed_ptrs: Vec<*mut nexus_slab::SlotCell<u64>> = Vec::new();
 
     for i in 0..100 {

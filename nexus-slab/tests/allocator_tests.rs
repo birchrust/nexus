@@ -7,7 +7,7 @@
 //! - Edge cases and boundary conditions
 //! - Complex types (String, Vec, ZST, large)
 
-use nexus_slab::SlotPtr;
+use nexus_slab::Slot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 use std::cell::Cell;
@@ -182,17 +182,17 @@ fn slot_debug_format() {
 
     let slot = slab.alloc(42);
     let debug = format!("{:?}", slot);
-    assert!(debug.contains("SlotPtr"));
+    assert!(debug.contains("Slot"));
     // SAFETY: slot was allocated from this slab
     slab.free(slot);
 }
 
 #[test]
 fn slot_size_is_8_bytes() {
-    // SlotPtr<T> is 8 bytes (one pointer)
-    assert_eq!(std::mem::size_of::<SlotPtr<u64>>(), 8);
-    assert_eq!(std::mem::size_of::<SlotPtr<String>>(), 8);
-    assert_eq!(std::mem::size_of::<SlotPtr<[u8; 1024]>>(), 8);
+    // Slot<T> is 8 bytes (one pointer)
+    assert_eq!(std::mem::size_of::<Slot<u64>>(), 8);
+    assert_eq!(std::mem::size_of::<Slot<String>>(), 8);
+    assert_eq!(std::mem::size_of::<Slot<[u8; 1024]>>(), 8);
 }
 
 // =============================================================================

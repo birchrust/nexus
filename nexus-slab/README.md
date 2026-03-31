@@ -35,7 +35,7 @@ Construction is `unsafe` — you're opting into:
 - **Free from the same slab.** Cross-slab free corrupts the freelist.
 - **Don't share across threads.** The slab is `!Send`/`!Sync`.
 
-Everything after construction is safe. `SlotPtr<T>` is move-only
+Everything after construction is safe. `Slot<T>` is move-only
 (`!Copy`, `!Clone`) — the compiler prevents double-free.
 
 ## API
@@ -83,7 +83,7 @@ slab.free(p2);
 slab.free(p1);
 ```
 
-### SlotPtr<T>
+### Slot<T>
 
 8-byte move-only handle. Safe `Deref`/`DerefMut` access.
 
@@ -96,14 +96,14 @@ let p: Pin<&mut Order> = ptr.pin_mut();  // stable address, no Unpin needed
 
 // Raw pointer escape hatch
 let raw = ptr.into_raw();                        // disarms debug leak detector
-let ptr = unsafe { SlotPtr::from_raw(raw) };     // reconstruct
+let ptr = unsafe { Slot::from_raw(raw) };     // reconstruct
 slab.free(ptr);
 
 // For refcounting wrappers (nexus-collections)
 let clone = unsafe { ptr.clone_ptr() };  // second handle, same slot
 ```
 
-**Debug mode:** dropping a `SlotPtr` without calling `free()` or `take()`
+**Debug mode:** dropping a `Slot` without calling `free()` or `take()`
 panics (leak detection). Release mode: silent leak.
 
 ## Performance
@@ -161,7 +161,7 @@ union SlotCell<T> {
 ```
 
 No tag, no metadata. Writing a value overwrites the freelist pointer.
-The `SlotPtr` handle is the proof of occupancy.
+The `Slot` handle is the proof of occupancy.
 
 ### Const Construction (thread_local!)
 
