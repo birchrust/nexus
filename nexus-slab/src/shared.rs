@@ -48,7 +48,7 @@ impl<T> std::error::Error for Full<T> {}
 ///
 /// These fields occupy the SAME bytes. Writing `value` overwrites `next_free`
 /// and vice versa. There is no header, no tag, no sentinel — the Slot RAII
-/// handle is the proof of occupancy.
+/// handle (`SlotPtr`) is the proof of occupancy.
 ///
 /// Size: `max(8, size_of::<T>())`.
 #[repr(C)]
@@ -70,7 +70,7 @@ impl<T> SlotCell<T> {
     ///
     /// The slot must be vacant (no live value present).
     #[inline]
-    pub unsafe fn write_value(&mut self, value: T) {
+    pub(crate) unsafe fn write_value(&mut self, value: T) {
         self.value = ManuallyDrop::new(MaybeUninit::new(value));
     }
 
@@ -82,7 +82,7 @@ impl<T> SlotCell<T> {
     /// After this call, the caller owns the value and the slot must not be
     /// read again without a subsequent write.
     #[inline]
-    pub unsafe fn read_value(&self) -> T {
+    pub(crate) unsafe fn read_value(&self) -> T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { core::ptr::read(self.value.as_ptr()) }
     }
@@ -93,7 +93,7 @@ impl<T> SlotCell<T> {
     ///
     /// The slot must be occupied with a valid `T`.
     #[inline]
-    pub unsafe fn drop_value_in_place(&mut self) {
+    pub(crate) unsafe fn drop_value_in_place(&mut self) {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe {
             core::ptr::drop_in_place((*self.value).as_mut_ptr());
@@ -106,7 +106,7 @@ impl<T> SlotCell<T> {
     ///
     /// The slot must be occupied with a valid `T`.
     #[inline]
-    pub unsafe fn value_ref(&self) -> &T {
+    pub(crate) unsafe fn value_ref(&self) -> &T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { self.value.assume_init_ref() }
     }
@@ -118,7 +118,7 @@ impl<T> SlotCell<T> {
     /// The slot must be occupied with a valid `T`.
     /// Caller must have exclusive access.
     #[inline]
-    pub unsafe fn value_mut(&mut self) -> &mut T {
+    pub(crate) unsafe fn value_mut(&mut self) -> &mut T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { (*self.value).assume_init_mut() }
     }
@@ -129,7 +129,8 @@ impl<T> SlotCell<T> {
     ///
     /// The slot must be occupied.
     #[inline]
-    pub unsafe fn value_ptr(&self) -> *const T {
+    #[allow(dead_code)]
+    pub(crate) unsafe fn value_ptr(&self) -> *const T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { self.value.as_ptr() }
     }
@@ -178,7 +179,7 @@ impl<T> SlotCell<T> {
 /// # Debug-Mode Leak Detection
 ///
 /// In debug builds, dropping a `SlotPtr` without calling `free()` or
-/// `take()` panics. Use [`into_ptr()`](Self::into_ptr) to extract the
+/// `take()` panics. Use [`into_raw()`](Self::into_raw) to extract the
 /// pointer and disarm the detector. In release builds there is no `Drop`
 /// impl — forgetting to call `free()` silently leaks the slot.
 ///
@@ -190,13 +191,13 @@ impl<T> SlotCell<T> {
 pub struct SlotPtr<T>(*mut SlotCell<T>);
 
 impl<T> SlotPtr<T> {
-    /// Creates a slot from a raw pointer.
+    /// Internal construction from a raw pointer.
     ///
     /// # Safety
     ///
     /// `ptr` must be a valid pointer to an occupied `SlotCell<T>` within a slab.
     #[inline]
-    pub unsafe fn from_ptr(ptr: *mut SlotCell<T>) -> Self {
+    pub(crate) unsafe fn from_ptr(ptr: *mut SlotCell<T>) -> Self {
         SlotPtr(ptr)
     }
 
@@ -206,16 +207,28 @@ impl<T> SlotPtr<T> {
         self.0
     }
 
-    /// Consumes the slot, returning the raw pointer.
+    /// Consumes the handle, returning the raw pointer without running Drop.
     ///
-    /// Unlike [`as_ptr()`](Self::as_ptr), this is a consuming operation that
-    /// disarms the debug-mode leak detector. In release mode, compiles
-    /// identically to `as_ptr()`.
+    /// The caller is responsible for the slot from this point — either
+    /// reconstruct via [`from_raw()`](Self::from_raw) or manage manually.
+    /// Disarms the debug-mode leak detector.
     #[inline]
-    pub fn into_ptr(self) -> *mut SlotCell<T> {
+    pub fn into_raw(self) -> *mut SlotCell<T> {
         let ptr = self.0;
         core::mem::forget(self);
         ptr
+    }
+
+    /// Reconstructs a `SlotPtr` from a raw pointer previously obtained
+    /// via [`into_raw()`](Self::into_raw).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid pointer to an occupied `SlotCell<T>` within
+    /// a slab, originally obtained from `into_raw()` on this type.
+    #[inline]
+    pub unsafe fn from_raw(ptr: *mut SlotCell<T>) -> Self {
+        SlotPtr(ptr)
     }
 
     /// Creates a duplicate pointer to the same slot.
@@ -227,6 +240,28 @@ impl<T> SlotPtr<T> {
     #[inline]
     pub unsafe fn clone_ptr(&self) -> Self {
         SlotPtr(self.0)
+    }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// Slab-backed memory never moves (no reallocation), so `Pin` is
+    /// sound without requiring `T: Unpin`. Useful for async code that
+    /// needs `Pin<&mut T>` for polling futures stored in a slab.
+    #[inline]
+    pub fn pin(&self) -> core::pin::Pin<&T> {
+        // SAFETY: The slab never moves its slot storage after init.
+        // The value at this pointer is stable for the slot's lifetime.
+        unsafe { core::pin::Pin::new_unchecked(&**self) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    ///
+    /// See [`pin()`](Self::pin) for the safety rationale.
+    #[inline]
+    pub fn pin_mut(&mut self) -> core::pin::Pin<&mut T> {
+        // SAFETY: Same as pin() — slab memory never moves.
+        // We have &mut self, guaranteeing exclusive access.
+        unsafe { core::pin::Pin::new_unchecked(&mut **self) }
     }
 }
 
@@ -293,7 +328,7 @@ impl<T> Drop for SlotPtr<T> {
             return; // Don't double-panic during unwind
         }
         panic!(
-            "SlotPtr<{}> dropped without being freed — call slab.free()",
+            "SlotPtr<{}> dropped without being freed — call slab.free(slot) or slab.take(slot)",
             core::any::type_name::<T>()
         );
     }

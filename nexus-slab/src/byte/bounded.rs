@@ -14,6 +14,40 @@ pub struct Slab<const N: usize> {
 }
 
 impl<const N: usize> Slab<N> {
+    /// Creates an empty, uninitialized byte slab.
+    ///
+    /// This is a const function that performs no allocation. Call
+    /// [`init()`](Self::init) to allocate storage before use.
+    ///
+    /// # Safety
+    ///
+    /// See [`crate::bounded::Slab`] safety contract.
+    #[inline]
+    pub const unsafe fn new() -> Self {
+        Self {
+            // SAFETY: caller upholds the slab contract
+            inner: unsafe { crate::bounded::Slab::new() },
+        }
+    }
+
+    /// Initializes the byte slab with the given capacity.
+    ///
+    /// Must be called exactly once before any allocations.
+    ///
+    /// # Safety
+    ///
+    /// See [`crate::bounded::Slab`] safety contract.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if the slab is already initialized (capacity > 0)
+    /// - Panics if capacity is zero
+    #[inline]
+    pub unsafe fn init(&self, capacity: usize) {
+        // SAFETY: caller upholds the slab contract
+        unsafe { self.inner.init(capacity) };
+    }
+
     /// Creates a byte slab with the given capacity.
     ///
     /// # Safety
@@ -77,6 +111,10 @@ impl<const N: usize> Slab<N> {
     #[inline]
     pub fn free<T>(&self, ptr: SlotPtr<T>) {
         let data_ptr = ptr.ptr;
+        debug_assert!(
+            self.inner.contains_ptr(data_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         mem::forget(ptr);
 
         unsafe {
@@ -92,6 +130,10 @@ impl<const N: usize> Slab<N> {
     #[inline]
     pub fn take<T>(&self, ptr: SlotPtr<T>) -> T {
         let data_ptr = ptr.ptr;
+        debug_assert!(
+            self.inner.contains_ptr(data_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         mem::forget(ptr);
 
         unsafe {

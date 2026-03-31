@@ -81,10 +81,50 @@ impl<T> SlotPtr<T> {
         }
     }
 
-    /// Returns a raw pointer to the stored value.
+    /// Returns a raw pointer to the underlying byte storage.
     #[inline]
-    pub fn as_raw(&self) -> *mut T {
-        self.ptr.cast::<T>()
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    /// Consumes the handle, returning the raw pointer without running Drop.
+    ///
+    /// Reconstruct via [`from_raw()`](Self::from_raw). Disarms the debug
+    /// leak detector.
+    #[inline]
+    pub fn into_raw(self) -> *mut u8 {
+        let ptr = self.ptr;
+        core::mem::forget(self);
+        ptr
+    }
+
+    /// Reconstructs a `SlotPtr` from a raw pointer previously obtained
+    /// via [`into_raw()`](Self::into_raw).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid, initialized `T` within a byte slab,
+    /// originally obtained from `into_raw()`.
+    #[inline]
+    pub unsafe fn from_raw(ptr: *mut u8) -> Self {
+        SlotPtr {
+            ptr,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns a pinned reference to the value.
+    ///
+    /// Byte slab memory never moves, so `Pin` is sound without `T: Unpin`.
+    #[inline]
+    pub fn pin(&self) -> core::pin::Pin<&T> {
+        unsafe { core::pin::Pin::new_unchecked(&**self) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    #[inline]
+    pub fn pin_mut(&mut self) -> core::pin::Pin<&mut T> {
+        unsafe { core::pin::Pin::new_unchecked(&mut **self) }
     }
 }
 
@@ -103,6 +143,20 @@ impl<T> core::ops::DerefMut for SlotPtr<T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: We have &mut self, guaranteeing exclusive access.
         unsafe { &mut *self.ptr.cast::<T>() }
+    }
+}
+
+impl<T> core::convert::AsRef<T> for SlotPtr<T> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
+impl<T> core::convert::AsMut<T> for SlotPtr<T> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut T {
+        self
     }
 }
 
@@ -136,7 +190,7 @@ impl<T> Drop for SlotPtr<T> {
             return;
         }
         panic!(
-            "byte::SlotPtr<{}> dropped without being freed — call slab.free()",
+            "byte::SlotPtr<{}> dropped without being freed — call slab.free(ptr) or slab.take(ptr)",
             core::any::type_name::<T>()
         );
     }

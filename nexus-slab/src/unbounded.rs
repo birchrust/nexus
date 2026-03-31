@@ -130,7 +130,11 @@ struct ChunkEntry<T> {
 ///
 /// # Const Construction
 ///
-/// ```ignore
+/// ```no_run
+/// use nexus_slab::unbounded::Slab;
+///
+/// struct MyType(u64);
+///
 /// // SAFETY: single slab per type, freed before thread exit
 /// thread_local! {
 ///     static SLAB: Slab<MyType> = const { unsafe { Slab::new() } };
@@ -159,7 +163,9 @@ impl<T> Slab<T> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
+    /// use nexus_slab::unbounded::Slab;
+    ///
     /// // SAFETY: single slab per type, freed before thread exit
     /// thread_local! {
     ///     static SLAB: Slab<u64> = const { unsafe { Slab::new() } };
@@ -351,7 +357,7 @@ impl<T> Slab<T> {
     /// - Return the pointer to the freelist via `free_ptr()` if abandoning
     #[doc(hidden)]
     #[inline]
-    pub fn claim_ptr(&self) -> (*mut SlotCell<T>, usize) {
+    pub(crate) fn claim_ptr(&self) -> (*mut SlotCell<T>, usize) {
         // Ensure we have space (grow if needed)
         if self.head_with_space.get() == CHUNK_NONE {
             self.grow();
@@ -398,7 +404,7 @@ impl<T> Slab<T> {
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
     pub fn free(&self, slot: SlotPtr<T>) {
-        let slot_ptr = slot.into_ptr();
+        let slot_ptr = slot.into_raw();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
             "slot was not allocated from this slab"
@@ -420,7 +426,7 @@ impl<T> Slab<T> {
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
     pub fn take(&self, slot: SlotPtr<T>) -> T {
-        let slot_ptr = slot.into_ptr();
+        let slot_ptr = slot.into_raw();
         debug_assert!(
             self.contains_ptr(slot_ptr as *const ()),
             "slot was not allocated from this slab"
@@ -443,7 +449,7 @@ impl<T> Slab<T> {
     /// - `slot_ptr` must point to a slot within this slab
     /// - Value must already be dropped or moved out
     #[doc(hidden)]
-    pub unsafe fn free_ptr(&self, slot_ptr: *mut SlotCell<T>) {
+    pub(crate) unsafe fn free_ptr(&self, slot_ptr: *mut SlotCell<T>) {
         let chunks = self.chunks();
         let cap = self.chunk_capacity.get();
 
@@ -472,14 +478,6 @@ impl<T> Slab<T> {
         }
 
         unreachable!("free_ptr: slot_ptr not found in any chunk");
-    }
-}
-
-impl<T> Default for Slab<T> {
-    fn default() -> Self {
-        // SAFETY: Default creates an uninitialized slab — caller must
-        // call init() and uphold the slab contract before use.
-        unsafe { Self::new() }
     }
 }
 

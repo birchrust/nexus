@@ -72,6 +72,10 @@ impl<const N: usize> Slab<N> {
     #[inline]
     pub fn free<T>(&self, ptr: SlotPtr<T>) {
         let data_ptr = ptr.ptr;
+        debug_assert!(
+            self.inner.contains_ptr(data_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         mem::forget(ptr);
 
         unsafe {
@@ -87,6 +91,10 @@ impl<const N: usize> Slab<N> {
     #[inline]
     pub fn take<T>(&self, ptr: SlotPtr<T>) -> T {
         let data_ptr = ptr.ptr;
+        debug_assert!(
+            self.inner.contains_ptr(data_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
         mem::forget(ptr);
 
         unsafe {
@@ -95,14 +103,6 @@ impl<const N: usize> Slab<N> {
                 .free_ptr(data_ptr.cast::<SlotCell<AlignedBytes<N>>>());
             value
         }
-    }
-}
-
-impl<const N: usize> Default for Slab<N> {
-    fn default() -> Self {
-        // SAFETY: Default creates a slab — caller must uphold the
-        // slab contract (free all allocations from this slab).
-        unsafe { Self::new() }
     }
 }
 

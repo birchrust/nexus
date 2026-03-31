@@ -54,6 +54,9 @@
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(not(any(feature = "std", feature = "alloc")))]
+compile_error!("nexus-slab requires either the `std` or `alloc` feature");
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
