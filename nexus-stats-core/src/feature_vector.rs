@@ -52,6 +52,7 @@ macro_rules! feature_vector {
             pub const DIMENSIONS: usize = [$(stringify!($field)),*].len();
 
             /// Field names in declaration order (for logging/debug).
+            #[allow(dead_code)]
             pub const FIELD_NAMES: &[&str] = &[$(stringify!($field)),*];
 
             /// Creates a feature vector with default values.

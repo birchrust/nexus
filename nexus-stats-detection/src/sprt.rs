@@ -582,7 +582,7 @@ mod tests {
 
         // Accumulate some evidence.
         for _ in 0..50 {
-            sprt.update(true);
+            let _ = sprt.update(true);
         }
         assert!(sprt.count() > 0);
 
@@ -604,7 +604,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..7 {
-            sprt.update(true);
+            let _ = sprt.update(true);
         }
         assert_eq!(sprt.count(), 7);
     }
@@ -793,7 +793,7 @@ mod tests {
             .beta(beta)
             .build()
             .unwrap();
-        b.update(true);
+        let _ = b.update(true);
         assert!(b.log_likelihood_ratio() > 0.0);
 
         // Gaussian: one observation above midpoint should move positive.

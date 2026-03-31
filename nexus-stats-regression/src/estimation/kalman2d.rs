@@ -301,7 +301,7 @@ mod tests {
             .unwrap();
 
         kf.predict();
-        kf.update(50.0, [1.0, 0.0]);
+        let _ = kf.update(50.0, [1.0, 0.0]);
         let cov1 = kf.covariance();
         let trace1 = cov1[0][0] + cov1[1][1];
 

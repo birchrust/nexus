@@ -373,7 +373,7 @@ mod tests {
         let centroids_before = km.centroids().to_vec();
         let count_before = km.count();
 
-        km.classify(&[5.0, 5.0]);
+        let _ = km.classify(&[5.0, 5.0]);
 
         assert_eq!(km.centroids(), &centroids_before[..]);
         assert_eq!(km.count(), count_before);
@@ -422,7 +422,7 @@ mod tests {
     #[should_panic(expected = "out of range")]
     fn cluster_out_of_range_panics() {
         let km = make(2, 2, 0.1);
-        km.centroid(2); // k=2, valid indices are 0 and 1
+        let _ = km.centroid(2); // k=2, valid indices are 0 and 1
     }
 
     #[test]

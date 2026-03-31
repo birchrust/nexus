@@ -324,9 +324,9 @@ fn debug_format() {
 }
 
 // === Integration with filters and optimizers ===
-// These require alloc (and some require std|libm) for the filter/optimizer types.
+// These require the `regression` feature (and alloc, some std|libm) for the filter/optimizer types.
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_lms_filter() {
     use nexus_stats::learning::LmsFilterF64;
@@ -354,7 +354,7 @@ fn works_with_lms_filter() {
     assert_eq!(filter.count(), 1);
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_nlms_filter() {
     use nexus_stats::learning::NlmsFilterF64;
@@ -377,7 +377,7 @@ fn works_with_nlms_filter() {
     assert_eq!(filter.count(), 1);
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_rls_filter() {
     use nexus_stats::learning::RlsFilterF64;
@@ -400,7 +400,7 @@ fn works_with_rls_filter() {
     assert_eq!(filter.count(), 1);
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_online_gd() {
     use nexus_stats::learning::OnlineGdF64;
@@ -423,7 +423,7 @@ fn works_with_online_gd() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adagrad() {
     use nexus_stats::learning::AdaGradF64;
@@ -451,7 +451,7 @@ fn works_with_adagrad() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adam() {
     use nexus_stats::learning::AdamF64;
@@ -474,7 +474,7 @@ fn works_with_adam() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_adam_weight_decay() {
     use nexus_stats::learning::AdamF64;
@@ -498,7 +498,7 @@ fn works_with_adam_weight_decay() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn works_with_logistic_regression() {
     use nexus_stats::regression::LogisticRegressionF64;
@@ -521,7 +521,7 @@ fn works_with_logistic_regression() {
     assert_eq!(lr.count(), 1);
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_online_kmeans() {
     use nexus_stats::learning::OnlineKMeansF64;
@@ -547,6 +547,7 @@ fn works_with_online_kmeans() {
 
 // === Realistic usage pattern ===
 
+#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
 #[test]
 fn realistic_training_loop() {
     use nexus_stats::learning::AdamF64;

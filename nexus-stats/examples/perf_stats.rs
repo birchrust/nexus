@@ -298,7 +298,7 @@ fn bench_liveness_f64(samples: &mut [u64]) {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 10.0 + (next_val(&mut rng) % 5) as f64;
-            black_box(lv.update(t));
+            let _ = black_box(lv.update(t));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -458,13 +458,13 @@ fn bench_event_rate_f64(samples: &mut [u64]) {
     let mut t = 0.0f64;
     for _ in 0..WARMUP {
         t += 10.0 + (next_val(&mut rng) % 5) as f64;
-        er.update(t);
+        let _ = er.update(t);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             t += 10.0 + (next_val(&mut rng) % 5) as f64;
-            er.update(t);
+            let _ = er.update(t);
         }
         let end = rdtsc_end();
         black_box(er.rate());
@@ -535,12 +535,12 @@ fn bench_windowed_median_f64(samples: &mut [u64]) {
     let mut wm = WindowedMedianF64::new(32);
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        let _ = wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
+            let _ = wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
         black_box(wm.median());

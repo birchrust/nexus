@@ -445,7 +445,7 @@ mod tests {
     fn dimension_mismatch_predict() {
         let filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
 
-        filter.predict(&[1.0, 2.0]);
+        let _ = filter.predict(&[1.0, 2.0]);
     }
 
     #[test]

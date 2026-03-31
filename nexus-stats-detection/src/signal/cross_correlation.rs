@@ -351,7 +351,7 @@ mod tests {
             let x = i as f64;
             let y = x * 2.0 + 1.0;
             cc.update(x, y).unwrap();
-            cov.update(x, y);
+            let _ = cov.update(x, y);
         }
 
         let r_cc = cc.correlation(0).unwrap();

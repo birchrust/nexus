@@ -851,7 +851,7 @@ mod tests {
         let mut r = PowerRegressionF64::new();
         r.update(0.0, 5.0).unwrap();
         r.update(1.0, -5.0).unwrap();
-        r.update(-1.0, 5.0);
+        let _ = r.update(-1.0, 5.0);
         assert_eq!(r.count(), 0);
     }
 

@@ -945,8 +945,8 @@ mod instant_liveness {
                 .deadline_multiple(3.0)
                 .build()
                 .unwrap();
-            lv.update(base);
-            lv.update(base + Duration::from_secs(1));
+            let _ = lv.update(base);
+            let _ = lv.update(base + Duration::from_secs(1));
             lv.reset(base + Duration::from_secs(2));
             assert_eq!(lv.count(), 0);
         }

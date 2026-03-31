@@ -288,7 +288,7 @@ mod tests {
             .build()
             .unwrap();
 
-        lr.predict(&[1.0, 2.0]);
+        let _ = lr.predict(&[1.0, 2.0]);
     }
 
     #[test]
