@@ -535,8 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_acquire_returns_after_release() {
-        // sync::Pool doesn't have an async acquire — only try_acquire.
+    fn atomic_try_acquire_returns_some_after_release() {
         // Verify that when all slots are held, try_acquire returns None,
         // and after release it returns Some.
         let pool = make_pool(1);

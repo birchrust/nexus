@@ -604,10 +604,8 @@ mod tests {
     }
 
     #[test]
-    fn acquire_returns_after_slot_released() {
-        // local::Pool::acquire() blocks (spins) until a slot is available.
-        // We can't easily test a true timeout with the sync acquire, but we
-        // can verify that when all slots are held, try_acquire returns None,
+    fn try_acquire_returns_some_after_slot_released() {
+        // Verify that when all slots are held, try_acquire returns None,
         // and after release it returns Some.
         let pool = Pool::new(make_disconnected_slot, |_| {});
         pool.put(make_disconnected_slot());
