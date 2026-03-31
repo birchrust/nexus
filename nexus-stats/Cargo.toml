@@ -1,6 +1,6 @@
 [package]
 name = "nexus-stats"
-version = "3.0.0"
+version = "4.0.0"
 description = "Fixed-memory, zero-allocation streaming statistics for real-time systems"
 readme = "README.md"
 edition.workspace = true
@@ -22,11 +22,11 @@ control = ["dep:nexus-stats-control"]
 full = ["smoothing", "detection", "regression", "control"]
 
 [dependencies]
-nexus-stats-core = { path = "../nexus-stats-core", default-features = false }
-nexus-stats-smoothing = { path = "../nexus-stats-smoothing", default-features = false, optional = true }
-nexus-stats-detection = { path = "../nexus-stats-detection", default-features = false, optional = true }
-nexus-stats-regression = { path = "../nexus-stats-regression", default-features = false, optional = true }
-nexus-stats-control = { path = "../nexus-stats-control", default-features = false, optional = true }
+nexus-stats-core = { version = "1.0.0", path = "../nexus-stats-core", default-features = false }
+nexus-stats-smoothing = { version = "1.0.0", path = "../nexus-stats-smoothing", default-features = false, optional = true }
+nexus-stats-detection = { version = "1.0.0", path = "../nexus-stats-detection", default-features = false, optional = true }
+nexus-stats-regression = { version = "1.0.0", path = "../nexus-stats-regression", default-features = false, optional = true }
+nexus-stats-control = { version = "1.0.0", path = "../nexus-stats-control", default-features = false, optional = true }
 
 [[example]]
 name = "perf_stats"
