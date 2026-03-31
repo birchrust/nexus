@@ -5,7 +5,7 @@
 //! # What Is This?
 //!
 //! `nexus-slab` provides **bounded** (fixed-capacity) and **unbounded** (growable)
-//! slab allocators with 8-byte pointer handles ([`SlotPtr<T>`]). Each allocation
+//! slab allocators with 8-byte pointer handles ([`Slot<T>`]). Each allocation
 //! returns a raw pointer wrapper that must be explicitly freed — no RAII, no
 //! reference counting, just a pointer and a freelist.
 //!
@@ -48,7 +48,7 @@
 //!
 //! Writing a value implicitly transitions the slot from vacant to occupied
 //! (overwrites the freelist pointer). Writing a freelist link transitions it
-//! back. There is no tag, no sentinel — the [`SlotPtr`] handle is the proof
+//! back. There is no tag, no sentinel — the [`Slot`] handle is the proof
 //! of occupancy. Zero bookkeeping on the hot path.
 
 #![warn(missing_docs)]
@@ -62,8 +62,12 @@ extern crate alloc;
 
 pub mod bounded;
 pub mod byte;
+#[cfg(feature = "rc")]
+pub mod rc;
 #[doc(hidden)]
 pub mod shared;
 pub mod unbounded;
 
-pub use shared::{Full, SlotCell, SlotPtr};
+#[cfg(feature = "rc")]
+pub use rc::{RcSlot, Ref, RefMut};
+pub use shared::{Full, Slot, SlotCell};

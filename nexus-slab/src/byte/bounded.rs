@@ -5,7 +5,7 @@ use core::mem;
 
 use crate::shared::{Full, SlotCell};
 
-use super::{AlignedBytes, SlotPtr, validate_type};
+use super::{AlignedBytes, Slot, validate_type};
 
 /// Fixed-capacity byte slab. Mirrors [`crate::bounded::Slab`] but stores
 /// heterogeneous types in fixed-size byte slots.
@@ -73,7 +73,7 @@ impl<const N: usize> Slab<N> {
     /// - Panics if `align_of::<T>() > 8`
     /// - Panics if the slab is full
     #[inline]
-    pub fn alloc<T>(&self, value: T) -> SlotPtr<T> {
+    pub fn alloc<T>(&self, value: T) -> Slot<T> {
         self.try_alloc(value)
             .unwrap_or_else(|_| panic!("byte slab full"))
     }
@@ -84,7 +84,7 @@ impl<const N: usize> Slab<N> {
     ///
     /// - Panics if `size_of::<T>() > N`
     /// - Panics if `align_of::<T>() > 8`
-    pub fn try_alloc<T>(&self, value: T) -> Result<SlotPtr<T>, Full<T>> {
+    pub fn try_alloc<T>(&self, value: T) -> Result<Slot<T>, Full<T>> {
         validate_type::<T, N>();
 
         let Some(slot_ptr) = self.inner.claim_ptr() else {
@@ -99,7 +99,7 @@ impl<const N: usize> Slab<N> {
             core::ptr::write(data_ptr, value);
         }
 
-        Ok(SlotPtr {
+        Ok(Slot {
             ptr: slot_ptr.cast::<u8>(),
             _marker: PhantomData,
         })
@@ -109,7 +109,7 @@ impl<const N: usize> Slab<N> {
     ///
     /// Consumes the handle — the slot cannot be used after this call.
     #[inline]
-    pub fn free<T>(&self, ptr: SlotPtr<T>) {
+    pub fn free<T>(&self, ptr: Slot<T>) {
         let data_ptr = ptr.ptr;
         debug_assert!(
             self.inner.contains_ptr(data_ptr as *const ()),
@@ -128,7 +128,7 @@ impl<const N: usize> Slab<N> {
     ///
     /// Consumes the handle — the slot cannot be used after this call.
     #[inline]
-    pub fn take<T>(&self, ptr: SlotPtr<T>) -> T {
+    pub fn take<T>(&self, ptr: Slot<T>) -> T {
         let data_ptr = ptr.ptr;
         debug_assert!(
             self.inner.contains_ptr(data_ptr as *const ()),

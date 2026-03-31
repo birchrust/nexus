@@ -14,6 +14,7 @@ categories.workspace = true
 default = ["std"]
 std = ["alloc"]
 alloc = []
+rc = []
 
 [dev-dependencies]
 hdrhistogram.workspace = true

@@ -48,7 +48,7 @@ impl<T> std::error::Error for Full<T> {}
 ///
 /// These fields occupy the SAME bytes. Writing `value` overwrites `next_free`
 /// and vice versa. There is no header, no tag, no sentinel — the Slot RAII
-/// handle (`SlotPtr`) is the proof of occupancy.
+/// handle (`Slot`) is the proof of occupancy.
 ///
 /// Size: `max(8, size_of::<T>())`.
 #[repr(C)]
@@ -158,12 +158,12 @@ impl<T> SlotCell<T> {
 }
 
 // =============================================================================
-// SlotPtr<T> — Raw Pointer Wrapper
+// Slot<T> — Raw Pointer Wrapper
 // =============================================================================
 
 /// Raw slot handle — pointer wrapper, NOT RAII.
 ///
-/// `SlotPtr<T>` is a thin wrapper around a pointer to a [`SlotCell<T>`]. It is
+/// `Slot<T>` is a thin wrapper around a pointer to a [`SlotCell<T>`]. It is
 /// analogous to `malloc` returning a pointer: the caller owns the memory and
 /// must explicitly free it via [`Slab::free()`](crate::bounded::Slab::free).
 ///
@@ -173,24 +173,24 @@ impl<T> SlotCell<T> {
 ///
 /// # Thread Safety
 ///
-/// `SlotPtr` is `!Send` and `!Sync`. It must only be used from the thread that
+/// `Slot` is `!Send` and `!Sync`. It must only be used from the thread that
 /// created it.
 ///
 /// # Debug-Mode Leak Detection
 ///
-/// In debug builds, dropping a `SlotPtr` without calling `free()` or
+/// In debug builds, dropping a `Slot` without calling `free()` or
 /// `take()` panics. Use [`into_raw()`](Self::into_raw) to extract the
 /// pointer and disarm the detector. In release builds there is no `Drop`
 /// impl — forgetting to call `free()` silently leaks the slot.
 ///
 /// # Borrow Traits
 ///
-/// `SlotPtr<T>` implements `Borrow<T>` and `BorrowMut<T>`, enabling use as
+/// `Slot<T>` implements `Borrow<T>` and `BorrowMut<T>`, enabling use as
 /// HashMap keys that borrow `T` for lookups.
 #[repr(transparent)]
-pub struct SlotPtr<T>(*mut SlotCell<T>);
+pub struct Slot<T>(*mut SlotCell<T>);
 
-impl<T> SlotPtr<T> {
+impl<T> Slot<T> {
     /// Internal construction from a raw pointer.
     ///
     /// # Safety
@@ -198,7 +198,7 @@ impl<T> SlotPtr<T> {
     /// `ptr` must be a valid pointer to an occupied `SlotCell<T>` within a slab.
     #[inline]
     pub(crate) unsafe fn from_ptr(ptr: *mut SlotCell<T>) -> Self {
-        SlotPtr(ptr)
+        Slot(ptr)
     }
 
     /// Returns the raw pointer to the slot cell.
@@ -219,7 +219,7 @@ impl<T> SlotPtr<T> {
         ptr
     }
 
-    /// Reconstructs a `SlotPtr` from a raw pointer previously obtained
+    /// Reconstructs a `Slot` from a raw pointer previously obtained
     /// via [`into_raw()`](Self::into_raw).
     ///
     /// # Safety
@@ -228,7 +228,7 @@ impl<T> SlotPtr<T> {
     /// a slab, originally obtained from `into_raw()` on this type.
     #[inline]
     pub unsafe fn from_raw(ptr: *mut SlotCell<T>) -> Self {
-        SlotPtr(ptr)
+        Slot(ptr)
     }
 
     /// Creates a duplicate pointer to the same slot.
@@ -239,7 +239,7 @@ impl<T> SlotPtr<T> {
     /// Intended for refcounting wrappers (e.g., nexus-collections' RcHandle).
     #[inline]
     pub unsafe fn clone_ptr(&self) -> Self {
-        SlotPtr(self.0)
+        Slot(self.0)
     }
 
     /// Returns a pinned reference to the value.
@@ -265,17 +265,17 @@ impl<T> SlotPtr<T> {
     }
 }
 
-impl<T> Deref for SlotPtr<T> {
+impl<T> Deref for Slot<T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        // SAFETY: SlotPtr was created from a valid, occupied SlotCell.
+        // SAFETY: Slot was created from a valid, occupied SlotCell.
         unsafe { (*self.0).value_ref() }
     }
 }
 
-impl<T> DerefMut for SlotPtr<T> {
+impl<T> DerefMut for Slot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: We have &mut self, guaranteeing exclusive access.
@@ -283,52 +283,52 @@ impl<T> DerefMut for SlotPtr<T> {
     }
 }
 
-impl<T> AsRef<T> for SlotPtr<T> {
+impl<T> AsRef<T> for Slot<T> {
     #[inline]
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T> AsMut<T> for SlotPtr<T> {
+impl<T> AsMut<T> for Slot<T> {
     #[inline]
     fn as_mut(&mut self) -> &mut T {
         self
     }
 }
 
-impl<T> Borrow<T> for SlotPtr<T> {
+impl<T> Borrow<T> for Slot<T> {
     #[inline]
     fn borrow(&self) -> &T {
         self
     }
 }
 
-impl<T> BorrowMut<T> for SlotPtr<T> {
+impl<T> BorrowMut<T> for Slot<T> {
     #[inline]
     fn borrow_mut(&mut self) -> &mut T {
         self
     }
 }
 
-// SlotPtr is intentionally NOT Clone/Copy.
+// Slot is intentionally NOT Clone/Copy.
 // Move-only semantics prevent double-free at compile time.
 
-impl<T: fmt::Debug> fmt::Debug for SlotPtr<T> {
+impl<T: fmt::Debug> fmt::Debug for Slot<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SlotPtr").field("value", &**self).finish()
+        f.debug_struct("Slot").field("value", &**self).finish()
     }
 }
 
 #[cfg(debug_assertions)]
-impl<T> Drop for SlotPtr<T> {
+impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         #[cfg(feature = "std")]
         if std::thread::panicking() {
             return; // Don't double-panic during unwind
         }
         panic!(
-            "SlotPtr<{}> dropped without being freed — call slab.free(slot) or slab.take(slot)",
+            "Slot<{}> dropped without being freed — call slab.free(slot) or slab.take(slot)",
             core::any::type_name::<T>()
         );
     }

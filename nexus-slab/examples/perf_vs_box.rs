@@ -47,13 +47,28 @@ const SAMPLES: usize = 10_000;
 const BATCH: u64 = 64;
 
 macro_rules! unroll_8 {
-    ($op:expr) => { $op; $op; $op; $op; $op; $op; $op; $op; };
+    ($op:expr) => {
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+        $op;
+    };
 }
 
 macro_rules! unroll_64 {
     ($op:expr) => {
-        unroll_8!($op); unroll_8!($op); unroll_8!($op); unroll_8!($op);
-        unroll_8!($op); unroll_8!($op); unroll_8!($op); unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
+        unroll_8!($op);
     };
 }
 
@@ -163,7 +178,10 @@ bench_size!(bench_4096, 4096);
 fn main() {
     println!("NEXUS-SLAB vs BOX — MULTI-SIZE BENCHMARK");
     println!("=========================================");
-    println!("Batched timing (64 ops per rdtsc), pinned core, {} samples\n", SAMPLES);
+    println!(
+        "Batched timing (64 ops per rdtsc), pinned core, {} samples\n",
+        SAMPLES
+    );
     println!(
         "  {:<40} {:>6} {:>6} {:>6} {:>7} {:>7}",
         "(cycles/op)", "p50", "p90", "p99", "p99.9", "max"

@@ -35,7 +35,7 @@ Construction is `unsafe` — you're opting into:
 - **Free from the same slab.** Cross-slab free corrupts the freelist.
 - **Don't share across threads.** The slab is `!Send`/`!Sync`.
 
-Everything after construction is safe. `SlotPtr<T>` is move-only
+Everything after construction is safe. `Slot<T>` is move-only
 (`!Copy`, `!Clone`) — the compiler prevents double-free.
 
 ## API
@@ -83,7 +83,7 @@ slab.free(p2);
 slab.free(p1);
 ```
 
-### SlotPtr<T>
+### Slot<T>
 
 8-byte move-only handle. Safe `Deref`/`DerefMut` access.
 
@@ -95,16 +95,65 @@ ptr.price = 105.0;
 let p: Pin<&mut Order> = ptr.pin_mut();  // stable address, no Unpin needed
 
 // Raw pointer escape hatch
-let raw = ptr.into_raw();                        // disarms debug leak detector
-let ptr = unsafe { SlotPtr::from_raw(raw) };     // reconstruct
+let raw = ptr.into_raw();               // disarms debug leak detector
+let ptr = unsafe { Slot::from_raw(raw) };  // reconstruct
 slab.free(ptr);
-
-// For refcounting wrappers (nexus-collections)
-let clone = unsafe { ptr.clone_ptr() };  // second handle, same slot
 ```
 
-**Debug mode:** dropping a `SlotPtr` without calling `free()` or `take()`
+**Debug mode:** dropping a `Slot` without calling `free()` or `take()`
 panics (leak detection). Release mode: silent leak.
+
+### Rc Slabs (Shared Ownership)
+
+When multiple owners need access to the same slot — e.g., a collection
+holds a node and the user holds a handle for cancellation.
+
+```rust
+use nexus_slab::rc::bounded::Slab;
+
+// SAFETY: caller accepts manual memory management contract
+let slab = unsafe { Slab::<Order>::with_capacity(1024) };
+
+// Alloc returns RcSlot<Order> with refcount 1
+let h1 = slab.alloc(Order { id: 1, price: 100.0 });
+
+// Clone is safe — increments refcount
+let h2 = h1.clone();  // refcount 2
+
+// Access through borrow guards — one borrow at a time
+{
+    let mut order = h1.borrow_mut();  // exclusive guard
+    order.price = 105.0;
+}
+{
+    let order = h2.borrow();          // shared guard (still exclusive — see below)
+    assert_eq!(order.price, 105.0);   // mutation visible across clones
+}
+
+// Every handle must be freed — slot deallocated on last free
+slab.free(h2);  // refcount 2 → 1, slot stays alive
+slab.free(h1);  // refcount 1 → 0, value dropped, slot freed
+```
+
+**Borrow rules:** More conservative than `RefCell`. Only one borrow
+(shared OR exclusive) is allowed at a time. Any attempt to borrow while
+another borrow is active panics. This is intentional — shared mutable
+state in a low-latency system should be tightly controlled.
+
+```rust
+let h1 = slab.alloc(42u64);
+let h2 = h1.clone();
+
+let _g1 = h1.borrow();
+let _g2 = h2.borrow();  // PANICS — already borrowed (even though both are shared)
+```
+
+**Pin support:** Slab memory never moves, so `Pin` is sound without
+`T: Unpin`:
+
+```rust
+let mut pinned = handle.pin_mut();  // Pin<RefMut<'_, T>>
+```
 
 ## Performance
 
@@ -161,7 +210,7 @@ union SlotCell<T> {
 ```
 
 No tag, no metadata. Writing a value overwrites the freelist pointer.
-The `SlotPtr` handle is the proof of occupancy.
+The `Slot` handle is the proof of occupancy.
 
 ### Const Construction (thread_local!)
 
@@ -183,6 +232,7 @@ ORDERS.with(|s| unsafe { s.init(1024) });
 |---------|---------|-------------|
 | `std` | yes | Enables `alloc` + `thread::panicking()` for debug leak detection |
 | `alloc` | with `std` | `Vec`-backed storage. Required for slab operation. |
+| `rc` | no | Reference-counted handles (`rc::bounded::Slab`, `rc::unbounded::Slab`) with borrow guards |
 
 `no_std` with `alloc` is supported for embedded systems.
 

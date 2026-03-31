@@ -49,7 +49,7 @@ pub struct AlignedBytes<const N: usize> {
 }
 
 // =============================================================================
-// SlotPtr
+// Slot
 // =============================================================================
 
 /// Typed handle to a value stored in a byte slab.
@@ -60,14 +60,14 @@ pub struct AlignedBytes<const N: usize> {
 ///
 /// # Debug Leak Detection
 ///
-/// Same as [`SlotPtr`](crate::SlotPtr) — panics on drop in debug
+/// Same as [`Slot`](crate::Slot) — panics on drop in debug
 /// builds if not freed.
-pub struct SlotPtr<T> {
+pub struct Slot<T> {
     ptr: *mut u8,
     _marker: PhantomData<T>,
 }
 
-impl<T> SlotPtr<T> {
+impl<T> Slot<T> {
     /// Creates a duplicate pointer to the same slot.
     ///
     /// # Safety
@@ -75,7 +75,7 @@ impl<T> SlotPtr<T> {
     /// Caller must ensure the slot is not freed while any clone exists.
     #[inline]
     pub unsafe fn clone_ptr(&self) -> Self {
-        SlotPtr {
+        Slot {
             ptr: self.ptr,
             _marker: PhantomData,
         }
@@ -98,7 +98,7 @@ impl<T> SlotPtr<T> {
         ptr
     }
 
-    /// Reconstructs a `SlotPtr` from a raw pointer previously obtained
+    /// Reconstructs a `Slot` from a raw pointer previously obtained
     /// via [`into_raw()`](Self::into_raw).
     ///
     /// # Safety
@@ -107,7 +107,7 @@ impl<T> SlotPtr<T> {
     /// originally obtained from `into_raw()`.
     #[inline]
     pub unsafe fn from_raw(ptr: *mut u8) -> Self {
-        SlotPtr {
+        Slot {
             ptr,
             _marker: PhantomData,
         }
@@ -128,7 +128,7 @@ impl<T> SlotPtr<T> {
     }
 }
 
-impl<T> core::ops::Deref for SlotPtr<T> {
+impl<T> core::ops::Deref for Slot<T> {
     type Target = T;
 
     #[inline]
@@ -138,7 +138,7 @@ impl<T> core::ops::Deref for SlotPtr<T> {
     }
 }
 
-impl<T> core::ops::DerefMut for SlotPtr<T> {
+impl<T> core::ops::DerefMut for Slot<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: We have &mut self, guaranteeing exclusive access.
@@ -146,51 +146,51 @@ impl<T> core::ops::DerefMut for SlotPtr<T> {
     }
 }
 
-impl<T> core::convert::AsRef<T> for SlotPtr<T> {
+impl<T> core::convert::AsRef<T> for Slot<T> {
     #[inline]
     fn as_ref(&self) -> &T {
         self
     }
 }
 
-impl<T> core::convert::AsMut<T> for SlotPtr<T> {
+impl<T> core::convert::AsMut<T> for Slot<T> {
     #[inline]
     fn as_mut(&mut self) -> &mut T {
         self
     }
 }
 
-impl<T> core::borrow::Borrow<T> for SlotPtr<T> {
+impl<T> core::borrow::Borrow<T> for Slot<T> {
     #[inline]
     fn borrow(&self) -> &T {
         self
     }
 }
 
-impl<T> core::borrow::BorrowMut<T> for SlotPtr<T> {
+impl<T> core::borrow::BorrowMut<T> for Slot<T> {
     #[inline]
     fn borrow_mut(&mut self) -> &mut T {
         self
     }
 }
 
-impl<T: core::fmt::Debug> core::fmt::Debug for SlotPtr<T> {
+impl<T: core::fmt::Debug> core::fmt::Debug for Slot<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("byte::SlotPtr")
+        f.debug_struct("byte::Slot")
             .field("value", &**self)
             .finish()
     }
 }
 
 #[cfg(debug_assertions)]
-impl<T> Drop for SlotPtr<T> {
+impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         #[cfg(feature = "std")]
         if std::thread::panicking() {
             return;
         }
         panic!(
-            "byte::SlotPtr<{}> dropped without being freed — call slab.free(ptr) or slab.take(ptr)",
+            "byte::Slot<{}> dropped without being freed — call slab.free(ptr) or slab.take(ptr)",
             core::any::type_name::<T>()
         );
     }

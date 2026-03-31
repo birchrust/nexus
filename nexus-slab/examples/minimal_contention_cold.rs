@@ -6,7 +6,7 @@
 //! - Interleaved Box/Slab measurements to avoid ordering bias
 //! - BATCH=10 amortizes rdtsc overhead while measuring cold-start behavior
 
-use nexus_slab::SlotPtr;
+use nexus_slab::Slot;
 use nexus_slab::bounded::Slab as BoundedSlab;
 use std::hint::black_box;
 
@@ -139,7 +139,7 @@ fn cold_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
             evict_cache();
             let start = rdtsc_start();
             for _ in 0..BATCH {
-                let slot: SlotPtr<T> = slab.alloc(T::default());
+                let slot: Slot<T> = slab.alloc(T::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
                 slab.free(slot);
@@ -151,7 +151,7 @@ fn cold_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
             evict_cache();
             let start = rdtsc_start();
             for _ in 0..BATCH {
-                let slot: SlotPtr<T> = slab.alloc(T::default());
+                let slot: Slot<T> = slab.alloc(T::default());
                 black_box(&*slot);
                 // SAFETY: slot was allocated from this slab
                 slab.free(slot);
