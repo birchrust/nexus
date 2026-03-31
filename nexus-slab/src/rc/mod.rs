@@ -371,7 +371,7 @@ impl<T> Drop for RcSlot<T> {
             return;
         }
         panic!(
-            "RcSlot<{}> dropped without being freed — call slab.free_rc(handle)",
+            "RcSlot<{}> dropped without being freed — call slab.free(handle)",
             core::any::type_name::<T>()
         );
     }

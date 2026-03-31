@@ -62,10 +62,12 @@ extern crate alloc;
 
 pub mod bounded;
 pub mod byte;
+#[cfg(feature = "rc")]
 pub mod rc;
 #[doc(hidden)]
 pub mod shared;
 pub mod unbounded;
 
+#[cfg(feature = "rc")]
 pub use rc::{RcSlot, Ref, RefMut};
 pub use shared::{Full, Slot, SlotCell};
