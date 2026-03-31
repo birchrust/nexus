@@ -950,4 +950,53 @@ mod tests {
 
         server.await.unwrap();
     }
+
+    /// A mock stream that fails all writes with BrokenPipe.
+    struct BrokenWriteStream(Cursor<Vec<u8>>);
+
+    impl AsyncRead for BrokenWriteStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let n = std::io::Read::read(&mut self.0, buf.initialize_unfilled())?;
+            buf.advance(n);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for BrokenWriteStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "connection lost",
+            )))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn send_on_broken_stream_returns_error() {
+        let mock = BrokenWriteStream(Cursor::new(Vec::new()));
+        let reader = FrameReader::builder().role(Role::Client).build();
+        let writer = FrameWriter::new(Role::Client);
+        let mut ws = WsStream::from_parts(mock, reader, writer);
+
+        let result = ws.send_text("hello").await;
+        assert!(result.is_err(), "send on broken stream should return error");
+
+        // Second send should also fail.
+        let result = ws.send_binary(&[1, 2, 3]).await;
+        assert!(result.is_err(), "subsequent send should also fail");
+    }
 }

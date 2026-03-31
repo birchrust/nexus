@@ -519,6 +519,80 @@ mod tests {
         assert!(slot.conn_and_reader().is_err());
     }
 
+    #[test]
+    fn atomic_try_acquire_none_when_all_in_use() {
+        let pool = make_pool(2);
+        let s1 = pool.try_acquire().unwrap();
+        let s2 = pool.try_acquire().unwrap();
+        // All slots acquired (not dead — just in use).
+        assert!(pool.try_acquire().is_none());
+        assert_eq!(pool.available(), 0);
+
+        drop(s1);
+        drop(s2);
+        assert_eq!(pool.available(), 2);
+        assert!(pool.try_acquire().is_some());
+    }
+
+    #[test]
+    fn atomic_acquire_returns_after_release() {
+        // sync::Pool doesn't have an async acquire — only try_acquire.
+        // Verify that when all slots are held, try_acquire returns None,
+        // and after release it returns Some.
+        let pool = make_pool(1);
+        let held = pool.try_acquire().unwrap();
+        assert!(pool.try_acquire().is_none());
+
+        drop(held);
+        assert!(pool.try_acquire().is_some());
+    }
+
+    /// Tests that 4 connections in the pool all work correctly.
+    #[tokio::test]
+    async fn atomic_pool_four_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server: accept 4 sequential connections.
+        tokio::spawn(async move {
+            for _ in 0..4 {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = tcp.read(&mut buf).await.unwrap();
+                let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                tcp.write_all(resp).await.unwrap();
+            }
+        });
+
+        let pool = make_pool(4);
+
+        // Connect, send, verify — 4 times sequentially.
+        let mut success_count = 0u8;
+        for _ in 0..4u8 {
+            {
+                let mut slot = pool.try_acquire().unwrap();
+                let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+                tcp.set_nodelay(true).unwrap();
+                let stream = MaybeTls::Plain(tcp);
+                slot.conn = Some(AsyncHttpConnection::new(stream));
+                slot.writer = RequestWriter::new(&addr.to_string()).unwrap();
+
+                let s: &mut AtomicClientSlot = &mut slot;
+                let req = s.writer.get("/test").finish().unwrap();
+                let conn = s.conn.as_mut().unwrap();
+                let resp = conn.send(req, &mut s.reader).await.unwrap();
+                assert_eq!(resp.status(), 200);
+                assert_eq!(resp.body_str().unwrap(), "ok");
+                success_count += 1;
+            }
+        }
+
+        assert_eq!(success_count, 4);
+    }
+
     #[tokio::test]
     async fn atomic_builder_validates_empty_url() {
         let result = AtomicClientPool::builder().connections(1).build().await;

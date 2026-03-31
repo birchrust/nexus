@@ -89,8 +89,8 @@ impl<const CAP: usize> Uuid<CAP> {
                 got: bytes.len(),
             });
         }
-        let hi = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
-        let lo = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+        let hi = u64::from_be_bytes(bytes[0..8].try_into().expect("8-byte slice"));
+        let lo = u64::from_be_bytes(bytes[8..16].try_into().expect("8-byte slice"));
         Ok(Self::from_raw(hi, lo))
     }
 
@@ -345,8 +345,8 @@ impl<const CAP: usize> UuidCompact<CAP> {
                 got: bytes.len(),
             });
         }
-        let hi = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
-        let lo = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+        let hi = u64::from_be_bytes(bytes[0..8].try_into().expect("8-byte slice"));
+        let lo = u64::from_be_bytes(bytes[8..16].try_into().expect("8-byte slice"));
         Ok(Self::from_raw(hi, lo))
     }
 
@@ -378,7 +378,7 @@ impl<const CAP: usize> UuidCompact<CAP> {
 
     /// Decode back to raw (hi, lo) bytes.
     pub fn decode(&self) -> (u64, u64) {
-        let bytes: &[u8; 32] = self.0.as_bytes().try_into().unwrap();
+        let bytes: &[u8; 32] = self.0.as_bytes().try_into().expect("32-byte hex string");
         // SAFETY: Data was validated at construction; decode cannot fail.
         unsafe { crate::simd::hex_decode_32(bytes).unwrap_unchecked() }
     }
@@ -396,7 +396,7 @@ impl<const CAP: usize> UuidCompact<CAP> {
         }
 
         // SIMD path: validates and decodes in a single pass
-        let hex_bytes: &[u8; 32] = bytes.try_into().unwrap();
+        let hex_bytes: &[u8; 32] = bytes.try_into().expect("32-byte hex string");
         let (hi, lo) =
             crate::simd::hex_decode_32(hex_bytes).map_err(|pos| ParseError::InvalidChar {
                 position: pos,
@@ -525,7 +525,7 @@ impl<const CAP: usize> HexId64<CAP> {
 
     /// Decode back to u64.
     pub fn decode(&self) -> u64 {
-        let bytes: &[u8; 16] = self.0.as_bytes().try_into().unwrap();
+        let bytes: &[u8; 16] = self.0.as_bytes().try_into().expect("16-byte hex string");
         // SAFETY: Data was validated at construction; decode cannot fail.
         unsafe { crate::simd::hex_decode_16(bytes).unwrap_unchecked() }
     }
@@ -541,7 +541,7 @@ impl<const CAP: usize> HexId64<CAP> {
         }
 
         // SIMD path: validates and decodes in a single pass
-        let hex_bytes: &[u8; 16] = bytes.try_into().unwrap();
+        let hex_bytes: &[u8; 16] = bytes.try_into().expect("16-byte hex string");
         let value =
             crate::simd::hex_decode_16(hex_bytes).map_err(|pos| ParseError::InvalidChar {
                 position: pos,
@@ -889,8 +889,8 @@ impl<const CAP: usize> Ulid<CAP> {
         ts_buf[2..8].copy_from_slice(&bytes[0..6]);
         let timestamp_ms = u64::from_be_bytes(ts_buf);
 
-        let rand_hi = u16::from_be_bytes(bytes[6..8].try_into().unwrap());
-        let rand_lo = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+        let rand_hi = u16::from_be_bytes(bytes[6..8].try_into().expect("2-byte slice"));
+        let rand_lo = u64::from_be_bytes(bytes[8..16].try_into().expect("8-byte slice"));
 
         Ok(Self::from_raw(timestamp_ms, rand_hi, rand_lo))
     }

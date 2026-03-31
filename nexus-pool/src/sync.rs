@@ -22,10 +22,11 @@ struct Slot<T> {
     next: AtomicU32,
 }
 
-// Safety: Slot is Send+Sync because:
-// - value is only accessed when slot is "owned" (popped from free list)
-// - next is atomic
+// SAFETY: Slot is Send because value is only accessed when the slot is "owned"
+// (popped from free list), so no concurrent access occurs. next is AtomicU32.
 unsafe impl<T: Send> Send for Slot<T> {}
+// SAFETY: Slot is Sync because value (UnsafeCell) is only accessed when owned
+// (not in the free list), so no data race is possible. next is AtomicU32 (Sync).
 unsafe impl<T: Send + Sync> Sync for Slot<T> {}
 
 // =============================================================================
@@ -44,8 +45,9 @@ impl<T> Inner<T> {
         // Reset the value
         (self.reset)(&mut value);
 
-        // Write value back to slot
-        // Safety: we own this slot (it was popped), no one else can access it
+        // SAFETY: We own this slot (it was popped from the free list via CAS).
+        // No other thread can access it until we push it back. MaybeUninit::write
+        // initializes the slot for the next acquirer.
         unsafe {
             (*self.slots[idx as usize].value.get()).write(value);
         }
@@ -99,6 +101,10 @@ impl<T> Inner<T> {
     ///
     /// Caller must own the slot (have popped it) and slot must contain valid value.
     unsafe fn read_value(&self, idx: u32) -> T {
+        // SAFETY: Caller guarantees slot was popped (owned) and contains a valid value
+        // written by new() or push(). assume_init_read moves the value out without
+        // dropping the MaybeUninit, which is correct since the slot will be rewritten
+        // on the next push.
         unsafe { (*self.slots[idx as usize].value.get()).assume_init_read() }
     }
 }
@@ -111,6 +117,10 @@ impl<T> Drop for Inner<T> {
         // (either returning to pool, or dropping directly if pool is gone).
         let mut idx = *self.free_head.get_mut();
         while idx != NONE {
+            // SAFETY: Slots in the free list contain valid values (written by new()
+            // or push()). Slots NOT in the free list have been moved out via
+            // assume_init_read in pop and are handled by Pooled's Drop. get_mut is
+            // safe because we have &mut self (exclusive access during drop).
             unsafe {
                 (*self.slots[idx as usize].value.get()).assume_init_drop();
             }
@@ -158,10 +168,10 @@ pub struct Pool<T> {
     inner: Arc<Inner<T>>,
 }
 
-// Pool is Send (can be moved to another thread) but not Sync (not shared)
-// Not Clone - only one acquirer exists
-// Safety: Inner uses atomics for the free list and values are only accessed
-// when a slot is owned (popped). T: Send ensures values can cross threads.
+// SAFETY: Pool is Send (can be moved to another thread) but not Sync (not shared).
+// Inner uses atomics for the free list. Values in UnsafeCell are only accessed
+// when a slot is owned (popped via CAS). T: Send ensures values can cross threads.
+// Pool is not Clone — single acquirer enforced at the type level.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send> Send for Pool<T> {}
 
@@ -215,8 +225,8 @@ impl<T> Pool<T> {
     /// Returns `None` if all objects are currently in use.
     pub fn try_acquire(&self) -> Option<Pooled<T>> {
         self.inner.pop().map(|idx| {
-            // Take value from slot
-            // Safety: we just popped this slot, we own it, it contains valid value
+            // SAFETY: We just popped this slot via CAS (exclusive ownership).
+            // The slot contains a valid value written by new() or a prior push().
             let value = unsafe { self.inner.read_value(idx) };
             Pooled {
                 value: ManuallyDrop::new(value),
@@ -255,12 +265,13 @@ pub struct Pooled<T> {
     inner: Weak<Inner<T>>,
 }
 
-// Pooled is Send + Sync - can be sent anywhere, dropped from anywhere
-// Safety: Pooled owns its value (ManuallyDrop<T>). The Weak<Inner<T>> is only
-// used during drop to push the slot back via atomic CAS. T: Send ensures the
-// value can cross threads; T: Sync ensures shared references are safe.
+// SAFETY: Pooled owns its value exclusively (ManuallyDrop<T>). The Weak<Inner<T>>
+// is only used during drop to push the slot back via atomic CAS. T: Send ensures
+// the value can cross threads.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send> Send for Pooled<T> {}
+// SAFETY: Pooled's &self access goes through Deref to &T, which requires T: Sync.
+// The Weak and idx fields are not mutated through &self.
 unsafe impl<T: Send + Sync> Sync for Pooled<T> {}
 
 impl<T> Deref for Pooled<T> {
@@ -282,11 +293,13 @@ impl<T> DerefMut for Pooled<T> {
 impl<T> Drop for Pooled<T> {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.upgrade() {
-            // Pool still alive - return value
+            // SAFETY: Value is valid (ManuallyDrop preserves it until explicit take/drop).
+            // After take, self.value is consumed; inner.push writes it back to the slot.
             let value = unsafe { ManuallyDrop::take(&mut self.value) };
             inner.push(self.idx, value);
         } else {
-            // Pool is gone - just drop the value
+            // SAFETY: Pool is gone. Value is valid and must be dropped to avoid a leak.
+            // After drop, we never touch self.value again.
             unsafe { ManuallyDrop::drop(&mut self.value) };
         }
     }

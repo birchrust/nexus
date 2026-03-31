@@ -68,15 +68,15 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-stats**](./nexus-stats) | 45 streaming statistics algorithms. EMA, CUSUM, Welford, Kalman, KAMA, change detection, anomaly filtering, and more. O(1) per update, fixed memory, `no_std`. [Full docs](./nexus-stats/docs/INDEX.md). |
+| [**nexus-stats**](./nexus-stats) | 70+ streaming statistics algorithms across 5 subcrates (core, smoothing, detection, regression, control). EMA, CUSUM, Welford, Kalman, KAMA, change detection, anomaly filtering, online regression, and more. O(1) per update, fixed memory, `no_std`. |
 | [**nexus-rate**](./nexus-rate) | Rate limiting. GCRA, token bucket, sliding window counter. Single-threaded and thread-safe variants. Weighted requests. ~2-4 cycle hot path. |
 
 ### Networking
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-net**](./nexus-net) | Sans-IO WebSocket (RFC 6455) and HTTP/1.1 REST primitives. Zero-copy, SIMD-accelerated. 7-14x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
-| [**nexus-async-net**](./nexus-async-net) | Async adapters for nexus-net. Tokio-compatible. WebSocket `WsStream<S>`, HTTP `AsyncHttpConnection<S>`, and `ClientPool`/`AtomicClientPool` for connection reuse with LIFO acquire, inline reconnect, and RAII guards. 3.5x faster than tokio-tungstenite. |
+| [**nexus-net**](./nexus-net) | Sans-IO WebSocket (RFC 6455) and HTTP/1.1 REST primitives. Zero-copy, SIMD-accelerated. 3x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
+| [**nexus-async-net**](./nexus-async-net) | Async adapters for nexus-net. Tokio-compatible. WebSocket `WsStream<S>`, HTTP `AsyncHttpConnection<S>`, and `ClientPool`/`AtomicClientPool` with self-healing reconnect. `try_acquire` (fast path) and `acquire` (patient path with backoff). 3.5x faster than tokio-tungstenite. |
 
 ### Communication & Notification
 
@@ -92,7 +92,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-slab**](./nexus-slab) | Pre-allocated slab allocator. Fixed-capacity `BoundedSlab` for deterministic latency, growable `Slab` via independent chunks (no copy on growth). |
+| [**nexus-slab**](./nexus-slab) | Manual memory management with SLUB-style slab allocation. `bounded::Slab` (fixed capacity) and `unbounded::Slab` (growable via chunks). `rc` feature adds `RcSlot` with borrow guards for shared ownership. 1 cycle alloc, sub-cycle free. |
 | [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` and thread-safe `sync::Pool` (one acquirer, any returner). |
 | [**nexus-timer**](./nexus-timer) | Hierarchical timer wheel with O(1) insert and cancel. No-cascade design inspired by the Linux kernel. Slab-backed, zero allocation after init. |
 | [**nexus-smartptr**](./nexus-smartptr) | Inline and flexible smart pointers for type-erased storage. `FlatBox` (fixed inline), `FlexBox` (inline or heap). Avoids boxing for small handler types. |
@@ -101,7 +101,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. Internal allocation via `nexus-slab` — user sees keys and values, not nodes. |
+| [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. External allocation via `nexus-slab` — user owns the slab, collection wires pointers. 2-3 cycle list operations, 15 cycle tree lookups. |
 
 ### Numeric
 

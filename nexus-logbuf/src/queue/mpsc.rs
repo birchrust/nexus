@@ -60,7 +60,8 @@ pub fn new(capacity: usize) -> (Producer, Consumer) {
     let mask = capacity - 1;
 
     // Allocate buffer, zero-initialized, 8-byte aligned for atomic len stamps
-    let layout = Layout::from_size_align(capacity, 8).unwrap();
+    let layout = Layout::from_size_align(capacity, 8)
+        .expect("valid layout: capacity is a power of two >= 16, align is 8");
     let buffer_ptr = unsafe { alloc_zeroed(layout) };
     if buffer_ptr.is_null() {
         handle_alloc_error(layout);
@@ -108,7 +109,8 @@ unsafe impl Sync for Shared {}
 impl Drop for Shared {
     fn drop(&mut self) {
         // Safety: buffer was allocated with alloc_zeroed using this layout.
-        let layout = Layout::from_size_align(self.capacity, 8).unwrap();
+        let layout = Layout::from_size_align(self.capacity, 8)
+            .expect("valid layout: capacity was validated at construction");
         unsafe { dealloc(self.buffer, layout) };
     }
 }

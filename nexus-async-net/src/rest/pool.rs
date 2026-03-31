@@ -584,6 +584,96 @@ mod tests {
         assert_eq!(pool.available(), 4);
     }
 
+    #[test]
+    fn try_acquire_returns_none_when_all_in_use() {
+        let pool = Pool::new(make_disconnected_slot, |_| {});
+        pool.put(make_disconnected_slot());
+        pool.put(make_disconnected_slot());
+
+        let s1 = pool.try_acquire().unwrap();
+        let s2 = pool.try_acquire().unwrap();
+        // All slots are held — not dead, just in use.
+        assert!(pool.try_acquire().is_none());
+        assert_eq!(pool.available(), 0);
+
+        // Return one.
+        drop(s1);
+        drop(s2);
+        assert_eq!(pool.available(), 2);
+        assert!(pool.try_acquire().is_some());
+    }
+
+    #[test]
+    fn acquire_returns_after_slot_released() {
+        // local::Pool::acquire() blocks (spins) until a slot is available.
+        // We can't easily test a true timeout with the sync acquire, but we
+        // can verify that when all slots are held, try_acquire returns None,
+        // and after release it returns Some.
+        let pool = Pool::new(make_disconnected_slot, |_| {});
+        pool.put(make_disconnected_slot());
+
+        let held = pool.try_acquire().unwrap();
+        assert!(pool.try_acquire().is_none());
+
+        drop(held);
+        assert!(pool.try_acquire().is_some());
+    }
+
+    /// Tests that 4 connections in the pool all work. Each connection
+    /// is set up and used one at a time (sequential, same TCP listener).
+    #[tokio::test(flavor = "current_thread")]
+    async fn pool_four_connections_all_succeed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server: accept 4 sequential connections, each gets one request.
+        tokio::spawn(async move {
+            for _ in 0..4 {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = tcp.read(&mut buf).await.unwrap();
+                let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                tcp.write_all(resp).await.unwrap();
+            }
+        });
+
+        let pool = Pool::new(make_disconnected_slot, |slot| {
+            if slot.needs_reconnect() {
+                slot.conn = None;
+                slot.reader.reset();
+            }
+        });
+
+        // Connect, send, and verify — 4 times. Each iteration creates
+        // a new connection (simulating pool with 4 slots used sequentially).
+        let mut success_count = 0u8;
+        for _ in 0..4u8 {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            tcp.set_nodelay(true).unwrap();
+            let stream = MaybeTls::Plain(tcp);
+            let conn = AsyncHttpConnection::new(stream);
+            pool.put(ClientSlot {
+                writer: RequestWriter::new(&addr.to_string()).unwrap(),
+                reader: ResponseReader::new(4096),
+                conn: Some(conn),
+            });
+
+            let mut slot = pool.try_acquire().unwrap();
+            let s: &mut ClientSlot = &mut slot;
+            let req = s.writer.get("/test").finish().unwrap();
+            let conn = s.conn.as_mut().unwrap();
+            let resp = conn.send(req, &mut s.reader).await.unwrap();
+            assert_eq!(resp.status(), 200);
+            assert_eq!(resp.body_str().unwrap(), "ok");
+            success_count += 1;
+        }
+
+        assert_eq!(success_count, 4);
+    }
+
     // Integration test with real TCP is in tests/httpbin.rs (ignored, needs network).
     // The loopback test below uses tokio to verify the full send path.
     #[tokio::test(flavor = "current_thread")]
