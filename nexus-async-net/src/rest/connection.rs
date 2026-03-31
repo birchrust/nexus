@@ -202,11 +202,16 @@ impl Default for AsyncHttpConnectionBuilder {
 /// ```ignore
 /// use nexus_net::rest::RequestWriter;
 /// use nexus_net::http::ResponseReader;
-/// use nexus_async_net::rest::AsyncHttpConnection;
+/// use nexus_async_net::rest::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+/// use nexus_net::tls::TlsConfig;
 ///
 /// let mut writer = RequestWriter::new("api.binance.com").unwrap();
 /// let mut reader = ResponseReader::new(32 * 1024);
-/// let mut conn = AsyncHttpConnection::connect("https://api.binance.com").await?;
+/// let tls = TlsConfig::new()?;
+/// let mut conn = AsyncHttpConnectionBuilder::new()
+///     .tls(&tls)
+///     .connect("https://api.binance.com")
+///     .await?;
 ///
 /// let req = writer.get("/orders").query("symbol", "BTC").finish()?;
 /// let resp = conn.send(req, &mut reader).await?;
@@ -216,12 +221,7 @@ pub struct AsyncHttpConnection<S> {
     poisoned: bool,
 }
 
-impl AsyncHttpConnection<MaybeTls> {
-    /// Connect with default configuration. TLS auto-detected from scheme.
-    pub async fn connect(url: &str) -> Result<Self, RestError> {
-        AsyncHttpConnectionBuilder::new().connect(url).await
-    }
-}
+// MaybeTls connections are created exclusively through `AsyncHttpConnectionBuilder`.
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
     /// Wrap a pre-connected async stream.

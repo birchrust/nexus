@@ -9,8 +9,8 @@ use tokio::net::TcpStream;
 
 /// Async stream that may or may not be TLS-wrapped.
 ///
-/// Created by [`WsStream::connect()`](crate::ws::WsStream::connect)
-/// or [`AsyncHttpConnection::connect()`](crate::rest::AsyncHttpConnection::connect)
+/// Created by [`WsStreamBuilder::connect()`](crate::ws::WsStreamBuilder::connect)
+/// or [`AsyncHttpConnectionBuilder::connect()`](crate::rest::AsyncHttpConnectionBuilder::connect)
 /// based on the URL scheme.
 pub enum MaybeTls {
     /// Plain TCP (ws://, http://).

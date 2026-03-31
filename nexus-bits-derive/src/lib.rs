@@ -607,6 +607,8 @@ fn generate_struct_builder_impl(
                     if is_signed {
                         // For signed types, check that value fits in signed field range
                         // A signed N-bit field can hold -(2^(N-1)) to (2^(N-1) - 1)
+                        // Note: len < 128 is guaranteed here — the early return at
+                        // line 596 (len >= type_bits) catches len >= 128 for i128.
                         let min_shift = len - 1;
                         Some(quote! {
                             if let Some(v) = self.#field_name {

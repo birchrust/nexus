@@ -107,7 +107,7 @@ nexus-net = { version = "0.2", features = ["full"] }
 ```rust
 use nexus_net::ws::{WsStream, Message, CloseCode};
 
-let mut ws = WsStream::connect("ws://exchange.com:80/ws/v1")?;
+let mut ws = WsStream::builder().connect("ws://exchange.com:80/ws/v1")?;
 
 ws.send_text(r#"{"subscribe":"trades.BTC-USD"}"#)?;
 
@@ -130,9 +130,11 @@ loop {
 
 ```rust
 use nexus_net::ws::WsStream;
+use nexus_net::tls::TlsConfig;
 
-// TLS detected from wss:// scheme — automatic with system root certs
-let mut ws = WsStream::connect("wss://exchange.com/ws/v1")?;
+// TLS detected from wss:// scheme — create TlsConfig once at startup
+let tls = TlsConfig::new()?;
+let mut ws = WsStream::builder().tls(&tls).connect("wss://exchange.com/ws/v1")?;
 
 // Same API — recv(), send_text(), send_binary(), etc.
 ```
@@ -163,8 +165,9 @@ writer.default_header("Accept", "application/json")?;
 // Response reader — caller-owned, reused across requests
 let mut reader = ResponseReader::new(32 * 1024).max_body_size(32 * 1024);
 
-// Transport — just a socket (TLS auto-detected from URL scheme)
-let mut conn = HttpConnection::connect("https://httpbin.org")?;
+// Transport — TLS config created once, builder for connection
+let tls = nexus_net::tls::TlsConfig::new()?;
+let mut conn = HttpConnection::builder().tls(&tls).connect("https://httpbin.org")?;
 
 // GET with query parameters
 let req = writer.get("/get")

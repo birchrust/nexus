@@ -89,10 +89,15 @@ impl ClientSlot {
 ///     .build()
 ///     .await?;
 ///
-/// let mut slot = pool.try_acquire().await?.unwrap();
-/// let req = slot.writer().post("/order").body(json).finish()?;
-/// let (conn, reader) = (s.conn.as_mut().unwrap(), &mut s.reader);
-/// let resp = conn.send(req, reader).await?;
+/// // Fast path (trading) — no reconnect, no wait
+/// let mut slot = pool.try_acquire().unwrap();
+/// // Patient path (background) — waits, reconnects with backoff
+/// let mut slot = pool.acquire().await?;
+///
+/// let s: &mut ClientSlot = &mut slot;
+/// let req = s.writer.post("/order").body(json).finish()?;
+/// let conn = s.conn.as_mut().unwrap();
+/// let resp = conn.send(req, &mut s.reader).await?;
 /// // drop(slot) returns to pool
 /// ```
 pub struct ClientPool {
@@ -122,23 +127,68 @@ impl ClientPool {
         ClientPoolBuilder::new()
     }
 
-    /// Acquire a client slot (LIFO).
+    /// Try to acquire a client slot (LIFO). Fast path — no reconnect.
     ///
-    /// Returns `None` if all slots are currently in use.
-    /// If the acquired slot has a dead connection, reconnects inline.
+    /// Returns `None` if all slots are in use or the only available
+    /// slots have dead connections. Use [`acquire()`](Self::acquire)
+    /// for the patient path that waits and reconnects.
     ///
-    /// The pool is bounded — it will never create connections beyond
-    /// the configured `connections` count.
-    pub async fn try_acquire(&self) -> Result<Option<Pooled<ClientSlot>>, RestError> {
-        match self.pool.try_acquire() {
-            Some(mut slot) => {
-                if slot.needs_reconnect() {
-                    self.reconnect(&mut slot).await?;
-                }
-                Ok(Some(slot))
-            }
-            None => Ok(None),
+    /// This is the trading hot path — O(1), no I/O, no blocking.
+    pub fn try_acquire(&self) -> Option<Pooled<ClientSlot>> {
+        let slot = self.pool.try_acquire()?;
+        if slot.needs_reconnect() {
+            // Return to pool, caller gets None
+            return None;
         }
+        Some(slot)
+    }
+
+    /// Acquire a client slot, waiting if necessary and reconnecting
+    /// dead connections with exponential backoff.
+    ///
+    /// This is the off-hot-path API for background tasks, REST API
+    /// calls, and any context where waiting is acceptable.
+    ///
+    /// Backoff: 1ms → 2ms → 4ms → ... → 1s max between reconnect
+    /// attempts. Returns error if all slots are exhausted and
+    /// reconnection keeps failing.
+    pub async fn acquire(&self) -> Result<Pooled<ClientSlot>, RestError> {
+        let mut backoff_ms = 1u64;
+        const MAX_BACKOFF_MS: u64 = 1_000;
+        const MAX_ATTEMPTS: u32 = 10;
+
+        for _ in 0..MAX_ATTEMPTS {
+            match self.pool.try_acquire() {
+                Some(mut slot) => {
+                    if slot.needs_reconnect() {
+                        match self.reconnect(&mut slot).await {
+                            Ok(()) => return Ok(slot),
+                            Err(_) => {
+                                // Reconnect failed — return slot, back off, retry
+                                drop(slot);
+                                tokio::time::sleep(
+                                    std::time::Duration::from_millis(backoff_ms),
+                                ).await;
+                                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+                                continue;
+                            }
+                        }
+                    }
+                    return Ok(slot);
+                }
+                None => {
+                    // All slots in use — wait briefly for one to return
+                    tokio::time::sleep(
+                        std::time::Duration::from_millis(backoff_ms),
+                    ).await;
+                    backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+                }
+            }
+        }
+
+        Err(RestError::ConnectionClosed(
+            "pool acquire failed: all slots exhausted or reconnect failed",
+        ))
     }
 
     /// Number of slots currently available (not acquired).

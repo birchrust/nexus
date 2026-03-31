@@ -164,7 +164,7 @@ impl FrameReader {
             self.buf.compact();
             spare = self.buf.spare();
             if spare.is_empty() {
-                return Ok(0); // genuinely full
+                return Err(std::io::Error::other("frame reader buffer full"));
             }
         }
         let n = src.read(spare)?;

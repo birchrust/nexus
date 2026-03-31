@@ -233,7 +233,15 @@ impl Producer {
         self.shared.capacity
     }
 
-    /// Returns `true` if the consumer has been dropped.
+    /// Best-effort hint: returns `true` if the consumer has likely been dropped.
+    ///
+    /// Uses `Arc::strong_count` which is inherently racy — the count can
+    /// change between the check and the caller's next action. Suitable for
+    /// graceful shutdown detection, not for correctness. For reliable
+    /// disconnection detection, use the channel layer (`channel::spsc`)
+    /// which tracks disconnection via dedicated atomic flags.
+    // TODO: consider adding an AtomicBool flag if reliable detection is
+    // needed at the raw queue level.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.shared) == 1
@@ -428,7 +436,9 @@ impl Consumer {
         self.shared.capacity
     }
 
-    /// Returns `true` if the producer has been dropped.
+    /// Best-effort hint: returns `true` if the producer has likely been dropped.
+    ///
+    /// See [`Producer::is_disconnected`] for caveats — uses `Arc::strong_count`.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.shared) == 1

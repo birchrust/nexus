@@ -79,19 +79,55 @@ impl AtomicClientPool {
         AtomicClientPoolBuilder::new()
     }
 
-    /// Try to acquire a slot. Returns `None` if all slots are in use.
+    /// Try to acquire a slot. Fast path — no reconnect.
     ///
-    /// If the acquired slot has a dead connection, reconnects inline.
-    pub async fn try_acquire(&self) -> Result<Option<Pooled<AtomicClientSlot>>, RestError> {
-        match self.pool.try_acquire() {
-            Some(mut slot) => {
-                if slot.needs_reconnect() {
-                    self.reconnect(&mut slot).await?;
-                }
-                Ok(Some(slot))
-            }
-            None => Ok(None),
+    /// Returns `None` if all slots are in use or only dead connections
+    /// remain. Use [`acquire()`](Self::acquire) for the patient path.
+    pub fn try_acquire(&self) -> Option<Pooled<AtomicClientSlot>> {
+        let slot = self.pool.try_acquire()?;
+        if slot.needs_reconnect() {
+            return None;
         }
+        Some(slot)
+    }
+
+    /// Acquire a slot, waiting if necessary and reconnecting with
+    /// exponential backoff. See [`ClientPool::acquire`] for details.
+    pub async fn acquire(&self) -> Result<Pooled<AtomicClientSlot>, RestError> {
+        let mut backoff_ms = 1u64;
+        const MAX_BACKOFF_MS: u64 = 1_000;
+        const MAX_ATTEMPTS: u32 = 10;
+
+        for _ in 0..MAX_ATTEMPTS {
+            match self.pool.try_acquire() {
+                Some(mut slot) => {
+                    if slot.needs_reconnect() {
+                        match self.reconnect(&mut slot).await {
+                            Ok(()) => return Ok(slot),
+                            Err(_) => {
+                                drop(slot);
+                                tokio::time::sleep(
+                                    std::time::Duration::from_millis(backoff_ms),
+                                ).await;
+                                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+                                continue;
+                            }
+                        }
+                    }
+                    return Ok(slot);
+                }
+                None => {
+                    tokio::time::sleep(
+                        std::time::Duration::from_millis(backoff_ms),
+                    ).await;
+                    backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+                }
+            }
+        }
+
+        Err(RestError::ConnectionClosed(
+            "pool acquire failed: all slots exhausted or reconnect failed",
+        ))
     }
 
     /// Number of slots currently available.
