@@ -280,13 +280,15 @@ impl Default for HttpConnectionBuilder {
 /// ```ignore
 /// use nexus_net::rest::{HttpConnection, RequestWriter};
 /// use nexus_net::http::ResponseReader;
+/// use nexus_net::tls::TlsConfig;
 ///
 /// // Protocol (sans-IO)
 /// let mut writer = RequestWriter::new("api.binance.com").unwrap();
 /// let mut reader = ResponseReader::new(32 * 1024);
 ///
 /// // Transport
-/// let mut conn = HttpConnection::connect("https://api.binance.com")?;
+/// let tls = TlsConfig::new()?;
+/// let mut conn = HttpConnection::builder().tls(&tls).connect("https://api.binance.com")?;
 ///
 /// // Build + send
 /// let req = writer.get("/orders").query("symbol", "BTC").finish()?;
@@ -300,11 +302,6 @@ pub struct HttpConnection<S> {
 }
 
 impl HttpConnection<std::net::TcpStream> {
-    /// Blocking connect with default transport configuration.
-    pub fn connect(url: &str) -> Result<Self, RestError> {
-        HttpConnectionBuilder::new().connect(url)
-    }
-
     /// Create a transport builder.
     #[must_use]
     pub fn builder() -> HttpConnectionBuilder {

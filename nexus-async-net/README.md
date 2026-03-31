@@ -11,10 +11,12 @@ Same sans-IO primitives, same performance — just `.await` on socket I/O.
 ## Quick Start
 
 ```rust
-use nexus_async_net::ws::WsStream;
+use nexus_async_net::ws::WsStreamBuilder;
 use nexus_net::ws::Message;
+use nexus_net::tls::TlsConfig;
 
-let mut ws = WsStream::connect("wss://exchange.com/ws").await?;
+let tls = TlsConfig::new()?;
+let mut ws = WsStreamBuilder::new().tls(&tls).connect("wss://exchange.com/ws").await?;
 
 ws.send_text("subscribe").await?;
 
@@ -34,15 +36,19 @@ while let Some(msg) = ws.recv().await? {
 ```rust
 use nexus_net::rest::RequestWriter;
 use nexus_net::http::ResponseReader;
-use nexus_async_net::rest::AsyncHttpConnection;
+use nexus_async_net::rest::AsyncHttpConnectionBuilder;
 
 // Same sans-IO primitives as blocking nexus-net
 let mut writer = RequestWriter::new("httpbin.org")?;
 writer.default_header("Accept", "application/json")?;
 let mut reader = ResponseReader::new(32 * 1024).max_body_size(32 * 1024);
 
-// Async transport — TLS auto-detected from URL scheme
-let mut conn = AsyncHttpConnection::connect("https://httpbin.org").await?;
+// Async transport — TLS config created once at startup
+let tls = nexus_net::tls::TlsConfig::new()?;
+let mut conn = AsyncHttpConnectionBuilder::new()
+    .tls(&tls)
+    .connect("https://httpbin.org")
+    .await?;
 
 // GET with query params
 let req = writer.get("/get")
@@ -108,7 +114,10 @@ let pool = ClientPool::builder()
     .build()
     .await?;
 
-// Acquire slot — LIFO, auto-reconnects if connection died
+// Fast path (trading) — no reconnect, no wait, no I/O
+// let slot = pool.try_acquire().unwrap();
+
+// Patient path (background) — waits, reconnects with backoff
 let mut slot = pool.acquire().await?;
 
 // Build request using the slot's writer

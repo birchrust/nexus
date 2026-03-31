@@ -24,9 +24,15 @@ use crate::maybe_tls::MaybeTls;
 /// # Usage
 ///
 /// ```ignore
-/// use nexus_async_net::ws::WsStream;
+/// use nexus_async_net::ws::WsStreamBuilder;
+/// use nexus_net::tls::TlsConfig;
 ///
-/// let mut ws = WsStream::connect("wss://exchange.com/ws").await?;
+/// // Plain WebSocket
+/// let mut ws = WsStreamBuilder::new().connect("ws://localhost:8080/ws").await?;
+///
+/// // TLS WebSocket
+/// let tls = TlsConfig::new()?;
+/// let mut ws = WsStreamBuilder::new().tls(&tls).connect("wss://exchange.com/ws").await?;
 ///
 /// ws.send_text("Hello!").await?;
 /// while let Some(msg) = ws.recv().await? {
@@ -38,24 +44,6 @@ pub struct WsStream<S> {
     reader: FrameReader,
     writer: FrameWriter,
     write_buf: WriteBuf,
-}
-
-// -- Connect on MaybeTls (creates TCP socket) --------------------------------
-
-impl WsStream<MaybeTls> {
-    /// Connect to a WebSocket server. TLS detected from URL scheme.
-    ///
-    /// For `wss://` URLs without a custom TLS config, this loads system
-    /// root certificates on every call (blocking file I/O). For production,
-    /// create a [`TlsConfig`] once at startup and pass it via the builder:
-    ///
-    /// ```ignore
-    /// let tls = TlsConfig::new()?;  // once, at startup
-    /// let ws = WsStream::builder().tls(&tls).connect("wss://...").await?;
-    /// ```
-    pub async fn connect(url: &str) -> Result<Self, WsError> {
-        WsStreamBuilder::new().connect(url).await
-    }
 }
 
 // -- Generic impl for any async stream ---------------------------------------

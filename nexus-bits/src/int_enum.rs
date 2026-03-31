@@ -4,11 +4,10 @@
 ///
 /// Derive this on `#[repr(u8)]` / `#[repr(u16)]` / etc enums:
 ///
-/// TODO - remove ignore once we have macro
-/// ```ignore
+/// ```
 /// use nexus_bits::IntEnum;
 ///
-/// #[derive(IntEnum, Clone, Copy)]
+/// #[derive(IntEnum, Clone, Copy, Debug, PartialEq)]
 /// #[repr(u8)]
 /// pub enum Exchange {
 ///     Nasdaq = 0,

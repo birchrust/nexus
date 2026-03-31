@@ -19,7 +19,7 @@
 //! let mut reader = ResponseReader::new(32 * 1024);
 //!
 //! // Transport
-//! let mut conn = HttpConnection::connect("http://api.exchange.com")?;
+//! let mut conn = HttpConnection::builder().connect("http://api.exchange.com")?;
 //!
 //! // Build + send
 //! let req = writer.get("/api/v1/orders")

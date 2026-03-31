@@ -174,6 +174,61 @@ impl<T: Pod> Reader<T> {
         }
     }
 
+    /// Read with version tracking for conflation detection.
+    ///
+    /// Returns `Some((value, version))` where `version` is a write counter
+    /// derived from the seqlock sequence. Increases on each write, but wraps
+    /// after `usize::MAX / 2` writes. Use wrapping arithmetic to compute
+    /// missed writes:
+    ///
+    /// ```ignore
+    /// let mut last_ver = 0;
+    /// loop {
+    ///     if let Some((quote, ver)) = reader.read_versioned() {
+    ///         let missed = ver.wrapping_sub(last_ver).wrapping_sub(1);
+    ///         if missed > 0 { log::warn!("conflated {missed} writes"); }
+    ///         last_ver = ver;
+    ///         process(quote);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Zero overhead vs [`read()`] — the version is derived from the
+    /// seqlock sequence that is already loaded during the read.
+    #[inline]
+    pub fn read_versioned(&mut self) -> Option<(T, u64)> {
+        let inner = &*self.inner;
+
+        loop {
+            let seq1 = inner.seq.load(Ordering::Relaxed);
+
+            if seq1 == 0 || seq1 == self.cached_seq {
+                return None;
+            }
+
+            if seq1 & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+
+            fence(Ordering::Acquire);
+
+            // SAFETY: same as read() — seq1 is even and non-zero.
+            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+
+            fence(Ordering::Acquire);
+            let seq2 = inner.seq.load(Ordering::Relaxed);
+
+            if seq1 == seq2 {
+                self.cached_seq = seq1;
+                // Version = seq / 2 (writer increments by 2 per write)
+                return Some((value, seq1 as u64 / 2));
+            }
+
+            core::hint::spin_loop();
+        }
+    }
+
     /// Checks if new data is available without consuming it.
     ///
     /// Returns `true` if [`read()`](Self::read) would return `Some`.
@@ -477,5 +532,50 @@ mod tests {
         }
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn read_versioned_returns_version() {
+        let (mut writer, mut reader) = slot::<TestData>();
+
+        writer.write(TestData { a: 1, b: 2 });
+        let (val, ver) = reader.read_versioned().unwrap();
+        assert_eq!(val.a, 1);
+        assert_eq!(ver, 1);
+
+        writer.write(TestData { a: 3, b: 4 });
+        let (val, ver) = reader.read_versioned().unwrap();
+        assert_eq!(val.a, 3);
+        assert_eq!(ver, 2);
+    }
+
+    #[test]
+    fn read_versioned_detects_conflation() {
+        let (mut writer, mut reader) = slot::<TestData>();
+
+        // Write 5 times, read once — missed 4 writes
+        for i in 0..5 {
+            writer.write(TestData { a: i, b: 0 });
+        }
+
+        let (val, ver) = reader.read_versioned().unwrap();
+        assert_eq!(val.a, 4); // last write
+        assert_eq!(ver, 5); // 5th write
+
+        // No new data
+        assert!(reader.read_versioned().is_none());
+
+        // Write again
+        writer.write(TestData { a: 99, b: 0 });
+        let (val, ver) = reader.read_versioned().unwrap();
+        assert_eq!(val.a, 99);
+        assert_eq!(ver, 6);
+        // Missed = ver - last_ver - 1 = 6 - 5 - 1 = 0 (no conflation)
+    }
+
+    #[test]
+    fn read_versioned_none_before_first_write() {
+        let (_writer, mut reader) = slot::<TestData>();
+        assert!(reader.read_versioned().is_none());
     }
 }

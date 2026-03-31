@@ -79,19 +79,40 @@ impl AtomicClientPool {
         AtomicClientPoolBuilder::new()
     }
 
-    /// Try to acquire a slot. Returns `None` if all slots are in use.
+    /// Try to acquire a healthy slot. Fast path — no reconnect.
     ///
-    /// If the acquired slot has a dead connection, reconnects inline.
-    pub async fn try_acquire(&self) -> Result<Option<Pooled<AtomicClientSlot>>, RestError> {
-        match self.pool.try_acquire() {
-            Some(mut slot) => {
-                if slot.needs_reconnect() {
-                    self.reconnect(&mut slot).await?;
-                }
-                Ok(Some(slot))
+    /// Dead slots are ejected and a reconnect task is spawned for each.
+    /// Returns `None` if all slots are in use or currently reconnecting.
+    pub fn try_acquire(&self) -> Option<Pooled<AtomicClientSlot>> {
+        loop {
+            let slot = self.pool.try_acquire()?;
+            if !slot.needs_reconnect() {
+                return Some(slot);
             }
-            None => Ok(None),
+            self.spawn_reconnect(slot);
         }
+    }
+
+    /// Acquire a slot, waiting until one is available.
+    ///
+    /// If no healthy slots exist, waits for spawned reconnect tasks
+    /// to heal dead connections and return them to the pool.
+    pub async fn acquire(&self) -> Result<Pooled<AtomicClientSlot>, RestError> {
+        const MAX_BACKOFF_MS: u64 = 1_000;
+        const MAX_ATTEMPTS: u32 = 20;
+        let mut backoff_ms = 1u64;
+
+        for _ in 0..MAX_ATTEMPTS {
+            if let Some(slot) = self.try_acquire() {
+                return Ok(slot);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+        }
+
+        Err(RestError::ConnectionClosed(
+            "pool acquire timed out: no healthy slots available",
+        ))
     }
 
     /// Number of slots currently available.
@@ -99,34 +120,52 @@ impl AtomicClientPool {
         self.pool.available()
     }
 
-    async fn reconnect(&self, slot: &mut AtomicClientSlot) -> Result<(), RestError> {
-        let conn = self.connect_one().await?;
-        slot.conn = Some(conn);
-        Ok(())
+    /// Spawn a task to reconnect a dead slot.
+    ///
+    /// Uses `tokio::spawn` (Send-compatible). The task owns the guard;
+    /// dropping it after reconnect returns the healthy slot to the pool.
+    fn spawn_reconnect(&self, mut slot: Pooled<AtomicClientSlot>) {
+        let config = self.reconnect_config.clone();
+        tokio::spawn(async move {
+            const MAX_BACKOFF_MS: u64 = 5_000;
+            let mut backoff_ms = 100u64;
+
+            loop {
+                if let Ok(conn) = Self::connect_one_with(&config).await {
+                    slot.conn = Some(conn);
+                    slot.reader.reset();
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+            }
+        });
     }
 
-    async fn connect_one(&self) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
+    async fn connect_one_with(
+        config: &ReconnectConfig,
+    ) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let mut builder = AsyncHttpConnectionBuilder::new();
         #[cfg(feature = "tls")]
-        if let Some(ref tls) = self.reconnect_config.tls_config {
+        if let Some(ref tls) = config.tls_config {
             builder = builder.tls(tls);
         }
-        if self.reconnect_config.nodelay {
+        if config.nodelay {
             builder = builder.disable_nagle();
         }
         #[cfg(feature = "socket-opts")]
         {
-            if let Some(idle) = self.reconnect_config.tcp_keepalive {
+            if let Some(idle) = config.tcp_keepalive {
                 builder = builder.tcp_keepalive(idle);
             }
-            if let Some(size) = self.reconnect_config.recv_buf_size {
+            if let Some(size) = config.recv_buf_size {
                 builder = builder.recv_buffer_size(size);
             }
-            if let Some(size) = self.reconnect_config.send_buf_size {
+            if let Some(size) = config.send_buf_size {
                 builder = builder.send_buffer_size(size);
             }
         }
-        builder.connect(&self.reconnect_config.url).await
+        builder.connect(&config.url).await
     }
 }
 

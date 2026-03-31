@@ -410,12 +410,14 @@ impl Default for WsStreamBuilder {
 ///
 /// ```ignore
 /// use nexus_net::ws::WsStream;
+/// use nexus_net::tls::TlsConfig;
 ///
 /// // Plain WebSocket
-/// let mut ws = WsStream::connect("ws://localhost:8080/ws")?;
+/// let mut ws = WsStream::builder().connect("ws://localhost:8080/ws")?;
 ///
 /// // TLS WebSocket (requires 'tls' feature)
-/// let mut ws = WsStream::connect("wss://exchange.com/ws")?;
+/// let tls = TlsConfig::new()?;
+/// let mut ws = WsStream::builder().tls(&tls).connect("wss://exchange.com/ws")?;
 ///
 /// // Same API for both:
 /// ws.send_text("Hello!")?;
@@ -434,23 +436,6 @@ pub struct WsStream<S> {
 }
 
 impl WsStream<std::net::TcpStream> {
-    /// Blocking connect — creates TCP socket and performs full handshake.
-    ///
-    /// For `wss://` URLs without a custom TLS config, this loads system
-    /// root certificates on every call. For production, create a
-    /// [`TlsConfig`](crate::tls::TlsConfig) once at startup and pass
-    /// it via the builder:
-    ///
-    /// ```ignore
-    /// let tls = TlsConfig::new()?;  // once, at startup
-    /// let ws = WsStream::builder().tls(&tls).connect("wss://...")?;
-    /// ```
-    ///
-    /// IPv6 addresses must use bracket notation: `ws://[::1]:8080/path`.
-    pub fn connect(url: &str) -> Result<Self, WsError> {
-        WsStreamBuilder::new().connect(url)
-    }
-
     /// Create a builder for configuring buffer sizes, socket options, and TLS.
     #[must_use]
     pub fn builder() -> WsStreamBuilder {

@@ -152,7 +152,8 @@ impl FrameReader {
     /// Read bytes from a source directly into the internal buffer.
     ///
     /// Convenience for `spare()` + `filled()`. Returns bytes read,
-    /// or 0 on EOF.
+    /// or 0 on EOF. Returns `Err` if the buffer is full after compaction
+    /// (indicates the buffer is undersized for the current message).
     ///
     /// ```ignore
     /// let n = reader.read_from(&mut socket)?;
@@ -164,7 +165,7 @@ impl FrameReader {
             self.buf.compact();
             spare = self.buf.spare();
             if spare.is_empty() {
-                return Ok(0); // genuinely full
+                return Err(std::io::Error::other("frame reader buffer full"));
             }
         }
         let n = src.read(spare)?;

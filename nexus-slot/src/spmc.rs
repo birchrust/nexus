@@ -193,6 +193,43 @@ impl<T: Pod> SharedReader<T> {
         }
     }
 
+    /// Read with version tracking for conflation detection.
+    ///
+    /// See [`spsc::Reader::read_versioned`](crate::spsc::Reader::read_versioned)
+    /// for details. Each cloned reader tracks versions independently.
+    #[inline]
+    pub fn read_versioned(&mut self) -> Option<(T, u64)> {
+        let inner = &*self.inner;
+
+        loop {
+            let seq1 = inner.seq.load(Ordering::Relaxed);
+
+            if seq1 == 0 || seq1 == self.cached_seq {
+                return None;
+            }
+
+            if seq1 & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+
+            fence(Ordering::Acquire);
+
+            // SAFETY: Same as spsc::Reader::read_versioned.
+            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+
+            fence(Ordering::Acquire);
+            let seq2 = inner.seq.load(Ordering::Relaxed);
+
+            if seq1 == seq2 {
+                self.cached_seq = seq1;
+                return Some((value, seq1 as u64 / 2));
+            }
+
+            core::hint::spin_loop();
+        }
+    }
+
     /// Checks if new data is available without consuming it.
     ///
     /// Returns `true` if [`read()`](Self::read) would return `Some`.

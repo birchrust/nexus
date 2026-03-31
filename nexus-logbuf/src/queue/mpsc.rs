@@ -166,7 +166,8 @@ impl Producer {
 
             if available < record_size {
                 // Reload head from shared state
-                self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
+                self.cached_head
+                    .set(self.shared.head.load(Ordering::Relaxed));
                 fence(Ordering::Acquire);
 
                 let used = tail.wrapping_sub(self.cached_head.get());
@@ -188,7 +189,8 @@ impl Producer {
 
                 if available < total_needed {
                     // Reload and recheck
-                    self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
+                    self.cached_head
+                        .set(self.shared.head.load(Ordering::Relaxed));
                     fence(Ordering::Acquire);
 
                     let used = tail.wrapping_sub(self.cached_head.get());
@@ -252,13 +254,12 @@ impl Producer {
         self.shared.capacity
     }
 
-    /// Returns `true` if the consumer has been dropped.
+    /// Best-effort hint: returns `true` if the consumer has likely been dropped.
+    ///
+    /// Uses `Arc::strong_count` which is inherently racy. For reliable
+    /// disconnection detection, use the channel layer (`channel::mpsc`).
     #[inline]
     pub fn is_disconnected(&self) -> bool {
-        // Consumer holds one Arc, each producer holds one.
-        // If only producers remain, consumer is gone.
-        // This is approximate - we check if we're the only holder besides other producers.
-        // A more accurate check would need a separate flag.
         Arc::strong_count(&self.shared) == 1
     }
 }
@@ -442,7 +443,9 @@ impl Consumer {
         self.shared.capacity
     }
 
-    /// Returns `true` if all producers have been dropped.
+    /// Best-effort hint: returns `true` if all producers have likely been dropped.
+    ///
+    /// See producer's [`is_disconnected`](Producer::is_disconnected) for caveats.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.shared) == 1
