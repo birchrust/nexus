@@ -34,7 +34,7 @@ pub mod rbtree;
 
 // Re-export comparison types at crate root
 pub use compare::{Compare, Natural, Reverse};
-// Re-export slab types for convenience
+// Re-export slab handle and error types for convenience
 pub use nexus_slab::rc::{RcSlot, Ref, RefMut};
 pub use nexus_slab::shared::Full;
 

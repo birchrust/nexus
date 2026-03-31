@@ -2,6 +2,7 @@
 
 use nexus_collections::rbtree::{RbNode, RbTree};
 use nexus_slab::bounded::Slab;
+use nexus_slab::unbounded::Slab as UnboundedSlab;
 
 fn make_slab() -> Slab<RbNode<u64, String>> {
     unsafe { Slab::with_capacity(200) }
@@ -264,4 +265,70 @@ fn reverse_comparator() {
     assert_eq!(tree.last_key_value(), Some((&1, &10)));
 
     tree.clear(&slab);
+}
+
+// =============================================================================
+// Unbounded slab — infallible insert
+// =============================================================================
+
+#[test]
+fn unbounded_insert() {
+    let slab: UnboundedSlab<RbNode<u64, u64>> =
+        unsafe { UnboundedSlab::with_chunk_capacity(8) };
+    let mut tree = RbTree::new();
+
+    for i in 0..50 {
+        assert!(tree.insert(&slab, i, i * 10).is_none());
+    }
+    tree.verify_invariants();
+    assert_eq!(tree.len(), 50);
+
+    // Replace existing
+    assert_eq!(tree.insert(&slab, 25, 999), Some(250));
+    assert_eq!(tree.get(&25), Some(&999));
+    assert_eq!(tree.len(), 50);
+
+    // Sorted iteration
+    let keys: Vec<u64> = tree.keys().copied().collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(keys, sorted);
+
+    tree.clear(&slab);
+}
+
+// =============================================================================
+// SlabFree trait — generic over bounded/unbounded
+// =============================================================================
+
+#[test]
+fn slab_free_trait_generic() {
+    use nexus_collections::SlabFree;
+
+    fn insert_and_remove<S: SlabFree<RbNode<u64, u64>>>(
+        tree: &mut RbTree<u64, u64>,
+        slab: &S,
+    ) {
+        // We can't insert generically (try_insert needs concrete slab type),
+        // but we can remove and clear generically.
+        tree.remove(slab, &1);
+        tree.clear(slab);
+    }
+
+    // Test with bounded slab
+    let bounded_slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_capacity(100) };
+    let mut tree = RbTree::new();
+    tree.try_insert(&bounded_slab, 1, 10).unwrap();
+    tree.try_insert(&bounded_slab, 2, 20).unwrap();
+    insert_and_remove(&mut tree, &bounded_slab);
+    assert!(tree.is_empty());
+
+    // Test with unbounded slab
+    let unbounded_slab: UnboundedSlab<RbNode<u64, u64>> =
+        unsafe { UnboundedSlab::with_chunk_capacity(8) };
+    let mut tree = RbTree::new();
+    tree.insert(&unbounded_slab, 1, 10);
+    tree.insert(&unbounded_slab, 2, 20);
+    insert_and_remove(&mut tree, &unbounded_slab);
+    assert!(tree.is_empty());
 }

@@ -2,6 +2,7 @@
 
 use nexus_collections::btree::{BTree, BTreeNode};
 use nexus_slab::bounded::Slab;
+use nexus_slab::unbounded::Slab as UnboundedSlab;
 
 fn make_slab() -> Slab<BTreeNode<u64, u64, 8>> {
     unsafe { Slab::with_capacity(200) }
@@ -233,6 +234,36 @@ fn custom_b_4() {
         tree.remove(&slab, &i);
     }
     tree.verify_invariants();
+
+    tree.clear(&slab);
+}
+
+// =============================================================================
+// Unbounded slab — infallible insert
+// =============================================================================
+
+#[test]
+fn unbounded_insert() {
+    let slab: UnboundedSlab<BTreeNode<u64, u64, 8>> =
+        unsafe { UnboundedSlab::with_chunk_capacity(8) };
+    let mut tree = BTree::<u64, u64, 8>::new();
+
+    for i in 0..50 {
+        assert!(tree.insert(&slab, i, i * 10).is_none());
+    }
+    tree.verify_invariants();
+    assert_eq!(tree.len(), 50);
+
+    // Replace existing
+    assert_eq!(tree.insert(&slab, 25, 999), Some(250));
+    assert_eq!(tree.get(&25), Some(&999));
+    assert_eq!(tree.len(), 50);
+
+    // Sorted iteration
+    let keys: Vec<u64> = tree.keys().copied().collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(keys, sorted);
 
     tree.clear(&slab);
 }

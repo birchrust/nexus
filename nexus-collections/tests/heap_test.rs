@@ -2,6 +2,7 @@
 
 use nexus_collections::heap::{Heap, HeapNode};
 use nexus_slab::rc::bounded::Slab;
+use nexus_slab::rc::unbounded::Slab as UnboundedSlab;
 
 fn make_slab() -> Slab<HeapNode<u64>> {
     unsafe { Slab::with_capacity(100) }
@@ -165,4 +166,129 @@ fn unlink_wrong_heap_panics() {
     let h = slab.alloc(HeapNode::new(1));
     heap1.link(&h);
     heap2.unlink(&h, &slab); // should panic
+}
+
+// =============================================================================
+// Unbounded slab path
+// =============================================================================
+
+#[test]
+fn unbounded_push_and_pop() {
+    let slab = unsafe { UnboundedSlab::<HeapNode<u64>>::with_chunk_capacity(4) };
+    let mut heap = Heap::new();
+
+    let h3 = heap.push(&slab, 30);
+    let h1 = heap.push(&slab, 10);
+    let h2 = heap.push(&slab, 20);
+
+    assert_eq!(heap.len(), 3);
+    assert_eq!(*heap.peek().unwrap().value(), 10);
+
+    let p1 = heap.pop().unwrap();
+    assert_eq!(*p1.borrow().value(), 10);
+
+    let p2 = heap.pop().unwrap();
+    assert_eq!(*p2.borrow().value(), 20);
+
+    let p3 = heap.pop().unwrap();
+    assert_eq!(*p3.borrow().value(), 30);
+
+    assert!(heap.is_empty());
+
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(p1);
+    slab.free(p2);
+    slab.free(p3);
+}
+
+// =============================================================================
+// Stress test — freelist integrity
+// =============================================================================
+
+#[test]
+fn stress_heap_push_pop_cycle() {
+    let slab: Slab<HeapNode<u64>> = unsafe { Slab::with_capacity(10_000) };
+    let mut heap = Heap::new();
+
+    // First fill
+    let mut handles = Vec::new();
+    for i in 0..10_000u64 {
+        let h = heap.try_push(&slab, i).unwrap();
+        handles.push(h);
+    }
+    assert_eq!(heap.len(), 10_000);
+
+    // Pop all (should come out in sorted order)
+    let mut prev = 0u64;
+    let mut popped = Vec::new();
+    while let Some(p) = heap.pop() {
+        let v = *p.borrow().value();
+        assert!(v >= prev);
+        prev = v;
+        popped.push(p);
+    }
+    assert!(heap.is_empty());
+    assert_eq!(popped.len(), 10_000);
+
+    // Free all
+    for h in handles {
+        slab.free(h);
+    }
+    for p in popped {
+        slab.free(p);
+    }
+
+    // Second fill — verifies freelist integrity
+    let mut handles2 = Vec::new();
+    for i in 0..10_000u64 {
+        let h = heap.try_push(&slab, i + 10_000).unwrap();
+        handles2.push(h);
+    }
+    assert_eq!(heap.len(), 10_000);
+
+    // Verify min is correct
+    assert_eq!(*heap.peek().unwrap().value(), 10_000);
+
+    heap.clear(&slab);
+    for h in handles2 {
+        slab.free(h);
+    }
+}
+
+// =============================================================================
+// drain_while — detailed
+// =============================================================================
+
+#[test]
+fn drain_while_partial() {
+    let slab = make_slab();
+    let mut heap = Heap::new();
+
+    // Push values 1-10
+    let mut handles = Vec::new();
+    for i in 1..=10 {
+        let h = heap.try_push(&slab, i).unwrap();
+        handles.push(h);
+    }
+
+    // Drain while value < 5 — should get 1, 2, 3, 4
+    let drained: Vec<_> = heap
+        .drain_while(|n| *n.value() < 5)
+        .map(|h| {
+            let v = *h.borrow().value();
+            slab.free(h);
+            v
+        })
+        .collect();
+
+    assert_eq!(drained, vec![1, 2, 3, 4]);
+    assert_eq!(heap.len(), 6);
+    assert_eq!(*heap.peek().unwrap().value(), 5);
+
+    heap.clear(&slab);
+    for h in handles {
+        slab.free(h);
+    }
 }

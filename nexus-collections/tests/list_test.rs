@@ -2,6 +2,7 @@
 
 use nexus_collections::list::{List, ListNode};
 use nexus_slab::rc::bounded::Slab;
+use nexus_slab::rc::unbounded::Slab as UnboundedSlab;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -332,4 +333,207 @@ fn is_head_is_tail() {
     list.clear(&slab);
     slab.free(h1);
     slab.free(h2);
+}
+
+// =============================================================================
+// Unbounded slab path
+// =============================================================================
+
+#[test]
+fn unbounded_push_back_and_pop_front() {
+    let slab = unsafe { UnboundedSlab::<ListNode<u64>>::with_chunk_capacity(4) };
+    let mut list = List::new();
+
+    let h1 = list.push_back(&slab, 10);
+    let h2 = list.push_back(&slab, 20);
+    let h3 = list.push_back(&slab, 30);
+
+    assert_eq!(list.len(), 3);
+    assert_eq!(list.front().unwrap().value, 10);
+    assert_eq!(list.back().unwrap().value, 30);
+
+    let p1 = list.pop_front().unwrap();
+    assert_eq!(p1.borrow().value, 10);
+    let p2 = list.pop_front().unwrap();
+    assert_eq!(p2.borrow().value, 20);
+    let p3 = list.pop_front().unwrap();
+    assert_eq!(p3.borrow().value, 30);
+
+    assert!(list.is_empty());
+
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+    slab.free(p1);
+    slab.free(p2);
+    slab.free(p3);
+}
+
+#[test]
+fn unbounded_push_front_and_pop_back() {
+    let slab = unsafe { UnboundedSlab::<ListNode<u64>>::with_chunk_capacity(4) };
+    let mut list = List::new();
+
+    let h1 = list.push_front(&slab, 10);
+    let h2 = list.push_front(&slab, 20);
+
+    assert_eq!(list.front().unwrap().value, 20);
+    assert_eq!(list.back().unwrap().value, 10);
+
+    let p = list.pop_back().unwrap();
+    assert_eq!(p.borrow().value, 10);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(p);
+}
+
+// =============================================================================
+// Stress test — freelist integrity
+// =============================================================================
+
+#[test]
+fn stress_list_push_pop_cycle() {
+    let slab = unsafe { Slab::<ListNode<u64>>::with_capacity(10_000) };
+    let mut list = List::new();
+
+    // First fill: push 10K items
+    let mut handles = Vec::new();
+    for i in 0..10_000 {
+        let h = list.try_push_back(&slab, i).unwrap();
+        handles.push(h);
+    }
+    assert_eq!(list.len(), 10_000);
+
+    // Pop all
+    let mut popped = Vec::new();
+    while let Some(p) = list.pop_front() {
+        popped.push(p);
+    }
+    assert!(list.is_empty());
+    assert_eq!(popped.len(), 10_000);
+
+    // Verify order
+    for (i, p) in popped.iter().enumerate() {
+        assert_eq!(p.borrow().value, i as u64);
+    }
+
+    // Free all handles from first fill
+    for h in handles {
+        slab.free(h);
+    }
+    for p in popped {
+        slab.free(p);
+    }
+
+    // Second fill: push 10K again — verifies freelist integrity
+    let mut handles2 = Vec::new();
+    for i in 0..10_000 {
+        let h = list.try_push_back(&slab, i + 10_000).unwrap();
+        handles2.push(h);
+    }
+    assert_eq!(list.len(), 10_000);
+
+    // Verify values on second fill
+    let mut cursor = list.cursor();
+    let mut idx = 0;
+    while cursor.advance() {
+        assert_eq!(cursor.current().unwrap().value, (idx + 10_000) as u64);
+        idx += 1;
+    }
+    assert_eq!(idx, 10_000);
+
+    list.clear(&slab);
+    for h in handles2 {
+        slab.free(h);
+    }
+}
+
+// =============================================================================
+// Cross-collection test
+// =============================================================================
+
+#[test]
+fn cross_collection_move() {
+    let slab = make_u64_slab();
+    let mut list_a = List::new();
+    let mut list_b = List::new();
+
+    // Alloc a node
+    let h = slab.alloc(ListNode::new(42));
+    assert_eq!(h.refcount(), 1);
+
+    // Link to list A
+    list_a.link_back(&h);
+    assert_eq!(h.refcount(), 2); // user + list_a
+
+    // Unlink from A
+    list_a.unlink(&h, &slab);
+    assert_eq!(h.refcount(), 1); // user only
+    assert!(list_a.is_empty());
+
+    // Link to list B
+    list_b.link_back(&h);
+    assert_eq!(h.refcount(), 2); // user + list_b
+
+    // Unlink from B
+    list_b.unlink(&h, &slab);
+    assert_eq!(h.refcount(), 1); // user only
+    assert!(list_b.is_empty());
+
+    // Free
+    slab.free(h);
+}
+
+// =============================================================================
+// move_to_front / move_to_back with order verification
+// =============================================================================
+
+#[test]
+fn move_middle_to_front_verify_order() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+
+    // Move middle (20) to front: expect [20, 10, 30]
+    list.move_to_front(&h2);
+    let mut values = Vec::new();
+    let mut cursor = list.cursor();
+    while cursor.advance() {
+        values.push(cursor.current().unwrap().value);
+    }
+    assert_eq!(values, vec![20, 10, 30]);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
+}
+
+#[test]
+fn move_middle_to_back_verify_order() {
+    let slab = make_u64_slab();
+    let mut list = List::new();
+
+    let h1 = list.try_push_back(&slab, 10).unwrap();
+    let h2 = list.try_push_back(&slab, 20).unwrap();
+    let h3 = list.try_push_back(&slab, 30).unwrap();
+
+    // Move middle (20) to back: expect [10, 30, 20]
+    list.move_to_back(&h2);
+    let mut values = Vec::new();
+    let mut cursor = list.cursor();
+    while cursor.advance() {
+        values.push(cursor.current().unwrap().value);
+    }
+    assert_eq!(values, vec![10, 30, 20]);
+
+    list.clear(&slab);
+    slab.free(h1);
+    slab.free(h2);
+    slab.free(h3);
 }

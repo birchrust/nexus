@@ -268,9 +268,9 @@ impl<T> RcSlot<T> {
 
     /// Returns a raw pointer to the value without acquiring a borrow guard.
     ///
-    /// This bypasses the borrow-checking mechanism. Use only when you need
-    /// to read/write through raw pointers (e.g., intrusive collection navigation
-    /// via `Cell`-based link fields).
+    /// This bypasses the borrow-checking mechanism. Returns a read-only
+    /// pointer — use [`value_ptr_mut`](Self::value_ptr_mut) for mutation.
+    /// Intended for intrusive collection navigation via `Cell`-based link fields.
     ///
     /// The pointer is valid as long as any `RcSlot` for this slot exists
     /// (refcount > 0). Slab memory never moves.

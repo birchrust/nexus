@@ -60,4 +60,9 @@ fn main() {
 
     black_box(&heap);
     heap.clear(&slab);
+
+    // Free all handles to satisfy the slab contract
+    for handle in handles {
+        slab.free(handle);
+    }
 }
