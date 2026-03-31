@@ -166,7 +166,8 @@ impl Producer {
 
             if available < record_size {
                 // Reload head from shared state
-                self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
+                self.cached_head
+                    .set(self.shared.head.load(Ordering::Relaxed));
                 fence(Ordering::Acquire);
 
                 let used = tail.wrapping_sub(self.cached_head.get());
@@ -188,7 +189,8 @@ impl Producer {
 
                 if available < total_needed {
                     // Reload and recheck
-                    self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
+                    self.cached_head
+                        .set(self.shared.head.load(Ordering::Relaxed));
                     fence(Ordering::Acquire);
 
                     let used = tail.wrapping_sub(self.cached_head.get());

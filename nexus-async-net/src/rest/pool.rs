@@ -127,67 +127,54 @@ impl ClientPool {
         ClientPoolBuilder::new()
     }
 
-    /// Try to acquire a client slot (LIFO). Fast path — no reconnect.
+    /// Try to acquire a healthy client slot (LIFO).
     ///
-    /// Returns `None` if all slots are in use or the only available
-    /// slots have dead connections. Use [`acquire()`](Self::acquire)
-    /// for the patient path that waits and reconnects.
+    /// Checks available slots for a healthy connection. Dead slots are
+    /// ejected from the pool and a reconnect task is spawned for each.
+    /// When reconnection succeeds, the slot returns to the pool
+    /// automatically.
     ///
-    /// This is the trading hot path — O(1), no I/O, no blocking.
+    /// Returns `None` if all slots are in use or currently reconnecting.
+    ///
+    /// This is the trading hot path — O(1) when the top slot is healthy.
     pub fn try_acquire(&self) -> Option<Pooled<ClientSlot>> {
-        let slot = self.pool.try_acquire()?;
-        if slot.needs_reconnect() {
-            // Return to pool, caller gets None
-            return None;
+        loop {
+            let slot = self.pool.try_acquire()?;
+            if !slot.needs_reconnect() {
+                return Some(slot);
+            }
+            // Spawn a task to heal this slot. The task owns the Pooled
+            // guard — when it reconnects, dropping the guard returns
+            // the healthy slot to the pool.
+            self.spawn_reconnect(slot);
+            // Try next slot.
         }
-        Some(slot)
     }
 
-    /// Acquire a client slot, waiting if necessary and reconnecting
-    /// dead connections with exponential backoff.
+    /// Acquire a client slot, waiting until one is available.
     ///
-    /// This is the off-hot-path API for background tasks, REST API
-    /// calls, and any context where waiting is acceptable.
+    /// If no healthy slots are available, waits for reconnect tasks
+    /// to finish healing dead connections. Returns error if no slot
+    /// becomes available within the retry limit.
     ///
-    /// Backoff: 1ms → 2ms → 4ms → ... → 1s max between reconnect
-    /// attempts. Returns error if all slots are exhausted and
-    /// reconnection keeps failing.
+    /// This is the off-hot-path API for background tasks and REST calls.
     pub async fn acquire(&self) -> Result<Pooled<ClientSlot>, RestError> {
-        let mut backoff_ms = 1u64;
         const MAX_BACKOFF_MS: u64 = 1_000;
-        const MAX_ATTEMPTS: u32 = 10;
+        const MAX_ATTEMPTS: u32 = 20;
+        let mut backoff_ms = 1u64;
 
         for _ in 0..MAX_ATTEMPTS {
-            match self.pool.try_acquire() {
-                Some(mut slot) => {
-                    if slot.needs_reconnect() {
-                        match self.reconnect(&mut slot).await {
-                            Ok(()) => return Ok(slot),
-                            Err(_) => {
-                                // Reconnect failed — return slot, back off, retry
-                                drop(slot);
-                                tokio::time::sleep(
-                                    std::time::Duration::from_millis(backoff_ms),
-                                ).await;
-                                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-                                continue;
-                            }
-                        }
-                    }
-                    return Ok(slot);
-                }
-                None => {
-                    // All slots in use — wait briefly for one to return
-                    tokio::time::sleep(
-                        std::time::Duration::from_millis(backoff_ms),
-                    ).await;
-                    backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-                }
+            if let Some(slot) = self.try_acquire() {
+                return Ok(slot);
             }
+            // All slots are either in use or being reconnected.
+            // Wait for a reconnect task to finish and return a slot.
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
         }
 
         Err(RestError::ConnectionClosed(
-            "pool acquire failed: all slots exhausted or reconnect failed",
+            "pool acquire timed out: no healthy slots available",
         ))
     }
 
@@ -196,34 +183,53 @@ impl ClientPool {
         self.pool.available()
     }
 
-    async fn reconnect(&self, slot: &mut ClientSlot) -> Result<(), RestError> {
-        let conn = self.connect_one().await?;
-        slot.conn = Some(conn);
-        Ok(())
+    /// Spawn a local task to reconnect a dead slot.
+    ///
+    /// The task owns the `Pooled` guard. On successful reconnect, the
+    /// guard drops and returns the healthy slot to the pool. On failure,
+    /// retries with exponential backoff.
+    fn spawn_reconnect(&self, mut slot: Pooled<ClientSlot>) {
+        let config = self.reconnect_config.clone();
+        tokio::task::spawn_local(async move {
+            const MAX_BACKOFF_MS: u64 = 5_000;
+            let mut backoff_ms = 100u64;
+
+            loop {
+                if let Ok(conn) = Self::connect_one_with(&config).await {
+                    slot.conn = Some(conn);
+                    slot.reader.reset();
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+            }
+        });
     }
 
-    async fn connect_one(&self) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
+    async fn connect_one_with(
+        config: &ReconnectConfig,
+    ) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
         let mut builder = AsyncHttpConnectionBuilder::new();
         #[cfg(feature = "tls")]
-        if let Some(ref tls) = self.reconnect_config.tls_config {
+        if let Some(ref tls) = config.tls_config {
             builder = builder.tls(tls);
         }
-        if self.reconnect_config.nodelay {
+        if config.nodelay {
             builder = builder.disable_nagle();
         }
         #[cfg(feature = "socket-opts")]
         {
-            if let Some(idle) = self.reconnect_config.tcp_keepalive {
+            if let Some(idle) = config.tcp_keepalive {
                 builder = builder.tcp_keepalive(idle);
             }
-            if let Some(size) = self.reconnect_config.recv_buf_size {
+            if let Some(size) = config.recv_buf_size {
                 builder = builder.recv_buffer_size(size);
             }
-            if let Some(size) = self.reconnect_config.send_buf_size {
+            if let Some(size) = config.send_buf_size {
                 builder = builder.send_buffer_size(size);
             }
         }
-        builder.connect(&self.reconnect_config.url).await
+        builder.connect(&config.url).await
     }
 }
 
@@ -786,5 +792,95 @@ mod tests {
                 "slot should be poisoned after stale connection"
             );
         }
+    }
+
+    /// Dead connection heals automatically via spawned reconnect task.
+    ///
+    /// Scenario:
+    /// 1. Server accepts one connection, responds, then closes
+    /// 2. Client sends on the now-dead connection → poisoned
+    /// 3. Slot returns to pool (dead)
+    /// 4. Server starts listening again
+    /// 5. try_acquire() spawns reconnect task for dead slot
+    /// 6. acquire() waits until reconnect task finishes
+    /// 7. Slot is healthy — request succeeds
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::large_futures)]
+    async fn dead_connection_heals_via_reconnect_task() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // Phase 1: Start server, build pool with 1 connection.
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let server_handle = tokio::task::spawn_local({
+                    let listener_fd = listener.into_std().unwrap();
+                    async move {
+                        let listener = TcpListener::from_std(listener_fd).unwrap();
+                        // Accept first connection — respond then close.
+                        let (mut tcp, _) = listener.accept().await.unwrap();
+                        let mut buf = [0u8; 4096];
+                        let _ = tcp.read(&mut buf).await.unwrap();
+                        tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst")
+                            .await
+                            .unwrap();
+                        drop(tcp); // kill connection
+
+                        // Accept second connection (reconnect) — respond.
+                        let (mut tcp, _) = listener.accept().await.unwrap();
+                        let _ = tcp.read(&mut buf).await.unwrap();
+                        tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nhealed")
+                            .await
+                            .unwrap();
+                    }
+                });
+
+                let pool = ClientPool::builder()
+                    .url(&format!("http://{addr}"))
+                    .connections(1)
+                    .build()
+                    .await
+                    .unwrap();
+
+                // Phase 2: First request succeeds.
+                {
+                    let mut slot = pool.try_acquire().unwrap();
+                    let s: &mut ClientSlot = &mut slot;
+                    let req = s.writer.get("/first").finish().unwrap();
+                    let conn = s.conn.as_mut().unwrap();
+                    let resp = conn.send(req, &mut s.reader).await.unwrap();
+                    assert_eq!(resp.body_str().unwrap(), "first");
+                }
+
+                // Phase 3: Server closed the connection. Next send will fail.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                {
+                    let mut slot = pool.try_acquire().unwrap();
+                    let s: &mut ClientSlot = &mut slot;
+                    let req = s.writer.get("/dead").finish().unwrap();
+                    let conn = s.conn.as_mut().unwrap();
+                    let timeout = std::time::Duration::from_millis(500);
+                    let _ = tokio::time::timeout(timeout, conn.send(req, &mut s.reader)).await;
+                    assert!(s.needs_reconnect(), "should be poisoned");
+                }
+                // Slot returned to pool (dead).
+
+                // Phase 4: try_acquire sees dead slot → spawns reconnect task.
+                // Server is still listening (waiting for second accept).
+                // acquire() waits for the reconnect task to finish.
+                let mut slot = pool.acquire().await.unwrap();
+                let s: &mut ClientSlot = &mut slot;
+                let req = s.writer.get("/healed").finish().unwrap();
+                let conn = s.conn.as_mut().unwrap();
+                let resp = conn.send(req, &mut s.reader).await.unwrap();
+                assert_eq!(resp.body_str().unwrap(), "healed");
+
+                server_handle.await.unwrap();
+            })
+            .await;
     }
 }

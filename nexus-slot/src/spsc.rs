@@ -176,15 +176,16 @@ impl<T: Pod> Reader<T> {
 
     /// Read with version tracking for conflation detection.
     ///
-    /// Returns `Some((value, version))` where `version` is a monotonically
-    /// increasing write counter. Comparing consecutive versions tells you
-    /// how many writes you missed:
+    /// Returns `Some((value, version))` where `version` is a write counter
+    /// derived from the seqlock sequence. Increases on each write, but wraps
+    /// after `usize::MAX / 2` writes. Use wrapping arithmetic to compute
+    /// missed writes:
     ///
     /// ```ignore
     /// let mut last_ver = 0;
     /// loop {
     ///     if let Some((quote, ver)) = reader.read_versioned() {
-    ///         let missed = ver - last_ver - 1;
+    ///         let missed = ver.wrapping_sub(last_ver).wrapping_sub(1);
     ///         if missed > 0 { log::warn!("conflated {missed} writes"); }
     ///         last_ver = ver;
     ///         process(quote);
