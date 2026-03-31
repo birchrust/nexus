@@ -1,0 +1,34 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+#![warn(missing_docs)]
+
+//! Core types shared across the nexus-stats ecosystem.
+//!
+//! This crate provides the fundamental streaming statistics types used by
+//! `nexus-stats` and all its subcrates. Not intended for direct use —
+//! import from `nexus-stats` instead.
+//!
+//! Includes: error types, math utilities, core smoothing (EMA, AsymEma, Slew),
+//! statistics (Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile),
+//! monitoring, core detection (CUSUM), and core control types.
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+mod enums;
+#[macro_use]
+#[doc(hidden)]
+pub mod math;
+mod feature_vector;
+
+pub use enums::{Condition, ConfigError, DataError, Direction};
+
+/// Control, thresholding, and differencing.
+pub mod control;
+/// Change detection.
+pub mod detection;
+/// Monitoring and health tracking.
+pub mod monitoring;
+/// Smoothing and filtering primitives.
+pub mod smoothing;
+/// Core streaming statistics.
+pub mod statistics;

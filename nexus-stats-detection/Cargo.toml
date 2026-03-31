@@ -1,0 +1,24 @@
+[package]
+name = "nexus-stats-detection"
+version = "1.0.0"
+description = "Advanced change detection and signal analysis for nexus-stats"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = ["nexus-stats-core/std", "nexus-stats-smoothing/std", "alloc"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing/alloc"]
+libm = ["nexus-stats-core/libm"]
+
+[dependencies]
+nexus-stats-core = { version = "1.0.0", path = "../nexus-stats-core", default-features = false }
+nexus-stats-smoothing = { version = "1.0.0", path = "../nexus-stats-smoothing", default-features = false }
+
+[lints]
+workspace = true

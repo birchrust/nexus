@@ -1,0 +1,65 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+#![warn(missing_docs)]
+
+//! Advanced change detection and signal analysis for [`nexus-stats`](https://docs.rs/nexus-stats).
+//!
+//! This crate provides change detection, anomaly detection, signal analysis,
+//! and hypothesis testing types separated from the core `nexus-stats` crate.
+//!
+//! Types are organized into submodules:
+//! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate
+//! - [`signal`] — Autocorrelation, CrossCorrelation, Entropy, TransferEntropy
+//! - [`estimation`] — SPRT (Bernoulli, Gaussian)
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+/// Validates that a float value is finite (not NaN, not Inf).
+macro_rules! check_finite {
+    ($val:expr) => {
+        if !$val.is_finite() {
+            return Err(if $val.is_nan() {
+                nexus_stats_core::DataError::NotANumber
+            } else {
+                nexus_stats_core::DataError::Infinite
+            });
+        }
+    };
+}
+
+// Internal modules
+mod multi_gate;
+mod robust_z;
+mod trend_alert;
+
+#[cfg(any(feature = "std", feature = "libm"))]
+mod adaptive_threshold;
+#[cfg(feature = "alloc")]
+mod mosum;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod shiryaev_roberts;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod sprt;
+
+/// Advanced change detection types.
+pub mod detection {
+    pub use super::multi_gate::*;
+    pub use super::robust_z::*;
+    pub use super::trend_alert::*;
+
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub use super::adaptive_threshold::*;
+    #[cfg(feature = "alloc")]
+    pub use super::mosum::*;
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub use super::shiryaev_roberts::*;
+}
+
+/// Signal analysis and information theory.
+pub mod signal;
+
+/// Hypothesis testing.
+pub mod estimation {
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub use super::sprt::*;
+}
