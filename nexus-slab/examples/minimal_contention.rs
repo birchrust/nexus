@@ -154,7 +154,7 @@ fn contention_test<T: Default + Clone>(name: &str, slab: &BoundedSlab<T>) {
             let slot = slab.alloc(T::default());
             black_box(&*slot);
             // SAFETY: slot was allocated from this slab
-            unsafe { slab.free(slot) };
+            slab.free(slot);
         }
         let elapsed = rdtsc_end() - start;
         slab_samples.push(elapsed / BATCH as u64);
@@ -169,15 +169,15 @@ fn main() {
     println!("ISOLATED CONTENTION TEST");
     println!("========================");
 
-    let slab64 = BoundedSlab::<Pod64>::with_capacity(SAMPLES * 2);
+    let slab64 = unsafe { BoundedSlab::<Pod64>::with_capacity(SAMPLES * 2) };
     contention_test("64B", &slab64);
 
-    let slab256 = BoundedSlab::<Pod256>::with_capacity(SAMPLES * 2);
+    let slab256 = unsafe { BoundedSlab::<Pod256>::with_capacity(SAMPLES * 2) };
     contention_test("256B", &slab256);
 
-    let slab1024 = BoundedSlab::<Pod1024>::with_capacity(SAMPLES * 2);
+    let slab1024 = unsafe { BoundedSlab::<Pod1024>::with_capacity(SAMPLES * 2) };
     contention_test("1024B", &slab1024);
 
-    let slab4096 = BoundedSlab::<Pod4096>::with_capacity(SAMPLES * 2);
+    let slab4096 = unsafe { BoundedSlab::<Pod4096>::with_capacity(SAMPLES * 2) };
     contention_test("4096B", &slab4096);
 }

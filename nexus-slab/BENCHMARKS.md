@@ -4,7 +4,44 @@ All measurements in CPU cycles (`rdtsc`), pinned to a single core (`taskset -c 0
 Best of 5 runs per percentile. Percentiles reported up to p99.9 — beyond that,
 OS noise (timer interrupts, scheduler) dominates over allocator behavior.
 
-**Platform:** AMD Ryzen / Intel Core, Linux, glibc malloc. Non-Copy types.
+**Platform:** Intel 14th gen, Linux, glibc malloc. Non-Copy types.
+
+### 1.0 Direct API (current)
+
+Batched timing (64 ops per rdtsc pair), pinned to core 0, 10K samples.
+
+#### Churn (alloc + deref + free, per op)
+
+| Size | Slab p50 | Box p50 | Slab p99 | Box p99 | Speedup |
+|------|---------|---------|---------|---------|---------|
+| 32B | **1** | 15 | **1** | 22 | **15x** |
+| 64B | **2** | 17 | **4** | 30 | **8.5x** |
+| 128B | **4** | 23 | **5** | 28 | **5.8x** |
+| 256B | **7** | 29 | **14** | 51 | **4.1x** |
+| 512B | **14** | 44 | **22** | 68 | **3.1x** |
+| 1024B | **25** | 103 | **38** | 168 | **4.1x** |
+| 4096B | **78** | 249 | **114** | 359 | **3.2x** |
+
+#### Free only (pre-alloc, then batch free)
+
+| Size | Slab p50 | Box p50 |
+|------|---------|---------|
+| 32B | **0** | 24 |
+| 64B | **0** | 24 |
+| 128B | **0** | 23 |
+| 256B | **0** | 23 |
+| 512B | **0** | 23 |
+| 1024B | **1** | 24 |
+| 4096B | **1** | 26 |
+
+Slab free is sub-cycle (0-1 cycles) — pure freelist pointer write.
+Box free is constant at ~24 cycles (allocator bookkeeping).
+
+### Historical TLS Macro API (pre-1.0)
+
+Benchmarks below measured through the old TLS macro API which added
+~3-7 cycles per access from `thread_local!` overhead. Retained for
+reference — stress tests and contention data are still relevant.
 
 ---
 
@@ -83,8 +120,8 @@ advantage, so the TLS overhead tips the balance to Box.
 2. **Deferred init**: `Slab::init(capacity)` allocates storage at runtime, but the
    TLS slot itself requires no lazy initialization.
 
-3. **Minimal TLS access**: The macro-generated `Alloc` trait moves value writes
-   *outside* the `.with()` closure, reducing closure capture overhead for large types.
+3. **Minimal TLS access**: Value writes happen outside the `.with()` closure,
+   reducing closure capture overhead for large types.
 
 **Why we don't leak the Vec:** We could replace `Vec<SlotCell<T>>` with a raw pointer
 and never deallocate, which would make `needs_drop = false`. But this leaks memory if
@@ -100,7 +137,7 @@ TLS overhead tips the scale. In real workloads with contention, Slot still wins 
 
 ## Slot vs Box — Isolated Benchmarks
 
-Slot: `bounded_allocator!` macro, TLS-backed slab, 8-byte RAII handle.
+Slot: `bounded::Slab`, 8-byte `SlotPtr` handle.
 Box: Standard `Box::new()` / `drop()` through glibc malloc.
 
 ### CHURN (alloc + deref + drop, LIFO single-slot)
@@ -426,7 +463,7 @@ hold pointers to each other.
 
 | | Box | Slot |
 |---|---|---|
-| Setup cost | None | `Allocator::builder().build()` |
+| Setup cost | None | `unsafe { Slab::with_capacity(N) }` |
 | Handle size | 8 bytes | 8 bytes |
 | Alloc p50 (32B) | 14 cycles | **5 cycles** |
 | Alloc p50 (1024B) | **55 cycles** | 62 cycles |
@@ -450,9 +487,11 @@ simplicity matters more than performance.
 # Build
 cargo build --release --examples -p nexus-slab
 
-# Isolated benchmark (all percentiles, multiple sizes)
-taskset -c 0 ./target/release/examples/bench_isolated slot
-taskset -c 0 ./target/release/examples/bench_isolated box
+# Slab vs Box comparison (alloc, free, churn, access)
+taskset -c 0 ./target/release/examples/perf_vs_box
+
+# Full distribution (all percentiles, multiple sizes)
+taskset -c 0 ./target/release/examples/perf_full_distribution
 
 # Stress tests (fragmentation, contention, sustained load)
 taskset -c 0 ./target/release/examples/perf_stress_test
