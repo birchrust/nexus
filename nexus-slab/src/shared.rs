@@ -106,7 +106,7 @@ impl<T> SlotCell<T> {
     ///
     /// The slot must be occupied with a valid `T`.
     #[inline]
-    pub(crate) unsafe fn value_ref(&self) -> &T {
+    pub unsafe fn value_ref(&self) -> &T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { self.value.assume_init_ref() }
     }
@@ -118,7 +118,7 @@ impl<T> SlotCell<T> {
     /// The slot must be occupied with a valid `T`.
     /// Caller must have exclusive access.
     #[inline]
-    pub(crate) unsafe fn value_mut(&mut self) -> &mut T {
+    pub unsafe fn value_mut(&mut self) -> &mut T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { (*self.value).assume_init_mut() }
     }
@@ -129,8 +129,7 @@ impl<T> SlotCell<T> {
     ///
     /// The slot must be occupied.
     #[inline]
-    #[allow(dead_code)]
-    pub(crate) unsafe fn value_ptr(&self) -> *const T {
+    pub unsafe fn value_ptr(&self) -> *const T {
         // SAFETY: Caller guarantees the slot is occupied.
         unsafe { self.value.as_ptr() }
     }

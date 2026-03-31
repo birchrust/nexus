@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_semicolon)]
 //! Red-black tree benchmark: cycle-accurate latency measurement.
 //!
 //! Measures insert, remove, get, entry, pop_first, pop_last at various
@@ -10,9 +11,7 @@
 use seq_macro::seq;
 use std::hint::black_box;
 
-mod rb {
-    nexus_collections::rbtree_allocator!(u64, u64, bounded);
-}
+use nexus_collections::rbtree::{Entry, RbNode, RbTree};
 
 const CAPACITY: usize = 200_000;
 const SAMPLES: usize = 50_000;
@@ -73,7 +72,7 @@ impl Xorshift {
 }
 
 fn main() {
-    rb::Allocator::builder().capacity(CAPACITY).build().unwrap();
+    let slab = unsafe { nexus_slab::bounded::Slab::<RbNode<u64, u64>>::with_capacity(CAPACITY) };
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
 
@@ -87,10 +86,10 @@ fn main() {
 
     // get (small @100)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..SMALL_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -104,15 +103,15 @@ fn main() {
             samples.push((e - s) / BATCH_READ as u64);
         }
         print_row(&format!("get (hit, @{SMALL_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // get (steady @10k)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -140,15 +139,15 @@ fn main() {
             samples.push((e - s) / BATCH_READ as u64);
         }
         print_row(&format!("get (miss, @{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // get (cold random access @10k)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let mut keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         for i in (1..keys.len()).rev() {
             let j = rng.next() as usize % (i + 1);
@@ -177,15 +176,15 @@ fn main() {
             offset = (offset + BATCH_READ) % num_keys;
         }
         print_row(&format!("get (cold rand, @{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // contains_key (steady @10k)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -199,7 +198,7 @@ fn main() {
             samples.push((e - s) / BATCH_READ as u64);
         }
         print_row(&format!("contains_key (hit, @{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     println!();
@@ -210,67 +209,67 @@ fn main() {
 
     // insert (into empty, growing — per-op, tree size varies)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            map.try_insert(rng.next(), 0).unwrap();
+            map.try_insert(&slab, rng.next(), 0).unwrap();
         }
-        map.clear();
+        map.clear(&slab);
         for _ in 0..SAMPLES {
             let k = rng.next();
             let s = rdtsc_start();
-            let _ = black_box(map.try_insert(k, 0));
+            let _ = black_box(map.try_insert(&slab, k, 0));
             let e = rdtsc_end();
             samples.push(e - s);
         }
         print_row("insert (growing, per-op)", &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // insert (steady @10k, batched)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let steady_keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &steady_keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
-            seq!(I in 0..100 { let _ = black_box(map.try_insert(batch[I], 0)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(&slab, batch[I], 0)); });
             for &k in &batch {
-                map.remove(&k);
+                map.remove(&slab, &k);
             }
         }
         for _ in 0..SAMPLES {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
-            seq!(I in 0..100 { let _ = black_box(map.try_insert(batch[I], 0)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(&slab, batch[I], 0)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
             for &k in &batch {
-                map.remove(&k);
+                map.remove(&slab, &k);
             }
         }
         print_row(&format!("insert (steady @{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // remove (steady @10k, batched)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut offset = 0usize;
         for _ in 0..WARMUP {
             let base = offset % keys.len();
             let batch: [u64; BATCH_READ] = std::array::from_fn(|i| keys[(base + i) % keys.len()]);
-            seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
+            seq!(I in 0..100 { black_box(map.remove(&slab, &batch[I])); });
             for &k in &batch {
-                map.try_insert(k, k).unwrap();
+                map.try_insert(&slab, k, k).unwrap();
             }
             offset += BATCH_READ;
         }
@@ -279,38 +278,38 @@ fn main() {
             let base = offset % keys.len();
             let batch: [u64; BATCH_READ] = std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             let s = rdtsc_start();
-            seq!(I in 0..100 { black_box(map.remove(&batch[I])); });
+            seq!(I in 0..100 { black_box(map.remove(&slab, &batch[I])); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
             for &k in &batch {
-                map.try_insert(k, k).unwrap();
+                map.try_insert(&slab, k, k).unwrap();
             }
             offset += BATCH_READ;
         }
         print_row(&format!("remove (steady @{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // insert duplicate key (batched, update in place)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { let _ = black_box(map.try_insert(lookup[I], 999)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(&slab, lookup[I], 999)); });
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { let _ = black_box(map.try_insert(lookup[I], 999)); });
+            seq!(I in 0..100 { let _ = black_box(map.try_insert(&slab, lookup[I], 999)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
         }
         print_row(&format!("insert dup (steady @{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     println!();
@@ -321,56 +320,66 @@ fn main() {
 
     // entry (occupied, batched)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let lookup: [u64; BATCH_READ] = std::array::from_fn(|i| keys[i % keys.len()]);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
-            seq!(I in 0..100 { black_box(map.entry(lookup[I]).and_modify(|v| *v += 1)); });
+            seq!(I in 0..100 { black_box(map.entry(&slab, lookup[I]).and_modify(|v| *v += 1)); });
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { black_box(map.entry(lookup[I]).and_modify(|v| *v += 1)); });
+            seq!(I in 0..100 { black_box(map.entry(&slab, lookup[I]).and_modify(|v| *v += 1)); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
         }
         print_row(&format!("entry occupied (@{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // entry (vacant — insert, batched)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
-            seq!(I in 0..100 { let _ = black_box(map.entry(batch[I]).or_try_insert(0)); });
+            seq!(I in 0..100 {
+                match map.entry(&slab, batch[I]) {
+                    Entry::Vacant(v) => { let _ = black_box(v.try_insert(0)); }
+                    Entry::Occupied(_) => {}
+                }
+            });
             for &k in &batch {
-                map.remove(&k);
+                map.remove(&slab, &k);
             }
         }
         for _ in 0..SAMPLES {
             let batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
-            seq!(I in 0..100 { let _ = black_box(map.entry(batch[I]).or_try_insert(0)); });
+            seq!(I in 0..100 {
+                match map.entry(&slab, batch[I]) {
+                    Entry::Vacant(v) => { let _ = black_box(v.try_insert(0)); }
+                    Entry::Occupied(_) => {}
+                }
+            });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
             for &k in &batch {
-                map.remove(&k);
+                map.remove(&slab, &k);
             }
         }
         print_row(
             &format!("entry vacant+insert (@{STEADY_SIZE})"),
             &mut samples,
         );
-        map.clear();
+        map.clear(&slab);
     }
 
     println!();
@@ -381,69 +390,69 @@ fn main() {
 
     // pop_first (steady @10k, batched)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let mut popped = [(0u64, 0u64); BATCH_READ];
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             for p in &mut popped {
-                *p = map.pop_first().unwrap();
+                *p = map.pop_first(&slab).unwrap();
             }
             for &(k, v) in &popped {
-                map.try_insert(k, v).unwrap();
+                map.try_insert(&slab, k, v).unwrap();
             }
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { popped[I] = map.pop_first().unwrap(); });
+            seq!(I in 0..100 { popped[I] = map.pop_first(&slab).unwrap(); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
             for &(k, v) in &popped {
-                map.try_insert(k, v).unwrap();
+                map.try_insert(&slab, k, v).unwrap();
             }
         }
         print_row(&format!("pop_first (@{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // pop_last (steady @10k, batched)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let mut popped = [(0u64, 0u64); BATCH_READ];
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             for p in &mut popped {
-                *p = map.pop_last().unwrap();
+                *p = map.pop_last(&slab).unwrap();
             }
             for &(k, v) in &popped {
-                map.try_insert(k, v).unwrap();
+                map.try_insert(&slab, k, v).unwrap();
             }
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
-            seq!(I in 0..100 { popped[I] = map.pop_last().unwrap(); });
+            seq!(I in 0..100 { popped[I] = map.pop_last(&slab).unwrap(); });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
             for &(k, v) in &popped {
-                map.try_insert(k, v).unwrap();
+                map.try_insert(&slab, k, v).unwrap();
             }
         }
         print_row(&format!("pop_last (@{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     // first_key_value (batched, read-only)
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         for i in 0..STEADY_SIZE {
-            map.try_insert(i as u64, 0).unwrap();
+            map.try_insert(&slab, i as u64, 0).unwrap();
         }
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
@@ -456,7 +465,7 @@ fn main() {
             samples.push((e - s) / BATCH_READ as u64);
         }
         print_row(&format!("first_key_value (@{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 
     println!();
@@ -465,10 +474,10 @@ fn main() {
     println!("CHURN (remove+insert pair, {BATCH_READ} unrolled ops/sample)");
     println!("---");
     {
-        let mut map = rb::RbTree::new(rb::Allocator);
+        let mut map = RbTree::new();
         let mut keys: Vec<u64> = (0..STEADY_SIZE).map(|_| rng.next()).collect();
         for &k in &keys {
-            map.try_insert(k, k).unwrap();
+            map.try_insert(&slab, k, k).unwrap();
         }
         let mut samples = Vec::with_capacity(SAMPLES);
         let mut offset = 0usize;
@@ -478,8 +487,8 @@ fn main() {
                 std::array::from_fn(|i| keys[(base + i) % keys.len()]);
             let new_batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             seq!(I in 0..100 {
-                map.remove(&old_batch[I]);
-                map.try_insert(new_batch[I], new_batch[I]).unwrap();
+                map.remove(&slab, &old_batch[I]);
+                map.try_insert(&slab, new_batch[I], new_batch[I]).unwrap();
             });
             for i in 0..BATCH_READ {
                 keys[(base + i) % STEADY_SIZE] = new_batch[i];
@@ -494,8 +503,8 @@ fn main() {
             let new_batch: [u64; BATCH_READ] = std::array::from_fn(|_| rng.next());
             let s = rdtsc_start();
             seq!(I in 0..100 {
-                map.remove(&old_batch[I]);
-                map.try_insert(new_batch[I], new_batch[I]).unwrap();
+                map.remove(&slab, &old_batch[I]);
+                map.try_insert(&slab, new_batch[I], new_batch[I]).unwrap();
             });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH_READ as u64);
@@ -505,6 +514,6 @@ fn main() {
             offset += BATCH_READ;
         }
         print_row(&format!("churn (@{STEADY_SIZE})"), &mut samples);
-        map.clear();
+        map.clear(&slab);
     }
 }

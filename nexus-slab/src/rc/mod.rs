@@ -170,6 +170,19 @@ impl<T> RcCell<T> {
         unsafe { &mut *(self.value.get().cast::<T>()) }
     }
 
+    /// Returns a raw pointer to the value without acquiring a borrow guard.
+    ///
+    /// This bypasses the borrow-checking mechanism. The returned pointer is
+    /// valid as long as the refcount is non-zero (some `RcSlot` exists).
+    ///
+    /// Returns `*mut T` (not `*const T`) because `UnsafeCell` grants interior
+    /// mutability. The caller must ensure no aliasing violations when
+    /// dereferencing.
+    #[inline]
+    pub fn value_ptr(&self) -> *mut T {
+        self.value.get().cast::<T>()
+    }
+
     /// Drops the value in place.
     ///
     /// # Safety
@@ -251,6 +264,38 @@ impl<T> RcSlot<T> {
             ptr,
             _marker: PhantomData,
         }
+    }
+
+    /// Returns a raw pointer to the value without acquiring a borrow guard.
+    ///
+    /// This bypasses the borrow-checking mechanism. Use only when you need
+    /// to read/write through raw pointers (e.g., intrusive collection navigation
+    /// via `Cell`-based link fields).
+    ///
+    /// The pointer is valid as long as any `RcSlot` for this slot exists
+    /// (refcount > 0). Slab memory never moves.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no aliasing violations: do not create a `&mut T`
+    /// through this pointer while any `Ref` or `RefMut` guard is active,
+    /// and vice versa.
+    #[inline]
+    pub unsafe fn value_ptr(&self) -> *const T {
+        // SAFETY: ptr is valid while any RcSlot exists.
+        unsafe { (*self.ptr).value_ptr().cast_const() }
+    }
+
+    /// Returns a raw mutable pointer to the value without acquiring a borrow guard.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`value_ptr`], plus: the caller must ensure exclusive access
+    /// (no other pointers or guards are reading/writing the value).
+    #[inline]
+    pub unsafe fn value_ptr_mut(&self) -> *mut T {
+        // SAFETY: ptr is valid while any RcSlot exists.
+        unsafe { (*self.ptr).value_ptr() }
     }
 
     /// Returns the current reference count.

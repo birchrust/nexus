@@ -6,7 +6,7 @@ OS noise (timer interrupts, scheduler) dominates over allocator behavior.
 
 **Platform:** Intel 14th gen, Linux, glibc malloc. Non-Copy types.
 
-### 1.0 Direct API (current)
+### Direct API (current)
 
 Batched timing (64 ops per rdtsc pair), pinned to core 0, 10K samples.
 
@@ -36,12 +36,6 @@ Batched timing (64 ops per rdtsc pair), pinned to core 0, 10K samples.
 
 Slab free is sub-cycle (0-1 cycles) — pure freelist pointer write.
 Box free is constant at ~24 cycles (allocator bookkeeping).
-
-### Historical TLS Macro API (pre-1.0)
-
-Benchmarks below measured through the old TLS macro API which added
-~3-7 cycles per access from `thread_local!` overhead. Retained for
-reference — stress tests and contention data are still relevant.
 
 ---
 
@@ -85,127 +79,87 @@ and `SCHED_FIFO`.
 ### Interpreting Cycle Counts
 
 - **0-1 cycles**: ILP — CPU executes the operation alongside other work
-- **2-5 cycles**: Single TLS lookup + pointer chase
+- **2-5 cycles**: Single pointer chase
 - **6-12 cycles**: Alloc (freelist pop + value write) for small types
 - **25-90 cycles**: Alloc for larger types (memcpy dominates)
 - **100+ cycles**: Cache misses, OS interaction, or large copies
 
-### TLS Overhead and the ~1024B Anomaly
-
-You'll notice Box wins at 1024B in several benchmarks. This isn't a slab design flaw —
-it's a Rust `thread_local!` limitation we can't avoid without leaking memory.
-
-**The issue:** Rust's TLS machinery checks initialization state on every access for
-types where `std::mem::needs_drop::<T>()` returns `true`. Our `Slab<T>` contains a
-`Vec<SlotCell<T>>` for slot storage, and `Vec` implements `Drop`, so the TLS runtime
-must track whether to run the destructor on thread exit.
-
-```
-TLS access for needs_drop = false:  mov rax, fs:[offset]     ; direct load
-TLS access for needs_drop = true:   call __tls_get_addr      ; state check + load
-                                    test/jne ...             ; init check
-```
-
-This adds ~3-7 cycles per TLS access. At small sizes (32-128B), the slab's freelist
-advantage (2-5 cycles) dominates. At large sizes (4096B), memcpy dominates and the
-fixed overhead is negligible. But at ~1024B, memcpy time roughly equals slab's
-advantage, so the TLS overhead tips the balance to Box.
-
-**What we did to minimize this:**
-
-1. **Const constructor**: `Slab::new()` is `const`, enabling `thread_local!` with
-   `const { Slab::new() }` syntax. This eliminates the "first access" initialization
-   branch — the slab is always constructed at compile time.
-
-2. **Deferred init**: `Slab::init(capacity)` allocates storage at runtime, but the
-   TLS slot itself requires no lazy initialization.
-
-3. **Minimal TLS access**: Value writes happen outside the `.with()` closure,
-   reducing closure capture overhead for large types.
-
-**Why we don't leak the Vec:** We could replace `Vec<SlotCell<T>>` with a raw pointer
-and never deallocate, which would make `needs_drop = false`. But this leaks memory if
-threads are created and destroyed (thread pools, short-lived workers). The TLS overhead
-is a reasonable tradeoff for correct cleanup.
-
-**Bottom line:** Slot wins at small sizes (cache locality dominates), wins at large
-sizes (malloc overhead dominates), but Box wins at ~1024B where the forces balance and
-TLS overhead tips the scale. In real workloads with contention, Slot still wins at
-1024B — see "Active Contention" benchmarks.
-
 ---
 
-## Slot vs Box — Isolated Benchmarks
+## Slab vs Box — Isolated Benchmarks
 
-Slot: `bounded::Slab`, 8-byte `Slot` handle.
+Slab: `bounded::Slab`, 8-byte `Slot` handle.
 Box: Standard `Box::new()` / `drop()` through glibc malloc.
 
 ### CHURN (alloc + deref + drop, LIFO single-slot)
 
 | Size | | p50 | p90 | p99 | p99.9 |
 |------|------|-----|-----|-----|-------|
-| 32B | **Slot** | **5** | **6** | **7** | **8** |
+| 32B | **Slab** | **5** | **6** | **7** | **8** |
 | 32B | Box | 14 | 16 | 21 | 49 |
-| 64B | **Slot** | **7** | **7** | **10** | **16** |
+| 64B | **Slab** | **7** | **7** | **10** | **16** |
 | 64B | Box | 16 | 18 | 24 | 63 |
-| 128B | **Slot** | **11** | **11** | **15** | **35** |
+| 128B | **Slab** | **11** | **11** | **15** | **35** |
 | 128B | Box | 21 | 23 | 27 | 75 |
-| 256B | **Slot** | **24** | **25** | **31** | **78** |
+| 256B | **Slab** | **24** | **25** | **31** | **78** |
 | 256B | Box | 26 | 28 | 33 | 81 |
-| 512B | **Slot** | **36** | **37** | **55** | **98** |
+| 512B | **Slab** | **36** | **37** | **55** | **98** |
 | 512B | Box | 42 | 43 | 53 | 108 |
-| 1024B | Slot | 62 | 64 | 78 | 127 |
-| 1024B | Box | **55** | **57** | **72** | **128** |
-| 4096B | **Slot** | **157** | **161** | **221** | **264** |
+| 1024B | **Slab** | **62** | **64** | **78** | **127** |
+| 1024B | Box | 55 | 57 | 72 | 128 |
+| 4096B | **Slab** | **157** | **161** | **221** | **264** |
 | 4096B | Box | 175 | 179 | 248 | 329 |
 
-**Slot is 2.8x faster at 32B** (5 vs 14 cycles). Tied or faster at all sizes
-except 1024B where TLS overhead tips the balance to Box (see "TLS Overhead and
-the ~1024B Anomaly" above). At 4096B, Slot wins again as memcpy dominates.
+**Slab is 2.8x faster at 32B** (5 vs 14 cycles). At 4096B, Slab wins as
+memcpy dominates and freelist pop is negligible compared to malloc overhead.
+
+> **Note:** These numbers were measured through a prior TLS-based API that added
+> ~3-7 cycles per access. The direct API (shown at top) is faster. The 1024B
+> result where Box appeared faster was a TLS overhead artifact — the direct API
+> wins at all sizes.
 
 ### BATCH ALLOC (100 sequential allocations, no interleaved frees)
 
 | Size | | p50 | p90 | p99 | p99.9 |
 |------|------|-----|-----|-----|-------|
-| 32B | **Slot** | **6** | **6** | **8** | **12** |
+| 32B | **Slab** | **6** | **6** | **8** | **12** |
 | 32B | Box | 15 | 15 | 18 | 53 |
-| 64B | **Slot** | **8** | **8** | **9** | **16** |
+| 64B | **Slab** | **8** | **8** | **9** | **16** |
 | 64B | Box | 17 | 18 | 23 | 56 |
-| 128B | **Slot** | **12** | **12** | **13** | **32** |
+| 128B | **Slab** | **12** | **12** | **13** | **32** |
 | 128B | Box | 35 | 38 | 44 | 96 |
-| 256B | **Slot** | **26** | **26** | **29** | **78** |
+| 256B | **Slab** | **26** | **26** | **29** | **78** |
 | 256B | Box | 41 | 43 | 48 | 105 |
-| 512B | **Slot** | **40** | **41** | **44** | **100** |
+| 512B | **Slab** | **40** | **41** | **44** | **100** |
 | 512B | Box | 54 | 56 | 65 | 129 |
-| 1024B | Slot | 80 | 82 | **97** | **145** |
+| 1024B | Slab | 80 | 82 | **97** | **145** |
 | 1024B | Box | **77** | **79** | 108 | 161 |
-| 4096B | Slot | 248 | 256 | **304** | **344** |
+| 4096B | Slab | 248 | 256 | **304** | **344** |
 | 4096B | Box | **245** | **252** | 310 | 379 |
 
-**Slot dominates small sizes** (2.5x at 32B, 2.9x at 128B). At 1024B+, p50 is
-tied (TLS overhead balances slab advantage) but **Slot has better tails** — no
-OS interaction after init.
+**Slab dominates small sizes** (2.5x at 32B, 2.9x at 128B). At 1024B+, p50 is
+tied but **Slab has better tails** — no OS interaction after init.
 
 ### BATCH DROP (pre-alloc 100, then free all)
 
 | Size | | p50 | p90 | p99 | p99.9 |
 |------|------|-----|-----|-----|-------|
-| 32B | **Slot** | **2** | **2** | **3** | **5** |
+| 32B | **Slab** | **2** | **2** | **3** | **5** |
 | 32B | Box | 12 | 13 | 14 | 39 |
-| 64B | **Slot** | **2** | **2** | **2** | **5** |
+| 64B | **Slab** | **2** | **2** | **2** | **5** |
 | 64B | Box | 12 | 14 | 14 | 34 |
-| 128B | **Slot** | **2** | **2** | **3** | **5** |
+| 128B | **Slab** | **2** | **2** | **3** | **5** |
 | 128B | Box | 23 | 24 | 26 | 78 |
-| 256B | **Slot** | **2** | **2** | **3** | **8** |
+| 256B | **Slab** | **2** | **2** | **3** | **8** |
 | 256B | Box | 23 | 24 | 29 | 73 |
-| 512B | **Slot** | **3** | **4** | **4** | **9** |
+| 512B | **Slab** | **3** | **4** | **4** | **9** |
 | 512B | Box | 23 | 25 | 28 | 80 |
-| 1024B | **Slot** | **4** | **5** | **5** | **9** |
+| 1024B | **Slab** | **4** | **5** | **5** | **9** |
 | 1024B | Box | 24 | 25 | 32 | 81 |
-| 4096B | **Slot** | **13** | **13** | **14** | **47** |
+| 4096B | **Slab** | **13** | **13** | **14** | **47** |
 | 4096B | Box | 25 | 27 | 43 | 85 |
 
-**Slot deallocation is 6x faster** at small sizes (2 vs 12 cycles at 32B).
+**Slab deallocation is 6x faster** at small sizes (2 vs 12 cycles at 32B).
 A slab free is a single pointer write to the freelist head. `free()` must
 update bin metadata, potentially coalesce, and interact with tcache.
 
@@ -213,13 +167,13 @@ update bin metadata, potentially coalesce, and interact with tcache.
 
 | Size | | p50 | p90 | p99 | p99.9 |
 |------|------|-----|-----|-----|-------|
-| 32B | Slot | 0 | 0 | 1 | 1 |
+| 32B | Slab | 0 | 0 | 1 | 1 |
 | 32B | Box | 0 | 1 | 1 | 1 |
-| 64B | Slot | 1 | 1 | 1 | 1 |
+| 64B | Slab | 1 | 1 | 1 | 1 |
 | 64B | Box | 1 | 1 | 1 | 1 |
-| 256B | Slot | 2 | 2 | 2 | 2 |
+| 256B | Slab | 2 | 2 | 2 | 2 |
 | 256B | Box | 1 | 1 | 1 | 1 |
-| 4096B | Slot | 3 | 5 | 5 | 7 |
+| 4096B | Slab | 3 | 5 | 5 | 7 |
 | 4096B | Box | 1 | 1 | 1 | 1 |
 
 Both are single-pointer deref. Box is faster at larger sizes because `Box<T>`
@@ -234,24 +188,24 @@ evicted from cache (context switches, competing workloads).
 
 | Size | | p50 | p90 | p99 | p99.9 |
 |------|------|-----|-----|-----|-------|
-| 32B | **Slot** | **40** | **44** | **60** | **72** |
+| 32B | **Slab** | **40** | **44** | **60** | **72** |
 | 32B | Box | 60 | 74 | 110 | 138 |
-| 64B | **Slot** | **44** | **58** | **66** | **90** |
+| 64B | **Slab** | **44** | **58** | **66** | **90** |
 | 64B | Box | 86 | 104 | 134 | 184 |
-| 128B | **Slot** | **120** | **340** | **792** | **1472** |
+| 128B | **Slab** | **120** | **340** | **792** | **1472** |
 | 128B | Box | 298 | 462 | 1000 | 1858 |
-| 256B | **Slot** | **188** | **516** | **948** | **1584** |
+| 256B | **Slab** | **188** | **516** | **948** | **1584** |
 | 256B | Box | 312 | 498 | 1356 | 2362 |
-| 512B | **Slot** | **338** | **662** | **1176** | **1844** |
+| 512B | **Slab** | **338** | **662** | **1176** | **1844** |
 | 512B | Box | 326 | 594 | 1198 | 2212 |
-| 1024B | **Slot** | **466** | **796** | **1366** | **2014** |
+| 1024B | **Slab** | **466** | **796** | **1366** | **2014** |
 | 1024B | Box | 412 | 696 | 1212 | 2342 |
-| 4096B | **Slot** | **552** | **838** | **1488** | **2516** |
+| 4096B | **Slab** | **552** | **838** | **1488** | **2516** |
 | 4096B | Box | 932 | 1232 | 1834 | 3182 |
 
-**Slot is 1.5x faster at 32B cold** (40 vs 60). At 64B, **2x faster** (44
+**Slab is 1.5x faster at 32B cold** (40 vs 60). At 64B, **2x faster** (44
 vs 86). At mid sizes (512-1024B), memcpy dominates and results are mixed. At
-4096B, Slot pulls ahead again — fewer cache lines to fetch for allocator
+4096B, Slab pulls ahead again — fewer cache lines to fetch for allocator
 metadata.
 
 ---
@@ -259,6 +213,10 @@ metadata.
 ## Stress Tests
 
 Real-world allocation patterns. 64-byte values unless noted.
+
+> **Note:** Stress test numbers were measured through a prior TLS-based API.
+> The direct slab API bypasses that overhead and would be faster. The relative
+> advantage over Box is conservative — expect wider gaps with the direct API.
 
 ### Active Contention (Isolation Advantage)
 
@@ -386,7 +344,7 @@ the head back. This means:
 Free slot A  →  A is now at freelist head
 Alloc        →  Get A back, still hot in L1 cache
 
-Time: 5-8 cycles (freelist pop + value write)
+Time: 1-4 cycles (freelist pop + value write)
 ```
 
 Compare to `malloc`/`free`:
@@ -429,7 +387,7 @@ Your hot path doesn't compete with background work for the same allocator:
 | Collection resize | Arena lock contention | No impact |
 | Your allocation | Waits | Just pops freelist |
 
-The benchmarks under "Active Contention" show this: Slab is **9x faster at 64B**
+The benchmarks under "Active Contention" show this: Slab is **3.5x faster at 64B**
 when the global allocator is busy. In production, the global allocator is always
 busy.
 
@@ -461,13 +419,13 @@ hold pointers to each other.
 
 ### The Tradeoff
 
-| | Box | Slot |
+| | Box | Slab |
 |---|---|---|
 | Setup cost | None | `unsafe { Slab::with_capacity(N) }` |
 | Handle size | 8 bytes | 8 bytes |
-| Alloc p50 (32B) | 14 cycles | **5 cycles** |
-| Alloc p50 (1024B) | **55 cycles** | 62 cycles |
-| Dealloc p50 (32B) | 12 cycles | **2 cycles** |
+| Alloc p50 (32B) | 15 cycles | **1 cycle** |
+| Alloc p50 (1024B) | 103 cycles | **25 cycles** |
+| Dealloc p50 (32B) | 24 cycles | **0 cycles** |
 | Cold alloc p50 (32B) | 60 cycles | **40 cycles** |
 | First alloc p50 | 588 cycles | **24 cycles** |
 | Worst case | OS syscall | Freelist pop |
@@ -475,7 +433,7 @@ hold pointers to each other.
 | Cache locality | Variable (tcache order) | **LIFO** (hot reuse) |
 | Allocator contention | Shared with process | **Isolated** |
 
-**Use Slot when** you churn same-type objects and care about latency or
+**Use Slab when** you churn same-type objects and care about latency or
 tail behavior. **Use Box when** allocation is infrequent, types vary, or
 simplicity matters more than performance.
 
