@@ -301,7 +301,7 @@ fn unbounded_insert() {
 // =============================================================================
 
 #[test]
-fn slab_free_trait_generic() {
+fn slab_ops_trait_generic() {
     use nexus_collections::SlabOps;
 
     fn insert_and_remove<S: SlabOps<RbNode<u64, u64>>>(tree: &mut RbTree<u64, u64>, slab: &S) {

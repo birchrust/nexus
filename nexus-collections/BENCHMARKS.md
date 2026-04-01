@@ -105,7 +105,6 @@ Population is 10,000 entries unless noted.
 | insert (steady) | 337 | **252** | 195 | std |
 | remove | 342 | **241** | 203 | std |
 | pop_first | **24** | 49 | 56 | RbTree |
-| pop_last | **24** | 50 | — | RbTree |
 | churn | 655 | **520** | — | BTree |
 | entry (occupied) | **22** | 43 | 36 | RbTree |
 | entry (vacant+insert) | **335** | 454 | 225 | std |
