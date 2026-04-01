@@ -72,6 +72,7 @@ pub fn new(capacity: usize) -> (Producer, Consumer) {
     // Allocate buffer, zero-initialized, 8-byte aligned for atomic len stamps
     let layout = Layout::from_size_align(capacity, 8)
         .expect("valid layout: capacity is a power of two >= 16, align is 8");
+    // SAFETY: Layout is valid — capacity >= 16 (power of two), align is 8.
     let buffer_ptr = unsafe { alloc_zeroed(layout) };
     if buffer_ptr.is_null() {
         handle_alloc_error(layout);
@@ -115,9 +116,10 @@ unsafe impl Sync for Shared {}
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        // Safety: buffer was allocated with alloc_zeroed using this layout.
         let layout = Layout::from_size_align(self.capacity, 8)
             .expect("valid layout: capacity was validated at construction");
+        // SAFETY: buffer was allocated with alloc_zeroed using this exact layout.
+        // Shared is only dropped once (Arc prevents earlier drops).
         unsafe { dealloc(self.buffer, layout) };
     }
 }
@@ -205,7 +207,11 @@ impl Producer {
             let buffer = self.shared.buffer;
             let skip_len = space_to_end | SKIP_BIT;
             fence(Ordering::Release);
+            // SAFETY: offset is masked to [0, capacity) and 8-byte aligned.
+            // Buffer is valid for capacity bytes. We are the sole producer.
             let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicUsize>();
+            // SAFETY: len_ptr points to a valid, aligned, zero-initialized usize
+            // within the buffer. AtomicUsize reference is used for store visibility.
             unsafe { &*len_ptr }.store(skip_len, Ordering::Relaxed);
 
             // Advance tail past padding
@@ -288,10 +294,12 @@ impl WriteClaim<'_> {
     #[inline]
     fn do_commit(&mut self) {
         let buffer = self.producer.shared.buffer;
+        // SAFETY: offset is within [0, capacity), 8-byte aligned. Buffer is valid.
         let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicUsize>();
 
         // Release fence: ensures payload writes are visible before len store
         fence(Ordering::Release);
+        // SAFETY: len_ptr points to a valid, aligned usize within the buffer.
         unsafe { &*len_ptr }.store(self.len, Ordering::Relaxed);
 
         // Advance tail
@@ -319,7 +327,11 @@ impl Deref for WriteClaim<'_> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         let buffer = self.producer.shared.buffer;
+        // SAFETY: offset + HEADER_SIZE is within the buffer. The claim owns
+        // exclusive access to this region via &mut Producer borrow.
         let payload_ptr = unsafe { buffer.add(self.offset + HEADER_SIZE) };
+        // SAFETY: payload_ptr is valid for self.len bytes, word-aligned,
+        // and exclusively owned by this claim. Lifetime tied to &self.
         unsafe { std::slice::from_raw_parts(payload_ptr, self.len) }
     }
 }
@@ -328,7 +340,11 @@ impl DerefMut for WriteClaim<'_> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         let buffer = self.producer.shared.buffer;
+        // SAFETY: offset + HEADER_SIZE is within the buffer. Exclusive access
+        // guaranteed by &mut self (only one WriteClaim exists per try_claim).
         let payload_ptr = unsafe { buffer.add(self.offset + HEADER_SIZE) };
+        // SAFETY: payload_ptr is valid for self.len bytes, word-aligned,
+        // and exclusively owned by this claim. Lifetime tied to &mut self.
         unsafe { std::slice::from_raw_parts_mut(payload_ptr, self.len) }
     }
 }
@@ -338,10 +354,12 @@ impl Drop for WriteClaim<'_> {
         if !self.committed {
             // Write skip marker so consumer can advance past this region
             let buffer = self.producer.shared.buffer;
+            // SAFETY: offset is within [0, capacity), 8-byte aligned. Buffer is valid.
             let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicUsize>();
             let skip_len = self.record_size | SKIP_BIT;
 
             fence(Ordering::Release);
+            // SAFETY: len_ptr points to a valid, aligned usize within the buffer.
             unsafe { &*len_ptr }.store(skip_len, Ordering::Relaxed);
 
             // Advance tail past the dead region
@@ -383,9 +401,12 @@ impl Consumer {
 
         loop {
             let offset = self.head.get() & self.shared.mask;
+            // SAFETY: offset is masked to [0, capacity), always 8-byte aligned
+            // (head advances by align8'd record sizes). Buffer is valid.
             let len_ptr = unsafe { buffer.add(offset) }.cast::<AtomicUsize>();
 
             // Relaxed atomic load, then Acquire fence for payload visibility
+            // SAFETY: len_ptr points to a valid, aligned usize within the buffer.
             let len_raw = unsafe { &*len_ptr }.load(Ordering::Relaxed);
             fence(Ordering::Acquire);
 
@@ -399,6 +420,8 @@ impl Consumer {
                 let skip_size = len_raw & LEN_MASK;
                 // Zero payload first, then stamp last (mirrors write path)
                 if skip_size > HEADER_SIZE {
+                    // SAFETY: offset + HEADER_SIZE .. offset + skip_size is within
+                    // the buffer. Consumer has exclusive read access to this region.
                     unsafe {
                         ptr::write_bytes(
                             buffer.add(offset + HEADER_SIZE),
@@ -409,6 +432,7 @@ impl Consumer {
                 }
                 // Ensure payload zeroing completes before clearing stamp
                 fence(Ordering::Release);
+                // SAFETY: len_ptr is still valid, computed above.
                 unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
                 self.head.set(self.head.get().wrapping_add(skip_size));
@@ -492,7 +516,11 @@ impl Deref for ReadClaim<'_> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         let buffer = self.consumer.shared.buffer;
+        // SAFETY: offset + HEADER_SIZE is within the buffer. The claim owns
+        // exclusive read access via &mut Consumer borrow.
         let payload_ptr = unsafe { buffer.add(self.offset + HEADER_SIZE) };
+        // SAFETY: payload_ptr is valid for self.len bytes. The producer has
+        // finished writing (len was non-zero, preceded by Release fence).
         unsafe { std::slice::from_raw_parts(payload_ptr, self.len) }
     }
 }
@@ -503,6 +531,8 @@ impl Drop for ReadClaim<'_> {
 
         // Zero payload first, then stamp last (mirrors write path)
         if self.record_size > HEADER_SIZE {
+            // SAFETY: offset + HEADER_SIZE .. offset + record_size is within
+            // the buffer. Consumer owns this region exclusively.
             unsafe {
                 ptr::write_bytes(
                     buffer.add(self.offset + HEADER_SIZE),
@@ -513,7 +543,9 @@ impl Drop for ReadClaim<'_> {
         }
         // Ensure payload zeroing completes before clearing stamp
         fence(Ordering::Release);
+        // SAFETY: offset is within [0, capacity), 8-byte aligned. Buffer is valid.
         let len_ptr = unsafe { buffer.add(self.offset) }.cast::<AtomicUsize>();
+        // SAFETY: len_ptr points to a valid, aligned usize within the buffer.
         unsafe { &*len_ptr }.store(0, Ordering::Relaxed);
 
         // Advance head
