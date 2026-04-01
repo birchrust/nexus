@@ -45,6 +45,9 @@ fn apply_mask_scalar(buf: &mut [u8], mask: [u8; 4]) {
     let mask_u32 = u32::from_ne_bytes(mask);
     let mask_u64 = u64::from(mask_u32) | (u64::from(mask_u32) << 32);
 
+    // SAFETY: u64 has no invalid bit patterns, and align_to_mut splits the
+    // buffer at naturally aligned boundaries. The prefix/suffix handle any
+    // unaligned bytes at the edges.
     let (prefix, middle, suffix) = unsafe { buf.align_to_mut::<u64>() };
 
     // Handle unaligned prefix
@@ -81,6 +84,11 @@ fn apply_mask_scalar(buf: &mut [u8], mask: [u8; 4]) {
     }
 }
 
+/// SSE2 WebSocket mask XOR — processes 16 bytes per iteration.
+///
+/// # Safety
+///
+/// Caller must ensure the CPU supports SSE2 (baseline on x86_64).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn apply_mask_sse2(buf: &mut [u8], mask: [u8; 4]) {
@@ -115,6 +123,11 @@ unsafe fn apply_mask_sse2(buf: &mut [u8], mask: [u8; 4]) {
     }
 }
 
+/// AVX2 WebSocket mask XOR — processes 32 bytes per iteration.
+///
+/// # Safety
+///
+/// Caller must ensure the CPU supports AVX2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn apply_mask_avx2(buf: &mut [u8], mask: [u8; 4]) {

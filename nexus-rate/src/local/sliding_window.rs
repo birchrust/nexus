@@ -30,6 +30,9 @@ unsafe impl Send for SlidingWindow {}
 impl SlidingWindow {
     #[inline]
     fn ring_mut(&mut self) -> &mut [u64] {
+        // SAFETY: self.buckets was allocated via Vec with capacity self.num_buckets
+        // in build(), and is exclusively owned (&mut self guarantees no aliasing).
+        // The pointer remains valid until drop().
         unsafe { core::slice::from_raw_parts_mut(self.buckets, self.num_buckets) }
     }
 
@@ -167,6 +170,9 @@ impl SlidingWindow {
 
 impl Drop for SlidingWindow {
     fn drop(&mut self) {
+        // SAFETY: self.buckets was created from a Vec::into_raw_parts (via ManuallyDrop)
+        // in build() with capacity self.num_buckets. Length is 0 because u64 has no
+        // drop glue — we only need the Vec to deallocate the buffer.
         unsafe {
             let _ = Vec::from_raw_parts(self.buckets, 0, self.num_buckets);
         }
