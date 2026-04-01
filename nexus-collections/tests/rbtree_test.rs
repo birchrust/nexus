@@ -297,14 +297,14 @@ fn unbounded_insert() {
 }
 
 // =============================================================================
-// SlabFree trait — generic over bounded/unbounded
+// SlabOps trait — generic over bounded/unbounded
 // =============================================================================
 
 #[test]
 fn slab_free_trait_generic() {
-    use nexus_collections::SlabFree;
+    use nexus_collections::SlabOps;
 
-    fn insert_and_remove<S: SlabFree<RbNode<u64, u64>>>(tree: &mut RbTree<u64, u64>, slab: &S) {
+    fn insert_and_remove<S: SlabOps<RbNode<u64, u64>>>(tree: &mut RbTree<u64, u64>, slab: &S) {
         // We can't insert generically (try_insert needs concrete slab type),
         // but we can remove and clear generically.
         tree.remove(slab, &1);

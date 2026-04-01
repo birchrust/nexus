@@ -71,22 +71,27 @@ impl<T> RcFree<T> for nexus_slab::rc::unbounded::Slab<T> {
 }
 
 // =============================================================================
-// SlabFree trait — unifies bounded and unbounded raw slab free
+// SlabOps trait — unifies bounded and unbounded raw slab free
 // =============================================================================
 
-/// Trait for raw slab types that can free a [`nexus_slab::Slot`] handle.
+/// Shared slab operations for raw slab types.
 ///
 /// Implemented by both `bounded::Slab<T>` and `unbounded::Slab<T>`.
 /// Used by tree collections (RbTree, BTree) which own nodes directly.
-pub trait SlabFree<T> {
+/// Methods that allocate (insert) are typed to the specific slab;
+/// methods that free/read use this trait for polymorphism.
+pub trait SlabOps<T> {
     /// Free a slot, dropping the value and returning storage to the freelist.
     fn free_slot(&self, slot: nexus_slab::Slot<T>);
 
     /// Take the value out of a slot, then free the storage.
     fn take_slot(&self, slot: nexus_slab::Slot<T>) -> T;
+
+    /// Returns true if the pointer falls within this slab's storage.
+    fn contains_ptr(&self, ptr: *const ()) -> bool;
 }
 
-impl<T> SlabFree<T> for nexus_slab::bounded::Slab<T> {
+impl<T> SlabOps<T> for nexus_slab::bounded::Slab<T> {
     #[inline]
     fn free_slot(&self, slot: nexus_slab::Slot<T>) {
         self.free(slot);
@@ -96,9 +101,14 @@ impl<T> SlabFree<T> for nexus_slab::bounded::Slab<T> {
     fn take_slot(&self, slot: nexus_slab::Slot<T>) -> T {
         self.take(slot)
     }
+
+    #[inline]
+    fn contains_ptr(&self, ptr: *const ()) -> bool {
+        self.contains_ptr(ptr)
+    }
 }
 
-impl<T> SlabFree<T> for nexus_slab::unbounded::Slab<T> {
+impl<T> SlabOps<T> for nexus_slab::unbounded::Slab<T> {
     #[inline]
     fn free_slot(&self, slot: nexus_slab::Slot<T>) {
         self.free(slot);
@@ -107,6 +117,11 @@ impl<T> SlabFree<T> for nexus_slab::unbounded::Slab<T> {
     #[inline]
     fn take_slot(&self, slot: nexus_slab::Slot<T>) -> T {
         self.take(slot)
+    }
+
+    #[inline]
+    fn contains_ptr(&self, ptr: *const ()) -> bool {
+        self.contains_ptr(ptr)
     }
 }
 

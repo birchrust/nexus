@@ -157,8 +157,8 @@ Collections accept both bounded and unbounded slabs:
 | `insert(slab, k, v)` | unbounded | Never fails |
 | `try_insert(slab, k, v)` | bounded | Returns `Result` |
 | `unlink(handle, slab)` | either | Via `RcFree` trait |
-| `clear(slab)` | either | Via `RcFree` / `SlabFree` trait |
-| `remove(slab, key)` | either | Via `SlabFree` trait |
+| `clear(slab)` | either | Via `RcFree` / `SlabOps` trait |
+| `remove(slab, key)` | either | Via `SlabOps` trait |
 | `pop()` / `pop_front()` | none | Transfers ownership |
 | `link_back(handle)` | none | Just pointer wiring |
 
@@ -208,15 +208,17 @@ Batched timing (100 ops per rdtsc pair), pinned to core 0.
 
 | Operation | RbTree | BTree | std BTreeMap |
 |-----------|--------|-------|-------------|
-| get (hit) | **15** | 22 | 40 |
-| insert (steady) | **318** | — | — |
-| remove | **323** | — | — |
-| pop_first | **23** | — | 71 |
-| entry (occupied) | **21** | — | 37 |
+| get (hit) | **16** | 40 | 38 |
+| insert (steady) | 337 | **252** | 195 |
+| remove | 342 | **241** | 203 |
+| pop_first | **24** | 49 | 56 |
+| entry (occupied) | **22** | 43 | 36 |
+| insert (growing) p999 | **684** | 808 | 5126 |
 
-Both nexus trees beat `std::collections::BTreeMap` across the board.
-The slab allocator eliminates global allocator contention and gives
-predictable cache behavior.
+RbTree wins on lookups and pops. BTree wins on remove and churn. std
+wins p50 on mutation but explodes at p999 on growing insert (5126 cycles
+vs nexus's 684) — global allocator pressure from node splits. The slab
+eliminates allocation jitter where it matters: tail latency.
 
 ## When to Choose What
 

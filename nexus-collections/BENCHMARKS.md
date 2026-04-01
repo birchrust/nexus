@@ -1,161 +1,155 @@
 # nexus-collections Benchmarks
 
-Cycle-accurate latency on Intel Core Ultra 7 155H, pinned to physical core,
-turbo boost disabled. All values in cycles per operation.
-
-Sorted map benchmarks use batched `seq!` unrolled timing (100 ops per rdtsc
-pair) to amortize serialization overhead. Population is 10,000 entries unless
-noted. Same Xorshift PRNG seed across all benchmarks.
+Batched timing (100 ops per rdtsc pair via `seq!` unroll), pinned to core 0.
+All values in CPU cycles per operation.
 
 ## List (doubly-linked list, RcSlot handles)
 
 | Operation | p50 | p90 | p99 | p999 |
 |-----------|-----|-----|-----|------|
-| link_back (growing) | 20 | 22 | 24 | 140 |
-| link_front (growing) | 20 | 22 | 22 | 28 |
-| link_back (steady @25k) | 20 | 22 | 22 | 64 |
-| pop_front (drain 50k) | 22 | 22 | 24 | 74 |
-| pop_back (drain 50k) | 22 | 22 | 24 | 36 |
-| unlink (arb order) | 22 | 22 | 24 | 36 |
-| move_to_front | 22 | 24 | 24 | 28 |
-| move_to_back | 22 | 24 | 26 | 30 |
-| try_push_back (alloc+link) | 22 | 22 | 24 | 26 |
+| link_back (empty) | 2 | 2 | 3 | 5 |
+| link_back (@1000) | 3 | 4 | 8 | 9 |
+| link_front (empty) | 2 | 2 | 3 | 7 |
+| pop_front | 3 | 3 | 3 | 4 |
+| pop_back | 3 | 3 | 3 | 5 |
+| unlink (from front) | 3 | 4 | 6 | 13 |
+| unlink (@1000 steady) | 5 | 7 | 11 | 15 |
+| try_push_back (alloc+link) | 4 | 4 | 5 | 8 |
+| front / back (peek) | <1 | <1 | <1 | 1 |
 
 ## Heap (pairing heap, RcSlot handles)
 
 | Operation | p50 | p90 | p99 | p999 |
 |-----------|-----|-----|-----|------|
-| push (growing) | 24 | 24 | 26 | 32 |
-| push (steady @25k) | 26 | 38 | 56 | 378 |
-| pop (drain 50k) | 312 | 440 | 574 | 1148 |
-| unlink (arb order) | 30 | 54 | 146 | 1956 |
-| try_push (alloc+link) | 22 | 22 | 24 | 38 |
-| peek | 20 | 22 | 22 | 22 |
+| link (empty) | 6 | 7 | 11 | 17 |
+| link (@1000) | 6 | 7 | 10 | 17 |
+| pop (from 100) | 110 | 117 | 145 | 207 |
+| pop (@1000 steady) | 111 | 118 | 149 | 220 |
+| unlink (from 100) | 42 | 46 | 54 | 109 |
+| unlink (@1000 steady) | 6 | 17 | 30 | 53 |
+| try_push (alloc+link) | 9 | 10 | 20 | 33 |
+| peek | <1 | <1 | <1 | <1 |
 
 ## Sorted Maps — Full Comparison
 
 Three sorted map implementations measured with identical methodology.
+Population is 10,000 entries unless noted.
 
 ### nexus RbTree (red-black tree, slab-backed, @10k)
 
 | Operation | p50 | p90 | p99 | p999 | max |
 |-----------|-----|-----|-----|------|-----|
-| get (hit, @100) | 9 | 9 | 20 | 34 | 287 |
-| get (hit, @10k) | 15 | 15 | 16 | 54 | 113 |
-| get (miss, @10k) | 41 | 41 | 53 | 105 | 191 |
-| get (cold rand, @10k) | 131 | 135 | 167 | 210 | 529 |
-| contains_key (hit) | 50 | 51 | 55 | 111 | 680 |
-| insert (growing, per-op) | 278 | 394 | 786 | 1178 | 15830 |
-| insert (steady) | 203 | 221 | 275 | 345 | 994 |
-| insert (duplicate) | 24 | 25 | 41 | 82 | 288 |
-| remove | 245 | 256 | 315 | 372 | 1477 |
-| pop_first | 22 | 24 | 41 | 69 | 272 |
-| pop_last | 21 | 24 | 42 | 74 | 3909 |
-| first_key_value | 0 | 1 | 1 | 1 | 160 |
-| churn (remove+insert) | 520 | 548 | 651 | 803 | 6431 |
-| entry (occupied) | 20 | 21 | 30 | 77 | 317 |
-| entry (vacant+insert) | 197 | 211 | 268 | 366 | 815 |
+| get (hit, @100) | 13 | 14 | 22 | 68 | 2244 |
+| get (hit, @10k) | 16 | 17 | 26 | 71 | 190 |
+| get (miss, @10k) | 35 | 36 | 65 | 116 | 427 |
+| get (cold rand, @10k) | 209 | 222 | 278 | 336 | 4218 |
+| contains_key (hit) | 16 | 17 | 32 | 75 | 9816 |
+| insert (growing, per-op) | 358 | 462 | 562 | 684 | 7404 |
+| insert (steady) | 337 | 359 | 429 | 525 | 11213 |
+| insert (duplicate) | 23 | 24 | 47 | 81 | 242 |
+| remove | 342 | 361 | 433 | 508 | 4434 |
+| pop_first | 24 | 26 | 35 | 80 | 415 |
+| pop_last | 24 | 26 | 35 | 87 | 710 |
+| first_key_value | <1 | <1 | 1 | 1 | 87 |
+| churn (remove+insert) | 655 | 699 | 807 | 915 | 13896 |
+| entry (occupied) | 22 | 24 | 36 | 77 | 201 |
+| entry (vacant+insert) | 335 | 357 | 423 | 495 | 1098 |
 
 ### nexus BTree (B=8, slab-backed, @10k)
 
 | Operation | p50 | p90 | p99 | p999 | max |
 |-----------|-----|-----|-----|------|-----|
-| get (hit, @100) | 14 | 15 | 21 | 44 | 364 |
-| get (hit, @10k) | 22 | 23 | 44 | 139 | 263 |
-| get (miss, @10k) | 30 | 31 | 36 | 92 | 256 |
-| get (cold rand, @10k) | 137 | 142 | 184 | 252 | 1478 |
-| contains_key (hit) | 22 | 23 | 40 | 81 | 393 |
-| insert (growing, per-op) | 254 | 314 | 628 | 758 | 12536 |
-| insert (steady) | 211 | 218 | 271 | 319 | 1255 |
-| insert (duplicate) | 27 | 28 | 41 | 87 | 510 |
-| remove | 209 | 221 | 280 | 359 | 582 |
-| pop_first | 47 | 50 | 79 | 128 | 532 |
-| pop_last | 38 | 41 | 60 | 107 | 226 |
-| first_key_value | 6 | 6 | 6 | 9 | 107 |
-| churn (remove+insert) | 455 | 481 | 578 | 758 | 6791 |
-| entry (occupied) | 22 | 44 | 60 | 94 | 294 |
-| entry (vacant+insert) | 373 | 392 | 464 | 602 | 6107 |
+| get (hit, @100) | 24 | 26 | 43 | 105 | 383 |
+| get (hit, @10k) | 40 | 65 | 81 | 173 | 814 |
+| get (miss, @10k) | 48 | 50 | 86 | 136 | 718 |
+| get (cold rand, @10k) | 177 | 196 | 274 | 347 | 4397 |
+| contains_key (hit) | 44 | 47 | 79 | 164 | 408 |
+| insert (growing, per-op) | 302 | 364 | 666 | 808 | 7994 |
+| insert (steady) | 252 | 277 | 365 | 464 | 4233 |
+| insert (duplicate) | 48 | 51 | 82 | 135 | 5164 |
+| remove | 241 | 257 | 334 | 455 | 4125 |
+| pop_first | 49 | 51 | 82 | 167 | 375 |
+| pop_last | 50 | 58 | 88 | 164 | 5418 |
+| first_key_value | 7 | 7 | 9 | 14 | 207 |
+| churn (remove+insert) | 520 | 575 | 714 | 945 | 9203 |
+| entry (occupied) | 43 | 45 | 64 | 118 | 284 |
+| entry (vacant+insert) | 454 | 488 | 632 | 864 | 11920 |
 
 ### std::collections::BTreeMap (baseline, @10k)
 
 | Operation | p50 | p90 | p99 | p999 | max |
 |-----------|-----|-----|-----|------|-----|
-| get (hit, @100) | 23 | 24 | 26 | 87 | 5880 |
-| get (hit, @10k) | 40 | 43 | 74 | 161 | 369 |
-| get (miss, @10k) | 48 | 51 | 59 | 127 | 458 |
-| get (cold rand, @10k) | 153 | 160 | 215 | 316 | 9081 |
-| contains_key (hit) | 37 | 39 | 50 | 155 | 435 |
-| insert (growing, per-op) | 256 | 358 | 614 | 3736 | 17300 |
-| insert (steady) | 231 | 244 | 312 | 401 | 11002 |
-| insert (duplicate) | 42 | 46 | 68 | 152 | 476 |
-| remove | 243 | 263 | 335 | 423 | 12015 |
-| pop_first | 71 | 78 | 92 | 153 | 735 |
-| pop_last | 52 | 57 | 68 | 132 | 291 |
-| churn (remove+insert) | 510 | 546 | 642 | 920 | 7292 |
-| entry (occupied) | 37 | 39 | 64 | 141 | 3921 |
-| entry (vacant+insert) | 228 | 245 | 313 | 406 | 6266 |
+| get (hit, @100) | 22 | 23 | 31 | 85 | 1808 |
+| get (hit, @10k) | 38 | 39 | 44 | 103 | 401 |
+| get (miss, @10k) | 47 | 48 | 73 | 153 | 540 |
+| get (cold rand, @10k) | 158 | 165 | 220 | 302 | 39680 |
+| contains_key (hit) | 37 | 39 | 53 | 115 | 472 |
+| insert (growing, per-op) | 238 | 342 | 720 | 5126 | 40916 |
+| insert (steady) | 195 | 210 | 274 | 350 | 710 |
+| insert (duplicate) | 38 | 41 | 45 | 105 | 11695 |
+| remove | 203 | 220 | 284 | 360 | 945 |
+| pop_first | 56 | 61 | 80 | 146 | 574 |
+| churn (remove+insert) | — | — | — | — | — |
+| entry (occupied) | 36 | 40 | 79 | 130 | 3933 |
+| entry (vacant+insert) | 225 | 242 | 308 | 408 | 6293 |
 
 ### p50 Comparison Matrix
 
-| Operation | nexus BTree | nexus RbTree | std BTreeMap | Best |
+| Operation | nexus RbTree | nexus BTree | std BTreeMap | Best |
 |---|---|---|---|---|
-| get (hit, @100) | 14 | **9** | 23 | RbTree |
-| get (hit, @10k) | 22 | **15** | 40 | RbTree |
-| get (miss, @10k) | **30** | 41 | 48 | nexus BTree |
-| get (cold rand, @10k) | 137 | **131** | 153 | RbTree |
-| contains_key (hit) | **22** | 50 | 37 | nexus BTree |
-| insert (growing) | **254** | 278 | 256 | nexus BTree |
-| insert (steady) | 211 | **203** | 231 | RbTree |
-| insert (duplicate) | 27 | **24** | 42 | RbTree |
-| remove | **209** | 245 | 243 | nexus BTree |
-| pop_first | 47 | **22** | 71 | RbTree |
-| pop_last | 38 | **21** | 52 | RbTree |
-| churn | **455** | 520 | 510 | nexus BTree |
-| entry (occupied) | 22 | **20** | 37 | RbTree |
-| entry (vacant+insert) | 373 | **197** | 228 | RbTree |
+| get (hit, @100) | **13** | 24 | 22 | RbTree |
+| get (hit, @10k) | **16** | 40 | 38 | RbTree |
+| get (miss, @10k) | **35** | 48 | 47 | RbTree |
+| contains_key (hit) | **16** | 44 | 37 | RbTree |
+| insert (growing) | 358 | **302** | 238 | std |
+| insert (steady) | 337 | **252** | 195 | std |
+| remove | 342 | **241** | 203 | std |
+| pop_first | **24** | 49 | 56 | RbTree |
+| pop_last | **24** | 50 | — | RbTree |
+| churn | 655 | **520** | — | BTree |
+| entry (occupied) | **22** | 43 | 36 | RbTree |
+| entry (vacant+insert) | **335** | 454 | 225 | std |
 
 ### p999 Tail Latency Comparison
 
-| Operation | nexus BTree | nexus RbTree | std BTreeMap | Best |
+| Operation | nexus RbTree | nexus BTree | std BTreeMap | Best |
 |---|---|---|---|---|
-| get (hit, @100) | 44 | **34** | 87 | RbTree |
-| get (hit, @10k) | 139 | **54** | 161 | RbTree |
-| get (miss, @10k) | **92** | 105 | 127 | nexus BTree |
-| get (cold rand, @10k) | 252 | **210** | 316 | RbTree |
-| contains_key (hit) | **81** | 111 | 155 | nexus BTree |
-| insert (growing) | **758** | 1178 | 3736 | nexus BTree |
-| insert (steady) | **319** | 345 | 401 | nexus BTree |
-| insert (duplicate) | 87 | **82** | 152 | RbTree |
-| remove | **359** | 372 | 423 | nexus BTree |
-| pop_first | 128 | **69** | 153 | RbTree |
-| pop_last | 107 | **74** | 132 | RbTree |
-| churn | **758** | 803 | 920 | nexus BTree |
-| entry (occupied) | 94 | **77** | 141 | RbTree |
-| entry (vacant+insert) | **602** | 366 | 406 | RbTree |
+| get (hit, @100) | **68** | 105 | 85 | RbTree |
+| get (hit, @10k) | **71** | 173 | 103 | RbTree |
+| insert (growing) | **684** | 808 | 5126 | RbTree |
+| insert (steady) | 525 | **464** | 350 | std |
+| remove | 508 | **455** | 360 | std |
+| pop_first | **80** | 167 | 146 | RbTree |
+| entry (occupied) | **77** | 118 | 130 | RbTree |
 
 ### Analysis
 
-**nexus vs std BTreeMap**: Both nexus trees beat std across the board. The slab
-allocator eliminates global allocator contention and gives predictable cache
-behavior. The advantage is most visible in tail latency — std's p999 on growing
-insert is 3736 cycles (global allocator on node splits) vs nexus BTree's 758.
+**Tail latency is the differentiator.** std BTreeMap wins p50 on insert/remove
+(195/203 vs nexus's 252/241), but at p999 on growing insert, std explodes to
+5126 cycles (global allocator pressure from node splits). nexus RbTree stays at
+684. The slab allocator eliminates allocation jitter.
 
-**nexus RbTree strengths**: Entry API (cached insertion point gives 197 vs 373
-for BTree), pop operations (cached leftmost/rightmost), hot lookups (40B nodes
-fit in one cache line).
+**nexus RbTree strengths**: Lookups (16 cycles at 10k — 40B nodes fit one
+cache line), pop operations (24 cycles — cached extremes), entry API,
+and growing-insert tail latency.
 
-**nexus BTree strengths**: Miss lookups (fewer nodes to confirm absence),
-contains_key, remove, churn (contiguous key layout), and tail latency on
-growing insert (preemptive splitting avoids cascading rebalance).
+**nexus BTree strengths**: Remove (241 vs RbTree's 342), churn (520 vs 655),
+and steady-state insert (252 vs 337). Contiguous key layout helps.
+
+**std wins p50 on mutation** because it doesn't pay the slab indirection cost.
+But it pays at p999 — the global allocator is a shared resource.
 
 ### When to Choose Which
 
-**RbTree**: Entry-heavy workloads (order books), pop-heavy workloads (timer
-wheels), anything where the pattern is check-then-insert via the entry API.
+**RbTree**: Lookup-heavy workloads (order books), pop-heavy workloads (timer
+wheels), entry API patterns, anything where tail latency matters more than
+median.
 
-**BTree**: Read-heavy lookups, existence checking (`contains_key`), high-churn
-streaming data, range scans, workloads where miss performance matters. Tunable
-branching factor via const generic B parameter.
+**BTree**: Remove-heavy workloads, high-churn streaming data, range scans.
+Tunable branching factor via const generic `B`.
+
+**std BTreeMap**: When you don't need stable handles, don't need O(1) pop,
+and median latency matters more than tail.
 
 ## Running Benchmarks
 
@@ -167,10 +161,11 @@ echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
 cargo build --release --examples -p nexus-collections
 
 # Run pinned to a physical core
-taskset -c 0 ./target/release/examples/perf_push_hist      # list + heap
-taskset -c 0 ./target/release/examples/perf_rbtree         # red-black tree
-taskset -c 0 ./target/release/examples/perf_btree          # B-tree
-taskset -c 0 ./target/release/examples/perf_std_btreemap   # std baseline
+taskset -c 0 ./target/release/examples/perf_list_cycles
+taskset -c 0 ./target/release/examples/perf_heap_cycles
+taskset -c 0 ./target/release/examples/perf_rbtree
+taskset -c 0 ./target/release/examples/perf_btree
+taskset -c 0 ./target/release/examples/perf_std_btreemap
 
 # Re-enable turbo boost
 echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
