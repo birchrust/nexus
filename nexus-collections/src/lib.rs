@@ -39,18 +39,32 @@ pub use nexus_slab::rc::{RcSlot, Ref, RefMut};
 pub use nexus_slab::shared::Full;
 
 // =============================================================================
-// RcFree trait — unifies bounded and unbounded slab free
+// Sealed — prevents external trait implementations
 // =============================================================================
 
-/// Trait for slab types that can free an [`RcSlot`] handle.
+mod sealed {
+    /// Sealed marker for Rc slab types.
+    pub trait RcSealed {}
+    /// Sealed marker for raw slab types.
+    pub trait SlabSealed {}
+
+    impl<T> RcSealed for nexus_slab::rc::bounded::Slab<T> {}
+    impl<T> RcSealed for nexus_slab::rc::unbounded::Slab<T> {}
+    impl<T> SlabSealed for nexus_slab::bounded::Slab<T> {}
+    impl<T> SlabSealed for nexus_slab::unbounded::Slab<T> {}
+}
+
+// =============================================================================
+// RcFree trait — sealed, unifies bounded and unbounded Rc slab free
+// =============================================================================
+
+/// Sealed trait for Rc slab types that can free an [`RcSlot`] handle.
 ///
-/// Implemented by both `rc::bounded::Slab<T>` and `rc::unbounded::Slab<T>`.
-/// Collections use this to accept either slab type in methods that release
-/// references (unlink, clear).
+/// Implemented by `rc::bounded::Slab<T>` and `rc::unbounded::Slab<T>`.
+/// Used by list and heap for `unlink` and `clear`.
 ///
-/// Choose one slab type per collection and stick with it — don't mix
-/// bounded and unbounded on the same collection.
-pub trait RcFree<T> {
+/// This trait is sealed — it cannot be implemented outside this crate.
+pub trait RcFree<T>: sealed::RcSealed {
     /// Free a handle, decrementing the refcount.
     /// Deallocates the slot when the last handle is freed.
     fn free_rc(&self, handle: RcSlot<T>);
@@ -71,22 +85,30 @@ impl<T> RcFree<T> for nexus_slab::rc::unbounded::Slab<T> {
 }
 
 // =============================================================================
-// SlabFree trait — unifies bounded and unbounded raw slab free
+// SlabOps trait — unifies bounded and unbounded raw slab free
 // =============================================================================
 
-/// Trait for raw slab types that can free a [`nexus_slab::Slot`] handle.
+/// Sealed trait for raw slab operations.
 ///
-/// Implemented by both `bounded::Slab<T>` and `unbounded::Slab<T>`.
-/// Used by tree collections (RbTree, BTree) which own nodes directly.
-pub trait SlabFree<T> {
+/// Implemented by `bounded::Slab<T>` and `unbounded::Slab<T>`.
+/// Used by tree collections for `remove`, `clear`, cursor, entry, and drain.
+///
+/// Methods that allocate (insert) are typed to the specific slab variant;
+/// this trait covers the shared operations (free, take, contains).
+///
+/// This trait is sealed — it cannot be implemented outside this crate.
+pub trait SlabOps<T>: sealed::SlabSealed {
     /// Free a slot, dropping the value and returning storage to the freelist.
     fn free_slot(&self, slot: nexus_slab::Slot<T>);
 
     /// Take the value out of a slot, then free the storage.
     fn take_slot(&self, slot: nexus_slab::Slot<T>) -> T;
+
+    /// Returns true if the pointer falls within this slab's storage.
+    fn contains_ptr(&self, ptr: *const ()) -> bool;
 }
 
-impl<T> SlabFree<T> for nexus_slab::bounded::Slab<T> {
+impl<T> SlabOps<T> for nexus_slab::bounded::Slab<T> {
     #[inline]
     fn free_slot(&self, slot: nexus_slab::Slot<T>) {
         self.free(slot);
@@ -96,9 +118,14 @@ impl<T> SlabFree<T> for nexus_slab::bounded::Slab<T> {
     fn take_slot(&self, slot: nexus_slab::Slot<T>) -> T {
         self.take(slot)
     }
+
+    #[inline]
+    fn contains_ptr(&self, ptr: *const ()) -> bool {
+        self.contains_ptr(ptr)
+    }
 }
 
-impl<T> SlabFree<T> for nexus_slab::unbounded::Slab<T> {
+impl<T> SlabOps<T> for nexus_slab::unbounded::Slab<T> {
     #[inline]
     fn free_slot(&self, slot: nexus_slab::Slot<T>) {
         self.free(slot);
@@ -107,6 +134,11 @@ impl<T> SlabFree<T> for nexus_slab::unbounded::Slab<T> {
     #[inline]
     fn take_slot(&self, slot: nexus_slab::Slot<T>) -> T {
         self.take(slot)
+    }
+
+    #[inline]
+    fn contains_ptr(&self, ptr: *const ()) -> bool {
+        self.contains_ptr(ptr)
     }
 }
 

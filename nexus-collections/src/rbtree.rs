@@ -33,7 +33,7 @@ use std::ptr;
 use nexus_slab::bounded;
 use nexus_slab::shared::{Full, Slot, SlotCell};
 
-use crate::SlabFree;
+use crate::SlabOps;
 use crate::compare::{Compare, Natural};
 
 // =============================================================================
@@ -315,19 +315,19 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
     // =========================================================================
 
     /// Removes the node with the given key and returns the value.
-    pub fn remove(&mut self, slab: &impl SlabFree<RbNode<K, V>>, key: &K) -> Option<V> {
+    pub fn remove(&mut self, slab: &impl SlabOps<RbNode<K, V>>, key: &K) -> Option<V> {
         let (_, v) = self.remove_entry(slab, key)?;
         Some(v)
     }
 
     /// Removes the node with the given key and returns `(key, value)`.
-    pub fn remove_entry(&mut self, slab: &impl SlabFree<RbNode<K, V>>, key: &K) -> Option<(K, V)> {
+    pub fn remove_entry(&mut self, slab: &impl SlabOps<RbNode<K, V>>, key: &K) -> Option<(K, V)> {
         let ptr = self.find(key)?;
         Some(self.remove_node(slab, ptr))
     }
 
     /// Removes and returns the first (smallest) key-value pair.
-    pub fn pop_first(&mut self, slab: &impl SlabFree<RbNode<K, V>>) -> Option<(K, V)> {
+    pub fn pop_first(&mut self, slab: &impl SlabOps<RbNode<K, V>>) -> Option<(K, V)> {
         if self.leftmost.is_null() {
             return None;
         }
@@ -335,7 +335,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
     }
 
     /// Removes and returns the last (largest) key-value pair.
-    pub fn pop_last(&mut self, slab: &impl SlabFree<RbNode<K, V>>) -> Option<(K, V)> {
+    pub fn pop_last(&mut self, slab: &impl SlabOps<RbNode<K, V>>) -> Option<(K, V)> {
         if self.rightmost.is_null() {
             return None;
         }
@@ -435,13 +435,15 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
 
     /// Gets the entry for the given key.
     ///
-    /// The entry API is only available with a [`bounded::Slab`]. Unbounded slab
-    /// users should use [`insert`](Self::insert) / [`remove`](Self::remove) directly.
-    pub fn entry<'a>(
+    /// Works with both [`bounded::Slab`] and [`unbounded::Slab`](nexus_slab::unbounded::Slab).
+    /// The available insert methods on [`VacantEntry`] depend on the slab type:
+    /// bounded gives [`try_insert`](VacantEntry::try_insert) and [`insert`](VacantEntry::insert),
+    /// unbounded gives only [`insert`](VacantEntry::insert).
+    pub fn entry<'a, S: SlabOps<RbNode<K, V>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<RbNode<K, V>>,
+        slab: &'a S,
         key: K,
-    ) -> Entry<'a, K, V, C> {
+    ) -> Entry<'a, K, V, C, S> {
         let mut parent: NodePtr<K, V> = ptr::null_mut();
         let mut is_left = true;
         let mut current = self.root;
@@ -542,12 +544,10 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
     // =========================================================================
 
     /// Returns a cursor positioned before the first element.
-    ///
-    /// The cursor API is only available with a [`bounded::Slab`].
-    pub fn cursor_front<'a>(
+    pub fn cursor_front<'a, S: SlabOps<RbNode<K, V>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<RbNode<K, V>>,
-    ) -> Cursor<'a, K, V, C> {
+        slab: &'a S,
+    ) -> Cursor<'a, K, V, C, S> {
         Cursor {
             tree: self,
             slab,
@@ -557,13 +557,11 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
     }
 
     /// Returns a cursor positioned at the given key.
-    ///
-    /// The cursor API is only available with a [`bounded::Slab`].
-    pub fn cursor_at<'a>(
+    pub fn cursor_at<'a, S: SlabOps<RbNode<K, V>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<RbNode<K, V>>,
+        slab: &'a S,
         key: &K,
-    ) -> Cursor<'a, K, V, C> {
+    ) -> Cursor<'a, K, V, C, S> {
         let current = self.find(key).unwrap_or_else(|| self.lower_bound(key));
         Cursor {
             tree: self,
@@ -578,10 +576,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
     // =========================================================================
 
     /// Returns a draining iterator.
-    ///
-    /// The drain API is only available with a [`bounded::Slab`]. Unbounded slab
-    /// users can use a loop with [`pop_first`](Self::pop_first).
-    pub fn drain<'a>(&'a mut self, slab: &'a bounded::Slab<RbNode<K, V>>) -> Drain<'a, K, V, C> {
+    pub fn drain<'a, S: SlabOps<RbNode<K, V>>>(&'a mut self, slab: &'a S) -> Drain<'a, K, V, C, S> {
         Drain { tree: self, slab }
     }
 
@@ -692,7 +687,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         unsafe { self.insert_fixup(ptr) };
     }
 
-    fn remove_node(&mut self, slab: &impl SlabFree<RbNode<K, V>>, ptr: NodePtr<K, V>) -> (K, V) {
+    fn remove_node(&mut self, slab: &impl SlabOps<RbNode<K, V>>, ptr: NodePtr<K, V>) -> (K, V) {
         let new_leftmost = if ptr == self.leftmost {
             if self.len == 1 {
                 ptr::null_mut()
@@ -1156,7 +1151,7 @@ impl<K, V, C> RbTree<K, V, C> {
     }
 
     /// Removes all nodes, freeing them via the slab.
-    pub fn clear(&mut self, slab: &impl SlabFree<RbNode<K, V>>) {
+    pub fn clear(&mut self, slab: &impl SlabOps<RbNode<K, V>>) {
         let mut current = self.root;
         while !current.is_null() {
             // SAFETY: current is a valid tree node — either root or reached
@@ -1202,34 +1197,30 @@ impl<K: fmt::Debug, V: fmt::Debug, C: Compare<K>> fmt::Debug for RbTree<K, V, C>
 // =============================================================================
 
 /// A view into a single entry in the tree.
-pub enum Entry<'a, K, V, C = Natural> {
+pub enum Entry<'a, K, V, C, S: SlabOps<RbNode<K, V>>> {
     /// An occupied entry — key exists in the tree.
-    Occupied(OccupiedEntry<'a, K, V, C>),
+    Occupied(OccupiedEntry<'a, K, V, C, S>),
     /// A vacant entry — key does not exist.
-    Vacant(VacantEntry<'a, K, V, C>),
+    Vacant(VacantEntry<'a, K, V, C, S>),
 }
 
 /// A view into an occupied entry in the tree.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct OccupiedEntry<'a, K, V, C = Natural> {
+pub struct OccupiedEntry<'a, K, V, C, S: SlabOps<RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, C>,
-    slab: &'a bounded::Slab<RbNode<K, V>>,
+    slab: &'a S,
     ptr: NodePtr<K, V>,
 }
 
 /// A view into a vacant entry in the tree.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct VacantEntry<'a, K, V, C = Natural> {
+pub struct VacantEntry<'a, K, V, C, S: SlabOps<RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, C>,
-    slab: &'a bounded::Slab<RbNode<K, V>>,
+    slab: &'a S,
     key: K,
     parent: NodePtr<K, V>,
     is_left: bool,
 }
 
-impl<K, V, C: Compare<K>> Entry<'_, K, V, C> {
+impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> Entry<'_, K, V, C, S> {
     /// Returns a reference to this entry's key.
     pub fn key(&self) -> &K {
         match self {
@@ -1247,7 +1238,7 @@ impl<K, V, C: Compare<K>> Entry<'_, K, V, C> {
     }
 }
 
-impl<'a, K, V, C: Compare<K>> OccupiedEntry<'a, K, V, C> {
+impl<'a, K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> OccupiedEntry<'a, K, V, C, S> {
     /// Returns a reference to the key.
     pub fn key(&self) -> &K {
         // SAFETY: self.ptr is a valid occupied tree node from find().
@@ -1285,13 +1276,17 @@ impl<'a, K, V, C: Compare<K>> OccupiedEntry<'a, K, V, C> {
     }
 }
 
-impl<'a, K, V, C: Compare<K>> VacantEntry<'a, K, V, C> {
+impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> VacantEntry<'_, K, V, C, S> {
     /// Returns a reference to the key.
     pub fn key(&self) -> &K {
         &self.key
     }
+}
 
+impl<'a, K, V, C: Compare<K>> VacantEntry<'a, K, V, C, bounded::Slab<RbNode<K, V>>> {
     /// Inserts a value into the vacant entry.
+    ///
+    /// Returns `Err(Full((key, value)))` if the slab is at capacity.
     pub fn try_insert(self, value: V) -> Result<&'a mut V, Full<(K, V)>> {
         let VacantEntry {
             tree,
@@ -1312,6 +1307,26 @@ impl<'a, K, V, C: Compare<K>> VacantEntry<'a, K, V, C> {
     }
 
     /// Inserts a value (panics if slab is full).
+    pub fn insert(self, value: V) -> &'a mut V {
+        let VacantEntry {
+            tree,
+            slab,
+            key,
+            parent,
+            is_left,
+        } = self;
+        let slot = slab.alloc(RbNode::new(key, value));
+        let ptr = slot.into_raw();
+        tree.link_new_node(ptr, parent, is_left);
+        // SAFETY: ptr is a freshly allocated and linked valid tree node.
+        unsafe { &mut (*node_deref_mut(ptr)).value }
+    }
+}
+
+impl<'a, K, V, C: Compare<K>> VacantEntry<'a, K, V, C, nexus_slab::unbounded::Slab<RbNode<K, V>>> {
+    /// Inserts a value into the vacant entry.
+    ///
+    /// Cannot fail — the unbounded slab grows as needed.
     pub fn insert(self, value: V) -> &'a mut V {
         let VacantEntry {
             tree,
@@ -1507,16 +1522,14 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
 // =============================================================================
 
 /// Cursor for positional traversal with removal.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct Cursor<'a, K, V, C = Natural> {
+pub struct Cursor<'a, K, V, C, S: SlabOps<RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, C>,
-    slab: &'a bounded::Slab<RbNode<K, V>>,
+    slab: &'a S,
     current: NodePtr<K, V>,
     started: bool,
 }
 
-impl<K, V, C: Compare<K>> Cursor<'_, K, V, C> {
+impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> Cursor<'_, K, V, C, S> {
     /// Returns a reference to the current key.
     pub fn key(&self) -> Option<&K> {
         if self.current.is_null() {
@@ -1580,14 +1593,12 @@ impl<K, V, C: Compare<K>> Cursor<'_, K, V, C> {
 // =============================================================================
 
 /// Draining iterator that removes and returns all key-value pairs in sorted order.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct Drain<'a, K, V, C = Natural> {
+pub struct Drain<'a, K, V, C, S: SlabOps<RbNode<K, V>>> {
     tree: &'a mut RbTree<K, V, C>,
-    slab: &'a bounded::Slab<RbNode<K, V>>,
+    slab: &'a S,
 }
 
-impl<K, V, C: Compare<K>> Iterator for Drain<'_, K, V, C> {
+impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> Iterator for Drain<'_, K, V, C, S> {
     type Item = (K, V);
     fn next(&mut self) -> Option<Self::Item> {
         self.tree.pop_first(self.slab)
@@ -1597,9 +1608,9 @@ impl<K, V, C: Compare<K>> Iterator for Drain<'_, K, V, C> {
     }
 }
 
-impl<K, V, C: Compare<K>> ExactSizeIterator for Drain<'_, K, V, C> {}
+impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> ExactSizeIterator for Drain<'_, K, V, C, S> {}
 
-impl<K, V, C> Drop for Drain<'_, K, V, C> {
+impl<K, V, C, S: SlabOps<RbNode<K, V>>> Drop for Drain<'_, K, V, C, S> {
     fn drop(&mut self) {
         self.tree.clear(self.slab);
     }

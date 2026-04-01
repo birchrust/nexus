@@ -32,7 +32,7 @@ use std::ptr;
 use nexus_slab::bounded;
 use nexus_slab::shared::{Full, Slot, SlotCell};
 
-use crate::SlabFree;
+use crate::SlabOps;
 use crate::compare::{Compare, Natural};
 
 // =============================================================================
@@ -248,7 +248,7 @@ unsafe fn shift_left<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
 /// freed or otherwise handled by the caller.
 unsafe fn free_node<K, V, const B: usize>(
     ptr: NodePtr<K, V, B>,
-    slab: &impl SlabFree<BTreeNode<K, V, B>>,
+    slab: &impl SlabOps<BTreeNode<K, V, B>>,
 ) {
     // SAFETY: ptr is a valid node per caller contract.
     let node = unsafe { &mut *node_deref_mut(ptr) };
@@ -412,7 +412,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     // =========================================================================
 
     /// Removes the node with the given key and returns the value.
-    pub fn remove(&mut self, slab: &impl SlabFree<BTreeNode<K, V, B>>, key: &K) -> Option<V> {
+    pub fn remove(&mut self, slab: &impl SlabOps<BTreeNode<K, V, B>>, key: &K) -> Option<V> {
         let (_, v) = self.remove_entry(slab, key)?;
         Some(v)
     }
@@ -420,7 +420,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     /// Removes the node with the given key and returns `(key, value)`.
     pub fn remove_entry(
         &mut self,
-        slab: &impl SlabFree<BTreeNode<K, V, B>>,
+        slab: &impl SlabOps<BTreeNode<K, V, B>>,
         key: &K,
     ) -> Option<(K, V)> {
         if self.root.is_null() {
@@ -451,7 +451,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     }
 
     /// Removes and returns the first (smallest) key-value pair.
-    pub fn pop_first(&mut self, slab: &impl SlabFree<BTreeNode<K, V, B>>) -> Option<(K, V)> {
+    pub fn pop_first(&mut self, slab: &impl SlabOps<BTreeNode<K, V, B>>) -> Option<(K, V)> {
         if self.root.is_null() {
             return None;
         }
@@ -477,7 +477,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     }
 
     /// Removes and returns the last (largest) key-value pair.
-    pub fn pop_last(&mut self, slab: &impl SlabFree<BTreeNode<K, V, B>>) -> Option<(K, V)> {
+    pub fn pop_last(&mut self, slab: &impl SlabOps<BTreeNode<K, V, B>>) -> Option<(K, V)> {
         if self.root.is_null() {
             return None;
         }
@@ -539,13 +539,15 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
 
     /// Gets the entry for the given key.
     ///
-    /// The entry API is only available with a [`bounded::Slab`]. Unbounded slab
-    /// users should use [`insert`](Self::insert) / [`remove`](Self::remove) directly.
-    pub fn entry<'a>(
+    /// Works with both [`bounded::Slab`] and [`unbounded::Slab`](nexus_slab::unbounded::Slab).
+    /// The available insert methods on [`VacantEntry`] depend on the slab type:
+    /// bounded gives [`try_insert`](VacantEntry::try_insert) and [`insert`](VacantEntry::insert),
+    /// unbounded gives only [`insert`](VacantEntry::insert).
+    pub fn entry<'a, S: SlabOps<BTreeNode<K, V, B>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
+        slab: &'a S,
         key: K,
-    ) -> Entry<'a, K, V, B, C> {
+    ) -> Entry<'a, K, V, B, C, S> {
         let mut current = self.root;
         while !current.is_null() {
             let (idx, found) = unsafe { search_in_node::<K, V, B, C>(current, &key) };
@@ -741,12 +743,10 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     // =========================================================================
 
     /// Returns a cursor positioned before the first element.
-    ///
-    /// The cursor API is only available with a [`bounded::Slab`].
-    pub fn cursor_front<'a>(
+    pub fn cursor_front<'a, S: SlabOps<BTreeNode<K, V, B>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
-    ) -> Cursor<'a, K, V, B, C> {
+        slab: &'a S,
+    ) -> Cursor<'a, K, V, B, C, S> {
         Cursor {
             tree: self,
             slab,
@@ -757,13 +757,11 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     }
 
     /// Returns a cursor positioned at the given key.
-    ///
-    /// The cursor API is only available with a [`bounded::Slab`].
-    pub fn cursor_at<'a>(
+    pub fn cursor_at<'a, S: SlabOps<BTreeNode<K, V, B>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
+        slab: &'a S,
         key: &K,
-    ) -> Cursor<'a, K, V, B, C> {
+    ) -> Cursor<'a, K, V, B, C, S> {
         let mut cursor = Cursor {
             tree: self,
             slab,
@@ -787,13 +785,10 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     // =========================================================================
 
     /// Returns a draining iterator.
-    ///
-    /// The drain API is only available with a [`bounded::Slab`]. Unbounded slab
-    /// users can use a loop with [`pop_first`](Self::pop_first).
-    pub fn drain<'a>(
+    pub fn drain<'a, S: SlabOps<BTreeNode<K, V, B>>>(
         &'a mut self,
-        slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
-    ) -> DrainBTree<'a, K, V, B, C> {
+        slab: &'a S,
+    ) -> DrainBTree<'a, K, V, B, C, S> {
         DrainBTree { tree: self, slab }
     }
 
@@ -836,7 +831,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     ///   collected during the downward traversal.
     unsafe fn remove_found(
         &mut self,
-        slab: &impl SlabFree<BTreeNode<K, V, B>>,
+        slab: &impl SlabOps<BTreeNode<K, V, B>>,
         node: NodePtr<K, V, B>,
         idx: usize,
         path: &[(NodePtr<K, V, B>, usize); MAX_DEPTH],
@@ -914,7 +909,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     /// during the downward search in `remove_entry` / `remove_found`.
     fn fixup_after_remove(
         &mut self,
-        slab: &impl SlabFree<BTreeNode<K, V, B>>,
+        slab: &impl SlabOps<BTreeNode<K, V, B>>,
         mut node: NodePtr<K, V, B>,
         path: &[(NodePtr<K, V, B>, usize); MAX_DEPTH],
         path_len: usize,
@@ -1159,7 +1154,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
     ///   the merged result fits in a single node (2*min + 1 == B-1).
     /// - No aliasing: parent, left, and right are distinct slab allocations.
     unsafe fn merge_children(
-        slab: &impl SlabFree<BTreeNode<K, V, B>>,
+        slab: &impl SlabOps<BTreeNode<K, V, B>>,
         parent: NodePtr<K, V, B>,
         merge_idx: usize,
     ) {
@@ -1666,7 +1661,7 @@ impl<K, V, const B: usize, C> BTree<K, V, B, C> {
     }
 
     /// Removes all nodes.
-    pub fn clear(&mut self, slab: &impl SlabFree<BTreeNode<K, V, B>>) {
+    pub fn clear(&mut self, slab: &impl SlabOps<BTreeNode<K, V, B>>) {
         if !self.root.is_null() {
             unsafe { Self::clear_subtree(self.root, slab) };
         }
@@ -1686,7 +1681,7 @@ impl<K, V, const B: usize, C> BTree<K, V, B, C> {
     /// `ptr` must be a valid non-null B-tree node obtained from
     /// `Slot::into_raw()` during insert/split. The entire subtree
     /// must be exclusively owned (no concurrent readers/writers).
-    unsafe fn clear_subtree(ptr: NodePtr<K, V, B>, slab: &impl SlabFree<BTreeNode<K, V, B>>) {
+    unsafe fn clear_subtree(ptr: NodePtr<K, V, B>, slab: &impl SlabOps<BTreeNode<K, V, B>>) {
         // SAFETY: ptr is a valid node per caller contract (root from self.root,
         // or a child pointer from a valid parent node).
         let node = unsafe { &*node_deref(ptr) };
@@ -2011,33 +2006,29 @@ impl<'a, K: 'a, V: 'a, const B: usize> Iterator for RangeMut<'a, K, V, B> {
 // =============================================================================
 
 /// Entry for B-tree.
-pub enum Entry<'a, K, V, const B: usize, C = Natural> {
+pub enum Entry<'a, K, V, const B: usize, C, S: SlabOps<BTreeNode<K, V, B>>> {
     /// Occupied.
-    Occupied(OccupiedEntry<'a, K, V, B, C>),
+    Occupied(OccupiedEntry<'a, K, V, B, C, S>),
     /// Vacant.
-    Vacant(VacantEntry<'a, K, V, B, C>),
+    Vacant(VacantEntry<'a, K, V, B, C, S>),
 }
 
 /// Occupied entry.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct OccupiedEntry<'a, K, V, const B: usize, C = Natural> {
+pub struct OccupiedEntry<'a, K, V, const B: usize, C, S: SlabOps<BTreeNode<K, V, B>>> {
     tree: &'a mut BTree<K, V, B, C>,
-    slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
+    slab: &'a S,
     node: NodePtr<K, V, B>,
     idx: usize,
 }
 
 /// Vacant entry.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct VacantEntry<'a, K, V, const B: usize, C = Natural> {
+pub struct VacantEntry<'a, K, V, const B: usize, C, S: SlabOps<BTreeNode<K, V, B>>> {
     tree: &'a mut BTree<K, V, B, C>,
-    slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
+    slab: &'a S,
     key: K,
 }
 
-impl<K, V, const B: usize, C: Compare<K>> Entry<'_, K, V, B, C> {
+impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>> Entry<'_, K, V, B, C, S> {
     /// Returns a reference to this entry's key.
     pub fn key(&self) -> &K {
         match self {
@@ -2055,7 +2046,9 @@ impl<K, V, const B: usize, C: Compare<K>> Entry<'_, K, V, B, C> {
     }
 }
 
-impl<'a, K, V, const B: usize, C: Compare<K>> OccupiedEntry<'a, K, V, B, C> {
+impl<'a, K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
+    OccupiedEntry<'a, K, V, B, C, S>
+{
     /// Key reference.
     pub fn key(&self) -> &K {
         // SAFETY: self.node is a valid node and self.idx < node.len.
@@ -2097,12 +2090,21 @@ impl<'a, K, V, const B: usize, C: Compare<K>> OccupiedEntry<'a, K, V, B, C> {
     }
 }
 
-impl<'a, K, V, const B: usize, C: Compare<K>> VacantEntry<'a, K, V, B, C> {
+impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
+    VacantEntry<'_, K, V, B, C, S>
+{
     /// Key reference.
     pub fn key(&self) -> &K {
         &self.key
     }
+}
+
+impl<'a, K, V, const B: usize, C: Compare<K>>
+    VacantEntry<'a, K, V, B, C, bounded::Slab<BTreeNode<K, V, B>>>
+{
     /// Try to insert.
+    ///
+    /// Returns `Err(Full((key, value)))` if the slab is at capacity.
     pub fn try_insert(self, value: V) -> Result<&'a mut V, Full<(K, V)>> {
         let VacantEntry { tree, slab, key } = self;
         let (val_ptr, _) = tree.try_insert_inner(slab, key, value)?;
@@ -2118,22 +2120,35 @@ impl<'a, K, V, const B: usize, C: Compare<K>> VacantEntry<'a, K, V, B, C> {
     }
 }
 
+impl<'a, K, V, const B: usize, C: Compare<K>>
+    VacantEntry<'a, K, V, B, C, nexus_slab::unbounded::Slab<BTreeNode<K, V, B>>>
+{
+    /// Insert a value into the vacant entry.
+    ///
+    /// Cannot fail — the unbounded slab grows as needed.
+    pub fn insert(self, value: V) -> &'a mut V {
+        let VacantEntry { tree, slab, key } = self;
+        let (val_ptr, _) = tree.insert_inner(slab, key, value);
+        unsafe { &mut *val_ptr }
+    }
+}
+
 // =============================================================================
 // Cursor
 // =============================================================================
 
 /// B-tree cursor.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct Cursor<'a, K, V, const B: usize, C = Natural> {
+pub struct Cursor<'a, K, V, const B: usize, C, S: SlabOps<BTreeNode<K, V, B>>> {
     tree: &'a mut BTree<K, V, B, C>,
-    slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
+    slab: &'a S,
     stack: [(NodePtr<K, V, B>, u16); MAX_DEPTH],
     stack_len: usize,
     started: bool,
 }
 
-impl<K, V, const B: usize, C: Compare<K>> Cursor<'_, K, V, B, C> {
+impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
+    Cursor<'_, K, V, B, C, S>
+{
     /// Key at cursor.
     pub fn key(&self) -> Option<&K> {
         if self.stack_len == 0 || !self.started {
@@ -2224,14 +2239,14 @@ impl<K, V, const B: usize, C: Compare<K>> Cursor<'_, K, V, B, C> {
 // =============================================================================
 
 /// Draining iterator.
-///
-/// Only available with a [`bounded::Slab`].
-pub struct DrainBTree<'a, K, V, const B: usize, C = Natural> {
+pub struct DrainBTree<'a, K, V, const B: usize, C, S: SlabOps<BTreeNode<K, V, B>>> {
     tree: &'a mut BTree<K, V, B, C>,
-    slab: &'a bounded::Slab<BTreeNode<K, V, B>>,
+    slab: &'a S,
 }
 
-impl<K, V, const B: usize, C: Compare<K>> Iterator for DrainBTree<'_, K, V, B, C> {
+impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>> Iterator
+    for DrainBTree<'_, K, V, B, C, S>
+{
     type Item = (K, V);
     fn next(&mut self) -> Option<Self::Item> {
         self.tree.pop_first(self.slab)
@@ -2240,9 +2255,14 @@ impl<K, V, const B: usize, C: Compare<K>> Iterator for DrainBTree<'_, K, V, B, C
         (self.tree.len(), Some(self.tree.len()))
     }
 }
-impl<K, V, const B: usize, C: Compare<K>> ExactSizeIterator for DrainBTree<'_, K, V, B, C> {}
+impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>> ExactSizeIterator
+    for DrainBTree<'_, K, V, B, C, S>
+{
+}
 
-impl<K, V, const B: usize, C> Drop for DrainBTree<'_, K, V, B, C> {
+impl<K, V, const B: usize, C, S: SlabOps<BTreeNode<K, V, B>>> Drop
+    for DrainBTree<'_, K, V, B, C, S>
+{
     fn drop(&mut self) {
         self.tree.clear(self.slab);
     }
