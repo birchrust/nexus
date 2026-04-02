@@ -34,6 +34,16 @@
 //! return a non-unit value, use [`CtxPipelineChain::run`] directly —
 //! `.build()` is only available when `Out = ()` or `Out = Option<()>`.
 //!
+//! # Three-tier step resolution
+//!
+//! Each combinator accepts functions via three tiers, matching the
+//! [`pipeline`](crate::pipeline) module:
+//!
+//! 1. **Named function with Params** — `fn(&mut C, Res<T>, In) -> Out`
+//! 2. **Arity-0 closure** — `FnMut(&mut C, In) -> Out`
+//! 3. **[`Opaque`](crate::Opaque) closure** — `FnMut(&mut C, &mut World, In) -> Out`
+//!    (raw World access, no Param resolution)
+//!
 //! # Deferred combinators
 //!
 //! The following combinators from [`pipeline`](crate::pipeline) are not yet
@@ -44,7 +54,7 @@
 
 use std::marker::PhantomData;
 
-use crate::handler::Param;
+use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
 // =============================================================================
@@ -82,8 +92,13 @@ pub trait CtxStepCall<C, In> {
 
 /// Converts a named function into a pre-resolved context-aware pipeline step.
 ///
-/// Context first, then Params, then step input last. Arity 0 (no Params)
-/// supports closures. Arities 1+ require named functions.
+/// Three tiers of resolution (same API for all):
+///
+/// | Params | Function shape | Example |
+/// |--------|---------------|---------|
+/// | Named | `fn(&mut C, Res<T>, In) -> Out` | `fn process(ctx: &mut Ctx, cfg: Res<Config>, x: u32) -> u64` |
+/// | `()` | `FnMut(&mut C, In) -> Out` | `\|ctx: &mut Ctx, x: u32\| x * 2` |
+/// | [`Opaque`] | `FnMut(&mut C, &mut World, In) -> Out` | `\|ctx: &mut Ctx, w: &mut World, x: u32\| { ... }` |
 ///
 /// # Examples
 ///
@@ -94,10 +109,14 @@ pub trait CtxStepCall<C, In> {
 /// // Arity 1 — named function required
 /// fn validate(ctx: &mut Ctx, config: Res<Config>, order: Order) -> Option<ValidOrder> { .. }
 /// let step = validate.into_ctx_step(registry);
+///
+/// // Opaque — raw World access
+/// let step = (|ctx: &mut Ctx, w: &mut World, x: u32| { ... }).into_ctx_step(registry);
 /// ```
 #[diagnostic::on_unimplemented(
     message = "this function cannot be used as a context-aware pipeline step",
     note = "ctx step signature: `fn(&mut C, Params..., In) -> Out` — context first, resources, input last",
+    note = "for raw World access: `fn(&mut C, &mut World, In) -> Out`",
     note = "closures with resource parameters are not supported — use a named `fn`"
 )]
 pub trait IntoCtxStep<C, In, Out, Params> {
@@ -200,6 +219,43 @@ macro_rules! impl_into_ctx_step {
 
 all_tuples!(impl_into_ctx_step);
 
+// -- Opaque: FnMut(&mut C, &mut World, In) -> Out ----------------------------
+
+/// Internal: wrapper for opaque closures used as context-aware steps.
+///
+/// Unlike [`CtxStep<F, P>`] which stores resolved `Param::State`, this
+/// holds only the function — the closure receives `&mut World` directly.
+#[doc(hidden)]
+pub struct CtxOpaqueStep<F> {
+    f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
+    #[allow(dead_code)]
+    name: &'static str,
+}
+
+impl<C, In, Out, F: FnMut(&mut C, &mut World, In) -> Out + 'static> CtxStepCall<C, In>
+    for CtxOpaqueStep<F>
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Out {
+        (self.f)(ctx, world, input)
+    }
+}
+
+impl<C, In, Out, F: FnMut(&mut C, &mut World, In) -> Out + 'static> IntoCtxStep<C, In, Out, Opaque>
+    for F
+{
+    type Step = CtxOpaqueStep<F>;
+
+    fn into_ctx_step(self, _registry: &Registry) -> Self::Step {
+        CtxOpaqueStep {
+            f: self,
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
 // =============================================================================
 // CtxRefStepCall / IntoCtxRefStep — context-aware step taking &In
 // =============================================================================
@@ -217,9 +273,19 @@ pub trait CtxRefStepCall<C, In> {
 }
 
 /// Converts a function into a context-aware step taking input by reference.
+///
+/// Used by combinators like `tap`, `guard`, `filter`, `inspect` that
+/// observe the value without consuming it.
+///
+/// | Params | Function shape | Example |
+/// |--------|---------------|---------|
+/// | Named | `fn(&mut C, Res<T>, &In) -> Out` | `fn check(ctx: &mut Ctx, cfg: Res<Config>, o: &Order) -> bool` |
+/// | `()` | `FnMut(&mut C, &In) -> Out` | `\|ctx: &mut Ctx, o: &Order\| o.qty > 0` |
+/// | [`Opaque`] | `FnMut(&mut C, &mut World, &In) -> Out` | `\|ctx: &mut Ctx, w: &mut World, o: &Order\| { ... }` |
 #[diagnostic::on_unimplemented(
     message = "this function cannot be used as a context-aware reference step",
     note = "ctx ref step signature: `fn(&mut C, Params..., &In) -> Out`",
+    note = "for raw World access: `fn(&mut C, &mut World, &In) -> Out`",
     note = "closures with resource parameters are not supported — use a named `fn`"
 )]
 pub trait IntoCtxRefStep<C, In, Out, Params> {
@@ -315,6 +381,39 @@ macro_rules! impl_into_ctx_ref_step {
 
 all_tuples!(impl_into_ctx_ref_step);
 
+// -- Opaque: FnMut(&mut C, &mut World, &In) -> Out ---------------------------
+
+/// Internal: wrapper for opaque closures taking input by reference.
+#[doc(hidden)]
+pub struct CtxOpaqueRefStep<F> {
+    f: F,
+    #[allow(dead_code)]
+    name: &'static str,
+}
+
+impl<C, In, Out, F: FnMut(&mut C, &mut World, &In) -> Out + 'static> CtxRefStepCall<C, In>
+    for CtxOpaqueRefStep<F>
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: &In) -> Out {
+        (self.f)(ctx, world, input)
+    }
+}
+
+impl<C, In, Out, F: FnMut(&mut C, &mut World, &In) -> Out + 'static>
+    IntoCtxRefStep<C, In, Out, Opaque> for F
+{
+    type Step = CtxOpaqueRefStep<F>;
+
+    fn into_ctx_ref_step(self, _registry: &Registry) -> Self::Step {
+        CtxOpaqueRefStep {
+            f: self,
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
 // =============================================================================
 // CtxProducerCall / IntoCtxProducer — context-aware producer (no pipeline input)
 // =============================================================================
@@ -331,9 +430,18 @@ pub trait CtxProducerCall<C> {
 }
 
 /// Converts a function into a context-aware producer step.
+///
+/// Used by combinators like `on_none`, `unwrap_or_else`.
+///
+/// | Params | Function shape | Example |
+/// |--------|---------------|---------|
+/// | Named | `fn(&mut C, Res<T>) -> Out` | `fn default_val(ctx: &mut Ctx, cfg: Res<Config>) -> u64` |
+/// | `()` | `FnMut(&mut C) -> Out` | `\|ctx: &mut Ctx\| ctx.fallback` |
+/// | [`Opaque`] | `FnMut(&mut C, &mut World) -> Out` | `\|ctx: &mut Ctx, w: &mut World\| { ... }` |
 #[diagnostic::on_unimplemented(
     message = "this function cannot be used as a context-aware producer",
     note = "ctx producer signature: `fn(&mut C, Params...) -> Out`",
+    note = "for raw World access: `fn(&mut C, &mut World) -> Out`",
     note = "closures with resource parameters are not supported — use a named `fn`"
 )]
 pub trait IntoCtxProducer<C, Out, Params> {
@@ -427,6 +535,37 @@ macro_rules! impl_into_ctx_producer {
 }
 
 all_tuples!(impl_into_ctx_producer);
+
+// -- Opaque: FnMut(&mut C, &mut World) -> Out --------------------------------
+
+/// Internal: wrapper for opaque closures used as context-aware producers.
+#[doc(hidden)]
+pub struct CtxOpaqueProducer<F> {
+    f: F,
+    #[allow(dead_code)]
+    name: &'static str,
+}
+
+impl<C, Out, F: FnMut(&mut C, &mut World) -> Out + 'static> CtxProducerCall<C>
+    for CtxOpaqueProducer<F>
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World) -> Out {
+        (self.f)(ctx, world)
+    }
+}
+
+impl<C, Out, F: FnMut(&mut C, &mut World) -> Out + 'static> IntoCtxProducer<C, Out, Opaque> for F {
+    type Step = CtxOpaqueProducer<F>;
+
+    fn into_ctx_producer(self, _registry: &Registry) -> Self::Step {
+        CtxOpaqueProducer {
+            f: self,
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
 
 // =============================================================================
 // CtxChainCall — callable trait for context-aware chain nodes
@@ -1886,5 +2025,103 @@ mod tests {
         // Err path — inspect skipped
         let _ = pipeline.run(&mut ctx, &mut world, 0);
         assert_eq!(ctx.retries, 7);
+    }
+
+    // -- Opaque escape hatch --------------------------------------------------
+
+    #[test]
+    fn ctx_pipeline_opaque_step() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(100);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // Opaque step: FnMut(&mut C, &mut World, In) -> Out
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |ctx: &mut ReconnectCtx, w: &mut World, x: u32| {
+                    ctx.retries += 1;
+                    let scale = *w.resource::<u64>();
+                    u64::from(x) * scale
+                },
+                &reg,
+            )
+            .then(
+                |ctx: &mut ReconnectCtx, val: u64| {
+                    ctx.last_result = Some(val > 0);
+                },
+                &reg,
+            )
+            .build();
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        pipeline.run(&mut ctx, &mut world, 5);
+        assert_eq!(ctx.retries, 1);
+        assert_eq!(ctx.last_result, Some(true));
+    }
+
+    #[test]
+    fn ctx_pipeline_opaque_guard() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(10);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // Opaque ref step used as guard
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(|_ctx: &mut ReconnectCtx, x: u32| x, &reg)
+            .guard(
+                |_ctx: &mut ReconnectCtx, w: &mut World, x: &u32| {
+                    let threshold = *w.resource::<u64>();
+                    u64::from(*x) > threshold
+                },
+                &reg,
+            );
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), None);
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 20), Some(20));
+    }
+
+    #[test]
+    fn ctx_pipeline_opaque_producer() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(42);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // Opaque producer: FnMut(&mut C, &mut World) -> Out
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| {
+                    if x > 0 { Some(x) } else { None }
+                },
+                &reg,
+            )
+            .unwrap_or_else(
+                |ctx: &mut ReconnectCtx, w: &mut World| {
+                    ctx.retries += 1;
+                    *w.resource::<u64>() as u32
+                },
+                &reg,
+            );
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), 5);
+        assert_eq!(ctx.retries, 0);
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 0), 42);
+        assert_eq!(ctx.retries, 1);
     }
 }

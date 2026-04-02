@@ -29,6 +29,16 @@
 //! the context `C` and calls the DAG via its `run` method, passing
 //! `&mut C`, `&mut World`, and the handler input.
 //!
+//! # Three-tier step resolution
+//!
+//! Each combinator accepts functions via three tiers, matching the
+//! [`dag`](crate::dag) module:
+//!
+//! 1. **Named function with Params** — `fn(&mut C, Res<T>, &In) -> Out`
+//! 2. **Arity-0 closure** — `FnMut(&mut C, &In) -> Out`
+//! 3. **[`Opaque`](crate::Opaque) closure** — `FnMut(&mut C, &mut World, &In) -> Out`
+//!    (raw World access, no Param resolution)
+//!
 //! # Deferred combinators
 //!
 //! The following combinators from [`dag`](crate::dag) are not yet implemented:
