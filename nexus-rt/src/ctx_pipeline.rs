@@ -25,9 +25,22 @@
 //! # Integration with Callback
 //!
 //! The built [`CtxPipeline`] implements [`CtxStepCall`] — it takes
-//! `&mut C`, `&mut World`, and `In`, returning `Out`. To use as a
-//! [`Handler`](crate::Handler), wrap it in a [`Callback`](crate::Callback)
-//! that provides the context.
+//! `&mut C`, `&mut World`, and `In`, returning `Out`.
+//!
+//! To use a pipeline from a [`Handler`](crate::Handler), create a normal
+//! [`Callback`](crate::Callback) whose handler function owns or accesses
+//! the context `C` and calls the pipeline via its `run` method, passing
+//! `&mut C`, `&mut World`, and the handler input. For pipelines that
+//! return a non-unit value, use [`CtxPipelineChain::run`] directly —
+//! `.build()` is only available when `Out = ()` or `Out = Option<()>`.
+//!
+//! # Deferred combinators
+//!
+//! The following combinators from [`pipeline`](crate::pipeline) are not yet
+//! implemented: `scan`, `dedup`, `dispatch`, `route`, `tee`, `splat`,
+//! `cloned`, `not`/`and`/`or`/`xor` (bool), `ok_or_else`, `or_else`,
+//! `Result::unwrap_or_else`, and `BatchPipeline`. These can be added when
+//! a concrete use case requires them.
 
 use std::marker::PhantomData;
 
@@ -43,6 +56,7 @@ use crate::world::{Registry, World};
 pub struct CtxStep<F, Params: Param> {
     f: F,
     state: Params::State,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -460,6 +474,7 @@ where
     S: CtxStepCall<C, Prev::Out>,
 {
     type Out = S::Out;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> S::Out {
         let mid = self.prev.call(ctx, world, input);
         self.step.call(ctx, world, mid)
@@ -479,6 +494,7 @@ where
     S: CtxRefStepCall<C, Prev::Out, Out = ()>,
 {
     type Out = Prev::Out;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Prev::Out {
         let val = self.prev.call(ctx, world, input);
         self.step.call(ctx, world, &val);
@@ -499,6 +515,7 @@ where
     S: CtxRefStepCall<C, Prev::Out, Out = bool>,
 {
     type Out = Option<Prev::Out>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<Prev::Out> {
         let val = self.prev.call(ctx, world, input);
         if self.step.call(ctx, world, &val) {
@@ -524,6 +541,7 @@ where
     S: CtxStepCall<C, T>,
 {
     type Out = Option<S::Out>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<S::Out> {
         match self.prev.call(ctx, world, input) {
             Some(val) => Some(self.step.call(ctx, world, val)),
@@ -545,6 +563,7 @@ where
     S: CtxStepCall<C, T, Out = Option<U>>,
 {
     type Out = Option<U>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<U> {
         match self.prev.call(ctx, world, input) {
             Some(val) => self.step.call(ctx, world, val),
@@ -566,6 +585,7 @@ where
     S: CtxRefStepCall<C, T, Out = bool>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<T> {
         match self.prev.call(ctx, world, input) {
             Some(val) if self.step.call(ctx, world, &val) => Some(val),
@@ -587,6 +607,7 @@ where
     S: CtxRefStepCall<C, T, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<T> {
         let opt = self.prev.call(ctx, world, input);
         if let Some(ref val) = opt {
@@ -609,6 +630,7 @@ where
     S: CtxProducerCall<C, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<T> {
         let opt = self.prev.call(ctx, world, input);
         if opt.is_none() {
@@ -631,6 +653,7 @@ where
     S: CtxProducerCall<C, Out = T>,
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> T {
         match self.prev.call(ctx, world, input) {
             Some(val) => val,
@@ -654,6 +677,7 @@ where
     S: CtxStepCall<C, T>,
 {
     type Out = Result<S::Out, E>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<S::Out, E> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => Ok(self.step.call(ctx, world, val)),
@@ -675,6 +699,7 @@ where
     S: CtxStepCall<C, T, Out = Result<U, E>>,
 {
     type Out = Result<U, E>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<U, E> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => self.step.call(ctx, world, val),
@@ -696,6 +721,7 @@ where
     S: CtxStepCall<C, E, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<T> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => Some(val),
@@ -720,6 +746,7 @@ where
     S: CtxStepCall<C, E, Out = E2>,
 {
     type Out = Result<T, E2>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<T, E2> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => Ok(val),
@@ -741,10 +768,34 @@ where
     S: CtxRefStepCall<C, E, Out = ()>,
 {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<T, E> {
         let result = self.prev.call(ctx, world, input);
         if let Err(ref e) = result {
             self.step.call(ctx, world, e);
+        }
+        result
+    }
+}
+
+/// Chain node for `.inspect()` on `Result<T, E>` — side effect on Ok value.
+#[doc(hidden)]
+pub struct CtxInspectResultNode<Prev, S> {
+    pub(crate) prev: Prev,
+    pub(crate) step: S,
+}
+
+impl<C, In, T, E, Prev, S> CtxChainCall<C, In> for CtxInspectResultNode<Prev, S>
+where
+    Prev: CtxChainCall<C, In, Out = Result<T, E>>,
+    S: CtxRefStepCall<C, T, Out = ()>,
+{
+    type Out = Result<T, E>;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<T, E> {
+        let result = self.prev.call(ctx, world, input);
+        if let Ok(ref val) = result {
+            self.step.call(ctx, world, val);
         }
         result
     }
@@ -1027,6 +1078,7 @@ where
     Prev: CtxChainCall<C, In, Out = Option<T>>,
 {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<T, E> {
         match self.prev.call(ctx, world, input) {
             Some(val) => Ok(val),
@@ -1047,6 +1099,7 @@ where
     Prev: CtxChainCall<C, In, Out = Option<T>>,
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> T {
         match self.prev.call(ctx, world, input) {
             Some(val) => val,
@@ -1122,6 +1175,21 @@ impl<C, In, T, E, Chain: CtxChainCall<C, In, Out = Result<T, E>>>
         }
     }
 
+    /// Side effect on Ok value. std: `Result::inspect` (nightly)
+    pub fn inspect<Params, S: IntoCtxRefStep<C, T, (), Params>>(
+        self,
+        f: S,
+        registry: &Registry,
+    ) -> CtxPipelineChain<C, In, Result<T, E>, CtxInspectResultNode<Chain, S::Step>> {
+        CtxPipelineChain {
+            chain: CtxInspectResultNode {
+                prev: self.chain,
+                step: f.into_ctx_ref_step(registry),
+            },
+            _marker: PhantomData,
+        }
+    }
+
     /// Side effect on Err value. std: `Result::inspect_err` (nightly)
     pub fn inspect_err<Params, S: IntoCtxRefStep<C, E, (), Params>>(
         self,
@@ -1174,6 +1242,7 @@ where
     Prev: CtxChainCall<C, In, Out = Result<T, E>>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<T> {
         self.prev.call(ctx, world, input).ok()
     }
@@ -1191,6 +1260,7 @@ where
     Prev: CtxChainCall<C, In, Out = Result<T, E>>,
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> T {
         match self.prev.call(ctx, world, input) {
             Ok(val) => val,
@@ -1277,7 +1347,7 @@ mod tests {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(10);
         let mut world = wb.build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         // Step 1: check retries (closure, arity 0)
         // Step 2: multiply by resource (named fn, arity 1)
@@ -1321,7 +1391,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_guard_and_map() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
             .then(|_ctx: &mut ReconnectCtx, x: u32| x, &reg)
@@ -1353,7 +1423,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_and_then() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
             .then(|_ctx: &mut ReconnectCtx, x: u32| Some(x), &reg)
@@ -1380,7 +1450,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_catch() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
             .then(
@@ -1430,7 +1500,7 @@ mod tests {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         fn accumulate(ctx: &mut ReconnectCtx, mut total: ResMut<u64>, val: u32) {
             *total += val as u64;
@@ -1456,7 +1526,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_build_with_option_unit() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         // Pipeline that ends with Option<()> — should still build
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
@@ -1482,7 +1552,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_tap() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
             .then(|_ctx: &mut ReconnectCtx, x: u32| x * 2, &reg)
@@ -1513,7 +1583,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_result_map_and_map_err() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
             .then(
@@ -1547,7 +1617,7 @@ mod tests {
     #[test]
     fn ctx_pipeline_inspect_err() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
             .then(
@@ -1574,5 +1644,247 @@ mod tests {
         // Ok path — inspect_err not called
         let _ = pipeline.run(&mut ctx, &mut world, 5);
         assert_eq!(ctx.retries, 1);
+    }
+
+    #[test]
+    fn ctx_pipeline_filter() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(|_ctx: &mut ReconnectCtx, x: u32| Some(x), &reg)
+            .filter(|_ctx: &mut ReconnectCtx, x: &u32| *x > 10, &reg);
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), None);
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 20), Some(20));
+    }
+
+    #[test]
+    fn ctx_pipeline_ok_or() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| {
+                    if x > 0 { Some(x) } else { None }
+                },
+                &reg,
+            )
+            .ok_or("was zero");
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), Ok(5));
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 0), Err("was zero"));
+    }
+
+    #[test]
+    fn ctx_pipeline_unwrap_or_option() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| {
+                    if x > 0 { Some(x) } else { None }
+                },
+                &reg,
+            )
+            .unwrap_or(99);
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), 5);
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 0), 99);
+    }
+
+    #[test]
+    fn ctx_pipeline_unwrap_or_else_option() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| {
+                    if x > 0 { Some(x) } else { None }
+                },
+                &reg,
+            )
+            .unwrap_or_else(
+                |ctx: &mut ReconnectCtx| {
+                    ctx.retries += 1;
+                    42
+                },
+                &reg,
+            );
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), 5);
+        assert_eq!(ctx.retries, 0);
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 0), 42);
+        assert_eq!(ctx.retries, 1);
+    }
+
+    #[test]
+    fn ctx_pipeline_inspect_option() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| {
+                    if x > 0 { Some(x) } else { None }
+                },
+                &reg,
+            )
+            .inspect(
+                |ctx: &mut ReconnectCtx, val: &u32| {
+                    ctx.retries = *val;
+                },
+                &reg,
+            );
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        // Some path — inspect fires
+        let _ = pipeline.run(&mut ctx, &mut world, 7);
+        assert_eq!(ctx.retries, 7);
+
+        // None path — inspect skipped
+        let _ = pipeline.run(&mut ctx, &mut world, 0);
+        assert_eq!(ctx.retries, 7);
+    }
+
+    #[test]
+    fn ctx_pipeline_on_none() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| {
+                    if x > 0 { Some(x) } else { None }
+                },
+                &reg,
+            )
+            .on_none(
+                |ctx: &mut ReconnectCtx| {
+                    ctx.retries += 1;
+                },
+                &reg,
+            );
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        // Some path — on_none not called
+        let result = pipeline.run(&mut ctx, &mut world, 5);
+        assert_eq!(result, Some(5));
+        assert_eq!(ctx.retries, 0);
+
+        // None path — on_none called
+        let result = pipeline.run(&mut ctx, &mut world, 0);
+        assert_eq!(result, None);
+        assert_eq!(ctx.retries, 1);
+    }
+
+    #[test]
+    fn ctx_pipeline_ok_result() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| -> Result<u32, String> {
+                    if x > 0 { Ok(x) } else { Err("zero".into()) }
+                },
+                &reg,
+            )
+            .ok();
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), Some(5));
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 0), None);
+    }
+
+    #[test]
+    fn ctx_pipeline_unwrap_or_result() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| -> Result<u32, String> {
+                    if x > 0 { Ok(x) } else { Err("zero".into()) }
+                },
+                &reg,
+            )
+            .unwrap_or(99);
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 5), 5);
+        assert_eq!(pipeline.run(&mut ctx, &mut world, 0), 99);
+    }
+
+    #[test]
+    fn ctx_pipeline_inspect_result() {
+        let mut world = WorldBuilder::new().build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<ReconnectCtx, u32>::new()
+            .then(
+                |_ctx: &mut ReconnectCtx, x: u32| -> Result<u32, String> {
+                    if x > 0 { Ok(x) } else { Err("zero".into()) }
+                },
+                &reg,
+            )
+            .inspect(
+                |ctx: &mut ReconnectCtx, val: &u32| {
+                    ctx.retries = *val;
+                },
+                &reg,
+            );
+
+        let mut ctx = ReconnectCtx {
+            retries: 0,
+            last_result: None,
+        };
+
+        // Ok path — inspect fires
+        let _ = pipeline.run(&mut ctx, &mut world, 7);
+        assert_eq!(ctx.retries, 7);
+
+        // Err path — inspect skipped
+        let _ = pipeline.run(&mut ctx, &mut world, 0);
+        assert_eq!(ctx.retries, 7);
     }
 }

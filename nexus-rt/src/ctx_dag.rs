@@ -22,9 +22,20 @@
 //! # Integration with Callback
 //!
 //! The built [`CtxDag`] implements [`CtxStepCall`] — it takes
-//! `&mut C`, `&mut World`, and `In`, returning `Out`. To use as a
-//! [`Handler`](crate::Handler), wrap it in a [`Callback`](crate::Callback)
-//! that provides the context.
+//! `&mut C`, `&mut World`, and `In`, returning `Out`.
+//!
+//! To use a DAG from a [`Handler`](crate::Handler), create a normal
+//! [`Callback`](crate::Callback) whose handler function owns or accesses
+//! the context `C` and calls the DAG via its `run` method, passing
+//! `&mut C`, `&mut World`, and the handler input.
+//!
+//! # Deferred combinators
+//!
+//! The following combinators from [`dag`](crate::dag) are not yet implemented:
+//! `scan`, `dedup`, `dispatch`, `route`, `tee`, `splat`, `cloned`,
+//! `not`/`and`/`or`/`xor` (bool), `ok_or_else`, `or_else`,
+//! `Result::unwrap_or_else`, `view`, and `BatchDag`. These can be added
+//! when a concrete use case requires them.
 //!
 //! # Examples
 //!
@@ -44,9 +55,9 @@ use std::marker::PhantomData;
 
 use crate::ctx_pipeline::{
     CtxChainCall, CtxDiscardOptionNode, CtxFilterNode, CtxGuardNode, CtxIdentityNode,
-    CtxInspectErrNode, CtxInspectOptionNode, CtxMapErrNode, CtxOkNode, CtxOkOrNode, CtxOnNoneNode,
-    CtxStepCall, CtxTapNode, CtxThenNode, CtxUnwrapOrElseOptionNode, CtxUnwrapOrOptionNode,
-    CtxUnwrapOrResultNode, IntoCtxProducer, IntoCtxRefStep, IntoCtxStep,
+    CtxInspectErrNode, CtxInspectOptionNode, CtxInspectResultNode, CtxMapErrNode, CtxOkNode,
+    CtxOkOrNode, CtxOnNoneNode, CtxStepCall, CtxTapNode, CtxThenNode, CtxUnwrapOrElseOptionNode,
+    CtxUnwrapOrOptionNode, CtxUnwrapOrResultNode, IntoCtxProducer, IntoCtxRefStep, IntoCtxStep,
 };
 use crate::handler::Param;
 use crate::world::{Registry, World};
@@ -70,6 +81,7 @@ where
     S: for<'a> CtxStepCall<C, &'a Prev::Out, Out = NewOut>,
 {
     type Out = NewOut;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> NewOut {
         let mid = self.prev.call(ctx, world, input);
         self.step.call(ctx, world, &mid)
@@ -94,6 +106,7 @@ where
     S: for<'a> CtxStepCall<C, &'a T, Out = U>,
 {
     type Out = Option<U>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<U> {
         match self.prev.call(ctx, world, input) {
             Some(val) => Some(self.step.call(ctx, world, &val)),
@@ -116,6 +129,7 @@ where
     S: for<'a> CtxStepCall<C, &'a T, Out = Option<U>>,
 {
     type Out = Option<U>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<U> {
         match self.prev.call(ctx, world, input) {
             Some(val) => self.step.call(ctx, world, &val),
@@ -138,6 +152,7 @@ where
     S: for<'a> CtxStepCall<C, &'a T, Out = U>,
 {
     type Out = Result<U, E>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<U, E> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => Ok(self.step.call(ctx, world, &val)),
@@ -160,6 +175,7 @@ where
     S: for<'a> CtxStepCall<C, &'a T, Out = Result<U, E>>,
 {
     type Out = Result<U, E>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Result<U, E> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => self.step.call(ctx, world, &val),
@@ -181,6 +197,7 @@ where
     S: for<'a> CtxStepCall<C, &'a E, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Option<T> {
         match self.prev.call(ctx, world, input) {
             Ok(val) => Some(val),
@@ -233,6 +250,7 @@ pub trait IntoCtxMergeStep<C, Inputs, Out, Params> {
 pub struct CtxMergeStep<F, Params: Param> {
     f: F,
     state: Params::State,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -291,6 +309,9 @@ macro_rules! impl_ctx_merge2_step {
                 }
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
+                // SAFETY: Resource IDs in self.state were obtained from the same
+                // Registry that built this World. Borrows are disjoint — enforced
+                // by conflict detection at build time (check_access).
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -325,20 +346,20 @@ macro_rules! impl_ctx_merge2_step {
 
 // -- Merge arity 3, Param arity 0 -------------------------------------------
 
-impl<Ctx, A, B, C, Out, F> CtxMergeStepCall<Ctx, (&A, &B, &C)> for CtxMergeStep<F, ()>
+impl<Ctx, IA, IB, IC, Out, F> CtxMergeStepCall<Ctx, (&IA, &IB, &IC)> for CtxMergeStep<F, ()>
 where
-    F: FnMut(&mut Ctx, &A, &B, &C) -> Out + 'static,
+    F: FnMut(&mut Ctx, &IA, &IB, &IC) -> Out + 'static,
 {
     type Out = Out;
     #[inline(always)]
-    fn call(&mut self, ctx: &mut Ctx, _world: &mut World, inputs: (&A, &B, &C)) -> Out {
+    fn call(&mut self, ctx: &mut Ctx, _world: &mut World, inputs: (&IA, &IB, &IC)) -> Out {
         (self.f)(ctx, inputs.0, inputs.1, inputs.2)
     }
 }
 
-impl<Ctx, A, B, C, Out, F> IntoCtxMergeStep<Ctx, (&A, &B, &C), Out, ()> for F
+impl<Ctx, IA, IB, IC, Out, F> IntoCtxMergeStep<Ctx, (&IA, &IB, &IC), Out, ()> for F
 where
-    F: FnMut(&mut Ctx, &A, &B, &C) -> Out + 'static,
+    F: FnMut(&mut Ctx, &IA, &IB, &IC) -> Out + 'static,
 {
     type Step = CtxMergeStep<F, ()>;
 
@@ -377,6 +398,9 @@ macro_rules! impl_ctx_merge3_step {
                 }
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
+                // SAFETY: Resource IDs in self.state were obtained from the same
+                // Registry that built this World. Borrows are disjoint — enforced
+                // by conflict detection at build time (check_access).
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -411,20 +435,21 @@ macro_rules! impl_ctx_merge3_step {
 
 // -- Merge arity 4, Param arity 0 -------------------------------------------
 
-impl<Ctx, A, B, C, D, Out, F> CtxMergeStepCall<Ctx, (&A, &B, &C, &D)> for CtxMergeStep<F, ()>
+impl<Ctx, IA, IB, IC, ID, Out, F> CtxMergeStepCall<Ctx, (&IA, &IB, &IC, &ID)>
+    for CtxMergeStep<F, ()>
 where
-    F: FnMut(&mut Ctx, &A, &B, &C, &D) -> Out + 'static,
+    F: FnMut(&mut Ctx, &IA, &IB, &IC, &ID) -> Out + 'static,
 {
     type Out = Out;
     #[inline(always)]
-    fn call(&mut self, ctx: &mut Ctx, _world: &mut World, inputs: (&A, &B, &C, &D)) -> Out {
+    fn call(&mut self, ctx: &mut Ctx, _world: &mut World, inputs: (&IA, &IB, &IC, &ID)) -> Out {
         (self.f)(ctx, inputs.0, inputs.1, inputs.2, inputs.3)
     }
 }
 
-impl<Ctx, A, B, C, D, Out, F> IntoCtxMergeStep<Ctx, (&A, &B, &C, &D), Out, ()> for F
+impl<Ctx, IA, IB, IC, ID, Out, F> IntoCtxMergeStep<Ctx, (&IA, &IB, &IC, &ID), Out, ()> for F
 where
-    F: FnMut(&mut Ctx, &A, &B, &C, &D) -> Out + 'static,
+    F: FnMut(&mut Ctx, &IA, &IB, &IC, &ID) -> Out + 'static,
 {
     type Step = CtxMergeStep<F, ()>;
 
@@ -461,6 +486,9 @@ macro_rules! impl_ctx_merge4_step {
                 ) -> Output { f(ctx, $($P,)+ a, b, c, d) }
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
+                // SAFETY: Resource IDs in self.state were obtained from the same
+                // Registry that built this World. Borrows are disjoint — enforced
+                // by conflict detection at build time (check_access).
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -606,6 +634,19 @@ impl<C, In, Chain: CtxChainCall<C, In, Out = Option<()>>> CtxDagChain<C, In, Opt
 /// Arm builder seed for context-aware DAG. Used in `.arm()` closures.
 pub struct CtxDagArmSeed<C, In>(PhantomData<fn(&mut C, *const In)>);
 
+impl<C, In> CtxDagArmSeed<C, In> {
+    /// Create a new arm seed. Typically constructed internally by `.arm()`.
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<C, In> Default for CtxDagArmSeed<C, In> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<C, In: 'static> CtxDagArmSeed<C, In> {
     /// Add the first step in this arm. Takes `&In` by reference.
     pub fn then<Out, Params, S>(
@@ -682,6 +723,7 @@ pub struct CtxDag<C, In, Chain> {
 
 impl<C, In, Chain: CtxChainCall<C, In, Out = ()>> CtxStepCall<C, In> for CtxDag<C, In, Chain> {
     type Out = ();
+    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) {
         self.chain.call(ctx, world, input);
     }
@@ -721,6 +763,7 @@ where
 {
     type Out = MOut;
 
+    #[inline(always)]
     fn call(&mut self, ctx: &mut Ctx, world: &mut World, input: In) -> MOut {
         let fork_out = self.chain.call(ctx, world, input);
         let o0 = self.arm0.call(ctx, world, &fork_out);
@@ -755,6 +798,7 @@ where
 {
     type Out = MOut;
 
+    #[inline(always)]
     fn call(&mut self, ctx: &mut Ctx, world: &mut World, input: In) -> MOut {
         let fork_out = self.chain.call(ctx, world, input);
         let o0 = self.arm0.call(ctx, world, &fork_out);
@@ -794,6 +838,7 @@ where
 {
     type Out = MOut;
 
+    #[inline(always)]
     fn call(&mut self, ctx: &mut Ctx, world: &mut World, input: In) -> MOut {
         let fork_out = self.chain.call(ctx, world, input);
         let o0 = self.arm0.call(ctx, world, &fork_out);
@@ -822,6 +867,7 @@ where
 {
     type Out = ();
 
+    #[inline(always)]
     fn call(&mut self, ctx: &mut Ctx, world: &mut World, input: In) {
         let fork_out = self.chain.call(ctx, world, input);
         self.arm0.call(ctx, world, &fork_out);
@@ -850,6 +896,7 @@ where
 {
     type Out = ();
 
+    #[inline(always)]
     fn call(&mut self, ctx: &mut Ctx, world: &mut World, input: In) {
         let fork_out = self.chain.call(ctx, world, input);
         self.arm0.call(ctx, world, &fork_out);
@@ -882,6 +929,7 @@ where
 {
     type Out = ();
 
+    #[inline(always)]
     fn call(&mut self, ctx: &mut Ctx, world: &mut World, input: In) {
         let fork_out = self.chain.call(ctx, world, input);
         self.arm0.call(ctx, world, &fork_out);
@@ -1170,6 +1218,21 @@ macro_rules! impl_ctx_dag_combinators {
                     chain: CtxMapErrNode {
                         prev: self.chain,
                         step: f.into_ctx_step(registry),
+                    },
+                    _marker: PhantomData,
+                }
+            }
+
+            /// Side effect on Ok value. std: `Result::inspect`
+            pub fn inspect<Params, S: IntoCtxRefStep<Ctx, T, (), Params>>(
+                self,
+                f: S,
+                registry: &Registry,
+            ) -> $Builder<Ctx, $U, Result<T, Err>, CtxInspectResultNode<Chain, S::Step>> {
+                $Builder {
+                    chain: CtxInspectResultNode {
+                        prev: self.chain,
+                        step: f.into_ctx_ref_step(registry),
                     },
                     _marker: PhantomData,
                 }
@@ -1643,7 +1706,7 @@ impl_ctx_dag_fork!(fork: CtxDagArmFork, output: CtxDagArm, upstream: In);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ResMut, WorldBuilder};
+    use crate::{Res, ResMut, WorldBuilder};
 
     struct TradingCtx {
         book_updates: u32,
@@ -1658,7 +1721,7 @@ mod tests {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         fn decode(ctx: &mut TradingCtx, raw: u32) -> u64 {
             ctx.book_updates += 1;
@@ -1709,7 +1772,7 @@ mod tests {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let mut world = wb.build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         fn root(ctx: &mut TradingCtx, x: u32) -> u64 {
             ctx.book_updates += 1;
@@ -1744,7 +1807,7 @@ mod tests {
     #[test]
     fn ctx_dag_fork_join() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         fn root(_ctx: &mut TradingCtx, x: u32) -> u64 {
             x as u64
@@ -1783,7 +1846,7 @@ mod tests {
     #[test]
     fn ctx_dag_guard_before_fork() {
         let mut world = WorldBuilder::new().build();
-        let reg = world.registry_mut();
+        let reg = world.registry();
 
         fn root(_ctx: &mut TradingCtx, x: u32) -> u32 {
             x
@@ -1822,6 +1885,114 @@ mod tests {
         // x = 20, guard passes
         dag.run(&mut ctx, &mut world, 20);
         assert_eq!(ctx.book_updates, 40);
+        assert_eq!(ctx.submissions, 1);
+    }
+
+    // -- 3-arm fork test ------------------------------------------------------
+
+    #[test]
+    fn ctx_dag_three_arm_fork_merge() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn decode(ctx: &mut TradingCtx, raw: u32) -> u64 {
+            ctx.book_updates += 1;
+            raw as u64
+        }
+
+        fn arm_a(ctx: &mut TradingCtx, val: &u64) -> u64 {
+            ctx.book_updates += 1;
+            *val * 2
+        }
+
+        fn arm_b(ctx: &mut TradingCtx, val: &u64) -> u64 {
+            ctx.risk_checks += 1;
+            *val + 10
+        }
+
+        fn arm_c(ctx: &mut TradingCtx, val: &u64) -> u64 {
+            ctx.submissions += 1;
+            *val * 3
+        }
+
+        fn merge3(ctx: &mut TradingCtx, a: &u64, b: &u64, c: &u64) {
+            ctx.submissions += 1;
+            assert_eq!(*a, 10); // 5 * 2
+            assert_eq!(*b, 15); // 5 + 10
+            assert_eq!(*c, 15); // 5 * 3
+        }
+
+        let mut dag = CtxDagBuilder::<TradingCtx, u32>::new()
+            .root(decode, &reg)
+            .fork()
+            .arm(|seed| seed.then(arm_a, &reg))
+            .arm(|seed| seed.then(arm_b, &reg))
+            .arm(|seed| seed.then(arm_c, &reg))
+            .merge(merge3, &reg)
+            .build();
+
+        let mut ctx = TradingCtx {
+            book_updates: 0,
+            risk_checks: 0,
+            submissions: 0,
+        };
+
+        dag.run(&mut ctx, &mut world, 5);
+
+        assert_eq!(ctx.book_updates, 2); // decode + arm_a
+        assert_eq!(ctx.risk_checks, 1); // arm_b
+        assert_eq!(ctx.submissions, 2); // arm_c + merge3
+    }
+
+    // -- Merge with Param resolution ------------------------------------------
+
+    #[test]
+    fn ctx_dag_merge_with_param() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(100);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn decode(ctx: &mut TradingCtx, raw: u32) -> u64 {
+            ctx.book_updates += 1;
+            raw as u64
+        }
+
+        fn arm_a(_ctx: &mut TradingCtx, val: &u64) -> u64 {
+            *val * 2
+        }
+
+        fn arm_b(_ctx: &mut TradingCtx, val: &u64) -> u64 {
+            *val + 10
+        }
+
+        // Merge step that uses Res<u64> — exercises the unsafe Param::fetch path
+        fn merge_with_res(ctx: &mut TradingCtx, scale: Res<u64>, a: &u64, b: &u64) {
+            ctx.submissions += 1;
+            // scale=100, a=10 (5*2), b=15 (5+10)
+            assert_eq!(*scale, 100);
+            assert_eq!(*a + *b, 25);
+        }
+
+        let mut dag = CtxDagBuilder::<TradingCtx, u32>::new()
+            .root(decode, &reg)
+            .fork()
+            .arm(|seed| seed.then(arm_a, &reg))
+            .arm(|seed| seed.then(arm_b, &reg))
+            .merge(merge_with_res, &reg)
+            .build();
+
+        let mut ctx = TradingCtx {
+            book_updates: 0,
+            risk_checks: 0,
+            submissions: 0,
+        };
+
+        dag.run(&mut ctx, &mut world, 5);
+
+        assert_eq!(ctx.book_updates, 1);
         assert_eq!(ctx.submissions, 1);
     }
 }
