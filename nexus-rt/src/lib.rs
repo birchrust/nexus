@@ -142,6 +142,9 @@
 // Macro-generated codegen audit tests declare types inline within test functions.
 #![allow(clippy::items_after_statements)]
 
+#[macro_use]
+mod tuples;
+
 mod adapt;
 mod callback;
 mod catch_unwind;

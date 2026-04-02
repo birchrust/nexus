@@ -282,19 +282,6 @@ macro_rules! impl_param_tuple {
     };
 }
 
-macro_rules! all_tuples {
-    ($m:ident) => {
-        $m!(P0);
-        $m!(P0, P1);
-        $m!(P0, P1, P2);
-        $m!(P0, P1, P2, P3);
-        $m!(P0, P1, P2, P3, P4);
-        $m!(P0, P1, P2, P3, P4, P5);
-        $m!(P0, P1, P2, P3, P4, P5, P6);
-        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
-    };
-}
-
 all_tuples!(impl_param_tuple);
 
 // =============================================================================

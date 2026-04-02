@@ -109,6 +109,35 @@ mod tests {
         guarded.run(&mut world, 10);
     }
 
+    fn partial_write_then_panic(mut val: ResMut<u64>, event: u64) {
+        *val += event;
+        panic!("mid-flight");
+    }
+
+    #[test]
+    fn world_state_survives_handler_panic() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let handler = partial_write_then_panic.into_handler(world.registry());
+        let mut guarded = CatchAssertUnwindSafe::new(handler);
+
+        // First call: writes 10, then panics. The write is visible.
+        guarded.run(&mut world, 10);
+        assert_eq!(*world.resource::<u64>(), 10);
+
+        // World is not corrupted — normal handler works afterwards.
+        let handler2 = normal_handler.into_handler(world.registry());
+        let mut guarded2 = CatchAssertUnwindSafe::new(handler2);
+        guarded2.run(&mut world, 5);
+        assert_eq!(*world.resource::<u64>(), 15);
+
+        // The panicking handler can be called again.
+        guarded.run(&mut world, 3);
+        assert_eq!(*world.resource::<u64>(), 18);
+    }
+
     #[test]
     fn forwards_name() {
         let mut builder = WorldBuilder::new();

@@ -224,9 +224,9 @@ macro_rules! impl_into_step {
                     f($($P,)+ input)
                 }
 
-                // SAFETY: state was produced by init() on the same registry
-                // that built this world. Single-threaded sequential dispatch
-                // ensures no mutable aliasing across params.
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -260,19 +260,6 @@ macro_rules! impl_into_step {
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
         }
-    };
-}
-
-macro_rules! all_tuples {
-    ($m:ident) => {
-        $m!(P0);
-        $m!(P0, P1);
-        $m!(P0, P1, P2);
-        $m!(P0, P1, P2, P3);
-        $m!(P0, P1, P2, P3, P4);
-        $m!(P0, P1, P2, P3, P4, P5);
-        $m!(P0, P1, P2, P3, P4, P5, P6);
-        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
     };
 }
 
@@ -397,6 +384,9 @@ macro_rules! impl_into_ref_step {
                     f($($P,)+ input)
                 }
 
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -564,6 +554,9 @@ macro_rules! impl_into_producer {
                     f($($P,)+)
                 }
 
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -732,6 +725,9 @@ macro_rules! impl_into_scan_step {
                     f($($P,)+ acc, input)
                 }
 
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -907,6 +903,9 @@ macro_rules! impl_into_ref_scan_step {
                     f($($P,)+ acc, input)
                 }
 
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -1061,6 +1060,9 @@ macro_rules! impl_splat2_step {
                 ) -> Output {
                     f($($P,)+ a, b)
                 }
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -1154,6 +1156,9 @@ macro_rules! impl_splat3_step {
                 ) -> Output {
                     f($($P,)+ a, b, c)
                 }
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -1247,6 +1252,9 @@ macro_rules! impl_splat4_step {
                     mut f: impl FnMut($($P,)+ IA, IB, IC, ID) -> Output,
                     $($P: $P,)+ a: IA, b: IB, c: IC, d: ID,
                 ) -> Output { f($($P,)+ a, b, c, d) }
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -1331,6 +1339,9 @@ macro_rules! impl_splat5_step {
                     mut f: impl FnMut($($P,)+ IA, IB, IC, ID, IE) -> Output,
                     $($P: $P,)+ a: IA, b: IB, c: IC, d: ID, e: IE,
                 ) -> Output { f($($P,)+ a, b, c, d, e) }
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {

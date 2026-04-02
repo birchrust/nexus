@@ -113,8 +113,8 @@ fn main() {
     // available (or None if the guard rejected).
     let mut pipeline_a = PipelineBuilder::<AdminCommand>::new()
         .view::<AsOrderView>()
-            .tap(log_order, reg)
-            .guard(check_risk, reg)
+        .tap(log_order, reg)
+        .guard(check_risk, reg)
         .end_view_guarded()
         .then(
             |w: &mut World, cmd: Option<AdminCommand>| {
@@ -132,8 +132,8 @@ fn main() {
     // Pipeline B: MarketUpdate → SAME view steps, different event type
     let mut pipeline_b = PipelineBuilder::<MarketUpdate>::new()
         .view::<AsOrderView>()
-            .tap(log_order, reg)       // SAME function as pipeline A
-            .guard(check_risk, reg)    // SAME function as pipeline A
+        .tap(log_order, reg) // SAME function as pipeline A
+        .guard(check_risk, reg) // SAME function as pipeline A
         .end_view_guarded()
         .then(
             |w: &mut World, update: Option<MarketUpdate>| {
@@ -214,7 +214,10 @@ fn main() {
     println!("  Events:    4 (2 admin, 2 market)");
     println!("  Accepted:  2 (qty <= 100)");
     println!("  Rejected:  2 (qty > 100)");
-    println!("  Audit log: {} entries (tap fires before guard)", log.entries.len());
+    println!(
+        "  Audit log: {} entries (tap fires before guard)",
+        log.entries.len()
+    );
     println!("  Reuse:     log_order + check_risk shared across both pipelines");
     println!("  Views:     zero-cost borrowed (&str, not String clone)");
 }

@@ -4058,9 +4058,7 @@ fn mio_driver_satisfies_resource_bound() {
 // =============================================================================
 
 mod view_derive {
-    use nexus_rt::{
-        PipelineBuilder, Res, ResMut, Resource, View, WorldBuilder,
-    };
+    use nexus_rt::{PipelineBuilder, Res, ResMut, Resource, View, WorldBuilder};
 
     #[derive(Resource)]
     struct AuditLog(Vec<String>);
@@ -4126,13 +4124,19 @@ mod view_derive {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "test".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "test".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["BTC qty=50"]);
     }
@@ -4147,18 +4151,30 @@ mod view_derive {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
-                .guard(check_risk, reg)
+            .tap(log_order, reg)
+            .guard(check_risk, reg)
             .end_view_guarded();
 
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
         assert!(result.is_some());
 
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "b".into(),
+                symbol: "ETH".into(),
+                qty: 200,
+                price: 3000.0,
+            },
+        );
         assert!(result.is_none());
     }
 
@@ -4171,22 +4187,34 @@ mod view_derive {
 
         let mut p_new = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
         let mut p_amend = PipelineBuilder::<AmendOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(|_: AmendOrderCommand| {}, reg);
 
-        p_new.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
-        p_amend.run(&mut world, AmendOrderCommand {
-            order_id: 123, symbol: "ETH".into(), qty: 25, price: 3000.0,
-        });
+        p_new.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
+        p_amend.run(
+            &mut world,
+            AmendOrderCommand {
+                order_id: 123,
+                symbol: "ETH".into(),
+                qty: 25,
+                price: 3000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "BTC qty=50");
@@ -4206,15 +4234,24 @@ mod view_derive {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsRiskView>()
-                .tap(log_risk, reg)
+            .tap(log_risk, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
-        assert_eq!(world.resource::<AuditLog>().0, vec!["risk: qty=50 price=42000"]);
+        assert_eq!(
+            world.resource::<AuditLog>().0,
+            vec!["risk: qty=50 price=42000"]
+        );
     }
 
     // -- Field remapping --
@@ -4277,22 +4314,32 @@ mod view_derive {
 
         let mut p_internal = PipelineBuilder::<InternalOrder>::new()
             .view::<AsUnifiedView>()
-                .tap(log_unified, reg)
+            .tap(log_unified, reg)
             .end_view()
             .then(|_: InternalOrder| {}, reg);
 
         let mut p_external = PipelineBuilder::<ExternalOrder>::new()
             .view::<AsUnifiedView>()
-                .tap(log_unified, reg)
+            .tap(log_unified, reg)
             .end_view()
             .then(|_: ExternalOrder| {}, reg);
 
-        p_internal.run(&mut world, InternalOrder {
-            symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
-        p_external.run(&mut world, ExternalOrder {
-            ticker: "ETH".into(), quantity: 25, px: 3000.0,
-        });
+        p_internal.run(
+            &mut world,
+            InternalOrder {
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
+        p_external.run(
+            &mut world,
+            ExternalOrder {
+                ticker: "ETH".into(),
+                quantity: 25,
+                px: 3000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "BTC qty=50");
@@ -4330,11 +4377,17 @@ mod view_derive {
 
         let mut p = PipelineBuilder::<TypedOrder>::new()
             .view::<AsBorrowCopyView>()
-                .tap(log_id, reg)
+            .tap(log_id, reg)
             .end_view()
             .then(|_: TypedOrder| {}, reg);
 
-        p.run(&mut world, TypedOrder { symbol_id: SymbolId(42), qty: 100 });
+        p.run(
+            &mut world,
+            TypedOrder {
+                symbol_id: SymbolId(42),
+                qty: 100,
+            },
+        );
         assert_eq!(world.resource::<AuditLog>().0, vec!["id=42 qty=100"]);
     }
 
@@ -4361,16 +4414,22 @@ mod view_derive {
         // Use OrderView first, then SourceView — two different derived views
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .view::<AsSourceView>()
-                .tap(log_source, reg)
+            .tap(log_source, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "ops".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "ops".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "BTC qty=50");
@@ -4391,14 +4450,20 @@ mod view_derive {
         let dag = DagBuilder::<NewOrderCommand>::new()
             .root(|cmd: NewOrderCommand| cmd, reg)
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view_dag()
             .then(|_: &NewOrderCommand| {}, reg);
 
         let mut handler = dag.build();
-        handler.run(&mut world, NewOrderCommand {
-            source: "test".into(), symbol: "SOL".into(), qty: 10, price: 150.0,
-        });
+        handler.run(
+            &mut world,
+            NewOrderCommand {
+                source: "test".into(),
+                symbol: "SOL".into(),
+                qty: 10,
+                price: 150.0,
+            },
+        );
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["SOL qty=10"]);
     }
@@ -4411,18 +4476,24 @@ mod view_derive {
         let reg = world.registry();
 
         fn log_remapped(mut log: ResMut<AuditLog>, v: &RemappedView) {
-            log.0.push(format!("{} qty={} @{}", v.symbol, v.qty, v.price));
+            log.0
+                .push(format!("{} qty={} @{}", v.symbol, v.qty, v.price));
         }
 
         let mut p = PipelineBuilder::<ExternalOrder>::new()
             .view::<AsRemappedView>()
-                .tap(log_remapped, reg)
+            .tap(log_remapped, reg)
             .end_view()
             .then(|_: ExternalOrder| {}, reg);
 
-        p.run(&mut world, ExternalOrder {
-            ticker: "SOL-USD".into(), quantity: 100, px: 150.0,
-        });
+        p.run(
+            &mut world,
+            ExternalOrder {
+                ticker: "SOL-USD".into(),
+                quantity: 100,
+                px: 150.0,
+            },
+        );
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["SOL-USD qty=100 @150"]);
     }

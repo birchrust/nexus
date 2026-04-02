@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::time::{Duration, Instant};
 
-use nexus_slab::{Full, bounded, unbounded};
+use nexus_slab::{Full, Slot, bounded, unbounded};
 
 use crate::entry::{EntryPtr, WheelEntry, entry_ref};
 use crate::handle::TimerHandle;
@@ -171,7 +171,10 @@ impl UnboundedWheelBuilder {
     /// levels, zero clk_shift, or zero tick duration).
     pub fn build<T: 'static>(self, now: Instant) -> Wheel<T> {
         self.config.validate();
-        let slab = unbounded::Slab::with_chunk_capacity(self.chunk_capacity);
+        // SAFETY: Timer wheel is single-threaded (!Send, !Sync). All slots
+        // are freed via Slot::from_raw() + slab.free() before the wheel drops.
+        // The slab is never shared across threads.
+        let slab = unsafe { unbounded::Slab::with_chunk_capacity(self.chunk_capacity) };
         let levels = build_levels::<T>(&self.config);
         TimerWheel {
             slab,
@@ -205,7 +208,10 @@ impl BoundedWheelBuilder {
     /// levels, zero clk_shift, or zero tick duration).
     pub fn build<T: 'static>(self, now: Instant) -> BoundedWheel<T> {
         self.config.validate();
-        let slab = bounded::Slab::with_capacity(self.capacity);
+        // SAFETY: Timer wheel is single-threaded (!Send, !Sync). All slots
+        // are freed via Slot::from_raw() + slab.free() before the wheel drops.
+        // The slab is never shared across threads.
+        let slab = unsafe { bounded::Slab::with_capacity(self.capacity) };
         let levels = build_levels::<T>(&self.config);
         TimerWheel {
             slab,
@@ -334,7 +340,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 2);
         let slot = self.slab.alloc(entry);
-        let ptr = slot.into_ptr();
+        let ptr = slot.into_raw();
         self.insert_entry(ptr, deadline_ticks);
         self.len += 1;
         TimerHandle::new(ptr)
@@ -353,7 +359,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let deadline_ticks = self.instant_to_ticks(deadline);
         let entry = WheelEntry::new(deadline_ticks, value, 1);
         let slot = self.slab.alloc(entry);
-        let ptr = slot.into_ptr();
+        let ptr = slot.into_raw();
         self.insert_entry(ptr, deadline_ticks);
         self.len += 1;
     }
@@ -374,7 +380,7 @@ impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let entry = WheelEntry::new(deadline_ticks, value, 2);
         match self.slab.try_alloc(entry) {
             Ok(slot) => {
-                let ptr = slot.into_ptr();
+                let ptr = slot.into_raw();
                 self.insert_entry(ptr, deadline_ticks);
                 self.len += 1;
                 Ok(TimerHandle::new(ptr))
@@ -400,7 +406,7 @@ impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let entry = WheelEntry::new(deadline_ticks, value, 1);
         match self.slab.try_alloc(entry) {
             Ok(slot) => {
-                let ptr = slot.into_ptr();
+                let ptr = slot.into_raw();
                 self.insert_entry(ptr, deadline_ticks);
                 self.len += 1;
                 Ok(())
@@ -442,15 +448,15 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
             let value = unsafe { entry.take_value() };
             self.remove_entry(ptr);
             self.len -= 1;
-            // SAFETY: ptr was allocated from our slab, entry is now spent
-            unsafe { self.slab.free_ptr(ptr) };
+            // SAFETY: ptr was allocated from our slab via into_raw()
+            self.slab.free(unsafe { Slot::from_raw(ptr) });
             value
         } else {
             // refs == 1 means the wheel already fired this (zombie).
             // The fire path decremented 2→1 and left the entry for us to free.
             debug_assert_eq!(refs, 1, "unexpected refcount {refs} in cancel");
-            // SAFETY: ptr was allocated from our slab
-            unsafe { self.slab.free_ptr(ptr) };
+            // SAFETY: ptr was allocated from our slab via into_raw()
+            self.slab.free(unsafe { Slot::from_raw(ptr) });
             None
         }
     }
@@ -472,8 +478,8 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
         if new_refs == 0 {
             // Was a zombie (fired already, refs was 1) — free the entry
-            // SAFETY: ptr was allocated from our slab
-            unsafe { self.slab.free_ptr(ptr) };
+            // SAFETY: ptr was allocated from our slab via into_raw()
+            self.slab.free(unsafe { Slot::from_raw(ptr) });
         }
         // new_refs == 1: timer is now fire-and-forget, stays in wheel
     }
@@ -692,8 +698,8 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         let new_refs = entry.dec_refs();
         if new_refs == 0 {
             // Fire-and-forget (was refs=1) — free the slab entry immediately
-            // SAFETY: entry_ptr was allocated from our slab
-            unsafe { self.slab.free_ptr(entry_ptr) };
+            // SAFETY: entry_ptr was allocated from our slab via into_raw()
+            self.slab.free(unsafe { Slot::from_raw(entry_ptr) });
         }
         // new_refs == 1: handle exists (was refs=2), entry becomes zombie.
         // Handle holder will free via cancel() or free().
@@ -785,8 +791,8 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> Drop for TimerWheel<T, S> {
                     let entry = unsafe { entry_ref(entry_ptr) };
                     let next_entry = entry.next();
 
-                    // SAFETY: entry_ptr was allocated from our slab
-                    unsafe { self.slab.free(nexus_slab::RawSlot::from_ptr(entry_ptr)) };
+                    // SAFETY: entry_ptr was allocated from our slab via into_raw()
+                    self.slab.free(unsafe { Slot::from_raw(entry_ptr) });
 
                     entry_ptr = next_entry;
                 }

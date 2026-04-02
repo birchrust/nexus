@@ -6,7 +6,12 @@
 /// compiler's suggestion list, causing stderr mismatches. Skip when
 /// any optional feature is active.
 #[test]
-#[cfg(not(any(feature = "timer", feature = "mio", feature = "smartptr", feature = "signals")))]
+#[cfg(not(any(
+    feature = "timer",
+    feature = "mio",
+    feature = "smartptr",
+    feature = "signals"
+)))]
 fn diagnostics() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/*.rs");

@@ -57,7 +57,9 @@ use crate::world::World;
 /// to generate correct implementations.
 pub unsafe trait View<Source> {
     /// The view type with the source borrow lifetime.
-    type ViewType<'a> where Source: 'a;
+    type ViewType<'a>
+    where
+        Source: 'a;
 
     /// The same type with `'static` — for `IntoRefStep` trait resolution.
     /// Must be layout-identical to `ViewType<'a>` for any `'a`.
@@ -84,10 +86,7 @@ pub unsafe trait View<Source> {
 ///
 /// This is the same pattern as `std::thread::scope` and `crossbeam::scope`.
 #[inline(always)]
-fn with_view<Source, V, R>(
-    source: &Source,
-    f: impl for<'a> FnOnce(&'a V::StaticViewType) -> R,
-) -> R
+fn with_view<Source, V, R>(source: &Source, f: impl for<'a> FnOnce(&'a V::StaticViewType) -> R) -> R
 where
     V: View<Source>,
 {
@@ -134,9 +133,7 @@ impl<In, Out, V: View<Out>, PrevChain> ViewScope<In, Out, V, PrevChain, ()> {
 
 // --- Combinators ---
 
-impl<In, Out, V: View<Out>, PrevChain, InnerSteps>
-    ViewScope<In, Out, V, PrevChain, InnerSteps>
-{
+impl<In, Out, V: View<Out>, PrevChain, InnerSteps> ViewScope<In, Out, V, PrevChain, InnerSteps> {
     /// Observe the view. Side effects via `Res`/`ResMut`.
     /// Step signature: `fn(Params..., &ViewType) -> ()`.
     pub fn tap<Params, S: IntoRefStep<V::StaticViewType, (), Params>>(
@@ -203,7 +200,9 @@ pub trait ViewSteps<V> {
 }
 
 impl<V> ViewSteps<V> for () {
-    fn run(&mut self, _world: &mut World, _view: &V) -> bool { true }
+    fn run(&mut self, _world: &mut World, _view: &V) -> bool {
+        true
+    }
 }
 
 impl<V, Prev: ViewSteps<V>, S: RefStepCall<V, Out = ()>> ViewSteps<V> for (Prev, ViewTap<S>) {
@@ -211,7 +210,7 @@ impl<V, Prev: ViewSteps<V>, S: RefStepCall<V, Out = ()>> ViewSteps<V> for (Prev,
         if !self.0.run(world, view) {
             return false;
         }
-        self.1 .0.call(world, view);
+        self.1.0.call(world, view);
         true
     }
 }
@@ -221,7 +220,7 @@ impl<V, Prev: ViewSteps<V>, S: RefStepCall<V, Out = bool>> ViewSteps<V> for (Pre
         if !self.0.run(world, view) {
             return false;
         }
-        self.1 .0.call(world, view)
+        self.1.0.call(world, view)
     }
 }
 
@@ -307,9 +306,7 @@ where
 
     fn call(&mut self, world: &mut World, input: In) -> Option<Out> {
         let event = self.prev.call(world, input);
-        let pass = with_view::<Out, V, bool>(&event, |view| {
-            self.inner.run(world, view)
-        });
+        let pass = with_view::<Out, V, bool>(&event, |view| self.inner.run(world, view));
         if pass { Some(event) } else { None }
     }
 }
@@ -411,11 +408,16 @@ mod tests {
     struct AuditLog(Vec<String>);
     impl Resource for AuditLog {}
 
-    struct RiskLimits { max_qty: u64 }
+    struct RiskLimits {
+        max_qty: u64,
+    }
     impl Resource for RiskLimits {}
 
     // Borrowed view — the whole point
-    struct OrderView<'a> { symbol: &'a str, qty: u64 }
+    struct OrderView<'a> {
+        symbol: &'a str,
+        qty: u64,
+    }
 
     struct NewOrderCommand {
         source: String,
@@ -442,7 +444,10 @@ mod tests {
         type ViewType<'a> = OrderView<'a>;
         type StaticViewType = OrderView<'static>;
         fn view(source: &NewOrderCommand) -> OrderView<'_> {
-            OrderView { symbol: &source.symbol, qty: source.qty }
+            OrderView {
+                symbol: &source.symbol,
+                qty: source.qty,
+            }
         }
     }
 
@@ -450,7 +455,10 @@ mod tests {
         type ViewType<'a> = OrderView<'a>;
         type StaticViewType = OrderView<'static>;
         fn view(source: &AmendOrderCommand) -> OrderView<'_> {
-            OrderView { symbol: &source.symbol, qty: source.qty }
+            OrderView {
+                symbol: &source.symbol,
+                qty: source.qty,
+            }
         }
     }
 
@@ -475,13 +483,19 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(|_cmd: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "test".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "test".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["BTC qty=50"]);
     }
@@ -496,18 +510,30 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
-                .guard(check_risk, reg)
+            .tap(log_order, reg)
+            .guard(check_risk, reg)
             .end_view_guarded();
 
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
         assert!(result.is_some());
 
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "b".into(),
+                symbol: "ETH".into(),
+                qty: 200,
+                price: 3000.0,
+            },
+        );
         assert!(result.is_none());
 
         // Tap is before guard, so both events are logged.
@@ -523,18 +549,25 @@ mod tests {
         let reg = world.registry();
 
         fn sink(mut out: ResMut<AuditLog>, cmd: NewOrderCommand) {
-            out.0.push(format!("sink: {} from {}", cmd.symbol, cmd.source));
+            out.0
+                .push(format!("sink: {} from {}", cmd.symbol, cmd.source));
         }
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(sink, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "ops".into(), symbol: "SOL".into(), qty: 10, price: 150.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "ops".into(),
+                symbol: "SOL".into(),
+                qty: 10,
+                price: 150.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "SOL qty=10");
@@ -550,22 +583,34 @@ mod tests {
 
         let mut p_new = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
         let mut p_amend = PipelineBuilder::<AmendOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg) // SAME function
+            .tap(log_order, reg) // SAME function
             .end_view()
             .then(|_: AmendOrderCommand| {}, reg);
 
-        p_new.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
-        p_amend.run(&mut world, AmendOrderCommand {
-            order_id: 123, symbol: "ETH".into(), qty: 25, price: 3000.0,
-        });
+        p_new.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
+        p_amend.run(
+            &mut world,
+            AmendOrderCommand {
+                order_id: 123,
+                symbol: "ETH".into(),
+                qty: 25,
+                price: 3000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "BTC qty=50");
@@ -588,14 +633,20 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_symbol, reg)
-                .tap(log_qty, reg)
+            .tap(log_symbol, reg)
+            .tap(log_qty, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "symbol: BTC");
@@ -604,15 +655,21 @@ mod tests {
 
     #[test]
     fn sequential_views() {
-        struct SymbolView<'a> { symbol: &'a str }
-        struct QtyView { qty: u64 }
+        struct SymbolView<'a> {
+            symbol: &'a str,
+        }
+        struct QtyView {
+            qty: u64,
+        }
 
         struct AsSymbolView;
         unsafe impl View<NewOrderCommand> for AsSymbolView {
             type ViewType<'a> = SymbolView<'a>;
             type StaticViewType = SymbolView<'static>;
             fn view(source: &NewOrderCommand) -> SymbolView<'_> {
-                SymbolView { symbol: &source.symbol }
+                SymbolView {
+                    symbol: &source.symbol,
+                }
             }
         }
 
@@ -639,16 +696,22 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsSymbolView>()
-                .tap(log_sym, reg)
+            .tap(log_sym, reg)
             .end_view()
             .view::<AsQtyView>()
-                .tap(log_qty_view, reg)
+            .tap(log_qty_view, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "sym: BTC");
@@ -669,14 +732,20 @@ mod tests {
         let dag = DagBuilder::<NewOrderCommand>::new()
             .root(|cmd: NewOrderCommand| cmd, reg)
             .view::<AsOrderView>()
-                .tap(log_order, reg)
+            .tap(log_order, reg)
             .end_view_dag()
             .then(|_cmd: &NewOrderCommand| {}, reg);
 
         let mut handler = dag.build();
-        handler.run(&mut world, NewOrderCommand {
-            source: "test".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        handler.run(
+            &mut world,
+            NewOrderCommand {
+                source: "test".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["BTC qty=50"]);
     }
@@ -702,18 +771,30 @@ mod tests {
         let dag = DagBuilder::<NewOrderCommand>::new()
             .root(|cmd: NewOrderCommand| cmd, reg)
             .view::<AsOrderView>()
-                .tap(log_order, reg)
-                .guard(check_risk, reg)
+            .tap(log_order, reg)
+            .guard(check_risk, reg)
             .end_view_dag_guarded()
             .then(sink, reg);
 
         let mut handler = dag.build();
-        handler.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
-        handler.run(&mut world, NewOrderCommand {
-            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
-        });
+        handler.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
+        handler.run(
+            &mut world,
+            NewOrderCommand {
+                source: "b".into(),
+                symbol: "ETH".into(),
+                qty: 200,
+                price: 3000.0,
+            },
+        );
 
         let log = &world.resource::<AuditLog>().0;
         assert_eq!(log[0], "BTC qty=50");
@@ -736,14 +817,20 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .inspect(just_print, reg)
-                .tap(log_order, reg)
+            .inspect(just_print, reg)
+            .tap(log_order, reg)
             .end_view()
             .then(|_: NewOrderCommand| {}, reg);
 
-        p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
 
         assert_eq!(world.resource::<AuditLog>().0, vec!["BTC qty=50"]);
     }
@@ -758,18 +845,30 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .tap(log_order, reg)
-                .filter(check_risk, reg)
+            .tap(log_order, reg)
+            .filter(check_risk, reg)
             .end_view_guarded();
 
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
         assert!(result.is_some());
 
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "b".into(),
+                symbol: "ETH".into(),
+                qty: 200,
+                price: 3000.0,
+            },
+        );
         assert!(result.is_none());
     }
 
@@ -784,22 +883,181 @@ mod tests {
 
         let mut p = PipelineBuilder::<NewOrderCommand>::new()
             .view::<AsOrderView>()
-                .guard(check_risk, reg)   // guard FIRST
-                .tap(log_order, reg)      // tap AFTER — should NOT fire on rejection
+            .guard(check_risk, reg) // guard FIRST
+            .tap(log_order, reg) // tap AFTER — should NOT fire on rejection
             .end_view_guarded();
 
         // Accepted: guard passes, tap fires
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "a".into(), symbol: "BTC".into(), qty: 50, price: 42000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
         assert!(result.is_some());
         assert_eq!(world.resource::<AuditLog>().0.len(), 1);
 
         // Rejected: guard fails, tap does NOT fire (short-circuit)
-        let result = p.run(&mut world, NewOrderCommand {
-            source: "b".into(), symbol: "ETH".into(), qty: 200, price: 3000.0,
-        });
+        let result = p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "b".into(),
+                symbol: "ETH".into(),
+                qty: 200,
+                price: 3000.0,
+            },
+        );
         assert!(result.is_none());
         assert_eq!(world.resource::<AuditLog>().0.len(), 1); // still 1, not 2
+    }
+
+    // -- Multi-field view tests -----------------------------------------------
+
+    struct FullOrderView<'a> {
+        source: &'a str,
+        symbol: &'a str,
+        qty: u64,
+        price: f64,
+    }
+
+    struct AsFullOrderView;
+    unsafe impl View<NewOrderCommand> for AsFullOrderView {
+        type ViewType<'a> = FullOrderView<'a>;
+        type StaticViewType = FullOrderView<'static>;
+        fn view(source: &NewOrderCommand) -> FullOrderView<'_> {
+            FullOrderView {
+                source: &source.source,
+                symbol: &source.symbol,
+                qty: source.qty,
+                price: source.price,
+            }
+        }
+    }
+
+    #[test]
+    fn view_with_multiple_borrowed_fields() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_full(mut log: ResMut<AuditLog>, v: &FullOrderView) {
+            log.0.push(format!(
+                "{} {} qty={} px={}",
+                v.source, v.symbol, v.qty, v.price
+            ));
+        }
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsFullOrderView>()
+            .tap(log_full, reg)
+            .end_view()
+            .then(|_: NewOrderCommand| {}, reg);
+
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "desk-a".into(),
+                symbol: "BTC".into(),
+                qty: 50,
+                price: 42000.0,
+            },
+        );
+
+        assert_eq!(
+            world.resource::<AuditLog>().0,
+            vec!["desk-a BTC qty=50 px=42000"]
+        );
+    }
+
+    // -- Non-Copy type tests --------------------------------------------------
+
+    struct Payload {
+        data: Vec<u8>,
+        tag: String,
+    }
+
+    struct PayloadView<'a> {
+        data: &'a [u8],
+        tag: &'a str,
+    }
+
+    struct AsPayloadView;
+    unsafe impl View<Payload> for AsPayloadView {
+        type ViewType<'a> = PayloadView<'a>;
+        type StaticViewType = PayloadView<'static>;
+        fn view(source: &Payload) -> PayloadView<'_> {
+            PayloadView {
+                data: &source.data,
+                tag: &source.tag,
+            }
+        }
+    }
+
+    #[test]
+    fn view_of_non_copy_types() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_payload(mut log: ResMut<AuditLog>, v: &PayloadView) {
+            log.0.push(format!("tag={} len={}", v.tag, v.data.len()));
+        }
+
+        let mut p = PipelineBuilder::<Payload>::new()
+            .view::<AsPayloadView>()
+            .tap(log_payload, reg)
+            .end_view()
+            .then(|_: Payload| {}, reg);
+
+        p.run(
+            &mut world,
+            Payload {
+                data: vec![1, 2, 3],
+                tag: "test".into(),
+            },
+        );
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["tag=test len=3"]);
+    }
+
+    #[test]
+    fn view_guard_preserves_non_copy_event() {
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn check_tag(v: &PayloadView) -> bool {
+            v.tag == "accept"
+        }
+
+        let mut p = PipelineBuilder::<Payload>::new()
+            .view::<AsPayloadView>()
+            .guard(check_tag, reg)
+            .end_view_guarded();
+
+        let accepted = p.run(
+            &mut world,
+            Payload {
+                data: vec![1],
+                tag: "accept".into(),
+            },
+        );
+        assert!(accepted.is_some());
+        assert_eq!(accepted.unwrap().data, vec![1]);
+
+        let rejected = p.run(
+            &mut world,
+            Payload {
+                data: vec![2],
+                tag: "reject".into(),
+            },
+        );
+        assert!(rejected.is_none());
     }
 }
