@@ -229,7 +229,7 @@ impl<T: 'static> Level<T> {
 mod tests {
     use super::*;
     use crate::entry::WheelEntry;
-    use nexus_slab::unbounded;
+    use nexus_slab::{Slot, unbounded};
 
     fn make_entry<T>(
         slab: &unbounded::Slab<WheelEntry<T>>,
@@ -238,12 +238,13 @@ mod tests {
     ) -> EntryPtr<T> {
         let entry = WheelEntry::new(deadline, value, 1);
         let slot = slab.alloc(entry);
-        slot.into_ptr()
+        slot.into_raw()
     }
 
     #[test]
     fn slot_push_remove_single() {
-        let slab = unbounded::Slab::<WheelEntry<u64>>::with_chunk_capacity(16);
+        // SAFETY: single-threaded test, slab contract upheld
+        let slab = unsafe { unbounded::Slab::<WheelEntry<u64>>::with_chunk_capacity(16) };
         let ws = WheelSlot::<u64>::new();
 
         assert!(ws.is_empty());
@@ -255,13 +256,14 @@ mod tests {
         unsafe { ws.remove_entry(e1) };
         assert!(ws.is_empty());
 
-        // SAFETY: e1 was allocated from slab
-        unsafe { slab.free_ptr(e1) };
+        // SAFETY: e1 was allocated from this slab via into_raw()
+        slab.free(unsafe { Slot::from_raw(e1) });
     }
 
     #[test]
     fn slot_push_remove_multiple() {
-        let slab = unbounded::Slab::<WheelEntry<u64>>::with_chunk_capacity(16);
+        // SAFETY: single-threaded test, slab contract upheld
+        let slab = unsafe { unbounded::Slab::<WheelEntry<u64>>::with_chunk_capacity(16) };
         let ws = WheelSlot::<u64>::new();
 
         let e1 = make_entry(&slab, 10, 1);
@@ -291,10 +293,11 @@ mod tests {
         unsafe { ws.remove_entry(e3) };
         assert!(ws.is_empty());
 
+        // SAFETY: all ptrs were allocated from this slab via into_raw()
         unsafe {
-            slab.free_ptr(e1);
-            slab.free_ptr(e2);
-            slab.free_ptr(e3);
+            slab.free(Slot::from_raw(e1));
+            slab.free(Slot::from_raw(e2));
+            slab.free(Slot::from_raw(e3));
         }
     }
 
