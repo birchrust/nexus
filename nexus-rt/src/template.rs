@@ -272,8 +272,9 @@ macro_rules! impl_template_dispatch {
                         f(ctx, $($P,)+ event);
                     }
 
-                    // SAFETY: state was produced by Param::init() during template construction.
-                    // World borrows are disjoint — enforced by conflict detection at build time.
+                    // SAFETY: state was produced by Param::init() on the same Registry
+                    // that built this World. Borrows are disjoint — enforced by
+                    // conflict detection at build time.
                     #[cfg(debug_assertions)]
                     world.clear_borrows();
                     let ($($P,)+) = unsafe {
@@ -920,7 +921,7 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 3);
     }
 
-    // -- Max arity (5 params) ---------------------------------------------------
+    // -- Five-parameter template -------------------------------------------------
 
     struct Offset(i64);
     impl crate::world::Resource for Offset {}
