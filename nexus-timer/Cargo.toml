@@ -2,10 +2,10 @@
 name = "nexus-timer"
 version = "1.4.0"
 description = "High-performance timer wheel with O(1) insert and cancel"
-edition = "2024"
-rust-version = "1.85"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/Abso1ut3Zer0/nexus"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 keywords = ["timer", "timer-wheel", "low-latency", "event-driven"]
 categories = ["data-structures"]
 
@@ -14,8 +14,11 @@ nexus-slab = { version = "2", path = "../nexus-slab" }
 
 [dev-dependencies]
 proptest = "1.4"
-seq-macro = "0.3"
+seq-macro.workspace = true
 
 [[example]]
 name = "perf_timer"
 harness = false
+
+[lints]
+workspace = true

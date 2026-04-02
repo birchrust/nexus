@@ -171,7 +171,9 @@ impl UnboundedWheelBuilder {
     /// levels, zero clk_shift, or zero tick duration).
     pub fn build<T: 'static>(self, now: Instant) -> Wheel<T> {
         self.config.validate();
-        // SAFETY: single-threaded timer wheel, slab contract upheld
+        // SAFETY: Timer wheel is single-threaded (!Send, !Sync). All slots
+        // are freed via Slot::from_raw() + slab.free() before the wheel drops.
+        // The slab is never shared across threads.
         let slab = unsafe { unbounded::Slab::with_chunk_capacity(self.chunk_capacity) };
         let levels = build_levels::<T>(&self.config);
         TimerWheel {
@@ -206,7 +208,9 @@ impl BoundedWheelBuilder {
     /// levels, zero clk_shift, or zero tick duration).
     pub fn build<T: 'static>(self, now: Instant) -> BoundedWheel<T> {
         self.config.validate();
-        // SAFETY: single-threaded timer wheel, slab contract upheld
+        // SAFETY: Timer wheel is single-threaded (!Send, !Sync). All slots
+        // are freed via Slot::from_raw() + slab.free() before the wheel drops.
+        // The slab is never shared across threads.
         let slab = unsafe { bounded::Slab::with_capacity(self.capacity) };
         let levels = build_levels::<T>(&self.config);
         TimerWheel {
