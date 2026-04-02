@@ -266,6 +266,8 @@ macro_rules! impl_merge2_step {
                 ) -> Output {
                     f($($P,)+ a, b)
                 }
+                // SAFETY: state was produced by Param::init() during handler construction.
+                // World borrows are disjoint — enforced by conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -347,6 +349,8 @@ macro_rules! impl_merge3_step {
                 ) -> Output {
                     f($($P,)+ a, b, c)
                 }
+                // SAFETY: state was produced by Param::init() during handler construction.
+                // World borrows are disjoint — enforced by conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -423,6 +427,8 @@ macro_rules! impl_merge4_step {
                     mut f: impl FnMut($($P,)+ &IA, &IB, &IC, &ID) -> Output,
                     $($P: $P,)+ a: &IA, b: &IB, c: &IC, d: &ID,
                 ) -> Output { f($($P,)+ a, b, c, d) }
+                // SAFETY: state was produced by Param::init() during handler construction.
+                // World borrows are disjoint — enforced by conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -445,21 +451,6 @@ macro_rules! impl_merge4_step {
                 MergeStep { f: self, state, name: std::any::type_name::<F>() }
             }
         }
-    };
-}
-
-// -- all_tuples! for param arities -------------------------------------------
-
-macro_rules! all_tuples {
-    ($m:ident) => {
-        $m!(P0);
-        $m!(P0, P1);
-        $m!(P0, P1, P2);
-        $m!(P0, P1, P2, P3);
-        $m!(P0, P1, P2, P3, P4);
-        $m!(P0, P1, P2, P3, P4, P5);
-        $m!(P0, P1, P2, P3, P4, P5, P6);
-        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
     };
 }
 
@@ -505,6 +496,8 @@ macro_rules! impl_merge5_step {
                     mut f: impl FnMut($($P,)+ &IA, &IB, &IC, &ID, &IE) -> Output,
                     $($P: $P,)+ a: &IA, b: &IB, c: &IC, d: &ID, e: &IE,
                 ) -> Output { f($($P,)+ a, b, c, d, e) }
+                // SAFETY: state was produced by Param::init() during handler construction.
+                // World borrows are disjoint — enforced by conflict detection at build time.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {

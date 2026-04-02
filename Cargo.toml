@@ -2,10 +2,10 @@
 resolver = "2"
 exclude = [
 	"nexus-timer",
-	"nexus-rt",
-	"nexus-rt-derive",
 ]
 members = [
+	"nexus-rt",
+	"nexus-rt-derive",
 	"nexus-ascii",
 	"nexus-bits",
 	"nexus-bits-derive",

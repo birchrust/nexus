@@ -258,20 +258,6 @@ macro_rules! impl_into_callback {
     };
 }
 
-// Reuse all_tuples — re-declared here since macros are module-scoped.
-macro_rules! all_tuples {
-    ($m:ident) => {
-        $m!(P0);
-        $m!(P0, P1);
-        $m!(P0, P1, P2);
-        $m!(P0, P1, P2, P3);
-        $m!(P0, P1, P2, P3, P4);
-        $m!(P0, P1, P2, P3, P4, P5);
-        $m!(P0, P1, P2, P3, P4, P5, P6);
-        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
-    };
-}
-
 all_tuples!(impl_into_callback);
 
 // =============================================================================
@@ -541,11 +527,14 @@ mod tests {
 
         world.next_sequence(); // tick=1
         let id = world.id::<u64>();
+        // SAFETY: id was obtained from the same world via id::<u64>().
+        // No mutable references to the resource exist.
         unsafe {
             assert_eq!(world.changed_at(id), crate::Sequence(0));
         }
 
         cb.run(&mut world, ());
+        // SAFETY: same id, no mutable references active.
         unsafe {
             assert_eq!(world.changed_at(id), crate::Sequence(1));
         }

@@ -272,11 +272,14 @@ macro_rules! impl_template_dispatch {
                         f(ctx, $($P,)+ event);
                     }
 
+                    // SAFETY: state was produced by Param::init() during template construction.
+                    // World borrows are disjoint — enforced by conflict detection at build time.
                     #[cfg(debug_assertions)]
                     world.clear_borrows();
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };
+                    // SAFETY: F is ZST — zeroed() produces the unique value.
                     let mut f: F = unsafe { std::mem::zeroed() };
                     call_inner(&mut f, ctx, $($P,)+ event);
                 }
@@ -291,19 +294,6 @@ macro_rules! impl_template_dispatch {
                 ]);
             }
         }
-    };
-}
-
-macro_rules! all_tuples {
-    ($m:ident) => {
-        $m!(P0);
-        $m!(P0, P1);
-        $m!(P0, P1, P2);
-        $m!(P0, P1, P2, P3);
-        $m!(P0, P1, P2, P3, P4);
-        $m!(P0, P1, P2, P3, P4, P5);
-        $m!(P0, P1, P2, P3, P4, P5, P6);
-        $m!(P0, P1, P2, P3, P4, P5, P6, P7);
     };
 }
 
@@ -928,6 +918,68 @@ mod tests {
         let mut h = template.generate();
         h.run(&mut world, 3);
         assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    // -- Max arity (5 params) ---------------------------------------------------
+
+    struct Offset(i64);
+    impl crate::world::Resource for Offset {}
+    struct Scale(u32);
+    impl crate::world::Resource for Scale {}
+    struct Tag(u32);
+    impl crate::world::Resource for Tag {}
+
+    struct FiveParamBlueprint;
+    impl Blueprint for FiveParamBlueprint {
+        type Event = u32;
+        type Params = (
+            ResMut<'static, u64>,
+            Res<'static, bool>,
+            ResMut<'static, Offset>,
+            Res<'static, Scale>,
+            ResMut<'static, Tag>,
+        );
+    }
+
+    fn five_param_fn(
+        mut counter: ResMut<u64>,
+        flag: Res<bool>,
+        mut offset: ResMut<Offset>,
+        scale: Res<Scale>,
+        mut tag: ResMut<Tag>,
+        event: u32,
+    ) {
+        if *flag {
+            *counter += event as u64;
+        }
+        offset.0 += (scale.0 as i64) * (event as i64);
+        tag.0 = event;
+    }
+
+    #[test]
+    fn handler_template_five_params() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<bool>(true);
+        builder.register(Offset(0));
+        builder.register(Scale(2));
+        builder.register(Tag(0));
+        let mut world = builder.build();
+
+        let template = HandlerTemplate::<FiveParamBlueprint>::new(five_param_fn, world.registry());
+
+        let mut h1 = template.generate();
+        let mut h2 = template.generate();
+
+        h1.run(&mut world, 10);
+        assert_eq!(*world.resource::<u64>(), 10);
+        assert_eq!(world.resource::<Offset>().0, 20);
+        assert_eq!(world.resource::<Tag>().0, 10);
+
+        h2.run(&mut world, 5);
+        assert_eq!(*world.resource::<u64>(), 15);
+        assert_eq!(world.resource::<Offset>().0, 30);
+        assert_eq!(world.resource::<Tag>().0, 5);
     }
 
     callback_blueprint!(MacroOnTimeout, Context = TimerCtx, Event = (), Params = (ResMut<'static, u64>,));
