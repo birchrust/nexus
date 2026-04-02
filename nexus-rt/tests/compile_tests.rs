@@ -4077,6 +4077,7 @@ mod view_derive {
         price: f64,
     }
 
+    #[allow(dead_code)]
     struct AmendOrderCommand {
         order_id: u64,
         symbol: String,
@@ -4086,6 +4087,7 @@ mod view_derive {
 
     // -- Derived view with borrowed + copy fields --
 
+    #[allow(dead_code)]
     #[derive(View)]
     #[source(NewOrderCommand)]
     #[source(AmendOrderCommand)]
@@ -4285,6 +4287,7 @@ mod view_derive {
     }
 
     #[derive(View)]
+    #[allow(dead_code)]
     #[source(InternalOrder)]
     #[source(ExternalOrder)]
     struct UnifiedView<'a> {

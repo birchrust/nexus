@@ -151,6 +151,8 @@ mod catch_unwind;
 /// Clock abstractions for event-driven runtimes.
 pub mod clock;
 mod combinator;
+pub mod ctx_dag;
+pub mod ctx_pipeline;
 pub mod dag;
 mod driver;
 mod handler;
@@ -188,6 +190,14 @@ pub use handler::{
 // namespace is separate from the type namespace.
 // Note: `View` derive macro and `View` trait coexist — Rust's macro
 // namespace is separate from the type namespace (same as `Param`).
+pub use ctx_dag::{
+    CtxDag, CtxDagArm, CtxDagArmFork, CtxDagArmSeed, CtxDagBuilder, CtxDagChain, CtxDagChainFork,
+    CtxMergeStepCall, IntoCtxMergeStep,
+};
+pub use ctx_pipeline::{
+    CtxChainCall, CtxPipeline, CtxPipelineBuilder, CtxPipelineChain, CtxStepCall, IntoCtxProducer,
+    IntoCtxRefStep, IntoCtxStep,
+};
 pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource, View};
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,

@@ -106,7 +106,7 @@ unsafe impl<T> SlabStore for bounded::Slab<T> {
 
     #[inline]
     fn free(&self, slot: Slot<T>) {
-        bounded::Slab::free(self, slot)
+        bounded::Slab::free(self, slot);
     }
 
     #[inline]
@@ -138,7 +138,7 @@ unsafe impl<T> SlabStore for unbounded::Slab<T> {
 
     #[inline]
     fn free(&self, slot: Slot<T>) {
-        unbounded::Slab::free(self, slot)
+        unbounded::Slab::free(self, slot);
     }
 
     #[inline]
