@@ -61,9 +61,9 @@ use crate::event_queue::{Events, Token};
 /// single-threaded use. Tokens are registered, marked as changed,
 /// and polled. Each token appears at most once per poll cycle.
 ///
-/// The interest/subscription layer (mapping data sources to actors)
+/// The interest/subscription layer (mapping data sources to reactors)
 /// is a higher-level concern handled by the consumer (e.g., the
-/// actor system in nexus-rt).
+/// reactor system in nexus-rt).
 #[derive(Debug)]
 pub struct LocalNotify {
     /// Dedup bitset. Bit N = token N is in `dispatch_list`.

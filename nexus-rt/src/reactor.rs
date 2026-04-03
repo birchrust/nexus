@@ -37,7 +37,7 @@
 //!
 //! // Register reactor — subscribes to BTC data + positions
 //! notify.register(
-//!     |id| QuotingCtx { actor_id: id, instrument: InstrumentId::BTC, layer: 1 },
+//!     |id| QuotingCtx { reactor_id: id, instrument: InstrumentId::BTC, layer: 1 },
 //!     quoting_step,
 //!     &registry,
 //! )
@@ -57,7 +57,7 @@
 //!     gw.submit(ctx.instrument, ctx.slice_size, books.best_ask(ctx.instrument));
 //!     ctx.remaining -= ctx.slice_size;
 //!     if ctx.remaining == 0 {
-//!         removals.deregister(ctx.actor_id);  // cleaned up after frame
+//!         removals.deregister(ctx.reactor_id);  // cleaned up after frame
 //!     }
 //! }
 //! ```
@@ -72,7 +72,7 @@
 //! ) {
 //!     let md_source = sources.get(&event.instrument).unwrap();
 //!     notify.register(
-//!         |id| TwapCtx { actor_id: id, instrument: event.instrument, remaining: event.qty },
+//!         |id| TwapCtx { reactor_id: id, instrument: event.instrument, remaining: event.qty },
 //!         twap_step, &registry,
 //!     ).subscribe(md_source);
 //! }
@@ -83,7 +83,7 @@
 //! ```ignore
 //! // On submission — embed reactor token in order
 //! fn submit(ctx: &mut Ctx, mut gw: ResMut<Gateway>) {
-//!     gw.submit(Order { client_id: ctx.actor_id.index(), .. });
+//!     gw.submit(Order { client_id: ctx.reactor_id.index(), .. });
 //! }
 //!
 //! // On fill — route back to reactor's data source
@@ -221,7 +221,7 @@ impl ReactorNotify {
     ///
     /// // Phase 2: build reactor (borrows &World for registry)
     /// let reactor = quoting_step.into_reactor(
-    ///     QuotingCtx { actor_id: token, instrument: BTC },
+    ///     QuotingCtx { reactor_id: token, instrument: BTC },
     ///     world.registry(),
     /// );
     ///
@@ -343,24 +343,27 @@ impl ReactorNotify {
     #[inline]
     pub fn mark(&mut self, source: DataSource) {
         if let Some(subscribers) = self.interests.get(source.0) {
-            for &actor_token in subscribers {
-                self.notify.mark(actor_token);
+            for &reactor_token in subscribers {
+                self.notify.mark(reactor_token);
             }
         }
     }
 
     /// Poll for woken reactor tokens into the events buffer.
+    #[inline]
     pub(crate) fn poll(&mut self, events: &mut Events) {
         self.notify.poll(events);
     }
 
     /// Take a reactor out of its slot for dispatch.
     /// Returns None if the slot is empty or doesn't exist.
+    #[inline]
     pub(crate) fn take_reactor(&mut self, idx: usize) -> Option<Box<dyn Reactor>> {
         self.reactors.get_mut(idx).and_then(Option::take)
     }
 
     /// Put a reactor back into its slot after dispatch.
+    #[inline]
     pub(crate) fn put_reactor(&mut self, idx: usize, reactor: Box<dyn Reactor>) {
         if self.reactors.contains(idx) {
             self.reactors[idx] = Some(reactor);
@@ -486,7 +489,7 @@ pub struct ReactorFn<C, F, Params: Param> {
 ///     .build();
 ///
 /// let reactor = PipelineReactor::new(
-///     QuotingCtx { actor_id: token, instrument: BTC },
+///     QuotingCtx { reactor_id: token, instrument: BTC },
 ///     pipeline,
 /// );
 ///
@@ -526,7 +529,7 @@ impl<C: Send + 'static> Reactor for PipelineReactor<C> {
 // IntoReactor — conversion trait
 // =============================================================================
 
-/// Converts a step function into an [`Reactor`].
+/// Converts a step function into a [`Reactor`].
 ///
 /// Step function signature: `fn(&mut C, Params...)` — context first,
 /// then resolved resources. No event argument, no return value.
@@ -760,17 +763,19 @@ impl SourceRegistry {
     }
 
     fn get_map<K: Hash + Eq + Send + 'static>(&self) -> Option<&FxHashMap<K, DataSource>> {
-        self.maps
-            .get(&TypeId::of::<K>())
-            .map(|boxed| boxed.downcast_ref::<FxHashMap<K, DataSource>>().unwrap())
+        self.maps.get(&TypeId::of::<K>()).map(|boxed| {
+            // Invariant: map was inserted with type K, so downcast always succeeds.
+            boxed.downcast_ref::<FxHashMap<K, DataSource>>().unwrap()
+        })
     }
 
     fn get_map_mut<K: Hash + Eq + Send + 'static>(
         &mut self,
     ) -> Option<&mut FxHashMap<K, DataSource>> {
-        self.maps
-            .get_mut(&TypeId::of::<K>())
-            .map(|boxed| boxed.downcast_mut::<FxHashMap<K, DataSource>>().unwrap())
+        self.maps.get_mut(&TypeId::of::<K>()).map(|boxed| {
+            // Invariant: map was inserted with type K, so downcast always succeeds.
+            boxed.downcast_mut::<FxHashMap<K, DataSource>>().unwrap()
+        })
     }
 
     fn get_or_create_map<K: Hash + Eq + Send + 'static>(
@@ -779,6 +784,7 @@ impl SourceRegistry {
         self.maps
             .entry(TypeId::of::<K>())
             .or_insert_with(|| Box::<FxHashMap<K, DataSource>>::default())
+            // Invariant: entry was just created or retrieved with type K.
             .downcast_mut::<FxHashMap<K, DataSource>>()
             .unwrap()
     }
@@ -885,7 +891,7 @@ mod tests {
     // -- Reactor trait dispatch --------------------------------------------------
 
     #[test]
-    fn actor_fn_arity0() {
+    fn reactor_fn_arity0() {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
         let reg = world.registry();
@@ -904,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_fn_with_params() {
+    fn reactor_fn_with_params() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(10);
         wb.register::<u32>(0);
@@ -926,7 +932,7 @@ mod tests {
 
     // -- ReactorNotify ----------------------------------------------------------
 
-    fn dummy_actor() -> ReactorFn<(), fn(&mut ()), ()> {
+    fn dummy_reactor() -> ReactorFn<(), fn(&mut ()), ()> {
         ReactorFn {
             ctx: (),
             f: (|_: &mut ()| {}) as fn(&mut ()),
@@ -936,14 +942,14 @@ mod tests {
     }
 
     #[test]
-    fn actor_notify_mark_fans_out() {
+    fn reactor_notify_mark_fans_out() {
         let mut notify = ReactorNotify::new(4, 8);
         let mut events = Events::with_capacity(8);
 
         let src = notify.register_source();
-        let a1 = notify.register_raw(dummy_actor()).token();
-        let a2 = notify.register_raw(dummy_actor()).token();
-        let _a3 = notify.register_raw(dummy_actor()).token();
+        let a1 = notify.register_raw(dummy_reactor()).token();
+        let a2 = notify.register_raw(dummy_reactor()).token();
+        let _a3 = notify.register_raw(dummy_reactor()).token();
 
         notify.subscribe(a1, src);
         notify.subscribe(a2, src);
@@ -958,13 +964,13 @@ mod tests {
     }
 
     #[test]
-    fn actor_notify_dedup_across_sources() {
+    fn reactor_notify_dedup_across_sources() {
         let mut notify = ReactorNotify::new(4, 8);
         let mut events = Events::with_capacity(8);
 
         let src1 = notify.register_source();
         let src2 = notify.register_source();
-        let reactor = notify.register_raw(dummy_actor()).token();
+        let reactor = notify.register_raw(dummy_reactor()).token();
 
         notify.subscribe(reactor, src1);
         notify.subscribe(reactor, src2);
@@ -978,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_notify_remove_reactor() {
+    fn reactor_notify_remove_reactor() {
         let mut notify = ReactorNotify::new(4, 8);
         let mut events = Events::with_capacity(8);
 
@@ -1011,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_system_dispatch() {
+    fn reactor_system_dispatch() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         wb.register(ReactorNotify::new(4, 8));
@@ -1023,7 +1029,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             increment: u64,
         }
 
@@ -1036,7 +1042,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     increment: 10,
                 },
                 step,
@@ -1046,7 +1052,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     increment: 5,
                 },
                 step,
@@ -1063,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_system_deferred_removal() {
+    fn reactor_system_deferred_removal() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         wb.register(ReactorNotify::new(4, 8));
@@ -1075,7 +1081,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            actor_id: Token,
+            reactor_id: Token,
             runs: u64,
         }
 
@@ -1083,7 +1089,7 @@ mod tests {
             *val += 1;
             ctx.runs += 1;
             if ctx.runs >= 2 {
-                removals.deregister(ctx.actor_id);
+                removals.deregister(ctx.reactor_id);
             }
         }
 
@@ -1092,7 +1098,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    actor_id: t,
+                    reactor_id: t,
                     runs: 0,
                 },
                 step,
@@ -1122,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_system_only_subscribed_wake() {
+    fn reactor_system_only_subscribed_wake() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         wb.register(ReactorNotify::new(4, 8));
@@ -1134,7 +1140,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -1149,7 +1155,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     value: 10,
                 },
                 step,
@@ -1159,7 +1165,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     value: 100,
                 },
                 step,
@@ -1190,7 +1196,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -1206,7 +1212,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 10,
                     },
                     step,
@@ -1227,7 +1233,7 @@ mod tests {
             notify_mut(&world, nid)
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 100,
                     },
                     step,
@@ -1254,14 +1260,14 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            actor_id: Token,
+            reactor_id: Token,
             value: u64,
         }
 
         fn step(ctx: &mut Ctx, mut out: ResMut<u64>, mut removals: ResMut<DeferredRemovals>) {
             *out += ctx.value;
             if ctx.value == 10 {
-                removals.deregister(ctx.actor_id);
+                removals.deregister(ctx.reactor_id);
             }
         }
 
@@ -1272,7 +1278,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        actor_id: t,
+                        reactor_id: t,
                         value: 10,
                     },
                     step,
@@ -1295,7 +1301,7 @@ mod tests {
             let token = notify
                 .register(
                     |t| Ctx {
-                        actor_id: t,
+                        reactor_id: t,
                         value: 100,
                     },
                     step,
@@ -1314,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_can_access_actor_notify() {
+    fn reactor_can_access_actor_notify() {
         // Verify no aliasing UB: the move-out-move-back pattern
         // allows reactors to safely access ReactorNotify via ResMut.
         let mut wb = WorldBuilder::new();
@@ -1327,7 +1333,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
         }
 
         fn step(_ctx: &mut Ctx, notify: ResMut<ReactorNotify>, mut out: ResMut<u64>) {
@@ -1340,7 +1346,7 @@ mod tests {
             let notify = notify_mut(&world, nid);
             let src = notify.register_source();
             notify
-                .register(|t| Ctx { _actor_id: t }, step, reg)
+                .register(|t| Ctx { _reactor_id: t }, step, reg)
                 .subscribe(src);
             src
         };
@@ -1369,7 +1375,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             instrument: &'static str,
         }
 
@@ -1398,7 +1404,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         instrument: "BTC",
                     },
                     step,
@@ -1411,7 +1417,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         instrument: "ETH",
                     },
                     step,
@@ -1424,7 +1430,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         instrument: "SOL",
                     },
                     step,
@@ -1471,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn per_actor_fill_routing() {
+    fn per_reactor_fill_routing() {
         // Pattern: each reactor gets its own DataSource for fill routing.
         // Wire protocol embeds the token index in the order client_id.
         // When a fill arrives, the handler marks the reactor's source directly.
@@ -1486,11 +1492,11 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            actor_id: Token,
+            reactor_id: Token,
         }
 
         fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
-            *out += ctx.actor_id.index() as u64 + 1;
+            *out += ctx.reactor_id.index() as u64 + 1;
         }
 
         // Routing table: token index → reactor's fill source
@@ -1504,7 +1510,7 @@ mod tests {
                 // Each reactor gets its own fill source
                 let fill_src = notify.register_source();
                 let token = notify
-                    .register(|t| Ctx { actor_id: t }, step, reg)
+                    .register(|t| Ctx { reactor_id: t }, step, reg)
                     .subscribe(fill_src)
                     .token();
 
@@ -1541,7 +1547,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -1557,7 +1563,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 10,
                     },
                     step,
@@ -1579,7 +1585,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 100,
                     },
                     step,
@@ -1609,7 +1615,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -1626,7 +1632,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 10,
                     },
                     step,
@@ -1636,7 +1642,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 100,
                     },
                     step,
@@ -1669,7 +1675,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     value: 1,
                 },
                 step,
@@ -1750,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn source_registry_integrated_with_actor_system() {
+    fn source_registry_integrated_with_reactor_system() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         wb.register(ReactorNotify::new(4, 8));
@@ -1766,7 +1772,7 @@ mod tests {
         const ETH: Instrument = Instrument(1);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -1789,7 +1795,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 10,
                     },
                     step,
@@ -1897,7 +1903,7 @@ mod tests {
         struct Instrument(u32);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -1917,7 +1923,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 10,
                     },
                     step,
@@ -1943,7 +1949,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 100,
                     },
                     step,
@@ -1982,7 +1988,7 @@ mod tests {
             notify
                 .register(
                     |t| Ctx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         value: 1000,
                     },
                     step,
@@ -2014,7 +2020,7 @@ mod tests {
         struct StrategyInstrument(&'static str, &'static str);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             value: u64,
         }
 
@@ -2034,7 +2040,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     value: 1,
                 },
                 step,
@@ -2044,7 +2050,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     value: 2,
                 },
                 step,
@@ -2056,7 +2062,7 @@ mod tests {
         notify
             .register(
                 |t| Ctx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     value: 100,
                 },
                 step,
@@ -2093,7 +2099,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_self_removal_with_registry_cleanup() {
+    fn reactor_self_removal_with_registry_cleanup() {
         // Reactor deregisters itself AND the handler cleans up the source
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
@@ -2105,12 +2111,12 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            actor_id: Token,
+            reactor_id: Token,
         }
 
         fn one_shot(ctx: &mut Ctx, mut out: ResMut<u64>, mut removals: ResMut<DeferredRemovals>) {
             *out += 1;
-            removals.deregister(ctx.actor_id);
+            removals.deregister(ctx.reactor_id);
         }
 
         let src = notify_mut(&world, nid).register_source();
@@ -2122,7 +2128,7 @@ mod tests {
             let reg = world.registry();
             let notify = notify_mut(&world, nid);
             notify
-                .register(|t| Ctx { actor_id: t }, one_shot, reg)
+                .register(|t| Ctx { reactor_id: t }, one_shot, reg)
                 .subscribe(src);
         }
 
@@ -2142,7 +2148,7 @@ mod tests {
     }
 
     #[test]
-    fn many_actors_same_source() {
+    fn many_reactors_same_source() {
         // 50 reactors all subscribed to one source — all wake, deduped
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
@@ -2153,7 +2159,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
         }
 
         fn step(_ctx: &mut Ctx, mut out: ResMut<u64>) {
@@ -2167,7 +2173,7 @@ mod tests {
             let notify = notify_mut(&world, nid);
             for _ in 0..50 {
                 notify
-                    .register(|t| Ctx { _actor_id: t }, step, reg)
+                    .register(|t| Ctx { _reactor_id: t }, step, reg)
                     .subscribe(src);
             }
         }
@@ -2180,7 +2186,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_subscribes_to_multiple_sources() {
+    fn reactor_subscribes_to_multiple_sources() {
         // One reactor subscribed to 5 different sources.
         // All 5 fire in one frame — reactor runs exactly once.
         let mut wb = WorldBuilder::new();
@@ -2192,7 +2198,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
         }
 
         fn step(_ctx: &mut Ctx, mut out: ResMut<u64>) {
@@ -2208,7 +2214,7 @@ mod tests {
         {
             let reg = world.registry();
             let notify = notify_mut(&world, nid);
-            let mut registration = notify.register(|t| Ctx { _actor_id: t }, step, reg);
+            let mut registration = notify.register(|t| Ctx { _reactor_id: t }, step, reg);
             for &src in &sources {
                 registration = registration.subscribe(src);
             }
@@ -2253,7 +2259,7 @@ mod tests {
     // -- PipelineReactor: reactor body is a CtxPipeline ----------------------------
 
     #[test]
-    fn pipeline_actor_dispatch() {
+    fn pipeline_reactor_dispatch() {
         use crate::CtxPipelineBuilder;
 
         let mut wb = WorldBuilder::new();
@@ -2265,7 +2271,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             instrument: &'static str,
         }
 
@@ -2296,7 +2302,7 @@ mod tests {
         // Wrap pipeline in PipelineReactor
         let reactor = PipelineReactor::new(
             Ctx {
-                _actor_id: Token::new(0),
+                _reactor_id: Token::new(0),
                 instrument: "BTC",
             },
             pipeline,
@@ -2312,7 +2318,7 @@ mod tests {
     }
 
     #[test]
-    fn dag_actor_dispatch() {
+    fn dag_reactor_dispatch() {
         use crate::CtxDagBuilder;
 
         let mut wb = WorldBuilder::new();
@@ -2324,7 +2330,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
         }
 
         fn root(ctx: &mut Ctx, val: Res<u64>, _input: ()) -> u64 {
@@ -2359,7 +2365,7 @@ mod tests {
 
         let reactor = PipelineReactor::new(
             Ctx {
-                _actor_id: Token::new(0),
+                _reactor_id: Token::new(0),
             },
             dag,
         );
@@ -2374,7 +2380,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_pipeline_actors_different_bodies() {
+    fn multiple_pipeline_reactors_different_bodies() {
         use crate::CtxPipelineBuilder;
 
         let mut wb = WorldBuilder::new();
@@ -2386,7 +2392,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             factor: u64,
         }
 
@@ -2418,7 +2424,7 @@ mod tests {
         notify
             .register_raw(PipelineReactor::new(
                 Ctx {
-                    _actor_id: Token::new(0),
+                    _reactor_id: Token::new(0),
                     factor: 2,
                 },
                 pipeline_a,
@@ -2428,7 +2434,7 @@ mod tests {
         notify
             .register_raw(PipelineReactor::new(
                 Ctx {
-                    _actor_id: Token::new(1),
+                    _reactor_id: Token::new(1),
                     factor: 10,
                 },
                 pipeline_b,
@@ -2448,7 +2454,7 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_actor_with_guard() {
+    fn pipeline_reactor_with_guard() {
         use crate::CtxPipelineBuilder;
 
         let mut wb = WorldBuilder::new();
@@ -2460,7 +2466,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             threshold: u64,
         }
 
@@ -2490,7 +2496,7 @@ mod tests {
         notify
             .register_raw(PipelineReactor::new(
                 Ctx {
-                    _actor_id: Token::new(0),
+                    _reactor_id: Token::new(0),
                     threshold: 10,
                 },
                 pipeline,
@@ -2525,13 +2531,13 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            actor_id: Token,
+            reactor_id: Token,
             instrument: &'static str,
         }
 
         fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
             let _ = ctx.instrument;
-            *out += ctx.actor_id.index() as u64 + 1;
+            *out += ctx.reactor_id.index() as u64 + 1;
         }
 
         // Phase 1: reserve slot
@@ -2541,7 +2547,7 @@ mod tests {
         // Phase 2: build reactor with token + registry (no borrow conflict)
         let reactor = step.into_reactor(
             Ctx {
-                actor_id: token,
+                reactor_id: token,
                 instrument: "BTC",
             },
             world.registry(),
@@ -2562,7 +2568,7 @@ mod tests {
         let token2 = world.resource_mut::<ReactorNotify>().create_reactor();
         let actor2 = step.into_reactor(
             Ctx {
-                actor_id: token2,
+                reactor_id: token2,
                 instrument: "ETH",
             },
             world.registry(),
@@ -2579,7 +2585,7 @@ mod tests {
     }
 
     #[test]
-    fn two_phase_with_pipeline_actor() {
+    fn two_phase_with_pipeline_reactor() {
         use crate::CtxPipelineBuilder;
 
         let mut wb = WorldBuilder::new();
@@ -2591,7 +2597,7 @@ mod tests {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
         }
 
         fn read(ctx: &mut Ctx, val: Res<u64>, _: ()) -> u64 {
@@ -2618,7 +2624,7 @@ mod tests {
             .then(double, reg)
             .then(store, reg)
             .build();
-        let reactor = PipelineReactor::new(Ctx { _actor_id: token }, pipeline);
+        let reactor = PipelineReactor::new(Ctx { _reactor_id: token }, pipeline);
 
         // Phase 3: insert
         world

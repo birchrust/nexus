@@ -4806,18 +4806,18 @@ mod reactors {
         counter.0 += 1;
         ctx.remaining -= 1;
         if ctx.remaining == 0 {
-            removals.deregister(ctx.reactor_id);
+            removals.deregister(ctx.rereactor_id);
         }
     }
 
     struct SimpleCtx {
-        _reactor_id: Token,
+        _rereactor_id: Token,
         name: &'static str,
         runs: u32,
     }
 
     struct RemovableCtx {
-        reactor_id: Token,
+        rereactor_id: Token,
         remaining: u32,
     }
 
@@ -4829,17 +4829,17 @@ mod reactors {
         let world = wb.build();
         let reg = world.registry();
 
-        let mut actor = ctx_only_step.into_reactor(
+        let mut reactor = ctx_only_step.into_reactor(
             SimpleCtx {
-                _reactor_id: Token::new(0),
+                _rereactor_id: Token::new(0),
                 name: "test",
                 runs: 0,
             },
             reg,
         );
         let mut world = world;
-        actor.run(&mut world);
-        assert_eq!(actor.ctx.runs, 1);
+        reactor.run(&mut world);
+        assert_eq!(reactor.ctx.runs, 1);
     }
 
     #[test]
@@ -4849,16 +4849,16 @@ mod reactors {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut actor = one_param_step.into_reactor(
+        let mut reactor = one_param_step.into_reactor(
             SimpleCtx {
-                _reactor_id: Token::new(0),
+                _rereactor_id: Token::new(0),
                 name: "test",
                 runs: 0,
             },
             reg,
         );
-        actor.run(&mut world);
-        assert_eq!(actor.ctx.runs, 10);
+        reactor.run(&mut world);
+        assert_eq!(reactor.ctx.runs, 10);
     }
 
     #[test]
@@ -4869,15 +4869,15 @@ mod reactors {
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut actor = two_param_step.into_reactor(
+        let mut reactor = two_param_step.into_reactor(
             SimpleCtx {
-                _reactor_id: Token::new(0),
+                _rereactor_id: Token::new(0),
                 name: "MM-BTC",
                 runs: 0,
             },
             reg,
         );
-        actor.run(&mut world);
+        reactor.run(&mut world);
         assert_eq!(world.resource::<Output>().0, vec!["MM-BTC:42"]);
     }
 
@@ -4922,7 +4922,7 @@ mod reactors {
         notify
             .register(
                 |t| SimpleCtx {
-                    _reactor_id: t,
+                    _rereactor_id: t,
                     name: "MM-BTC",
                     runs: 0,
                 },
@@ -4935,7 +4935,7 @@ mod reactors {
         notify
             .register(
                 |t| SimpleCtx {
-                    _reactor_id: t,
+                    _rereactor_id: t,
                     name: "MM-ETH",
                     runs: 0,
                 },
@@ -4945,7 +4945,7 @@ mod reactors {
             .subscribe(eth_md)
             .subscribe(positions);
 
-        // Frame 1: BTC data only — only BTC actor wakes
+        // Frame 1: BTC data only — only BTC rereactor wakes
         notify_mut(&world, nid).mark(btc_md);
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Output>().0, vec!["quote:MM-BTC"]);
@@ -4959,7 +4959,7 @@ mod reactors {
         assert!(output.contains(&"quote:MM-BTC".to_string()));
         assert!(output.contains(&"quote:MM-ETH".to_string()));
 
-        // Frame 3: BTC + positions — BTC actor runs ONCE (dedup)
+        // Frame 3: BTC + positions — BTC rereactor runs ONCE (dedup)
         world.resource_mut::<Output>().0.clear();
         let notify = notify_mut(&world, nid);
         notify.mark(btc_md);
@@ -4990,7 +4990,7 @@ mod reactors {
         notify
             .register(
                 |t| RemovableCtx {
-                    reactor_id: t,
+                    rereactor_id: t,
                     remaining: 3,
                 },
                 self_removing_step,
@@ -5007,7 +5007,7 @@ mod reactors {
                 assert_eq!(world.resource::<Counter>().0, frame);
                 assert_eq!(system.reactor_count(&world), if frame < 3 { 1 } else { 0 });
             } else {
-                // Frame 4: actor already removed, counter stays at 3
+                // Frame 4: reactor already removed, counter stays at 3
                 assert_eq!(world.resource::<Counter>().0, 3);
             }
         }
@@ -5028,7 +5028,7 @@ mod reactors {
         let mut system = ReactorSystem::new(&world);
 
         struct FillCtx {
-            reactor_id: Token,
+            rereactor_id: Token,
             instrument: &'static str,
         }
 
@@ -5036,7 +5036,7 @@ mod reactors {
             out.0.push(format!(
                 "fill:{}:{}",
                 ctx.instrument,
-                ctx.reactor_id.index()
+                ctx.rereactor_id.index()
             ));
         }
 
@@ -5051,7 +5051,7 @@ mod reactors {
             let token_0 = notify
                 .register(
                     |t| FillCtx {
-                        reactor_id: t,
+                        rereactor_id: t,
                         instrument: "BTC",
                     },
                     on_fill,
@@ -5064,7 +5064,7 @@ mod reactors {
             let token_1 = notify
                 .register(
                     |t| FillCtx {
-                        reactor_id: t,
+                        rereactor_id: t,
                         instrument: "ETH",
                     },
                     on_fill,
@@ -5083,7 +5083,7 @@ mod reactors {
             sr.insert(RoutingKey(token_1.index()), fill_src_1);
         }
 
-        // Simulate fill arriving for actor 1 — look up by wire routing key
+        // Simulate fill arriving for reactor 1 — look up by wire routing key
         let routing_key = RoutingKey(token_1.index());
         let fill_source = world
             .resource::<SourceRegistry>()
@@ -5131,7 +5131,7 @@ mod reactors {
             notify_mut(&world, nid)
                 .register(
                     |t| SimpleCtx {
-                        _reactor_id: t,
+                        _rereactor_id: t,
                         name: "BTC",
                         runs: 0,
                     },
@@ -5157,7 +5157,7 @@ mod reactors {
             notify_mut(&world, nid)
                 .register(
                     |t| SimpleCtx {
-                        _reactor_id: t,
+                        _rereactor_id: t,
                         name: "ETH",
                         runs: 0,
                     },
@@ -5199,7 +5199,7 @@ mod reactors {
     // -- register_raw with impl Reactor -----------------------------------------
 
     #[test]
-    fn register_raw_impl_actor() {
+    fn register_raw_impl_reactor() {
         struct ManualReactor {
             value: u64,
         }
@@ -5233,7 +5233,7 @@ mod reactors {
     // -- Heterogeneous reactors in one system -----------------------------------
 
     #[test]
-    fn heterogeneous_actors() {
+    fn heterogeneous_reactors() {
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
         wb.register(Output(Vec::new()));
@@ -5302,7 +5302,7 @@ mod reactors {
         let mut system = ReactorSystem::new(&world);
 
         struct QuotingCtx {
-            _reactor_id: Token,
+            _rereactor_id: Token,
             _instrument: &'static str,
             layer: u32,
         }
@@ -5324,11 +5324,11 @@ mod reactors {
             sr.insert("positions", positions);
         }
 
-        // Register BTC quoting actor — two-phase, safe
+        // Register BTC quoting reactor — two-phase, safe
         let token = world.resource_mut::<ReactorNotify>().create_reactor();
-        let actor = quoting_step.into_reactor(
+        let reactor = quoting_step.into_reactor(
             QuotingCtx {
-                _reactor_id: token,
+                _rereactor_id: token,
                 _instrument: "BTC",
                 layer: 1,
             },
@@ -5336,15 +5336,15 @@ mod reactors {
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert_reactor(token, actor)
+            .insert_reactor(token, reactor)
             .subscribe(btc_md)
             .subscribe(positions);
 
-        // Register ETH quoting actor
+        // Register ETH quoting reactor
         let token = world.resource_mut::<ReactorNotify>().create_reactor();
-        let actor = quoting_step.into_reactor(
+        let reactor = quoting_step.into_reactor(
             QuotingCtx {
-                _reactor_id: token,
+                _rereactor_id: token,
                 _instrument: "ETH",
                 layer: 2,
             },
@@ -5352,11 +5352,11 @@ mod reactors {
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert_reactor(token, actor)
+            .insert_reactor(token, reactor)
             .subscribe(eth_md)
             .subscribe(positions);
 
-        // Frame 1: BTC data only — BTC actor wakes
+        // Frame 1: BTC data only — BTC rereactor wakes
         world.resource_mut::<ReactorNotify>().mark(btc_md);
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Counter>().0, 1); // layer 1
@@ -5371,7 +5371,7 @@ mod reactors {
 
     #[test]
     fn runtime_registration_with_registry_ref() {
-        // Simulates an event handler registering an actor at runtime.
+        // Simulates an event handler registering a reactor at runtime.
         // Uses RegistryRef as a Param — same pattern as scheduling timers.
         use nexus_rt::{Handler, IntoHandler, RegistryRef};
 
@@ -5390,9 +5390,9 @@ mod reactors {
             .resource_mut::<SourceRegistry>()
             .insert("BTC", md_source);
 
-        // The actor step function
+        // The reactor step function
         struct TwapCtx {
-            reactor_id: Token,
+            rereactor_id: Token,
             remaining: u32,
         }
 
@@ -5404,7 +5404,7 @@ mod reactors {
             counter.0 += 1;
             ctx.remaining -= 1;
             if ctx.remaining == 0 {
-                removals.deregister(ctx.reactor_id);
+                removals.deregister(ctx.rereactor_id);
             }
         }
 
@@ -5420,7 +5420,7 @@ mod reactors {
             notify
                 .register(
                     |id| TwapCtx {
-                        reactor_id: id,
+                        rereactor_id: id,
                         remaining: 3,
                     },
                     twap_step,
@@ -5433,11 +5433,11 @@ mod reactors {
         // ResMut<ReactorNotify> and Res<SourceRegistry>)
         let mut handler = on_admin_add_twap.into_handler(world.registry());
 
-        // Simulate admin command arriving — handler registers the actor
+        // Simulate admin command arriving — handler registers the reactor
         handler.run(&mut world, ());
         assert_eq!(system.reactor_count(&world), 1);
 
-        // 3 frames — actor runs and self-removes
+        // 3 frames — reactor runs and self-removes
         for frame in 1..=4 {
             world.resource_mut::<ReactorNotify>().mark(md_source);
             system.dispatch(&mut world);
@@ -5445,14 +5445,14 @@ mod reactors {
             if frame <= 3 {
                 assert_eq!(world.resource::<Counter>().0, frame);
             } else {
-                // Frame 4: actor removed, counter stays at 3
+                // Frame 4: reactor removed, counter stays at 3
                 assert_eq!(world.resource::<Counter>().0, 3);
                 assert_eq!(system.reactor_count(&world), 0);
             }
         }
     }
 
-    // -- Pipeline actor registered at startup ---------------------------------
+    // -- Pipeline reactor registered at startup ---------------------------------
 
     #[test]
     fn startup_pipeline_actor() {
@@ -5467,7 +5467,7 @@ mod reactors {
         let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _reactor_id: Token,
+            _rereactor_id: Token,
             multiplier: u64,
         }
 
@@ -5494,16 +5494,16 @@ mod reactors {
             .then(multiply, reg)
             .then(store, reg)
             .build();
-        let actor = nexus_rt::PipelineReactor::new(
+        let reactor = nexus_rt::PipelineReactor::new(
             Ctx {
-                _reactor_id: token,
+                _rereactor_id: token,
                 multiplier: 3,
             },
             pipeline,
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert_reactor(token, actor)
+            .insert_reactor(token, reactor)
             .subscribe(src);
 
         // Set initial value and dispatch
@@ -5513,7 +5513,7 @@ mod reactors {
         assert_eq!(world.resource::<Counter>().0, 30); // 10 * 3
     }
 
-    // -- Runtime pipeline actor via RegistryRef -------------------------------
+    // -- Runtime pipeline reactor via RegistryRef -------------------------------
 
     #[test]
     fn runtime_pipeline_actor_via_registry_ref() {
@@ -5529,7 +5529,7 @@ mod reactors {
         let src = world.resource_mut::<ReactorNotify>().register_source();
 
         struct Ctx {
-            _reactor_id: Token,
+            _rereactor_id: Token,
         }
 
         fn double(_ctx: &mut Ctx, counter: Res<Counter>, _: ()) -> u64 {
@@ -5540,7 +5540,7 @@ mod reactors {
             counter.0 = val;
         }
 
-        // Handler that builds a pipeline actor at runtime
+        // Handler that builds a pipeline reactor at runtime
         fn on_admin(mut notify: ResMut<ReactorNotify>, reg: RegistryRef<'_>, _event: ()) {
             let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
                 .then(double, &reg)
@@ -5551,7 +5551,7 @@ mod reactors {
             notify
                 .register_raw(PipelineReactor::new(
                     Ctx {
-                        _reactor_id: Token::new(0),
+                        _rereactor_id: Token::new(0),
                     },
                     pipeline,
                 ))
