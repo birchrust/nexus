@@ -511,35 +511,6 @@ mod tests {
         let _cb = bad.into_callback(0u64, world.registry_mut());
     }
 
-    // -- Change detection -----------------------------------------------------
-
-    fn stamps_writer(_ctx: &mut u64, mut val: ResMut<u64>, _e: ()) {
-        *val = 99;
-    }
-
-    #[test]
-    fn mut_stamps_changed_at() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        let mut world = builder.build();
-
-        let mut cb = stamps_writer.into_callback(0u64, world.registry_mut());
-
-        world.next_sequence(); // tick=1
-        let id = world.id::<u64>();
-        // SAFETY: id was obtained from the same world via id::<u64>().
-        // No mutable references to the resource exist.
-        unsafe {
-            assert_eq!(world.changed_at(id), crate::Sequence(0));
-        }
-
-        cb.run(&mut world, ());
-        // SAFETY: same id, no mutable references active.
-        unsafe {
-            assert_eq!(world.changed_at(id), crate::Sequence(1));
-        }
-    }
-
     // -- Handler<E> interface -------------------------------------------------
 
     #[test]

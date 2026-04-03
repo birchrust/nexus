@@ -9,12 +9,6 @@
 //! - **Boolean propagation** — root systems always run; non-root systems
 //!   run only if at least one upstream returned `true` (OR semantics).
 //!
-//! `SchedulerTick` tracks the sequence at the last scheduler pass. Systems
-//! use `Res::changed_after(tick.last())` to detect resources modified since
-//! the previous pass. This enables efficient skip-detection: if the handler
-//! that processes market data didn't write to `MidPrice` this event, the
-//! scheduler can detect that nothing changed and skip downstream.
-//!
 //! Typical pattern: event handlers write resources, then the scheduler
 //! runs reconciliation after each event (or batch of events).
 //!
@@ -25,7 +19,7 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
-use nexus_rt::scheduler::{SchedulerInstaller, SchedulerTick};
+use nexus_rt::scheduler::SchedulerInstaller;
 use nexus_rt::{Handler, IntoHandler, Res, ResMut, Resource, WorldBuilder};
 
 // ── Domain types ────────────────────────────────────────────────────────
@@ -50,15 +44,12 @@ struct RiskFlag(bool);
 
 // ── Systems ─────────────────────────────────────────────────────────────
 
-/// Recompute theoretical value from mid price. Propagates only if the
-/// mid actually changed since last scheduler pass.
-fn compute_theo(
-    mid: Res<MidPrice>,
-    tick: Res<SchedulerTick>,
-    mut theo: ResMut<TheoreticalValue>,
-) -> bool {
-    if mid.changed_after(tick.last()) {
-        theo.0 = mid.0 * 1.001; // trivial model
+/// Recompute theoretical value from mid price. Always propagates —
+/// the system's bool return controls downstream execution.
+fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoreticalValue>) -> bool {
+    let new_theo = mid.0 * 1.001; // trivial model
+    if (new_theo - theo.0).abs() > f64::EPSILON {
+        theo.0 = new_theo;
         true
     } else {
         false
@@ -102,9 +93,6 @@ fn main() {
     wb.register(QuoteState { bid: 0.0, ask: 0.0 });
     wb.register(RiskFlag(false));
 
-    // Pre-register SchedulerTick so systems reading it can resolve params.
-    wb.ensure(SchedulerTick::default());
-
     // Build the DAG: compute_theo → compute_quotes → check_risk
     let mut installer = SchedulerInstaller::new();
     let theo = installer.add(compute_theo, wb.registry());
@@ -147,14 +135,9 @@ fn main() {
         );
     }
 
-    // Note: pass 3 runs all systems even though the mid price didn't
-    // change (50_200 → 50_200). compute_theo sees changed_after as true
-    // because the handler stamps changed_at via DerefMut unconditionally.
-    //
-    // The system's bool return is the correct propagation control:
-    // compute_theo could compare old vs new theo and return false when
-    // its output didn't change, stopping downstream regardless of what
-    // the handler stamped.
+    // Note: pass 3 has mid_price 50_200 → 50_200 (no change).
+    // compute_theo compares old vs new and returns false, stopping
+    // downstream — only 1 system runs instead of 3.
 
     println!("\nDone. The system's bool return controls propagation —");
     println!("return false when outputs didn't change to skip downstream.");

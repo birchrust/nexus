@@ -8,7 +8,7 @@
 use super::helpers::*;
 use crate::dag::DagArmSeed;
 use crate::pipeline::{PipelineBuilder, resolve_step};
-use crate::{Broadcast, IntoHandler, Local, Res, ResMut, Sequence, World, fan_out};
+use crate::{Broadcast, IntoHandler, Local, Res, ResMut, World, fan_out};
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Linear chains
@@ -1091,32 +1091,8 @@ pub fn pipe_world_mixed_chain(world: &mut World, input: u64) -> u64 {
     p.run(world, input)
 }
 
-#[inline(never)]
-pub fn pipe_world_change_detection(world: &mut World, input: u64) -> u64 {
-    let reg = world.registry();
-
-    fn check_changed(a: Res<ResA>, x: u64) -> u64 {
-        if a.is_changed() { x.wrapping_mul(2) } else { x }
-    }
-
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(write_res_a, &reg)
-        .then(check_changed, &reg);
-    p.run(world, input)
-}
-
-#[inline(never)]
-pub fn pipe_world_res_mut_stamp(world: &mut World, input: u64) -> u64 {
-    let reg = world.registry();
-
-    fn stamp_and_pass(mut a: ResMut<ResA>, x: u64) -> u64 {
-        *a = ResA(x);
-        x
-    }
-
-    let mut p = PipelineBuilder::<u64>::new().then(stamp_and_pass, &reg);
-    p.run(world, input)
-}
+// Change detection probes removed — resource stamping replaced by reactor
+// interest-based notification.
 
 // ---- Remaining section 3b gap: 3.13 ----
 
@@ -1450,21 +1426,8 @@ pub fn pipe_world_8_params(world: &mut World, input: u64) -> u64 {
     p.run(world, input)
 }
 
-#[inline(never)]
-pub fn pipe_world_changed_after(world: &mut World, input: u64) -> u64 {
-    let reg = world.registry();
-
-    fn check_since(a: Res<ResA>, x: u64) -> u64 {
-        // Compare against a fixed tick value.
-        if a.changed_after(Sequence(0)) {
-            x.wrapping_mul(2)
-        } else {
-            x
-        }
-    }
-
-    let mut p = PipelineBuilder::<u64>::new()
-        .then(write_res_a, &reg)
-        .then(check_since, &reg);
-    p.run(world, input)
+// changed_after probe removed — resource stamping replaced by reactor
+// interest-based notification.
+pub fn pipe_world_changed_after(_world: &mut World, input: u64) -> u64 {
+    input
 }

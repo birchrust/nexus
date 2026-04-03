@@ -101,9 +101,8 @@ impl BorrowTracker {
 
 /// Direct pointer identifying a resource within a [`World`] container.
 ///
-/// Points to a heap-allocated `ResourceCell<T>` whose `changed_at` field
-/// is at offset 0 (`#[repr(C)]`). Dispatch-time access is a single deref —
-/// no index lookup, no Vec indirection.
+/// Points to a heap-allocated `ResourceCell<T>`. Dispatch-time access is
+/// a single deref — no index lookup, no Vec indirection.
 ///
 /// Obtained from [`WorldBuilder::register`], [`WorldBuilder::ensure`],
 /// [`Registry::id`], [`World::id`], or their `try_` / `_default` variants.
@@ -131,12 +130,11 @@ impl std::fmt::Display for ResourceId {
     }
 }
 
-/// Monotonic event sequence number for change detection.
+/// Monotonic event sequence number for event ordering.
 ///
 /// Each event processed by a driver is assigned a unique sequence number
-/// via [`World::next_sequence`]. Resources record the sequence at which
-/// they were last written. A resource is considered "changed" if its
-/// `changed_at` equals the world's `current_sequence`.
+/// via [`World::next_sequence`]. Handlers can read the current sequence
+/// via [`Seq`](crate::Seq) or advance it via [`SeqMut`](crate::SeqMut).
 ///
 /// Uses `i64` for wire-format compatibility (FIX/SBE, Protobuf, Avro
 /// all have native signed 64-bit; unsigned is awkward or absent) and to
@@ -234,21 +232,14 @@ impl std::fmt::Display for Sequence {
     }
 }
 
-/// Inline value + change tick for a single resource.
+/// Heap-allocated wrapper for a single resource value.
 ///
-/// `changed_at` at offset 0 is critical — it lets `stamp_changed` and
-/// `changed_at` work without knowing T. Cast the pointer to
-/// `*const Cell<Sequence>` and read/write directly.
-#[repr(C)]
+/// Resources are individually heap-allocated via `Box::new(ResourceCell { value })`.
+/// The `ResourceId` is the raw pointer to this cell — a single deref to reach
+/// the value with zero framework overhead.
 pub(crate) struct ResourceCell<T> {
-    pub(crate) changed_at: Cell<Sequence>,
     pub(crate) value: T,
 }
-
-// changed_at MUST be at offset 0 — changed_at(), changed_at_cell(), and
-// stamp_changed() cast ResourceId's pointer directly to *const Cell<Sequence>
-// without knowing T. repr(C) guarantees this, but let's be explicit.
-const _: () = assert!(std::mem::offset_of!(ResourceCell<()>, changed_at) == 0);
 
 /// Reconstruct and drop a `Box<ResourceCell<T>>` from a raw pointer.
 ///
@@ -512,10 +503,7 @@ impl WorldBuilder {
             type_name::<T>(),
         );
 
-        let cell = Box::new(ResourceCell {
-            changed_at: Cell::new(Sequence(0)),
-            value,
-        });
+        let cell = Box::new(ResourceCell { value });
         let raw = Box::into_raw(cell) as *mut u8;
         // SAFETY: Box::into_raw never returns null.
         let ptr = unsafe { NonNull::new_unchecked(raw) };
@@ -797,9 +785,6 @@ impl World {
     /// Panics if the resource type was not registered.
     pub fn resource_mut<T: Resource>(&mut self) -> &mut T {
         let id = self.registry.id::<T>();
-        // Cold path — stamp unconditionally. If you request &mut, you're writing.
-        // SAFETY: id resolved from our own registry.
-        unsafe { self.stamp_changed(id) };
         // SAFETY: id resolved from our own registry. &mut self ensures
         // exclusive access — no other references can exist.
         unsafe { self.get_mut(id) }
@@ -892,7 +877,7 @@ impl World {
     }
 
     // =========================================================================
-    // Sequence / change detection
+    // Sequence
     // =========================================================================
 
     /// Returns the current event sequence number.
@@ -903,8 +888,7 @@ impl World {
     /// Advance to the next event sequence number and return it.
     ///
     /// Drivers call this before dispatching each event. The returned
-    /// sequence number identifies the event being processed. Resources
-    /// mutated during dispatch will record this sequence in `changed_at`.
+    /// sequence number identifies the event being processed.
     pub fn next_sequence(&mut self) -> Sequence {
         let next = Sequence(self.current_sequence.get().0.wrapping_add(1));
         self.current_sequence.set(next);
@@ -987,59 +971,6 @@ impl World {
     #[cfg(debug_assertions)]
     pub(crate) fn track_borrow(&self, id: ResourceId) {
         self.borrow_tracker.track(id);
-    }
-
-    // =========================================================================
-    // Change-detection internals (framework use only)
-    // =========================================================================
-
-    /// Read the sequence at which a resource was last changed.
-    ///
-    /// Uses the `#[repr(C)]` guarantee that `changed_at` is at offset 0
-    /// of `ResourceCell<T>`, so we can read it without knowing T.
-    ///
-    /// # Safety
-    ///
-    /// `id` must have been returned by [`WorldBuilder::register`] for
-    /// the same builder that produced this container.
-    #[inline(always)]
-    #[allow(clippy::unused_self)] // Method interface — callers use world.changed_at(id).
-    pub(crate) unsafe fn changed_at(&self, id: ResourceId) -> Sequence {
-        // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
-        // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
-        unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).get() }
-    }
-
-    /// Get a reference to the `Cell` tracking a resource's change sequence.
-    ///
-    /// Uses the `#[repr(C)]` guarantee that `changed_at` is at offset 0.
-    ///
-    /// # Safety
-    ///
-    /// `id` must have been returned by [`WorldBuilder::register`] for
-    /// the same builder that produced this container.
-    #[inline(always)]
-    #[allow(clippy::unused_self)] // Method interface — callers use world.changed_at_cell(id).
-    pub(crate) unsafe fn changed_at_cell(&self, id: ResourceId) -> &Cell<Sequence> {
-        // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
-        // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
-        unsafe { &*(id.as_ptr() as *const Cell<Sequence>) }
-    }
-
-    /// Stamp a resource as changed at the current sequence.
-    ///
-    /// Uses the `#[repr(C)]` guarantee that `changed_at` is at offset 0.
-    ///
-    /// # Safety
-    ///
-    /// `id` must have been returned by [`WorldBuilder::register`] for
-    /// the same builder that produced this container.
-    #[inline(always)]
-    #[allow(dead_code)] // Available for driver implementations.
-    pub(crate) unsafe fn stamp_changed(&self, id: ResourceId) {
-        // SAFETY: ResourceCell is #[repr(C)] with changed_at: Cell<Sequence>
-        // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
-        unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).set(self.current_sequence.get()) }
     }
 
     // =========================================================================
@@ -1482,7 +1413,7 @@ mod tests {
         assert_eq!(*world.resource::<Vec<u32>>(), vec![1, 2, 3]);
     }
 
-    // -- Sequence / change detection tests ----------------------------------------
+    // -- Sequence tests -----------------------------------------------------------
 
     #[test]
     fn sequence_default_is_zero() {
@@ -1497,44 +1428,6 @@ mod tests {
         assert_eq!(world.current_sequence(), Sequence(1));
         world.next_sequence();
         assert_eq!(world.current_sequence(), Sequence(2));
-    }
-
-    #[test]
-    fn resource_registered_at_current_sequence() {
-        // Resources registered at build time get changed_at=Sequence(0).
-        // World starts at current_sequence=Sequence(0). So they match — "changed."
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(42);
-        let world = builder.build();
-
-        let id = world.id::<u64>();
-        unsafe {
-            assert_eq!(world.changed_at(id), Sequence(0));
-            assert_eq!(world.current_sequence(), Sequence(0));
-            // changed_at == current_sequence → "changed"
-            assert_eq!(world.changed_at(id), world.current_sequence());
-        }
-    }
-
-    #[test]
-    fn resource_mut_stamps_changed_at() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        let mut world = builder.build();
-
-        world.next_sequence(); // tick=1
-        let id = world.id::<u64>();
-
-        // changed_at is still 0, current_sequence is 1 → not changed
-        unsafe {
-            assert_eq!(world.changed_at(id), Sequence(0));
-        }
-
-        // resource_mut stamps changed_at to current_sequence
-        *world.resource_mut::<u64>() = 99;
-        unsafe {
-            assert_eq!(world.changed_at(id), Sequence(1));
-        }
     }
 
     // -- run_startup tests ----------------------------------------------------
@@ -1652,31 +1545,18 @@ mod tests {
 
     #[test]
     fn sequence_wrapping() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
+        let builder = WorldBuilder::new();
         let mut world = builder.build();
 
         // Advance to MAX.
         world.current_sequence.set(Sequence(i64::MAX));
         assert_eq!(world.current_sequence(), Sequence(i64::MAX));
 
-        // Stamp resource at MAX.
-        *world.resource_mut::<u64>() = 99;
-        let id = world.id::<u64>();
-        unsafe {
-            assert_eq!(world.changed_at(id), Sequence(i64::MAX));
-        }
-
         // Wrap to MIN (which is the NULL sentinel, but wrapping is
         // purely mechanical — it doesn't assign semantic meaning).
         let seq = world.next_sequence();
         assert_eq!(seq, Sequence(i64::MIN));
         assert_eq!(world.current_sequence(), Sequence(i64::MIN));
-
-        // Resource changed at MAX, current is MIN → not changed.
-        unsafe {
-            assert_ne!(world.changed_at(id), world.current_sequence());
-        }
     }
 
     // -- BorrowTracker tests (debug builds only) ------------------------------

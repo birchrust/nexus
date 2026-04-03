@@ -45,6 +45,13 @@
 //!   [`WorldBuilder::install_plugin`] consumes a plugin to configure state.
 //!   Closures `FnOnce(&mut WorldBuilder)` implement `Plugin` automatically.
 //!
+//! - **Reactors** *(feature: `reactors`)* — Interest-based per-instance
+//!   dispatch. Event handlers call [`ReactorNotify::mark`] to signal data
+//!   changes. Subscribed reactors wake with O(1) dedup — per-instrument,
+//!   per-strategy granularity. Replaces per-resource change detection with
+//!   explicit, fine-grained notification. [`SourceRegistry`] maps domain
+//!   keys to data sources for runtime routing.
+//!
 //! - **Derive macros** — `#[derive(Resource)]` marks types for World storage.
 //!   `#[derive(Param)]` bundles multiple resources into a single handler
 //!   parameter (sidesteps the 8-param arity limit). `#[derive(Deref, DerefMut)]`
@@ -133,6 +140,7 @@
 //! | [`Plugin`] | `Plugin` | Composable registration |
 //! | [`World`] | `World` | Singletons only (no ECS) |
 //! | [`HandlerTemplate`] | *(no equivalent)* | Resolve-once, stamp-many |
+//! | [`ReactorNotify`] | `Observer` (partial) | Interest-based per-instance dispatch |
 
 #![warn(missing_docs)]
 // SystemParam types (Res, ResMut, Local, Option<Res<T>>) must be passed by value
@@ -212,7 +220,7 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut, Seq, SeqMut};
-pub use scheduler::{MAX_SYSTEMS, SchedulerInstaller, SchedulerTick, SystemId, SystemScheduler};
+pub use scheduler::{MAX_SYSTEMS, SchedulerInstaller, SystemId, SystemScheduler};
 pub use shutdown::{Shutdown, ShutdownHandle};
 pub use system::{IntoSystem, System, SystemFn};
 pub use template::{
