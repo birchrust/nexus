@@ -139,12 +139,13 @@ impl<T: Resource> DerefMut for ResMut<'_, T> {
 ///     println!("event {} at sequence {}", event, seq.get());
 /// }
 /// ```
+#[derive(Clone, Copy)]
 pub struct Seq(pub(crate) Sequence);
 
 impl Seq {
     /// Returns the current sequence value.
     #[inline(always)]
-    pub const fn get(self) -> i64 {
+    pub const fn get(&self) -> i64 {
         self.0.get()
     }
 }

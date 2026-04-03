@@ -1426,8 +1426,13 @@ pub fn pipe_world_8_params(world: &mut World, input: u64) -> u64 {
     p.run(world, input)
 }
 
-// changed_after probe removed — resource stamping replaced by reactor
-// interest-based notification.
-pub fn pipe_world_changed_after(_world: &mut World, input: u64) -> u64 {
-    input
+// Replacement for the removed changed_after audit: exercises pipeline
+// world-parameter codegen with Res + arithmetic.
+#[inline(never)]
+pub fn pipe_world_res_branch(world: &mut World, input: u64) -> u64 {
+    let reg = world.registry();
+    let mut p = PipelineBuilder::<u64>::new()
+        .then(add_res_a, &reg)
+        .then(add_one, &reg);
+    p.run(world, input)
 }
