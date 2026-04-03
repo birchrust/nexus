@@ -252,6 +252,12 @@ impl Events {
         self.tokens.clear();
     }
 
+    /// Push a token into the buffer.
+    #[inline]
+    pub(crate) fn push(&mut self, token: Token) {
+        self.tokens.push(token);
+    }
+
     /// View the fired tokens as a slice.
     #[inline]
     pub fn as_slice(&self) -> &[Token] {

@@ -160,6 +160,8 @@ mod handler;
 pub mod mio;
 pub mod pipeline;
 mod plugin;
+#[cfg(feature = "reactors")]
+pub mod reactor;
 mod resource;
 pub mod scheduler;
 pub mod shutdown;
@@ -176,7 +178,6 @@ pub mod codegen_audit;
 
 pub use adapt::{Adapt, ByRef, Cloned, Owned};
 
-// Derive macros re-exported from nexus-rt-derive
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};
@@ -185,6 +186,11 @@ pub use driver::Installer;
 pub use handler::{
     CtxFree, Handler, HandlerFn, IntoHandler, Local, Opaque, OpaqueHandler, Param, RegistryRef,
     Resolved,
+};
+#[cfg(feature = "reactors")]
+pub use reactor::{
+    DataSource, DeferredRemovals, IntoReactor, PipelineReactor, Reactor, ReactorFn, ReactorNotify,
+    ReactorRegistration, ReactorSystem, SourceRegistry,
 };
 // Note: `Param` derive macro and `Param` trait coexist — Rust's macro
 // namespace is separate from the type namespace.

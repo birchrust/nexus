@@ -1,0 +1,23 @@
+error[E0277]: this function cannot be used as a context-aware merge step
+  --> tests/ui/ctx_dag_wrong_merge.rs:35:16
+   |
+35 |         .merge(bad_merge, reg);
+   |          ----- ^^^^^^^^^ unsatisfied trait bound
+   |          |
+   |          required by a bound introduced by this call
+   |
+   = help: the trait `IntoCtxMergeStep<MyCtx, (&'static u32, &'static String), _, _>` is not implemented for fn item `for<'a> fn(&'a mut MyCtx, u32, String) {bad_merge}`
+   = note: ctx merge steps: `fn(&mut C, Params..., &A, &B, ...) -> Out`
+   = note: closures with resource parameters are not supported — use a named `fn`
+note: required by a bound in `CtxDagChainFork::<Ctx, In, ForkOut, Chain, (CtxDagArm<Ctx, ForkOut, A0, C0>, CtxDagArm<Ctx, ForkOut, A1, C1>)>::merge`
+  --> src/ctx_dag.rs
+   |
+   |             pub fn merge<MOut, Params, S>(
+   |                    ----- required by a bound in this associated function
+...
+   |                 S: IntoCtxMergeStep<Ctx, (&'static A0, &'static A1), MOut, Params>,
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `CtxDagChainFork::<Ctx, In, ForkOut, Chain, (CtxDagArm<Ctx, ForkOut, A0, C0>, CtxDagArm<Ctx, ForkOut, A1, C1>)>::merge`
+...
+   | impl_ctx_dag_fork!(fork: CtxDagChainFork, output: CtxDagChain, upstream: In);
+   | ---------------------------------------------------------------------------- in this macro invocation
+   = note: this error originates in the macro `impl_ctx_dag_fork` (in Nightly builds, run with -Z macro-backtrace for more info)

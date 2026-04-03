@@ -620,13 +620,36 @@ impl WorldBuilder {
     /// After this call, no more resources can be registered. All
     /// [`ResourceId`] values remain valid for the lifetime of the
     /// returned [`World`].
-    pub fn build(self) -> World {
+    ///
+    /// When the `reactors` feature is enabled, [`ReactorNotify`](crate::ReactorNotify),
+    /// [`DeferredRemovals`](crate::DeferredRemovals), and
+    /// [`SourceRegistry`](crate::SourceRegistry) are automatically registered
+    /// if not already present.
+    #[allow(unused_mut)]
+    pub fn build(mut self) -> World {
+        #[cfg(feature = "reactors")]
+        let (reactor_notify_id, reactor_removals_id) = {
+            self.ensure(crate::reactor::ReactorNotify::new(16, 64));
+            self.ensure(crate::reactor::DeferredRemovals::default());
+            self.ensure(crate::reactor::SourceRegistry::new());
+            (
+                self.registry.id::<crate::reactor::ReactorNotify>(),
+                self.registry.id::<crate::reactor::DeferredRemovals>(),
+            )
+        };
+
         World {
             registry: self.registry,
             storage: self.storage,
             current_sequence: Cell::new(Sequence(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             _not_sync: PhantomData,
+            #[cfg(feature = "reactors")]
+            reactor_notify_id,
+            #[cfg(feature = "reactors")]
+            reactor_removals_id,
+            #[cfg(feature = "reactors")]
+            reactor_events: Some(nexus_notify::Events::with_capacity(256)),
             #[cfg(debug_assertions)]
             borrow_tracker: BorrowTracker::new(),
         }
@@ -677,6 +700,15 @@ pub struct World {
     /// `Cell<Sequence>` values accessed through `&self`. `!Sync` enforced by
     /// `PhantomData<Cell<()>>`.
     _not_sync: PhantomData<Cell<()>>,
+    /// Pre-resolved pointer to ReactorNotify for O(1) reactor operations.
+    #[cfg(feature = "reactors")]
+    reactor_notify_id: ResourceId,
+    /// Pre-resolved pointer to DeferredRemovals (avoids HashMap lookup per frame).
+    #[cfg(feature = "reactors")]
+    reactor_removals_id: ResourceId,
+    /// Pre-allocated events buffer for dispatch (avoids allocation per frame).
+    #[cfg(feature = "reactors")]
+    reactor_events: Option<nexus_notify::Events>,
     /// Debug-only aliasing tracker. Detects duplicate resource access within
     /// a single dispatch phase. Compiled out entirely in release builds.
     #[cfg(debug_assertions)]
@@ -1009,6 +1041,137 @@ impl World {
         // at offset 0. id.as_ptr() points to a valid ResourceCell<T>.
         unsafe { (*(id.as_ptr() as *const Cell<Sequence>)).set(self.current_sequence.get()) }
     }
+
+    // =========================================================================
+    // Reactor convenience methods (behind `reactors` feature)
+    // =========================================================================
+
+    /// Register a new data source for reactor subscriptions.
+    ///
+    /// Convenience for `world.resource_mut::<ReactorNotify>().register_source()`.
+    #[cfg(feature = "reactors")]
+    pub fn register_source(&mut self) -> crate::reactor::DataSource {
+        self.resource_mut::<crate::reactor::ReactorNotify>()
+            .register_source()
+    }
+
+    /// Create and register a reactor from a step function + context factory.
+    ///
+    /// The closure receives the assigned [`Token`](nexus_notify::Token) so
+    /// the reactor can store it for wire routing or self-deregistration.
+    /// Params are resolved from the internal registry — single pointer
+    /// deref at dispatch time.
+    ///
+    /// This is the primary registration API. It handles the borrow
+    /// juggling internally: allocates the token, resolves params from
+    /// the registry, and inserts the reactor — all in one call.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let src = world.register_source();
+    /// world.spawn_reactor(
+    ///     |id| QuotingCtx { reactor_id: id, instrument: BTC, layer: 1 },
+    ///     quoting_step,
+    /// ).subscribe(src);
+    /// ```
+    #[cfg(feature = "reactors")]
+    pub fn spawn_reactor<C, Params, F: crate::reactor::IntoReactor<C, Params>>(
+        &mut self,
+        ctx_fn: impl FnOnce(nexus_notify::Token) -> C,
+        step: F,
+    ) -> crate::reactor::ReactorRegistration<'_> {
+        // SAFETY: reactor_notify_id was resolved during build() from the same
+        // WorldBuilder. ReactorNotify is heap-allocated via ResourceCell —
+        // the pointer is stable for World's lifetime. We access it via raw
+        // pointer to simultaneously read the registry (disjoint: registry is
+        // an inline field, ReactorNotify is on the heap). &mut self guarantees
+        // no other references to any World resource exist.
+        let notify_ptr: *mut crate::reactor::ReactorNotify =
+            unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
+        let token = unsafe { &mut *notify_ptr }.create_reactor();
+        let ctx = ctx_fn(token);
+        let reactor = step.into_reactor(ctx, &self.registry);
+        let notify = unsafe { &mut *notify_ptr };
+        notify.insert_reactor(token, reactor)
+    }
+
+    /// Register a pre-built reactor in one step.
+    ///
+    /// For reactors that don't need their token in the context, or for
+    /// [`PipelineReactor`](crate::PipelineReactor) instances.
+    #[cfg(feature = "reactors")]
+    pub fn spawn_built_reactor(
+        &mut self,
+        reactor: impl crate::reactor::Reactor + 'static,
+    ) -> crate::reactor::ReactorRegistration<'_> {
+        let notify =
+            unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
+        notify.register_built(reactor)
+    }
+
+    /// Dispatch all woken reactors and process deferred removals.
+    ///
+    /// Call this post-frame after event handlers have called
+    /// [`ReactorNotify::mark`](crate::ReactorNotify::mark).
+    /// Returns `true` if any reactor ran.
+    #[cfg(feature = "reactors")]
+    pub fn dispatch_reactors(&mut self) -> bool {
+        let notify_ptr: *mut crate::reactor::ReactorNotify =
+            unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
+
+        // Poll — scoped &mut, dropped before reactor dispatch.
+        let mut events = self
+            .reactor_events
+            .take()
+            .unwrap_or_else(|| nexus_notify::Events::with_capacity(256));
+        {
+            let notify = unsafe { &mut *notify_ptr };
+            notify.poll(&mut events);
+        }
+        let ran = !events.is_empty();
+
+        // Dispatch — each reactor is moved out before run(), put back after.
+        // &mut ReactorNotify is scoped tightly to avoid aliasing during run().
+        for token in events.iter() {
+            let idx = token.index();
+            let reactor = {
+                let notify = unsafe { &mut *notify_ptr };
+                notify.take_reactor(idx)
+            }; // &mut dropped here — safe to call run()
+            if let Some(mut reactor) = reactor {
+                reactor.run(self);
+                let notify = unsafe { &mut *notify_ptr };
+                notify.put_reactor(idx, reactor);
+            }
+        }
+
+        // Deferred removals — collect first, then process.
+        let pending: Vec<nexus_notify::Token> = {
+            let removals = unsafe {
+                self.get_mut::<crate::reactor::DeferredRemovals>(self.reactor_removals_id)
+            };
+            removals.drain().collect()
+        };
+        if !pending.is_empty() {
+            let notify = unsafe { &mut *notify_ptr };
+            for token in pending {
+                notify.remove_reactor(token);
+            }
+        }
+
+        // Return events buffer for reuse next frame.
+        self.reactor_events = Some(events);
+
+        ran
+    }
+
+    /// Number of registered reactors.
+    #[cfg(feature = "reactors")]
+    pub fn reactor_count(&self) -> usize {
+        self.resource::<crate::reactor::ReactorNotify>()
+            .reactor_count()
+    }
 }
 
 // SAFETY: All resources are `T: Send` (enforced by `register`). World owns all
@@ -1048,7 +1211,10 @@ mod tests {
         builder.register::<Price>(Price { value: 100.0 });
         builder.register::<Venue>(Venue { name: "test" });
         let world = builder.build();
+        #[cfg(not(feature = "reactors"))]
         assert_eq!(world.len(), 2);
+        #[cfg(feature = "reactors")]
+        assert_eq!(world.len(), 5); // + ReactorNotify + DeferredRemovals + SourceRegistry
     }
 
     #[test]
@@ -1131,7 +1297,12 @@ mod tests {
     #[test]
     fn empty_builder_builds_empty_world() {
         let world = WorldBuilder::new().build();
+        // With the `reactors` feature, ReactorNotify + DeferredRemovals +
+        // SourceRegistry are auto-registered. Without it, the world is truly empty.
+        #[cfg(not(feature = "reactors"))]
         assert_eq!(world.len(), 0);
+        #[cfg(feature = "reactors")]
+        assert_eq!(world.len(), 3);
     }
 
     #[test]
