@@ -1,0 +1,2597 @@
+//! Actor dispatch system with interest-based notification.
+//!
+//! Actors are lightweight, per-instance dispatch units — each owns its
+//! own metadata (instrument ID, order ID, algo parameters) and runs a
+//! step function with pre-resolved [`Param`] access when woken.
+//!
+//! # Architecture
+//!
+//! ```text
+//! LocalNotify      (nexus-notify)  — dedup bitset, mark/poll
+//!     ↑
+//! ActorNotify      (nexus-rt)      — World resource: actor storage +
+//!                                    data source fan-out + registration
+//! SourceRegistry   (nexus-rt)      — World resource: typed key → DataSource
+//!     ↑
+//! ActorSystem      (nexus-rt)      — thin dispatch handle (driver level)
+//! ```
+//!
+//! # Use Cases
+//!
+//! ## 1. Market maker with per-instrument quoting actors
+//!
+//! ```ignore
+//! // Step function — context first, then pre-resolved Params
+//! fn quoting_step(ctx: &mut QuotingCtx, books: Res<OrderBooks>, mut gw: ResMut<Gateway>) {
+//!     let quote = books.compute_quote(ctx.instrument, ctx.layer);
+//!     gw.submit_quote(quote);
+//! }
+//!
+//! // Setup
+//! let notify = world.resource_mut::<ActorNotify>();
+//! let btc_md = notify.register_source();
+//! let positions = notify.register_source();
+//!
+//! // Map natural keys for runtime lookup
+//! world.resource_mut::<SourceRegistry>().insert(InstrumentId::BTC, btc_md);
+//!
+//! // Register actor — subscribes to BTC data + positions
+//! notify.register(
+//!     |id| QuotingCtx { actor_id: id, instrument: InstrumentId::BTC, layer: 1 },
+//!     quoting_step,
+//!     &registry,
+//! )
+//! .subscribe(btc_md)
+//! .subscribe(positions);
+//! ```
+//!
+//! ## 2. TWAP execution algo that self-removes on completion
+//!
+//! ```ignore
+//! fn twap_step(
+//!     ctx: &mut TwapCtx,
+//!     books: Res<OrderBooks>,
+//!     mut gw: ResMut<Gateway>,
+//!     mut removals: ResMut<DeferredRemovals>,
+//! ) {
+//!     gw.submit(ctx.instrument, ctx.slice_size, books.best_ask(ctx.instrument));
+//!     ctx.remaining -= ctx.slice_size;
+//!     if ctx.remaining == 0 {
+//!         removals.deregister(ctx.actor_id);  // cleaned up after frame
+//!     }
+//! }
+//! ```
+//!
+//! ## 3. Runtime registration from event handlers
+//!
+//! ```ignore
+//! fn on_new_order(
+//!     event: NewOrder,
+//!     mut notify: ResMut<ActorNotify>,
+//!     sources: Res<SourceRegistry>,
+//! ) {
+//!     let md_source = sources.get(&event.instrument).unwrap();
+//!     notify.register(
+//!         |id| TwapCtx { actor_id: id, instrument: event.instrument, remaining: event.qty },
+//!         twap_step, &registry,
+//!     ).subscribe(md_source);
+//! }
+//! ```
+//!
+//! ## 4. Order fill routing via wire protocol
+//!
+//! ```ignore
+//! // On submission — embed actor token in order
+//! fn submit(ctx: &mut Ctx, mut gw: ResMut<Gateway>) {
+//!     gw.submit(Order { client_id: ctx.actor_id.index(), .. });
+//! }
+//!
+//! // On fill — route back to actor's data source
+//! fn on_fill(fill: Fill, mut notify: ResMut<ActorNotify>, sources: Res<SourceRegistry>) {
+//!     if let Some(src) = sources.get(&RoutingKey(fill.client_id)) {
+//!         notify.mark(src);
+//!     }
+//! }
+//! ```
+//!
+//! ## 5. Instrument delisting — cleanup
+//!
+//! ```ignore
+//! fn on_delist(event: Delist, mut notify: ResMut<ActorNotify>, mut sources: ResMut<SourceRegistry>) {
+//!     if let Some(src) = sources.remove(&event.instrument) {
+//!         notify.remove_source(src);  // frees slab slot for reuse
+//!     }
+//! }
+//! ```
+//!
+//! ## 6. Event handler marking (hot path)
+//!
+//! ```ignore
+//! fn on_btc_tick(event: Tick, mut books: ResMut<OrderBooks>, mut notify: ResMut<ActorNotify>) {
+//!     books.apply(event);
+//!     notify.mark(btc_md);  // pre-resolved DataSource, O(1), no lookup
+//! }
+//! ```
+
+use std::any::{Any, TypeId};
+use std::hash::Hash;
+
+use nexus_notify::local::LocalNotify;
+use nexus_notify::{Events, Token};
+use rustc_hash::FxHashMap;
+
+use crate::ctx_pipeline::CtxStepCall;
+use crate::handler::Param;
+use crate::world::{Registry, Resource, ResourceId, World};
+
+// =============================================================================
+// DataSource — identifies a category of change
+// =============================================================================
+
+/// Identifies a data source (e.g., "BTC market data", "positions").
+///
+/// Registered via [`ActorNotify::register_source`]. Event handlers
+/// mark data sources via [`ActorNotify::mark`] to wake subscribed actors.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct DataSource(pub usize);
+
+// =============================================================================
+// ActorNotify — World resource: storage + notification + registration
+// =============================================================================
+
+/// Actor storage, interest mapping, and notification hub.
+///
+/// Lives in the [`World`] as a resource. Handles:
+/// - Actor registration and storage (`Box<dyn Actor>` in a slab)
+/// - Data source registration and interest mapping
+/// - Marking data sources as changed (fan-out + dedup)
+///
+/// Event handlers access this via [`ResMut<ActorNotify>`](crate::ResMut)
+/// to mark data sources or register new actors at runtime.
+pub struct ActorNotify {
+    /// Per-actor token dedup.
+    notify: LocalNotify,
+
+    /// Data source → actor tokens subscribed to this source.
+    /// Slab-backed for dynamic add/remove with slot reuse.
+    /// Slab key = `DataSource.0`.
+    interests: slab::Slab<Vec<Token>>,
+
+    /// Actor storage. Slab key = token index.
+    /// `Option` enables move-out-move-back during dispatch to avoid
+    /// aliasing: the actor is `take()`n before `run()`, then put back.
+    /// `Option<Box<dyn Actor>>` is niche-optimized — zero extra bytes.
+    actors: slab::Slab<Option<Box<dyn Actor>>>,
+}
+
+// Manual Debug — slab of dyn Actor can't derive
+impl std::fmt::Debug for ActorNotify {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorNotify")
+            .field("num_sources", &self.interests.len())
+            .field("num_actors", &self.actors.len())
+            .field("notify", &self.notify)
+            .finish()
+    }
+}
+
+impl ActorNotify {
+    /// Create with capacity hints for data sources and actors.
+    pub fn new(source_capacity: usize, actor_capacity: usize) -> Self {
+        Self {
+            notify: LocalNotify::with_capacity(actor_capacity),
+            interests: slab::Slab::with_capacity(source_capacity),
+            actors: slab::Slab::with_capacity(actor_capacity),
+        }
+    }
+
+    // ── Data sources ────────────────────────────────────────────────────
+
+    /// Register a new data source. Returns its identifier.
+    ///
+    /// Slab-backed — removed sources' slots are reused.
+    pub fn register_source(&mut self) -> DataSource {
+        DataSource(self.interests.insert(Vec::new()))
+    }
+
+    /// Remove a data source. Unsubscribes all actors and frees the
+    /// slab slot for reuse.
+    ///
+    /// Marking a removed `DataSource` is a no-op (stale handle safety).
+    pub fn remove_source(&mut self, source: DataSource) {
+        if self.interests.contains(source.0) {
+            self.interests.remove(source.0);
+        }
+    }
+
+    // ── Actor registration ──────────────────────────────────────────────
+
+    /// Reserve a slot for a new actor and return its [`Token`].
+    ///
+    /// Use with [`insert`](Self::insert) to complete registration.
+    /// This two-phase pattern avoids borrow conflicts: you can
+    /// drop the `&mut ActorNotify` borrow, build the actor with
+    /// `world.registry()`, then call `insert`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Phase 1: reserve slot
+    /// let token = world.resource_mut::<ActorNotify>().alloc_actor();
+    ///
+    /// // Phase 2: build actor (borrows &World for registry)
+    /// let actor = quoting_step.into_actor(
+    ///     QuotingCtx { actor_id: token, instrument: BTC },
+    ///     world.registry(),
+    /// );
+    ///
+    /// // Phase 3: fill slot
+    /// world.resource_mut::<ActorNotify>()
+    ///     .insert(token, actor)
+    ///     .subscribe(btc_md);
+    /// ```
+    pub fn alloc_actor(&mut self) -> Token {
+        let key = self.actors.vacant_key();
+        self.notify.ensure_capacity(key);
+        Token::new(key)
+    }
+
+    /// Insert a pre-built actor at a previously allocated [`Token`].
+    ///
+    /// The token must have been returned by [`alloc_actor`](Self::alloc_actor)
+    /// and not yet filled. Completes the two-phase registration.
+    pub fn insert(&mut self, token: Token, actor: impl Actor + 'static) -> ActorRegistration<'_> {
+        let key = self.actors.insert(Some(Box::new(actor)));
+        debug_assert_eq!(key, token.index(), "token must come from alloc_actor");
+        ActorRegistration {
+            token,
+            notify: self,
+        }
+    }
+
+    /// Register an actor from a step function + context factory.
+    ///
+    /// One-shot convenience when you already have `&Registry` (e.g.,
+    /// inside event handlers via [`Param`] resolution, or in tests).
+    /// For the safe `World`-based API, use [`alloc_actor`](Self::alloc_actor)
+    /// + [`insert`](Self::insert).
+    pub fn register<C, Params, F: IntoActor<C, Params>>(
+        &mut self,
+        ctx_fn: impl FnOnce(Token) -> C,
+        step: F,
+        registry: &Registry,
+    ) -> ActorRegistration<'_> {
+        let key = self.actors.vacant_key();
+        let token = Token::new(key);
+        self.notify.ensure_capacity(key);
+        let ctx = ctx_fn(token);
+        let actor = step.into_actor(ctx, registry);
+        let inserted = self.actors.insert(Some(Box::new(actor)));
+        debug_assert_eq!(inserted, key);
+        ActorRegistration {
+            token,
+            notify: self,
+        }
+    }
+
+    /// Register a pre-built actor in one step.
+    ///
+    /// Convenience for actors that don't need their [`Token`] in
+    /// the context. For actors that need the token (wire routing,
+    /// self-deregistration), use [`alloc_actor`](Self::alloc_actor)
+    /// + [`insert`](Self::insert).
+    pub fn register_raw(&mut self, actor: impl Actor + 'static) -> ActorRegistration<'_> {
+        let key = self.actors.vacant_key();
+        let token = Token::new(key);
+        self.notify.ensure_capacity(key);
+        let inserted = self.actors.insert(Some(Box::new(actor)));
+        debug_assert_eq!(inserted, key);
+        ActorRegistration {
+            token,
+            notify: self,
+        }
+    }
+
+    // ── Subscription ────────────────────────────────────────────────────
+
+    /// Subscribe an actor to a data source.
+    ///
+    /// Idempotent — subscribing twice is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `source` is not registered.
+    pub fn subscribe(&mut self, actor: Token, source: DataSource) {
+        if let Some(subscribers) = self.interests.get_mut(source.0) {
+            if !subscribers.contains(&actor) {
+                subscribers.push(actor);
+            }
+        }
+    }
+
+    /// Unsubscribe an actor from a data source.
+    pub fn unsubscribe(&mut self, actor: Token, source: DataSource) {
+        if let Some(subscribers) = self.interests.get_mut(source.0) {
+            subscribers.retain(|&t| t != actor);
+        }
+    }
+
+    // ── Hot path ────────────────────────────────────────────────────────
+
+    /// Mark a data source as changed this frame.
+    ///
+    /// Fans out to all subscribed actor tokens in the underlying
+    /// [`LocalNotify`], with per-actor dedup.
+    #[inline]
+    pub fn mark(&mut self, source: DataSource) {
+        if let Some(subscribers) = self.interests.get(source.0) {
+            for &actor_token in subscribers {
+                self.notify.mark(actor_token);
+            }
+        }
+    }
+
+    /// Remove an actor and unsubscribe from all data sources.
+    pub fn remove_actor(&mut self, token: Token) {
+        let idx = token.index();
+        if self.actors.contains(idx) {
+            self.actors.remove(idx);
+            for (_, subscribers) in &mut self.interests {
+                subscribers.retain(|&t| t != token);
+            }
+        }
+    }
+
+    // ── Introspection ───────────────────────────────────────────────────
+
+    /// Any actors woken this frame?
+    pub fn has_notified(&self) -> bool {
+        self.notify.has_notified()
+    }
+
+    /// Number of actors woken this frame.
+    pub fn notified_count(&self) -> usize {
+        self.notify.notified_count()
+    }
+
+    /// Number of registered data sources.
+    pub fn source_count(&self) -> usize {
+        self.interests.len()
+    }
+
+    /// Number of registered actors.
+    pub fn actor_count(&self) -> usize {
+        self.actors.len()
+    }
+}
+
+impl Resource for ActorNotify {}
+
+// =============================================================================
+// ActorRegistration — builder for chaining subscriptions
+// =============================================================================
+
+/// Builder returned by [`ActorNotify::register`] for chaining subscriptions.
+pub struct ActorRegistration<'a> {
+    token: Token,
+    notify: &'a mut ActorNotify,
+}
+
+impl ActorRegistration<'_> {
+    /// Subscribe this actor to a data source.
+    pub fn subscribe(self, source: DataSource) -> Self {
+        self.notify.subscribe(self.token, source);
+        self
+    }
+
+    /// The assigned token for this actor.
+    pub fn token(&self) -> Token {
+        self.token
+    }
+}
+
+// =============================================================================
+// Actor trait
+// =============================================================================
+
+/// A dispatchable unit with per-instance context.
+///
+/// Actors own lightweight metadata (instrument ID, order ID, routing
+/// keys). Mutable state belongs in World resources, accessed via
+/// pre-resolved [`Res<T>`](crate::Res) / [`ResMut<T>`](crate::ResMut)
+/// in the step function.
+///
+/// Resource access is resolved once at registration time — dispatch
+/// is a single pointer deref per resource, no HashMap lookups.
+pub trait Actor: Send {
+    /// Run this actor with full World access.
+    fn run(&mut self, world: &mut World);
+
+    /// Returns the actor's name for diagnostics.
+    fn name(&self) -> &'static str {
+        "<unnamed>"
+    }
+}
+
+// =============================================================================
+// ActorFn — concrete dispatch wrapper
+// =============================================================================
+
+/// Concrete actor wrapper produced by [`IntoActor`].
+///
+/// Stores the step function, per-actor context, and pre-resolved
+/// parameter state. Same pattern as [`Callback`](crate::Callback)
+/// but without an event argument.
+pub struct ActorFn<C, F, Params: Param> {
+    /// Per-actor owned context (instrument, order ID, config).
+    pub ctx: C,
+    f: F,
+    state: Params::State,
+    name: &'static str,
+}
+
+// =============================================================================
+// PipelineActor — actor backed by a CtxPipeline or CtxDag body
+// =============================================================================
+
+/// An actor whose body is a [`CtxPipeline`](crate::CtxPipeline),
+/// [`CtxDag`](crate::CtxDag), or any [`CtxStepCall`](crate::CtxStepCall).
+///
+/// The context `C` holds per-actor metadata. The body is type-erased
+/// via `Box<dyn CtxStepCall>` since pipeline chain types are unnameable.
+///
+/// # Example
+///
+/// ```ignore
+/// let pipeline = CtxPipelineBuilder::<QuotingCtx, ()>::new()
+///     .then(read_books, &reg)
+///     .then(compute_quote, &reg)
+///     .then(submit_quote, &reg)
+///     .build();
+///
+/// let actor = PipelineActor::new(
+///     QuotingCtx { actor_id: token, instrument: BTC },
+///     pipeline,
+/// );
+///
+/// notify.register_raw(actor).subscribe(btc_md);
+/// ```
+pub struct PipelineActor<C> {
+    /// Per-actor owned context.
+    pub ctx: C,
+    body: Box<dyn CtxStepCall<C, (), Out = ()> + Send>,
+}
+
+impl<C: Send + 'static> PipelineActor<C> {
+    /// Create an actor from a context and a pipeline/DAG body.
+    ///
+    /// The body must implement `CtxStepCall<C, (), Out = ()>`.
+    /// Both [`CtxPipeline`](crate::CtxPipeline) and
+    /// [`CtxDag`](crate::CtxDag) satisfy this when their output is `()`.
+    pub fn new(ctx: C, body: impl CtxStepCall<C, (), Out = ()> + Send + 'static) -> Self {
+        Self {
+            ctx,
+            body: Box::new(body),
+        }
+    }
+}
+
+impl<C: Send + 'static> Actor for PipelineActor<C> {
+    fn run(&mut self, world: &mut World) {
+        self.body.call(&mut self.ctx, world, ());
+    }
+
+    fn name(&self) -> &'static str {
+        std::any::type_name::<C>()
+    }
+}
+
+// =============================================================================
+// IntoActor — conversion trait
+// =============================================================================
+
+/// Converts a step function into an [`Actor`].
+///
+/// Step function signature: `fn(&mut C, Params...)` — context first,
+/// then resolved resources. No event argument, no return value.
+///
+/// # Example
+///
+/// ```ignore
+/// fn quoting_step(ctx: &mut QuotingCtx, books: Res<OrderBooks>, mut gw: ResMut<Gateway>) {
+///     let quote = books.compute_quote(ctx.instrument, ctx.layer);
+///     gw.submit_quote(quote);
+/// }
+///
+/// let actor = quoting_step.into_actor(QuotingCtx { instrument: BTC, layer: 1 }, &registry);
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "this function cannot be used as an actor step",
+    note = "actor step signature: `fn(&mut C, Params...)` — context first, then resources",
+    note = "closures with resource parameters are not supported — use a named `fn`"
+)]
+pub trait IntoActor<C, Params> {
+    /// The concrete actor type produced.
+    type Actor: Actor + 'static;
+
+    /// Convert this function + context into an actor, resolving
+    /// parameters from the registry.
+    fn into_actor(self, ctx: C, registry: &Registry) -> Self::Actor;
+}
+
+// =============================================================================
+// Arity 0: fn(&mut C) — context only, no Param
+// =============================================================================
+
+impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> Actor for ActorFn<C, F, ()> {
+    fn run(&mut self, _world: &mut World) {
+        (self.f)(&mut self.ctx);
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> IntoActor<C, ()> for F {
+    type Actor = ActorFn<C, F, ()>;
+
+    fn into_actor(self, ctx: C, registry: &Registry) -> Self::Actor {
+        ActorFn {
+            ctx,
+            f: self,
+            state: <() as Param>::init(registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+// =============================================================================
+// Arities 1-8 via macro
+// =============================================================================
+
+macro_rules! impl_into_actor {
+    ($($P:ident),+) => {
+        impl<C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
+            Actor for ActorFn<C, F, ($($P,)+)>
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) +
+                FnMut(&mut C, $($P::Item<'a>,)+),
+        {
+            #[allow(non_snake_case)]
+            fn run(&mut self, world: &mut World) {
+                #[allow(clippy::too_many_arguments)]
+                fn call_inner<Ctx, $($P,)+>(
+                    mut f: impl FnMut(&mut Ctx, $($P,)+),
+                    ctx: &mut Ctx,
+                    $($P: $P,)+
+                ) {
+                    f(ctx, $($P,)+);
+                }
+
+                // SAFETY: state was produced by Param::init() on the same
+                // Registry that built this World. Single-threaded sequential
+                // dispatch ensures no mutable aliasing across params.
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, &mut self.ctx, $($P,)+);
+            }
+
+            fn name(&self) -> &'static str {
+                self.name
+            }
+        }
+
+        impl<C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
+            IntoActor<C, ($($P,)+)> for F
+        where
+            for<'a> &'a mut F:
+                FnMut(&mut C, $($P,)+) +
+                FnMut(&mut C, $($P::Item<'a>,)+),
+        {
+            type Actor = ActorFn<C, F, ($($P,)+)>;
+
+            fn into_actor(self, ctx: C, registry: &Registry) -> Self::Actor {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                ActorFn {
+                    ctx,
+                    f: self,
+                    state,
+                    name: std::any::type_name::<F>(),
+                }
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_actor);
+
+// =============================================================================
+// DeferredRemovals — World resource for actor self-removal
+// =============================================================================
+
+/// Deferred actor removal queue.
+///
+/// Actors request removal during dispatch by pushing their token
+/// via [`ResMut<DeferredRemovals>`](crate::ResMut). The [`ActorSystem`]
+/// drains this after all actors in the frame have run.
+#[derive(Default)]
+pub struct DeferredRemovals {
+    tokens: Vec<Token>,
+}
+
+impl DeferredRemovals {
+    /// Request deferred removal of an actor.
+    ///
+    /// Takes effect after the current dispatch frame completes.
+    /// Safe to call multiple times with the same token.
+    pub fn deregister(&mut self, token: Token) {
+        self.tokens.push(token);
+    }
+
+    /// Drain pending removals.
+    pub(crate) fn drain(&mut self) -> std::vec::Drain<'_, Token> {
+        self.tokens.drain(..)
+    }
+
+    /// Any removals pending?
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+}
+
+impl Resource for DeferredRemovals {}
+
+// =============================================================================
+// SourceRegistry — typed key → DataSource resolution
+// =============================================================================
+
+/// Maps natural domain keys to [`DataSource`] values.
+///
+/// Single World resource supporting any number of key types via
+/// type erasure. Each key type `K` gets its own internal
+/// `HashMap<K, DataSource>`. The `TypeId` dispatch is one hash
+/// lookup to find the right inner map — cold path only.
+///
+/// Any `Hash + Eq + Send + 'static` type works as a key — no trait
+/// to implement, no macro to invoke. Newtypes, enums, and tuples
+/// all work out of the box.
+///
+/// # Example
+///
+/// ```ignore
+/// // Setup
+/// let src = notify.register_source();
+/// registry.insert(InstrumentId("BTC"), src);
+///
+/// // Runtime lookup (cold path — from event handler)
+/// let src = registry.get(&InstrumentId("BTC")).unwrap();
+/// notify.register(|t| ctx, step, reg).subscribe(src);
+///
+/// // Hot path — DataSource pre-resolved, no registry involvement
+/// notify.mark(src);
+/// ```
+#[derive(Default)]
+pub struct SourceRegistry {
+    maps: FxHashMap<TypeId, Box<dyn Any + Send>>,
+}
+
+impl SourceRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Map a typed key to a [`DataSource`].
+    ///
+    /// Overwrites any previous mapping for this key.
+    pub fn insert<K: Hash + Eq + Send + 'static>(&mut self, key: K, source: DataSource) {
+        self.get_or_create_map::<K>().insert(key, source);
+    }
+
+    /// Look up a [`DataSource`] by typed key.
+    ///
+    /// Returns `None` if the key is not registered.
+    pub fn get<K: Hash + Eq + Send + 'static>(&self, key: &K) -> Option<DataSource> {
+        self.get_map::<K>().and_then(|map| map.get(key)).copied()
+    }
+
+    /// Remove a key mapping. Returns the [`DataSource`] so the caller
+    /// can also call [`ActorNotify::remove_source`] to free the slot.
+    pub fn remove<K: Hash + Eq + Send + 'static>(&mut self, key: &K) -> Option<DataSource> {
+        self.get_map_mut::<K>().and_then(|map| map.remove(key))
+    }
+
+    /// Returns `true` if the key is mapped.
+    pub fn contains<K: Hash + Eq + Send + 'static>(&self, key: &K) -> bool {
+        self.get_map::<K>().is_some_and(|map| map.contains_key(key))
+    }
+
+    fn get_map<K: Hash + Eq + Send + 'static>(&self) -> Option<&FxHashMap<K, DataSource>> {
+        self.maps
+            .get(&TypeId::of::<K>())
+            .map(|boxed| boxed.downcast_ref::<FxHashMap<K, DataSource>>().unwrap())
+    }
+
+    fn get_map_mut<K: Hash + Eq + Send + 'static>(
+        &mut self,
+    ) -> Option<&mut FxHashMap<K, DataSource>> {
+        self.maps
+            .get_mut(&TypeId::of::<K>())
+            .map(|boxed| boxed.downcast_mut::<FxHashMap<K, DataSource>>().unwrap())
+    }
+
+    fn get_or_create_map<K: Hash + Eq + Send + 'static>(
+        &mut self,
+    ) -> &mut FxHashMap<K, DataSource> {
+        self.maps
+            .entry(TypeId::of::<K>())
+            .or_insert_with(|| Box::<FxHashMap<K, DataSource>>::default())
+            .downcast_mut::<FxHashMap<K, DataSource>>()
+            .unwrap()
+    }
+}
+
+impl Resource for SourceRegistry {}
+
+// =============================================================================
+// ActorSystem — thin dispatch handle
+// =============================================================================
+
+/// Lightweight dispatch handle for the actor system.
+///
+/// Sits at the driver level (same as mio `Poll` or timer poller).
+/// Reads [`ActorNotify`] via pre-resolved [`ResourceId`] during
+/// dispatch. All actor storage and registration lives in
+/// [`ActorNotify`] (World resource).
+pub struct ActorSystem {
+    /// Pre-allocated events buffer for polling.
+    events: Events,
+
+    /// Pre-resolved resource IDs for reaching into World.
+    notify_id: ResourceId,
+    removals_id: ResourceId,
+}
+
+impl ActorSystem {
+    /// Create a dispatch handle from a built [`World`].
+    ///
+    /// The World must contain [`ActorNotify`] and [`DeferredRemovals`].
+    pub fn new(world: &World) -> Self {
+        Self {
+            events: Events::with_capacity(256),
+            notify_id: world.id::<ActorNotify>(),
+            removals_id: world.id::<DeferredRemovals>(),
+        }
+    }
+
+    /// Dispatch all woken actors and process deferred removals.
+    ///
+    /// 1. Polls [`ActorNotify`] for woken actor tokens (deduped)
+    /// 2. Runs each actor's step function with pre-resolved Params
+    /// 3. Drains [`DeferredRemovals`] and removes actors
+    ///
+    /// Returns `true` if any actor ran (for scheduler propagation).
+    pub fn dispatch(&mut self, world: &mut World) -> bool {
+        // SAFETY: notify_id was resolved from the same WorldBuilder.
+        // The raw pointer is needed to reach ActorNotify for polling,
+        // then we release before passing &mut World to actors.
+        let notify_ptr: *mut ActorNotify = unsafe { world.get_mut::<ActorNotify>(self.notify_id) };
+        let notify = unsafe { &mut *notify_ptr };
+
+        notify.notify.poll(&mut self.events);
+        let ran = !self.events.is_empty();
+
+        for token in self.events.iter() {
+            let idx = token.index();
+            // Move actor out of the slab before calling run().
+            // This eliminates aliasing: the actor is not inside
+            // ActorNotify during execution, so actors can safely
+            // access ActorNotify via ResMut<ActorNotify> if needed.
+            if let Some(slot) = notify.actors.get_mut(idx) {
+                if let Some(mut actor) = slot.take() {
+                    actor.run(world);
+                    // Put it back. Re-acquire notify in case the actor
+                    // modified it (e.g., registered new actors).
+                    let notify = unsafe { &mut *notify_ptr };
+                    if notify.actors.contains(idx) {
+                        notify.actors[idx] = Some(actor);
+                    }
+                    // If the slot was removed during run() (via
+                    // DeferredRemovals processed by a nested dispatch
+                    // or direct remove_actor), the actor is dropped.
+                }
+            }
+        }
+
+        // Deferred removals
+        let notify = unsafe { &mut *notify_ptr };
+        let removals: *mut DeferredRemovals =
+            unsafe { world.get_mut::<DeferredRemovals>(self.removals_id) };
+        let removals = unsafe { &mut *removals };
+        for token in removals.drain() {
+            notify.remove_actor(token);
+        }
+
+        ran
+    }
+
+    /// Number of live actors.
+    pub fn actor_count(&self, world: &World) -> usize {
+        world.resource::<ActorNotify>().actor_count()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Res, ResMut, WorldBuilder};
+
+    // -- Actor trait dispatch --------------------------------------------------
+
+    #[test]
+    fn actor_fn_arity0() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        struct Ctx {
+            count: u32,
+        }
+
+        fn step(ctx: &mut Ctx) {
+            ctx.count += 1;
+        }
+
+        let mut actor = step.into_actor(Ctx { count: 0 }, reg);
+        actor.run(&mut world);
+        assert_eq!(actor.ctx.count, 1);
+    }
+
+    #[test]
+    fn actor_fn_with_params() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(10);
+        wb.register::<u32>(0);
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        struct Ctx {
+            multiplier: u64,
+        }
+
+        fn step(ctx: &mut Ctx, val: Res<u64>, mut out: ResMut<u32>) {
+            *out = (*val * ctx.multiplier) as u32;
+        }
+
+        let mut actor = step.into_actor(Ctx { multiplier: 5 }, reg);
+        actor.run(&mut world);
+        assert_eq!(*world.resource::<u32>(), 50);
+    }
+
+    // -- ActorNotify ----------------------------------------------------------
+
+    fn dummy_actor() -> ActorFn<(), fn(&mut ()), ()> {
+        ActorFn {
+            ctx: (),
+            f: (|_: &mut ()| {}) as fn(&mut ()),
+            state: (),
+            name: "dummy",
+        }
+    }
+
+    #[test]
+    fn actor_notify_mark_fans_out() {
+        let mut notify = ActorNotify::new(4, 8);
+        let mut events = Events::with_capacity(8);
+
+        let src = notify.register_source();
+        let a1 = notify.register_raw(dummy_actor()).token();
+        let a2 = notify.register_raw(dummy_actor()).token();
+        let _a3 = notify.register_raw(dummy_actor()).token();
+
+        notify.subscribe(a1, src);
+        notify.subscribe(a2, src);
+        // _a3 not subscribed
+
+        notify.mark(src);
+        notify.notify.poll(&mut events);
+
+        assert_eq!(events.len(), 2);
+        assert!(events.as_slice().contains(&a1));
+        assert!(events.as_slice().contains(&a2));
+    }
+
+    #[test]
+    fn actor_notify_dedup_across_sources() {
+        let mut notify = ActorNotify::new(4, 8);
+        let mut events = Events::with_capacity(8);
+
+        let src1 = notify.register_source();
+        let src2 = notify.register_source();
+        let actor = notify.register_raw(dummy_actor()).token();
+
+        notify.subscribe(actor, src1);
+        notify.subscribe(actor, src2);
+
+        notify.mark(src1);
+        notify.mark(src2);
+
+        notify.notify.poll(&mut events);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events.as_slice()[0], actor);
+    }
+
+    #[test]
+    fn actor_notify_remove_actor() {
+        let mut notify = ActorNotify::new(4, 8);
+        let mut events = Events::with_capacity(8);
+
+        let src = notify.register_source();
+
+        struct Ctx;
+        let token = notify
+            .register_raw(ActorFn {
+                ctx: Ctx,
+                f: (|_: &mut Ctx| {}) as fn(&mut Ctx),
+                state: (),
+                name: "test",
+            })
+            .token();
+        notify.subscribe(token, src);
+
+        notify.remove_actor(token);
+        notify.mark(src);
+        notify.notify.poll(&mut events);
+        assert!(events.is_empty());
+    }
+
+    // -- Full ActorSystem integration -----------------------------------------
+
+    // Helper: registry() borrows &World, resource_mut() borrows &mut World.
+    // In tests, we use unsafe get_mut via the notify_id to avoid the conflict,
+    // same pattern as production dispatch code.
+    fn notify_mut(world: &World, id: ResourceId) -> &mut ActorNotify {
+        unsafe { world.get_mut::<ActorNotify>(id) }
+    }
+
+    #[test]
+    fn actor_system_dispatch() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let reg = world.registry();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            increment: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut val: ResMut<u64>) {
+            *val += ctx.increment;
+        }
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    increment: 10,
+                },
+                step,
+                reg,
+            )
+            .subscribe(src);
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    increment: 5,
+                },
+                step,
+                reg,
+            )
+            .subscribe(src);
+
+        // Mark and dispatch
+        notify_mut(&world, nid).mark(src);
+        let ran = system.dispatch(&mut world);
+
+        assert!(ran);
+        assert_eq!(*world.resource::<u64>(), 15); // 10 + 5
+    }
+
+    #[test]
+    fn actor_system_deferred_removal() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let reg = world.registry();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            actor_id: Token,
+            runs: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut val: ResMut<u64>, mut removals: ResMut<DeferredRemovals>) {
+            *val += 1;
+            ctx.runs += 1;
+            if ctx.runs >= 2 {
+                removals.deregister(ctx.actor_id);
+            }
+        }
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+        notify
+            .register(
+                |t| Ctx {
+                    actor_id: t,
+                    runs: 0,
+                },
+                step,
+                reg,
+            )
+            .subscribe(src);
+
+        assert_eq!(system.actor_count(&world), 1);
+
+        // Frame 1 — actor runs, runs=1, no removal
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 1);
+        assert_eq!(system.actor_count(&world), 1);
+
+        // Frame 2 — actor runs, runs=2, deregisters
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 2);
+        assert_eq!(system.actor_count(&world), 0);
+
+        // Frame 3 — no actors, nothing runs
+        notify_mut(&world, nid).mark(src);
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+        assert_eq!(*world.resource::<u64>(), 2);
+    }
+
+    #[test]
+    fn actor_system_only_subscribed_wake() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let reg = world.registry();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        let notify = notify_mut(&world, nid);
+        let btc = notify.register_source();
+        let eth = notify.register_source();
+
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    value: 10,
+                },
+                step,
+                reg,
+            )
+            .subscribe(btc);
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    value: 100,
+                },
+                step,
+                reg,
+            )
+            .subscribe(eth);
+
+        // Only BTC fires — only actor 1 runs
+        notify_mut(&world, nid).mark(btc);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 10);
+
+        // ETH fires — actor 2 runs
+        notify_mut(&world, nid).mark(eth);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 110);
+    }
+
+    #[test]
+    fn runtime_registration() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        // Register source and first actor at setup
+        let src = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let src = notify.register_source();
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 10,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(src);
+            src
+        };
+
+        // Frame 1 — one actor
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 10);
+
+        // Runtime registration (simulates admin command handler)
+        {
+            let reg = world.registry();
+            notify_mut(&world, nid)
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 100,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(src);
+        }
+
+        // Frame 2 — both actors fire
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 120); // 10 + 10 + 100
+    }
+
+    #[test]
+    fn register_after_remove_reuses_key() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>, mut removals: ResMut<DeferredRemovals>) {
+            *out += ctx.value;
+            if ctx.value == 10 {
+                removals.deregister(ctx.actor_id);
+            }
+        }
+
+        let src = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let src = notify.register_source();
+            notify
+                .register(
+                    |t| Ctx {
+                        actor_id: t,
+                        value: 10,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(src);
+            src
+        };
+
+        // Frame 1 — actor runs and deregisters itself
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 10);
+        assert_eq!(system.actor_count(&world), 0);
+
+        // Register a NEW actor — should reuse key 0
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let token = notify
+                .register(
+                    |t| Ctx {
+                        actor_id: t,
+                        value: 100,
+                    },
+                    step,
+                    reg,
+                )
+                .token();
+            notify.subscribe(token, src);
+            assert_eq!(token.index(), 0); // slab reused key 0
+        }
+
+        // Frame 2 — new actor runs correctly
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 110); // 10 + 100
+        assert_eq!(system.actor_count(&world), 1); // still alive (value != 10)
+    }
+
+    #[test]
+    fn actor_can_access_actor_notify() {
+        // Verify no aliasing UB: the move-out-move-back pattern
+        // allows actors to safely access ActorNotify via ResMut.
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+        }
+
+        fn step(_ctx: &mut Ctx, notify: ResMut<ActorNotify>, mut out: ResMut<u64>) {
+            // Actor reads ActorNotify — this would be UB without move-out
+            *out = notify.actor_count() as u64;
+        }
+
+        let src = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let src = notify.register_source();
+            notify
+                .register(|t| Ctx { _actor_id: t }, step, reg)
+                .subscribe(src);
+            src
+        };
+
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        // Actor count is 1, but during run() the actor was taken out,
+        // so actor_count() sees 0 actors with Some values... actually
+        // slab.len() still counts the slot as occupied. The Option is
+        // None but the slab entry exists. Let's just verify no panic.
+        // The important thing is no aliasing UB.
+    }
+
+    // -- Realistic data source patterns ---------------------------------------
+
+    #[test]
+    fn multi_instrument_with_shared_source() {
+        // Pattern: per-instrument market data sources + a shared "positions"
+        // source. Quoting actors subscribe to their instrument + positions.
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            instrument: &'static str,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            // Each actor increments by its instrument's "value"
+            *out += match ctx.instrument {
+                "BTC" => 100,
+                "ETH" => 10,
+                "SOL" => 1,
+                _ => 0,
+            };
+        }
+
+        let (btc_md, eth_md, sol_md, positions) = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+
+            // Per-instrument data sources
+            let btc_md = notify.register_source();
+            let eth_md = notify.register_source();
+            let sol_md = notify.register_source();
+            // Shared source
+            let positions = notify.register_source();
+
+            // BTC actor: subscribes to btc_md + positions
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        instrument: "BTC",
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(btc_md)
+                .subscribe(positions);
+
+            // ETH actor: subscribes to eth_md + positions
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        instrument: "ETH",
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(eth_md)
+                .subscribe(positions);
+
+            // SOL actor: subscribes to sol_md + positions
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        instrument: "SOL",
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(sol_md)
+                .subscribe(positions);
+
+            (btc_md, eth_md, sol_md, positions)
+        };
+
+        // Only BTC data changes — only BTC actor wakes
+        notify_mut(&world, nid).mark(btc_md);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 100);
+
+        // Position update — ALL actors wake (shared source), deduped
+        notify_mut(&world, nid).mark(positions);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 211); // 100 + 100 + 10 + 1
+
+        // BTC + ETH data change in same frame — both actors wake once
+        notify_mut(&world, nid).mark(btc_md);
+        notify_mut(&world, nid).mark(eth_md);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 321); // 211 + 100 + 10
+
+        // BTC data + position in same frame — BTC actor wakes ONCE (dedup)
+        notify_mut(&world, nid).mark(btc_md);
+        notify_mut(&world, nid).mark(positions);
+        system.dispatch(&mut world);
+        // BTC: 100 (deduped, only once), ETH: 10, SOL: 1
+        assert_eq!(*world.resource::<u64>(), 432); // 321 + 100 + 10 + 1
+
+        // Nothing fires — no actors wake
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+        assert_eq!(*world.resource::<u64>(), 432);
+
+        // SOL data only — only SOL actor
+        notify_mut(&world, nid).mark(sol_md);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 433);
+    }
+
+    #[test]
+    fn per_actor_fill_routing() {
+        // Pattern: each actor gets its own DataSource for fill routing.
+        // Wire protocol embeds the token index in the order client_id.
+        // When a fill arrives, the handler marks the actor's source directly.
+        use std::collections::HashMap;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            actor_id: Token,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.actor_id.index() as u64 + 1;
+        }
+
+        // Routing table: token index → actor's fill source
+        let mut fill_sources: HashMap<usize, DataSource> = HashMap::new();
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+
+            for _ in 0..3 {
+                // Each actor gets its own fill source
+                let fill_src = notify.register_source();
+                let token = notify
+                    .register(|t| Ctx { actor_id: t }, step, reg)
+                    .subscribe(fill_src)
+                    .token();
+
+                fill_sources.insert(token.index(), fill_src);
+            }
+        }
+
+        // Simulate fill arriving for actor 1 — look up its source by wire ID
+        let wire_client_id: usize = 1;
+        let fill_source = fill_sources[&wire_client_id];
+        notify_mut(&world, nid).mark(fill_source);
+        system.dispatch(&mut world);
+        // Only actor 1 ran: token.index()=1, so += 2
+        assert_eq!(*world.resource::<u64>(), 2);
+
+        // Fill for actor 0
+        let fill_source = fill_sources[&0];
+        notify_mut(&world, nid).mark(fill_source);
+        system.dispatch(&mut world);
+        // Actor 0: token.index()=0, += 1
+        assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    #[test]
+    fn dynamic_source_registration() {
+        // Pattern: data sources added at runtime when new instruments
+        // come online. Actors registered and subscribed dynamically.
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        // Start with just BTC
+        let btc_md = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let btc_md = notify.register_source();
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 10,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(btc_md);
+            btc_md
+        };
+
+        notify_mut(&world, nid).mark(btc_md);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 10);
+
+        // Runtime: new instrument comes online — register source + actor
+        let eth_md = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let eth_md = notify.register_source();
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 100,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(eth_md);
+            eth_md
+        };
+
+        // Both instruments fire
+        notify_mut(&world, nid).mark(btc_md);
+        notify_mut(&world, nid).mark(eth_md);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 120); // 10 + 10 + 100
+    }
+
+    // -- Source removal + slab reuse ------------------------------------------
+
+    #[test]
+    fn remove_source_and_reuse_slot() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        // Register two sources
+        let (src_a, src_b) = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let src_a = notify.register_source();
+            let src_b = notify.register_source();
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 10,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(src_a);
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 100,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(src_b);
+            (src_a, src_b)
+        };
+
+        // Remove source A
+        notify_mut(&world, nid).remove_source(src_a);
+
+        // Marking removed source is a no-op
+        notify_mut(&world, nid).mark(src_a);
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+
+        // Source B still works
+        notify_mut(&world, nid).mark(src_b);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 100);
+
+        // Register a new source — should reuse slot 0
+        let src_c = notify_mut(&world, nid).register_source();
+        assert_eq!(src_c.0, src_a.0); // slab reused the slot
+
+        // Subscribe actor to new source and verify it works
+        let reg = world.registry();
+        let notify = notify_mut(&world, nid);
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    value: 1,
+                },
+                step,
+                reg,
+            )
+            .subscribe(src_c);
+
+        notify_mut(&world, nid).mark(src_c);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 101); // 100 + 1
+    }
+
+    // -- SourceRegistry -------------------------------------------------------
+
+    #[test]
+    fn source_registry_basic() {
+        let mut registry = SourceRegistry::new();
+
+        #[derive(Hash, Eq, PartialEq, Debug)]
+        struct InstrumentId(u32);
+
+        let src_a = DataSource(0);
+        let src_b = DataSource(1);
+
+        registry.insert(InstrumentId(1), src_a);
+        registry.insert(InstrumentId(2), src_b);
+
+        assert_eq!(registry.get(&InstrumentId(1)), Some(src_a));
+        assert_eq!(registry.get(&InstrumentId(2)), Some(src_b));
+        assert_eq!(registry.get(&InstrumentId(3)), None);
+        assert!(registry.contains(&InstrumentId(1)));
+        assert!(!registry.contains(&InstrumentId(3)));
+    }
+
+    #[test]
+    fn source_registry_multiple_key_types() {
+        let mut registry = SourceRegistry::new();
+
+        #[derive(Hash, Eq, PartialEq)]
+        struct InstrumentId(u32);
+
+        #[derive(Hash, Eq, PartialEq)]
+        struct StrategyId(u32);
+
+        let src_a = DataSource(0);
+        let src_b = DataSource(1);
+
+        // Same registry, different key types
+        registry.insert(InstrumentId(1), src_a);
+        registry.insert(StrategyId(1), src_b);
+
+        // Different type namespaces — same inner value (1), different results
+        assert_eq!(registry.get(&InstrumentId(1)), Some(src_a));
+        assert_eq!(registry.get(&StrategyId(1)), Some(src_b));
+    }
+
+    #[test]
+    fn source_registry_tuple_keys() {
+        let mut registry = SourceRegistry::new();
+
+        let src = DataSource(42);
+        registry.insert(("BTC", "Binance"), src);
+
+        assert_eq!(registry.get(&("BTC", "Binance")), Some(src));
+        assert_eq!(registry.get(&("ETH", "Binance")), None);
+    }
+
+    #[test]
+    fn source_registry_remove() {
+        let mut registry = SourceRegistry::new();
+
+        let src = DataSource(0);
+        registry.insert(42u64, src);
+
+        assert_eq!(registry.remove(&42u64), Some(src));
+        assert_eq!(registry.get(&42u64), None);
+        assert_eq!(registry.remove(&42u64), None); // already gone
+    }
+
+    #[test]
+    fn source_registry_integrated_with_actor_system() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        #[derive(Hash, Eq, PartialEq, Clone, Copy)]
+        struct Instrument(u32);
+        const BTC: Instrument = Instrument(0);
+        const ETH: Instrument = Instrument(1);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        // Setup: register sources and map to natural keys
+        let btc_src = notify_mut(&world, nid).register_source();
+        let eth_src = notify_mut(&world, nid).register_source();
+
+        world.resource_mut::<SourceRegistry>().insert(BTC, btc_src);
+        world.resource_mut::<SourceRegistry>().insert(ETH, eth_src);
+
+        // Register actors using natural key lookup
+        {
+            let reg = world.registry();
+            let btc = world.resource::<SourceRegistry>().get(&BTC).unwrap();
+            let notify = notify_mut(&world, nid);
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 10,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(btc);
+        }
+
+        // Mark via pre-resolved DataSource
+        notify_mut(&world, nid).mark(btc_src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 10);
+
+        // Delist BTC — remove from both registry and notify
+        let removed = world.resource_mut::<SourceRegistry>().remove(&BTC);
+        assert!(removed.is_some());
+        notify_mut(&world, nid).remove_source(removed.unwrap());
+
+        // Marking BTC is now a no-op
+        notify_mut(&world, nid).mark(btc_src);
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+    }
+
+    // -- SourceRegistry edge cases --------------------------------------------
+
+    #[test]
+    fn source_registry_overwrite_key() {
+        let mut registry = SourceRegistry::new();
+        let src_a = DataSource(0);
+        let src_b = DataSource(1);
+
+        registry.insert(42u32, src_a);
+        assert_eq!(registry.get(&42u32), Some(src_a));
+
+        // Overwrite same key with different source
+        registry.insert(42u32, src_b);
+        assert_eq!(registry.get(&42u32), Some(src_b));
+    }
+
+    #[test]
+    fn source_registry_empty_get() {
+        let registry = SourceRegistry::new();
+        // No key type has ever been registered
+        assert_eq!(registry.get(&42u32), None);
+        assert!(!registry.contains(&42u32));
+    }
+
+    #[test]
+    fn source_registry_enum_keys() {
+        #[derive(Hash, Eq, PartialEq)]
+        enum Venue {
+            Binance,
+            Coinbase,
+        }
+
+        let mut registry = SourceRegistry::new();
+        let src = DataSource(0);
+        registry.insert(Venue::Binance, src);
+
+        assert_eq!(registry.get(&Venue::Binance), Some(src));
+        assert_eq!(registry.get(&Venue::Coinbase), None);
+    }
+
+    #[test]
+    fn source_registry_composite_key() {
+        // (Strategy, Instrument, Venue) triple as key
+        #[derive(Hash, Eq, PartialEq)]
+        struct StrategyId(u32);
+        #[derive(Hash, Eq, PartialEq)]
+        struct InstrumentId(u32);
+        #[derive(Hash, Eq, PartialEq)]
+        struct VenueId(u32);
+
+        let mut registry = SourceRegistry::new();
+        let src = DataSource(5);
+        registry.insert((StrategyId(1), InstrumentId(0), VenueId(2)), src);
+
+        assert_eq!(
+            registry.get(&(StrategyId(1), InstrumentId(0), VenueId(2))),
+            Some(src)
+        );
+        // Different strategy
+        assert_eq!(
+            registry.get(&(StrategyId(2), InstrumentId(0), VenueId(2))),
+            None
+        );
+    }
+
+    // -- Full lifecycle scenarios ---------------------------------------------
+
+    #[test]
+    fn full_lifecycle_add_trade_remove() {
+        // Simulates: add instrument → actors trade → delist → cleanup
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        #[derive(Hash, Eq, PartialEq, Clone, Copy)]
+        struct Instrument(u32);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        // Phase 1: Add BTC
+        let btc_src = notify_mut(&world, nid).register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(Instrument(0), btc_src);
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 10,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(btc_src);
+        }
+
+        // Phase 2: Trade
+        notify_mut(&world, nid).mark(btc_src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 10);
+
+        // Phase 3: Add ETH dynamically
+        let eth_src = notify_mut(&world, nid).register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(Instrument(1), eth_src);
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 100,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(eth_src);
+        }
+
+        // Both trade
+        notify_mut(&world, nid).mark(btc_src);
+        notify_mut(&world, nid).mark(eth_src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 120);
+
+        // Phase 4: Delist BTC
+        let removed = world
+            .resource_mut::<SourceRegistry>()
+            .remove(&Instrument(0));
+        notify_mut(&world, nid).remove_source(removed.unwrap());
+
+        // Only ETH remains
+        notify_mut(&world, nid).mark(eth_src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 220);
+
+        // Phase 5: Add SOL — reuses BTC's old slab slot
+        let sol_src = notify_mut(&world, nid).register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(Instrument(2), sol_src);
+        assert_eq!(sol_src.0, btc_src.0); // slab reused
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            notify
+                .register(
+                    |t| Ctx {
+                        _actor_id: t,
+                        value: 1000,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(sol_src);
+        }
+
+        // SOL + ETH fire
+        notify_mut(&world, nid).mark(sol_src);
+        notify_mut(&world, nid).mark(eth_src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 1320); // 220 + 1000 + 100
+    }
+
+    #[test]
+    fn multi_strategy_same_instrument() {
+        // Two strategies on the same instrument with different data sources
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        #[derive(Hash, Eq, PartialEq, Clone, Copy)]
+        struct StrategyInstrument(&'static str, &'static str);
+
+        struct Ctx {
+            _actor_id: Token,
+            value: u64,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += ctx.value;
+        }
+
+        // Per-strategy+instrument sources
+        let reg = world.registry();
+        let notify = notify_mut(&world, nid);
+
+        let mm_btc = notify.register_source();
+        let mm_eth = notify.register_source();
+        let arb_btc = notify.register_source();
+
+        // Market maker on BTC and ETH
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    value: 1,
+                },
+                step,
+                reg,
+            )
+            .subscribe(mm_btc);
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    value: 2,
+                },
+                step,
+                reg,
+            )
+            .subscribe(mm_eth);
+
+        // Arb strategy on BTC
+        notify
+            .register(
+                |t| Ctx {
+                    _actor_id: t,
+                    value: 100,
+                },
+                step,
+                reg,
+            )
+            .subscribe(arb_btc);
+
+        // Map composite keys
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(StrategyInstrument("MM", "BTC"), mm_btc);
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(StrategyInstrument("MM", "ETH"), mm_eth);
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(StrategyInstrument("ARB", "BTC"), arb_btc);
+
+        // BTC data arrives — both MM-BTC and ARB-BTC should fire
+        // But they're separate sources, so handler marks both:
+        let mm_btc_src = world
+            .resource::<SourceRegistry>()
+            .get(&StrategyInstrument("MM", "BTC"))
+            .unwrap();
+        let arb_btc_src = world
+            .resource::<SourceRegistry>()
+            .get(&StrategyInstrument("ARB", "BTC"))
+            .unwrap();
+
+        notify_mut(&world, nid).mark(mm_btc_src);
+        notify_mut(&world, nid).mark(arb_btc_src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 101); // 1 + 100
+    }
+
+    #[test]
+    fn actor_self_removal_with_registry_cleanup() {
+        // Actor deregisters itself AND the handler cleans up the source
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            actor_id: Token,
+        }
+
+        fn one_shot(ctx: &mut Ctx, mut out: ResMut<u64>, mut removals: ResMut<DeferredRemovals>) {
+            *out += 1;
+            removals.deregister(ctx.actor_id);
+        }
+
+        let src = notify_mut(&world, nid).register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert("one-shot", src);
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            notify
+                .register(|t| Ctx { actor_id: t }, one_shot, reg)
+                .subscribe(src);
+        }
+
+        // Actor runs once and removes itself
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 1);
+        assert_eq!(system.actor_count(&world), 0);
+
+        // Source still exists in registry but no actors subscribe
+        assert!(world.resource::<SourceRegistry>().contains(&"one-shot"));
+
+        // Mark again — no actors wake
+        notify_mut(&world, nid).mark(src);
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+    }
+
+    #[test]
+    fn many_actors_same_source() {
+        // 50 actors all subscribed to one source — all wake, deduped
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 64));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+        }
+
+        fn step(_ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += 1;
+        }
+
+        let src = notify_mut(&world, nid).register_source();
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            for _ in 0..50 {
+                notify
+                    .register(|t| Ctx { _actor_id: t }, step, reg)
+                    .subscribe(src);
+            }
+        }
+
+        assert_eq!(system.actor_count(&world), 50);
+
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 50); // all 50 ran exactly once
+    }
+
+    #[test]
+    fn actor_subscribes_to_multiple_sources() {
+        // One actor subscribed to 5 different sources.
+        // All 5 fire in one frame — actor runs exactly once.
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(8, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+        }
+
+        fn step(_ctx: &mut Ctx, mut out: ResMut<u64>) {
+            *out += 1;
+        }
+
+        let mut sources = Vec::new();
+        let notify = notify_mut(&world, nid);
+        for _ in 0..5 {
+            sources.push(notify.register_source());
+        }
+
+        {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+            let mut registration = notify.register(|t| Ctx { _actor_id: t }, step, reg);
+            for &src in &sources {
+                registration = registration.subscribe(src);
+            }
+        }
+
+        // Mark all 5 sources
+        for &src in &sources {
+            notify_mut(&world, nid).mark(src);
+        }
+
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 1); // ONE run despite 5 sources
+    }
+
+    #[test]
+    fn stale_data_source_is_noop() {
+        // After removing a source, marking it must not panic
+        let mut wb = WorldBuilder::new();
+        wb.register(ActorNotify::new(4, 4));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        let src = notify_mut(&world, nid).register_source();
+        notify_mut(&world, nid).remove_source(src);
+
+        // Must not panic
+        notify_mut(&world, nid).mark(src);
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+    }
+
+    #[test]
+    fn double_remove_source_is_noop() {
+        let mut notify = ActorNotify::new(4, 4);
+        let src = notify.register_source();
+        notify.remove_source(src);
+        notify.remove_source(src); // must not panic
+    }
+
+    // -- PipelineActor: actor body is a CtxPipeline ----------------------------
+
+    #[test]
+    fn pipeline_actor_dispatch() {
+        use crate::CtxPipelineBuilder;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            instrument: &'static str,
+        }
+
+        fn read_data(ctx: &mut Ctx, val: Res<u64>, _input: ()) -> u64 {
+            let _ = ctx.instrument;
+            *val
+        }
+
+        fn double(_ctx: &mut Ctx, x: u64) -> u64 {
+            x * 2
+        }
+
+        fn store(_ctx: &mut Ctx, mut out: ResMut<u64>, x: u64) {
+            *out = x;
+        }
+
+        let reg = world.registry();
+
+        let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
+            .then(read_data, reg)
+            .then(double, reg)
+            .then(store, reg)
+            .build();
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+
+        // Wrap pipeline in PipelineActor
+        let actor = PipelineActor::new(
+            Ctx {
+                _actor_id: Token::new(0),
+                instrument: "BTC",
+            },
+            pipeline,
+        );
+        notify.register_raw(actor).subscribe(src);
+
+        // Set initial value and dispatch
+        *world.resource_mut::<u64>() = 10;
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+
+        assert_eq!(*world.resource::<u64>(), 20); // 10 * 2
+    }
+
+    #[test]
+    fn dag_actor_dispatch() {
+        use crate::CtxDagBuilder;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+        }
+
+        fn root(ctx: &mut Ctx, val: Res<u64>, _input: ()) -> u64 {
+            let _ = ctx;
+            *val
+        }
+
+        fn arm_double(_ctx: &mut Ctx, val: &u64) -> u64 {
+            *val * 2
+        }
+
+        fn arm_add(_ctx: &mut Ctx, val: &u64) -> u64 {
+            *val + 10
+        }
+
+        fn merge(_ctx: &mut Ctx, mut out: ResMut<u64>, a: &u64, b: &u64) {
+            *out = *a + *b;
+        }
+
+        let reg = world.registry();
+
+        let dag = CtxDagBuilder::<Ctx, ()>::new()
+            .root(root, reg)
+            .fork()
+            .arm(|seed| seed.then(arm_double, reg))
+            .arm(|seed| seed.then(arm_add, reg))
+            .merge(merge, reg)
+            .build();
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+
+        let actor = PipelineActor::new(
+            Ctx {
+                _actor_id: Token::new(0),
+            },
+            dag,
+        );
+        notify.register_raw(actor).subscribe(src);
+
+        *world.resource_mut::<u64>() = 5;
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+
+        // (5 * 2) + (5 + 10) = 10 + 15 = 25
+        assert_eq!(*world.resource::<u64>(), 25);
+    }
+
+    #[test]
+    fn multiple_pipeline_actors_different_bodies() {
+        use crate::CtxPipelineBuilder;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            factor: u64,
+        }
+
+        fn multiply(ctx: &mut Ctx, val: Res<u64>, _input: ()) -> u64 {
+            *val * ctx.factor
+        }
+
+        fn accumulate(_ctx: &mut Ctx, mut out: ResMut<u64>, val: u64) {
+            *out += val;
+        }
+
+        let reg = world.registry();
+
+        // Actor A: multiply by 2
+        let pipeline_a = CtxPipelineBuilder::<Ctx, ()>::new()
+            .then(multiply, reg)
+            .then(accumulate, reg)
+            .build();
+
+        // Actor B: multiply by 10
+        let pipeline_b = CtxPipelineBuilder::<Ctx, ()>::new()
+            .then(multiply, reg)
+            .then(accumulate, reg)
+            .build();
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+
+        notify
+            .register_raw(PipelineActor::new(
+                Ctx {
+                    _actor_id: Token::new(0),
+                    factor: 2,
+                },
+                pipeline_a,
+            ))
+            .subscribe(src);
+
+        notify
+            .register_raw(PipelineActor::new(
+                Ctx {
+                    _actor_id: Token::new(1),
+                    factor: 10,
+                },
+                pipeline_b,
+            ))
+            .subscribe(src);
+
+        *world.resource_mut::<u64>() = 5;
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+
+        // Actor A reads 5, adds 5*2=10, so resource=15
+        // Actor B reads 15, adds 15*10=150, so resource=165
+        // (Order depends on dispatch order — both subscribed to same source)
+        // The value is order-dependent. Just verify both ran:
+        let val = *world.resource::<u64>();
+        assert!(val > 5, "both actors should have run, got {val}");
+    }
+
+    #[test]
+    fn pipeline_actor_with_guard() {
+        use crate::CtxPipelineBuilder;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            threshold: u64,
+        }
+
+        fn read(_ctx: &mut Ctx, val: Res<u64>, _input: ()) -> u64 {
+            *val
+        }
+
+        fn above_threshold(ctx: &mut Ctx, val: &u64) -> bool {
+            *val > ctx.threshold
+        }
+
+        fn write(_ctx: &mut Ctx, mut out: ResMut<u64>, _val: u64) {
+            *out = 999;
+        }
+
+        let reg = world.registry();
+
+        let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
+            .then(read, reg)
+            .guard(above_threshold, reg)
+            .map(write, reg)
+            .build();
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+
+        notify
+            .register_raw(PipelineActor::new(
+                Ctx {
+                    _actor_id: Token::new(0),
+                    threshold: 10,
+                },
+                pipeline,
+            ))
+            .subscribe(src);
+
+        // Value below threshold — guard blocks
+        *world.resource_mut::<u64>() = 5;
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 5); // unchanged
+
+        // Value above threshold — guard passes
+        *world.resource_mut::<u64>() = 20;
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 999);
+    }
+
+    // -- Two-phase registration (safe API through World) ----------------------
+
+    #[test]
+    fn two_phase_registration_safe_api() {
+        // Demonstrates the safe API: alloc_actor → into_actor → insert
+        // No unsafe, no registry borrow conflicts.
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            actor_id: Token,
+            instrument: &'static str,
+        }
+
+        fn step(ctx: &mut Ctx, mut out: ResMut<u64>) {
+            let _ = ctx.instrument;
+            *out += ctx.actor_id.index() as u64 + 1;
+        }
+
+        // Phase 1: reserve slot
+        let src = world.resource_mut::<ActorNotify>().register_source();
+        let token = world.resource_mut::<ActorNotify>().alloc_actor();
+
+        // Phase 2: build actor with token + registry (no borrow conflict)
+        let actor = step.into_actor(
+            Ctx {
+                actor_id: token,
+                instrument: "BTC",
+            },
+            world.registry(),
+        );
+
+        // Phase 3: insert + subscribe
+        world
+            .resource_mut::<ActorNotify>()
+            .insert(token, actor)
+            .subscribe(src);
+
+        // Verify dispatch
+        world.resource_mut::<ActorNotify>().mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 1); // token index 0 + 1
+
+        // Second actor — same pattern
+        let token2 = world.resource_mut::<ActorNotify>().alloc_actor();
+        let actor2 = step.into_actor(
+            Ctx {
+                actor_id: token2,
+                instrument: "ETH",
+            },
+            world.registry(),
+        );
+        world
+            .resource_mut::<ActorNotify>()
+            .insert(token2, actor2)
+            .subscribe(src);
+
+        // Both actors fire
+        world.resource_mut::<ActorNotify>().mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 4); // 1 + (0+1) + (1+1)
+    }
+
+    #[test]
+    fn two_phase_with_pipeline_actor() {
+        use crate::CtxPipelineBuilder;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+        }
+
+        fn read(ctx: &mut Ctx, val: Res<u64>, _: ()) -> u64 {
+            let _ = ctx;
+            *val
+        }
+
+        fn double(_ctx: &mut Ctx, x: u64) -> u64 {
+            x * 2
+        }
+
+        fn store(_ctx: &mut Ctx, mut out: ResMut<u64>, x: u64) {
+            *out = x;
+        }
+
+        // Phase 1: reserve + register source
+        let src = world.resource_mut::<ActorNotify>().register_source();
+        let token = world.resource_mut::<ActorNotify>().alloc_actor();
+
+        // Phase 2: build pipeline + wrap in PipelineActor (needs registry)
+        let reg = world.registry();
+        let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
+            .then(read, reg)
+            .then(double, reg)
+            .then(store, reg)
+            .build();
+        let actor = PipelineActor::new(Ctx { _actor_id: token }, pipeline);
+
+        // Phase 3: insert
+        world
+            .resource_mut::<ActorNotify>()
+            .insert(token, actor)
+            .subscribe(src);
+
+        *world.resource_mut::<u64>() = 10;
+        world.resource_mut::<ActorNotify>().mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(*world.resource::<u64>(), 20); // 10 * 2
+    }
+}

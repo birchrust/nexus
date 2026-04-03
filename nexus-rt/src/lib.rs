@@ -145,6 +145,7 @@
 #[macro_use]
 mod tuples;
 
+pub mod actor;
 mod adapt;
 mod callback;
 mod catch_unwind;
@@ -177,6 +178,10 @@ pub mod codegen_audit;
 pub use adapt::{Adapt, ByRef, Cloned, Owned};
 
 // Derive macros re-exported from nexus-rt-derive
+pub use actor::{
+    Actor, ActorFn, ActorNotify, ActorRegistration, ActorSystem, DataSource, DeferredRemovals,
+    IntoActor, PipelineActor, SourceRegistry,
+};
 pub use callback::{Callback, IntoCallback};
 pub use catch_unwind::CatchAssertUnwindSafe;
 pub use combinator::{Broadcast, FanOut};

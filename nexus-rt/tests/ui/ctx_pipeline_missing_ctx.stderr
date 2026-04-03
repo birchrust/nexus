@@ -1,0 +1,16 @@
+error[E0277]: this function cannot be used as a context-aware pipeline step
+  --> tests/ui/ctx_pipeline_missing_ctx.rs:21:66
+   |
+21 |     let _pipeline = CtxPipelineBuilder::<MyCtx, u32>::new().then(bad_step, reg);
+   |                                                             ---- ^^^^^^^^ the trait `IntoCtxStep<MyCtx, u32, _, _>` is not implemented for fn item `for<'a> fn(Res<'a, Val>, u32) -> u64 {bad_step}`
+   |                                                             |
+   |                                                             required by a bound introduced by this call
+   |
+   = note: ctx step signature: `fn(&mut C, Params..., In) -> Out` — context first, resources, input last
+   = note: for raw World access: `fn(&mut C, &mut World, In) -> Out`
+   = note: closures with resource parameters are not supported — use a named `fn`
+note: required by a bound in `CtxPipelineBuilder::<C, In>::then`
+  --> src/ctx_pipeline.rs
+   |
+   |     pub fn then<Out, Params, S: IntoCtxStep<C, In, Out, Params>>(
+   |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `CtxPipelineBuilder::<C, In>::then`

@@ -1,0 +1,5 @@
+error[E0599]: no method named `into_actor` found for fn item `fn(u32) {bad_step}` in the current scope
+  --> tests/ui/actor_wrong_sig.rs:18:27
+   |
+18 |     let _actor = bad_step.into_actor(MyCtx, reg);
+   |                           ^^^^^^^^^^ method not found in `fn(u32) {bad_step}`

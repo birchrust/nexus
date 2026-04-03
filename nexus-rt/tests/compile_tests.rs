@@ -4501,3 +4501,1066 @@ mod view_derive {
         assert_eq!(world.resource::<AuditLog>().0, vec!["SOL-USD qty=100 @150"]);
     }
 }
+
+// =========================================================================
+// Context-aware pipeline + DAG — compile-time + runtime integration tests
+// =========================================================================
+
+mod ctx_pipelines {
+    use nexus_rt::{CtxDagBuilder, CtxPipelineBuilder, Res, ResMut, WorldBuilder};
+
+    nexus_rt::new_resource!(
+        #[derive(Debug, PartialEq)]
+        Val(u64)
+    );
+
+    nexus_rt::new_resource!(
+        #[derive(Debug, PartialEq)]
+        Out(u64)
+    );
+
+    struct MyCtx {
+        count: u32,
+        multiplier: u64,
+    }
+
+    // -- Pipeline step functions (compile check) ------------------------------
+
+    fn read_val(ctx: &mut MyCtx, val: Res<Val>, _input: ()) -> u64 {
+        ctx.count += 1;
+        val.0 * ctx.multiplier
+    }
+
+    fn double(_ctx: &mut MyCtx, x: u64) -> u64 {
+        x * 2
+    }
+
+    fn write_out(_ctx: &mut MyCtx, mut out: ResMut<Out>, val: u64) {
+        out.0 = val;
+    }
+
+    fn check_positive(_ctx: &mut MyCtx, val: &u64) -> bool {
+        *val > 0
+    }
+
+    fn log_val(ctx: &mut MyCtx, val: &u64) {
+        ctx.count += *val as u32;
+    }
+
+    // -- Pipeline: then + guard + map + tap -----------------------------------
+
+    #[test]
+    fn ctx_pipeline_three_stage() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(10));
+        wb.register(Out(0));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<MyCtx, ()>::new()
+            .then(read_val, reg)
+            .then(double, reg)
+            .then(write_out, reg);
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 3,
+        };
+        pipeline.run(&mut ctx, &mut world, ());
+
+        assert_eq!(world.resource::<Out>().0, 60); // 10 * 3 * 2
+        assert_eq!(ctx.count, 1);
+    }
+
+    #[test]
+    fn ctx_pipeline_guard_and_map() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(10));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<MyCtx, ()>::new()
+            .then(read_val, reg)
+            .guard(check_positive, reg)
+            .map(double, reg);
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 5,
+        };
+        let result = pipeline.run(&mut ctx, &mut world, ());
+        assert_eq!(result, Some(100)); // 10 * 5 * 2
+    }
+
+    #[test]
+    fn ctx_pipeline_tap() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(10));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut pipeline = CtxPipelineBuilder::<MyCtx, ()>::new()
+            .then(read_val, reg)
+            .tap(log_val, reg);
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 1,
+        };
+        let result = pipeline.run(&mut ctx, &mut world, ());
+
+        assert_eq!(result, 10);
+        assert_eq!(ctx.count, 11); // 1 from read_val + 10 from log_val
+    }
+
+    #[test]
+    fn ctx_pipeline_opaque_step() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(10));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        // Opaque closure gets &mut World directly
+        let mut pipeline = CtxPipelineBuilder::<MyCtx, ()>::new().then(
+            |ctx: &mut MyCtx, w: &mut nexus_rt::World, _input: ()| -> u64 {
+                ctx.count += 1;
+                w.resource::<Val>().0
+            },
+            reg,
+        );
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 0,
+        };
+        let result = pipeline.run(&mut ctx, &mut world, ());
+        assert_eq!(result, 10);
+        assert_eq!(ctx.count, 1);
+    }
+
+    // -- DAG: fork + merge ----------------------------------------------------
+
+    #[test]
+    fn ctx_dag_fork_merge() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(5));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn decode(ctx: &mut MyCtx, _input: u32) -> u64 {
+            ctx.count += 1;
+            42
+        }
+
+        fn arm_double(_ctx: &mut MyCtx, val: &u64) -> u64 {
+            *val * 2
+        }
+
+        fn arm_add_ten(_ctx: &mut MyCtx, val: &u64) -> u64 {
+            *val + 10
+        }
+
+        fn merge(ctx: &mut MyCtx, a: &u64, b: &u64) {
+            ctx.multiplier = *a + *b;
+        }
+
+        let mut dag = CtxDagBuilder::<MyCtx, u32>::new()
+            .root(decode, reg)
+            .fork()
+            .arm(|seed| seed.then(arm_double, reg))
+            .arm(|seed| seed.then(arm_add_ten, reg))
+            .merge(merge, reg)
+            .build();
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 0,
+        };
+        dag.run(&mut ctx, &mut world, 0);
+
+        assert_eq!(ctx.count, 1);
+        assert_eq!(ctx.multiplier, 136); // (42 * 2) + (42 + 10) = 84 + 52
+    }
+
+    // -- Pipeline builds with void return -------------------------------------
+
+    #[test]
+    fn ctx_pipeline_build_void() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Out(0));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn sink(ctx: &mut MyCtx, mut out: ResMut<Out>, _input: ()) {
+            out.0 = ctx.multiplier;
+        }
+
+        let mut pipeline = CtxPipelineBuilder::<MyCtx, ()>::new()
+            .then(sink, reg)
+            .build();
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 99,
+        };
+        pipeline.run(&mut ctx, &mut world, ());
+        assert_eq!(world.resource::<Out>().0, 99);
+    }
+
+    // -- Result combinators ---------------------------------------------------
+
+    #[test]
+    fn ctx_pipeline_result_flow() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn parse(_ctx: &mut MyCtx, input: &str) -> Result<u64, String> {
+            input
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())
+        }
+
+        fn double_ok(_ctx: &mut MyCtx, val: u64) -> u64 {
+            val * 2
+        }
+
+        fn on_err(ctx: &mut MyCtx, _err: &String) {
+            ctx.count += 1;
+        }
+
+        let mut pipeline = CtxPipelineBuilder::<MyCtx, &str>::new()
+            .then(parse, reg)
+            .map(double_ok, reg)
+            .inspect_err(on_err, reg);
+
+        let mut ctx = MyCtx {
+            count: 0,
+            multiplier: 0,
+        };
+
+        // Ok path
+        let result = pipeline.run(&mut ctx, &mut world, "21");
+        assert_eq!(result, Ok(42));
+        assert_eq!(ctx.count, 0);
+
+        // Err path
+        let result = pipeline.run(&mut ctx, &mut world, "abc");
+        assert!(result.is_err());
+        assert_eq!(ctx.count, 1);
+    }
+}
+
+// =========================================================================
+// Actor system — compile-time + runtime integration tests
+// =========================================================================
+
+mod actors {
+    use nexus_notify::Token;
+    use nexus_rt::{
+        Actor, ActorNotify, ActorSystem, DataSource, DeferredRemovals, IntoActor, Res, ResMut,
+        ResourceId, SourceRegistry, World, WorldBuilder,
+    };
+
+    /// Helper: access ActorNotify via ResourceId to avoid borrow conflicts
+    /// with world.registry(). Same pattern as ActorSystem::dispatch.
+    fn notify_mut(world: &World, id: ResourceId) -> &mut ActorNotify {
+        unsafe { world.get_mut::<ActorNotify>(id) }
+    }
+
+    nexus_rt::new_resource!(
+        #[derive(Debug, PartialEq)]
+        Counter(u64)
+    );
+
+    nexus_rt::new_resource!(
+        #[derive(Debug, PartialEq)]
+        Output(Vec<String>)
+    );
+
+    // -- Step function signatures compile correctly ---------------------------
+
+    /// Context-only step (arity 0 — no Params).
+    fn ctx_only_step(ctx: &mut SimpleCtx) {
+        ctx.runs += 1;
+    }
+
+    /// One Param step.
+    fn one_param_step(ctx: &mut SimpleCtx, counter: Res<Counter>) {
+        ctx.runs += counter.0 as u32;
+    }
+
+    /// Two Param step with mutation.
+    fn two_param_step(ctx: &mut SimpleCtx, input: Res<Counter>, mut out: ResMut<Output>) {
+        out.0.push(format!("{}:{}", ctx.name, input.0));
+        ctx.runs += 1;
+    }
+
+    /// Step that self-removes via DeferredRemovals.
+    fn self_removing_step(
+        ctx: &mut RemovableCtx,
+        mut counter: ResMut<Counter>,
+        mut removals: ResMut<DeferredRemovals>,
+    ) {
+        counter.0 += 1;
+        ctx.remaining -= 1;
+        if ctx.remaining == 0 {
+            removals.deregister(ctx.actor_id);
+        }
+    }
+
+    struct SimpleCtx {
+        _actor_id: Token,
+        name: &'static str,
+        runs: u32,
+    }
+
+    struct RemovableCtx {
+        actor_id: Token,
+        remaining: u32,
+    }
+
+    // -- IntoActor compiles for all arities -----------------------------------
+
+    #[test]
+    fn into_actor_arity0_compiles() {
+        let wb = WorldBuilder::new();
+        let world = wb.build();
+        let reg = world.registry();
+
+        let mut actor = ctx_only_step.into_actor(
+            SimpleCtx {
+                _actor_id: Token::new(0),
+                name: "test",
+                runs: 0,
+            },
+            reg,
+        );
+        let mut world = world;
+        actor.run(&mut world);
+        assert_eq!(actor.ctx.runs, 1);
+    }
+
+    #[test]
+    fn into_actor_arity1_compiles() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(10));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut actor = one_param_step.into_actor(
+            SimpleCtx {
+                _actor_id: Token::new(0),
+                name: "test",
+                runs: 0,
+            },
+            reg,
+        );
+        actor.run(&mut world);
+        assert_eq!(actor.ctx.runs, 10);
+    }
+
+    #[test]
+    fn into_actor_arity2_compiles() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(42));
+        wb.register(Output(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        let mut actor = two_param_step.into_actor(
+            SimpleCtx {
+                _actor_id: Token::new(0),
+                name: "MM-BTC",
+                runs: 0,
+            },
+            reg,
+        );
+        actor.run(&mut world);
+        assert_eq!(world.resource::<Output>().0, vec!["MM-BTC:42"]);
+    }
+
+    // -- Full system integration: market maker pattern ------------------------
+
+    #[test]
+    fn market_maker_pattern() {
+        // 3 instruments, shared positions source, per-instrument actors
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(Output(Vec::new()));
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        fn quoting(ctx: &mut SimpleCtx, mut out: ResMut<Output>) {
+            out.0.push(format!("quote:{}", ctx.name));
+            ctx.runs += 1;
+        }
+
+        // Register sources
+        let notify = notify_mut(&world, nid);
+        let btc_md = notify.register_source();
+        let eth_md = notify.register_source();
+        let positions = notify.register_source();
+
+        // Map natural keys (before getting registry)
+        {
+            let sr = world.resource_mut::<SourceRegistry>();
+            sr.insert("BTC", btc_md);
+            sr.insert("ETH", eth_md);
+            sr.insert("positions", positions);
+        }
+
+        // Register actors (registry borrow starts here)
+        let reg = world.registry();
+        let notify = notify_mut(&world, nid);
+        notify
+            .register(
+                |t| SimpleCtx {
+                    _actor_id: t,
+                    name: "MM-BTC",
+                    runs: 0,
+                },
+                quoting,
+                reg,
+            )
+            .subscribe(btc_md)
+            .subscribe(positions);
+
+        notify
+            .register(
+                |t| SimpleCtx {
+                    _actor_id: t,
+                    name: "MM-ETH",
+                    runs: 0,
+                },
+                quoting,
+                reg,
+            )
+            .subscribe(eth_md)
+            .subscribe(positions);
+
+        // Frame 1: BTC data only — only BTC actor wakes
+        notify_mut(&world, nid).mark(btc_md);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Output>().0, vec!["quote:MM-BTC"]);
+
+        // Frame 2: position update — both actors wake (deduped)
+        world.resource_mut::<Output>().0.clear();
+        notify_mut(&world, nid).mark(positions);
+        system.dispatch(&mut world);
+        let output = &world.resource::<Output>().0;
+        assert_eq!(output.len(), 2);
+        assert!(output.contains(&"quote:MM-BTC".to_string()));
+        assert!(output.contains(&"quote:MM-ETH".to_string()));
+
+        // Frame 3: BTC + positions — BTC actor runs ONCE (dedup)
+        world.resource_mut::<Output>().0.clear();
+        let notify = notify_mut(&world, nid);
+        notify.mark(btc_md);
+        notify.mark(positions);
+        system.dispatch(&mut world);
+        let output = &world.resource::<Output>().0;
+        assert_eq!(output.len(), 2); // BTC once + ETH once
+    }
+
+    // -- TWAP execution pattern -----------------------------------------------
+
+    #[test]
+    fn twap_self_removal_pattern() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let reg = world.registry();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        let notify = notify_mut(&world, nid);
+        let md_source = notify.register_source();
+
+        // TWAP with 3 slices
+        notify
+            .register(
+                |t| RemovableCtx {
+                    actor_id: t,
+                    remaining: 3,
+                },
+                self_removing_step,
+                reg,
+            )
+            .subscribe(md_source);
+
+        // 3 frames of market data
+        for frame in 1..=4 {
+            notify_mut(&world, nid).mark(md_source);
+            system.dispatch(&mut world);
+
+            if frame <= 3 {
+                assert_eq!(world.resource::<Counter>().0, frame);
+                assert_eq!(system.actor_count(&world), if frame < 3 { 1 } else { 0 });
+            } else {
+                // Frame 4: actor already removed, counter stays at 3
+                assert_eq!(world.resource::<Counter>().0, 3);
+            }
+        }
+    }
+
+    // -- Wire protocol round-trip pattern -------------------------------------
+
+    #[test]
+    fn wire_routing_with_source_registry() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Output(Vec::new()));
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct FillCtx {
+            actor_id: Token,
+            instrument: &'static str,
+        }
+
+        fn on_fill(ctx: &mut FillCtx, mut out: ResMut<Output>) {
+            out.0
+                .push(format!("fill:{}:{}", ctx.instrument, ctx.actor_id.index()));
+        }
+
+        #[derive(Hash, Eq, PartialEq, Clone, Copy)]
+        struct RoutingKey(usize);
+
+        let (token_0, fill_src_0, token_1, fill_src_1) = {
+            let reg = world.registry();
+            let notify = notify_mut(&world, nid);
+
+            let fill_src_0 = notify.register_source();
+            let token_0 = notify
+                .register(
+                    |t| FillCtx {
+                        actor_id: t,
+                        instrument: "BTC",
+                    },
+                    on_fill,
+                    reg,
+                )
+                .subscribe(fill_src_0)
+                .token();
+
+            let fill_src_1 = notify.register_source();
+            let token_1 = notify
+                .register(
+                    |t| FillCtx {
+                        actor_id: t,
+                        instrument: "ETH",
+                    },
+                    on_fill,
+                    reg,
+                )
+                .subscribe(fill_src_1)
+                .token();
+
+            (token_0, fill_src_0, token_1, fill_src_1)
+        };
+
+        // Map routing keys
+        {
+            let sr = world.resource_mut::<SourceRegistry>();
+            sr.insert(RoutingKey(token_0.index()), fill_src_0);
+            sr.insert(RoutingKey(token_1.index()), fill_src_1);
+        }
+
+        // Simulate fill arriving for actor 1 — look up by wire routing key
+        let routing_key = RoutingKey(token_1.index());
+        let fill_source = world
+            .resource::<SourceRegistry>()
+            .get(&routing_key)
+            .unwrap();
+        notify_mut(&world, nid).mark(fill_source);
+        system.dispatch(&mut world);
+
+        assert_eq!(
+            world.resource::<Output>().0,
+            vec![format!("fill:ETH:{}", token_1.index())]
+        );
+    }
+
+    // -- Dynamic instrument lifecycle with SourceRegistry ---------------------
+
+    #[test]
+    fn dynamic_instrument_lifecycle() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+
+        let mut system = ActorSystem::new(&world);
+
+        fn step(ctx: &mut SimpleCtx, mut counter: ResMut<Counter>) {
+            counter.0 += 1;
+            ctx.runs += 1;
+        }
+
+        #[derive(Hash, Eq, PartialEq, Clone, Copy)]
+        struct Symbol(&'static str);
+
+        // Admin: list BTC
+        let btc_src = notify_mut(&world, nid).register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(Symbol("BTC"), btc_src);
+
+        {
+            let reg = world.registry();
+            notify_mut(&world, nid)
+                .register(
+                    |t| SimpleCtx {
+                        _actor_id: t,
+                        name: "BTC",
+                        runs: 0,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(btc_src);
+        }
+
+        // Trade BTC
+        notify_mut(&world, nid).mark(btc_src);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 1);
+
+        // Admin: list ETH (runtime)
+        let eth_src = notify_mut(&world, nid).register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert(Symbol("ETH"), eth_src);
+
+        {
+            let reg = world.registry();
+            notify_mut(&world, nid)
+                .register(
+                    |t| SimpleCtx {
+                        _actor_id: t,
+                        name: "ETH",
+                        runs: 0,
+                    },
+                    step,
+                    reg,
+                )
+                .subscribe(eth_src);
+        }
+
+        // Trade both
+        let notify = notify_mut(&world, nid);
+        notify.mark(btc_src);
+        notify.mark(eth_src);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 3); // 1 + 2
+
+        // Admin: delist BTC
+        let removed = world
+            .resource_mut::<SourceRegistry>()
+            .remove(&Symbol("BTC"))
+            .unwrap();
+        notify_mut(&world, nid).remove_source(removed);
+
+        // BTC gone, ETH remains
+        assert!(!world.resource::<SourceRegistry>().contains(&Symbol("BTC")));
+        assert!(world.resource::<SourceRegistry>().contains(&Symbol("ETH")));
+
+        // Only ETH fires
+        notify_mut(&world, nid).mark(eth_src);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 4);
+
+        // Stale BTC mark is no-op
+        notify_mut(&world, nid).mark(btc_src);
+        let ran = system.dispatch(&mut world);
+        assert!(!ran);
+    }
+
+    // -- register_raw with impl Actor -----------------------------------------
+
+    #[test]
+    fn register_raw_impl_actor() {
+        struct ManualActor {
+            value: u64,
+        }
+
+        impl Actor for ManualActor {
+            fn run(&mut self, world: &mut World) {
+                let counter = world.resource_mut::<Counter>();
+                counter.0 += self.value;
+            }
+        }
+
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+        notify
+            .register_raw(ManualActor { value: 42 })
+            .subscribe(src);
+
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 42);
+    }
+
+    // -- Heterogeneous actors in one system -----------------------------------
+
+    #[test]
+    fn heterogeneous_actors() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(Output(Vec::new()));
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+        let reg = world.registry();
+        let nid = world.id::<ActorNotify>();
+        let mut system = ActorSystem::new(&world);
+
+        // Type A: increments counter
+        struct CtxA {
+            _id: Token,
+        }
+        fn step_a(_ctx: &mut CtxA, mut c: ResMut<Counter>) {
+            c.0 += 1;
+        }
+
+        // Type B: appends to output
+        struct CtxB {
+            _id: Token,
+            label: &'static str,
+        }
+        fn step_b(ctx: &mut CtxB, mut out: ResMut<Output>) {
+            out.0.push(ctx.label.to_string());
+        }
+
+        let notify = notify_mut(&world, nid);
+        let src = notify.register_source();
+
+        // Mix types in one system
+        notify
+            .register(|t| CtxA { _id: t }, step_a, reg)
+            .subscribe(src);
+        notify
+            .register(
+                |t| CtxB {
+                    _id: t,
+                    label: "hello",
+                },
+                step_b,
+                reg,
+            )
+            .subscribe(src);
+
+        notify_mut(&world, nid).mark(src);
+        system.dispatch(&mut world);
+
+        assert_eq!(world.resource::<Counter>().0, 1);
+        assert_eq!(world.resource::<Output>().0, vec!["hello"]);
+    }
+
+    // -- Two-phase registration at startup (main pattern) ---------------------
+
+    #[test]
+    fn startup_two_phase_registration() {
+        // Simulates wiring actors in main() using alloc_actor + into_actor + insert.
+        // No unsafe, no borrow conflicts.
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct QuotingCtx {
+            _actor_id: Token,
+            _instrument: &'static str,
+            layer: u32,
+        }
+
+        fn quoting_step(ctx: &mut QuotingCtx, mut counter: ResMut<Counter>) {
+            counter.0 += u64::from(ctx.layer);
+        }
+
+        // Register data sources
+        let btc_md = world.resource_mut::<ActorNotify>().register_source();
+        let eth_md = world.resource_mut::<ActorNotify>().register_source();
+        let positions = world.resource_mut::<ActorNotify>().register_source();
+
+        // Map natural keys
+        {
+            let sr = world.resource_mut::<SourceRegistry>();
+            sr.insert("BTC", btc_md);
+            sr.insert("ETH", eth_md);
+            sr.insert("positions", positions);
+        }
+
+        // Register BTC quoting actor — two-phase, safe
+        let token = world.resource_mut::<ActorNotify>().alloc_actor();
+        let actor = quoting_step.into_actor(
+            QuotingCtx {
+                _actor_id: token,
+                _instrument: "BTC",
+                layer: 1,
+            },
+            world.registry(),
+        );
+        world
+            .resource_mut::<ActorNotify>()
+            .insert(token, actor)
+            .subscribe(btc_md)
+            .subscribe(positions);
+
+        // Register ETH quoting actor
+        let token = world.resource_mut::<ActorNotify>().alloc_actor();
+        let actor = quoting_step.into_actor(
+            QuotingCtx {
+                _actor_id: token,
+                _instrument: "ETH",
+                layer: 2,
+            },
+            world.registry(),
+        );
+        world
+            .resource_mut::<ActorNotify>()
+            .insert(token, actor)
+            .subscribe(eth_md)
+            .subscribe(positions);
+
+        // Frame 1: BTC data only — BTC actor wakes
+        world.resource_mut::<ActorNotify>().mark(btc_md);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 1); // layer 1
+
+        // Frame 2: position update — both actors wake (deduped)
+        world.resource_mut::<ActorNotify>().mark(positions);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 4); // 1 + 1 + 2
+    }
+
+    // -- Runtime registration from event handler (RegistryRef pattern) --------
+
+    #[test]
+    fn runtime_registration_with_registry_ref() {
+        // Simulates an event handler registering an actor at runtime.
+        // Uses RegistryRef as a Param — same pattern as scheduling timers.
+        use nexus_rt::{Handler, IntoHandler, RegistryRef};
+
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(8, 16));
+        wb.register(DeferredRemovals::default());
+        wb.register(SourceRegistry::new());
+        let mut world = wb.build();
+
+        let mut system = ActorSystem::new(&world);
+
+        // Pre-register a data source and map it
+        let md_source = world.resource_mut::<ActorNotify>().register_source();
+        world
+            .resource_mut::<SourceRegistry>()
+            .insert("BTC", md_source);
+
+        // The actor step function
+        struct TwapCtx {
+            actor_id: Token,
+            remaining: u32,
+        }
+
+        fn twap_step(
+            ctx: &mut TwapCtx,
+            mut counter: ResMut<Counter>,
+            mut removals: ResMut<DeferredRemovals>,
+        ) {
+            counter.0 += 1;
+            ctx.remaining -= 1;
+            if ctx.remaining == 0 {
+                removals.deregister(ctx.actor_id);
+            }
+        }
+
+        // The "admin command handler" — takes RegistryRef as a Param
+        // to register actors at runtime.
+        fn on_admin_add_twap(
+            mut notify: ResMut<ActorNotify>,
+            sources: Res<SourceRegistry>,
+            reg: RegistryRef<'_>,
+            _event: (),
+        ) {
+            let md = sources.get(&"BTC").expect("BTC not listed");
+            notify
+                .register(
+                    |id| TwapCtx {
+                        actor_id: id,
+                        remaining: 3,
+                    },
+                    twap_step,
+                    &reg,
+                )
+                .subscribe(md);
+        }
+
+        // Build the handler (compile test: RegistryRef works as Param alongside
+        // ResMut<ActorNotify> and Res<SourceRegistry>)
+        let mut handler = on_admin_add_twap.into_handler(world.registry());
+
+        // Simulate admin command arriving — handler registers the actor
+        handler.run(&mut world, ());
+        assert_eq!(system.actor_count(&world), 1);
+
+        // 3 frames — actor runs and self-removes
+        for frame in 1..=4 {
+            world.resource_mut::<ActorNotify>().mark(md_source);
+            system.dispatch(&mut world);
+
+            if frame <= 3 {
+                assert_eq!(world.resource::<Counter>().0, frame);
+            } else {
+                // Frame 4: actor removed, counter stays at 3
+                assert_eq!(world.resource::<Counter>().0, 3);
+                assert_eq!(system.actor_count(&world), 0);
+            }
+        }
+    }
+
+    // -- Pipeline actor registered at startup ---------------------------------
+
+    #[test]
+    fn startup_pipeline_actor() {
+        use nexus_rt::CtxPipelineBuilder;
+
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+
+        let mut system = ActorSystem::new(&world);
+
+        struct Ctx {
+            _actor_id: Token,
+            multiplier: u64,
+        }
+
+        fn read(_ctx: &mut Ctx, counter: Res<Counter>, _: ()) -> u64 {
+            counter.0
+        }
+
+        fn multiply(ctx: &mut Ctx, val: u64) -> u64 {
+            val * ctx.multiplier
+        }
+
+        fn store(_ctx: &mut Ctx, mut counter: ResMut<Counter>, val: u64) {
+            counter.0 = val;
+        }
+
+        // Register source
+        let src = world.resource_mut::<ActorNotify>().register_source();
+
+        // Two-phase: alloc token, build pipeline with registry, insert
+        let token = world.resource_mut::<ActorNotify>().alloc_actor();
+        let reg = world.registry();
+        let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
+            .then(read, reg)
+            .then(multiply, reg)
+            .then(store, reg)
+            .build();
+        let actor = nexus_rt::PipelineActor::new(
+            Ctx {
+                _actor_id: token,
+                multiplier: 3,
+            },
+            pipeline,
+        );
+        world
+            .resource_mut::<ActorNotify>()
+            .insert(token, actor)
+            .subscribe(src);
+
+        // Set initial value and dispatch
+        world.resource_mut::<Counter>().0 = 10;
+        world.resource_mut::<ActorNotify>().mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 30); // 10 * 3
+    }
+
+    // -- Runtime pipeline actor via RegistryRef -------------------------------
+
+    #[test]
+    fn runtime_pipeline_actor_via_registry_ref() {
+        use nexus_rt::{CtxPipelineBuilder, Handler, IntoHandler, PipelineActor, RegistryRef};
+
+        let mut wb = WorldBuilder::new();
+        wb.register(Counter(0));
+        wb.register(ActorNotify::new(4, 8));
+        wb.register(DeferredRemovals::default());
+        let mut world = wb.build();
+
+        let mut system = ActorSystem::new(&world);
+        let src = world.resource_mut::<ActorNotify>().register_source();
+
+        struct Ctx {
+            _actor_id: Token,
+        }
+
+        fn double(_ctx: &mut Ctx, counter: Res<Counter>, _: ()) -> u64 {
+            counter.0 * 2
+        }
+
+        fn store(_ctx: &mut Ctx, mut counter: ResMut<Counter>, val: u64) {
+            counter.0 = val;
+        }
+
+        // Handler that builds a pipeline actor at runtime
+        fn on_admin(mut notify: ResMut<ActorNotify>, reg: RegistryRef<'_>, _event: ()) {
+            let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
+                .then(double, &reg)
+                .then(store, &reg)
+                .build();
+
+            // register_raw doesn't need the token in context
+            notify
+                .register_raw(PipelineActor::new(
+                    Ctx {
+                        _actor_id: Token::new(0),
+                    },
+                    pipeline,
+                ))
+                // subscribe to source 0 — hardcoded for test simplicity
+                .subscribe(DataSource(0));
+        }
+
+        let mut handler = on_admin.into_handler(world.registry());
+        handler.run(&mut world, ());
+
+        world.resource_mut::<Counter>().0 = 5;
+        world.resource_mut::<ActorNotify>().mark(src);
+        system.dispatch(&mut world);
+        assert_eq!(world.resource::<Counter>().0, 10); // 5 * 2
+    }
+}
