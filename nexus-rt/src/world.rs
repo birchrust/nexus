@@ -621,9 +621,10 @@ impl WorldBuilder {
     /// [`ResourceId`] values remain valid for the lifetime of the
     /// returned [`World`].
     ///
-    /// When the `reactors` feature is enabled, [`ReactorNotify`](crate::ReactorNotify)
-    /// and [`DeferredRemovals`](crate::DeferredRemovals) are automatically
-    /// registered if not already present.
+    /// When the `reactors` feature is enabled, [`ReactorNotify`](crate::ReactorNotify),
+    /// [`DeferredRemovals`](crate::DeferredRemovals), and
+    /// [`SourceRegistry`](crate::SourceRegistry) are automatically registered
+    /// if not already present.
     #[allow(unused_mut)]
     pub fn build(mut self) -> World {
         #[cfg(feature = "reactors")]
@@ -1088,11 +1089,11 @@ impl World {
         // no other references to any World resource exist.
         let notify_ptr: *mut crate::reactor::ReactorNotify =
             unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
-        let token = unsafe { &mut *notify_ptr }.alloc_reactor();
+        let token = unsafe { &mut *notify_ptr }.create_reactor();
         let ctx = ctx_fn(token);
         let reactor = step.into_reactor(ctx, &self.registry);
         let notify = unsafe { &mut *notify_ptr };
-        notify.insert(token, reactor)
+        notify.insert_reactor(token, reactor)
     }
 
     /// Register a pre-built reactor in one step.

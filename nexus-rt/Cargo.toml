@@ -14,7 +14,7 @@ full = ["smartptr", "timer", "mio", "signals", "reactors"]
 codegen-audit = []
 smartptr = ["dep:nexus-smartptr"]
 timer = ["dep:nexus-timer"]
-mio = ["dep:mio"]
+mio = ["dep:mio", "dep:slab"]
 signals = ["dep:signal-hook"]
 reactors = ["dep:nexus-notify", "dep:slab"]
 
@@ -35,6 +35,14 @@ trybuild = "1"
 [[example]]
 name = "mio_timer"
 required-features = ["mio", "timer"]
+
+[[example]]
+name = "reactors"
+required-features = ["reactors"]
+
+[[example]]
+name = "perf_reactors"
+required-features = ["reactors"]
 
 [lints]
 workspace = true

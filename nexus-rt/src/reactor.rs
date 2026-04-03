@@ -208,7 +208,7 @@ impl ReactorNotify {
 
     /// Reserve a slot for a new reactor and return its [`Token`].
     ///
-    /// Use with [`insert`](Self::insert) to complete registration.
+    /// Use with [`insert_reactor`](Self::insert_reactor) to complete registration.
     /// This two-phase pattern avoids borrow conflicts: you can
     /// drop the `&mut ReactorNotify` borrow, build the reactor with
     /// `world.registry()`, then call `insert`.
@@ -217,7 +217,7 @@ impl ReactorNotify {
     ///
     /// ```ignore
     /// // Phase 1: reserve slot
-    /// let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+    /// let token = world.resource_mut::<ReactorNotify>().create_reactor();
     ///
     /// // Phase 2: build reactor (borrows &World for registry)
     /// let reactor = quoting_step.into_reactor(
@@ -227,26 +227,43 @@ impl ReactorNotify {
     ///
     /// // Phase 3: fill slot
     /// world.resource_mut::<ReactorNotify>()
-    ///     .insert(token, reactor)
+    ///     .insert_reactor(token, reactor)
     ///     .subscribe(btc_md);
     /// ```
-    pub fn alloc_reactor(&mut self) -> Token {
-        let key = self.reactors.vacant_key();
+    pub fn create_reactor(&mut self) -> Token {
+        // Reserve the slot with a None placeholder so no other registration
+        // can claim the same key between alloc and insert.
+        let key = self.reactors.insert(None);
         self.notify.ensure_capacity(key);
         Token::new(key)
     }
 
     /// Insert a pre-built reactor at a previously allocated [`Token`].
     ///
-    /// The token must have been returned by [`alloc_reactor`](Self::alloc_reactor)
+    /// The token must have been returned by [`create_reactor`](Self::create_reactor)
     /// and not yet filled. Completes the two-phase registration.
-    pub fn insert(
+    ///
+    /// # Panics
+    ///
+    /// Panics if the token was not allocated by [`create_reactor`] or was
+    /// already filled.
+    pub fn insert_reactor(
         &mut self,
         token: Token,
         reactor: impl Reactor + 'static,
     ) -> ReactorRegistration<'_> {
-        let key = self.reactors.insert(Some(Box::new(reactor)));
-        debug_assert_eq!(key, token.index(), "token must come from alloc_reactor");
+        let idx = token.index();
+        assert!(
+            self.reactors.contains(idx),
+            "token {} was not allocated by create_reactor",
+            idx,
+        );
+        assert!(
+            self.reactors[idx].is_none(),
+            "token {} was already filled",
+            idx,
+        );
+        self.reactors[idx] = Some(Box::new(reactor));
         ReactorRegistration {
             token,
             notify: self,
@@ -257,8 +274,8 @@ impl ReactorNotify {
     ///
     /// One-shot convenience when you already have `&Registry` (e.g.,
     /// inside event handlers via [`Param`] resolution, or in tests).
-    /// For the safe `World`-based API, use [`alloc_reactor`](Self::alloc_reactor)
-    /// + [`insert`](Self::insert).
+    /// For the safe `World`-based API, use [`create_reactor`](Self::create_reactor)
+    /// + [`insert_reactor`](Self::insert_reactor).
     pub fn register<C, Params, F: IntoReactor<C, Params>>(
         &mut self,
         ctx_fn: impl FnOnce(Token) -> C,
@@ -282,8 +299,8 @@ impl ReactorNotify {
     ///
     /// Convenience for reactors that don't need their [`Token`] in
     /// the context. For reactors that need the token (wire routing,
-    /// self-deregistration), use [`alloc_reactor`](Self::alloc_reactor)
-    /// + [`insert`](Self::insert).
+    /// self-deregistration), use [`create_reactor`](Self::create_reactor)
+    /// + [`insert_reactor`](Self::insert_reactor).
     pub fn register_raw(&mut self, reactor: impl Reactor + 'static) -> ReactorRegistration<'_> {
         let key = self.reactors.vacant_key();
         let token = Token::new(key);
@@ -453,7 +470,7 @@ pub struct ReactorFn<C, F, Params: Param> {
 // PipelineReactor — reactor backed by a CtxPipeline or CtxDag body
 // =============================================================================
 
-/// An reactor whose body is a [`CtxPipeline`](crate::CtxPipeline),
+/// A reactor whose body is a [`CtxPipeline`](crate::CtxPipeline),
 /// [`CtxDag`](crate::CtxDag), or any [`CtxStepCall`](crate::CtxStepCall).
 ///
 /// The context `C` holds per-reactor metadata. The body is type-erased
@@ -2497,7 +2514,7 @@ mod tests {
 
     #[test]
     fn two_phase_registration_safe_api() {
-        // Demonstrates the safe API: alloc_reactor → into_reactor → insert
+        // Demonstrates the safe API: create_reactor → into_reactor → insert
         // No unsafe, no registry borrow conflicts.
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
@@ -2519,7 +2536,7 @@ mod tests {
 
         // Phase 1: reserve slot
         let src = world.resource_mut::<ReactorNotify>().register_source();
-        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token = world.resource_mut::<ReactorNotify>().create_reactor();
 
         // Phase 2: build reactor with token + registry (no borrow conflict)
         let reactor = step.into_reactor(
@@ -2533,7 +2550,7 @@ mod tests {
         // Phase 3: insert + subscribe
         world
             .resource_mut::<ReactorNotify>()
-            .insert(token, reactor)
+            .insert_reactor(token, reactor)
             .subscribe(src);
 
         // Verify dispatch
@@ -2542,7 +2559,7 @@ mod tests {
         assert_eq!(*world.resource::<u64>(), 1); // token index 0 + 1
 
         // Second reactor — same pattern
-        let token2 = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token2 = world.resource_mut::<ReactorNotify>().create_reactor();
         let actor2 = step.into_reactor(
             Ctx {
                 actor_id: token2,
@@ -2552,7 +2569,7 @@ mod tests {
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert(token2, actor2)
+            .insert_reactor(token2, actor2)
             .subscribe(src);
 
         // Both reactors fire
@@ -2592,7 +2609,7 @@ mod tests {
 
         // Phase 1: reserve + register source
         let src = world.resource_mut::<ReactorNotify>().register_source();
-        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token = world.resource_mut::<ReactorNotify>().create_reactor();
 
         // Phase 2: build pipeline + wrap in PipelineReactor (needs registry)
         let reg = world.registry();
@@ -2606,7 +2623,7 @@ mod tests {
         // Phase 3: insert
         world
             .resource_mut::<ReactorNotify>()
-            .insert(token, reactor)
+            .insert_reactor(token, reactor)
             .subscribe(src);
 
         *world.resource_mut::<u64>() = 10;

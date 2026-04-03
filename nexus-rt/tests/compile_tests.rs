@@ -5290,7 +5290,7 @@ mod reactors {
 
     #[test]
     fn startup_two_phase_registration() {
-        // Simulates wiring reactors in main() using alloc_reactor + into_reactor + insert.
+        // Simulates wiring reactors in main() using create_reactor + into_reactor + insert.
         // No unsafe, no borrow conflicts.
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
@@ -5325,7 +5325,7 @@ mod reactors {
         }
 
         // Register BTC quoting actor — two-phase, safe
-        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token = world.resource_mut::<ReactorNotify>().create_reactor();
         let actor = quoting_step.into_reactor(
             QuotingCtx {
                 _reactor_id: token,
@@ -5336,12 +5336,12 @@ mod reactors {
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert(token, actor)
+            .insert_reactor(token, actor)
             .subscribe(btc_md)
             .subscribe(positions);
 
         // Register ETH quoting actor
-        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token = world.resource_mut::<ReactorNotify>().create_reactor();
         let actor = quoting_step.into_reactor(
             QuotingCtx {
                 _reactor_id: token,
@@ -5352,7 +5352,7 @@ mod reactors {
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert(token, actor)
+            .insert_reactor(token, actor)
             .subscribe(eth_md)
             .subscribe(positions);
 
@@ -5487,7 +5487,7 @@ mod reactors {
         let src = world.resource_mut::<ReactorNotify>().register_source();
 
         // Two-phase: alloc token, build pipeline with registry, insert
-        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token = world.resource_mut::<ReactorNotify>().create_reactor();
         let reg = world.registry();
         let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
             .then(read, reg)
@@ -5503,7 +5503,7 @@ mod reactors {
         );
         world
             .resource_mut::<ReactorNotify>()
-            .insert(token, actor)
+            .insert_reactor(token, actor)
             .subscribe(src);
 
         // Set initial value and dispatch

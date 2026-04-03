@@ -126,11 +126,11 @@ impl LocalNotify {
     #[inline]
     pub fn mark(&mut self, token: Token) {
         let idx = token.index();
-        debug_assert!(
+        assert!(
             idx < self.num_tokens,
             "token index {} out of range ({})",
             idx,
-            self.num_tokens
+            self.num_tokens,
         );
         let word = idx / 64;
         let bit = 1u64 << (idx % 64);

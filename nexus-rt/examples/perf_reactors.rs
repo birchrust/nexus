@@ -121,11 +121,11 @@ fn scenario_dispatch_scaling() {
         let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..count {
-            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let token = world.resource_mut::<ReactorNotify>().create_reactor();
             let reactor = noop_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
                 .resource_mut::<ReactorNotify>()
-                .insert(token, reactor)
+                .insert_reactor(token, reactor)
                 .subscribe(src);
         }
 
@@ -151,11 +151,11 @@ fn scenario_param_cost() {
         let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..10 {
-            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let token = world.resource_mut::<ReactorNotify>().create_reactor();
             let reactor = noop_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
                 .resource_mut::<ReactorNotify>()
-                .insert(token, reactor)
+                .insert_reactor(token, reactor)
                 .subscribe(src);
         }
 
@@ -177,11 +177,11 @@ fn scenario_param_cost() {
         let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..10 {
-            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let token = world.resource_mut::<ReactorNotify>().create_reactor();
             let reactor = one_res_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
                 .resource_mut::<ReactorNotify>()
-                .insert(token, reactor)
+                .insert_reactor(token, reactor)
                 .subscribe(src);
         }
 
@@ -204,11 +204,11 @@ fn scenario_param_cost() {
         let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..10 {
-            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let token = world.resource_mut::<ReactorNotify>().create_reactor();
             let reactor = two_res_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
                 .resource_mut::<ReactorNotify>()
-                .insert(token, reactor)
+                .insert_reactor(token, reactor)
                 .subscribe(src);
         }
 
@@ -235,9 +235,11 @@ fn scenario_dedup() {
     }
 
     for _ in 0..50 {
-        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let token = world.resource_mut::<ReactorNotify>().create_reactor();
         let reactor = noop_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
-        let mut reg = world.resource_mut::<ReactorNotify>().insert(token, reactor);
+        let mut reg = world
+            .resource_mut::<ReactorNotify>()
+            .insert_reactor(token, reactor);
         for &src in &sources {
             reg = reg.subscribe(src);
         }

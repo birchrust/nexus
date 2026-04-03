@@ -1,7 +1,7 @@
 //! Reactor system usage examples.
 //!
 //! Demonstrates the two registration patterns:
-//! 1. **Startup (main)** — two-phase: `alloc_reactor` → `into_reactor` → `insert`
+//! 1. **Startup (main)** — two-phase: `create_reactor` → `into_reactor` → `insert`
 //! 2. **Runtime (handler)** — one-shot via `RegistryRef` param
 //!
 //! Also shows: pipeline reactors, self-removal, data source registry,
@@ -132,7 +132,7 @@ fn main() {
 
     println!("Registering quoting reactors...");
 
-    // BTC quoter — spawn_rereactor handles borrow juggling internally
+    // BTC quoter — spawn_reactor handles borrow juggling internally
     world
         .spawn_reactor(
             |id| QuotingCtx {
@@ -199,7 +199,8 @@ fn main() {
         );
     }
 
-    // Pipeline reactor — build pipeline with registry, wrap in PipelineReactor
+    // Pipeline reactor — use two-phase to get a proper token
+    let token = world.resource_mut::<ReactorNotify>().create_reactor();
     let reg = world.registry();
     let pipeline = CtxPipelineBuilder::<QuotingCtx, ()>::new()
         .then(read_volume, reg)
@@ -208,14 +209,18 @@ fn main() {
         .build();
 
     world
-        .spawn_reactor_raw(PipelineReactor::new(
-            QuotingCtx {
-                reactor_id: nexus_notify::Token::new(0),
-                instrument: "BTC",
-                layer: 0,
-            },
-            pipeline,
-        ))
+        .resource_mut::<ReactorNotify>()
+        .insert_reactor(
+            token,
+            PipelineReactor::new(
+                QuotingCtx {
+                    reactor_id: token,
+                    instrument: "BTC",
+                    layer: 0,
+                },
+                pipeline,
+            ),
+        )
         .subscribe(btc_md);
 
     println!("  Registered {} reactors\n", world.reactor_count());
