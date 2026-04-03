@@ -16,6 +16,12 @@
 //! ReactorSystem      (nexus-rt)      — thin dispatch handle (driver level)
 //! ```
 //!
+//! [`SourceRegistry`] maps domain keys (instrument IDs, strategy IDs,
+//! `(Symbol, Venue)` tuples) to [`DataSource`] values for runtime lookup.
+//! Any `Hash + Eq + Send + 'static` type works as a key. All three
+//! resources are auto-registered by [`WorldBuilder::build`] when the
+//! `reactors` feature is enabled.
+//!
 //! # Use Cases
 //!
 //! ## 1. Market maker with per-instrument quoting reactors
@@ -301,7 +307,7 @@ impl ReactorNotify {
     /// the context. For reactors that need the token (wire routing,
     /// self-deregistration), use [`create_reactor`](Self::create_reactor)
     /// + [`insert_reactor`](Self::insert_reactor).
-    pub fn register_raw(&mut self, reactor: impl Reactor + 'static) -> ReactorRegistration<'_> {
+    pub fn register_built(&mut self, reactor: impl Reactor + 'static) -> ReactorRegistration<'_> {
         let key = self.reactors.vacant_key();
         let token = Token::new(key);
         self.notify.ensure_capacity(key);
@@ -493,7 +499,7 @@ pub struct ReactorFn<C, F, Params: Param> {
 ///     pipeline,
 /// );
 ///
-/// notify.register_raw(reactor).subscribe(btc_md);
+/// notify.register_built(reactor).subscribe(btc_md);
 /// ```
 pub struct PipelineReactor<C> {
     /// Per-reactor owned context.
@@ -947,9 +953,9 @@ mod tests {
         let mut events = Events::with_capacity(8);
 
         let src = notify.register_source();
-        let a1 = notify.register_raw(dummy_reactor()).token();
-        let a2 = notify.register_raw(dummy_reactor()).token();
-        let _a3 = notify.register_raw(dummy_reactor()).token();
+        let a1 = notify.register_built(dummy_reactor()).token();
+        let a2 = notify.register_built(dummy_reactor()).token();
+        let _a3 = notify.register_built(dummy_reactor()).token();
 
         notify.subscribe(a1, src);
         notify.subscribe(a2, src);
@@ -970,7 +976,7 @@ mod tests {
 
         let src1 = notify.register_source();
         let src2 = notify.register_source();
-        let reactor = notify.register_raw(dummy_reactor()).token();
+        let reactor = notify.register_built(dummy_reactor()).token();
 
         notify.subscribe(reactor, src1);
         notify.subscribe(reactor, src2);
@@ -992,7 +998,7 @@ mod tests {
 
         struct Ctx;
         let token = notify
-            .register_raw(ReactorFn {
+            .register_built(ReactorFn {
                 ctx: Ctx,
                 f: (|_: &mut Ctx| {}) as fn(&mut Ctx),
                 state: (),
@@ -2307,7 +2313,7 @@ mod tests {
             },
             pipeline,
         );
-        notify.register_raw(reactor).subscribe(src);
+        notify.register_built(reactor).subscribe(src);
 
         // Set initial value and dispatch
         *world.resource_mut::<u64>() = 10;
@@ -2369,7 +2375,7 @@ mod tests {
             },
             dag,
         );
-        notify.register_raw(reactor).subscribe(src);
+        notify.register_built(reactor).subscribe(src);
 
         *world.resource_mut::<u64>() = 5;
         notify_mut(&world, nid).mark(src);
@@ -2422,7 +2428,7 @@ mod tests {
         let src = notify.register_source();
 
         notify
-            .register_raw(PipelineReactor::new(
+            .register_built(PipelineReactor::new(
                 Ctx {
                     _reactor_id: Token::new(0),
                     factor: 2,
@@ -2432,7 +2438,7 @@ mod tests {
             .subscribe(src);
 
         notify
-            .register_raw(PipelineReactor::new(
+            .register_built(PipelineReactor::new(
                 Ctx {
                     _reactor_id: Token::new(1),
                     factor: 10,
@@ -2494,7 +2500,7 @@ mod tests {
         let src = notify.register_source();
 
         notify
-            .register_raw(PipelineReactor::new(
+            .register_built(PipelineReactor::new(
                 Ctx {
                     _reactor_id: Token::new(0),
                     threshold: 10,

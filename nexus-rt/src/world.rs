@@ -1101,13 +1101,13 @@ impl World {
     /// For reactors that don't need their token in the context, or for
     /// [`PipelineReactor`](crate::PipelineReactor) instances.
     #[cfg(feature = "reactors")]
-    pub fn spawn_reactor_raw(
+    pub fn spawn_built_reactor(
         &mut self,
         reactor: impl crate::reactor::Reactor + 'static,
     ) -> crate::reactor::ReactorRegistration<'_> {
         let notify =
             unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
-        notify.register_raw(reactor)
+        notify.register_built(reactor)
     }
 
     /// Dispatch all woken reactors and process deferred removals.

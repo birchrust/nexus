@@ -5196,10 +5196,10 @@ mod reactors {
         assert!(!ran);
     }
 
-    // -- register_raw with impl Reactor -----------------------------------------
+    // -- register_built with impl Reactor -----------------------------------------
 
     #[test]
-    fn register_raw_impl_reactor() {
+    fn register_built_impl_reactor() {
         struct ManualReactor {
             value: u64,
         }
@@ -5222,7 +5222,7 @@ mod reactors {
         let notify = notify_mut(&world, nid);
         let src = notify.register_source();
         notify
-            .register_raw(ManualReactor { value: 42 })
+            .register_built(ManualReactor { value: 42 })
             .subscribe(src);
 
         notify_mut(&world, nid).mark(src);
@@ -5547,9 +5547,9 @@ mod reactors {
                 .then(store, &reg)
                 .build();
 
-            // register_raw doesn't need the token in context
+            // register_built doesn't need the token in context
             notify
-                .register_raw(PipelineReactor::new(
+                .register_built(PipelineReactor::new(
                     Ctx {
                         _rereactor_id: Token::new(0),
                     },
