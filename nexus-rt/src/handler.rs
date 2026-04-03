@@ -30,7 +30,7 @@ use crate::world::{Registry, ResourceId, World};
 /// | Param | State | Description |
 /// |-------|-------|-------------|
 /// | [`Res<T>`] | `ResourceId` | Shared read |
-/// | [`ResMut<T>`] | `ResourceId` | Exclusive write (stamps on `DerefMut`) |
+/// | [`ResMut<T>`] | `ResourceId` | Exclusive write |
 /// | [`Option<Res<T>>`] | `Option<ResourceId>` | Optional shared read |
 /// | [`Option<ResMut<T>>`] | `Option<ResourceId>` | Optional exclusive write |
 /// | [`Local<T>`] | `T` | Per-handler state (not in World) |
@@ -92,13 +92,7 @@ impl<T: Resource> Param for Res<'_, T> {
         world.track_borrow(id);
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no mutable alias exists for T.
-        unsafe {
-            Res::new(
-                world.get::<T>(id),
-                world.changed_at(id),
-                world.current_sequence(),
-            )
-        }
+        unsafe { Res::new(world.get::<T>(id)) }
     }
 
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
@@ -123,13 +117,7 @@ impl<T: Resource> Param for ResMut<'_, T> {
         world.track_borrow(id);
         // SAFETY: state was produced by init() on the same world.
         // Caller ensures no aliases exist for T.
-        unsafe {
-            ResMut::new(
-                world.get_mut::<T>(id),
-                world.changed_at_cell(id),
-                world.current_sequence(),
-            )
-        }
+        unsafe { ResMut::new(world.get_mut::<T>(id)) }
     }
 
     fn resource_id(state: &ResourceId) -> Option<ResourceId> {
@@ -154,13 +142,7 @@ impl<T: Resource> Param for Option<Res<'_, T>> {
         state.map(|id| {
             #[cfg(debug_assertions)]
             world.track_borrow(id);
-            unsafe {
-                Res::new(
-                    world.get::<T>(id),
-                    world.changed_at(id),
-                    world.current_sequence(),
-                )
-            }
+            unsafe { Res::new(world.get::<T>(id)) }
         })
     }
 
@@ -189,13 +171,7 @@ impl<T: Resource> Param for Option<ResMut<'_, T>> {
         state.map(|id| {
             #[cfg(debug_assertions)]
             world.track_borrow(id);
-            unsafe {
-                ResMut::new(
-                    world.get_mut::<T>(id),
-                    world.changed_at_cell(id),
-                    world.current_sequence(),
-                )
-            }
+            unsafe { ResMut::new(world.get_mut::<T>(id)) }
         })
     }
 
@@ -1092,44 +1068,6 @@ mod tests {
         let _sys = ok.into_handler(world.registry_mut());
     }
 
-    #[test]
-    fn end_to_end_change_detection() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        builder.register::<bool>(false);
-        let mut world = builder.build();
-
-        // Tick 0: all resources changed_at=0, current_sequence=0 → changed.
-        fn writer(mut val: ResMut<u64>, _e: ()) {
-            *val = 42;
-        }
-        fn observer(val: Res<u64>, flag: Res<bool>, _e: ()) {
-            // On tick 0: both are "changed" (changed_at == current_sequence == 0).
-            // After next_sequence: only u64 should be changed (writer stamps it).
-            let _ = (*val, *flag);
-        }
-
-        let mut writer_sys = writer.into_handler(world.registry_mut());
-        let mut observer_sys = observer.into_handler(world.registry_mut());
-
-        // Tick 0: everything is "changed"
-        writer_sys.run(&mut world, ());
-        observer_sys.run(&mut world, ());
-
-        world.next_sequence(); // tick=1
-
-        // Tick 1: writer runs → stamps u64 to tick=1.
-        // bool was not written → still at tick=0.
-        writer_sys.run(&mut world, ());
-
-        let u64_id = world.id::<u64>();
-        let bool_id = world.id::<bool>();
-        unsafe {
-            assert_eq!(world.changed_at(u64_id), world.current_sequence());
-            assert_ne!(world.changed_at(bool_id), world.current_sequence());
-        }
-    }
-
     // -- OpaqueHandler tests --------------------------------------------------
 
     #[test]
@@ -1171,7 +1109,7 @@ mod tests {
     #[test]
     fn seq_reads_current() {
         fn check(seq: Seq, mut out: ResMut<i64>, _event: ()) {
-            *out = seq.get().0;
+            *out = seq.get();
         }
 
         let mut builder = WorldBuilder::new();
@@ -1189,7 +1127,7 @@ mod tests {
         fn stamp(mut seq: SeqMut, mut counter: ResMut<u64>, _event: ()) {
             let a = seq.advance();
             let b = seq.advance();
-            *counter = a.0 as u64 * 100 + b.0 as u64;
+            *counter = a.get() as u64 * 100 + b.get() as u64;
         }
 
         let mut builder = WorldBuilder::new();
@@ -1223,7 +1161,7 @@ mod tests {
     #[test]
     fn seq_only_param() {
         fn handle(seq: Seq, _event: ()) {
-            assert!(seq.get().0 >= 0);
+            assert!(seq.get() >= 0);
         }
 
         let builder = WorldBuilder::new();
@@ -1235,7 +1173,7 @@ mod tests {
     #[test]
     fn seq_first_with_res() {
         fn handle(seq: Seq, config: Res<u64>, mut out: ResMut<i64>, _event: ()) {
-            *out = seq.get().0 + *config as i64;
+            *out = seq.get() + *config as i64;
         }
 
         let mut builder = WorldBuilder::new();
@@ -1251,7 +1189,7 @@ mod tests {
     #[test]
     fn seq_middle_position() {
         fn handle(config: Res<u64>, seq: Seq, mut out: ResMut<i64>, _event: ()) {
-            *out = *config as i64 + seq.get().0;
+            *out = *config as i64 + seq.get();
         }
 
         let mut builder = WorldBuilder::new();
@@ -1267,7 +1205,7 @@ mod tests {
     #[test]
     fn seq_last_position() {
         fn handle(mut out: ResMut<i64>, seq: Seq, _event: ()) {
-            *out = seq.get().0;
+            *out = seq.get();
         }
 
         let mut builder = WorldBuilder::new();

@@ -5,11 +5,6 @@
 //! They are produced by [`Param::fetch`](crate::Param::fetch) during dispatch
 //! and deref to the inner `T` transparently.
 //!
-//! Both carry change-detection metadata: [`is_changed()`](Res::is_changed)
-//! compares the resource's `changed_at` stamp against the world's current
-//! sequence. [`ResMut`] stamps `changed_at` on [`DerefMut`] — the act of
-//! writing is the change signal, no manual marking needed.
-//!
 //! For optional dependencies, use [`Option<Res<T>>`] or
 //! [`Option<ResMut<T>>`] — these resolve to `None` if the type was not
 //! registered, rather than panicking at build time.
@@ -26,7 +21,7 @@
 //!
 //! fn process(config: Res<Config>, mut state: ResMut<Flag>, _event: ()) {
 //!     if config.0 > 10 {
-//!         state.0 = true; // stamps changed_at
+//!         state.0 = true;
 //!     }
 //! }
 //!
@@ -52,8 +47,7 @@ use crate::world::Sequence;
 /// Analogous to Bevy's `Res<T>`.
 ///
 /// Appears in handler function signatures to declare a read dependency.
-/// Derefs to the inner value transparently. Carries change-detection
-/// metadata — call [`is_changed`](Self::is_changed) to check.
+/// Derefs to the inner value transparently.
 ///
 /// For exclusive write access, use [`ResMut<T>`]. For optional read
 /// access (no panic if unregistered), use [`Option<Res<T>>`].
@@ -61,35 +55,11 @@ use crate::world::Sequence;
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
 pub struct Res<'w, T: Resource> {
     value: &'w T,
-    changed_at: Sequence,
-    current_sequence: Sequence,
 }
 
 impl<'w, T: Resource> Res<'w, T> {
-    pub(crate) fn new(value: &'w T, changed_at: Sequence, current_sequence: Sequence) -> Self {
-        Self {
-            value,
-            changed_at,
-            current_sequence,
-        }
-    }
-
-    /// Returns `true` if the resource was modified during the current sequence.
-    pub fn is_changed(&self) -> bool {
-        self.changed_at == self.current_sequence
-    }
-
-    /// Returns `true` if the resource was modified after `since`.
-    ///
-    /// Unlike [`is_changed`](Self::is_changed) (equality check against
-    /// current sequence), this uses `>` — suitable for checking whether
-    /// any event since a prior checkpoint wrote this resource.
-    ///
-    /// Relies on numeric ordering of the underlying `i64` counter.
-    /// Not wrap-safe, but at one increment per event the `i64` sequence
-    /// space takes ~584 years at 1 GHz to exhaust.
-    pub fn changed_after(&self, since: Sequence) -> bool {
-        self.changed_at.0 > since.0
+    pub(crate) fn new(value: &'w T) -> Self {
+        Self { value }
     }
 }
 
@@ -113,9 +83,7 @@ impl<T: Resource> Deref for Res<'_, T> {
 /// Analogous to Bevy's `ResMut<T>`.
 ///
 /// Appears in handler function signatures to declare a write dependency.
-/// Derefs to the inner value transparently. Stamps the resource's
-/// `changed_at` sequence on [`DerefMut`] — the act of writing is the
-/// change signal.
+/// Derefs to the inner value transparently.
 ///
 /// For shared read access, use [`Res<T>`]. For optional write access
 /// (no panic if unregistered), use [`Option<ResMut<T>>`].
@@ -123,39 +91,11 @@ impl<T: Resource> Deref for Res<'_, T> {
 /// Construction is `pub(crate)` — only the dispatch layer creates these.
 pub struct ResMut<'w, T: Resource> {
     value: &'w mut T,
-    changed_at: &'w Cell<Sequence>,
-    current_sequence: Sequence,
 }
 
 impl<'w, T: Resource> ResMut<'w, T> {
-    pub(crate) fn new(
-        value: &'w mut T,
-        changed_at: &'w Cell<Sequence>,
-        current_sequence: Sequence,
-    ) -> Self {
-        Self {
-            value,
-            changed_at,
-            current_sequence,
-        }
-    }
-
-    /// Returns `true` if the resource was modified during the current sequence.
-    pub fn is_changed(&self) -> bool {
-        self.changed_at.get() == self.current_sequence
-    }
-
-    /// Returns `true` if the resource was modified after `since`.
-    ///
-    /// Unlike [`is_changed`](Self::is_changed) (equality check against
-    /// current sequence), this uses `>` — suitable for checking whether
-    /// any event since a prior checkpoint wrote this resource.
-    ///
-    /// Relies on numeric ordering of the underlying `i64` counter.
-    /// Not wrap-safe, but at one increment per event the `i64` sequence
-    /// space takes ~584 years at 1 GHz to exhaust.
-    pub fn changed_after(&self, since: Sequence) -> bool {
-        self.changed_at.get().0 > since.0
+    pub(crate) fn new(value: &'w mut T) -> Self {
+        Self { value }
     }
 }
 
@@ -177,7 +117,6 @@ impl<T: Resource> Deref for ResMut<'_, T> {
 impl<T: Resource> DerefMut for ResMut<'_, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        self.changed_at.set(self.current_sequence);
         self.value
     }
 }
@@ -197,15 +136,17 @@ impl<T: Resource> DerefMut for ResMut<'_, T> {
 /// use nexus_rt::{Seq, Handler, IntoHandler};
 ///
 /// fn log_event(seq: Seq, event: u64) {
-///     println!("seq={:?}, event={}", seq.get(), event);
+///     println!("event {} at sequence {}", event, seq.get());
 /// }
 /// ```
+#[derive(Clone, Copy)]
 pub struct Seq(pub(crate) Sequence);
 
 impl Seq {
-    /// Returns the sequence value.
-    pub fn get(&self) -> Sequence {
-        self.0
+    /// Returns the current sequence value.
+    #[inline(always)]
+    pub const fn get(&self) -> i64 {
+        self.0.get()
     }
 }
 
@@ -218,40 +159,32 @@ impl Deref for Seq {
     }
 }
 
-impl std::fmt::Debug for Seq {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-/// Mutable access to the world's sequence number.
+/// Mutable access to the world's current sequence number.
 ///
-/// Allows handlers to advance the sequence for stamping outbound messages.
-/// Each call to [`advance`](Self::advance) returns a new monotonically increasing
-/// sequence number.
+/// Allows handlers to advance the sequence — useful for stamping
+/// outbound messages with monotonic sequence numbers.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use nexus_rt::{SeqMut, Handler, IntoHandler};
 ///
-/// fn on_trade(mut seq: SeqMut, event: Trade) {
-///     let seq_a = seq.advance();
-///     publish(Message { seq: seq_a, .. });
-///
-///     let seq_b = seq.advance();
-///     publish(Message { seq: seq_b, .. });
+/// fn send_message(mut seq: SeqMut<'_>, event: u64) {
+///     let msg_seq = seq.advance();
+///     // stamp msg_seq on outbound message
 /// }
 /// ```
 pub struct SeqMut<'w>(pub(crate) &'w Cell<Sequence>);
 
 impl SeqMut<'_> {
     /// Returns the current sequence value.
+    #[inline(always)]
     pub fn get(&self) -> Sequence {
         self.0.get()
     }
 
-    /// Advance to the next sequence number and return it.
+    /// Advance the sequence by 1 and return the new value.
+    #[inline(always)]
     pub fn advance(&mut self) -> Sequence {
         let next = Sequence(self.0.get().0.wrapping_add(1));
         self.0.set(next);
@@ -259,114 +192,54 @@ impl SeqMut<'_> {
     }
 }
 
-impl std::fmt::Debug for SeqMut<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.get().fmt(f)
-    }
-}
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::Resource;
+
+    struct Val(u64);
+    impl Resource for Val {}
 
     #[test]
     fn res_deref() {
-        let val = 42u64;
-        let res = Res::new(&val, Sequence::default(), Sequence::default());
-        assert_eq!(*res, 42);
+        let val = Val(42);
+        let res = Res::new(&val);
+        assert_eq!(res.0, 42);
     }
 
     #[test]
-    fn res_is_changed() {
-        let val = 42u64;
-        let tick = Sequence::default();
-        let res = Res::new(&val, tick, tick);
-        assert!(res.is_changed());
+    fn res_mut_deref() {
+        let mut val = Val(0);
+        let mut res = ResMut::new(&mut val);
+        res.0 = 99;
+        assert_eq!(val.0, 99);
     }
 
     #[test]
-    fn res_not_changed() {
-        let val = 42u64;
-        // changed_at=0, current_sequence=1 → not changed
-        let res = Res::new(&val, Sequence::default(), Sequence(1));
-        assert!(!res.is_changed());
+    fn res_mut_deref_mut_no_stamp() {
+        // ResMut::deref_mut is now a plain pass-through — no stamping.
+        let mut val = Val(0);
+        let mut res = ResMut::new(&mut val);
+        *res = Val(123);
+        assert_eq!(val.0, 123);
     }
 
     #[test]
-    fn res_mut_deref_mut() {
-        let mut val = 1u64;
-        let changed_at = Cell::new(Sequence::default());
-        let mut res = ResMut::new(&mut val, &changed_at, Sequence::default());
-        *res = 99;
-        assert_eq!(*res, 99);
-        // Intentional drop to end mutable borrow before asserting.
-        #[allow(clippy::drop_non_drop)]
-        drop(res);
-        assert_eq!(val, 99);
+    fn seq_get() {
+        let seq = Seq(Sequence(42));
+        assert_eq!(seq.get(), 42);
     }
 
     #[test]
-    fn res_mut_deref_mut_stamps() {
-        let mut val = 1u64;
-        let changed_at = Cell::new(Sequence(0));
-        let current = Sequence(5);
-        let mut res = ResMut::new(&mut val, &changed_at, current);
-
-        // Before DerefMut — changed_at is still 0
-        assert_eq!(changed_at.get(), Sequence(0));
-
-        *res = 99;
-
-        // After DerefMut — changed_at stamped to current_sequence
-        assert_eq!(changed_at.get(), Sequence(5));
-    }
-
-    #[test]
-    fn res_mut_deref_does_not_stamp() {
-        let mut val = 42u64;
-        let changed_at = Cell::new(Sequence(0));
-        let current = Sequence(5);
-        let res = ResMut::new(&mut val, &changed_at, current);
-
-        // Deref (shared) — read only, should not stamp
-        let _ = *res;
-        assert_eq!(changed_at.get(), Sequence(0));
-    }
-
-    #[test]
-    fn res_changed_after() {
-        let val = 42u64;
-        // changed_at=3, since=1 → changed after
-        let res = Res::new(&val, Sequence(3), Sequence(5));
-        assert!(res.changed_after(Sequence(1)));
-    }
-
-    #[test]
-    fn res_changed_after_equal_is_false() {
-        let val = 42u64;
-        // changed_at=3, since=3 → NOT changed after (equal, not greater)
-        let res = Res::new(&val, Sequence(3), Sequence(5));
-        assert!(!res.changed_after(Sequence(3)));
-    }
-
-    #[test]
-    fn res_mut_changed_after() {
-        let mut val = 1u64;
-        let changed_at = Cell::new(Sequence(5));
-        let res = ResMut::new(&mut val, &changed_at, Sequence(5));
-        assert!(res.changed_after(Sequence(2)));
-        assert!(!res.changed_after(Sequence(5)));
-        assert!(!res.changed_after(Sequence(7)));
-    }
-
-    #[test]
-    fn res_mut_is_changed() {
-        let mut val = 1u64;
-        let changed_at = Cell::new(Sequence(3));
-        let res = ResMut::new(&mut val, &changed_at, Sequence(3));
-        assert!(res.is_changed());
-
-        let res2 = ResMut::new(&mut val, &changed_at, Sequence(4));
-        assert!(!res2.is_changed());
+    fn seq_mut_advance() {
+        let cell = Cell::new(Sequence(0));
+        let mut seq = SeqMut(&cell);
+        let next = seq.advance();
+        assert_eq!(next, Sequence(1));
+        assert_eq!(cell.get(), Sequence(1));
     }
 }

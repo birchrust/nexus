@@ -95,10 +95,10 @@ parameter against the `World`'s registry. At dispatch time, it fetches
 the resources by direct pointer — no `HashMap` lookup, no type checking,
 just a pointer deref.
 
-`ResMut<T>` also participates in **change detection**: the act of writing
-(via `DerefMut`) stamps a sequence number on the resource. Other handlers
-can check `Res<T>::is_changed()` to see if the resource was modified during
-the current event. This is automatic — no manual marking.
+`ResMut<T>` provides exclusive write access via `DerefMut`. For change
+detection, use the reactor system's interest-based notification — mark
+data sources when resources change, and subscribed reactors wake
+automatically.
 
 ### Handlers — Connecting Functions to the World
 
@@ -238,8 +238,8 @@ WorldBuilder::new()
 
 `nexus-rt` is heavily inspired by [Bevy ECS](https://bevyengine.org/).
 Handlers as plain functions, `Param` for declarative dependency
-injection, `Res<T>` / `ResMut<T>` wrappers, change detection via
-sequence stamps, the `Plugin` trait for composable registration — these
+injection, `Res<T>` / `ResMut<T>` wrappers, the `Plugin` trait for
+composable registration — these
 are Bevy's ideas, and in many cases the implementation follows Bevy's
 patterns closely (including the HRTB double-bound trick that makes
 `IntoHandler` work). Credit where it's due: Bevy's system model is
@@ -266,7 +266,7 @@ processing rather than game-world state management.
                    │                  │               │                      │
                    │  ┌────────────┐  │    build()    │  ┌────────────────┐  │
                    │  │ Registry   │──┼──────────────►│  │ ResourceSlot[] │  │
-                   │  │ TypeId→Idx │  │               │  │ ptr+changed_at │  │
+                   │  │ TypeId→Idx │  │               │  │ ptr → value    │  │
                    │  └────────────┘  │               │  └───────┬────────┘  │
                    │                  │               │          │           │
                    │  install_plugin  │               │    get(id) ~3 cyc    │
@@ -299,8 +299,7 @@ processing rather than game-world state management.
    `world.next_sequence()`. **Drivers are responsible for calling this**
    before dispatching each event — the built-in timer and mio pollers
    do this automatically. `world.run()` does not advance the sequence;
-   it is purely a shutdown-checked loop. Change detection is causal:
-   `changed_at` records which event caused the mutation.
+   it is purely a shutdown-checked loop.
 
 ### Dispatch tiers
 
@@ -381,8 +380,7 @@ Frozen after build — no inserts, no removes.
 ### Res / ResMut — resource parameters
 
 Declare resource dependencies in function signatures. `Res<T>` for shared
-reads, `ResMut<T>` for exclusive writes. `ResMut` stamps `changed_at` on
-`DerefMut` — the act of writing is the change signal. See
+reads, `ResMut<T>` for exclusive writes. See
 [Dependency Injection](#rest-and-resmut--dependency-injection) above.
 
 ### Optional resources
@@ -638,22 +636,27 @@ For fan-out with merge (data flowing back together), use
 
 ### Change detection
 
-Each resource tracks a `changed_at` sequence number. Drivers call
-`world.next_sequence()` before each event dispatch to advance the
-sequence counter.
+Per-resource change detection has been replaced by the **reactor system**
+(behind the `reactors` feature). Event handlers call `ReactorNotify::mark(source)`
+to signal which data changed. Subscribed reactors wake automatically with
+dedup — per-instrument, per-strategy granularity.
 
 ```rust
-// Read side — check if a resource was modified this sequence
-fn observer(val: Res<u64>, _event: ()) {
-    if val.is_changed() {
-        // val was written during the current sequence
-    }
+// Setup: register data sources and spawn reactors
+let btc_md = world.register_source();
+world.spawn_reactor(
+    |id| QuotingCtx { reactor_id: id, instrument: BTC },
+    quoting_step,
+).subscribe(btc_md);
+
+// Event handler: mark which data changed
+fn on_btc_tick(event: Tick, mut books: ResMut<OrderBooks>, mut notify: ResMut<ReactorNotify>) {
+    books.apply(event);
+    notify.mark(btc_md);  // O(1), wakes only BTC-subscribed reactors
 }
 
-// Write side — ResMut stamps changed_at on DerefMut automatically
-fn writer(mut val: ResMut<u64>, _event: ()) {
-    *val = 42; // stamps changed_at = current_sequence
-}
+// Post-frame: dispatch woken reactors (deduped)
+world.dispatch_reactors();
 ```
 
 ### Local — per-handler state
@@ -897,8 +900,9 @@ propagation in a DAG scheduler.
 ```rust
 // Bool-returning: controls DAG propagation
 fn compute_theo(mid: Res<MidPrice>, mut theo: ResMut<TheoValue>) -> bool {
-    if mid.is_changed() {
-        theo.0 = mid.0 * 1.001;
+    let new_theo = mid.0 * 1.001;
+    if (new_theo - theo.0).abs() > f64::EPSILON {
+        theo.0 = new_theo;
         true  // outputs changed — run downstream
     } else {
         false // nothing changed — skip downstream
@@ -926,7 +930,7 @@ Root systems (no upstreams) always run. Non-root systems run only if at
 least one upstream returned `true` (OR semantics).
 
 ```rust
-use nexus_rt::scheduler::{SchedulerInstaller, SchedulerTick};
+use nexus_rt::scheduler::SchedulerInstaller;
 
 let mut installer = SchedulerInstaller::new();
 let theo = installer.add(compute_theo, registry);
@@ -942,12 +946,10 @@ let mut world = wb.build();
 let systems_run = scheduler.run(&mut world);
 ```
 
-`SchedulerTick` tracks the sequence at the last scheduler pass. Systems
-use `Res::changed_after(tick.last())` to detect resources modified since
-the previous pass — enabling skip-detection without manual bookkeeping.
-
 Propagation is tracked via a `u64` bitmask (one bit per system), limiting
-the scheduler to `MAX_SYSTEMS` (64) systems.
+the scheduler to `MAX_SYSTEMS` (64) systems. Systems return `bool` to
+control downstream execution — `true` means "my outputs changed, run
+downstream." For per-item change detection, use the reactor system.
 
 ### Startup & Lifecycle
 
@@ -1274,8 +1276,6 @@ eliminates runtime bookkeeping.
   reconciliation systems, boolean propagation, change detection
 - [`handlers`](examples/handlers.rs) — Handler composition: IntoHandler,
   Callback, boxing, FanOut, Broadcast, adapters
-- [`change_detection`](examples/change_detection.rs) — Change detection:
-  is_changed, changed_after, ResMut stamping, SchedulerTick
 - [`templates`](examples/templates.rs) — Template generation:
   HandlerTemplate, CallbackTemplate, handler_blueprint macro
 - [`testing_example`](examples/testing_example.rs) — TestHarness usage

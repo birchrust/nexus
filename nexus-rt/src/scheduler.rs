@@ -23,14 +23,7 @@
 //! # Sequence mechanics
 //!
 //! The global sequence counter is event-only — the scheduler never
-//! calls [`next_sequence`](crate::World::next_sequence). System writes
-//! via [`ResMut`](crate::ResMut) stamp at the current (last event's)
-//! sequence. At the end of each pass, [`SchedulerTick`] is updated to
-//! [`current_sequence`](crate::World::current_sequence).
-//!
-//! Systems use [`Res::changed_after`](crate::Res::changed_after) with
-//! [`SchedulerTick::last`] to detect resources modified since the
-//! previous pass.
+//! calls [`next_sequence`](crate::World::next_sequence).
 //!
 //! # Invariants
 //!
@@ -83,57 +76,7 @@ use std::collections::VecDeque;
 
 use crate::driver::Installer;
 use crate::system::{IntoSystem, System};
-use crate::world::{Registry, ResourceId, Sequence, World, WorldBuilder};
-
-// =============================================================================
-// SchedulerTick
-// =============================================================================
-
-/// Tracks the sequence at which the last scheduler pass completed.
-///
-/// Registered as a resource by [`SchedulerInstaller::install`]. Systems
-/// can use [`Res::changed_after`](crate::Res::changed_after) with
-/// `scheduler_tick.last()` to detect changes since the previous pass.
-///
-/// Updated at the end of each [`SystemScheduler::run`] call to
-/// [`World::current_sequence`](crate::World::current_sequence).
-///
-/// # Examples
-///
-/// ```
-/// use nexus_rt::{Res, ResMut, Resource};
-/// use nexus_rt::scheduler::SchedulerTick;
-///
-/// #[derive(Resource)]
-/// struct Counter(u64);
-///
-/// #[derive(Resource)]
-/// struct Flag(bool);
-///
-/// fn detect_and_reconcile(
-///     val: Res<Counter>,
-///     tick: Res<SchedulerTick>,
-///     mut out: ResMut<Flag>,
-/// ) -> bool {
-///     if val.changed_after(tick.last()) {
-///         out.0 = val.0 > 100;
-///         true
-///     } else {
-///         false
-///     }
-/// }
-/// ```
-#[derive(Debug, Default)]
-pub struct SchedulerTick(Sequence);
-
-impl crate::world::Resource for SchedulerTick {}
-
-impl SchedulerTick {
-    /// The sequence at which the last scheduler pass completed.
-    pub fn last(&self) -> Sequence {
-        self.0
-    }
-}
+use crate::world::{Registry, World, WorldBuilder};
 
 // =============================================================================
 // SystemId
@@ -269,8 +212,7 @@ pub const MAX_SYSTEMS: usize = 64;
 impl Installer for SchedulerInstaller {
     type Poller = SystemScheduler;
 
-    fn install(self, world: &mut WorldBuilder) -> SystemScheduler {
-        let tick_id = world.ensure(SchedulerTick::default());
+    fn install(self, _world: &mut WorldBuilder) -> SystemScheduler {
         let n = self.systems.len();
 
         assert!(
@@ -337,7 +279,6 @@ impl Installer for SchedulerInstaller {
         }
 
         SystemScheduler {
-            tick_id,
             systems,
             upstream_masks,
         }
@@ -376,7 +317,6 @@ impl Installer for SchedulerInstaller {
 /// propagation check itself. The `results` bitmask lives in a register
 /// for the duration of the loop.
 pub struct SystemScheduler {
-    tick_id: ResourceId,
     systems: Vec<Box<dyn System>>,
     /// Per-system: bit `j` set means system `j` is an upstream dependency.
     /// `0` = root (always runs).
@@ -399,12 +339,7 @@ impl SystemScheduler {
     /// load + one AND + one branch (~4 cycles).
     ///
     /// Does NOT call [`next_sequence`](World::next_sequence) — the global
-    /// sequence is event-only. System writes via [`ResMut`](crate::ResMut)
-    /// stamp at the current (last event's) sequence.
-    ///
-    /// Updates [`SchedulerTick`] to
-    /// [`current_sequence`](World::current_sequence) at the end of
-    /// each pass.
+    /// sequence is event-only.
     ///
     /// Returns the number of systems that actually ran.
     pub fn run(&mut self, world: &mut World) -> usize {
@@ -419,11 +354,6 @@ impl SystemScheduler {
                 }
                 ran += 1;
             }
-        }
-
-        // SAFETY: tick_id was obtained from ensure() on the same builder.
-        unsafe {
-            world.get_mut::<SchedulerTick>(self.tick_id).0 = world.current_sequence();
         }
 
         ran
@@ -443,7 +373,7 @@ impl SystemScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Res, ResMut};
+    use crate::ResMut;
 
     // -- Empty scheduler --------------------------------------------------
 
@@ -600,59 +530,6 @@ mod tests {
         installer.after(b, a);
         installer.after(a, b);
         let _scheduler = builder.install_driver(installer);
-    }
-
-    // -- SchedulerTick updated --------------------------------------------
-
-    #[test]
-    fn scheduler_tick_updated() {
-        let mut builder = WorldBuilder::new();
-        let mut installer = SchedulerInstaller::new();
-        installer.add(|| -> bool { true }, builder.registry());
-        let mut scheduler = builder.install_driver(installer);
-        let mut world = builder.build();
-
-        // Advance sequence as if events were processed.
-        world.next_sequence(); // 1
-        world.next_sequence(); // 2
-
-        scheduler.run(&mut world);
-
-        assert_eq!(world.resource::<SchedulerTick>().last(), Sequence(2));
-    }
-
-    // -- changed_after integration ----------------------------------------
-
-    fn detect_change(val: Res<u64>, tick: Res<SchedulerTick>) -> bool {
-        val.changed_after(tick.last())
-    }
-
-    #[test]
-    fn changed_after_integration() {
-        let mut builder = WorldBuilder::new();
-        builder.register::<u64>(0);
-        // Pre-register SchedulerTick so detect_change can resolve it.
-        // install() uses ensure(), so the duplicate is harmless.
-        builder.ensure(SchedulerTick::default());
-        let mut installer = SchedulerInstaller::new();
-        installer.add(detect_change, builder.registry());
-        let mut scheduler = builder.install_driver(installer);
-        let mut world = builder.build();
-
-        // First pass: changed_at=0, tick.last()=0 → 0 > 0 is false
-        scheduler.run(&mut world);
-
-        // Simulate event that writes u64
-        world.next_sequence(); // seq=1
-        *world.resource_mut::<u64>() = 42; // stamps changed_at=1
-
-        // Second pass: changed_at=1, tick.last()=0 → 1 > 0 is true
-        // (tick updated at END of pass — during this pass it's still 0)
-        scheduler.run(&mut world);
-        // After this pass, tick.last() = 1.
-
-        // Third pass: no new events, changed_at=1, tick.last()=1 → 1 > 1 = false
-        scheduler.run(&mut world);
     }
 
     // -- Sequence not bumped by scheduler ---------------------------------
