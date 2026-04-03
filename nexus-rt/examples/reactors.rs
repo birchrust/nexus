@@ -1,20 +1,20 @@
-//! Actor system usage examples.
+//! Reactor system usage examples.
 //!
 //! Demonstrates the two registration patterns:
-//! 1. **Startup (main)** — two-phase: `alloc_actor` → `into_actor` → `insert`
+//! 1. **Startup (main)** — two-phase: `alloc_reactor` → `into_reactor` → `insert`
 //! 2. **Runtime (handler)** — one-shot via `RegistryRef` param
 //!
-//! Also shows: pipeline actors, self-removal, data source registry,
+//! Also shows: pipeline reactors, self-removal, data source registry,
 //! and the full mark → dispatch cycle.
 //!
 //! ```bash
-//! cargo run -p nexus-rt --example actors
+//! cargo run -p nexus-rt --example reactors
 //! ```
 
 use nexus_notify::Token;
 use nexus_rt::{
-    ActorNotify, ActorSystem, CtxPipelineBuilder, DeferredRemovals, IntoActor, PipelineActor, Res,
-    ResMut, SourceRegistry, WorldBuilder,
+    CtxPipelineBuilder, DeferredRemovals, PipelineReactor, ReactorNotify, Res, ResMut,
+    SourceRegistry, WorldBuilder,
 };
 
 // =============================================================================
@@ -32,27 +32,27 @@ nexus_rt::new_resource!(
 );
 
 // =============================================================================
-// Actor contexts (per-instance metadata)
+// Reactor contexts (per-instance metadata)
 // =============================================================================
 
 struct QuotingCtx {
-    actor_id: Token,
+    reactor_id: Token,
     instrument: &'static str,
     layer: u32,
 }
 
 struct TwapCtx {
-    actor_id: Token,
+    reactor_id: Token,
     instrument: &'static str,
     slice_size: u64,
     remaining: u64,
 }
 
 // =============================================================================
-// Actor step functions
+// Reactor step functions
 // =============================================================================
 
-/// Quoting actor — runs every time market data or positions change.
+/// Quoting reactor — runs every time market data or positions change.
 fn quoting_step(
     ctx: &mut QuotingCtx,
     mut orders: ResMut<OrderCount>,
@@ -61,12 +61,16 @@ fn quoting_step(
     orders.0 += 1;
     volume.0 += u64::from(ctx.layer) * 100;
     println!(
-        "  [QUOTE] {} layer={} (actor {}) → order #{}, volume={}",
-        ctx.instrument, ctx.layer, ctx.actor_id.index(), orders.0, volume.0
+        "  [QUOTE] {} layer={} (reactor {}) → order #{}, volume={}",
+        ctx.instrument,
+        ctx.layer,
+        ctx.reactor_id.index(),
+        orders.0,
+        volume.0
     );
 }
 
-/// TWAP actor — executes slices until done, then self-removes.
+/// TWAP reactor — executes slices until done, then self-removes.
 fn twap_step(
     ctx: &mut TwapCtx,
     mut orders: ResMut<OrderCount>,
@@ -78,16 +82,20 @@ fn twap_step(
     orders.0 += 1;
     volume.0 += qty;
     println!(
-        "  [TWAP]  {} slice={} remaining={} (actor {})",
-        ctx.instrument, qty, ctx.remaining, ctx.actor_id.index()
+        "  [TWAP]  {} slice={} remaining={} (reactor {})",
+        ctx.instrument,
+        qty,
+        ctx.remaining,
+        ctx.reactor_id.index()
     );
 
     if ctx.remaining == 0 {
         println!(
-            "  [TWAP]  {} complete — deregistering actor {}",
-            ctx.instrument, ctx.actor_id.index()
+            "  [TWAP]  {} complete — deregistering reactor {}",
+            ctx.instrument,
+            ctx.reactor_id.index()
         );
-        removals.deregister(ctx.actor_id);
+        removals.deregister(ctx.reactor_id);
     }
 }
 
@@ -96,24 +104,21 @@ fn twap_step(
 // =============================================================================
 
 fn main() {
-    println!("=== Actor System Example ===\n");
+    println!("=== Reactor System Example ===\n");
 
     // ── Setup ────────────────────────────────────────────────────────────
 
     let mut wb = WorldBuilder::new();
     wb.register(OrderCount(0));
     wb.register(TotalVolume(0));
-    wb.register(ActorNotify::new(16, 64));
-    wb.register(DeferredRemovals::default());
     wb.register(SourceRegistry::new());
+    // ReactorNotify + DeferredRemovals are auto-registered by build()
     let mut world = wb.build();
 
-    let mut system = ActorSystem::new(&world);
-
     // Register data sources
-    let btc_md = world.resource_mut::<ActorNotify>().register_source();
-    let eth_md = world.resource_mut::<ActorNotify>().register_source();
-    let positions = world.resource_mut::<ActorNotify>().register_source();
+    let btc_md = world.register_source();
+    let eth_md = world.register_source();
+    let positions = world.register_source();
 
     // Map natural keys
     {
@@ -123,52 +128,59 @@ fn main() {
         sr.insert("positions", positions);
     }
 
-    // ── Register quoting actors (startup, two-phase) ─────────────────────
+    // ── Register quoting reactors (startup, two-phase) ─────────────────────
 
-    println!("Registering quoting actors...");
+    println!("Registering quoting reactors...");
 
-    // BTC quoter
-    let token = world.resource_mut::<ActorNotify>().alloc_actor();
-    let actor = quoting_step.into_actor(
-        QuotingCtx { actor_id: token, instrument: "BTC", layer: 1 },
-        world.registry(),
-    );
-    world.resource_mut::<ActorNotify>()
-        .insert(token, actor)
+    // BTC quoter — spawn_rereactor handles borrow juggling internally
+    world
+        .spawn_reactor(
+            |id| QuotingCtx {
+                reactor_id: id,
+                instrument: "BTC",
+                layer: 1,
+            },
+            quoting_step,
+        )
         .subscribe(btc_md)
         .subscribe(positions);
 
     // ETH quoter
-    let token = world.resource_mut::<ActorNotify>().alloc_actor();
-    let actor = quoting_step.into_actor(
-        QuotingCtx { actor_id: token, instrument: "ETH", layer: 2 },
-        world.registry(),
-    );
-    world.resource_mut::<ActorNotify>()
-        .insert(token, actor)
+    world
+        .spawn_reactor(
+            |id| QuotingCtx {
+                reactor_id: id,
+                instrument: "ETH",
+                layer: 2,
+            },
+            quoting_step,
+        )
         .subscribe(eth_md)
         .subscribe(positions);
 
-    println!("  Registered {} actors\n", system.actor_count(&world));
+    println!("  Registered {} reactors\n", world.reactor_count());
 
-    // ── Register TWAP actor (simulates runtime registration) ─────────────
+    // ── Register TWAP reactor (simulates runtime registration) ─────────────
 
     println!("Registering TWAP algo (BTC, 500 qty, 100/slice)...");
 
-    let token = world.resource_mut::<ActorNotify>().alloc_actor();
-    let actor = twap_step.into_actor(
-        TwapCtx { actor_id: token, instrument: "BTC", slice_size: 100, remaining: 500 },
-        world.registry(),
-    );
-    world.resource_mut::<ActorNotify>()
-        .insert(token, actor)
+    world
+        .spawn_reactor(
+            |id| TwapCtx {
+                reactor_id: id,
+                instrument: "BTC",
+                slice_size: 100,
+                remaining: 500,
+            },
+            twap_step,
+        )
         .subscribe(btc_md);
 
-    println!("  Registered {} actors\n", system.actor_count(&world));
+    println!("  Registered {} reactors\n", world.reactor_count());
 
-    // ── Register pipeline actor ──────────────────────────────────────────
+    // ── Register pipeline reactor ──────────────────────────────────────────
 
-    println!("Registering pipeline actor (BTC doubler)...");
+    println!("Registering pipeline reactor (BTC doubler)...");
 
     fn read_volume(_ctx: &mut QuotingCtx, vol: Res<TotalVolume>, _: ()) -> u64 {
         vol.0
@@ -180,27 +192,33 @@ fn main() {
 
     fn print_result(ctx: &mut QuotingCtx, val: u64) {
         println!(
-            "  [PIPE]  {} doubled volume = {} (actor {})",
-            ctx.instrument, val, ctx.actor_id.index()
+            "  [PIPE]  {} doubled volume = {} (reactor {})",
+            ctx.instrument,
+            val,
+            ctx.reactor_id.index()
         );
     }
 
-    let token = world.resource_mut::<ActorNotify>().alloc_actor();
+    // Pipeline reactor — build pipeline with registry, wrap in PipelineReactor
     let reg = world.registry();
     let pipeline = CtxPipelineBuilder::<QuotingCtx, ()>::new()
         .then(read_volume, reg)
         .then(double, reg)
         .then(print_result, reg)
         .build();
-    let actor = PipelineActor::new(
-        QuotingCtx { actor_id: token, instrument: "BTC", layer: 0 },
-        pipeline,
-    );
-    world.resource_mut::<ActorNotify>()
-        .insert(token, actor)
+
+    world
+        .spawn_reactor_raw(PipelineReactor::new(
+            QuotingCtx {
+                reactor_id: nexus_notify::Token::new(0),
+                instrument: "BTC",
+                layer: 0,
+            },
+            pipeline,
+        ))
         .subscribe(btc_md);
 
-    println!("  Registered {} actors\n", system.actor_count(&world));
+    println!("  Registered {} reactors\n", world.reactor_count());
 
     // ── Simulate event loop ──────────────────────────────────────────────
 
@@ -208,21 +226,21 @@ fn main() {
         println!("--- Frame {} ---", frame);
 
         // Simulate: BTC data arrives every frame
-        world.resource_mut::<ActorNotify>().mark(btc_md);
+        world.resource_mut::<ReactorNotify>().mark(btc_md);
 
         // Simulate: position update every other frame
         if frame % 2 == 0 {
-            world.resource_mut::<ActorNotify>().mark(positions);
+            world.resource_mut::<ReactorNotify>().mark(positions);
         }
 
-        let ran = system.dispatch(&mut world);
+        let ran = world.dispatch_reactors();
         if !ran {
-            println!("  (no actors woke)");
+            println!("  (no reactors woke)");
         }
 
         println!(
-            "  → actors={} orders={} volume={}\n",
-            system.actor_count(&world),
+            "  → reactors={} orders={} volume={}\n",
+            world.reactor_count(),
             world.resource::<OrderCount>().0,
             world.resource::<TotalVolume>().0,
         );

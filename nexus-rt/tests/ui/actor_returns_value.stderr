@@ -1,5 +1,0 @@
-error[E0599]: no method named `into_actor` found for fn item `for<'a> fn(&'a mut MyCtx) -> u32 {bad_step}` in the current scope
-  --> tests/ui/actor_returns_value.rs:19:27
-   |
-19 |     let _actor = bad_step.into_actor(MyCtx, reg);
-   |                           ^^^^^^^^^^ method not found in `for<'a> fn(&'a mut MyCtx) -> u32 {bad_step}`

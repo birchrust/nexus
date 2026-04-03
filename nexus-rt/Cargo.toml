@@ -10,18 +10,19 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-full = ["smartptr", "timer", "mio", "signals"]
+full = ["smartptr", "timer", "mio", "signals", "reactors"]
 codegen-audit = []
 smartptr = ["dep:nexus-smartptr"]
 timer = ["dep:nexus-timer"]
 mio = ["dep:mio"]
 signals = ["dep:signal-hook"]
+reactors = ["dep:nexus-notify", "dep:slab"]
 
 [dependencies]
 nexus-rt-derive = { version = "1.1", path = "../nexus-rt-derive" }
-nexus-notify = { version = "1.0", path = "../nexus-notify" }
+nexus-notify = { version = "1.0", path = "../nexus-notify", optional = true }
 rustc-hash = "2"
-slab = "0.4"
+slab = { version = "0.4", optional = true }
 nexus-smartptr = { version = "0.1", path = "../nexus-smartptr", optional = true }
 nexus-timer = { version = "1.2", path = "../nexus-timer", optional = true }
 mio = { version = "1", features = ["os-poll", "net"], optional = true }

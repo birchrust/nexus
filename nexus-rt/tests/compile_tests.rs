@@ -4752,20 +4752,21 @@ mod ctx_pipelines {
 }
 
 // =========================================================================
-// Actor system — compile-time + runtime integration tests
+// Reactor system — compile-time + runtime integration tests
 // =========================================================================
 
-mod actors {
+#[cfg(feature = "reactors")]
+mod reactors {
     use nexus_notify::Token;
     use nexus_rt::{
-        Actor, ActorNotify, ActorSystem, DataSource, DeferredRemovals, IntoActor, Res, ResMut,
-        ResourceId, SourceRegistry, World, WorldBuilder,
+        DataSource, DeferredRemovals, IntoReactor, Reactor, ReactorNotify, ReactorSystem, Res,
+        ResMut, ResourceId, SourceRegistry, World, WorldBuilder,
     };
 
-    /// Helper: access ActorNotify via ResourceId to avoid borrow conflicts
-    /// with world.registry(). Same pattern as ActorSystem::dispatch.
-    fn notify_mut(world: &World, id: ResourceId) -> &mut ActorNotify {
-        unsafe { world.get_mut::<ActorNotify>(id) }
+    /// Helper: access ReactorNotify via ResourceId to avoid borrow conflicts
+    /// with world.registry(). Same pattern as ReactorSystem::dispatch.
+    fn notify_mut(world: &World, id: ResourceId) -> &mut ReactorNotify {
+        unsafe { world.get_mut::<ReactorNotify>(id) }
     }
 
     nexus_rt::new_resource!(
@@ -4805,32 +4806,32 @@ mod actors {
         counter.0 += 1;
         ctx.remaining -= 1;
         if ctx.remaining == 0 {
-            removals.deregister(ctx.actor_id);
+            removals.deregister(ctx.reactor_id);
         }
     }
 
     struct SimpleCtx {
-        _actor_id: Token,
+        _reactor_id: Token,
         name: &'static str,
         runs: u32,
     }
 
     struct RemovableCtx {
-        actor_id: Token,
+        reactor_id: Token,
         remaining: u32,
     }
 
-    // -- IntoActor compiles for all arities -----------------------------------
+    // -- IntoReactor compiles for all arities -----------------------------------
 
     #[test]
-    fn into_actor_arity0_compiles() {
+    fn into_reactor_arity0_compiles() {
         let wb = WorldBuilder::new();
         let world = wb.build();
         let reg = world.registry();
 
-        let mut actor = ctx_only_step.into_actor(
+        let mut actor = ctx_only_step.into_reactor(
             SimpleCtx {
-                _actor_id: Token::new(0),
+                _reactor_id: Token::new(0),
                 name: "test",
                 runs: 0,
             },
@@ -4842,15 +4843,15 @@ mod actors {
     }
 
     #[test]
-    fn into_actor_arity1_compiles() {
+    fn into_reactor_arity1_compiles() {
         let mut wb = WorldBuilder::new();
         wb.register(Counter(10));
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut actor = one_param_step.into_actor(
+        let mut actor = one_param_step.into_reactor(
             SimpleCtx {
-                _actor_id: Token::new(0),
+                _reactor_id: Token::new(0),
                 name: "test",
                 runs: 0,
             },
@@ -4861,16 +4862,16 @@ mod actors {
     }
 
     #[test]
-    fn into_actor_arity2_compiles() {
+    fn into_reactor_arity2_compiles() {
         let mut wb = WorldBuilder::new();
         wb.register(Counter(42));
         wb.register(Output(Vec::new()));
         let mut world = wb.build();
         let reg = world.registry();
 
-        let mut actor = two_param_step.into_actor(
+        let mut actor = two_param_step.into_reactor(
             SimpleCtx {
-                _actor_id: Token::new(0),
+                _reactor_id: Token::new(0),
                 name: "MM-BTC",
                 runs: 0,
             },
@@ -4884,17 +4885,17 @@ mod actors {
 
     #[test]
     fn market_maker_pattern() {
-        // 3 instruments, shared positions source, per-instrument actors
+        // 3 instruments, shared positions source, per-instrument reactors
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
         wb.register(Output(Vec::new()));
-        wb.register(ActorNotify::new(8, 16));
+        wb.register(ReactorNotify::new(8, 16));
         wb.register(DeferredRemovals::default());
         wb.register(SourceRegistry::new());
         let mut world = wb.build();
-        let nid = world.id::<ActorNotify>();
+        let nid = world.id::<ReactorNotify>();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         fn quoting(ctx: &mut SimpleCtx, mut out: ResMut<Output>) {
             out.0.push(format!("quote:{}", ctx.name));
@@ -4915,13 +4916,13 @@ mod actors {
             sr.insert("positions", positions);
         }
 
-        // Register actors (registry borrow starts here)
+        // Register reactors (registry borrow starts here)
         let reg = world.registry();
         let notify = notify_mut(&world, nid);
         notify
             .register(
                 |t| SimpleCtx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     name: "MM-BTC",
                     runs: 0,
                 },
@@ -4934,7 +4935,7 @@ mod actors {
         notify
             .register(
                 |t| SimpleCtx {
-                    _actor_id: t,
+                    _reactor_id: t,
                     name: "MM-ETH",
                     runs: 0,
                 },
@@ -4949,7 +4950,7 @@ mod actors {
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Output>().0, vec!["quote:MM-BTC"]);
 
-        // Frame 2: position update — both actors wake (deduped)
+        // Frame 2: position update — both reactors wake (deduped)
         world.resource_mut::<Output>().0.clear();
         notify_mut(&world, nid).mark(positions);
         system.dispatch(&mut world);
@@ -4974,13 +4975,13 @@ mod actors {
     fn twap_self_removal_pattern() {
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(4, 8));
+        wb.register(ReactorNotify::new(4, 8));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
         let reg = world.registry();
-        let nid = world.id::<ActorNotify>();
+        let nid = world.id::<ReactorNotify>();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         let notify = notify_mut(&world, nid);
         let md_source = notify.register_source();
@@ -4989,7 +4990,7 @@ mod actors {
         notify
             .register(
                 |t| RemovableCtx {
-                    actor_id: t,
+                    reactor_id: t,
                     remaining: 3,
                 },
                 self_removing_step,
@@ -5004,7 +5005,7 @@ mod actors {
 
             if frame <= 3 {
                 assert_eq!(world.resource::<Counter>().0, frame);
-                assert_eq!(system.actor_count(&world), if frame < 3 { 1 } else { 0 });
+                assert_eq!(system.reactor_count(&world), if frame < 3 { 1 } else { 0 });
             } else {
                 // Frame 4: actor already removed, counter stays at 3
                 assert_eq!(world.resource::<Counter>().0, 3);
@@ -5018,22 +5019,25 @@ mod actors {
     fn wire_routing_with_source_registry() {
         let mut wb = WorldBuilder::new();
         wb.register(Output(Vec::new()));
-        wb.register(ActorNotify::new(8, 16));
+        wb.register(ReactorNotify::new(8, 16));
         wb.register(DeferredRemovals::default());
         wb.register(SourceRegistry::new());
         let mut world = wb.build();
-        let nid = world.id::<ActorNotify>();
+        let nid = world.id::<ReactorNotify>();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         struct FillCtx {
-            actor_id: Token,
+            reactor_id: Token,
             instrument: &'static str,
         }
 
         fn on_fill(ctx: &mut FillCtx, mut out: ResMut<Output>) {
-            out.0
-                .push(format!("fill:{}:{}", ctx.instrument, ctx.actor_id.index()));
+            out.0.push(format!(
+                "fill:{}:{}",
+                ctx.instrument,
+                ctx.reactor_id.index()
+            ));
         }
 
         #[derive(Hash, Eq, PartialEq, Clone, Copy)]
@@ -5047,7 +5051,7 @@ mod actors {
             let token_0 = notify
                 .register(
                     |t| FillCtx {
-                        actor_id: t,
+                        reactor_id: t,
                         instrument: "BTC",
                     },
                     on_fill,
@@ -5060,7 +5064,7 @@ mod actors {
             let token_1 = notify
                 .register(
                     |t| FillCtx {
-                        actor_id: t,
+                        reactor_id: t,
                         instrument: "ETH",
                     },
                     on_fill,
@@ -5100,13 +5104,13 @@ mod actors {
     fn dynamic_instrument_lifecycle() {
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(8, 16));
+        wb.register(ReactorNotify::new(8, 16));
         wb.register(DeferredRemovals::default());
         wb.register(SourceRegistry::new());
         let mut world = wb.build();
-        let nid = world.id::<ActorNotify>();
+        let nid = world.id::<ReactorNotify>();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         fn step(ctx: &mut SimpleCtx, mut counter: ResMut<Counter>) {
             counter.0 += 1;
@@ -5127,7 +5131,7 @@ mod actors {
             notify_mut(&world, nid)
                 .register(
                     |t| SimpleCtx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         name: "BTC",
                         runs: 0,
                     },
@@ -5153,7 +5157,7 @@ mod actors {
             notify_mut(&world, nid)
                 .register(
                     |t| SimpleCtx {
-                        _actor_id: t,
+                        _reactor_id: t,
                         name: "ETH",
                         runs: 0,
                     },
@@ -5192,15 +5196,15 @@ mod actors {
         assert!(!ran);
     }
 
-    // -- register_raw with impl Actor -----------------------------------------
+    // -- register_raw with impl Reactor -----------------------------------------
 
     #[test]
     fn register_raw_impl_actor() {
-        struct ManualActor {
+        struct ManualReactor {
             value: u64,
         }
 
-        impl Actor for ManualActor {
+        impl Reactor for ManualReactor {
             fn run(&mut self, world: &mut World) {
                 let counter = world.resource_mut::<Counter>();
                 counter.0 += self.value;
@@ -5209,16 +5213,16 @@ mod actors {
 
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(4, 8));
+        wb.register(ReactorNotify::new(4, 8));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
-        let nid = world.id::<ActorNotify>();
-        let mut system = ActorSystem::new(&world);
+        let nid = world.id::<ReactorNotify>();
+        let mut system = ReactorSystem::new(&world);
 
         let notify = notify_mut(&world, nid);
         let src = notify.register_source();
         notify
-            .register_raw(ManualActor { value: 42 })
+            .register_raw(ManualReactor { value: 42 })
             .subscribe(src);
 
         notify_mut(&world, nid).mark(src);
@@ -5226,19 +5230,19 @@ mod actors {
         assert_eq!(world.resource::<Counter>().0, 42);
     }
 
-    // -- Heterogeneous actors in one system -----------------------------------
+    // -- Heterogeneous reactors in one system -----------------------------------
 
     #[test]
     fn heterogeneous_actors() {
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
         wb.register(Output(Vec::new()));
-        wb.register(ActorNotify::new(4, 8));
+        wb.register(ReactorNotify::new(4, 8));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
         let reg = world.registry();
-        let nid = world.id::<ActorNotify>();
-        let mut system = ActorSystem::new(&world);
+        let nid = world.id::<ReactorNotify>();
+        let mut system = ReactorSystem::new(&world);
 
         // Type A: increments counter
         struct CtxA {
@@ -5286,19 +5290,19 @@ mod actors {
 
     #[test]
     fn startup_two_phase_registration() {
-        // Simulates wiring actors in main() using alloc_actor + into_actor + insert.
+        // Simulates wiring reactors in main() using alloc_reactor + into_reactor + insert.
         // No unsafe, no borrow conflicts.
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(8, 16));
+        wb.register(ReactorNotify::new(8, 16));
         wb.register(DeferredRemovals::default());
         wb.register(SourceRegistry::new());
         let mut world = wb.build();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         struct QuotingCtx {
-            _actor_id: Token,
+            _reactor_id: Token,
             _instrument: &'static str,
             layer: u32,
         }
@@ -5308,9 +5312,9 @@ mod actors {
         }
 
         // Register data sources
-        let btc_md = world.resource_mut::<ActorNotify>().register_source();
-        let eth_md = world.resource_mut::<ActorNotify>().register_source();
-        let positions = world.resource_mut::<ActorNotify>().register_source();
+        let btc_md = world.resource_mut::<ReactorNotify>().register_source();
+        let eth_md = world.resource_mut::<ReactorNotify>().register_source();
+        let positions = world.resource_mut::<ReactorNotify>().register_source();
 
         // Map natural keys
         {
@@ -5321,44 +5325,44 @@ mod actors {
         }
 
         // Register BTC quoting actor — two-phase, safe
-        let token = world.resource_mut::<ActorNotify>().alloc_actor();
-        let actor = quoting_step.into_actor(
+        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let actor = quoting_step.into_reactor(
             QuotingCtx {
-                _actor_id: token,
+                _reactor_id: token,
                 _instrument: "BTC",
                 layer: 1,
             },
             world.registry(),
         );
         world
-            .resource_mut::<ActorNotify>()
+            .resource_mut::<ReactorNotify>()
             .insert(token, actor)
             .subscribe(btc_md)
             .subscribe(positions);
 
         // Register ETH quoting actor
-        let token = world.resource_mut::<ActorNotify>().alloc_actor();
-        let actor = quoting_step.into_actor(
+        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let actor = quoting_step.into_reactor(
             QuotingCtx {
-                _actor_id: token,
+                _reactor_id: token,
                 _instrument: "ETH",
                 layer: 2,
             },
             world.registry(),
         );
         world
-            .resource_mut::<ActorNotify>()
+            .resource_mut::<ReactorNotify>()
             .insert(token, actor)
             .subscribe(eth_md)
             .subscribe(positions);
 
         // Frame 1: BTC data only — BTC actor wakes
-        world.resource_mut::<ActorNotify>().mark(btc_md);
+        world.resource_mut::<ReactorNotify>().mark(btc_md);
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Counter>().0, 1); // layer 1
 
-        // Frame 2: position update — both actors wake (deduped)
-        world.resource_mut::<ActorNotify>().mark(positions);
+        // Frame 2: position update — both reactors wake (deduped)
+        world.resource_mut::<ReactorNotify>().mark(positions);
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Counter>().0, 4); // 1 + 1 + 2
     }
@@ -5373,22 +5377,22 @@ mod actors {
 
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(8, 16));
+        wb.register(ReactorNotify::new(8, 16));
         wb.register(DeferredRemovals::default());
         wb.register(SourceRegistry::new());
         let mut world = wb.build();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         // Pre-register a data source and map it
-        let md_source = world.resource_mut::<ActorNotify>().register_source();
+        let md_source = world.resource_mut::<ReactorNotify>().register_source();
         world
             .resource_mut::<SourceRegistry>()
             .insert("BTC", md_source);
 
         // The actor step function
         struct TwapCtx {
-            actor_id: Token,
+            reactor_id: Token,
             remaining: u32,
         }
 
@@ -5400,14 +5404,14 @@ mod actors {
             counter.0 += 1;
             ctx.remaining -= 1;
             if ctx.remaining == 0 {
-                removals.deregister(ctx.actor_id);
+                removals.deregister(ctx.reactor_id);
             }
         }
 
         // The "admin command handler" — takes RegistryRef as a Param
-        // to register actors at runtime.
+        // to register reactors at runtime.
         fn on_admin_add_twap(
-            mut notify: ResMut<ActorNotify>,
+            mut notify: ResMut<ReactorNotify>,
             sources: Res<SourceRegistry>,
             reg: RegistryRef<'_>,
             _event: (),
@@ -5416,7 +5420,7 @@ mod actors {
             notify
                 .register(
                     |id| TwapCtx {
-                        actor_id: id,
+                        reactor_id: id,
                         remaining: 3,
                     },
                     twap_step,
@@ -5426,16 +5430,16 @@ mod actors {
         }
 
         // Build the handler (compile test: RegistryRef works as Param alongside
-        // ResMut<ActorNotify> and Res<SourceRegistry>)
+        // ResMut<ReactorNotify> and Res<SourceRegistry>)
         let mut handler = on_admin_add_twap.into_handler(world.registry());
 
         // Simulate admin command arriving — handler registers the actor
         handler.run(&mut world, ());
-        assert_eq!(system.actor_count(&world), 1);
+        assert_eq!(system.reactor_count(&world), 1);
 
         // 3 frames — actor runs and self-removes
         for frame in 1..=4 {
-            world.resource_mut::<ActorNotify>().mark(md_source);
+            world.resource_mut::<ReactorNotify>().mark(md_source);
             system.dispatch(&mut world);
 
             if frame <= 3 {
@@ -5443,7 +5447,7 @@ mod actors {
             } else {
                 // Frame 4: actor removed, counter stays at 3
                 assert_eq!(world.resource::<Counter>().0, 3);
-                assert_eq!(system.actor_count(&world), 0);
+                assert_eq!(system.reactor_count(&world), 0);
             }
         }
     }
@@ -5456,14 +5460,14 @@ mod actors {
 
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(4, 8));
+        wb.register(ReactorNotify::new(4, 8));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
 
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
             multiplier: u64,
         }
 
@@ -5480,31 +5484,31 @@ mod actors {
         }
 
         // Register source
-        let src = world.resource_mut::<ActorNotify>().register_source();
+        let src = world.resource_mut::<ReactorNotify>().register_source();
 
         // Two-phase: alloc token, build pipeline with registry, insert
-        let token = world.resource_mut::<ActorNotify>().alloc_actor();
+        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
         let reg = world.registry();
         let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
             .then(read, reg)
             .then(multiply, reg)
             .then(store, reg)
             .build();
-        let actor = nexus_rt::PipelineActor::new(
+        let actor = nexus_rt::PipelineReactor::new(
             Ctx {
-                _actor_id: token,
+                _reactor_id: token,
                 multiplier: 3,
             },
             pipeline,
         );
         world
-            .resource_mut::<ActorNotify>()
+            .resource_mut::<ReactorNotify>()
             .insert(token, actor)
             .subscribe(src);
 
         // Set initial value and dispatch
         world.resource_mut::<Counter>().0 = 10;
-        world.resource_mut::<ActorNotify>().mark(src);
+        world.resource_mut::<ReactorNotify>().mark(src);
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Counter>().0, 30); // 10 * 3
     }
@@ -5513,19 +5517,19 @@ mod actors {
 
     #[test]
     fn runtime_pipeline_actor_via_registry_ref() {
-        use nexus_rt::{CtxPipelineBuilder, Handler, IntoHandler, PipelineActor, RegistryRef};
+        use nexus_rt::{CtxPipelineBuilder, Handler, IntoHandler, PipelineReactor, RegistryRef};
 
         let mut wb = WorldBuilder::new();
         wb.register(Counter(0));
-        wb.register(ActorNotify::new(4, 8));
+        wb.register(ReactorNotify::new(4, 8));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
 
-        let mut system = ActorSystem::new(&world);
-        let src = world.resource_mut::<ActorNotify>().register_source();
+        let mut system = ReactorSystem::new(&world);
+        let src = world.resource_mut::<ReactorNotify>().register_source();
 
         struct Ctx {
-            _actor_id: Token,
+            _reactor_id: Token,
         }
 
         fn double(_ctx: &mut Ctx, counter: Res<Counter>, _: ()) -> u64 {
@@ -5537,7 +5541,7 @@ mod actors {
         }
 
         // Handler that builds a pipeline actor at runtime
-        fn on_admin(mut notify: ResMut<ActorNotify>, reg: RegistryRef<'_>, _event: ()) {
+        fn on_admin(mut notify: ResMut<ReactorNotify>, reg: RegistryRef<'_>, _event: ()) {
             let pipeline = CtxPipelineBuilder::<Ctx, ()>::new()
                 .then(double, &reg)
                 .then(store, &reg)
@@ -5545,9 +5549,9 @@ mod actors {
 
             // register_raw doesn't need the token in context
             notify
-                .register_raw(PipelineActor::new(
+                .register_raw(PipelineReactor::new(
                     Ctx {
-                        _actor_id: Token::new(0),
+                        _reactor_id: Token::new(0),
                     },
                     pipeline,
                 ))
@@ -5559,7 +5563,7 @@ mod actors {
         handler.run(&mut world, ());
 
         world.resource_mut::<Counter>().0 = 5;
-        world.resource_mut::<ActorNotify>().mark(src);
+        world.resource_mut::<ReactorNotify>().mark(src);
         system.dispatch(&mut world);
         assert_eq!(world.resource::<Counter>().0, 10); // 5 * 2
     }

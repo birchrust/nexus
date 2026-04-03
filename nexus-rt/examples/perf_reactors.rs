@@ -1,20 +1,20 @@
-//! Actor system performance benchmark.
+//! Reactor system performance benchmark.
 //!
-//! Measures cycle counts for actor dispatch across configurations:
-//! - mark + dispatch with varying actor counts
-//! - per-actor dispatch cost (with pre-resolved Params)
+//! Measures cycle counts for reactor dispatch across configurations:
+//! - mark + dispatch with varying reactor counts
+//! - per-reactor dispatch cost (with pre-resolved Params)
 //! - dedup pressure (many sources, overlapping subscriptions)
 //! - source registry lookup cost
 //!
 //! ```bash
-//! taskset -c 0 cargo run --release -p nexus-rt --example perf_actors
+//! taskset -c 0 cargo run --release -p nexus-rt --example perf_reactors
 //! ```
 
 use std::hint::black_box;
 
 use nexus_notify::Token;
 use nexus_rt::{
-    ActorNotify, ActorSystem, DeferredRemovals, IntoActor, Res, ResMut, SourceRegistry,
+    DeferredRemovals, IntoReactor, ReactorNotify, ReactorSystem, Res, ResMut, SourceRegistry,
     WorldBuilder,
 };
 
@@ -85,11 +85,11 @@ fn print_header(title: &str) {
 }
 
 // =============================================================================
-// Actor step functions
+// Reactor step functions
 // =============================================================================
 
 struct Ctx {
-    _actor_id: Token,
+    _reactor_id: Token,
 }
 
 fn noop_step(_ctx: &mut Ctx) {
@@ -109,29 +109,29 @@ fn two_res_step(_ctx: &mut Ctx, _val: Res<Val>, mut out: ResMut<Out>) {
 // =============================================================================
 
 fn scenario_dispatch_scaling() {
-    print_header("mark + dispatch — varying actor counts (noop step)");
+    print_header("mark + dispatch — varying reactor counts (noop step)");
 
     for &count in &[1, 5, 10, 50, 200] {
         let mut wb = WorldBuilder::new();
-        wb.register(ActorNotify::new(4, count + 16));
+        wb.register(ReactorNotify::new(4, count + 16));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
-        let mut system = ActorSystem::new(&world);
+        let mut system = ReactorSystem::new(&world);
 
-        let src = world.resource_mut::<ActorNotify>().register_source();
+        let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..count {
-            let token = world.resource_mut::<ActorNotify>().alloc_actor();
-            let actor = noop_step.into_actor(Ctx { _actor_id: token }, world.registry());
+            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let reactor = noop_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
-                .resource_mut::<ActorNotify>()
-                .insert(token, actor)
+                .resource_mut::<ReactorNotify>()
+                .insert(token, reactor)
                 .subscribe(src);
         }
 
-        let label = format!("mark + dispatch ({} actors, noop)", count);
+        let label = format!("mark + dispatch ({} reactors, noop)", count);
         bench_batched(&label, || {
-            world.resource_mut::<ActorNotify>().mark(src);
+            world.resource_mut::<ReactorNotify>().mark(src);
             system.dispatch(&mut world);
             0
         });
@@ -139,28 +139,28 @@ fn scenario_dispatch_scaling() {
 }
 
 fn scenario_param_cost() {
-    print_header("dispatch cost per Param arity (10 actors)");
+    print_header("dispatch cost per Param arity (10 reactors)");
 
     // Noop (0 params)
     {
         let mut wb = WorldBuilder::new();
-        wb.register(ActorNotify::new(4, 16));
+        wb.register(ReactorNotify::new(4, 16));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
-        let mut system = ActorSystem::new(&world);
-        let src = world.resource_mut::<ActorNotify>().register_source();
+        let mut system = ReactorSystem::new(&world);
+        let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..10 {
-            let token = world.resource_mut::<ActorNotify>().alloc_actor();
-            let actor = noop_step.into_actor(Ctx { _actor_id: token }, world.registry());
+            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let reactor = noop_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
-                .resource_mut::<ActorNotify>()
-                .insert(token, actor)
+                .resource_mut::<ReactorNotify>()
+                .insert(token, reactor)
                 .subscribe(src);
         }
 
-        bench_batched("10 actors × 0 params (noop)", || {
-            world.resource_mut::<ActorNotify>().mark(src);
+        bench_batched("10 reactors × 0 params (noop)", || {
+            world.resource_mut::<ReactorNotify>().mark(src);
             system.dispatch(&mut world);
             0
         });
@@ -170,23 +170,23 @@ fn scenario_param_cost() {
     {
         let mut wb = WorldBuilder::new();
         wb.register(Val(42));
-        wb.register(ActorNotify::new(4, 16));
+        wb.register(ReactorNotify::new(4, 16));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
-        let mut system = ActorSystem::new(&world);
-        let src = world.resource_mut::<ActorNotify>().register_source();
+        let mut system = ReactorSystem::new(&world);
+        let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..10 {
-            let token = world.resource_mut::<ActorNotify>().alloc_actor();
-            let actor = one_res_step.into_actor(Ctx { _actor_id: token }, world.registry());
+            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let reactor = one_res_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
-                .resource_mut::<ActorNotify>()
-                .insert(token, actor)
+                .resource_mut::<ReactorNotify>()
+                .insert(token, reactor)
                 .subscribe(src);
         }
 
-        bench_batched("10 actors × 1 param (Res<Val>)", || {
-            world.resource_mut::<ActorNotify>().mark(src);
+        bench_batched("10 reactors × 1 param (Res<Val>)", || {
+            world.resource_mut::<ReactorNotify>().mark(src);
             system.dispatch(&mut world);
             0
         });
@@ -197,23 +197,23 @@ fn scenario_param_cost() {
         let mut wb = WorldBuilder::new();
         wb.register(Val(42));
         wb.register(Out(0));
-        wb.register(ActorNotify::new(4, 16));
+        wb.register(ReactorNotify::new(4, 16));
         wb.register(DeferredRemovals::default());
         let mut world = wb.build();
-        let mut system = ActorSystem::new(&world);
-        let src = world.resource_mut::<ActorNotify>().register_source();
+        let mut system = ReactorSystem::new(&world);
+        let src = world.resource_mut::<ReactorNotify>().register_source();
 
         for _ in 0..10 {
-            let token = world.resource_mut::<ActorNotify>().alloc_actor();
-            let actor = two_res_step.into_actor(Ctx { _actor_id: token }, world.registry());
+            let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+            let reactor = two_res_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
             world
-                .resource_mut::<ActorNotify>()
-                .insert(token, actor)
+                .resource_mut::<ReactorNotify>()
+                .insert(token, reactor)
                 .subscribe(src);
         }
 
-        bench_batched("10 actors × 2 params (Res + ResMut)", || {
-            world.resource_mut::<ActorNotify>().mark(src);
+        bench_batched("10 reactors × 2 params (Res + ResMut)", || {
+            world.resource_mut::<ReactorNotify>().mark(src);
             system.dispatch(&mut world);
             0
         });
@@ -221,30 +221,30 @@ fn scenario_param_cost() {
 }
 
 fn scenario_dedup() {
-    print_header("dedup — 50 actors × 10 sources (all subscribed to all)");
+    print_header("dedup — 50 reactors × 10 sources (all subscribed to all)");
 
     let mut wb = WorldBuilder::new();
-    wb.register(ActorNotify::new(16, 64));
+    wb.register(ReactorNotify::new(16, 64));
     wb.register(DeferredRemovals::default());
     let mut world = wb.build();
-    let mut system = ActorSystem::new(&world);
+    let mut system = ReactorSystem::new(&world);
 
     let mut sources = Vec::new();
     for _ in 0..10 {
-        sources.push(world.resource_mut::<ActorNotify>().register_source());
+        sources.push(world.resource_mut::<ReactorNotify>().register_source());
     }
 
     for _ in 0..50 {
-        let token = world.resource_mut::<ActorNotify>().alloc_actor();
-        let actor = noop_step.into_actor(Ctx { _actor_id: token }, world.registry());
-        let mut reg = world.resource_mut::<ActorNotify>().insert(token, actor);
+        let token = world.resource_mut::<ReactorNotify>().alloc_reactor();
+        let reactor = noop_step.into_reactor(Ctx { _reactor_id: token }, world.registry());
+        let mut reg = world.resource_mut::<ReactorNotify>().insert(token, reactor);
         for &src in &sources {
             reg = reg.subscribe(src);
         }
     }
 
-    bench_batched("mark 10 sources + dispatch 50 actors (dedup)", || {
-        let notify = world.resource_mut::<ActorNotify>();
+    bench_batched("mark 10 sources + dispatch 50 reactors (dedup)", || {
+        let notify = world.resource_mut::<ReactorNotify>();
         for &src in &sources {
             notify.mark(src);
         }
@@ -287,7 +287,7 @@ fn scenario_source_registry() {
 // =============================================================================
 
 fn main() {
-    println!("Actor System Performance Benchmark");
+    println!("Reactor System Performance Benchmark");
     println!("Cycles per operation (batched, {} ops/sample)\n", BATCH);
 
     scenario_dispatch_scaling();
