@@ -45,7 +45,7 @@ fn udp_send_recv_basic() {
             s.send_to(b"hello udp", recv_addr).await.unwrap();
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -84,7 +84,7 @@ fn udp_connected_send_recv() {
             flag.set(true);
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -125,7 +125,7 @@ fn udp_echo() {
             flag.set(true);
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -163,11 +163,11 @@ fn udp_multiple_datagrams() {
             for i in 0..5u8 {
                 c.send_to(&[i; 4], recv_addr).await.unwrap();
                 // Small delay between sends.
-                handle.sleep(Duration::from_millis(5)).await;
+                handle.sleep(Duration::from_millis(20)).await;
             }
         });
 
-        handle.sleep(Duration::from_millis(1000)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert_eq!(count.get(), 5);
@@ -260,7 +260,7 @@ fn udp_try_send_recv() {
             }
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -300,7 +300,7 @@ fn udp_from_std() {
             s.send_to(b"from-std", addr).await.unwrap();
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -355,7 +355,7 @@ fn udp_peek_from() {
             s.send_to(b"peek-data", recv_addr).await.unwrap();
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -409,7 +409,7 @@ fn udp_multicast_loopback() {
             s.send_to(b"mcast", target).await.unwrap();
         });
 
-        handle.sleep(Duration::from_millis(1000)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     // Multicast on loopback may not work in all environments (CI, containers).

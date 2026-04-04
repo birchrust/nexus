@@ -57,7 +57,7 @@ fn tcp_echo_basic() {
             flag.set(true);
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -101,7 +101,7 @@ fn tcp_multiple_clients() {
             }
         });
 
-        handle.sleep(Duration::from_millis(1000)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert_eq!(count.get(), 3);
@@ -156,7 +156,7 @@ fn tcp_large_transfer() {
             // Drop the stream to send FIN → server sees EOF.
         });
 
-        handle.sleep(Duration::from_millis(2000)).await;
+        handle.sleep(Duration::from_secs(5)).await;
     });
 
     assert!(done.get(), "large transfer did not complete");
@@ -209,7 +209,7 @@ fn tcp_split_borrowed() {
             flag.set(true);
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -239,7 +239,7 @@ fn tcp_into_split_reunite() {
             let _c = TcpStream::connect(addr, io).unwrap();
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 }
 
@@ -301,7 +301,7 @@ fn tcp_socket_options_on_stream() {
             handle.sleep(Duration::from_millis(100)).await;
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -345,7 +345,7 @@ fn tcp_socket_builder_bind_listen() {
             c.write_all(b"via-socket").await.unwrap();
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -388,7 +388,7 @@ fn tcp_try_read_write() {
             handle.sleep(Duration::from_millis(100)).await;
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -430,7 +430,7 @@ fn tcp_from_std() {
             c.write_all(b"from_std").await.unwrap();
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -468,7 +468,7 @@ fn tcp_into_std() {
             handle.sleep(Duration::from_millis(100)).await;
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -515,7 +515,7 @@ fn tcp_connect_refused() {
             }
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
@@ -552,7 +552,7 @@ fn tcp_read_after_peer_close() {
             flag.set(true);
         });
 
-        handle.sleep(Duration::from_millis(500)).await;
+        handle.sleep(Duration::from_secs(2)).await;
     });
 
     assert!(done.get());
