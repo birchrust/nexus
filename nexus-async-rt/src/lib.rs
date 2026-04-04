@@ -23,6 +23,7 @@
 
 // Single-threaded runtime — futures are intentionally !Send.
 #![allow(clippy::future_not_send)]
+#![cfg(unix)]
 
 mod task;
 mod waker;
