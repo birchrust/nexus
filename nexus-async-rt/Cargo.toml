@@ -10,14 +10,17 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
 nexus-rt = { path = "../nexus-rt" }
+slab = "0.4"
 nexus-slab = { path = "../nexus-slab" }
 nexus-timer = { path = "../nexus-timer" }
 socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "macros"] }
 
 [[bench]]
 name = "executor"

@@ -212,42 +212,22 @@ impl TcpStream {
     pub async fn write_all(&mut self, mut buf: &[u8]) -> io::Result<()> {
         while !buf.is_empty() {
             let n = self.write(buf).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
             buf = &buf[n..];
         }
         Ok(())
     }
 
-    /// Wait until the stream is readable.
-    pub async fn readable(&mut self) -> io::Result<()> {
-        std::future::poll_fn(|cx| {
-            if let Err(e) = self.ensure_registered(cx) {
-                return Poll::Ready(Err(e));
-            }
-            // Try a zero-length read to check readiness.
-            match self.inner.read(&mut []) {
-                Ok(_) => Poll::Ready(Ok(())),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-                Err(e) => Poll::Ready(Err(e)),
-            }
-        })
-        .await
-    }
-
-    /// Wait until the stream is writable.
-    pub async fn writable(&mut self) -> io::Result<()> {
-        std::future::poll_fn(|cx| {
-            if let Err(e) = self.ensure_registered(cx) {
-                return Poll::Ready(Err(e));
-            }
-            // Try a zero-length write to check readiness.
-            match self.inner.write(&[]) {
-                Ok(_) => Poll::Ready(Ok(())),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-                Err(e) => Poll::Ready(Err(e)),
-            }
-        })
-        .await
-    }
+    // Note: readable()/writable() readiness futures are NOT provided.
+    // Correctly implementing them requires tracking readiness state from
+    // epoll events (like tokio's internal readiness tracking). Zero-length
+    // reads/writes don't reliably probe socket readiness on Linux.
+    // Use poll_read/poll_write or try_read/try_write instead.
 
     // =========================================================================
     // Split
@@ -267,8 +247,13 @@ impl TcpStream {
 
     /// Split into owned read and write halves.
     ///
-    /// The halves can be moved to different tasks. Use
+    /// The halves can be moved to different spawned tasks on the same
+    /// single-threaded runtime (`!Send` — not across threads). Use
     /// [`OwnedReadHalf::reunite`] to reassemble the stream.
+    ///
+    /// **Note:** The halves must first be polled from the same task that
+    /// created them (to set up the mio registration). After the first
+    /// poll, the waker is fixed to that task.
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
         use std::rc::Rc;
         let shared = Rc::new(std::cell::UnsafeCell::new(self));
@@ -371,6 +356,15 @@ impl AsyncWrite for TcpStream {
     }
 }
 
+impl std::fmt::Debug for TcpStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpStream")
+            .field("fd", &self.inner.as_raw_fd())
+            .field("registered", &self.token.is_some())
+            .finish()
+    }
+}
+
 impl AsFd for TcpStream {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.inner.as_fd()
@@ -462,14 +456,6 @@ impl AsyncWrite for WriteHalf<'_> {
         let this = self.get_mut();
         Pin::new(this.stream()).poll_shutdown(cx)
     }
-}
-
-// Implement split() properly using raw pointers.
-impl TcpStream {
-    // Re-declare split using raw pointers for the borrowed halves.
-    // The two halves alias the same TcpStream, but ReadHalf only calls
-    // poll_read and WriteHalf only calls poll_write. The underlying
-    // mio::net::TcpStream supports concurrent read/write (it's a socket fd).
 }
 
 // =============================================================================
@@ -656,6 +642,15 @@ impl TcpListener {
     }
 }
 
+impl std::fmt::Debug for TcpListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpListener")
+            .field("fd", &self.inner.as_raw_fd())
+            .field("registered", &self.token.is_some())
+            .finish()
+    }
+}
+
 impl AsFd for TcpListener {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.inner.as_fd()
@@ -837,8 +832,20 @@ impl TcpSocket {
     }
 
     /// Connect to `addr` and return a [`TcpStream`].
+    ///
+    /// The connection completes asynchronously (non-blocking socket).
+    /// The first read or write will detect when the connection is
+    /// established.
     pub fn connect(self, addr: SocketAddr, io: IoHandle) -> io::Result<TcpStream> {
-        self.inner.connect(&addr.into())?;
+        // Non-blocking connect returns EINPROGRESS/EALREADY — that's
+        // normal, not an error. Suppress these.
+        match self.inner.connect(&addr.into()) {
+            Ok(()) => {}
+            Err(e)
+                if e.raw_os_error() == Some(libc::EINPROGRESS)
+                    || e.raw_os_error() == Some(libc::EALREADY) => {}
+            Err(e) => return Err(e),
+        }
         let std_stream: std::net::TcpStream = self.inner.into();
         let mio_stream = mio::net::TcpStream::from_std(std_stream);
         Ok(TcpStream::new(mio_stream, io))
@@ -854,6 +861,14 @@ impl TcpSocket {
             io,
             token: None,
         })
+    }
+}
+
+impl std::fmt::Debug for TcpSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpSocket")
+            .field("fd", &self.inner.as_raw_fd())
+            .finish()
     }
 }
 

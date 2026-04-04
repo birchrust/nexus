@@ -127,14 +127,25 @@ pub struct Executor<const INTERNAL_SIZE: usize> {
     draining: Vec<*mut u8>,
 
     /// All live task pointers (including pending tasks not in any queue).
-    /// Enables complete cleanup on Drop — no leaked futures.
-    all_tasks: Vec<*mut u8>,
+    /// Slab-indexed for O(1) removal on completion/cancel. The slab key
+    /// is stored in the task header (`tracker_key`).
+    all_tasks: slab::Slab<*mut u8>,
 
     /// Number of live tasks.
     live_count: usize,
+
+    /// Maximum tasks to poll per cycle before yielding to IO.
+    /// `usize::MAX` = unlimited (drain all). Default: 64.
+    /// Lower values improve IO responsiveness at the cost of
+    /// task throughput. Higher values reduce IO polling frequency.
+    poll_limit: usize,
 }
 
 impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
+    /// Default poll limit: max tasks polled per cycle before yielding
+    /// to IO. Balances task throughput with IO responsiveness.
+    const DEFAULT_POLL_LIMIT: usize = 64;
+
     /// Create a bounded executor with fixed task capacity.
     ///
     /// `INTERNAL_SIZE` includes task header overhead (24 bytes). Use
@@ -152,8 +163,9 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
             slab: SlabBackend::Bounded(slab),
             incoming: Vec::with_capacity(capacity),
             draining: Vec::with_capacity(capacity),
-            all_tasks: Vec::with_capacity(capacity),
+            all_tasks: slab::Slab::with_capacity(capacity),
             live_count: 0,
+            poll_limit: Self::DEFAULT_POLL_LIMIT,
         }
     }
 
@@ -170,8 +182,9 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
             slab: SlabBackend::Unbounded(slab),
             incoming: Vec::with_capacity(initial_chunk_capacity),
             draining: Vec::with_capacity(initial_chunk_capacity),
-            all_tasks: Vec::with_capacity(initial_chunk_capacity),
+            all_tasks: slab::Slab::with_capacity(initial_chunk_capacity),
             live_count: 0,
+            poll_limit: Self::DEFAULT_POLL_LIMIT,
         }
     }
 
@@ -186,13 +199,19 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
     where
         F: Future<Output = ()> + 'static,
     {
-        let task = Task::new(future);
+        // Reserve a tracking slot first to get the key.
+        let tracker_key = self.all_tasks.vacant_key();
+        debug_assert!(
+            u32::try_from(tracker_key).is_ok(),
+            "more than 4 billion concurrent tasks — tracker_key overflow"
+        );
+        let task = Task::new(future, tracker_key as u32);
 
         // Placement new into the byte slab.
         let ptr = self.slab.alloc_task(task);
 
-        // Track for cleanup on Drop.
-        self.all_tasks.push(ptr);
+        // Track for cleanup on Drop. O(1) insert.
+        self.all_tasks.insert(ptr);
 
         // Mark as queued and push to incoming queue.
         // SAFETY: ptr points to a live Task we just allocated.
@@ -227,7 +246,10 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
         reusable.init();
 
         // Linear drain — sequential memory access, no index math.
-        for &ptr in &self.draining {
+        // Respects poll_limit: only poll up to N tasks before yielding
+        // back to the caller (Runtime polls IO between cycles).
+        let limit = self.poll_limit.min(self.draining.len());
+        for &ptr in &self.draining[..limit] {
             // Clear queued flag so the task can be re-queued by its waker.
             // SAFETY: ptr points to a live Task in the slab.
             unsafe { task::set_queued(ptr, false) };
@@ -244,21 +266,26 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
             match poll_result {
                 Poll::Pending => {}
                 Poll::Ready(()) => {
+                    // Read tracker key before dropping the future.
+                    // SAFETY: ptr points to a live Task.
+                    let key = unsafe { task::tracker_key(ptr) } as usize;
                     // Drop the future and free the slab slot.
                     // SAFETY: future is live, single drop.
                     unsafe { task::drop_task_future(ptr) };
                     // SAFETY: ptr was returned by alloc_task.
                     unsafe { self.slab.free_slot(ptr) };
-                    // Remove from all_tasks tracking.
-                    if let Some(pos) = self.all_tasks.iter().position(|p| *p == ptr) {
-                        self.all_tasks.swap_remove(pos);
-                    }
+                    // O(1) removal from tracking slab.
+                    self.all_tasks.remove(key);
                     self.live_count -= 1;
                     completed += 1;
                 }
             }
         }
 
+        // Move unpolled tasks back to incoming for the next cycle.
+        if limit < self.draining.len() {
+            self.incoming.extend_from_slice(&self.draining[limit..]);
+        }
         // Clear draining buffer, keep capacity for next cycle.
         self.draining.clear();
 
@@ -273,6 +300,24 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
     /// Returns `true` if any tasks are queued for polling.
     pub fn has_ready(&self) -> bool {
         !self.incoming.is_empty()
+    }
+
+    /// Set the maximum number of tasks to poll per cycle before
+    /// yielding to IO. Default: 64.
+    ///
+    /// - Lower values (e.g., 16): better IO responsiveness, less
+    ///   task throughput. Good for IO-heavy gateways.
+    /// - Higher values (e.g., 256): more tasks processed per cycle,
+    ///   higher latency for IO events between cycles.
+    /// - `usize::MAX`: unlimited — drain all ready tasks before
+    ///   checking IO. Only for benchmarks or pure-compute workloads.
+    pub fn set_poll_limit(&mut self, limit: usize) {
+        self.poll_limit = limit;
+    }
+
+    /// Returns the current poll limit.
+    pub fn poll_limit(&self) -> usize {
+        self.poll_limit
     }
 
     /// Returns a mutable reference to the incoming queue.
@@ -298,18 +343,19 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
     /// `&mut self` — `poll` also takes `&mut self`).
     pub fn cancel(&mut self, id: TaskId) {
         let ptr = id.0;
+        // Read tracker key before dropping.
+        // SAFETY: ptr points to a live Task.
+        let key = unsafe { task::tracker_key(ptr) } as usize;
         // SAFETY: ptr points to a live Task.
         unsafe { task::drop_task_future(ptr) };
         // SAFETY: ptr was returned by alloc_task.
         unsafe { self.slab.free_slot(ptr) };
         self.live_count -= 1;
 
-        // Remove from all tracking structures.
+        // Remove from ready queues and tracking slab.
         self.incoming.retain(|p| *p != ptr);
         self.draining.retain(|p| *p != ptr);
-        if let Some(pos) = self.all_tasks.iter().position(|p| *p == ptr) {
-            self.all_tasks.swap_remove(pos);
-        }
+        self.all_tasks.remove(key);
     }
 }
 
@@ -318,7 +364,7 @@ impl<const INTERNAL_SIZE: usize> Drop for Executor<INTERNAL_SIZE> {
         // Drop ALL live tasks — including pending ones not in any queue.
         // This ensures futures' Drop impls run (releasing file descriptors,
         // Rc references, slab slots in other allocators, etc.).
-        for &ptr in &self.all_tasks {
+        for (_, &ptr) in &self.all_tasks {
             // SAFETY: ptr points to a live Task. Each pointer appears
             // exactly once in all_tasks (inserted at spawn, removed at
             // completion/cancel).
@@ -762,6 +808,57 @@ mod tests {
         assert_eq!(executor.task_count(), 50);
         let done = executor.poll();
         assert_eq!(done, 50);
+    }
+
+    // =========================================================================
+    // Poll limit
+    // =========================================================================
+
+    #[test]
+    fn poll_limit_partial_drain() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let polled = Rc::new(Cell::new(0u32));
+        let mut executor = test_executor();
+        executor.set_poll_limit(3);
+
+        // Spawn 6 immediate-completion tasks.
+        for _ in 0..6 {
+            let p = polled.clone();
+            executor.spawn(async move {
+                p.set(p.get() + 1);
+            });
+        }
+
+        assert_eq!(executor.task_count(), 6);
+
+        // First poll: only 3 should run (poll_limit = 3).
+        let done = executor.poll();
+        assert_eq!(done, 3);
+        assert_eq!(polled.get(), 3);
+        assert_eq!(executor.task_count(), 3); // 3 remaining
+
+        // Second poll: remaining 3 run.
+        let done = executor.poll();
+        assert_eq!(done, 3);
+        assert_eq!(polled.get(), 6);
+        assert_eq!(executor.task_count(), 0);
+    }
+
+    #[test]
+    fn poll_limit_unlimited() {
+        let mut executor = test_executor();
+        executor.set_poll_limit(usize::MAX);
+
+        // test_executor has capacity 16.
+        for _ in 0..16 {
+            executor.spawn(async {});
+        }
+
+        // All 16 should complete in one poll.
+        let done = executor.poll();
+        assert_eq!(done, 16);
     }
 
     // =========================================================================

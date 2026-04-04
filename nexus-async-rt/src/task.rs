@@ -26,23 +26,26 @@ pub const TASK_HEADER_SIZE: usize = 24;
 ///
 /// Layout (64-bit):
 /// ```text
-/// offset  0: poll_fn    (8 bytes, fn pointer)
-/// offset  8: drop_fn    (8 bytes, fn pointer)
-/// offset 16: is_queued  (1 byte, bool)
-/// offset 17: _pad       (7 bytes, alignment padding)
-/// offset 24: future     (F bytes, the actual future)
+/// offset  0: poll_fn      (8 bytes, fn pointer)
+/// offset  8: drop_fn      (8 bytes, fn pointer)
+/// offset 16: is_queued    (1 byte, bool)
+/// offset 17: _pad         (3 bytes, alignment padding)
+/// offset 20: tracker_key  (4 bytes, u32 — index in Executor::all_tasks slab)
+/// offset 24: future       (F bytes, the actual future)
 /// ```
 #[repr(C)]
 pub(crate) struct Task<F> {
     poll_fn: unsafe fn(*mut u8, &mut Context<'_>) -> Poll<()>,
     drop_fn: unsafe fn(*mut u8),
     is_queued: bool,
-    /// Explicit padding ensures TASK_HEADER_SIZE is always 24 regardless
-    /// of F's alignment. Without this, repr(C) would pad to F's alignment
-    /// — a future with align(1) would put `future` at offset 17, not 24.
-    /// The hardcoded offsets in `is_queued()`/`set_queued()`/`poll_task()`
-    /// depend on this being exactly 24.
-    _pad: [u8; 7],
+    /// Explicit padding ensures future starts at offset 24 regardless
+    /// of F's alignment. The hardcoded offsets in `is_queued()`,
+    /// `set_queued()`, `poll_task()`, and `tracker_key()` depend on
+    /// this layout being exactly as documented above.
+    _pad: [u8; 3],
+    /// Index into the Executor's `all_tasks` slab. Set at spawn time.
+    /// Used for O(1) removal on completion/cancel.
+    tracker_key: u32,
     future: F,
 }
 
@@ -55,12 +58,13 @@ const _: () = {
 impl<F: Future<Output = ()> + 'static> Task<F> {
     /// Construct a task. Called once at spawn time.
     #[inline]
-    pub(crate) fn new(future: F) -> Self {
+    pub(crate) fn new(future: F, tracker_key: u32) -> Self {
         Self {
             poll_fn: poll_fn::<F>,
             drop_fn: drop_fn::<F>,
             is_queued: false,
-            _pad: [0; 7],
+            _pad: [0; 3],
+            tracker_key,
             future,
         }
     }
@@ -81,6 +85,17 @@ impl TaskId {
     pub fn as_ptr(&self) -> *mut u8 {
         self.0
     }
+}
+
+/// Read the `tracker_key` from a task pointer.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>` in the byte slab.
+#[inline]
+pub(crate) unsafe fn tracker_key(ptr: *mut u8) -> u32 {
+    // SAFETY: tracker_key is at offset 20 in repr(C) Task.
+    unsafe { *(ptr.add(20).cast::<u32>()) }
 }
 
 /// Read the `is_queued` flag from a task pointer.
@@ -181,6 +196,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Task<()>, poll_fn), 0);
         assert_eq!(std::mem::offset_of!(Task<()>, drop_fn), 8);
         assert_eq!(std::mem::offset_of!(Task<()>, is_queued), 16);
+        assert_eq!(std::mem::offset_of!(Task<()>, tracker_key), 20);
         assert_eq!(std::mem::offset_of!(Task<()>, future), 24);
     }
 
@@ -211,7 +227,7 @@ mod tests {
             }
         }
 
-        let task = Box::new(Task::new(Noop));
+        let task = Box::new(Task::new(Noop, 0));
         let ptr = Box::into_raw(task) as *mut u8;
 
         unsafe {

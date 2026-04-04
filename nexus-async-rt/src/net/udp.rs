@@ -381,6 +381,15 @@ impl UdpSocket {
     }
 }
 
+impl std::fmt::Debug for UdpSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpSocket")
+            .field("fd", &self.inner.as_raw_fd())
+            .field("registered", &self.token.is_some())
+            .finish()
+    }
+}
+
 impl AsFd for UdpSocket {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.inner.as_fd()

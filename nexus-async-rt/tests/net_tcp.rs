@@ -437,6 +437,44 @@ fn tcp_from_std() {
 }
 
 // =============================================================================
+// into_std
+// =============================================================================
+
+#[test]
+fn tcp_into_std() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let handle = rt.handle();
+
+    let (listener, addr) = bind_listener(handle.io());
+    let done = Rc::new(Cell::new(false));
+    let flag = done.clone();
+
+    rt.block_on(async move {
+        spawn(async move {
+            let mut listener = listener;
+            let (s, _) = listener.accept().await.unwrap();
+            // Convert to std and verify it's valid.
+            let std_stream = s.into_std().unwrap();
+            assert!(std_stream.peer_addr().is_ok());
+            flag.set(true);
+        });
+
+        let io = handle.io();
+        spawn(async move {
+            handle.sleep(Duration::from_millis(10)).await;
+            let _c = TcpStream::connect(addr, io).unwrap();
+            handle.sleep(Duration::from_millis(100)).await;
+        });
+
+        handle.sleep(Duration::from_millis(500)).await;
+    });
+
+    assert!(done.get());
+}
+
+// =============================================================================
 // Error paths
 // =============================================================================
 

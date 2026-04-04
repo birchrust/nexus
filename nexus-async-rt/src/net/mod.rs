@@ -1,8 +1,8 @@
 //! Async network primitives.
 //!
 //! Wraps mio's TCP and UDP types with async read/write backed by the
-//! runtime's IO driver. Sockets register with mio lazily on first IO
-//! attempt and re-register on `WouldBlock`.
+//! runtime's IO driver. Sockets register with mio lazily on first poll
+//! (edge-triggered — register once, no reregistration).
 //!
 //! # IO Traits
 //!
