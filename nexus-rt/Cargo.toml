@@ -1,6 +1,6 @@
 [package]
 name = "nexus-rt"
-version = "1.2.0"
+version = "2.0.0"
 description = "Single-threaded, event-driven runtime primitives with pre-resolved dispatch"
 edition.workspace = true
 rust-version.workspace = true
@@ -29,8 +29,13 @@ mio = { version = "1", features = ["os-poll", "net"], optional = true }
 signal-hook = { version = "0.3", optional = true }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 mio = { version = "1", features = ["os-poll", "net"] }
 trybuild = "1"
+
+[[bench]]
+name = "dispatch"
+harness = false
 
 [[example]]
 name = "mio_timer"

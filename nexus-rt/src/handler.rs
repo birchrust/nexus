@@ -210,15 +210,17 @@ impl Param for SeqMut<'_> {
 
 // -- Shutdown ----------------------------------------------------------------
 
-impl Param for Shutdown {
+impl Param for Shutdown<'_> {
     type State = ();
-    type Item<'w> = Shutdown;
+    type Item<'w> = Shutdown<'w>;
 
     fn init(_registry: &Registry) {}
 
     #[inline(always)]
-    unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> Shutdown {
-        Shutdown(std::sync::Arc::clone(world.shutdown_flag()))
+    unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> Shutdown<'w> {
+        // Borrow the AtomicBool directly — lifetime-bound to World.
+        // No Arc::clone, no raw pointer. Safe by construction.
+        Shutdown(world.shutdown_flag())
     }
 }
 

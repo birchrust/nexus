@@ -19,7 +19,7 @@
 //! [`SourceRegistry`] maps domain keys (instrument IDs, strategy IDs,
 //! `(Symbol, Venue)` tuples) to [`DataSource`] values for runtime lookup.
 //! Any `Hash + Eq + Send + 'static` type works as a key. All three
-//! resources are auto-registered by [`WorldBuilder::build`] when the
+//! resources are auto-registered by [`WorldBuilder::build`](crate::WorldBuilder::build) when the
 //! `reactors` feature is enabled.
 //!
 //! # Use Cases
@@ -163,6 +163,10 @@ pub struct ReactorNotify {
     /// Slab key = `DataSource.0`.
     interests: slab::Slab<Vec<Token>>,
 
+    /// Reverse index: reactor token → data sources it's subscribed to.
+    /// Enables O(subscriptions) removal instead of O(all_sources × all_subs).
+    reactor_sources: Vec<Vec<DataSource>>,
+
     /// Reactor storage. Slab key = token index.
     /// `Option` enables move-out-move-back during dispatch to avoid
     /// aliasing: the reactor is `take()`n before `run()`, then put back.
@@ -187,6 +191,7 @@ impl ReactorNotify {
         Self {
             notify: LocalNotify::with_capacity(reactor_capacity),
             interests: slab::Slab::with_capacity(source_capacity),
+            reactor_sources: Vec::with_capacity(reactor_capacity),
             reactors: slab::Slab::with_capacity(reactor_capacity),
         }
     }
@@ -241,6 +246,10 @@ impl ReactorNotify {
         // can claim the same key between alloc and insert.
         let key = self.reactors.insert(None);
         self.notify.ensure_capacity(key);
+        // Grow reverse index to cover this reactor token.
+        if key >= self.reactor_sources.len() {
+            self.reactor_sources.resize_with(key + 1, Vec::new);
+        }
         Token::new(key)
     }
 
@@ -251,7 +260,7 @@ impl ReactorNotify {
     ///
     /// # Panics
     ///
-    /// Panics if the token was not allocated by [`create_reactor`] or was
+    /// Panics if the token was not allocated by [`create_reactor`](Self::create_reactor) or was
     /// already filled.
     pub fn insert_reactor(
         &mut self,
@@ -291,6 +300,9 @@ impl ReactorNotify {
         let key = self.reactors.vacant_key();
         let token = Token::new(key);
         self.notify.ensure_capacity(key);
+        if key >= self.reactor_sources.len() {
+            self.reactor_sources.resize_with(key + 1, Vec::new);
+        }
         let ctx = ctx_fn(token);
         let reactor = step.into_reactor(ctx, registry);
         let inserted = self.reactors.insert(Some(Box::new(reactor)));
@@ -311,6 +323,9 @@ impl ReactorNotify {
         let key = self.reactors.vacant_key();
         let token = Token::new(key);
         self.notify.ensure_capacity(key);
+        if key >= self.reactor_sources.len() {
+            self.reactor_sources.resize_with(key + 1, Vec::new);
+        }
         let inserted = self.reactors.insert(Some(Box::new(reactor)));
         debug_assert_eq!(inserted, key);
         ReactorRegistration {
@@ -329,6 +344,14 @@ impl ReactorNotify {
         if let Some(subscribers) = self.interests.get_mut(source.0) {
             if !subscribers.contains(&reactor) {
                 subscribers.push(reactor);
+                // Maintain reverse index for O(subscriptions) removal.
+                let idx = reactor.index();
+                debug_assert!(
+                    idx < self.reactor_sources.len(),
+                    "reactor_sources missing entry for reactor token {}",
+                    idx,
+                );
+                self.reactor_sources[idx].push(source);
             }
         }
     }
@@ -337,6 +360,9 @@ impl ReactorNotify {
     pub fn unsubscribe(&mut self, reactor: Token, source: DataSource) {
         if let Some(subscribers) = self.interests.get_mut(source.0) {
             subscribers.retain(|&t| t != reactor);
+        }
+        if let Some(sources) = self.reactor_sources.get_mut(reactor.index()) {
+            sources.retain(|&s| s != source);
         }
     }
 
@@ -369,20 +395,31 @@ impl ReactorNotify {
     }
 
     /// Put a reactor back into its slot after dispatch.
+    ///
+    /// The caller guarantees `idx` is a valid, occupied slab key
+    /// (it was just returned by `take_reactor`). Skips the redundant
+    /// `contains` check — single bounds-checked write.
     #[inline]
     pub(crate) fn put_reactor(&mut self, idx: usize, reactor: Box<dyn Reactor>) {
-        if self.reactors.contains(idx) {
-            self.reactors[idx] = Some(reactor);
-        }
+        self.reactors[idx] = Some(reactor);
     }
 
     /// Remove a reactor and unsubscribe from all data sources.
+    ///
+    /// Uses the reverse index for O(subscriptions) removal instead of
+    /// scanning all data source interest lists.
     pub fn remove_reactor(&mut self, token: Token) {
         let idx = token.index();
         if self.reactors.contains(idx) {
             self.reactors.remove(idx);
-            for (_, subscribers) in &mut self.interests {
-                subscribers.retain(|&t| t != token);
+            // Use reverse index — only touch sources this reactor subscribed to.
+            if let Some(sources) = self.reactor_sources.get_mut(idx) {
+                for &source in sources.iter() {
+                    if let Some(subscribers) = self.interests.get_mut(source.0) {
+                        subscribers.retain(|&t| t != token);
+                    }
+                }
+                sources.clear();
             }
         }
     }
@@ -480,7 +517,7 @@ pub struct ReactorFn<C, F, Params: Param> {
 // =============================================================================
 
 /// A reactor whose body is a [`CtxPipeline`](crate::CtxPipeline),
-/// [`CtxDag`](crate::CtxDag), or any [`CtxStepCall`](crate::CtxStepCall).
+/// [`CtxDag`](crate::CtxDag), or any [`CtxStepCall`].
 ///
 /// The context `C` holds per-reactor metadata. The body is type-erased
 /// via `Box<dyn CtxStepCall>` since pipeline chain types are unnameable.
@@ -683,16 +720,23 @@ impl DeferredRemovals {
     /// Request deferred removal of a reactor.
     ///
     /// Takes effect after the current dispatch frame completes.
-    /// Safe to call multiple times with the same token.
+    /// Duplicate calls are harmless — `remove_reactor` is idempotent.
     pub fn deregister(&mut self, token: Token) {
-        if !self.tokens.contains(&token) {
-            self.tokens.push(token);
-        }
+        self.tokens.push(token);
     }
 
-    /// Drain pending removals.
-    pub(crate) fn drain(&mut self) -> std::vec::Drain<'_, Token> {
-        self.tokens.drain(..)
+    /// Swap out the inner Vec for zero-alloc processing.
+    /// Returns the Vec (caller owns it). Leaves self with an empty Vec.
+    #[inline]
+    pub(crate) fn take(&mut self) -> Vec<Token> {
+        std::mem::take(&mut self.tokens)
+    }
+
+    /// Put a (drained) Vec back for reuse. Zero allocation.
+    #[inline]
+    pub(crate) fn put(&mut self, tokens: Vec<Token>) {
+        debug_assert!(tokens.is_empty(), "put() expects a drained Vec");
+        self.tokens = tokens;
     }
 
     /// Any removals pending?
@@ -853,28 +897,36 @@ impl ReactorSystem {
         // &mut ReactorNotify is scoped tightly to avoid aliasing during run().
         for token in self.events.iter() {
             let idx = token.index();
+            // SAFETY: notify_ptr is valid for World's lifetime. Scoped &mut
+            // is dropped before reactor.run() to avoid aliasing.
             let reactor = {
                 let notify = unsafe { &mut *notify_ptr };
                 notify.take_reactor(idx)
-            }; // &mut dropped — safe to call run()
+            };
             if let Some(mut reactor) = reactor {
                 reactor.run(world);
+                // SAFETY: re-derive &mut after run() completes. No aliasing —
+                // reactor was moved out of the slab during run().
                 let notify = unsafe { &mut *notify_ptr };
                 notify.put_reactor(idx, reactor);
             }
         }
 
-        // Deferred removals — collect first to avoid holding two &mut.
-        let pending: Vec<Token> = {
-            let removals = unsafe { world.get_mut::<DeferredRemovals>(self.removals_id) };
-            removals.drain().collect()
-        };
+        // Deferred removals — swap Vec out to avoid holding two &mut.
+        // Zero allocation: Vec is swapped back and reused next frame.
+        // SAFETY: removals_id from same WorldBuilder. Dispatch complete.
+        let removals = unsafe { world.get_mut::<DeferredRemovals>(self.removals_id) };
+        let mut pending = removals.take();
         if !pending.is_empty() {
+            // SAFETY: re-derive &mut for cleanup phase. No other references.
             let notify = unsafe { &mut *notify_ptr };
-            for token in pending {
+            while let Some(token) = pending.pop() {
                 notify.remove_reactor(token);
             }
         }
+        // Put the (now empty) Vec back for reuse.
+        let removals = unsafe { world.get_mut::<DeferredRemovals>(self.removals_id) };
+        removals.put(pending);
 
         ran
     }

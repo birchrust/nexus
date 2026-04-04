@@ -170,6 +170,8 @@ impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> CallbackTemplat
     for F
 {
     fn run_fn_ptr() -> unsafe fn(&mut C, &mut (), &mut World, E) {
+        // SAFETY: F must be a ZST (named function item). Caller ensures
+        // this via const { assert!(size_of::<F>() == 0) } in stamp().
         unsafe fn run<C: Send, E, F: FnMut(&mut C, E) + Send>(
             ctx: &mut C,
             _state: &mut (),
@@ -251,6 +253,8 @@ macro_rules! impl_template_dispatch {
                 FnMut(&mut C, $($P::Item<'a>,)+ E),
         {
             fn run_fn_ptr() -> unsafe fn(&mut C, &mut ($($P::State,)+), &mut World, E) {
+                // SAFETY: F must be a ZST (named function item). Caller ensures
+                // this via const { assert!(size_of::<F>() == 0) } in stamp().
                 #[allow(non_snake_case)]
                 unsafe fn run<C: Send, E, F: Send + 'static, $($P: Param + 'static),+>(
                     ctx: &mut C,
