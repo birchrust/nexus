@@ -656,14 +656,18 @@ mod tests {
             executor.poll();
             assert_eq!(dropped.get(), 0);
 
-            // Drop the executor — should drop all live tasks.
-            // Note: current impl only drops queued tasks. Tasks that are
-            // pending (not in ready queue) are not cleaned up by Drop.
-            // The self-waking ensures they're in the ready queue.
+            // Drop the executor — all_tasks tracking ensures ALL live
+            // tasks are dropped, including pending ones.
         }
 
-        // If tasks were pending (not queued), they leak. Let's test
-        // the queued path: spawn without polling (tasks are queued).
+        assert_eq!(
+            dropped.get(),
+            3,
+            "pending tasks not cleaned up on executor drop"
+        );
+
+        // Also verify the queued (never-polled) path works:
+        // the queued (never-polled) path works:
         let dropped2 = Rc::new(Cell::new(0u32));
         {
             let mut executor = test_executor();
@@ -988,7 +992,7 @@ mod tests {
                 black_box(e);
             }
 
-            let mut wb = WorldBuilder::new();
+            let wb = WorldBuilder::new();
             let mut world = wb.build();
             let mut h: Box<dyn Handler<u64>> =
                 Box::new(on_event.into_handler(world.registry()));

@@ -59,7 +59,17 @@ pub struct WorldCtx {
 impl WorldCtx {
     /// Create a context handle from a mutable [`World`] reference.
     ///
-    /// The [`World`] must outlive all tasks using this handle.
+    /// # Safety Contract (enforced by caller, not by the type system)
+    ///
+    /// - The [`World`] must outlive all tasks using this handle.
+    /// - The caller must not use `&mut World` directly while tasks hold
+    ///   a `WorldCtx` — all World access must go through `with_world`.
+    /// - Single-threaded use only (no concurrent `with_world` calls).
+    ///
+    /// These invariants are structurally enforced by [`Runtime`]:
+    /// the World is created before the runtime, `block_on` takes
+    /// `&mut self` preventing direct World access during execution,
+    /// and the single-threaded executor prevents concurrent polls.
     pub fn new(world: &mut World) -> Self {
         Self {
             ptr: world as *mut World,

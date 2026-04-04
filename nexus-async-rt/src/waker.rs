@@ -10,6 +10,23 @@
 //!
 //! Single-threaded only. The ready queue pointer in TLS must be valid
 //! during the entire poll cycle.
+//!
+//! # Waker Lifetime Invariant
+//!
+//! Wakers are **non-owning** raw pointers to task slab slots. They do
+//! not prevent the slot from being freed. This means:
+//!
+//! - A waker must not be used after its task is cancelled or completed.
+//! - IO registrations and timer entries that hold wakers must be cleaned
+//!   up before the task slot is freed.
+//! - In practice, the single-threaded executor enforces this: timers fire
+//!   before cancel, IO sources are deregistered before cancel, and task
+//!   completion happens synchronously during poll (no concurrent free).
+//!
+//! A future improvement could add a lightweight in-task refcount
+//! (incremented on clone, decremented on drop/wake) so the slot stays
+//! valid until all wakers are dropped. For now, the single-threaded
+//! invariant is sufficient.
 
 use std::task::{Context, RawWaker, RawWakerVTable};
 

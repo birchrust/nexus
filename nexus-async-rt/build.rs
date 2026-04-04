@@ -7,7 +7,13 @@
 //! This build script validates the layout at compile time. If rustc ever
 //! changes the field order, the build fails with a clear error message
 //! rather than producing silent UB at runtime.
+//!
+//! Note: build scripts run on the host, not the target. For cross-compilation,
+//! the runtime layout tests in `waker.rs::tests` provide target-side validation.
+//! In practice, `Waker`/`Context` layout is a compiler convention (not
+//! target-dependent), so host validation is sufficient.
 
+use std::mem::size_of;
 use std::ptr;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 

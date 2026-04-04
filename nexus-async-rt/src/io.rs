@@ -232,7 +232,11 @@ impl IoHandle {
         let token = driver.claim_token(task_ptr);
         // SAFETY: registry pointer is valid (borrowed from Poll).
         let registry = unsafe { &*self.registry };
-        registry.register(source, token, interest)?;
+        if let Err(e) = registry.register(source, token, interest) {
+            // Roll back: release the token so it's not leaked.
+            driver.release_token(token);
+            return Err(e);
+        }
         Ok(token)
     }
 
