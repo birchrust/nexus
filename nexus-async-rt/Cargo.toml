@@ -1,0 +1,26 @@
+[package]
+name = "nexus-async-rt"
+version = "0.1.0"
+description = "Single-threaded async executor with pre-allocated task storage"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+mio = { version = "1", features = ["os-poll", "net"] }
+nexus-rt = { path = "../nexus-rt" }
+nexus-slab = { path = "../nexus-slab" }
+nexus-timer = { path = "../nexus-timer" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "executor"
+harness = false
+
+[lints]
+workspace = true

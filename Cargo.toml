@@ -26,8 +26,10 @@ members = [
 	"nexus-rate",
 	"nexus-notify",
 	"nexus-decimal",
-	"nexus-net", "nexus-async-net",
+	"nexus-net",
+	"nexus-async-net",
 	"nexus-collections",
+	"nexus-async-rt",
 ]
 
 [workspace.package]
