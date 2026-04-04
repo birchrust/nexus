@@ -218,7 +218,9 @@ impl Param for Shutdown {
 
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, _state: &'w mut ()) -> Shutdown {
-        Shutdown(std::sync::Arc::clone(world.shutdown_flag()))
+        // SAFETY: Arc<AtomicBool> lives in World for its entire lifetime.
+        // Raw pointer avoids Arc::clone (atomic RMW) on every dispatch.
+        Shutdown(&raw const **world.shutdown_flag())
     }
 }
 

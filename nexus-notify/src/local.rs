@@ -126,7 +126,7 @@ impl LocalNotify {
     #[inline]
     pub fn mark(&mut self, token: Token) {
         let idx = token.index();
-        assert!(
+        debug_assert!(
             idx < self.num_tokens,
             "token index {} out of range ({})",
             idx,
@@ -160,6 +160,7 @@ impl LocalNotify {
     /// Tokens appear in mark order (FIFO).
     ///
     /// Mirrors [`Poller::poll_limit`](crate::Poller::poll_limit).
+    #[inline]
     pub fn poll_limit(&mut self, events: &mut Events, limit: usize) {
         events.clear();
         let drain_count = self.dispatch_list.len().min(limit);

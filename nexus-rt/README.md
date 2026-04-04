@@ -311,10 +311,13 @@ processing rather than game-world state management.
 | **Template** | Pre-resolved handler stamping for re-registration. | ~1 cycle p50 (generate) |
 | **DAG** | Monomorphized fan-out / merge data-flow graphs. | ~1-3 cycles p50 |
 | **FanOut / Broadcast** | Static or dynamic fan-out by reference. | ~2 cycles p50 |
+| **Reactor** | Interest-based per-instance dispatch with dedup. | ~19 cycles p50 (amortized) |
 
 All tiers resolve `Param` state at build time. Dispatch-time cost is
 a direct pointer deref — no hashing, no searching, no bounds check,
 no Vec indirection.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full criterion numbers.
 
 ## Driver Model
 
@@ -950,6 +953,41 @@ Propagation is tracked via a `u64` bitmask (one bit per system), limiting
 the scheduler to `MAX_SYSTEMS` (64) systems. Systems return `bool` to
 control downstream execution — `true` means "my outputs changed, run
 downstream." For per-item change detection, use the reactor system.
+
+### Reactor system (feature: `reactors`)
+
+Interest-based per-instance dispatch with O(1) dedup. Replaces
+per-resource change detection with explicit, fine-grained notification.
+
+```rust
+// Setup — auto-registered by WorldBuilder::build()
+let btc_md = world.register_source();
+
+world.spawn_reactor(
+    |id| QuotingCtx { reactor_id: id, instrument: BTC, layer: 1 },
+    quoting_step,
+).subscribe(btc_md);
+
+// Event handler marks data source
+fn on_btc_tick(mut books: ResMut<OrderBooks>, mut notify: ResMut<ReactorNotify>, event: Tick) {
+    books.apply(event);
+    notify.mark(btc_md);  // wakes BTC-subscribed reactors only
+}
+
+// Post-frame dispatch (deduped — each reactor runs at most once)
+world.dispatch_reactors();
+```
+
+- `ReactorNotify` — World resource: reactor storage, data source
+  fan-out, registration. Event handlers mark via `ResMut`.
+- `SourceRegistry` — maps domain keys (`InstrumentId`, `StrategyId`,
+  tuples) to `DataSource` values for runtime lookup.
+- `DeferredRemovals` — reactors self-remove by pushing their token.
+  Cleanup runs after dispatch completes.
+- `PipelineReactor` — reactor body is a `CtxPipeline` or `CtxDag`.
+  Pipeline internals fully monomorphized; one `Box` per reactor.
+- ~19 cycles per reactor (amortized at 50 reactors). See
+  [BENCHMARKS.md](BENCHMARKS.md).
 
 ### Startup & Lifecycle
 

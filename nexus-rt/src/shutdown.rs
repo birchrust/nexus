@@ -49,18 +49,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Accesses the world's shutdown flag directly — not a resource.
 /// Uses [`Relaxed`](Ordering::Relaxed) ordering — the flag is checked
 /// once per poll iteration, not on a hot path requiring memory fencing.
-pub struct Shutdown(pub(crate) Arc<AtomicBool>);
+/// Holds a raw pointer to World's `AtomicBool` shutdown flag.
+/// No `Arc::clone` per dispatch — the flag lives for World's entire lifetime.
+pub struct Shutdown(pub(crate) *const AtomicBool);
+
+// SAFETY: The AtomicBool is allocated inside an Arc in World. The pointer
+// is valid for World's lifetime. Single-threaded — no concurrent access
+// to the Shutdown param itself.
+unsafe impl Send for Shutdown {}
 
 impl Shutdown {
     /// Returns `true` if shutdown has been triggered.
     pub fn is_shutdown(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        // SAFETY: pointer is valid for World's lifetime.
+        unsafe { (*self.0).load(Ordering::Relaxed) }
     }
 
     /// Trigger shutdown. The event loop will exit after the current
     /// dispatch completes.
     pub fn trigger(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        // SAFETY: pointer is valid for World's lifetime.
+        unsafe { (*self.0).store(true, Ordering::Relaxed) }
     }
 }
 
@@ -132,7 +141,7 @@ mod tests {
     fn shutdown_param_triggers() {
         let world = crate::WorldBuilder::new().build();
         let handle = world.shutdown_handle();
-        let shutdown = Shutdown(Arc::clone(world.shutdown_flag()));
+        let shutdown = Shutdown(&raw const **world.shutdown_flag());
 
         assert!(!handle.is_shutdown());
         shutdown.trigger();

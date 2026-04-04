@@ -1092,23 +1092,27 @@ impl World {
             }
         }
 
-        // Deferred removals — collect first, then process.
-        let pending: Vec<nexus_notify::Token> = {
-            // SAFETY: reactor_removals_id was resolved during build() from
-            // the same WorldBuilder. No other references to this resource.
-            let removals = unsafe {
-                self.get_mut::<crate::reactor::DeferredRemovals>(self.reactor_removals_id)
-            };
-            removals.drain().collect()
-        };
+        // Deferred removals — swap the inner Vec out to avoid holding
+        // &mut DeferredRemovals and &mut ReactorNotify simultaneously.
+        // Zero allocation: the Vec is swapped back and reused next frame.
+        // SAFETY: reactor_removals_id was resolved during build() from
+        // the same WorldBuilder. No other references to this resource.
+        let removals =
+            unsafe { self.get_mut::<crate::reactor::DeferredRemovals>(self.reactor_removals_id) };
+        let mut pending = removals.take();
         if !pending.is_empty() {
-            // SAFETY: notify_ptr is stable. removals &mut was dropped above.
-            // No other references to ReactorNotify exist.
+            // SAFETY: notify_ptr is stable. removals &mut was dropped
+            // (pending now owns the data). No aliasing.
             let notify = unsafe { &mut *notify_ptr };
-            for token in pending {
+            while let Some(token) = pending.pop() {
                 notify.remove_reactor(token);
             }
         }
+        // Put the (now empty) Vec back for reuse.
+        // SAFETY: same removals_id, no other references.
+        let removals =
+            unsafe { self.get_mut::<crate::reactor::DeferredRemovals>(self.reactor_removals_id) };
+        removals.put(pending);
 
         // Return events buffer for reuse next frame.
         self.reactor_events = Some(events);
