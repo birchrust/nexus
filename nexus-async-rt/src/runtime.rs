@@ -629,4 +629,73 @@ mod tests {
         assert!(elapsed >= Duration::from_millis(80));
         assert_eq!(world.resource::<Out>().0, 42);
     }
+
+    #[test]
+    fn sleep_zero_duration_ready_immediately() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(0));
+        let mut world = wb.build();
+
+        let mut rt = DefaultRuntime::new(&mut world, 4);
+        let handle = rt.handle();
+
+        let before = Instant::now();
+        rt.block_on(async move {
+            handle.sleep(Duration::ZERO).await;
+        });
+        let elapsed = before.elapsed();
+
+        // Should complete almost instantly (< 10ms).
+        assert!(
+            elapsed < Duration::from_millis(10),
+            "zero sleep took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn sleep_past_deadline_ready_immediately() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Val(0));
+        let mut world = wb.build();
+
+        let mut rt = DefaultRuntime::new(&mut world, 4);
+        let handle = rt.handle();
+
+        let past = Instant::now() - Duration::from_secs(1);
+        let before = Instant::now();
+        rt.block_on(async move {
+            handle.sleep_until(past).await;
+        });
+        let elapsed = before.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(10),
+            "past deadline sleep took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_timers_fire_in_order() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Out(0));
+        let mut world = wb.build();
+
+        let mut rt = DefaultRuntime::new(&mut world, 8);
+        let handle = rt.handle();
+
+        rt.block_on(async move {
+            let h = handle;
+            // Sleep 50ms then 50ms — total ~100ms.
+            h.sleep(Duration::from_millis(50)).await;
+            h.with_world(|world| {
+                world.resource_mut::<Out>().0 = 1;
+            });
+            h.sleep(Duration::from_millis(50)).await;
+            h.with_world(|world| {
+                world.resource_mut::<Out>().0 = 2;
+            });
+        });
+
+        assert_eq!(world.resource::<Out>().0, 2);
+    }
 }
