@@ -11,7 +11,6 @@
 //! Single-threaded only. The ready queue pointer in TLS must be valid
 //! during the entire poll cycle.
 
-use std::collections::VecDeque;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 
 use crate::task;
@@ -23,20 +22,20 @@ use crate::task;
 std::thread_local! {
     /// Raw pointer to the executor's ready queue. Set before polling,
     /// cleared after. Wakers read this to push their task pointer.
-    static READY_QUEUE: std::cell::Cell<*mut VecDeque<*mut u8>> =
+    static READY_QUEUE: std::cell::Cell<*mut Vec<*mut u8>> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
 /// Install the ready queue pointer for the duration of a poll cycle.
 /// Returns an RAII guard that clears it on drop.
 #[inline]
-pub(crate) fn set_ready_queue(queue: &mut VecDeque<*mut u8>) -> ReadyQueueGuard {
-    let prev = READY_QUEUE.with(|cell| cell.replace(queue as *mut VecDeque<*mut u8>));
+pub(crate) fn set_ready_queue(queue: &mut Vec<*mut u8>) -> ReadyQueueGuard {
+    let prev = READY_QUEUE.with(|cell| cell.replace(queue as *mut Vec<*mut u8>));
     ReadyQueueGuard { prev }
 }
 
 pub(crate) struct ReadyQueueGuard {
-    prev: *mut VecDeque<*mut u8>,
+    prev: *mut Vec<*mut u8>,
 }
 
 impl Drop for ReadyQueueGuard {
@@ -167,7 +166,7 @@ pub(crate) unsafe fn push_ready(ptr: *mut u8) {
         if !queue_ptr.is_null() {
             // SAFETY: queue_ptr valid — set by set_ready_queue.
             let queue = unsafe { &mut *queue_ptr };
-            queue.push_back(ptr);
+            queue.push(ptr);
         }
     });
 }
@@ -286,7 +285,7 @@ unsafe fn wake_impl(data: *const ()) {
             // SAFETY: queue_ptr is valid — set by set_ready_queue before
             // polling. Single-threaded, no concurrent access.
             let queue = unsafe { &mut *queue_ptr };
-            queue.push_back(task_ptr);
+            queue.push(task_ptr);
         }
         // If null, we're outside a poll cycle. The task will be picked
         // up on the next poll since is_queued is set.

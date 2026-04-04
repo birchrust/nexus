@@ -34,7 +34,6 @@ pub use io::IoHandle;
 pub use timer::{Sleep, TimerHandle};
 pub use runtime::{DefaultRuntime, Runtime, RuntimeHandle, spawn};
 
-use std::collections::VecDeque;
 use std::future::Future;
 use std::task::Poll;
 
@@ -115,8 +114,13 @@ pub struct Executor<const INTERNAL_SIZE: usize> {
     /// Byte slab: task header + future bytes in one slot.
     slab: SlabBackend<INTERNAL_SIZE>,
 
-    /// Task pointers ready to be polled. Dedup via `is_queued` flag.
-    ready: VecDeque<*mut u8>,
+    /// Incoming ready tasks. Wakers and spawn push here.
+    /// Swapped with `draining` at the start of each poll cycle.
+    incoming: Vec<*mut u8>,
+
+    /// Tasks being drained this cycle. Iterated linearly —
+    /// perfect cache-line utilization, no index math.
+    draining: Vec<*mut u8>,
 
     /// Number of live tasks.
     live_count: usize,
@@ -138,7 +142,8 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
         };
         Self {
             slab: SlabBackend::Bounded(slab),
-            ready: VecDeque::with_capacity(capacity),
+            incoming: Vec::with_capacity(capacity),
+            draining: Vec::with_capacity(capacity),
             live_count: 0,
         }
     }
@@ -154,7 +159,8 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
         };
         Self {
             slab: SlabBackend::Unbounded(slab),
-            ready: VecDeque::with_capacity(initial_chunk_capacity),
+            incoming: Vec::with_capacity(initial_chunk_capacity),
+            draining: Vec::with_capacity(initial_chunk_capacity),
             live_count: 0,
         }
     }
@@ -175,10 +181,10 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
         // Placement new into the byte slab.
         let ptr = self.slab.alloc_task(task);
 
-        // Mark as queued and push to ready queue.
+        // Mark as queued and push to incoming queue.
         // SAFETY: ptr points to a live Task we just allocated.
         unsafe { task::set_queued(ptr, true) };
-        self.ready.push_back(ptr);
+        self.incoming.push(ptr);
         self.live_count += 1;
 
         TaskId(ptr)
@@ -194,32 +200,28 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
     pub fn poll(&mut self) -> usize {
         let mut completed = 0;
 
-        // Install TLS ready queue so wakers can push to it.
-        // If the Runtime already installed a guard (covering timers + IO),
-        // this creates a nested guard that restores correctly on drop.
-        let _guard = set_ready_queue(&mut self.ready);
+        // Double-buffer swap: move incoming tasks to draining, leave
+        // incoming empty for wakers to push to during this cycle.
+        std::mem::swap(&mut self.incoming, &mut self.draining);
+
+        // Install TLS ready queue pointing to incoming — wakers and
+        // timers push here during this poll cycle.
+        let _guard = set_ready_queue(&mut self.incoming);
 
         // Pre-built waker + context: vtable and Context layout set once,
-        // only data pointer updated per task. One store per iteration.
+        // only data pointer updated per task.
         let mut reusable = ReusableWaker::new();
-        reusable.init(); // set self-referential pointers at final stack address
+        reusable.init();
 
-        // Drain the ready queue snapshot.
-        let drain_count = self.ready.len();
-        for _ in 0..drain_count {
-            let Some(ptr) = self.ready.pop_front() else {
-                break;
-            };
-
+        // Linear drain — sequential memory access, no index math.
+        for &ptr in &self.draining {
             // Clear queued flag so the task can be re-queued by its waker.
             // SAFETY: ptr points to a live Task in the slab.
             unsafe { task::set_queued(ptr, false) };
 
             // Update the reusable waker+context with this task's pointer.
-            // One store per iteration (the data pointer). Everything
-            // else was set once before the loop.
             // SAFETY: ptr is valid for the task's lifetime. ReusableWaker
-            // is on the stack and not moved after first set_task.
+            // is on the stack and not moved after init.
             let cx = unsafe { reusable.set_task(ptr) };
 
             // SAFETY: ptr points to a live Task. Future bytes are at
@@ -240,6 +242,9 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
             }
         }
 
+        // Clear draining buffer, keep capacity for next cycle.
+        self.draining.clear();
+
         completed
     }
 
@@ -250,13 +255,13 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
 
     /// Returns `true` if any tasks are queued for polling.
     pub fn has_ready(&self) -> bool {
-        !self.ready.is_empty()
+        !self.incoming.is_empty()
     }
 
-    /// Returns a mutable reference to the ready queue.
+    /// Returns a mutable reference to the incoming queue.
     /// Used by Runtime to install TLS covering timers + IO.
-    pub(crate) fn ready_queue_mut(&mut self) -> &mut VecDeque<*mut u8> {
-        &mut self.ready
+    pub(crate) fn ready_queue_mut(&mut self) -> &mut Vec<*mut u8> {
+        &mut self.incoming
     }
 
     /// Run the executor until all tasks complete.
@@ -278,28 +283,29 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
         unsafe { self.slab.free_slot(ptr) };
         self.live_count -= 1;
 
-        // Remove from ready queue if queued.
-        self.ready.retain(|p| *p != ptr);
+        // Remove from both queues if present.
+        self.incoming.retain(|p| *p != ptr);
+        self.draining.retain(|p| *p != ptr);
     }
 }
 
 impl<const INTERNAL_SIZE: usize> Drop for Executor<INTERNAL_SIZE> {
     fn drop(&mut self) {
-        // Drop all queued tasks.
-        while let Some(ptr) = self.ready.pop_front() {
+        // Drop all tasks in both queues.
+        for &ptr in self.incoming.iter().chain(self.draining.iter()) {
             unsafe { task::drop_task_future(ptr) };
             unsafe { self.slab.free_slot(ptr) };
         }
         // Note: tasks that are live but not queued (Pending, waiting for
         // external wakeup) are leaked. In practice, Runtime::block_on
         // runs to completion, and cancel() handles explicit cleanup.
-        // A full solution would track all live task pointers.
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::hint::black_box;
     use std::pin::Pin;
     use std::task::Context;
 
@@ -726,5 +732,380 @@ mod tests {
         assert_eq!(executor.task_count(), 50);
         let done = executor.poll();
         assert_eq!(done, 50);
+    }
+
+    // =========================================================================
+    // Latency distribution benchmarks (run with --ignored --nocapture)
+    //
+    // cargo test -p nexus-async-rt --release -- --ignored --nocapture dispatch_latency
+    // =========================================================================
+
+    #[inline(always)]
+    fn rdtsc() -> u64 {
+        unsafe { core::arch::x86_64::_rdtsc() }
+    }
+
+    #[inline(always)]
+    fn rdtscp() -> u64 {
+        unsafe {
+            let mut aux: u32 = 0;
+            let tsc = core::arch::x86_64::__rdtscp(&mut aux);
+            core::arch::x86_64::_mm_lfence();
+            tsc
+        }
+    }
+
+    fn print_distribution(name: &str, samples: &mut [u64]) {
+        samples.sort_unstable();
+        let len = samples.len();
+        let p50 = samples[len / 2];
+        let p90 = samples[len * 90 / 100];
+        let p99 = samples[len * 99 / 100];
+        let p999 = samples[len * 999 / 1000];
+        let p9999 = samples[len * 9999 / 10000];
+        let min = samples[0];
+        let max = samples[len - 1];
+        println!(
+            "{name:<35} min:{min:>5}  p50:{p50:>5}  p90:{p90:>5}  p99:{p99:>5}  p999:{p999:>5}  p9999:{p9999:>5}  max:{max:>6}"
+        );
+    }
+
+    const BENCH_WARMUP: usize = 100_000;
+    const BENCH_SAMPLES: usize = 1_000_000;
+
+    #[test]
+    #[ignore]
+    fn dispatch_latency_distribution() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let mut samples = Vec::with_capacity(BENCH_SAMPLES);
+
+        println!("\n=== Dispatch Latency Distribution (rdtsc, all values in cycles) ===\n");
+
+        const BATCH: usize = 100;
+
+        // -- rdtsc floor --
+        {
+            samples.clear();
+            for _ in 0..BENCH_WARMUP {
+                let s = rdtsc();
+                let e = rdtscp();
+                black_box(e.wrapping_sub(s));
+            }
+            for _ in 0..BENCH_SAMPLES {
+                let s = rdtsc();
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s));
+            }
+            print_distribution("rdtsc/rdtscp floor (per-sample)", &mut samples);
+        }
+
+        println!();
+
+        // -- Sync mono handler --
+        {
+            use nexus_rt::{Handler, IntoHandler, ResMut, WorldBuilder};
+            nexus_rt::new_resource!(Counter(u64));
+
+            fn on_event(mut c: ResMut<Counter>, e: u64) {
+                c.0 = c.0.wrapping_add(e);
+            }
+
+            let mut wb = WorldBuilder::new();
+            wb.register(Counter(0));
+            let mut world = wb.build();
+            let mut h = on_event.into_handler(world.registry());
+
+            for i in 0..BENCH_WARMUP as u64 {
+                h.run(black_box(&mut world), black_box(i));
+            }
+
+            samples.clear();
+            for i in 0..BENCH_SAMPLES as u64 {
+                let s = rdtsc();
+                h.run(black_box(&mut world), black_box(i));
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s));
+            }
+            black_box(world.resource::<Counter>().0);
+            print_distribution("sync mono handler.run", &mut samples);
+        }
+
+        // -- Sync boxed handler (production mio path) --
+        {
+            use nexus_rt::{Handler, IntoHandler, ResMut, WorldBuilder};
+            nexus_rt::new_resource!(Counter(u64));
+
+            fn on_event(mut c: ResMut<Counter>, e: u64) {
+                c.0 = c.0.wrapping_add(e);
+            }
+
+            let mut wb = WorldBuilder::new();
+            wb.register(Counter(0));
+            let mut world = wb.build();
+            let mut h: Box<dyn Handler<u64>> =
+                Box::new(on_event.into_handler(world.registry()));
+
+            for i in 0..BENCH_WARMUP as u64 {
+                h.run(black_box(&mut world), black_box(i));
+            }
+
+            samples.clear();
+            for i in 0..BENCH_SAMPLES as u64 {
+                let s = rdtsc();
+                h.run(black_box(&mut world), black_box(i));
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s));
+            }
+            black_box(world.resource::<Counter>().0);
+            print_distribution("sync Box<dyn Handler>", &mut samples);
+        }
+
+        println!();
+
+        // -- Async: IO-woken task (pure poll overhead) --
+        // Task returns Pending without self-waking. We manually re-queue
+        // between polls to simulate the IO driver wake path.
+        {
+            struct IoTask(Rc<Cell<u64>>);
+            impl Future for IoTask {
+                type Output = ();
+                fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+                    self.0.set(self.0.get().wrapping_add(1));
+                    Poll::Pending // no self-wake
+                }
+            }
+
+            let counter = Rc::new(Cell::new(0u64));
+            let mut executor = test_executor();
+            let id = executor.spawn(IoTask(counter.clone()));
+            let ptr = id.as_ptr();
+
+            for _ in 0..BENCH_WARMUP {
+                unsafe {
+                    task::set_queued(ptr, true);
+                    executor.incoming.push(ptr);
+                }
+                executor.poll();
+            }
+            counter.set(0);
+
+            samples.clear();
+            for _ in 0..BENCH_SAMPLES {
+                unsafe {
+                    task::set_queued(ptr, true);
+                    executor.incoming.push(ptr);
+                }
+                let s = rdtsc();
+                executor.poll();
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s));
+            }
+            black_box(counter.get());
+            print_distribution("async poll (IO-woken, no self-wake)", &mut samples);
+        }
+
+        // -- Async: self-waking task (poll + wake overhead) --
+        {
+            struct BusyTask(Rc<Cell<u64>>);
+            impl Future for BusyTask {
+                type Output = ();
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                    self.0.set(self.0.get().wrapping_add(1));
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+
+            let counter = Rc::new(Cell::new(0u64));
+            let mut executor = test_executor();
+            executor.spawn(BusyTask(counter.clone()));
+
+            for _ in 0..BENCH_WARMUP {
+                executor.poll();
+            }
+            counter.set(0);
+
+            samples.clear();
+            for _ in 0..BENCH_SAMPLES {
+                let s = rdtsc();
+                executor.poll();
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s));
+            }
+            black_box(counter.get());
+            print_distribution("async poll (self-waking)", &mut samples);
+        }
+
+        println!();
+
+        // -- Async: spawn + poll churn (alloc overhead, separate) --
+        {
+            let mut executor = test_executor();
+
+            for _ in 0..BENCH_WARMUP {
+                executor.spawn(async { black_box(42u64); });
+                executor.poll();
+            }
+
+            samples.clear();
+            for _ in 0..BENCH_SAMPLES {
+                let s = rdtsc();
+                executor.spawn(async { black_box(42u64); });
+                executor.poll();
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s));
+            }
+            print_distribution("async spawn+poll (alloc churn)", &mut samples);
+        }
+
+        println!("\n--- Batched ({BATCH} iterations per sample, amortizes rdtsc overhead) ---\n");
+
+        // -- Batched sync boxed (0 params — pure dispatch overhead) --
+        {
+            use nexus_rt::{Handler, IntoHandler, WorldBuilder};
+
+            fn on_event(e: u64) {
+                black_box(e);
+            }
+
+            let mut wb = WorldBuilder::new();
+            let mut world = wb.build();
+            let mut h: Box<dyn Handler<u64>> =
+                Box::new(on_event.into_handler(world.registry()));
+
+            for i in 0..BENCH_WARMUP as u64 {
+                h.run(black_box(&mut world), black_box(i));
+            }
+
+            samples.clear();
+            for batch in 0..BENCH_SAMPLES {
+                let base = (batch * BATCH) as u64;
+                let s = rdtsc();
+                for j in 0..BATCH as u64 {
+                    h.run(black_box(&mut world), black_box(base + j));
+                }
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s) / BATCH as u64);
+            }
+            print_distribution("sync Box<dyn Handler> 0p (bat)", &mut samples);
+        }
+
+        // -- Batched sync boxed (1 param — with param resolution) --
+        {
+            use nexus_rt::{Handler, IntoHandler, ResMut, WorldBuilder};
+            nexus_rt::new_resource!(Counter(u64));
+
+            fn on_event(mut c: ResMut<Counter>, e: u64) {
+                c.0 = c.0.wrapping_add(e);
+            }
+
+            let mut wb = WorldBuilder::new();
+            wb.register(Counter(0));
+            let mut world = wb.build();
+            let mut h: Box<dyn Handler<u64>> =
+                Box::new(on_event.into_handler(world.registry()));
+
+            for i in 0..BENCH_WARMUP as u64 {
+                h.run(black_box(&mut world), black_box(i));
+            }
+
+            samples.clear();
+            for batch in 0..BENCH_SAMPLES {
+                let base = (batch * BATCH) as u64;
+                let s = rdtsc();
+                for j in 0..BATCH as u64 {
+                    h.run(black_box(&mut world), black_box(base + j));
+                }
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s) / BATCH as u64);
+            }
+            black_box(world.resource::<Counter>().0);
+            print_distribution("sync Box<dyn Handler> 1p (bat)", &mut samples);
+        }
+
+        // -- Batched async IO-woken --
+        {
+            struct IoTask(Rc<Cell<u64>>);
+            impl Future for IoTask {
+                type Output = ();
+                fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+                    self.0.set(self.0.get().wrapping_add(1));
+                    Poll::Pending
+                }
+            }
+
+            let counter = Rc::new(Cell::new(0u64));
+            let mut executor = test_executor();
+            let id = executor.spawn(IoTask(counter.clone()));
+            let ptr = id.as_ptr();
+
+            for _ in 0..BENCH_WARMUP {
+                unsafe {
+                    task::set_queued(ptr, true);
+                    executor.incoming.push(ptr);
+                }
+                executor.poll();
+            }
+            counter.set(0);
+
+            samples.clear();
+            for _ in 0..BENCH_SAMPLES {
+                // Pre-queue BATCH tasks (same task re-queued BATCH times)
+                for _ in 0..BATCH {
+                    unsafe {
+                        task::set_queued(ptr, true);
+                        executor.incoming.push(ptr);
+                    }
+                }
+                let s = rdtsc();
+                executor.poll();
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s) / BATCH as u64);
+            }
+            black_box(counter.get());
+            print_distribution("async poll IO-woken (batched)", &mut samples);
+        }
+
+        // -- Batched async self-waking (N tasks) --
+        {
+            struct BusyTask(Rc<Cell<u64>>);
+            impl Future for BusyTask {
+                type Output = ();
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                    self.0.set(self.0.get().wrapping_add(1));
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+
+            let counter = Rc::new(Cell::new(0u64));
+            let mut executor = test_executor();
+            executor.spawn(BusyTask(counter.clone()));
+
+            for _ in 0..BENCH_WARMUP {
+                executor.poll();
+            }
+            counter.set(0);
+
+            // Each poll() does 1 task (self-waking goes to next cycle).
+            // Batch by calling poll() BATCH times.
+            samples.clear();
+            for _ in 0..BENCH_SAMPLES {
+                let s = rdtsc();
+                for _ in 0..BATCH {
+                    executor.poll();
+                }
+                let e = rdtscp();
+                samples.push(e.wrapping_sub(s) / BATCH as u64);
+            }
+            black_box(counter.get());
+            print_distribution("async poll self-wake (batched)", &mut samples);
+        }
+
+        println!();
+        println!("Per-sample:  one rdtsc pair per iteration (includes ~20cy measurement floor)");
+        println!("Batched:     one rdtsc pair per {BATCH} iterations (amortizes floor to ~0.2cy)");
     }
 }
