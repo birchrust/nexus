@@ -35,7 +35,10 @@ mod runtime;
 pub use task::{TaskId, TASK_HEADER_SIZE};
 pub use world_ctx::WorldCtx;
 pub use io::IoHandle;
-pub use net::{AsyncRead, AsyncWrite, TcpListener, TcpStream};
+pub use net::{
+    AsyncRead, AsyncWrite, OwnedReadHalf, OwnedWriteHalf, ReadHalf, TcpListener, TcpSocket,
+    TcpStream, UdpSocket, WriteHalf,
+};
 pub use timer::{Sleep, TimerHandle};
 pub use runtime::{DefaultRuntime, Runtime, RuntimeHandle, spawn};
 
