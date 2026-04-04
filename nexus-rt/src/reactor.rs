@@ -19,7 +19,7 @@
 //! [`SourceRegistry`] maps domain keys (instrument IDs, strategy IDs,
 //! `(Symbol, Venue)` tuples) to [`DataSource`] values for runtime lookup.
 //! Any `Hash + Eq + Send + 'static` type works as a key. All three
-//! resources are auto-registered by [`WorldBuilder::build`] when the
+//! resources are auto-registered by [`WorldBuilder::build`](crate::WorldBuilder::build) when the
 //! `reactors` feature is enabled.
 //!
 //! # Use Cases
@@ -251,7 +251,7 @@ impl ReactorNotify {
     ///
     /// # Panics
     ///
-    /// Panics if the token was not allocated by [`create_reactor`] or was
+    /// Panics if the token was not allocated by [`create_reactor`](Self::create_reactor) or was
     /// already filled.
     pub fn insert_reactor(
         &mut self,
@@ -480,7 +480,7 @@ pub struct ReactorFn<C, F, Params: Param> {
 // =============================================================================
 
 /// A reactor whose body is a [`CtxPipeline`](crate::CtxPipeline),
-/// [`CtxDag`](crate::CtxDag), or any [`CtxStepCall`](crate::CtxStepCall).
+/// [`CtxDag`](crate::CtxDag), or any [`CtxStepCall`].
 ///
 /// The context `C` holds per-reactor metadata. The body is type-erased
 /// via `Box<dyn CtxStepCall>` since pipeline chain types are unnameable.
@@ -853,12 +853,16 @@ impl ReactorSystem {
         // &mut ReactorNotify is scoped tightly to avoid aliasing during run().
         for token in self.events.iter() {
             let idx = token.index();
+            // SAFETY: notify_ptr is valid for World's lifetime. Scoped &mut
+            // is dropped before reactor.run() to avoid aliasing.
             let reactor = {
                 let notify = unsafe { &mut *notify_ptr };
                 notify.take_reactor(idx)
-            }; // &mut dropped — safe to call run()
+            };
             if let Some(mut reactor) = reactor {
                 reactor.run(world);
+                // SAFETY: re-derive &mut after run() completes. No aliasing —
+                // reactor was moved out of the slab during run().
                 let notify = unsafe { &mut *notify_ptr };
                 notify.put_reactor(idx, reactor);
             }
@@ -866,10 +870,13 @@ impl ReactorSystem {
 
         // Deferred removals — collect first to avoid holding two &mut.
         let pending: Vec<Token> = {
+            // SAFETY: removals_id from same WorldBuilder. Dispatch complete —
+            // no concurrent access to DeferredRemovals.
             let removals = unsafe { world.get_mut::<DeferredRemovals>(self.removals_id) };
             removals.drain().collect()
         };
         if !pending.is_empty() {
+            // SAFETY: re-derive &mut for cleanup phase. No other references.
             let notify = unsafe { &mut *notify_ptr };
             for token in pending {
                 notify.remove_reactor(token);

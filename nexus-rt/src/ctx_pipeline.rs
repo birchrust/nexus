@@ -41,7 +41,7 @@
 //!
 //! 1. **Named function with Params** — `fn(&mut C, Res<T>, In) -> Out`
 //! 2. **Arity-0 closure** — `FnMut(&mut C, In) -> Out`
-//! 3. **[`Opaque`](crate::Opaque) closure** — `FnMut(&mut C, &mut World, In) -> Out`
+//! 3. **[`Opaque`] closure** — `FnMut(&mut C, &mut World, In) -> Out`
 //!    (raw World access, no Param resolution)
 //!
 //! # Deferred combinators
@@ -181,6 +181,9 @@ macro_rules! impl_into_ctx_step {
                 // SAFETY: state was produced by Param::init() on the same Registry
                 // that built this World. Borrows are disjoint — enforced by
                 // conflict detection at build time.
+                // SAFETY: state was produced by Param::init() on the same
+                // Registry that built this World. Single-threaded sequential
+                // dispatch ensures no mutable aliasing across params.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -343,6 +346,9 @@ macro_rules! impl_into_ctx_ref_step {
                     f(ctx, $($P,)+ input)
                 }
 
+                // SAFETY: state was produced by Param::init() on the same
+                // Registry that built this World. Single-threaded sequential
+                // dispatch ensures no mutable aliasing across params.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {
@@ -498,6 +504,9 @@ macro_rules! impl_into_ctx_producer {
                     f(ctx, $($P,)+)
                 }
 
+                // SAFETY: state was produced by Param::init() on the same
+                // Registry that built this World. Single-threaded sequential
+                // dispatch ensures no mutable aliasing across params.
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
                 let ($($P,)+) = unsafe {

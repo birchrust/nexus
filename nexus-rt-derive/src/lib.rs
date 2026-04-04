@@ -13,7 +13,7 @@ use syn::{Data, DeriveInput, Fields, Lifetime, parse_macro_input};
 // =============================================================================
 
 /// Derive the `Resource` marker trait, allowing this type to be stored
-/// in a [`World`](nexus_rt::World).
+/// in a `World`.
 ///
 /// ```ignore
 /// use nexus_rt::Resource;

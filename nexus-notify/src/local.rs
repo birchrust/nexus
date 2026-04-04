@@ -9,7 +9,7 @@
 //!
 //! | Cross-thread | Single-threaded | Notes |
 //! |--------------|-----------------|-------|
-//! | [`event_queue(n)`](crate::event_queue) | [`LocalNotify::with_capacity(n)`] | |
+//! | [`event_queue(n)`](crate::event_queue) | [`LocalNotify::with_capacity`] | |
 //! | [`Notifier::notify(token)`](crate::Notifier::notify) | [`LocalNotify::mark(token)`](LocalNotify::mark) | `&mut self` vs `&self` |
 //! | [`Poller::poll(events)`](crate::Poller::poll) | [`LocalNotify::poll(events)`](LocalNotify::poll) | same `Events` buffer |
 //! | `AtomicBool` per token | bitset (`Vec<u64>`) | |

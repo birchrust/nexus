@@ -1060,4 +1060,114 @@ mod tests {
         );
         assert!(rejected.is_none());
     }
+
+    #[test]
+    fn view_filter_chain() {
+        // Guard inside view → filter outside view — multiple operations chained
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn accept_tag(v: &PayloadView) -> bool {
+            v.tag == "accept"
+        }
+
+        let mut p = PipelineBuilder::<Payload>::new()
+            .view::<AsPayloadView>()
+            .guard(accept_tag, reg)
+            .end_view_guarded();
+
+        // Wrong tag — guarded out
+        let result = p.run(
+            &mut world,
+            Payload {
+                data: vec![1],
+                tag: "reject".into(),
+            },
+        );
+        assert!(result.is_none());
+
+        // Right tag — passes through
+        let result = p.run(
+            &mut world,
+            Payload {
+                data: vec![1, 2, 3],
+                tag: "accept".into(),
+            },
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn view_tap_with_world_resources() {
+        // View tap step reads a World resource
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn log_order(mut log: ResMut<AuditLog>, v: &OrderView) {
+            log.0.push(format!("{}:{}", v.symbol, v.qty));
+        }
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+            .tap(log_order, reg)
+            .end_view();
+
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "test".into(),
+                symbol: "BTC".into(),
+                qty: 100,
+                price: 50000.0,
+            },
+        );
+        p.run(
+            &mut world,
+            NewOrderCommand {
+                source: "test".into(),
+                symbol: "ETH".into(),
+                qty: 50,
+                price: 3000.0,
+            },
+        );
+
+        assert_eq!(world.resource::<AuditLog>().0, vec!["BTC:100", "ETH:50"]);
+    }
+
+    #[test]
+    fn view_repeated_dispatch() {
+        // Stress: same pipeline dispatched many times — no leaks, no drift
+        let mut wb = WorldBuilder::new();
+        wb.register(AuditLog(Vec::new()));
+        let mut world = wb.build();
+        let reg = world.registry();
+
+        fn count(mut log: ResMut<AuditLog>, _v: &OrderView) {
+            log.0.push("hit".into());
+        }
+
+        let mut p = PipelineBuilder::<NewOrderCommand>::new()
+            .view::<AsOrderView>()
+            .tap(count, reg)
+            .end_view();
+
+        for _ in 0..100 {
+            p.run(
+                &mut world,
+                NewOrderCommand {
+                    source: "stress".into(),
+                    symbol: "X".into(),
+                    qty: 1,
+                    price: 1.0,
+                },
+            );
+        }
+
+        assert_eq!(world.resource::<AuditLog>().0.len(), 100);
+    }
 }

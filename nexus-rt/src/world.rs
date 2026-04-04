@@ -1020,9 +1020,13 @@ impl World {
         // no other references to any World resource exist.
         let notify_ptr: *mut crate::reactor::ReactorNotify =
             unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
+        // SAFETY: notify_ptr is stable (heap-allocated ResourceCell).
+        // No other references exist — previous &mut was not retained.
         let token = unsafe { &mut *notify_ptr }.create_reactor();
         let ctx = ctx_fn(token);
         let reactor = step.into_reactor(ctx, &self.registry);
+        // SAFETY: notify_ptr is stable (heap-allocated ResourceCell).
+        // No other references exist — ctx_fn and into_reactor don't alias.
         let notify = unsafe { &mut *notify_ptr };
         notify.insert_reactor(token, reactor)
     }
@@ -1036,6 +1040,8 @@ impl World {
         &mut self,
         reactor: impl crate::reactor::Reactor + 'static,
     ) -> crate::reactor::ReactorRegistration<'_> {
+        // SAFETY: reactor_notify_id was resolved during build() from the
+        // same WorldBuilder. &mut self guarantees exclusive access.
         let notify =
             unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
         notify.register_built(reactor)
@@ -1048,6 +1054,9 @@ impl World {
     /// Returns `true` if any reactor ran.
     #[cfg(feature = "reactors")]
     pub fn dispatch_reactors(&mut self) -> bool {
+        // SAFETY: reactor_notify_id was resolved during build() from the
+        // same WorldBuilder. &mut self guarantees exclusive access. We hold
+        // a raw pointer to allow scoped re-borrows across reactor dispatch.
         let notify_ptr: *mut crate::reactor::ReactorNotify =
             unsafe { self.get_mut::<crate::reactor::ReactorNotify>(self.reactor_notify_id) };
 
@@ -1057,6 +1066,8 @@ impl World {
             .take()
             .unwrap_or_else(|| nexus_notify::Events::with_capacity(256));
         {
+            // SAFETY: notify_ptr is stable (heap-allocated ResourceCell).
+            // Scoped — &mut is dropped before any other access.
             let notify = unsafe { &mut *notify_ptr };
             notify.poll(&mut events);
         }
@@ -1067,11 +1078,15 @@ impl World {
         for token in events.iter() {
             let idx = token.index();
             let reactor = {
+                // SAFETY: notify_ptr is stable. Scoped — &mut is dropped
+                // before reactor.run(self) which may re-borrow World.
                 let notify = unsafe { &mut *notify_ptr };
                 notify.take_reactor(idx)
             }; // &mut dropped here — safe to call run()
             if let Some(mut reactor) = reactor {
                 reactor.run(self);
+                // SAFETY: notify_ptr is stable. reactor.run() is complete,
+                // so no World borrows remain. Safe to re-borrow notify.
                 let notify = unsafe { &mut *notify_ptr };
                 notify.put_reactor(idx, reactor);
             }
@@ -1079,12 +1094,16 @@ impl World {
 
         // Deferred removals — collect first, then process.
         let pending: Vec<nexus_notify::Token> = {
+            // SAFETY: reactor_removals_id was resolved during build() from
+            // the same WorldBuilder. No other references to this resource.
             let removals = unsafe {
                 self.get_mut::<crate::reactor::DeferredRemovals>(self.reactor_removals_id)
             };
             removals.drain().collect()
         };
         if !pending.is_empty() {
+            // SAFETY: notify_ptr is stable. removals &mut was dropped above.
+            // No other references to ReactorNotify exist.
             let notify = unsafe { &mut *notify_ptr };
             for token in pending {
                 notify.remove_reactor(token);
