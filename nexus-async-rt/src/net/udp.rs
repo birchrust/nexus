@@ -222,13 +222,17 @@ impl UdpSocket {
     // =========================================================================
 
     /// Ensure registered with mio for read + write interest.
-    /// Only registers once — subsequent calls are no-ops (the task
-    /// pointer is set at registration and doesn't change for the
-    /// socket's lifetime within a single task).
+    /// Only registers once — subsequent calls are no-ops.
+    #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
         if self.token.is_some() {
-            return Ok(()); // already registered
+            return Ok(());
         }
+        self.do_register(cx)
+    }
+
+    #[cold]
+    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
         let task_ptr = waker_to_ptr(cx);
         let interest = Interest::READABLE | Interest::WRITABLE;
         // SAFETY: IoHandle valid (Runtime lifetime). task_ptr from waker.

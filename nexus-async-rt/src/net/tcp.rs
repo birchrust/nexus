@@ -285,10 +285,18 @@ impl TcpStream {
     // =========================================================================
 
     /// Ensure registered with mio. Only registers once.
+    /// Hot path: single branch on `token.is_some()`. Cold path (first
+    /// call) does the mio register in a separate `#[cold]` function.
+    #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
         if self.token.is_some() {
             return Ok(());
         }
+        self.do_register(cx)
+    }
+
+    #[cold]
+    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
         let task_ptr = waker_to_ptr(cx);
         let interest = Interest::READABLE | Interest::WRITABLE;
         // SAFETY: IoHandle valid (Runtime lifetime). task_ptr from waker.
@@ -628,10 +636,16 @@ impl TcpListener {
     }
 
     /// Ensure registered with mio for READABLE interest. Only registers once.
+    #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
         if self.token.is_some() {
             return Ok(());
         }
+        self.do_register(cx)
+    }
+
+    #[cold]
+    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
         let task_ptr = waker_to_ptr(cx);
         // SAFETY: IoHandle valid, task_ptr from waker.
         let token = unsafe {
