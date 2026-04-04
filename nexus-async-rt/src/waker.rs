@@ -11,7 +11,7 @@
 //! Single-threaded only. The ready queue pointer in TLS must be valid
 //! during the entire poll cycle.
 
-use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, RawWaker, RawWakerVTable};
 
 use crate::task;
 
@@ -48,19 +48,6 @@ impl Drop for ReadyQueueGuard {
 // =============================================================================
 // Waker construction
 // =============================================================================
-
-/// Create a waker for the given task pointer.
-///
-/// The task pointer is stored directly in the `RawWaker` data field.
-/// Zero allocation.
-#[inline]
-#[allow(dead_code)]
-pub(crate) fn task_waker(task_ptr: *mut u8) -> Waker {
-    let raw = RawWaker::new(task_ptr.cast::<()>(), &VTABLE);
-    // SAFETY: The vtable is correct for our task pointer convention.
-    // Single-threaded — no Send/Sync concern.
-    unsafe { Waker::from_raw(raw) }
-}
 
 // =============================================================================
 // Reusable waker for poll loops
@@ -281,13 +268,17 @@ unsafe fn wake_impl(data: *const ()) {
     // Push to ready queue.
     READY_QUEUE.with(|cell| {
         let queue_ptr = cell.get();
+        debug_assert!(
+            !queue_ptr.is_null(),
+            "waker fired outside poll cycle — task will be lost. \
+             Ensure wakers are only used within Runtime::block_on or \
+             Executor::poll scope."
+        );
         if !queue_ptr.is_null() {
             // SAFETY: queue_ptr is valid — set by set_ready_queue before
             // polling. Single-threaded, no concurrent access.
             let queue = unsafe { &mut *queue_ptr };
             queue.push(task_ptr);
         }
-        // If null, we're outside a poll cycle. The task will be picked
-        // up on the next poll since is_queued is set.
     });
 }

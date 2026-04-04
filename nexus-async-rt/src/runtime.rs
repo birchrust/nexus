@@ -337,7 +337,14 @@ impl<const SLOT_SIZE: usize> Runtime<SLOT_SIZE> {
                 }
                 ParkMode::Spin => Some(Duration::ZERO),
             };
-            let _ = self.io.poll_io(mio_timeout);
+            if let Err(e) = self.io.poll_io(mio_timeout) {
+                // Interrupt (EINTR) is expected — retry on next cycle.
+                // Other errors indicate a serious OS-level problem.
+                assert!(
+                    e.kind() == std::io::ErrorKind::Interrupted,
+                    "mio::Poll::poll failed: {e}"
+                );
+            }
 
             // 5. Update event timestamp (after IO poll returns).
             self.event_time.set(Instant::now());

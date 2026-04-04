@@ -82,21 +82,17 @@ impl<const N: usize> SlabBackend<N> {
 // ExecutorBuilder
 // =============================================================================
 
-/// Builder for configuring an [`Executor`]'s allocation strategy.
+/// Computes the internal slab slot size from user-visible future capacity.
 ///
-/// `SLOT_SIZE` is the maximum size in bytes for spawned futures (not
-/// including internal task header overhead).
-///
-/// # Examples
+/// The slab stores a task header (24 bytes) alongside each future.
+/// Use this to compute the `INTERNAL_SIZE` const generic for [`Executor`]:
 ///
 /// ```ignore
-/// // Fixed capacity — panics on spawn if full
-/// let executor = ExecutorBuilder::<256>::bounded(64);
+/// use nexus_async_rt::{Executor, slot_size};
 ///
-/// // Growable — never fails, allocates new chunks as needed
-/// let executor = ExecutorBuilder::<256>::unbounded(64);
+/// // Executor with 256-byte future capacity (280-byte slab slots)
+/// let executor = Executor::<{ slot_size(256) }>::with_capacity(64);
 /// ```
-/// Computes internal slab slot size from user-visible future capacity.
 pub const fn slot_size(future_capacity: usize) -> usize {
     future_capacity + TASK_HEADER_SIZE
 }
@@ -122,6 +118,10 @@ pub struct Executor<const INTERNAL_SIZE: usize> {
     /// perfect cache-line utilization, no index math.
     draining: Vec<*mut u8>,
 
+    /// All live task pointers (including pending tasks not in any queue).
+    /// Enables complete cleanup on Drop — no leaked futures.
+    all_tasks: Vec<*mut u8>,
+
     /// Number of live tasks.
     live_count: usize,
 }
@@ -144,6 +144,7 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
             slab: SlabBackend::Bounded(slab),
             incoming: Vec::with_capacity(capacity),
             draining: Vec::with_capacity(capacity),
+            all_tasks: Vec::with_capacity(capacity),
             live_count: 0,
         }
     }
@@ -161,6 +162,7 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
             slab: SlabBackend::Unbounded(slab),
             incoming: Vec::with_capacity(initial_chunk_capacity),
             draining: Vec::with_capacity(initial_chunk_capacity),
+            all_tasks: Vec::with_capacity(initial_chunk_capacity),
             live_count: 0,
         }
     }
@@ -180,6 +182,9 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
 
         // Placement new into the byte slab.
         let ptr = self.slab.alloc_task(task);
+
+        // Track for cleanup on Drop.
+        self.all_tasks.push(ptr);
 
         // Mark as queued and push to incoming queue.
         // SAFETY: ptr points to a live Task we just allocated.
@@ -236,6 +241,10 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
                     unsafe { task::drop_task_future(ptr) };
                     // SAFETY: ptr was returned by alloc_task.
                     unsafe { self.slab.free_slot(ptr) };
+                    // Remove from all_tasks tracking.
+                    if let Some(pos) = self.all_tasks.iter().position(|p| *p == ptr) {
+                        self.all_tasks.swap_remove(pos);
+                    }
                     self.live_count -= 1;
                     completed += 1;
                 }
@@ -276,29 +285,38 @@ impl<const INTERNAL_SIZE: usize> Executor<INTERNAL_SIZE> {
     }
 
     /// Cancel a task by ID. The future is dropped immediately.
+    ///
+    /// Must not be called while `poll()` is executing (enforced by
+    /// `&mut self` — `poll` also takes `&mut self`).
     pub fn cancel(&mut self, id: TaskId) {
         let ptr = id.0;
         // SAFETY: ptr points to a live Task.
         unsafe { task::drop_task_future(ptr) };
+        // SAFETY: ptr was returned by alloc_task.
         unsafe { self.slab.free_slot(ptr) };
         self.live_count -= 1;
 
-        // Remove from both queues if present.
+        // Remove from all tracking structures.
         self.incoming.retain(|p| *p != ptr);
         self.draining.retain(|p| *p != ptr);
+        if let Some(pos) = self.all_tasks.iter().position(|p| *p == ptr) {
+            self.all_tasks.swap_remove(pos);
+        }
     }
 }
 
 impl<const INTERNAL_SIZE: usize> Drop for Executor<INTERNAL_SIZE> {
     fn drop(&mut self) {
-        // Drop all tasks in both queues.
-        for &ptr in self.incoming.iter().chain(self.draining.iter()) {
+        // Drop ALL live tasks — including pending ones not in any queue.
+        // This ensures futures' Drop impls run (releasing file descriptors,
+        // Rc references, slab slots in other allocators, etc.).
+        for &ptr in &self.all_tasks {
+            // SAFETY: ptr points to a live Task. Each pointer appears
+            // exactly once in all_tasks (inserted at spawn, removed at
+            // completion/cancel).
             unsafe { task::drop_task_future(ptr) };
             unsafe { self.slab.free_slot(ptr) };
         }
-        // Note: tasks that are live but not queued (Pending, waiting for
-        // external wakeup) are leaked. In practice, Runtime::block_on
-        // runs to completion, and cancel() handles explicit cleanup.
     }
 }
 

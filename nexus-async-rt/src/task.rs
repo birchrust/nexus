@@ -37,6 +37,11 @@ pub(crate) struct Task<F> {
     poll_fn: unsafe fn(*mut u8, &mut Context<'_>) -> Poll<()>,
     drop_fn: unsafe fn(*mut u8),
     is_queued: bool,
+    /// Explicit padding ensures TASK_HEADER_SIZE is always 24 regardless
+    /// of F's alignment. Without this, repr(C) would pad to F's alignment
+    /// — a future with align(1) would put `future` at offset 17, not 24.
+    /// The hardcoded offsets in `is_queued()`/`set_queued()`/`poll_task()`
+    /// depend on this being exactly 24.
     _pad: [u8; 7],
     future: F,
 }

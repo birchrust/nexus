@@ -54,6 +54,10 @@ pub(crate) struct IoDriver {
     /// `Some(ptr)` = task to wake on readiness.
     wakers: Vec<Option<*mut u8>>,
 
+    /// Intrusive freelist: `next_free[i]` is the index of the next
+    /// free slot after `i`. Only valid when `wakers[i]` is `None`.
+    next_free: Vec<usize>,
+
     /// Head of the token freelist. `usize::MAX` = empty.
     free_head: usize,
 }
@@ -74,13 +78,18 @@ impl IoDriver {
         let events = Events::with_capacity(event_capacity);
 
         let mut wakers = Vec::with_capacity(token_capacity);
+        let mut next_free = Vec::with_capacity(token_capacity);
         wakers.resize(token_capacity, None);
+        for i in 0..token_capacity {
+            next_free.push(if i + 1 < token_capacity { i + 1 } else { NO_FREE });
+        }
 
         Ok(Self {
             poll,
             events,
             mio_waker,
             wakers,
+            next_free,
             free_head: if token_capacity > 0 { 0 } else { NO_FREE },
         })
     }
@@ -97,24 +106,21 @@ impl IoDriver {
         self.poll.registry()
     }
 
-    /// Claim a token slot, associating it with a task pointer.
+    /// Claim a token slot, associating it with a task pointer. O(1).
     ///
     /// Returns the `mio::Token` to use when registering a source.
-    /// Grows the wakers Vec if no free slots are available.
+    /// Grows the Vecs if no free slots are available.
     pub(crate) fn claim_token(&mut self, task_ptr: *mut u8) -> Token {
         let idx = if self.free_head == NO_FREE {
             // Grow: append a new slot.
             let idx = self.wakers.len();
             self.wakers.push(None);
+            self.next_free.push(NO_FREE);
             idx
         } else {
-            // Pop from freelist.
+            // Pop from freelist head. O(1).
             let idx = self.free_head;
-            // Find next free by scanning forward (simple, cold path).
-            self.free_head = self.wakers[idx + 1..]
-                .iter()
-                .position(Option::is_none)
-                .map_or(NO_FREE, |pos| idx + 1 + pos);
+            self.free_head = self.next_free[idx];
             idx
         };
 
@@ -122,15 +128,14 @@ impl IoDriver {
         Token(idx)
     }
 
-    /// Release a token slot back to the freelist.
+    /// Release a token slot back to the freelist. O(1).
     pub(crate) fn release_token(&mut self, token: Token) {
         let idx = token.0;
         if idx < self.wakers.len() {
             self.wakers[idx] = None;
-            // Push to freelist (simple: just update free_head if lower).
-            if idx < self.free_head || self.free_head == NO_FREE {
-                self.free_head = idx;
-            }
+            // Push to freelist head.
+            self.next_free[idx] = self.free_head;
+            self.free_head = idx;
         }
     }
 
@@ -252,8 +257,12 @@ impl IoHandle {
     }
 
     /// Deregister a source and release its token.
-    pub fn deregister(&self, source: &mut impl Source, token: Token) -> io::Result<()> {
-        // SAFETY: driver/registry pointers valid (Runtime lifetime).
+    ///
+    /// # Safety
+    ///
+    /// The driver and registry pointers must be valid (Runtime lifetime).
+    pub unsafe fn deregister(&self, source: &mut impl Source, token: Token) -> io::Result<()> {
+        // SAFETY: caller guarantees pointers are valid.
         let driver = unsafe { &mut *self.driver };
         let registry = unsafe { &*self.registry };
         registry.deregister(source)?;
