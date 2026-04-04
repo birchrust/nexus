@@ -313,6 +313,15 @@ impl IoHandle {
         Ok(())
     }
 
+    /// Update the task pointer for a token. Called when a stream
+    /// is polled from a different task than the one that registered it
+    /// (e.g., after `into_split`).
+    pub fn set_waker_for_token(&self, token: Token, task_ptr: *mut u8) {
+        // SAFETY: driver pointer valid (Runtime lifetime).
+        let driver = unsafe { &mut *self.driver };
+        driver.set_waker(token, task_ptr);
+    }
+
     /// Query the readiness state for a token.
     ///
     /// Returns the last-known readiness from epoll events. Cleared

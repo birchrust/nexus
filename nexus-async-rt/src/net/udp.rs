@@ -28,6 +28,7 @@ pub struct UdpSocket {
     inner: mio::net::UdpSocket,
     io: IoHandle,
     token: Option<Token>,
+    registered_task: *mut u8,
 }
 
 impl UdpSocket {
@@ -38,6 +39,7 @@ impl UdpSocket {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -177,6 +179,7 @@ impl UdpSocket {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -221,25 +224,29 @@ impl UdpSocket {
     // Registration
     // =========================================================================
 
-    /// Ensure registered with mio for read + write interest.
-    /// Only registers once — subsequent calls are no-ops.
+    /// Ensure registered with mio and the correct task pointer.
     #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        if self.token.is_some() {
+        let task_ptr = waker_to_ptr(cx);
+        if let Some(token) = self.token {
+            if task_ptr != self.registered_task {
+                self.io.set_waker_for_token(token, task_ptr);
+                self.registered_task = task_ptr;
+            }
             return Ok(());
         }
-        self.do_register(cx)
+        self.do_register(task_ptr)
     }
 
     #[cold]
-    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        let task_ptr = waker_to_ptr(cx);
+    fn do_register(&mut self, task_ptr: *mut u8) -> io::Result<()> {
         let interest = Interest::READABLE | Interest::WRITABLE;
         // SAFETY: IoHandle valid (Runtime lifetime). task_ptr from waker.
         let token = unsafe {
             self.io.register(&mut self.inner, interest, task_ptr)?
         };
         self.token = Some(token);
+        self.registered_task = task_ptr;
         Ok(())
     }
 

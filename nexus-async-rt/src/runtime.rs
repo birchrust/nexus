@@ -345,7 +345,7 @@ impl<A: TaskAlloc + 'static> Runtime<A> {
             &raw mut self.io,
             &raw mut self.timers,
             &raw const self.event_time,
-            self.shutdown.flag_ptr(),
+            std::sync::Arc::as_ptr(&self.shutdown.flag_ptr()),
         );
 
         // Box the root future — not constrained by SLOT_SIZE.

@@ -38,6 +38,10 @@ pub struct TcpStream {
     inner: mio::net::TcpStream,
     io: IoHandle,
     token: Option<Token>,
+    /// Task pointer from the last registration. Used to detect when the
+    /// stream moves to a different task (e.g., via `into_split`) and
+    /// reregister with the IO driver to wake the correct task.
+    registered_task: *mut u8,
 }
 
 impl TcpStream {
@@ -47,6 +51,7 @@ impl TcpStream {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         }
     }
 
@@ -291,12 +296,10 @@ impl TcpStream {
     /// Split into owned read and write halves.
     ///
     /// The halves can be moved to different spawned tasks on the same
-    /// single-threaded runtime (`!Send` — not across threads). Use
-    /// [`OwnedReadHalf::reunite`] to reassemble the stream.
-    ///
-    /// **Note:** The halves must first be polled from the same task that
-    /// created them (to set up the mio registration). After the first
-    /// poll, the waker is fixed to that task.
+    /// single-threaded runtime (`!Send` — not across threads). The IO
+    /// driver automatically updates the task pointer when a half is
+    /// polled from a different task. Use [`OwnedReadHalf::reunite`]
+    /// to reassemble the stream.
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
         use std::rc::Rc;
         let shared = Rc::new(std::cell::UnsafeCell::new(self));
@@ -312,26 +315,34 @@ impl TcpStream {
     // Registration (internal)
     // =========================================================================
 
-    /// Ensure registered with mio. Only registers once.
-    /// Hot path: single branch on `token.is_some()`. Cold path (first
-    /// call) does the mio register in a separate `#[cold]` function.
+    /// Ensure registered with mio and the correct task pointer.
+    ///
+    /// First call: registers with mio. Subsequent calls: checks if the
+    /// task pointer changed (stream moved to a different task via
+    /// `into_split`). If so, updates the IO driver's waker mapping.
     #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        if self.token.is_some() {
+        let task_ptr = waker_to_ptr(cx);
+        if let Some(token) = self.token {
+            // Already registered — check if task changed.
+            if task_ptr != self.registered_task {
+                self.io.set_waker_for_token(token, task_ptr);
+                self.registered_task = task_ptr;
+            }
             return Ok(());
         }
-        self.do_register(cx)
+        self.do_register(task_ptr)
     }
 
     #[cold]
-    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        let task_ptr = waker_to_ptr(cx);
+    fn do_register(&mut self, task_ptr: *mut u8) -> io::Result<()> {
         let interest = Interest::READABLE | Interest::WRITABLE;
         // SAFETY: IoHandle valid (Runtime lifetime). task_ptr from waker.
         let token = unsafe {
             self.io.register(&mut self.inner, interest, task_ptr)?
         };
         self.token = Some(token);
+        self.registered_task = task_ptr;
         Ok(())
     }
 }
@@ -637,6 +648,7 @@ pub struct TcpListener {
     inner: mio::net::TcpListener,
     io: IoHandle,
     token: Option<Token>,
+    registered_task: *mut u8,
 }
 
 impl TcpListener {
@@ -647,6 +659,7 @@ impl TcpListener {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -657,6 +670,7 @@ impl TcpListener {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -680,23 +694,28 @@ impl TcpListener {
         Accept { listener: self }
     }
 
-    /// Ensure registered with mio for READABLE interest. Only registers once.
+    /// Ensure registered with mio and the correct task pointer.
     #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        if self.token.is_some() {
+        let task_ptr = waker_to_ptr(cx);
+        if let Some(token) = self.token {
+            if task_ptr != self.registered_task {
+                self.io.set_waker_for_token(token, task_ptr);
+                self.registered_task = task_ptr;
+            }
             return Ok(());
         }
-        self.do_register(cx)
+        self.do_register(task_ptr)
     }
 
     #[cold]
-    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        let task_ptr = waker_to_ptr(cx);
+    fn do_register(&mut self, task_ptr: *mut u8) -> io::Result<()> {
         // SAFETY: IoHandle valid, task_ptr from waker.
         let token = unsafe {
             self.io.register(&mut self.inner, Interest::READABLE, task_ptr)?
         };
         self.token = Some(token);
+        self.registered_task = task_ptr;
         Ok(())
     }
 }
@@ -919,6 +938,7 @@ impl TcpSocket {
             inner: mio_listener,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 }

@@ -19,7 +19,6 @@
 
 use std::cell::Cell;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::io::{IoDriver, IoHandle};
@@ -38,11 +37,8 @@ thread_local! {
         const { Cell::new(std::ptr::null_mut()) };
     static CTX_EVENT_TIME: Cell<*const Cell<Instant>> =
         const { Cell::new(std::ptr::null()) };
-    /// Shutdown flag stored as a cloned Arc — no raw pointer reconstruction.
-    /// Not const-initializable (Arc isn't const), but only accessed on
-    /// shutdown which is a cold path.
-    static CTX_SHUTDOWN: std::cell::RefCell<Option<Arc<AtomicBool>>> =
-        const { std::cell::RefCell::new(None) };
+    static CTX_SHUTDOWN: Cell<*const AtomicBool> =
+        const { Cell::new(std::ptr::null()) };
 }
 
 // =============================================================================
@@ -56,15 +52,14 @@ pub(crate) fn install(
     io: *mut IoDriver,
     timer: *mut TimerDriver,
     event_time: *const Cell<Instant>,
-    shutdown_flag: Arc<AtomicBool>,
+    shutdown_flag: *const AtomicBool,
 ) -> ContextGuard {
-    let prev_shutdown = CTX_SHUTDOWN.with(|c| c.borrow_mut().replace(shutdown_flag));
     let prev = PrevContext {
         world: CTX_WORLD.with(|c| c.replace(world)),
         io: CTX_IO.with(|c| c.replace(io)),
         timer: CTX_TIMER.with(|c| c.replace(timer)),
         event_time: CTX_EVENT_TIME.with(|c| c.replace(event_time)),
-        shutdown: prev_shutdown,
+        shutdown: CTX_SHUTDOWN.with(|c| c.replace(shutdown_flag)),
     };
     ContextGuard { prev }
 }
@@ -74,7 +69,7 @@ struct PrevContext {
     io: *mut IoDriver,
     timer: *mut TimerDriver,
     event_time: *const Cell<Instant>,
-    shutdown: Option<Arc<AtomicBool>>,
+    shutdown: *const AtomicBool,
 }
 
 pub(crate) struct ContextGuard {
@@ -87,7 +82,7 @@ impl Drop for ContextGuard {
         CTX_IO.with(|c| c.set(self.prev.io));
         CTX_TIMER.with(|c| c.set(self.prev.timer));
         CTX_EVENT_TIME.with(|c| c.set(self.prev.event_time));
-        CTX_SHUTDOWN.with(|c| *c.borrow_mut() = self.prev.shutdown.take());
+        CTX_SHUTDOWN.with(|c| c.set(self.prev.shutdown));
     }
 }
 
@@ -170,13 +165,7 @@ pub fn event_time() -> Instant {
 
 /// Returns a future that resolves when shutdown is triggered.
 pub fn shutdown_signal() -> crate::ShutdownSignal {
-    CTX_SHUTDOWN.with(|c| {
-        let borrow = c.borrow();
-        let flag = borrow
-            .as_ref()
-            .expect("shutdown_signal() called outside Runtime::block_on");
-        crate::ShutdownSignal {
-            flag: Arc::clone(flag),
-        }
-    })
+    let ptr = CTX_SHUTDOWN.with(Cell::get);
+    assert!(!ptr.is_null(), "shutdown_signal() called outside Runtime::block_on");
+    crate::ShutdownSignal { flag: ptr }
 }

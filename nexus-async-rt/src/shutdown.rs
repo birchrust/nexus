@@ -77,7 +77,7 @@ impl ShutdownHandle {
     /// Returns a future that completes when shutdown is triggered.
     pub fn signal(&self) -> ShutdownSignal {
         ShutdownSignal {
-            flag: Arc::clone(&self.flag),
+            flag: Arc::as_ptr(&self.flag),
         }
     }
 }
@@ -86,19 +86,24 @@ impl ShutdownHandle {
 ///
 /// Checked by the Runtime's poll loop — when the shutdown flag is set,
 /// the root future gets re-polled automatically.
+/// Future that resolves when shutdown is triggered.
+///
+/// Holds a raw pointer to the AtomicBool flag, valid for the lifetime
+/// of the Runtime (which outlives `block_on` which outlives all tasks).
 pub struct ShutdownSignal {
-    pub(crate) flag: Arc<AtomicBool>,
+    pub(crate) flag: *const AtomicBool,
 }
 
 impl Future for ShutdownSignal {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-        if self.flag.load(Ordering::Acquire) {
+        // SAFETY: flag points to the AtomicBool inside the Runtime's
+        // ShutdownHandle (Arc-allocated, stable address). Valid for
+        // Runtime lifetime.
+        if unsafe { &*self.flag }.load(Ordering::Acquire) {
             return Poll::Ready(());
         }
-        // Don't self-wake — the poll loop checks the shutdown flag
-        // directly and re-polls the root future when it's set.
         Poll::Pending
     }
 }
