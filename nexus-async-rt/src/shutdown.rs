@@ -20,7 +20,7 @@
 //!     spawn(connection_tasks...);
 //!
 //!     // Wait for SIGTERM/SIGINT.
-//!     handle.shutdown_signal().await;
+//!     nexus_async_rt::shutdown_signal().await;
 //!
 //!     // Drain connections, flush buffers, etc.
 //! });

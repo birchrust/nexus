@@ -340,13 +340,12 @@ impl<A: TaskAlloc + 'static> Runtime<A> {
         F: Future + 'static,
     {
         // Install TLS context — Runtime is at its final stack address.
-        let shutdown_ptr = std::sync::Arc::as_ptr(&self.shutdown.flag_ptr());
         let _ctx_guard = crate::context::install(
             self.ctx.as_ptr(),
             &raw mut self.io,
             &raw mut self.timers,
             &raw const self.event_time,
-            shutdown_ptr,
+            self.shutdown.flag_ptr(),
         );
 
         // Box the root future — not constrained by SLOT_SIZE.

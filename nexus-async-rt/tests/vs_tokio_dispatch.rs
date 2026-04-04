@@ -13,8 +13,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-const WARMUP: usize = 50_000;
-const TOTAL_POLLS: usize = 1_100_000; // warmup + measurement
+const WARMUP: usize = 10_000;
+const TOTAL_POLLS: usize = 210_000; // warmup + measurement
 const BATCH: usize = 100;
 
 #[inline(always)]

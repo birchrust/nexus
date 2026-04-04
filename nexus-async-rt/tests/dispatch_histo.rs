@@ -13,8 +13,8 @@ use std::task::{Context, Poll};
 
 use nexus_async_rt::{DefaultBoundedAlloc, Executor};
 
-const WARMUP: usize = 100_000;
-const SAMPLES: usize = 5_000_000;
+const WARMUP: usize = 10_000;
+const SAMPLES: usize = 500_000;
 
 #[inline(always)]
 fn rdtsc() -> u64 {

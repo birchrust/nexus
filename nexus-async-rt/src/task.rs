@@ -126,6 +126,7 @@ pub(crate) unsafe fn ref_inc(ptr: *mut u8) {
 pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> bool {
     // SAFETY: ref_count at offset 18.
     let rc = unsafe { &mut *ptr.add(18).cast::<u16>() };
+    debug_assert!(*rc > 0, "waker refcount underflow");
     *rc -= 1;
     *rc == 0
 }

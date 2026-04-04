@@ -31,7 +31,7 @@ use nexus_rt::World;
 /// # Examples
 ///
 /// ```ignore
-/// use nexus_async_rt::{Executor, WorldCtx};
+/// use nexus_async_rt::{DefaultBoundedAlloc, Executor, WorldCtx};
 /// use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler};
 ///
 /// let mut world = builder.build();

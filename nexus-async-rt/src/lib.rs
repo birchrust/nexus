@@ -19,7 +19,7 @@
 //!     .build();
 //!
 //! rt.block_on(async {
-//!     let handle = handle();
+//!     // All runtime state via free functions:
 //!     // ...
 //! });
 //! ```
@@ -273,13 +273,29 @@ impl<A: TaskAlloc> Executor<A> {
 
 impl<A: TaskAlloc> Drop for Executor<A> {
     fn drop(&mut self) {
+        // Free deferred slots first (completed tasks whose last waker dropped).
         for ptr in self.deferred_free.drain(..) {
             unsafe { self.alloc.free(ptr) };
         }
+
         for (_, &ptr) in &self.all_tasks {
+            // Drop the future if not already dropped.
             if !unsafe { task::is_completed(ptr) } {
                 unsafe { task::drop_task_future(ptr) };
+                unsafe { task::set_completed(ptr) };
+                // Executor releases its reference.
+                unsafe { task::ref_dec(ptr) };
             }
+
+            // Check for outstanding waker clones.
+            let rc = unsafe { task::ref_count(ptr) };
+            debug_assert!(
+                rc == 0,
+                "executor dropped with {} outstanding waker clone(s) — \
+                 all wakers must be dropped before the Runtime",
+                rc,
+            );
+
             unsafe { self.alloc.free(ptr) };
         }
     }
@@ -906,8 +922,8 @@ mod tests {
         );
     }
 
-    const BENCH_WARMUP: usize = 100_000;
-    const BENCH_SAMPLES: usize = 1_000_000;
+    const BENCH_WARMUP: usize = 10_000;
+    const BENCH_SAMPLES: usize = 100_000;
 
     #[test]
     #[ignore]
