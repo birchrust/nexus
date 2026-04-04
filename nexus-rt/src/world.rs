@@ -843,7 +843,7 @@ impl World {
     /// Returns a reference to the shutdown flag.
     ///
     /// Used by the [`Shutdown`](crate::Shutdown) Param for direct access.
-    pub(crate) fn shutdown_flag(&self) -> &Arc<AtomicBool> {
+    pub(crate) fn shutdown_flag(&self) -> &AtomicBool {
         &self.shutdown
     }
 

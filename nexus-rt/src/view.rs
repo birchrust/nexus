@@ -1062,8 +1062,8 @@ mod tests {
     }
 
     #[test]
-    fn view_filter_chain() {
-        // Guard inside view → filter outside view — multiple operations chained
+    fn view_guard_inside_view() {
+        // Guard inside view scope — tests guarded view with accept/reject
         let mut wb = WorldBuilder::new();
         wb.register(AuditLog(Vec::new()));
         let mut world = wb.build();

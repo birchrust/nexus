@@ -345,9 +345,13 @@ impl ReactorNotify {
             if !subscribers.contains(&reactor) {
                 subscribers.push(reactor);
                 // Maintain reverse index for O(subscriptions) removal.
-                if let Some(sources) = self.reactor_sources.get_mut(reactor.index()) {
-                    sources.push(source);
-                }
+                let idx = reactor.index();
+                debug_assert!(
+                    idx < self.reactor_sources.len(),
+                    "reactor_sources missing entry for reactor token {}",
+                    idx,
+                );
+                self.reactor_sources[idx].push(source);
             }
         }
     }
@@ -390,7 +394,6 @@ impl ReactorNotify {
         self.reactors.get_mut(idx).and_then(Option::take)
     }
 
-    /// Put a reactor back into its slot after dispatch.
     /// Put a reactor back into its slot after dispatch.
     ///
     /// The caller guarantees `idx` is a valid, occupied slab key
