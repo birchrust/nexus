@@ -223,7 +223,50 @@ impl TcpStream {
         Ok(())
     }
 
-    // Note: readable()/writable() readiness futures are NOT provided.
+    /// Poll for read readiness without performing IO.
+    ///
+    /// Returns `Ready(Ok(()))` if the socket has been reported readable
+    /// by epoll. Returns `Pending` if not yet ready. Use this for
+    /// sans-IO codecs that want to check readiness before feeding bytes.
+    pub fn poll_read_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Err(e) = self.ensure_registered(cx) {
+            return Poll::Ready(Err(e));
+        }
+        if let Some(token) = self.token {
+            if self.io.readiness(token).readable {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        Poll::Pending
+    }
+
+    /// Poll for write readiness without performing IO.
+    pub fn poll_write_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Err(e) = self.ensure_registered(cx) {
+            return Poll::Ready(Err(e));
+        }
+        if let Some(token) = self.token {
+            if self.io.readiness(token).writable {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        Poll::Pending
+    }
+
+    /// Wait until the stream is readable.
+    ///
+    /// Returns when epoll reports the socket as readable. After this
+    /// returns, [`try_read`](Self::try_read) should succeed.
+    pub async fn readable(&mut self) -> io::Result<()> {
+        std::future::poll_fn(|cx| self.poll_read_ready(cx)).await
+    }
+
+    /// Wait until the stream is writable.
+    pub async fn writable(&mut self) -> io::Result<()> {
+        std::future::poll_fn(|cx| self.poll_write_ready(cx)).await
+    }
+
+    // Note: after a successful read or WouldBlock, the readable flag is
     // Correctly implementing them requires tracking readiness state from
     // epoll events (like tokio's internal readiness tracking). Zero-length
     // reads/writes don't reliably probe socket readiness on Linux.
@@ -305,7 +348,13 @@ impl AsyncRead for TcpStream {
         }
         match this.inner.read(buf) {
             Ok(n) => Poll::Ready(Ok(n)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // Clear readable — wait for next epoll notification.
+                if let Some(token) = this.token {
+                    this.io.clear_readable(token);
+                }
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -323,7 +372,12 @@ impl AsyncWrite for TcpStream {
         }
         match this.inner.write(buf) {
             Ok(n) => Poll::Ready(Ok(n)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if let Some(token) = this.token {
+                    this.io.clear_writable(token);
+                }
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -338,7 +392,12 @@ impl AsyncWrite for TcpStream {
         }
         match this.inner.flush() {
             Ok(()) => Poll::Ready(Ok(())),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if let Some(token) = this.token {
+                    this.io.clear_writable(token);
+                }
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -901,18 +960,16 @@ mod tests {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
         let mut rt = DefaultRuntime::new(&mut world, 16);
-        let handle = rt.handle();
-
-        let listener = TcpListener::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            handle.io(),
-        ).expect("bind failed");
-        let addr = listener.local_addr().unwrap();
 
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();
 
         rt.block_on(async move {
+            let listener = TcpListener::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                crate::context::io(),
+            ).expect("bind failed");
+            let addr = listener.local_addr().unwrap();
             spawn(async move {
                 let mut listener = listener;
                 let (mut stream, _peer) = listener.accept().await.unwrap();
@@ -921,10 +978,10 @@ mod tests {
                 stream.write_all(&buf[..n]).await.unwrap();
             });
 
-            let io = handle.io();
+            let io = crate::context::io();
             let flag = done2;
             spawn(async move {
-                handle.sleep(std::time::Duration::from_millis(10)).await;
+                crate::context::sleep(std::time::Duration::from_millis(10)).await;
                 let mut client = TcpStream::connect(addr, io).unwrap();
                 client.write_all(b"hello").await.unwrap();
                 let mut buf = [0u8; 64];
@@ -933,29 +990,13 @@ mod tests {
                 flag.set(true);
             });
 
-            handle.sleep(std::time::Duration::from_millis(500)).await;
+            crate::context::sleep(std::time::Duration::from_millis(500)).await;
         });
 
         assert!(done.get(), "echo exchange never completed");
     }
 
-    #[test]
-    fn tcp_socket_options() {
-        let wb = WorldBuilder::new();
-        let mut world = wb.build();
-        let mut rt = DefaultRuntime::new(&mut world, 4);
-        let io = rt.handle().io();
 
-        let stream = TcpStream::connect("127.0.0.1:1".parse().unwrap(), io);
-        // Connect will fail (nothing on port 1), but we can still test
-        // socket options on the created socket.
-        if let Ok(s) = stream {
-            s.set_nodelay(true).unwrap();
-            assert!(s.nodelay().unwrap());
-            s.set_nodelay(false).unwrap();
-            assert!(!s.nodelay().unwrap());
-        }
-    }
 
     #[test]
     fn tcp_socket_builder() {

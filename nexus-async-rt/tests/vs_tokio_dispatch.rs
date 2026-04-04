@@ -100,12 +100,12 @@ fn dispatch_nexus_vs_tokio() {
 
     // --- nexus ---
     {
-        use nexus_async_rt::{Executor, TASK_HEADER_SIZE};
+        use nexus_async_rt::{DefaultBoundedAlloc, Executor};
 
         let timestamps = Rc::new(Cell::new(Vec::with_capacity(TOTAL_POLLS)));
         let ts = timestamps.clone();
 
-        let mut executor = Executor::<{ 256 + TASK_HEADER_SIZE }>::with_capacity(4);
+        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
         executor.spawn(BenchTask {
             count: 0,
             target: TOTAL_POLLS as u64,

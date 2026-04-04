@@ -20,7 +20,7 @@
 //! A single [`Instant::now()`] is taken after each IO poll cycle (or at
 //! loop entry when no IO driver is present). All dispatch within that
 //! cycle shares the same timestamp — one clock read per cycle, not per
-//! event. Access via [`RuntimeHandle::event_time`].
+//! event. Access via [`nexus_async_rt::event_time`].
 
 use std::cell::Cell;
 use std::future::Future;
@@ -28,9 +28,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
-use crate::{Executor, TaskId, WorldCtx, task::TASK_HEADER_SIZE};
-use crate::io::{IoDriver, IoHandle};
-use crate::timer::{TimerDriver, TimerHandle};
+use crate::{Executor, TaskAlloc, TaskId, WorldCtx};
+use crate::alloc::DefaultUnboundedAlloc;
+use crate::io::IoDriver;
+use crate::timer::TimerDriver;
 
 // =============================================================================
 // Thread-local runtime context
@@ -50,7 +51,7 @@ trait SpawnErased {
     fn spawn_erased(&mut self, future: Pin<Box<dyn Future<Output = ()>>>) -> TaskId;
 }
 
-impl<const S: usize> SpawnErased for Executor<S> {
+impl<A: TaskAlloc> SpawnErased for Executor<A> {
     fn spawn_erased(&mut self, future: Pin<Box<dyn Future<Output = ()>>>) -> TaskId {
         self.spawn(future)
     }
@@ -84,68 +85,6 @@ where
 }
 
 // =============================================================================
-// RuntimeHandle — Copy handle for tasks
-// =============================================================================
-
-/// [`Copy`] handle for accessing runtime state from async tasks.
-///
-/// Provides [`WorldCtx`] access, IO registration, timer scheduling,
-/// and the current event-cycle timestamp.
-#[derive(Clone, Copy)]
-pub struct RuntimeHandle {
-    ctx: WorldCtx,
-    event_time: *const Cell<Instant>,
-    io: IoHandle,
-    timers: TimerHandle,
-}
-
-impl RuntimeHandle {
-    /// Access the [`World`](nexus_rt::World) synchronously.
-    ///
-    /// Delegates to [`WorldCtx::with_world`].
-    pub fn with_world<R>(&self, f: impl FnOnce(&mut nexus_rt::World) -> R) -> R {
-        self.ctx.with_world(f)
-    }
-
-    /// Access the [`World`](nexus_rt::World) with shared access.
-    ///
-    /// Delegates to [`WorldCtx::with_world_ref`].
-    pub fn with_world_ref<R>(&self, f: impl FnOnce(&nexus_rt::World) -> R) -> R {
-        self.ctx.with_world_ref(f)
-    }
-
-    /// Timestamp taken after the most recent IO poll cycle.
-    ///
-    /// All events dispatched within the same cycle share this timestamp.
-    /// One clock read per cycle, not per event.
-    pub fn event_time(&self) -> Instant {
-        // SAFETY: Pointer is valid for the lifetime of the Runtime.
-        // Single-threaded — no concurrent mutation during task poll.
-        unsafe { &*self.event_time }.get()
-    }
-
-    /// Returns the IO handle for registering mio sources.
-    pub fn io(&self) -> IoHandle {
-        self.io
-    }
-
-    /// Returns the timer handle for scheduling deadlines.
-    pub fn timers(&self) -> TimerHandle {
-        self.timers
-    }
-
-    /// Convenience: sleep for `duration`. Returns a [`Sleep`](crate::Sleep) future.
-    pub fn sleep(&self, duration: Duration) -> crate::Sleep {
-        self.timers.sleep(duration)
-    }
-
-    /// Convenience: sleep until `deadline`. Returns a [`Sleep`](crate::Sleep) future.
-    pub fn sleep_until(&self, deadline: Instant) -> crate::Sleep {
-        self.timers.sleep_until(deadline)
-    }
-}
-
-// =============================================================================
 // Runtime
 // =============================================================================
 
@@ -165,13 +104,12 @@ impl RuntimeHandle {
 /// let mut world = WorldBuilder::new().build();
 ///
 /// let mut rt = DefaultRuntime::new(&mut world, 64);
-/// let handle = rt.handle();
 ///
 /// let output = rt.block_on(async move {
 ///     spawn(async move {
 ///         // IO task — lives in slab
 ///         let data = read_socket().await;
-///         handle.with_world(|world| process(world, data));
+///         crate::context::with_world(|world| process(world, data));
 ///     });
 ///
 ///     // Root future coordinates, then returns a value
@@ -181,60 +119,184 @@ impl RuntimeHandle {
 ///
 /// assert_eq!(output, "done");
 /// ```
-pub struct Runtime<const SLOT_SIZE: usize> {
-    /// Spawned task storage. SLOT_SIZE includes task header overhead.
-    executor: Executor<SLOT_SIZE>,
+pub struct Runtime<A: TaskAlloc> {
+    /// Spawned task storage.
+    executor: Executor<A>,
 
     /// IO driver (mio). Owns the Poll instance and token→waker map.
     io: IoDriver,
 
-    /// Timer driver. Min-heap of deadlines → task wakers.
+    /// Timer driver.
     timers: TimerDriver,
 
     /// World access handle.
     ctx: WorldCtx,
 
-    /// Event-cycle timestamp. Updated after each IO poll cycle.
-    /// `Cell` for interior mutability — tasks read it through a raw
-    /// pointer while the runtime updates it.
+    /// Event-cycle timestamp.
     event_time: Cell<Instant>,
+
+    /// Graceful shutdown handle.
+    shutdown: crate::ShutdownHandle,
 }
 
-/// Runtime with 256-byte future capacity (+ 24 byte header = 280 byte slots).
-pub type DefaultRuntime = Runtime<{ 256 + TASK_HEADER_SIZE }>;
+/// Runtime with default unbounded allocator (256-byte future capacity).
+pub type DefaultRuntime = Runtime<DefaultUnboundedAlloc>;
 
-impl<const SLOT_SIZE: usize> Runtime<SLOT_SIZE> {
-    /// Create a runtime with pre-allocated capacity for `task_capacity`
-    /// spawned tasks.
+impl DefaultRuntime {
+    /// Create a default runtime with unbounded task allocation.
     ///
-    /// The [`World`](nexus_rt::World) must outlive the runtime.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the mio `Poll` instance cannot be created (OS error).
-    pub fn new(world: &mut nexus_rt::World, task_capacity: usize) -> Self {
+    /// Convenience for the common case. For fine-grained control,
+    /// use [`Runtime::builder`].
+    pub fn new(world: &mut nexus_rt::World, queue_capacity: usize) -> Self {
+        let alloc = DefaultUnboundedAlloc::new(queue_capacity);
+        Runtime::builder(world, alloc).build()
+    }
+}
+
+impl<A: TaskAlloc + 'static> Runtime<A> {
+    /// Create a runtime via the builder pattern.
+    pub fn builder(world: &mut nexus_rt::World, alloc: A) -> RuntimeBuilder<'_, A> {
+        RuntimeBuilder::new(world, alloc)
+    }
+
+    /// Returns a [`ShutdownHandle`] for triggering or observing shutdown.
+    pub fn shutdown_handle(&self) -> crate::ShutdownHandle {
+        self.shutdown.clone()
+    }
+
+    /// Install signal handlers for SIGTERM and SIGINT.
+    pub fn install_signal_handlers(&self) {
+        crate::shutdown::install_signal_handlers(
+            &self.shutdown.flag_ptr(),
+            &self.io.mio_waker(),
+        );
+    }
+}
+
+// =============================================================================
+// RuntimeBuilder
+// =============================================================================
+
+/// Builder for configuring a [`Runtime`].
+///
+/// # Examples
+///
+/// ```ignore
+/// use nexus_async_rt::*;
+///
+/// let mut world = nexus_rt::WorldBuilder::new().build();
+/// let alloc = DefaultUnboundedAlloc::new(64);
+///
+/// let mut rt = Runtime::builder(&mut world, alloc)
+///     .tasks_per_cycle(128)
+///     .signal_handlers(true)
+///     .build();
+/// ```
+pub struct RuntimeBuilder<'w, A: TaskAlloc> {
+    world: &'w mut nexus_rt::World,
+    alloc: A,
+    tasks_per_cycle: usize,
+    queue_capacity: usize,
+    event_capacity: usize,
+    token_capacity: usize,
+    signal_handlers: bool,
+}
+
+impl<'w, A: TaskAlloc + 'static> RuntimeBuilder<'w, A> {
+    fn new(world: &'w mut nexus_rt::World, alloc: A) -> Self {
         Self {
-            executor: Executor::with_capacity(task_capacity),
-            io: IoDriver::new(1024, 64).expect("failed to create mio::Poll"),
-            timers: TimerDriver::new(64),
-            ctx: WorldCtx::new(world),
-            event_time: Cell::new(Instant::now()),
+            world,
+            alloc,
+            tasks_per_cycle: crate::DEFAULT_TASKS_PER_CYCLE,
+            queue_capacity: 64,
+            event_capacity: 1024,
+            token_capacity: 64,
+            signal_handlers: false,
         }
     }
 
-    /// Get a [`Copy`] handle for use inside async tasks.
+    /// Maximum tasks polled per cycle before yielding to check IO.
+    /// Default: 64.
     ///
-    /// The handle provides [`World`](nexus_rt::World) access, IO
-    /// registration, and the current event-cycle timestamp.
-    pub fn handle(&mut self) -> RuntimeHandle {
-        RuntimeHandle {
-            ctx: self.ctx,
-            event_time: &raw const self.event_time,
-            io: IoHandle::new(&mut self.io),
-            timers: TimerHandle::new(&mut self.timers),
-        }
+    /// Lower values improve IO responsiveness (new data is noticed
+    /// sooner). Higher values improve task throughput when many tasks
+    /// are ready simultaneously.
+    pub fn tasks_per_cycle(mut self, limit: usize) -> Self {
+        self.tasks_per_cycle = limit;
+        self
     }
 
+    /// Pre-allocated capacity for internal queues. Default: 64.
+    ///
+    /// Sets the initial size of the ready queue and task tracking
+    /// structures. Grows automatically if exceeded — this just avoids
+    /// early reallocation.
+    pub fn queue_capacity(mut self, cap: usize) -> Self {
+        self.queue_capacity = cap;
+        self
+    }
+
+    /// Maximum IO events processed per epoll cycle. Default: 1024.
+    ///
+    /// Size of the mio events buffer. If more events arrive than this
+    /// in a single cycle, the excess is deferred to the next cycle.
+    /// Increase for high-connection-count services.
+    pub fn event_capacity(mut self, cap: usize) -> Self {
+        self.event_capacity = cap;
+        self
+    }
+
+    /// Initial number of IO source slots (sockets/fds). Default: 64.
+    ///
+    /// Each registered socket occupies one slot. Grows automatically
+    /// if exceeded — this just avoids early reallocation.
+    pub fn token_capacity(mut self, cap: usize) -> Self {
+        self.token_capacity = cap;
+        self
+    }
+
+    /// Install SIGTERM/SIGINT signal handlers for graceful shutdown.
+    /// Default: false.
+    ///
+    /// When enabled, receiving SIGTERM or SIGINT sets the shutdown
+    /// flag. Await [`ShutdownHandle::signal`] in the root future to
+    /// observe it.
+    pub fn signal_handlers(mut self, enable: bool) -> Self {
+        self.signal_handlers = enable;
+        self
+    }
+
+    /// Build the runtime.
+    pub fn build(self) -> Runtime<A> {
+        let io = IoDriver::new(self.event_capacity, self.token_capacity)
+            .expect("failed to create mio::Poll");
+        let mut shutdown = crate::ShutdownHandle::new();
+        shutdown.set_mio_waker(io.mio_waker());
+
+        let mut executor = Executor::new(self.alloc, self.queue_capacity);
+        executor.set_tasks_per_cycle(self.tasks_per_cycle);
+
+        let ctx = WorldCtx::new(self.world);
+        let event_time = Cell::new(Instant::now());
+
+        let rt = Runtime {
+            executor,
+            io,
+            timers: TimerDriver::new(64),
+            ctx,
+            event_time,
+            shutdown,
+        };
+
+        if self.signal_handlers {
+            rt.install_signal_handlers();
+        }
+
+        rt
+    }
+}
+
+impl<A: TaskAlloc + 'static> Runtime<A> {
     /// Drive the root future to completion. CPU-friendly.
     ///
     /// Parks the thread when no work is available. Uses
@@ -277,6 +339,16 @@ impl<const SLOT_SIZE: usize> Runtime<SLOT_SIZE> {
     where
         F: Future + 'static,
     {
+        // Install TLS context — Runtime is at its final stack address.
+        let shutdown_ptr = std::sync::Arc::as_ptr(&self.shutdown.flag_ptr());
+        let _ctx_guard = crate::context::install(
+            self.ctx.as_ptr(),
+            &raw mut self.io,
+            &raw mut self.timers,
+            &raw const self.event_time,
+            shutdown_ptr,
+        );
+
         // Box the root future — not constrained by SLOT_SIZE.
         let mut root: Pin<Box<dyn Future<Output = F::Output>>> = Box::pin(future);
 
@@ -293,15 +365,24 @@ impl<const SLOT_SIZE: usize> Runtime<SLOT_SIZE> {
         let executor_ptr: *mut dyn SpawnErased = &mut self.executor;
         let _spawn_guard = RuntimeGuard::enter(executor_ptr);
 
-        // Install TLS ready queue so timers and IO can wake tasks.
-        let _ready_guard = crate::waker::set_ready_queue(self.executor.ready_queue_mut());
+        // Install TLS: ready queue + deferred free list for waker refcounting.
+        let (ready, deferred) = self.executor.poll_context_mut();
+        let _ready_guard = crate::waker::set_poll_context(ready, deferred);
+
+        // Note: runtime context (world, io, timer, event_time, shutdown)
+        // was already installed by RuntimeBuilder::build(). It persists
+        // for the lifetime of the Runtime.
 
         // Take initial timestamp.
         self.event_time.set(Instant::now());
 
         loop {
-            // 1. Poll root future if woken.
-            if woken.swap(false, std::sync::atomic::Ordering::Acquire) {
+            // 1. Poll root future if woken OR shutdown triggered.
+            // Shutdown check ensures the root future sees the flag
+            // even if its waker wasn't explicitly fired.
+            if woken.swap(false, std::sync::atomic::Ordering::Acquire)
+                || self.shutdown.is_shutdown()
+            {
                 match root.as_mut().poll(&mut root_cx) {
                     Poll::Ready(output) => return output,
                     Poll::Pending => {}
@@ -443,14 +524,13 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 4);
-        let handle = rt.handle();
 
         let result = rt.block_on(async move {
-            handle.with_world(|world| {
+            crate::context::with_world(|world| {
                 let v = world.resource::<Val>().0;
                 world.resource_mut::<Out>().0 = v + 10;
             });
-            handle.with_world_ref(|world| world.resource::<Out>().0)
+            crate::context::with_world_ref(|world| world.resource::<Out>().0)
         });
 
         assert_eq!(result, 52);
@@ -464,7 +544,6 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 4);
-        let handle = rt.handle();
 
         let mut h = (|val: Res<Val>, mut out: ResMut<Out>, event: u64| {
             out.0 = val.0 + event;
@@ -472,8 +551,8 @@ mod tests {
         .into_handler(world.registry());
 
         let result = rt.block_on(async move {
-            handle.with_world(|world| h.run(world, 10));
-            handle.with_world_ref(|world| world.resource::<Out>().0)
+            crate::context::with_world(|world| h.run(world, 10));
+            crate::context::with_world_ref(|world| world.resource::<Out>().0)
         });
 
         assert_eq!(result, 52);
@@ -486,13 +565,11 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 8);
-        let handle = rt.handle();
 
         rt.block_on(async move {
             for i in 1..=3u64 {
-                let h = handle;
                 spawn(async move {
-                    h.with_world(|world| {
+                    crate::context::with_world(|world| {
                         world.resource_mut::<Out>().0 += i;
                     });
                 });
@@ -523,12 +600,10 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 8);
-        let handle = rt.handle();
 
         rt.block_on_busy(async move {
-            let h = handle;
             spawn(async move {
-                h.with_world(|world| {
+                crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 = 99;
                 });
             });
@@ -546,11 +621,10 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 4);
-        let handle = rt.handle();
 
         let before = Instant::now();
         rt.block_on(async move {
-            let t = handle.event_time();
+            let t = crate::context::event_time();
             assert!(t >= before);
         });
     }
@@ -589,11 +663,10 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 4);
-        let handle = rt.handle();
 
         let before = Instant::now();
         rt.block_on(async move {
-            handle.sleep(Duration::from_millis(50)).await;
+            crate::context::sleep(Duration::from_millis(50)).await;
         });
         let elapsed = before.elapsed();
 
@@ -615,21 +688,17 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 8);
-        let handle = rt.handle();
 
         let before = Instant::now();
         rt.block_on(async move {
-            let h = handle;
             spawn(async move {
-                h.sleep(Duration::from_millis(50)).await;
-                h.with_world(|world| {
+                crate::context::sleep(Duration::from_millis(50)).await;
+                crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 = 42;
                 });
             });
 
-            // Wait for the spawned task to complete.
-            // The root future sleeps a bit longer to give the task time.
-            handle.sleep(Duration::from_millis(100)).await;
+            crate::context::sleep(Duration::from_millis(100)).await;
         });
 
         let elapsed = before.elapsed();
@@ -644,11 +713,10 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 4);
-        let handle = rt.handle();
 
         let before = Instant::now();
         rt.block_on(async move {
-            handle.sleep(Duration::ZERO).await;
+            crate::context::sleep(Duration::ZERO).await;
         });
         let elapsed = before.elapsed();
 
@@ -666,12 +734,11 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 4);
-        let handle = rt.handle();
 
         let past = Instant::now() - Duration::from_secs(1);
         let before = Instant::now();
         rt.block_on(async move {
-            handle.sleep_until(past).await;
+            crate::context::sleep_until(past).await;
         });
         let elapsed = before.elapsed();
 
@@ -688,17 +755,15 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = DefaultRuntime::new(&mut world, 8);
-        let handle = rt.handle();
 
         rt.block_on(async move {
-            let h = handle;
             // Sleep 50ms then 50ms — total ~100ms.
-            h.sleep(Duration::from_millis(50)).await;
-            h.with_world(|world| {
+            crate::context::sleep(Duration::from_millis(50)).await;
+            crate::context::with_world(|world| {
                 world.resource_mut::<Out>().0 = 1;
             });
-            h.sleep(Duration::from_millis(50)).await;
-            h.with_world(|world| {
+            crate::context::sleep(Duration::from_millis(50)).await;
+            crate::context::with_world(|world| {
                 world.resource_mut::<Out>().0 = 2;
             });
         });
