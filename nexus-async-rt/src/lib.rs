@@ -21,16 +21,21 @@
 //! executor.poll();
 //! ```
 
+// Single-threaded runtime — futures are intentionally !Send.
+#![allow(clippy::future_not_send)]
+
 mod task;
 mod waker;
 mod world_ctx;
 mod io;
+pub mod net;
 mod timer;
 mod runtime;
 
 pub use task::{TaskId, TASK_HEADER_SIZE};
 pub use world_ctx::WorldCtx;
 pub use io::IoHandle;
+pub use net::{AsyncRead, AsyncWrite, TcpListener, TcpStream};
 pub use timer::{Sleep, TimerHandle};
 pub use runtime::{DefaultRuntime, Runtime, RuntimeHandle, spawn};
 
