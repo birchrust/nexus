@@ -481,6 +481,11 @@ fn tcp_into_std() {
 #[test]
 fn tcp_connect_refused() {
     // Connect to a port that's definitely not listening.
+    // Bind a listener then drop it immediately to get a known-closed port.
+    let tmp_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed_addr = tmp_listener.local_addr().unwrap();
+    drop(tmp_listener); // port is now closed
+
     let wb = WorldBuilder::new();
     let mut world = wb.build();
     let mut rt = DefaultRuntime::new(&mut world, 16);
@@ -492,15 +497,22 @@ fn tcp_connect_refused() {
     rt.block_on(async move {
         spawn(async move {
             let io = handle.io();
-            // Port 1 should be refused on localhost.
-            let mut c = TcpStream::connect("127.0.0.1:1".parse().unwrap(), io).unwrap();
-            // The connect itself doesn't fail — it's non-blocking.
-            // The first read/write should detect the connection failure.
-            handle.sleep(Duration::from_millis(50)).await;
-            let result = c.write(b"test").await;
-            // Should be an error (connection refused).
-            assert!(result.is_err(), "expected connection refused");
-            flag.set(true);
+            // Non-blocking connect may succeed (EINPROGRESS) or fail immediately.
+            let connect_result = TcpStream::connect(closed_addr, io);
+            match connect_result {
+                Err(_) => {
+                    // Connect failed immediately — that's valid.
+                    flag.set(true);
+                }
+                Ok(mut c) => {
+                    // Connect returned Ok (in progress). Wait for it to
+                    // settle, then the first read/write detects failure.
+                    handle.sleep(Duration::from_millis(50)).await;
+                    let result = c.write(b"test").await;
+                    assert!(result.is_err(), "expected connection refused");
+                    flag.set(true);
+                }
+            }
         });
 
         handle.sleep(Duration::from_millis(500)).await;

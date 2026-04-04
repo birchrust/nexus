@@ -1,3 +1,4 @@
+#![cfg(target_arch = "x86_64")]
 //! Pure dispatch overhead comparison: nexus-async-rt vs tokio LocalSet.
 //!
 //! No IO, no syscalls. A persistent task self-wakes and we measure

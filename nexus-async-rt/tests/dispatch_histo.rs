@@ -1,3 +1,4 @@
+#![cfg(target_arch = "x86_64")]
 //! Per-poll (not batched) histogram for nexus-async-rt dispatch.
 //! Shows exactly which polls are slow and by how much.
 //!

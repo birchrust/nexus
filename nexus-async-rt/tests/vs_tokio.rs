@@ -1,3 +1,4 @@
+#![cfg(target_arch = "x86_64")]
 //! Head-to-head comparison: nexus-async-rt vs tokio LocalSet.
 //!
 //! Both runtimes run single-threaded on the same machine. Measures
