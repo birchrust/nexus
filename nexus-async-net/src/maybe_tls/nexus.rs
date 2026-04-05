@@ -1,5 +1,3 @@
-// Consumed by rt_stream (Phase 2b) — no callers yet.
-#![allow(dead_code)]
 //! MaybeTls — plain TCP or TLS, unified async I/O (nexus-async-rt backend).
 //!
 //! Unlike the tokio variant which delegates TLS to `tokio-rustls`, this

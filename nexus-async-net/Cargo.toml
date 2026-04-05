@@ -11,11 +11,12 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["tokio-rt", "tls"]
+default = ["tokio-tls"]
 full = ["tls", "socket-opts", "bytes"]
 tokio-rt = ["dep:tokio", "dep:futures-core", "dep:futures-sink"]
 nexus-rt = ["dep:nexus-async-rt"]
-tls = ["nexus-net/tls", "dep:tokio-rustls"]
+tls = ["nexus-net/tls"]
+tokio-tls = ["tokio-rt", "tls", "dep:tokio-rustls"]
 socket-opts = ["dep:socket2"]
 bytes = ["nexus-net/bytes"]
 
