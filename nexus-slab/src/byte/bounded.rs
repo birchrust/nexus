@@ -105,6 +105,40 @@ impl<const N: usize> Slab<N> {
         })
     }
 
+    /// Try to reserve a slot without writing. Returns `None` if full.
+    ///
+    /// The returned [`ByteClaim`] can be written to with `.write(value)`
+    /// or `.write_raw(src, size)`. If dropped without writing, the slot
+    /// is returned to the freelist.
+    #[inline]
+    pub fn try_claim(&self) -> Option<super::ByteClaim<'_>> {
+        let claim = self.inner.claim()?;
+        let ptr = claim.into_ptr().cast::<u8>();
+        let slab_ptr = std::ptr::from_ref(&self.inner).cast::<u8>();
+        // SAFETY: ptr is a valid vacant slot. Bounded = single chunk (idx 0).
+        Some(unsafe {
+            super::ByteClaim::from_raw_parts(ptr, slab_ptr, free_raw_impl::<N>, 0, N)
+        })
+    }
+
+    /// Reserve a slot without writing. Panics if full.
+    #[inline]
+    pub fn claim(&self) -> super::ByteClaim<'_> {
+        self.try_claim().expect("byte slab full")
+    }
+
+    /// Free a raw pointer without dropping content.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a slot in this slab (claimed or allocated).
+    #[inline]
+    pub unsafe fn free_raw(&self, ptr: *mut u8) {
+        unsafe {
+            self.inner.free_ptr(ptr.cast());
+        }
+    }
+
     /// Claim a slot and copy raw bytes into it. Returns a raw pointer.
     ///
     /// # Safety
@@ -170,6 +204,28 @@ impl<const N: usize> Slab<N> {
     #[inline]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
+    }
+}
+
+/// Monomorphized free function for `ByteClaim::Drop`.
+///
+/// Casts the slab pointer back to the correct bounded `Slab<AlignedBytes<N>>`
+/// and returns the slot to its freelist. `AlignedBytes<N>` is `Copy` so
+/// `drop_in_place` is a no-op — safe for vacant (unwritten) slots.
+///
+/// # Safety
+///
+/// - `slab_ptr` must point to a live `crate::bounded::Slab<AlignedBytes<N>>`.
+/// - `slot_ptr` must point to a slot within that slab.
+unsafe fn free_raw_impl<const N: usize>(slab_ptr: *const u8, slot_ptr: *mut u8, _chunk_idx: usize) {
+    let slab = unsafe {
+        &*(slab_ptr as *const crate::bounded::Slab<super::AlignedBytes<N>>)
+    };
+    // SAFETY: Bounded slab has one chunk — chunk_idx is ignored.
+    // free_ptr returns the slot to the freelist. For vacant slots
+    // (ByteClaim abandoned without writing), no value needs dropping.
+    unsafe {
+        slab.free_ptr(slot_ptr.cast());
     }
 }
 
@@ -264,5 +320,70 @@ mod tests {
             let _ptr = slab.alloc(42u64);
         }));
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // ByteClaim tests
+    // ========================================================================
+
+    #[test]
+    fn claim_write_typed() {
+        let slab: Slab<64> = unsafe { Slab::with_capacity(4) };
+        let claim = slab.claim();
+        let slot = claim.write(42u64);
+        assert_eq!(*slot, 42);
+        slab.free(slot);
+    }
+
+    #[test]
+    fn claim_write_raw() {
+        let slab: Slab<64> = unsafe { Slab::with_capacity(4) };
+        let claim = slab.claim();
+        let val: u64 = 99;
+        let ptr = unsafe {
+            claim.write_raw(
+                &val as *const u64 as *const u8,
+                core::mem::size_of::<u64>(),
+            )
+        };
+        assert_eq!(unsafe { *(ptr as *const u64) }, 99);
+        let slot = unsafe { super::Slot::<u64>::from_raw(ptr) };
+        slab.free(slot);
+    }
+
+    #[test]
+    fn claim_drop_returns_to_freelist() {
+        let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
+
+        // Claim the only slot, then drop without writing.
+        let claim = slab.claim();
+        drop(claim);
+
+        // Slot should be back — we can claim again.
+        let claim = slab.claim();
+        let slot = claim.write(7u64);
+        assert_eq!(*slot, 7);
+        slab.free(slot);
+    }
+
+    #[test]
+    fn try_claim_returns_none_when_full() {
+        let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
+        let _held = slab.claim();
+
+        assert!(slab.try_claim().is_none());
+    }
+
+    #[test]
+    fn try_claim_succeeds_after_abandon() {
+        let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
+
+        let claim = slab.claim();
+        drop(claim); // abandon → returns to freelist
+
+        let claim2 = slab.try_claim();
+        assert!(claim2.is_some());
+        let slot = claim2.unwrap().write(42u64);
+        slab.free(slot);
     }
 }
