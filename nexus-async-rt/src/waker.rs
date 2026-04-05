@@ -183,24 +183,6 @@ unsafe fn drop_fn(data: *const ()) {
     }
 }
 
-/// Push a task pointer to the ready queue. Used by the IO driver
-/// to wake tasks directly (bypasses the waker vtable path).
-///
-/// # Safety
-///
-/// `ptr` must point to a live task. The ready queue TLS must be set.
-#[inline]
-pub(crate) unsafe fn push_ready(ptr: *mut u8) {
-    READY_QUEUE.with(|cell| {
-        let queue_ptr = cell.get();
-        if !queue_ptr.is_null() {
-            // SAFETY: queue_ptr valid — set by set_poll_context.
-            let queue = unsafe { &mut *queue_ptr };
-            queue.push(ptr);
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

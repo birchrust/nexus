@@ -1,20 +1,26 @@
 //! HTTP/1.1 keep-alive connection — pure transport.
 //!
-//! `HttpConnection<S>` is a thin I/O wrapper. It sends request bytes and
+//! `Client<S>` is a thin I/O wrapper. It sends request bytes and
 //! reads response bytes. All protocol logic (request encoding, response
 //! parsing) lives in [`RequestWriter`](super::RequestWriter) and
 //! [`ResponseReader`](crate::http::ResponseReader).
 
-use std::io::{self, Read, Write};
 use std::time::Duration;
 
 use super::error::RestError;
-use super::request::{Request, RequestWriter};
+use super::request::RequestWriter;
+
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
+use std::io::{self, Read, Write};
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
+use super::request::Request;
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 use super::response::RestResponse;
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 use crate::http::{HttpError, ResponseReader};
 
 #[cfg(feature = "tls")]
-use crate::tls::{TlsCodec, TlsConfig, TlsError};
+use crate::tls::TlsConfig;
 
 // =============================================================================
 // URL parsing
@@ -105,15 +111,15 @@ pub fn parse_base_url(url: &str) -> Result<ParsedUrl<'_>, RestError> {
 }
 
 // =============================================================================
-// HttpConnectionBuilder
+// ClientBuilder
 // =============================================================================
 
-/// Builder for [`HttpConnection`].
+/// Builder for [`Client`].
 ///
 /// Configures transport: TLS, timeouts, socket options.
 /// Protocol configuration (host, headers, base path) lives on
 /// [`RequestWriter`].
-pub struct HttpConnectionBuilder {
+pub struct ClientBuilder {
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     tcp_nodelay: bool,
@@ -121,7 +127,7 @@ pub struct HttpConnectionBuilder {
     read_timeout: Option<Duration>,
 }
 
-impl HttpConnectionBuilder {
+impl ClientBuilder {
     /// Create a new builder with defaults.
     #[must_use]
     pub fn new() -> Self {
@@ -167,8 +173,15 @@ impl HttpConnectionBuilder {
 
     /// Connect to an HTTP(S) endpoint (blocking).
     ///
-    /// TLS is auto-detected from the URL scheme.
-    pub fn connect(self, url: &str) -> Result<HttpConnection<std::net::TcpStream>, RestError> {
+    /// TLS is auto-detected from the URL scheme. When the `tls` feature is
+    /// enabled, returns `Client<MaybeTls<TcpStream>>` — `https://` uses
+    /// `MaybeTls::Tls`, `http://` uses `MaybeTls::Plain`. Without the `tls`
+    /// feature, returns `Client<TcpStream>` and errors on `https://`.
+    #[cfg(all(not(any(feature = "nexus-rt", feature = "tokio")), feature = "tls"))]
+    pub fn connect(
+        self,
+        url: &str,
+    ) -> Result<Client<crate::MaybeTls<std::net::TcpStream>>, RestError> {
         let parsed = parse_base_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
@@ -193,55 +206,71 @@ impl HttpConnectionBuilder {
             tcp.set_read_timeout(Some(timeout))?;
         }
 
-        self.connect_with(tcp, url)
-    }
-
-    /// Connect using a pre-connected socket.
-    #[allow(unused_mut)]
-    pub fn connect_with<S: Read + Write>(
-        self,
-        mut stream: S,
-        url: &str,
-    ) -> Result<HttpConnection<S>, RestError> {
-        let parsed = parse_base_url(url)?;
-
-        #[cfg(feature = "tls")]
-        let tls = if parsed.tls {
+        let stream = if parsed.tls {
             let config = match self.tls_config {
                 Some(c) => c,
                 None => TlsConfig::new().map_err(RestError::Tls)?,
             };
-            let mut codec = TlsCodec::new(&config, parsed.host)?;
-            // Drive the TLS handshake to completion.
-            while codec.is_handshaking() {
-                if codec.wants_write() {
-                    codec.write_tls_to(&mut stream)?;
-                }
-                if codec.wants_read() {
-                    codec.read_tls_from(&mut stream)?;
-                    codec.process_new_packets()?;
-                }
-            }
-            // Flush any remaining handshake data.
-            if codec.wants_write() {
-                codec.write_tls_to(&mut stream)?;
-            }
-            Some(codec)
+            let codec = crate::tls::TlsCodec::new(&config, parsed.host)?;
+            let mut tls = crate::tls::TlsStream::new(tcp, codec);
+            tls.handshake().map_err(RestError::Tls)?;
+            crate::MaybeTls::Tls(Box::new(tls))
         } else {
-            None
+            crate::MaybeTls::Plain(tcp)
         };
 
-        #[cfg(not(feature = "tls"))]
+        Ok(Client {
+            stream,
+            poisoned: false,
+        })
+    }
+
+    /// Connect to an HTTP(S) endpoint (blocking, no TLS feature).
+    #[cfg(all(not(any(feature = "nexus-rt", feature = "tokio")), not(feature = "tls")))]
+    pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, RestError> {
+        let parsed = parse_base_url(url)?;
         if parsed.tls {
             return Err(RestError::TlsNotEnabled);
         }
+        let addr = format!("{}:{}", parsed.host, parsed.port);
 
-        Ok(HttpConnection {
-            stream,
-            #[cfg(feature = "tls")]
-            tls,
+        let tcp = match self.connect_timeout {
+            Some(timeout) => {
+                let addrs: Vec<std::net::SocketAddr> =
+                    std::net::ToSocketAddrs::to_socket_addrs(&addr)
+                        .map_err(RestError::Io)?
+                        .collect();
+                let first = addrs
+                    .first()
+                    .ok_or_else(|| RestError::Io(io::Error::other("DNS resolution failed")))?;
+                std::net::TcpStream::connect_timeout(first, timeout)?
+            }
+            None => std::net::TcpStream::connect(&addr)?,
+        };
+
+        if self.tcp_nodelay {
+            tcp.set_nodelay(true)?;
+        }
+        if let Some(timeout) = self.read_timeout {
+            tcp.set_read_timeout(Some(timeout))?;
+        }
+
+        Ok(Client {
+            stream: tcp,
             poisoned: false,
         })
+    }
+
+    /// Connect using a pre-connected socket.
+    ///
+    /// The stream must already handle TLS if connecting to `https://`.
+    /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
+    #[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
+    pub fn connect_with<S: Read + Write>(self, stream: S, url: &str) -> Result<Client<S>, RestError> {
+        // Validate the URL even though we don't use it for connection —
+        // catches malformed URLs early rather than at first request.
+        parse_base_url(url)?;
+        Ok(Client::new(stream))
     }
 
     /// Create a `RequestWriter` configured for this URL.
@@ -259,26 +288,26 @@ impl HttpConnectionBuilder {
     }
 }
 
-impl Default for HttpConnectionBuilder {
+impl Default for ClientBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
 // =============================================================================
-// HttpConnection — pure transport
+// Client — pure transport
 // =============================================================================
 
 /// HTTP/1.1 keep-alive connection — pure transport.
 ///
 /// Sends request bytes and reads response bytes. All protocol logic
 /// lives in [`RequestWriter`] (request encoding) and
-/// [`ResponseReader`] (response parsing).
+/// [`ResponseReader`](crate::http::ResponseReader) (response parsing).
 ///
 /// # Usage
 ///
 /// ```ignore
-/// use nexus_net::rest::{HttpConnection, RequestWriter};
+/// use nexus_net::rest::{Client, RequestWriter};
 /// use nexus_net::http::ResponseReader;
 /// use nexus_net::tls::TlsConfig;
 ///
@@ -288,24 +317,22 @@ impl Default for HttpConnectionBuilder {
 ///
 /// // Transport
 /// let tls = TlsConfig::new()?;
-/// let mut conn = HttpConnection::builder().tls(&tls).connect("https://api.binance.com")?;
+/// let mut conn = Client::builder().tls(&tls).connect("https://api.binance.com")?;
 ///
 /// // Build + send
 /// let req = writer.get("/orders").query("symbol", "BTC").finish()?;
 /// let resp = conn.send(req, &mut reader)?;
 /// ```
-pub struct HttpConnection<S> {
-    stream: S,
-    #[cfg(feature = "tls")]
-    tls: Option<TlsCodec>,
-    poisoned: bool,
+pub struct Client<S> {
+    pub(crate) stream: S,
+    pub(crate) poisoned: bool,
 }
 
-impl HttpConnection<std::net::TcpStream> {
+impl Client<std::net::TcpStream> {
     /// Create a transport builder.
     #[must_use]
-    pub fn builder() -> HttpConnectionBuilder {
-        HttpConnectionBuilder::new()
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::new()
     }
 
     /// Set read timeout on the socket.
@@ -328,17 +355,37 @@ impl HttpConnection<std::net::TcpStream> {
     }
 }
 
-impl<S: Read + Write> HttpConnection<S> {
+// -- Unbounded impl: accessors and constructors that need no I/O traits -------
+
+impl<S> Client<S> {
     /// Wrap a pre-connected stream.
     pub fn new(stream: S) -> Self {
         Self {
             stream,
-            #[cfg(feature = "tls")]
-            tls: None,
             poisoned: false,
         }
     }
 
+    /// Whether the connection is poisoned (I/O error occurred).
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Access the underlying stream.
+    pub fn stream(&self) -> &S {
+        &self.stream
+    }
+
+    /// Mutable access to the underlying stream.
+    pub fn stream_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+}
+
+// -- Blocking I/O impl --------------------------------------------------------
+
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
+impl<S: Read + Write> Client<S> {
     /// Send a request and read the response.
     ///
     /// `req` provides the outbound bytes (from [`RequestWriter`]).
@@ -398,29 +445,9 @@ impl<S: Read + Write> HttpConnection<S> {
     /// report `ReadTimeout`. The connection is poisoned either way.
     #[allow(clippy::unused_self)]
     fn peek_is_dead(&self) -> bool {
-        #[cfg(feature = "tls")]
-        if self.tls.is_some() {
-            // Can't peek through TLS — conservatively report stale.
-            return true;
-        }
         // For generic S, assume alive (report ReadTimeout not ConnectionStale).
         // The caller still gets an error; it's just less specific.
         false
-    }
-
-    /// Whether the connection is poisoned (I/O error occurred).
-    pub fn is_poisoned(&self) -> bool {
-        self.poisoned
-    }
-
-    /// Access the underlying stream.
-    pub fn stream(&self) -> &S {
-        &self.stream
-    }
-
-    /// Mutable access to the underlying stream.
-    pub fn stream_mut(&mut self) -> &mut S {
-        &mut self.stream
     }
 
     // =========================================================================
@@ -428,48 +455,12 @@ impl<S: Read + Write> HttpConnection<S> {
     // =========================================================================
 
     fn write_all(&mut self, data: &[u8]) -> Result<(), RestError> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            tls.encrypt(data)?;
-            while tls.wants_write() {
-                tls.write_tls_to(&mut self.stream)?;
-            }
-            self.stream.flush()?;
-            return Ok(());
-        }
-
         self.stream.write_all(data)?;
         self.stream.flush()?;
         Ok(())
     }
 
     fn read_into_reader(&mut self, reader: &mut ResponseReader) -> Result<usize, RestError> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            let mut tmp = [0u8; 4096];
-            for _ in 0..32 {
-                let tls_n = tls.read_tls_from(&mut self.stream)?;
-                if tls_n == 0 {
-                    return Ok(0);
-                }
-                tls.process_new_packets()?;
-                let n = tls.read_plaintext(&mut tmp).map_err(|e| match e {
-                    TlsError::Io(io) => RestError::Io(io),
-                    other => RestError::Tls(other),
-                })?;
-                if n > 0 {
-                    reader.read(&tmp[..n])?;
-                    return Ok(n);
-                }
-            }
-            return Err(RestError::Io(io::Error::other(
-                "TLS: too many non-data records",
-            )));
-        }
-
-        #[cfg(not(feature = "tls"))]
-        { /* fall through to plain path */ }
-
         let n = reader.read_from(&mut self.stream)?;
         Ok(n)
     }
@@ -649,32 +640,8 @@ impl<S: Read + Write> HttpConnection<S> {
         Ok(body)
     }
 
-    /// Read raw bytes from the socket (through TLS if present).
+    /// Read raw bytes from the socket.
     fn read_wire_bytes(&mut self, buf: &mut [u8]) -> Result<usize, RestError> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            for _ in 0..32 {
-                let tls_n = tls.read_tls_from(&mut self.stream)?;
-                if tls_n == 0 {
-                    return Ok(0);
-                }
-                tls.process_new_packets()?;
-                let n = tls.read_plaintext(buf).map_err(|e| match e {
-                    crate::tls::TlsError::Io(io) => RestError::Io(io),
-                    other => RestError::Tls(other),
-                })?;
-                if n > 0 {
-                    return Ok(n);
-                }
-            }
-            return Err(RestError::Io(io::Error::other(
-                "TLS: too many non-data records",
-            )));
-        }
-
-        #[cfg(not(feature = "tls"))]
-        { /* fall through */ }
-
         Ok(self.stream.read(buf)?)
     }
 }
@@ -684,6 +651,7 @@ impl<S: Read + Write> HttpConnection<S> {
 // =============================================================================
 
 #[cfg(test)]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 mod tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
@@ -736,7 +704,7 @@ mod tests {
     #[allow(dead_code)]
     fn send_get<'r>(
         writer: &mut RequestWriter,
-        conn: &mut HttpConnection<MockStream>,
+        conn: &mut Client<MockStream>,
         reader: &'r mut ResponseReader,
         path: &str,
     ) -> Result<RestResponse<'r>, RestError> {
@@ -752,7 +720,7 @@ mod tests {
         let mock = MockStream::new(&resp);
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/api/v1/status").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();
@@ -772,7 +740,7 @@ mod tests {
         let mock = MockStream::new(&resp);
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let body = br#"{"symbol":"BTC","side":"buy"}"#;
         let req = writer.post("/api/v3/order").body(body).finish().unwrap();
@@ -791,7 +759,7 @@ mod tests {
         let mock = MockStream::new(&resp);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let body = br#"{"symbol":"BTC","side":"buy"}"#;
         let req = writer
@@ -883,7 +851,7 @@ mod tests {
             let mock = MockStream::new(&resp);
             let mut writer = RequestWriter::new("host").unwrap();
             let mut reader = ResponseReader::new(4096);
-            let mut conn = HttpConnection::new(mock);
+            let mut conn = Client::new(mock);
 
             let req = writer.request(method, "/test").finish().unwrap();
             let _ = conn.send(req, &mut reader).unwrap();
@@ -905,7 +873,7 @@ mod tests {
             .default_header("Content-Type", "application/json")
             .unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let _ = conn.send(req, &mut reader).unwrap();
@@ -921,7 +889,7 @@ mod tests {
         let mock = MockStream::new(&resp);
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer
             .get("/test")
@@ -1069,7 +1037,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();
@@ -1083,7 +1051,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();
@@ -1097,7 +1065,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();
@@ -1116,7 +1084,7 @@ mod tests {
         let mock = MockStream::new(chunked.as_bytes());
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();
@@ -1129,7 +1097,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let result = conn.send(req, &mut reader);
@@ -1142,7 +1110,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096).max_body_size(32 * 1024);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let result = conn.send(req, &mut reader);
@@ -1158,7 +1126,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();
@@ -1172,7 +1140,7 @@ mod tests {
         let mock = MockStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(mock);
+        let mut conn = Client::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let result = conn.send(req, &mut reader);
@@ -1261,7 +1229,7 @@ mod tests {
         let tcp = TcpStream::connect(addr).unwrap();
         let mut writer = RequestWriter::new("localhost").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(tcp);
+        let mut conn = Client::new(tcp);
 
         let req = writer.get("/first").finish().unwrap();
         let resp = conn.send(req, &mut reader).unwrap();

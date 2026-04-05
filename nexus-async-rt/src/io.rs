@@ -1,17 +1,16 @@
 //! IO driver backed by mio.
 //!
 //! The [`IoDriver`] owns a `mio::Poll` instance and a token→waker mapping.
-//! When mio reports readiness on a token, the associated task is woken
-//! (pointer pushed to the ready queue via the waker).
+//! When mio reports readiness on a token, the associated waker is fired.
 //!
 //! Tasks interact with IO through [`IoHandle`], a [`Copy`] handle that
 //! provides source registration and deregistration.
 //!
 //! # Token lifecycle
 //!
-//! 1. Task calls `io.register(&mut source, interest)` → gets a `mio::Token`
+//! 1. Task calls `io.register(&mut source, interest, waker)` → gets a `mio::Token`
 //! 2. Runtime calls `mio::Poll::poll` → readiness events arrive
-//! 3. For each event, the driver wakes the associated task
+//! 3. For each event, the driver calls `waker.wake_by_ref()`
 //! 4. Task calls `io.deregister(&mut source)` when done
 //!
 //! Tokens are reused via a freelist. Stale wakeups (token reused after
@@ -19,6 +18,7 @@
 //! per the async contract.
 
 use std::io;
+use std::task::Waker;
 use std::time::Duration;
 
 use std::sync::Arc;
@@ -39,8 +39,6 @@ pub struct Readiness {
 
 use mio::event::Source;
 use mio::{Events, Interest, Poll, Token};
-
-use crate::waker;
 
 // =============================================================================
 // IoDriver — owned by Runtime
@@ -63,10 +61,10 @@ pub(crate) struct IoDriver {
     /// firing from a callback).
     mio_waker: Arc<mio::Waker>,
 
-    /// Token → task pointer. Indexed by `Token.0`.
+    /// Token → waker. Indexed by `Token.0`.
     /// `None` = vacant slot (in freelist).
-    /// `Some(ptr)` = task to wake on readiness.
-    wakers: Vec<Option<*mut u8>>,
+    /// `Some(waker)` = waker to fire on readiness.
+    wakers: Vec<Option<Waker>>,
 
     /// Per-token readiness state. Updated by `poll_io`, read by net types.
     /// Cleared when the task consumes the readiness (attempts IO).
@@ -98,7 +96,7 @@ impl IoDriver {
         let mut wakers = Vec::with_capacity(token_capacity);
         let mut readiness = Vec::with_capacity(token_capacity);
         let mut next_free = Vec::with_capacity(token_capacity);
-        wakers.resize(token_capacity, None);
+        wakers.resize_with(token_capacity, || None);
         readiness.resize(token_capacity, Readiness::default());
         for i in 0..token_capacity {
             next_free.push(if i + 1 < token_capacity { i + 1 } else { NO_FREE });
@@ -127,11 +125,11 @@ impl IoDriver {
         self.poll.registry()
     }
 
-    /// Claim a token slot, associating it with a task pointer. O(1).
+    /// Claim a token slot, associating it with a waker. O(1).
     ///
     /// Returns the `mio::Token` to use when registering a source.
     /// Grows the Vecs if no free slots are available.
-    pub(crate) fn claim_token(&mut self, task_ptr: *mut u8) -> Token {
+    pub(crate) fn claim_token(&mut self, waker: Waker) -> Token {
         let idx = if self.free_head == NO_FREE {
             // Grow: append a new slot.
             let idx = self.wakers.len();
@@ -146,7 +144,7 @@ impl IoDriver {
             idx
         };
 
-        self.wakers[idx] = Some(task_ptr);
+        self.wakers[idx] = Some(waker);
         Token(idx)
     }
 
@@ -161,12 +159,13 @@ impl IoDriver {
         }
     }
 
-    /// Update the task pointer associated with a token.
+    /// Update the waker associated with a token.
     ///
-    /// Used when a different task takes over an IO source.
-    pub(crate) fn set_waker(&mut self, token: Token, task_ptr: *mut u8) {
+    /// Used when a different task takes over an IO source
+    /// (e.g., after `into_split`).
+    pub(crate) fn set_waker(&mut self, token: Token, waker: Waker) {
         if let Some(slot) = self.wakers.get_mut(token.0) {
-            *slot = Some(task_ptr);
+            *slot = Some(waker);
         }
     }
 
@@ -193,7 +192,7 @@ impl IoDriver {
     /// Poll mio for IO events and wake associated tasks.
     ///
     /// `timeout`: `None` blocks indefinitely, `Some(Duration::ZERO)` is
-    /// non-blocking. Returns the number of tasks woken.
+    /// non-blocking. Returns the number of wakers fired.
     pub(crate) fn poll_io(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
         self.poll.poll(&mut self.events, timeout)?;
 
@@ -201,7 +200,7 @@ impl IoDriver {
         for event in &self.events {
             let token = event.token();
             if token == WAKER_TOKEN {
-                // Mio waker fired — root future or external wake. Not a task.
+                // Mio waker fired — root future or external wake. Not a socket.
                 continue;
             }
             let idx = token.0;
@@ -216,18 +215,9 @@ impl IoDriver {
                 }
             }
 
-            if let Some(Some(task_ptr)) = self.wakers.get(idx) {
-                let ptr = *task_ptr;
-                // Wake the task: set is_queued flag, push to ready queue.
-                // SAFETY: task_ptr points to a live Task in the slab.
-                // The waker TLS must be set (we're inside the poll loop).
-                unsafe {
-                    if !crate::task::is_queued(ptr) {
-                        crate::task::set_queued(ptr, true);
-                        waker::push_ready(ptr);
-                        woken += 1;
-                    }
-                }
+            if let Some(Some(waker)) = self.wakers.get(idx) {
+                waker.wake_by_ref();
+                woken += 1;
             }
             // Stale tokens (None) are silently skipped — spurious wakeup.
         }
@@ -266,23 +256,18 @@ impl IoHandle {
         }
     }
 
-    /// Register a mio source with the given interest.
+    /// Register a mio source with the given interest and waker.
     ///
-    /// The `task_ptr` is the task to wake on readiness. Returns the
-    /// assigned token for use with `reregister` or `deregister`.
-    ///
-    /// # Safety
-    ///
-    /// `task_ptr` must point to a live task in the slab.
-    pub unsafe fn register(
+    /// Returns the assigned token for use with `deregister`.
+    pub fn register(
         &self,
         source: &mut impl Source,
         interest: Interest,
-        task_ptr: *mut u8,
+        waker: Waker,
     ) -> io::Result<Token> {
         // SAFETY: driver pointer is valid (Runtime lifetime).
         let driver = unsafe { &mut *self.driver };
-        let token = driver.claim_token(task_ptr);
+        let token = driver.claim_token(waker);
         // SAFETY: registry pointer is valid (borrowed from Poll).
         let registry = unsafe { &*self.registry };
         if let Err(e) = registry.register(source, token, interest) {
@@ -293,33 +278,13 @@ impl IoHandle {
         Ok(token)
     }
 
-    /// Re-register a source with updated interest or task.
-    ///
-    /// # Safety
-    ///
-    /// `task_ptr` must point to a live task in the slab.
-    pub unsafe fn reregister(
-        &self,
-        source: &mut impl Source,
-        token: Token,
-        interest: Interest,
-        task_ptr: *mut u8,
-    ) -> io::Result<()> {
-        // SAFETY: driver/registry pointers valid (Runtime lifetime).
-        let driver = unsafe { &mut *self.driver };
-        driver.set_waker(token, task_ptr);
-        let registry = unsafe { &*self.registry };
-        registry.reregister(source, token, interest)?;
-        Ok(())
-    }
-
-    /// Update the task pointer for a token. Called when a stream
-    /// is polled from a different task than the one that registered it
+    /// Update the waker for a token. Called when a stream is polled
+    /// from a different task than the one that registered it
     /// (e.g., after `into_split`).
-    pub fn set_waker_for_token(&self, token: Token, task_ptr: *mut u8) {
+    pub fn set_waker(&self, token: Token, waker: Waker) {
         // SAFETY: driver pointer valid (Runtime lifetime).
         let driver = unsafe { &mut *self.driver };
-        driver.set_waker(token, task_ptr);
+        driver.set_waker(token, waker);
     }
 
     /// Query the readiness state for a token.

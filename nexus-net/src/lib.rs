@@ -8,12 +8,20 @@
 //! - [`buf`] — Buffer primitives (`ReadBuf`, `WriteBuf`, `WriteBufWriter`)
 //! - [`ws`] — WebSocket framing (RFC 6455)
 //! - [`http`] — HTTP/1.1 response parsing, chunked decoding, request/response writers
-//! - [`rest`] — HTTP/1.1 REST client (`RequestWriter`, `HttpConnection`, typestate builder)
-//! - [`tls`] — TLS codec via rustls (feature: `tls`)
+//! - [`rest`] — HTTP/1.1 REST client (`RequestWriter`, `Client`, typestate builder)
+//! - `tls` — TLS codec via rustls (feature: `tls`)
+
+#[cfg(all(feature = "nexus-rt", feature = "tokio"))]
+compile_error!(
+    "features `nexus-rt` and `tokio` are mutually exclusive — pick one async runtime"
+);
 
 pub mod buf;
 pub mod http;
+pub mod maybe_tls;
 pub mod rest;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub mod ws;
+
+pub use maybe_tls::MaybeTls;

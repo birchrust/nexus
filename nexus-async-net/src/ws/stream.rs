@@ -5,7 +5,7 @@ use nexus_net::buf::WriteBuf;
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{
     CloseCode, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError, Message, Role,
-    WsError, parse_ws_url,
+    Error as WsError, parse_ws_url,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;

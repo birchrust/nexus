@@ -24,7 +24,7 @@ enum State {
 
 /// Sans-IO chunked transfer-encoding decoder.
 ///
-/// Feed wire bytes via [`decode`]. Decoded body bytes are written
+/// Feed wire bytes via [`decode`](Self::decode). Decoded body bytes are written
 /// into the output buffer. Returns how many input bytes were consumed
 /// and how many output bytes were produced.
 ///

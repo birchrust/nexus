@@ -23,16 +23,16 @@
 //! podman stop autobahn
 //! ```
 
-use nexus_net::ws::{CloseCode, Message, OwnedMessage, ProtocolError, WsError, WsStream};
+use nexus_net::ws::{CloseCode, Message, OwnedMessage, ProtocolError, Error, Client};
 use std::net::TcpStream;
 
 const AUTOBAHN_HOST: &str = "127.0.0.1:9001";
 const AGENT: &str = "nexus-net";
 
-fn make_ws(path: &str) -> WsStream<TcpStream> {
+fn make_ws(path: &str) -> Client<TcpStream> {
     let tcp = TcpStream::connect(AUTOBAHN_HOST).expect("connect failed");
     let url = format!("ws://{AUTOBAHN_HOST}{path}");
-    nexus_net::ws::WsStreamBuilder::new()
+    nexus_net::ws::ClientBuilder::new()
         .buffer_capacity(16 * 1024 * 1024 + 4096) // 16MB + header room
         .max_frame_size(16 * 1024 * 1024)
         .max_message_size(16 * 1024 * 1024)
@@ -72,11 +72,11 @@ fn run_case(case: u32) {
     loop {
         let msg = match ws.recv() {
             Ok(Some(msg)) => msg.into_owned(),
-            Err(WsError::Protocol(ProtocolError::InvalidUtf8)) => {
+            Err(Error::Protocol(ProtocolError::InvalidUtf8)) => {
                 let _ = ws.close(CloseCode::InvalidPayload, "invalid UTF-8");
                 break;
             }
-            Err(WsError::Protocol(_)) => {
+            Err(Error::Protocol(_)) => {
                 let _ = ws.close(CloseCode::Protocol, "protocol error");
                 break;
             }

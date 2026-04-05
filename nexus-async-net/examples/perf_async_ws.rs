@@ -682,7 +682,7 @@ fn main() {
 }
 
 fn bench_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{Message, WsStream};
+    use nexus_net::ws::{Client, Message};
     use std::net::{TcpListener, TcpStream};
 
     let addr = format!("127.0.0.1:{port}");
@@ -703,7 +703,7 @@ fn bench_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duratio
 
     let tcp = TcpStream::connect(&addr).unwrap();
     tcp.set_nodelay(true).unwrap();
-    let mut ws = WsStream::connect_with(tcp, &format!("ws://{addr}/")).unwrap();
+    let mut ws = Client::connect_with(tcp, &format!("ws://{addr}/")).unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
@@ -921,7 +921,7 @@ fn bench_tls_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dur
         .danger_no_verify()
         .build()
         .unwrap();
-    let mut ws = nexus_net::ws::WsStreamBuilder::new()
+    let mut ws = nexus_net::ws::ClientBuilder::new()
         .tls(&tls_config)
         .connect_with(tcp, "wss://localhost/")
         .unwrap();
@@ -948,7 +948,7 @@ fn bench_tls_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dur
 // =============================================================================
 
 fn bench_blocking_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, WsStream};
+    use nexus_net::ws::{Client, FrameReader, FrameWriter, Message, Role};
     use std::io::{Cursor, Read, Write};
 
     struct CursorWrap<'a>(Cursor<&'a [u8]>);
@@ -971,7 +971,7 @@ fn bench_blocking_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = WsStream::from_parts(cursor, reader, FrameWriter::new(Role::Client));
+    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client));
 
     let start = Instant::now();
     let mut received = 0u64;
