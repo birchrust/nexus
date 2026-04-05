@@ -107,6 +107,9 @@ pub(crate) fn with_executor<R>(f: impl FnOnce(&mut Executor) -> R) -> R {
 /// - If called outside a runtime context.
 /// - If no slab is configured.
 pub fn try_claim_slab() -> Option<crate::alloc::SlabClaim> {
+    CURRENT.with(|cell| {
+        assert!(!cell.get().is_null(), "try_claim_slab() called outside of Runtime::block_on");
+    });
     crate::alloc::try_claim()
 }
 
@@ -122,6 +125,9 @@ pub fn try_claim_slab() -> Option<crate::alloc::SlabClaim> {
 /// - If no slab is configured.
 /// - If the slab is full (bounded slab).
 pub fn claim_slab() -> crate::alloc::SlabClaim {
+    CURRENT.with(|cell| {
+        assert!(!cell.get().is_null(), "claim_slab() called outside of Runtime::block_on");
+    });
     crate::alloc::claim()
 }
 

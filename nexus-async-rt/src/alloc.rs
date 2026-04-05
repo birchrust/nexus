@@ -67,7 +67,7 @@ unsafe fn no_slab_free(_ptr: *mut u8) {
 
 unsafe fn no_slab_try_claim() -> (*mut u8, usize) {
     panic!(
-        "claim_slab() called without a slab configured — \
+        "try_claim_slab()/claim_slab() called without a slab configured — \
          use Runtime::builder().slab_unbounded(slab) or .slab_bounded(slab)"
     )
 }
@@ -184,6 +184,8 @@ pub struct SlabClaim {
     free: ClaimFreeFn,
     chunk_idx: usize,
     slot_size: usize,
+    // !Send + !Sync — must stay on the runtime thread.
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl SlabClaim {
@@ -192,26 +194,28 @@ impl SlabClaim {
     /// Consumes the claim. The future is constructed, placed in the
     /// slab slot, and pushed to the executor's ready queue.
     pub fn spawn<F: Future<Output = ()> + 'static>(self, future: F) -> crate::TaskId {
-        let tracker_key = crate::runtime::with_executor(|exec| exec.next_tracker_key());
-        let task = Task::new_with_free(future, tracker_key, slab_free_task);
-        let size = std::mem::size_of_val(&task);
+        crate::runtime::with_executor(|exec| {
+            let tracker_key = exec.next_tracker_key();
+            let task = Task::new_with_free(future, tracker_key, slab_free_task);
+            let size = std::mem::size_of_val(&task);
 
-        assert!(
-            size <= self.slot_size,
-            "task size ({size} bytes) exceeds slab slot size ({} bytes)",
-            self.slot_size,
-        );
+            assert!(
+                size <= self.slot_size,
+                "task size ({size} bytes) exceeds slab slot size ({} bytes)",
+                self.slot_size,
+            );
 
-        let src = std::ptr::from_ref(&task).cast::<u8>();
-        // SAFETY: ptr is a valid vacant slot, src has `size` valid bytes.
-        unsafe { std::ptr::copy_nonoverlapping(src, self.ptr, size) };
-        std::mem::forget(task);
+            let src = std::ptr::from_ref(&task).cast::<u8>();
+            // SAFETY: ptr is a valid vacant slot, src has `size` valid bytes.
+            unsafe { std::ptr::copy_nonoverlapping(src, self.ptr, size) };
+            std::mem::forget(task);
 
-        let ptr = self.ptr;
-        // Don't run Drop — the slot is now occupied.
-        std::mem::forget(self);
+            let ptr = self.ptr;
+            // Don't run Drop — the slot is now occupied.
+            std::mem::forget(self);
 
-        crate::runtime::with_executor(|exec| exec.spawn_raw(ptr))
+            exec.spawn_raw(ptr)
+        })
     }
 
     /// Raw pointer to the reserved slot.
@@ -271,6 +275,7 @@ pub(crate) fn try_claim() -> Option<SlabClaim> {
         free,
         chunk_idx,
         slot_size,
+        _not_send: std::marker::PhantomData,
     })
 }
 
