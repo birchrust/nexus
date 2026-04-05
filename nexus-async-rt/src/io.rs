@@ -78,6 +78,15 @@ pub(crate) struct IoDriver {
 
     /// Head of the token freelist. `usize::MAX` = empty.
     free_head: usize,
+
+    /// Root future's "task pointer" (actually the Arc<RootWake> data ptr).
+    /// When poll_io sees this pointer, it sets the root woken flag
+    /// instead of pushing to the spawned-task ready queue.
+    root_task_ptr: *mut u8,
+
+    /// Pointer to the root future's woken flag. Set by `set_root_waker`
+    /// before entering the run loop.
+    root_woken: *const std::sync::atomic::AtomicBool,
 }
 
 /// Sentinel for empty freelist.
@@ -112,7 +121,30 @@ impl IoDriver {
             readiness,
             next_free,
             free_head: if token_capacity > 0 { 0 } else { NO_FREE },
+            root_task_ptr: std::ptr::null_mut(),
+            root_woken: std::ptr::null(),
         })
+    }
+
+    /// Set the root future's task pointer and woken flag.
+    ///
+    /// Called by the runtime before entering the run loop. When
+    /// `poll_io` sees an event for a token whose task pointer matches
+    /// `root_ptr`, it sets `*woken = true` instead of pushing to the
+    /// spawned-task ready queue.
+    ///
+    /// # Safety
+    ///
+    /// `woken` must point to a valid `AtomicBool` that outlives the
+    /// run loop. `root_ptr` must be the value that `waker_to_ptr`
+    /// extracts from the root future's context.
+    pub(crate) unsafe fn set_root_waker(
+        &mut self,
+        root_ptr: *mut u8,
+        woken: *const std::sync::atomic::AtomicBool,
+    ) {
+        self.root_task_ptr = root_ptr;
+        self.root_woken = woken;
     }
 
     /// Returns a clone of the mio waker for breaking out of epoll_wait.
@@ -218,14 +250,24 @@ impl IoDriver {
 
             if let Some(Some(task_ptr)) = self.wakers.get(idx) {
                 let ptr = *task_ptr;
-                // Wake the task: set is_queued flag, push to ready queue.
-                // SAFETY: task_ptr points to a live Task in the slab.
-                // The waker TLS must be set (we're inside the poll loop).
-                unsafe {
-                    if !crate::task::is_queued(ptr) {
-                        crate::task::set_queued(ptr, true);
-                        waker::push_ready(ptr);
-                        woken += 1;
+                if ptr == self.root_task_ptr && !self.root_woken.is_null() {
+                    // Root future — set the woken flag directly.
+                    // SAFETY: root_woken points to a valid AtomicBool
+                    // (set by set_root_waker, lives on the run_loop stack).
+                    unsafe {
+                        (*self.root_woken).store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    woken += 1;
+                } else {
+                    // Spawned task — push to ready queue.
+                    // SAFETY: task_ptr points to a live Task in the slab.
+                    // The waker TLS must be set (we're inside the poll loop).
+                    unsafe {
+                        if !crate::task::is_queued(ptr) {
+                            crate::task::set_queued(ptr, true);
+                            waker::push_ready(ptr);
+                            woken += 1;
+                        }
                     }
                 }
             }
