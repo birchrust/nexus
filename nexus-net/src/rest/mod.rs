@@ -6,7 +6,6 @@
 //!
 //! **Transport layer:**
 //! - [`Client`] — sends request bytes, reads response bytes
-//! - `ClientPool` — pre-allocated connection pool (requires `nexus-rt` feature)
 //!
 //! # Usage
 //!
@@ -31,12 +30,8 @@ mod error;
 mod request;
 mod response;
 
-#[cfg(feature = "nexus-rt")]
-mod async_nexus;
 #[cfg(feature = "tokio")]
 mod async_tokio;
-#[cfg(feature = "nexus-rt")]
-mod pool;
 
 pub use connection::{Client, ClientBuilder, ParsedUrl, parse_base_url};
 pub use error::RestError;
@@ -44,6 +39,3 @@ pub use request::{
     BodyWriter, Headers, Method, Query, Ready, Request, RequestBuilder, RequestWriter,
 };
 pub use response::RestResponse;
-
-#[cfg(feature = "nexus-rt")]
-pub use pool::{ClientPool, ClientPoolBuilder, ClientSlot};

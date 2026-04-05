@@ -69,66 +69,6 @@ impl<S: Read + Write> Write for MaybeTls<S> {
 }
 
 // =============================================================================
-// AsyncRead + AsyncWrite (nexus-async-rt)
-// =============================================================================
-
-#[cfg(feature = "nexus-rt")]
-impl<S: nexus_async_rt::AsyncRead + nexus_async_rt::AsyncWrite + Unpin>
-    nexus_async_rt::AsyncRead for MaybeTls<S>
-{
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut [u8],
-    ) -> std::task::Poll<io::Result<usize>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_read(cx, buf),
-        }
-    }
-}
-
-#[cfg(feature = "nexus-rt")]
-impl<S: nexus_async_rt::AsyncRead + nexus_async_rt::AsyncWrite + Unpin>
-    nexus_async_rt::AsyncWrite for MaybeTls<S>
-{
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<io::Result<usize>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_shutdown(cx),
-        }
-    }
-}
-
-// =============================================================================
 // AsyncRead + AsyncWrite (tokio)
 // =============================================================================
 

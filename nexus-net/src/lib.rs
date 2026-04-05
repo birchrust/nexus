@@ -11,11 +11,6 @@
 //! - [`rest`] — HTTP/1.1 REST client (`RequestWriter`, `Client`, typestate builder)
 //! - `tls` — TLS codec via rustls (feature: `tls`)
 
-#[cfg(all(feature = "nexus-rt", feature = "tokio"))]
-compile_error!(
-    "features `nexus-rt` and `tokio` are mutually exclusive — pick one async runtime"
-);
-
 pub mod buf;
 pub mod http;
 pub mod maybe_tls;
