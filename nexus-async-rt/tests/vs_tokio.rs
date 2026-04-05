@@ -8,7 +8,6 @@
 //!   cargo test -p nexus-async-rt --release --test vs_tokio -- --ignored --nocapture --test-threads=1
 
 use std::cell::Cell;
-use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -57,9 +56,8 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
     let mut rt = DefaultRuntime::new(&mut world, 16);
-    let handle = rt.handle();
 
-    let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), handle.io()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
     let addr = listener.local_addr().unwrap();
 
     let samples_rc: Rc<Cell<Vec<u64>>> = Rc::new(Cell::new(Vec::new()));
@@ -80,9 +78,9 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
         });
 
         // Client
-        let io = handle.io();
+        let io = nexus_async_rt::io();
         spawn(async move {
-            handle.sleep(Duration::from_millis(10)).await;
+            nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, io).unwrap();
             c.set_nodelay(true).unwrap();
 
@@ -105,7 +103,7 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
             writer.set(samples);
         });
 
-        handle.sleep(Duration::from_millis(60_000)).await;
+        nexus_async_rt::sleep(Duration::from_millis(60_000)).await;
     });
 
     samples_rc.take()
@@ -195,10 +193,9 @@ fn nexus_udp_samples() -> Vec<u64> {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
     let mut rt = DefaultRuntime::new(&mut world, 16);
-    let handle = rt.handle();
 
-    let a = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), handle.io()).unwrap();
-    let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), handle.io()).unwrap();
+    let a = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+    let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
     let a_addr = a.local_addr().unwrap();
     let b_addr = b.local_addr().unwrap();
 
@@ -220,7 +217,7 @@ fn nexus_udp_samples() -> Vec<u64> {
 
         // Client on a
         spawn(async move {
-            handle.sleep(Duration::from_millis(10)).await;
+            nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut a = a;
             a.connect(b_addr).unwrap();
 
@@ -243,7 +240,7 @@ fn nexus_udp_samples() -> Vec<u64> {
             writer.set(samples);
         });
 
-        handle.sleep(Duration::from_millis(60_000)).await;
+        nexus_async_rt::sleep(Duration::from_millis(60_000)).await;
     });
 
     samples_rc.take()

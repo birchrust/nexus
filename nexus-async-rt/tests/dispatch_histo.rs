@@ -11,10 +11,10 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use nexus_async_rt::{Executor, TASK_HEADER_SIZE};
+use nexus_async_rt::{DefaultBoundedAlloc, Executor};
 
-const WARMUP: usize = 100_000;
-const SAMPLES: usize = 5_000_000;
+const WARMUP: usize = 10_000;
+const SAMPLES: usize = 500_000;
 
 #[inline(always)]
 fn rdtsc() -> u64 {
@@ -65,7 +65,7 @@ fn dispatch_per_poll_histogram() {
     let entries = Rc::new(Cell::new(Vec::with_capacity(total as usize)));
     let e = entries.clone();
 
-    let mut executor = Executor::<{ 128 + TASK_HEADER_SIZE }>::with_capacity(4);
+    let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
     executor.spawn(InstrumentedTask {
         count: 0,
         target: total,

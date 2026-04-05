@@ -31,7 +31,7 @@ use nexus_rt::World;
 /// # Examples
 ///
 /// ```ignore
-/// use nexus_async_rt::{Executor, WorldCtx};
+/// use nexus_async_rt::{DefaultBoundedAlloc, Executor, WorldCtx};
 /// use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler};
 ///
 /// let mut world = builder.build();
@@ -42,14 +42,14 @@ use nexus_rt::World;
 ///     books.update(q);
 /// }).into_handler(world.registry());
 ///
-/// let mut executor = Executor::<256>::with_capacity(64);
+/// let mut executor = Executor::new(DefaultBoundedAlloc::new(64), 64);
 /// executor.spawn(async move {
 ///     let data = read_socket().await;
 ///     // Single deref per resource at dispatch time
 ///     ctx.with_world(|world| on_quote.run(world, data));
 /// });
 ///
-/// executor.block_on();
+/// executor.drain();
 /// ```
 #[derive(Clone, Copy)]
 pub struct WorldCtx {
@@ -80,6 +80,11 @@ impl WorldCtx {
     ///
     /// Executes synchronously inline — no await point. The closure
     /// has `&mut World` access for its duration.
+    /// Returns the raw world pointer. Used by context module.
+    pub(crate) fn as_ptr(&self) -> *mut World {
+        self.ptr
+    }
+
     pub fn with_world<R>(&self, f: impl FnOnce(&mut World) -> R) -> R {
         // SAFETY: Single-threaded executor guarantees only one task polls
         // at a time, so only one with_world is active. World outlives all
@@ -102,7 +107,7 @@ impl WorldCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Executor;
+    use crate::{DefaultBoundedAlloc, Executor};
     use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
 
     nexus_rt::new_resource!(Val(u64));
@@ -116,7 +121,7 @@ mod tests {
         let mut world = wb.build();
         let ctx = WorldCtx::new(&mut world);
 
-        let mut executor = Executor::<128>::with_capacity(4);
+        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
         executor.spawn(async move {
             ctx.with_world(|world| {
                 let v = world.resource::<Val>().0;
@@ -124,7 +129,7 @@ mod tests {
             });
         });
 
-        executor.block_on();
+        executor.drain();
         assert_eq!(world.resource::<Out>().0, 52);
     }
 
@@ -138,14 +143,14 @@ mod tests {
         let result = std::cell::Cell::new(0u64);
         let result_ptr = &result as *const std::cell::Cell<u64>;
 
-        let mut executor = Executor::<128>::with_capacity(4);
+        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
         executor.spawn(async move {
             let v = ctx.with_world_ref(|world| world.resource::<Val>().0);
             // SAFETY: test-only, single-threaded, Cell is alive.
             unsafe { &*result_ptr }.set(v);
         });
 
-        executor.block_on();
+        executor.drain();
         assert_eq!(result.get(), 99);
     }
 
@@ -163,12 +168,12 @@ mod tests {
         })
         .into_handler(world.registry());
 
-        let mut executor = Executor::<256>::with_capacity(4);
+        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
         executor.spawn(async move {
             ctx.with_world(|world| handler.run(world, 10));
         });
 
-        executor.block_on();
+        executor.drain();
         assert_eq!(world.resource::<Out>().0, 52);
     }
 
@@ -182,7 +187,7 @@ mod tests {
         let result = std::cell::Cell::new(0u64);
         let result_ptr = &result as *const std::cell::Cell<u64>;
 
-        let mut executor = Executor::<128>::with_capacity(4);
+        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
         executor.spawn(async move {
             let v = ctx.with_world(|world| {
                 world.resource::<Val>().0 * 6
@@ -191,7 +196,7 @@ mod tests {
             unsafe { &*result_ptr }.set(v);
         });
 
-        executor.block_on();
+        executor.drain();
         assert_eq!(result.get(), 42);
     }
 
@@ -202,7 +207,7 @@ mod tests {
         let mut world = wb.build();
         let ctx = WorldCtx::new(&mut world);
 
-        let mut executor = Executor::<128>::with_capacity(4);
+        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
 
         for i in 1..=3u64 {
             let ctx = ctx; // Copy
@@ -213,7 +218,7 @@ mod tests {
             });
         }
 
-        executor.block_on();
+        executor.drain();
         assert_eq!(world.resource::<Out>().0, 6); // 1 + 2 + 3
     }
 }

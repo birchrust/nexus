@@ -16,6 +16,7 @@ nexus-rt = { path = "../nexus-rt" }
 slab = "0.4"
 nexus-slab = { path = "../nexus-slab" }
 nexus-timer = { path = "../nexus-timer" }
+signal-hook = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]

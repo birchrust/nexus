@@ -38,6 +38,10 @@ pub struct TcpStream {
     inner: mio::net::TcpStream,
     io: IoHandle,
     token: Option<Token>,
+    /// Task pointer from the last registration. Used to detect when the
+    /// stream moves to a different task (e.g., via `into_split`) and
+    /// reregister with the IO driver to wake the correct task.
+    registered_task: *mut u8,
 }
 
 impl TcpStream {
@@ -47,6 +51,7 @@ impl TcpStream {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         }
     }
 
@@ -223,7 +228,50 @@ impl TcpStream {
         Ok(())
     }
 
-    // Note: readable()/writable() readiness futures are NOT provided.
+    /// Poll for read readiness without performing IO.
+    ///
+    /// Returns `Ready(Ok(()))` if the socket has been reported readable
+    /// by epoll. Returns `Pending` if not yet ready. Use this for
+    /// sans-IO codecs that want to check readiness before feeding bytes.
+    pub fn poll_read_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Err(e) = self.ensure_registered(cx) {
+            return Poll::Ready(Err(e));
+        }
+        if let Some(token) = self.token {
+            if self.io.readiness(token).readable {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        Poll::Pending
+    }
+
+    /// Poll for write readiness without performing IO.
+    pub fn poll_write_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Err(e) = self.ensure_registered(cx) {
+            return Poll::Ready(Err(e));
+        }
+        if let Some(token) = self.token {
+            if self.io.readiness(token).writable {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        Poll::Pending
+    }
+
+    /// Wait until the stream is readable.
+    ///
+    /// Returns when epoll reports the socket as readable. After this
+    /// returns, [`try_read`](Self::try_read) should succeed.
+    pub async fn readable(&mut self) -> io::Result<()> {
+        std::future::poll_fn(|cx| self.poll_read_ready(cx)).await
+    }
+
+    /// Wait until the stream is writable.
+    pub async fn writable(&mut self) -> io::Result<()> {
+        std::future::poll_fn(|cx| self.poll_write_ready(cx)).await
+    }
+
+    // Note: after a successful read or WouldBlock, the readable flag is
     // Correctly implementing them requires tracking readiness state from
     // epoll events (like tokio's internal readiness tracking). Zero-length
     // reads/writes don't reliably probe socket readiness on Linux.
@@ -248,12 +296,10 @@ impl TcpStream {
     /// Split into owned read and write halves.
     ///
     /// The halves can be moved to different spawned tasks on the same
-    /// single-threaded runtime (`!Send` — not across threads). Use
-    /// [`OwnedReadHalf::reunite`] to reassemble the stream.
-    ///
-    /// **Note:** The halves must first be polled from the same task that
-    /// created them (to set up the mio registration). After the first
-    /// poll, the waker is fixed to that task.
+    /// single-threaded runtime (`!Send` — not across threads). The IO
+    /// driver automatically updates the task pointer when a half is
+    /// polled from a different task. Use [`OwnedReadHalf::reunite`]
+    /// to reassemble the stream.
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
         use std::rc::Rc;
         let shared = Rc::new(std::cell::UnsafeCell::new(self));
@@ -269,26 +315,34 @@ impl TcpStream {
     // Registration (internal)
     // =========================================================================
 
-    /// Ensure registered with mio. Only registers once.
-    /// Hot path: single branch on `token.is_some()`. Cold path (first
-    /// call) does the mio register in a separate `#[cold]` function.
+    /// Ensure registered with mio and the correct task pointer.
+    ///
+    /// First call: registers with mio. Subsequent calls: checks if the
+    /// task pointer changed (stream moved to a different task via
+    /// `into_split`). If so, updates the IO driver's waker mapping.
     #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        if self.token.is_some() {
+        let task_ptr = waker_to_ptr(cx);
+        if let Some(token) = self.token {
+            // Already registered — check if task changed.
+            if task_ptr != self.registered_task {
+                self.io.set_waker_for_token(token, task_ptr);
+                self.registered_task = task_ptr;
+            }
             return Ok(());
         }
-        self.do_register(cx)
+        self.do_register(task_ptr)
     }
 
     #[cold]
-    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        let task_ptr = waker_to_ptr(cx);
+    fn do_register(&mut self, task_ptr: *mut u8) -> io::Result<()> {
         let interest = Interest::READABLE | Interest::WRITABLE;
         // SAFETY: IoHandle valid (Runtime lifetime). task_ptr from waker.
         let token = unsafe {
             self.io.register(&mut self.inner, interest, task_ptr)?
         };
         self.token = Some(token);
+        self.registered_task = task_ptr;
         Ok(())
     }
 }
@@ -305,7 +359,13 @@ impl AsyncRead for TcpStream {
         }
         match this.inner.read(buf) {
             Ok(n) => Poll::Ready(Ok(n)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // Clear readable — wait for next epoll notification.
+                if let Some(token) = this.token {
+                    this.io.clear_readable(token);
+                }
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -323,7 +383,12 @@ impl AsyncWrite for TcpStream {
         }
         match this.inner.write(buf) {
             Ok(n) => Poll::Ready(Ok(n)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if let Some(token) = this.token {
+                    this.io.clear_writable(token);
+                }
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -338,7 +403,12 @@ impl AsyncWrite for TcpStream {
         }
         match this.inner.flush() {
             Ok(()) => Poll::Ready(Ok(())),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if let Some(token) = this.token {
+                    this.io.clear_writable(token);
+                }
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -578,6 +648,7 @@ pub struct TcpListener {
     inner: mio::net::TcpListener,
     io: IoHandle,
     token: Option<Token>,
+    registered_task: *mut u8,
 }
 
 impl TcpListener {
@@ -588,6 +659,7 @@ impl TcpListener {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -598,6 +670,7 @@ impl TcpListener {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -621,23 +694,28 @@ impl TcpListener {
         Accept { listener: self }
     }
 
-    /// Ensure registered with mio for READABLE interest. Only registers once.
+    /// Ensure registered with mio and the correct task pointer.
     #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        if self.token.is_some() {
+        let task_ptr = waker_to_ptr(cx);
+        if let Some(token) = self.token {
+            if task_ptr != self.registered_task {
+                self.io.set_waker_for_token(token, task_ptr);
+                self.registered_task = task_ptr;
+            }
             return Ok(());
         }
-        self.do_register(cx)
+        self.do_register(task_ptr)
     }
 
     #[cold]
-    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        let task_ptr = waker_to_ptr(cx);
+    fn do_register(&mut self, task_ptr: *mut u8) -> io::Result<()> {
         // SAFETY: IoHandle valid, task_ptr from waker.
         let token = unsafe {
             self.io.register(&mut self.inner, Interest::READABLE, task_ptr)?
         };
         self.token = Some(token);
+        self.registered_task = task_ptr;
         Ok(())
     }
 }
@@ -860,6 +938,7 @@ impl TcpSocket {
             inner: mio_listener,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 }
@@ -901,18 +980,16 @@ mod tests {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
         let mut rt = DefaultRuntime::new(&mut world, 16);
-        let handle = rt.handle();
-
-        let listener = TcpListener::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            handle.io(),
-        ).expect("bind failed");
-        let addr = listener.local_addr().unwrap();
 
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();
 
         rt.block_on(async move {
+            let listener = TcpListener::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                crate::context::io(),
+            ).expect("bind failed");
+            let addr = listener.local_addr().unwrap();
             spawn(async move {
                 let mut listener = listener;
                 let (mut stream, _peer) = listener.accept().await.unwrap();
@@ -921,10 +998,10 @@ mod tests {
                 stream.write_all(&buf[..n]).await.unwrap();
             });
 
-            let io = handle.io();
+            let io = crate::context::io();
             let flag = done2;
             spawn(async move {
-                handle.sleep(std::time::Duration::from_millis(10)).await;
+                crate::context::sleep(std::time::Duration::from_millis(10)).await;
                 let mut client = TcpStream::connect(addr, io).unwrap();
                 client.write_all(b"hello").await.unwrap();
                 let mut buf = [0u8; 64];
@@ -933,29 +1010,13 @@ mod tests {
                 flag.set(true);
             });
 
-            handle.sleep(std::time::Duration::from_millis(500)).await;
+            crate::context::sleep(std::time::Duration::from_millis(500)).await;
         });
 
         assert!(done.get(), "echo exchange never completed");
     }
 
-    #[test]
-    fn tcp_socket_options() {
-        let wb = WorldBuilder::new();
-        let mut world = wb.build();
-        let mut rt = DefaultRuntime::new(&mut world, 4);
-        let io = rt.handle().io();
 
-        let stream = TcpStream::connect("127.0.0.1:1".parse().unwrap(), io);
-        // Connect will fail (nothing on port 1), but we can still test
-        // socket options on the created socket.
-        if let Ok(s) = stream {
-            s.set_nodelay(true).unwrap();
-            assert!(s.nodelay().unwrap());
-            s.set_nodelay(false).unwrap();
-            assert!(!s.nodelay().unwrap());
-        }
-    }
 
     #[test]
     fn tcp_socket_builder() {

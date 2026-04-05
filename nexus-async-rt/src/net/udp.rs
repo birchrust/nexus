@@ -28,6 +28,7 @@ pub struct UdpSocket {
     inner: mio::net::UdpSocket,
     io: IoHandle,
     token: Option<Token>,
+    registered_task: *mut u8,
 }
 
 impl UdpSocket {
@@ -38,6 +39,7 @@ impl UdpSocket {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -177,6 +179,7 @@ impl UdpSocket {
             inner,
             io,
             token: None,
+            registered_task: std::ptr::null_mut(),
         })
     }
 
@@ -221,25 +224,29 @@ impl UdpSocket {
     // Registration
     // =========================================================================
 
-    /// Ensure registered with mio for read + write interest.
-    /// Only registers once — subsequent calls are no-ops.
+    /// Ensure registered with mio and the correct task pointer.
     #[inline(always)]
     fn ensure_registered(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        if self.token.is_some() {
+        let task_ptr = waker_to_ptr(cx);
+        if let Some(token) = self.token {
+            if task_ptr != self.registered_task {
+                self.io.set_waker_for_token(token, task_ptr);
+                self.registered_task = task_ptr;
+            }
             return Ok(());
         }
-        self.do_register(cx)
+        self.do_register(task_ptr)
     }
 
     #[cold]
-    fn do_register(&mut self, cx: &Context<'_>) -> io::Result<()> {
-        let task_ptr = waker_to_ptr(cx);
+    fn do_register(&mut self, task_ptr: *mut u8) -> io::Result<()> {
         let interest = Interest::READABLE | Interest::WRITABLE;
         // SAFETY: IoHandle valid (Runtime lifetime). task_ptr from waker.
         let token = unsafe {
             self.io.register(&mut self.inner, interest, task_ptr)?
         };
         self.token = Some(token);
+        self.registered_task = task_ptr;
         Ok(())
     }
 
@@ -422,20 +429,16 @@ mod tests {
 
     #[test]
     fn udp_send_recv() {
-        // Simpler test: one-way send, no echo.
         let wb = WorldBuilder::new();
         let mut world = wb.build();
         let mut rt = DefaultRuntime::new(&mut world, 16);
-        let handle = rt.handle();
-
-        let io = handle.io();
-        let recv_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
-        let recv_addr = recv_sock.local_addr().unwrap();
 
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();
 
         rt.block_on(async move {
+            let recv_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
+            let recv_addr = recv_sock.local_addr().unwrap();
             // Receiver task.
             let flag = done2;
             spawn(async move {
@@ -448,12 +451,12 @@ mod tests {
 
             // Sender task.
             spawn(async move {
-                handle.sleep(Duration::from_millis(10)).await;
-                let mut sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), handle.io()).unwrap();
+                crate::context::sleep(Duration::from_millis(10)).await;
+                let mut sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
                 sock.send_to(b"test", recv_addr).await.unwrap();
             });
 
-            handle.sleep(Duration::from_millis(500)).await;
+            crate::context::sleep(Duration::from_millis(500)).await;
         });
 
         assert!(done.get(), "UDP recv never completed");
@@ -464,17 +467,14 @@ mod tests {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
         let mut rt = DefaultRuntime::new(&mut world, 16);
-        let handle = rt.handle();
-
-        let io = handle.io();
-        let server_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let server_sock = UdpSocket::bind(server_addr, io).expect("bind failed");
-        let server_addr = server_sock.local_addr().unwrap();
 
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();
 
         rt.block_on(async move {
+            let server_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).expect("bind failed");
+            let server_addr = server_sock.local_addr().unwrap();
+
             // Server task: receive one datagram, echo back.
             spawn(async move {
                 let mut server = server_sock;
@@ -486,9 +486,9 @@ mod tests {
             // Client task: send datagram, receive echo.
             let flag = done2;
             spawn(async move {
-                handle.sleep(Duration::from_millis(10)).await;
+                crate::context::sleep(Duration::from_millis(10)).await;
                 let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-                let mut client = UdpSocket::bind(client_addr, handle.io()).unwrap();
+                let mut client = UdpSocket::bind(client_addr, crate::context::io()).unwrap();
                 client.send_to(b"hello udp", server_addr).await.unwrap();
                 let mut buf = [0u8; 64];
                 let (n, _from) = client.recv_from(&mut buf).await.unwrap();
@@ -496,7 +496,7 @@ mod tests {
                 flag.set(true);
             });
 
-            handle.sleep(Duration::from_millis(500)).await;
+            crate::context::sleep(Duration::from_millis(500)).await;
         });
 
         assert!(done.get(), "UDP echo never completed");
@@ -507,18 +507,16 @@ mod tests {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
         let mut rt = DefaultRuntime::new(&mut world, 16);
-        let handle = rt.handle();
-
-        let io = handle.io();
-        let a_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
-        let b_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
-        let a_addr = a_sock.local_addr().unwrap();
-        let b_addr = b_sock.local_addr().unwrap();
 
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();
 
         rt.block_on(async move {
+            let io = crate::context::io();
+            let a_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
+            let b_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
+            let a_addr = a_sock.local_addr().unwrap();
+            let b_addr = b_sock.local_addr().unwrap();
             // A sends to B via connected mode.
             spawn(async move {
                 let mut a = a_sock;
@@ -528,7 +526,7 @@ mod tests {
 
             let flag = done2;
             spawn(async move {
-                handle.sleep(Duration::from_millis(10)).await;
+                crate::context::sleep(Duration::from_millis(10)).await;
                 let mut b = b_sock;
                 b.connect(a_addr).unwrap();
                 let mut buf = [0u8; 64];
@@ -537,7 +535,7 @@ mod tests {
                 flag.set(true);
             });
 
-            handle.sleep(Duration::from_millis(500)).await;
+            crate::context::sleep(Duration::from_millis(500)).await;
         });
 
         assert!(done.get(), "UDP connected exchange never completed");

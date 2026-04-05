@@ -23,6 +23,20 @@ use std::time::Duration;
 
 use std::sync::Arc;
 
+// =============================================================================
+// Readiness state
+// =============================================================================
+
+/// Per-token readiness flags, updated by `poll_io` from epoll events.
+/// Read by net types to check if IO is ready without a syscall.
+#[derive(Clone, Copy, Default)]
+pub struct Readiness {
+    /// Socket is readable (data available or EOF).
+    pub readable: bool,
+    /// Socket is writable (send buffer has space).
+    pub writable: bool,
+}
+
 use mio::event::Source;
 use mio::{Events, Interest, Poll, Token};
 
@@ -54,6 +68,10 @@ pub(crate) struct IoDriver {
     /// `Some(ptr)` = task to wake on readiness.
     wakers: Vec<Option<*mut u8>>,
 
+    /// Per-token readiness state. Updated by `poll_io`, read by net types.
+    /// Cleared when the task consumes the readiness (attempts IO).
+    readiness: Vec<Readiness>,
+
     /// Intrusive freelist: `next_free[i]` is the index of the next
     /// free slot after `i`. Only valid when `wakers[i]` is `None`.
     next_free: Vec<usize>,
@@ -78,8 +96,10 @@ impl IoDriver {
         let events = Events::with_capacity(event_capacity);
 
         let mut wakers = Vec::with_capacity(token_capacity);
+        let mut readiness = Vec::with_capacity(token_capacity);
         let mut next_free = Vec::with_capacity(token_capacity);
         wakers.resize(token_capacity, None);
+        readiness.resize(token_capacity, Readiness::default());
         for i in 0..token_capacity {
             next_free.push(if i + 1 < token_capacity { i + 1 } else { NO_FREE });
         }
@@ -89,6 +109,7 @@ impl IoDriver {
             events,
             mio_waker,
             wakers,
+            readiness,
             next_free,
             free_head: if token_capacity > 0 { 0 } else { NO_FREE },
         })
@@ -115,6 +136,7 @@ impl IoDriver {
             // Grow: append a new slot.
             let idx = self.wakers.len();
             self.wakers.push(None);
+            self.readiness.push(Readiness::default());
             self.next_free.push(NO_FREE);
             idx
         } else {
@@ -148,6 +170,26 @@ impl IoDriver {
         }
     }
 
+    /// Get the readiness state for a token.
+    pub(crate) fn readiness(&self, token: Token) -> Readiness {
+        self.readiness.get(token.0).copied().unwrap_or_default()
+    }
+
+    /// Clear the readable flag for a token. Called after a successful read
+    /// or a WouldBlock — the next `poll_io` will re-set it when epoll fires.
+    pub(crate) fn clear_readable(&mut self, token: Token) {
+        if let Some(r) = self.readiness.get_mut(token.0) {
+            r.readable = false;
+        }
+    }
+
+    /// Clear the writable flag for a token.
+    pub(crate) fn clear_writable(&mut self, token: Token) {
+        if let Some(r) = self.readiness.get_mut(token.0) {
+            r.writable = false;
+        }
+    }
+
     /// Poll mio for IO events and wake associated tasks.
     ///
     /// `timeout`: `None` blocks indefinitely, `Some(Duration::ZERO)` is
@@ -163,6 +205,17 @@ impl IoDriver {
                 continue;
             }
             let idx = token.0;
+
+            // Record readiness state from this event.
+            if let Some(r) = self.readiness.get_mut(idx) {
+                if event.is_readable() {
+                    r.readable = true;
+                }
+                if event.is_writable() {
+                    r.writable = true;
+                }
+            }
+
             if let Some(Some(task_ptr)) = self.wakers.get(idx) {
                 let ptr = *task_ptr;
                 // Wake the task: set is_queued flag, push to ready queue.
@@ -190,7 +243,7 @@ impl IoDriver {
 /// [`Copy`] handle for IO operations from async tasks.
 ///
 /// Provides source registration with the mio reactor. Obtained from
-/// [`RuntimeHandle::io`] or similar.
+/// [`nexus_async_rt::io`].
 ///
 /// # Safety
 ///
@@ -258,6 +311,39 @@ impl IoHandle {
         let registry = unsafe { &*self.registry };
         registry.reregister(source, token, interest)?;
         Ok(())
+    }
+
+    /// Update the task pointer for a token. Called when a stream
+    /// is polled from a different task than the one that registered it
+    /// (e.g., after `into_split`).
+    pub fn set_waker_for_token(&self, token: Token, task_ptr: *mut u8) {
+        // SAFETY: driver pointer valid (Runtime lifetime).
+        let driver = unsafe { &mut *self.driver };
+        driver.set_waker(token, task_ptr);
+    }
+
+    /// Query the readiness state for a token.
+    ///
+    /// Returns the last-known readiness from epoll events. Cleared
+    /// after the task consumes the readiness (calls clear_readable/clear_writable).
+    pub fn readiness(&self, token: Token) -> Readiness {
+        // SAFETY: driver pointer valid (Runtime lifetime).
+        let driver = unsafe { &*self.driver };
+        driver.readiness(token)
+    }
+
+    /// Clear the readable flag for a token. Call after a successful
+    /// read or WouldBlock to wait for the next epoll notification.
+    pub fn clear_readable(&self, token: Token) {
+        // SAFETY: driver pointer valid (Runtime lifetime).
+        let driver = unsafe { &mut *self.driver };
+        driver.clear_readable(token);
+    }
+
+    /// Clear the writable flag for a token.
+    pub fn clear_writable(&self, token: Token) {
+        let driver = unsafe { &mut *self.driver };
+        driver.clear_writable(token);
     }
 
     /// Deregister a source and release its token.
