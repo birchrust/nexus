@@ -111,7 +111,7 @@ impl<const N: usize> Slab<N> {
     /// or `.write_raw(src, size)`. If dropped without writing, the slot
     /// is returned to the freelist.
     #[inline]
-    pub fn try_claim(&self) -> Option<super::ByteClaim> {
+    pub fn try_claim(&self) -> Option<super::ByteClaim<'_>> {
         let claim = self.inner.claim()?;
         let ptr = claim.into_ptr().cast::<u8>();
         let slab_ptr = std::ptr::from_ref(&self.inner).cast::<u8>();
@@ -123,7 +123,7 @@ impl<const N: usize> Slab<N> {
 
     /// Reserve a slot without writing. Panics if full.
     #[inline]
-    pub fn claim(&self) -> super::ByteClaim {
+    pub fn claim(&self) -> super::ByteClaim<'_> {
         self.try_claim().expect("byte slab full")
     }
 
@@ -221,8 +221,9 @@ unsafe fn free_raw_impl<const N: usize>(slab_ptr: *const u8, slot_ptr: *mut u8, 
     let slab = unsafe {
         &*(slab_ptr as *const crate::bounded::Slab<super::AlignedBytes<N>>)
     };
-    // SAFETY: AlignedBytes is Copy — drop_in_place is a no-op.
-    // Bounded slab has one chunk — chunk_idx is ignored.
+    // SAFETY: Bounded slab has one chunk — chunk_idx is ignored.
+    // free_ptr returns the slot to the freelist. For vacant slots
+    // (ByteClaim abandoned without writing), no value needs dropping.
     unsafe {
         slab.free_ptr(slot_ptr.cast());
     }

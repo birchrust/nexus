@@ -72,7 +72,7 @@ impl<const N: usize> Slab<N> {
     /// or `.write_raw(src, size)`. If dropped without writing, the slot
     /// is returned to the freelist.
     #[inline]
-    pub fn claim(&self) -> super::ByteClaim {
+    pub fn claim(&self) -> super::ByteClaim<'_> {
         let claim = self.inner.claim();
         let (ptr, chunk_idx) = claim.into_ptr();
         let slab_ptr = std::ptr::from_ref(&self.inner).cast::<u8>();

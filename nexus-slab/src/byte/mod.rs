@@ -206,15 +206,16 @@ impl<T> Drop for Slot<T> {
 /// [`.write_raw()`](Self::write_raw). If dropped without writing, the
 /// slot is returned to the freelist automatically. Works with both
 /// bounded and unbounded byte slabs.
-pub struct ByteClaim {
+pub struct ByteClaim<'a> {
     ptr: *mut u8,
     slab_ptr: *const u8,
     free: unsafe fn(*const u8, *mut u8, usize),
     chunk_idx: usize,
     slot_size: usize,
+    _borrow: core::marker::PhantomData<&'a ()>,
 }
 
-impl ByteClaim {
+impl ByteClaim<'_> {
     /// Create a claim from raw components.
     ///
     /// # Safety
@@ -231,7 +232,7 @@ impl ByteClaim {
         chunk_idx: usize,
         slot_size: usize,
     ) -> Self {
-        Self { ptr, slab_ptr, free, chunk_idx, slot_size }
+        Self { ptr, slab_ptr, free, chunk_idx, slot_size, _borrow: core::marker::PhantomData }
     }
 
     /// Write a typed value into the slot. Consumes the claim.
@@ -298,7 +299,7 @@ impl ByteClaim {
     }
 }
 
-impl Drop for ByteClaim {
+impl Drop for ByteClaim<'_> {
     fn drop(&mut self) {
         // Slot was claimed but never written — return to freelist.
         // SAFETY: free was set at claim time to the correct slab's freelist
@@ -307,7 +308,7 @@ impl Drop for ByteClaim {
     }
 }
 
-impl core::fmt::Debug for ByteClaim {
+impl core::fmt::Debug for ByteClaim<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ByteClaim")
             .field("ptr", &self.ptr)
