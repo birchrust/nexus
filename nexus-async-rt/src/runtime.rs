@@ -953,6 +953,92 @@ mod tests {
     }
 
     // =========================================================================
+    // Timeout tests
+    // =========================================================================
+
+    #[test]
+    fn timeout_completes_before_deadline() {
+        let mut wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let result = rt.block_on(async {
+            crate::context::timeout(
+                Duration::from_millis(500),
+                async { 42u64 },
+            ).await
+        });
+
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn timeout_expires() {
+        let mut wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let result = rt.block_on(async {
+            crate::context::timeout(
+                Duration::from_millis(10),
+                crate::context::sleep(Duration::from_secs(10)),
+            ).await
+        });
+
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Interval tests
+    // =========================================================================
+
+    #[test]
+    fn interval_ticks() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Out(0));
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let before = Instant::now();
+        rt.block_on(async move {
+            let mut iv = crate::context::interval(Duration::from_millis(20));
+            iv.tick().await; // ~20ms
+            iv.tick().await; // ~40ms
+            iv.tick().await; // ~60ms
+        });
+        let elapsed = before.elapsed();
+
+        assert!(elapsed >= Duration::from_millis(50), "too fast: {elapsed:?}");
+        assert!(elapsed < Duration::from_millis(200), "too slow: {elapsed:?}");
+    }
+
+    // =========================================================================
+    // yield_now tests
+    // =========================================================================
+
+    #[test]
+    fn yield_now_lets_other_tasks_run() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Out(0));
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async move {
+            spawn_boxed(async move {
+                crate::context::with_world(|world| {
+                    world.resource_mut::<Out>().0 = 99;
+                });
+            });
+
+            // Yield so the spawned task gets a turn.
+            crate::context::yield_now().await;
+
+            let val = crate::context::with_world_ref(|world| world.resource::<Out>().0);
+            assert_eq!(val, 99);
+        });
+    }
+
+    // =========================================================================
     // Test helpers
     // =========================================================================
 
