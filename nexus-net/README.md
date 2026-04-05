@@ -88,18 +88,81 @@ Each layer is a pure state machine. No syscalls, no sockets, no async.
 Bytes in, messages out. The I/O layer is yours — mio, io_uring, tokio,
 raw `libc::read`, kernel bypass.
 
+## Async Runtimes
+
+nexus-net supports two async runtimes via mutually exclusive feature flags.
+Without either flag, you get the blocking sync API.
+
+```toml
+[dependencies]
+# Blocking sync API (default)
+nexus-net = { version = "0.3", features = ["tls"] }
+
+# nexus-async-rt — single-threaded, zero-alloc dispatch, 58 cy p50
+# Best for dedicated trading threads where every microsecond matters.
+nexus-net = { version = "0.3", features = ["nexus-rt", "tls"] }
+
+# tokio — multi-threaded, ecosystem compatibility
+# Best when integrating with existing tokio services.
+nexus-net = { version = "0.3", features = ["tokio", "tls"] }
+```
+
+Both runtimes expose the same API — same method names, same types:
+
+```rust
+// This code works with either runtime. The feature flag selects the impl.
+let mut ws = ws::Client::connect_with(tcp, "ws://exchange.com/ws").await?;
+ws.send_text(r#"{"subscribe":"trades"}"#).await?;
+while let Some(msg) = ws.recv().await? {
+    handle(msg);
+}
+```
+
+| | nexus-async-rt | tokio |
+|---|---|---|
+| Threading | Single-threaded | Multi-threaded or current_thread |
+| Dispatch p50 | 58 cycles | 146 cycles |
+| Task alloc | Slab (pre-allocated) | Box (heap) |
+| Waker | Zero-alloc (raw pointer) | Arc-based |
+| IO driver | mio (direct) | mio (through tokio) |
+| Ecosystem | Standalone | Full tokio ecosystem |
+| Use case | Hot-path trading | Everything else |
+
+The codec is identical — same `FrameReader`, same `FrameWriter`, same zero-copy
+`Message<'_>`. The runtime only affects how `.await` is scheduled and how IO
+events are dispatched.
+
+### nexus-async-rt + ClientPool
+
+The `nexus-rt` feature also enables `rest::ClientPool` — a pre-allocated
+connection pool with LIFO acquire, bounded reconnect, and RAII guards:
+
+```rust
+let pool = rest::ClientPool::builder()
+    .url("https://api.exchange.com")
+    .base_path("/api/v3")
+    .connections(4)
+    .build()
+    .await?;
+
+let mut slot = pool.try_acquire().unwrap();
+let req = slot.writer.post("/order").body(json).finish()?;
+let (conn, reader) = slot.conn_and_reader()?;
+let resp = conn.send(req, reader).await?;
+```
+
 ## Quick Start
 
 ```toml
 [dependencies]
 # WebSocket + HTTP, no TLS
-nexus-net = "0.2"
+nexus-net = "0.3"
 
 # With TLS (rustls + aws-lc-rs)
-nexus-net = { version = "0.2", features = ["tls"] }
+nexus-net = { version = "0.3", features = ["tls"] }
 
 # Everything (TLS + socket options + bytes)
-nexus-net = { version = "0.2", features = ["full"] }
+nexus-net = { version = "0.3", features = ["full"] }
 ```
 
 ### WebSocket Client (ws://)
@@ -275,9 +338,8 @@ archive.write(&order)?;               // still yours — archive after send
   query params (percent-encoded), per-request headers, `body()` (slice),
   `body_writer()` (serialize directly via `std::io::Write`),
   `body_fixed()` (known-size direct write), base path.
-- **`Client<S>`** — pure transport. 3 fields: stream, TLS,
-  poisoned. `send(req, &mut reader)` is the whole API (request moved
-  on send).
+- **`Client<S>`** — pure transport. `send(req, &mut reader)` is the
+  whole API. TLS handled at the stream level via `TlsStream<S>`.
 - **`RestResponse<'a>`** — borrows from `ResponseReader`. Status, headers,
   body. Supports Content-Length and chunked transfer encoding.
 
@@ -302,12 +364,15 @@ archive.write(&order)?;               // still yours — archive after send
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `tls` | No | TLS support via rustls + aws-lc-rs |
+| `nexus-rt` | No | Async API via nexus-async-rt (single-threaded, low-latency) |
+| `tokio` | No | Async API via tokio |
 | `socket-opts` | No | Socket options (SO_RCVBUF, SO_SNDBUF) via socket2 |
 | `bytes` | No | `bytes::Bytes` conversion on `OwnedMessage` and `RestResponse` |
-| `full` | No | All features enabled |
+| `full` | No | `tls` + `socket-opts` + `bytes` |
 
-Without features: zero TLS compile time. The `ws` and `http`
-modules work standalone.
+`nexus-rt` and `tokio` are mutually exclusive — enabling both is a compile error.
+Without either, you get the blocking sync API. The `tls` feature is orthogonal
+and works with any mode.
 
 ## Design Decisions
 
@@ -336,8 +401,10 @@ socket and `FrameReader` without changing either.
 ## Testing
 
 ```bash
-cargo test -p nexus-net                          # unit tests (190)
-cargo test -p nexus-net --all-features           # with TLS
+cargo test -p nexus-net                          # sync (200 tests)
+cargo test -p nexus-net --features nexus-rt      # nexus-async-rt (180 tests)
+cargo test -p nexus-net --features tokio         # tokio (174 tests)
+cargo test -p nexus-net --features tls           # sync + TLS
 
 # WebSocket: Autobahn conformance (requires Podman)
 podman run --rm -d --network=host \
@@ -358,11 +425,13 @@ cargo +nightly fuzz run fuzz_response_reader -- -max_total_time=60
 cargo +nightly fuzz run fuzz_request_writer -- -max_total_time=60
 cargo +nightly fuzz run fuzz_keepalive_sequence -- -max_total_time=60
 
-# Benchmarks
+# Benchmarks (sans-IO)
 cargo run --release -p nexus-net --example perf_ws
 cargo run --release -p nexus-net --example perf_vs_tungstenite
 cargo run --release -p nexus-net --features tls --example perf_tls
 cargo run --release -p nexus-net --example perf_rest
-cargo run --release -p nexus-net --example throughput_rest
-cargo run --release -p nexus-net --example bench_loopback_rest
+
+# Runtime comparison (nexus-rt vs tokio vs competition)
+cargo run --release -p nexus-net --features nexus-rt --example perf_ws_compare
+cargo run --release -p nexus-net --features nexus-rt --example perf_rest_compare
 ```

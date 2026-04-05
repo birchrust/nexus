@@ -10,7 +10,7 @@ use crate::ws::FrameReader;
 ///
 /// Wraps a rustls `ClientConnection` with an API shaped for nexus-net:
 /// feed raw TLS bytes in, get plaintext into a [`FrameReader`]; encrypt
-/// plaintext from a [`FrameWriter`] and flush to a socket.
+/// plaintext from a [`FrameWriter`](crate::ws::FrameWriter) and flush to a socket.
 ///
 /// # Usage
 ///

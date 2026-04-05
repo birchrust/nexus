@@ -1,8 +1,8 @@
 //! Stream that may or may not be wrapped in TLS.
 //!
-//! Implements `Read + Write` (and `AsyncRead + AsyncWrite` when
-//! `nexus-rt` is enabled) by delegating to either the plain stream
-//! or the [`TlsStream`] wrapper.
+//! Implements `Read + Write` (and `AsyncRead + AsyncWrite` when an
+//! async runtime feature is enabled) by delegating to either the plain
+//! stream or the `TlsStream` wrapper (requires `tls` feature).
 //!
 //! Protocol clients use `MaybeTls<S>` as their stream type when the
 //! TLS decision happens at runtime (`ws://` vs `wss://`).

@@ -302,7 +302,7 @@ impl Default for ClientBuilder {
 ///
 /// Sends request bytes and reads response bytes. All protocol logic
 /// lives in [`RequestWriter`] (request encoding) and
-/// [`ResponseReader`] (response parsing).
+/// [`ResponseReader`](crate::http::ResponseReader) (response parsing).
 ///
 /// # Usage
 ///

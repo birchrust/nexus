@@ -6,7 +6,7 @@
 //!
 //! **Transport layer:**
 //! - [`Client`] — sends request bytes, reads response bytes
-//! - [`ClientPool`] — pre-allocated connection pool (requires `nexus-rt` feature)
+//! - `ClientPool` — pre-allocated connection pool (requires `nexus-rt` feature)
 //!
 //! # Usage
 //!

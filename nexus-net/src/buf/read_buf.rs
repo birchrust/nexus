@@ -194,7 +194,7 @@ impl ReadBuf {
     /// Reclaim consumed space by moving unconsumed data to the front.
     ///
     /// Call when [`spare()`](Self::spare) is empty but there is consumed
-    /// space before [`head`] that can be reclaimed. The unconsumed data
+    /// space before `head` that can be reclaimed. The unconsumed data
     /// (typically a partial frame) is moved to the pre_padding offset.
     ///
     /// Cost: O(unconsumed bytes). For a partial frame this is typically

@@ -279,7 +279,7 @@ impl ResponseReader {
 
     /// Advance past a consumed response, preserving any pipelined bytes.
     ///
-    /// Uses `last_raw_body_bytes` (set via [`set_body_consumed`]) to
+    /// Uses `last_raw_body_bytes` (set via [`set_body_consumed`](Self::set_body_consumed)) to
     /// determine how many wire bytes to skip. Call before parsing the
     /// next response on a keep-alive connection.
     pub fn consume_response(&mut self) {
