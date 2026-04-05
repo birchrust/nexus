@@ -44,6 +44,7 @@ pub mod net;
 mod timer;
 mod runtime;
 mod shutdown;
+mod backoff;
 
 // Re-export slab type for convenience — users create the slab and hand it to the builder.
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
@@ -57,6 +58,7 @@ pub use net::{
     TcpStream, UdpSocket, WriteHalf,
 };
 pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHandle, YieldNow};
+pub use backoff::{Backoff, BackoffBuilder, Exhausted};
 pub use alloc::SlabClaim;
 pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab, try_claim_slab, claim_slab};
 
