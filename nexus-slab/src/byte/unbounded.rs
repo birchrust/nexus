@@ -66,6 +66,25 @@ impl<const N: usize> Slab<N> {
         }
     }
 
+    /// Claim a slot and copy raw bytes into it. Returns a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// - `src` must point to `size` valid bytes.
+    /// - `size` must be <= `N`.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `size > N`.
+    #[inline]
+    pub unsafe fn alloc_raw(&self, src: *const u8, size: usize) -> *mut u8 {
+        assert!(size <= N, "raw alloc size {size} exceeds slot size {N}");
+        let (slot_ptr, _chunk_idx) = self.inner.claim_ptr();
+        let dst = slot_ptr.cast::<u8>();
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, size) };
+        dst
+    }
+
     /// Frees a value, dropping it and returning the slot to the freelist.
     ///
     /// Consumes the handle — the slot cannot be used after this call.

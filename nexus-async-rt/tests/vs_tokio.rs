@@ -50,12 +50,12 @@ fn print_distribution(name: &str, samples: &mut [u64]) {
 // =============================================================================
 
 fn nexus_tcp_echo_samples() -> Vec<u64> {
-    use nexus_async_rt::{DefaultRuntime, TcpListener, TcpStream, spawn};
+    use nexus_async_rt::{Runtime, TcpListener, TcpStream, spawn_boxed};
     use nexus_rt::WorldBuilder;
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
 
     let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -65,7 +65,7 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
 
     rt.block_on(async move {
         // Server
-        spawn(async move {
+        spawn_boxed(async move {
             let mut listener = listener;
             let (mut s, _) = listener.accept().await.unwrap();
             s.set_nodelay(true).unwrap();
@@ -79,7 +79,7 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
 
         // Client
         let io = nexus_async_rt::io();
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, io).unwrap();
             c.set_nodelay(true).unwrap();
@@ -187,12 +187,12 @@ fn tokio_tcp_echo_samples() -> Vec<u64> {
 // =============================================================================
 
 fn nexus_udp_samples() -> Vec<u64> {
-    use nexus_async_rt::{DefaultRuntime, UdpSocket, spawn};
+    use nexus_async_rt::{Runtime, UdpSocket, spawn_boxed};
     use nexus_rt::WorldBuilder;
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
 
     let a = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
     let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
@@ -204,7 +204,7 @@ fn nexus_udp_samples() -> Vec<u64> {
 
     rt.block_on(async move {
         // Echo server on b
-        spawn(async move {
+        spawn_boxed(async move {
             let mut b = b;
             b.connect(a_addr).unwrap();
             let mut buf = [0u8; MSG_SIZE];
@@ -216,7 +216,7 @@ fn nexus_udp_samples() -> Vec<u64> {
         });
 
         // Client on a
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut a = a;
             a.connect(b_addr).unwrap();

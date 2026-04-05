@@ -5,7 +5,7 @@
 
 use std::net::SocketAddr;
 
-use nexus_async_rt::{TcpStream, spawn, sleep};
+use nexus_async_rt::{TcpStream, spawn_boxed, sleep};
 use nexus_pool::local::{Pool, Pooled};
 
 use super::connection::{Client, parse_base_url};
@@ -176,7 +176,7 @@ impl ClientPool {
     /// the next `try_acquire` will re-trigger reconnect.
     fn spawn_reconnect(&self, mut slot: Pooled<ClientSlot>) {
         let config = self.reconnect_config.clone();
-        spawn(async move {
+        spawn_boxed(async move {
             const MAX_BACKOFF_MS: u64 = 5_000;
             const MAX_RETRIES: u32 = 10;
             let mut backoff_ms = 100u64;

@@ -11,13 +11,13 @@
 //! # Usage
 //!
 //! ```ignore
-//! let mut rt = DefaultRuntime::new(&mut world, 64);
+//! let mut rt = Runtime::new(&mut world);
 //!
 //! // Install signal handlers (call once at startup).
 //! rt.install_signal_handlers();
 //!
 //! rt.block_on(async move {
-//!     spawn(connection_tasks...);
+//!     spawn_boxed(connection_tasks...);
 //!
 //!     // Wait for SIGTERM/SIGINT.
 //!     nexus_async_rt::shutdown_signal().await;
@@ -156,14 +156,14 @@ mod tests {
 
     #[test]
     fn shutdown_signal_resolves_after_trigger() {
-        use crate::{DefaultRuntime, spawn};
+        use crate::{Runtime, spawn_boxed};
         use nexus_rt::WorldBuilder;
         use std::cell::Cell;
         use std::rc::Rc;
 
         let wb = WorldBuilder::new();
         let mut world = wb.build();
-        let mut rt = DefaultRuntime::new(&mut world, 8);
+        let mut rt = Runtime::new(&mut world);
         let shutdown = rt.shutdown_handle();
 
         let done = Rc::new(Cell::new(false));
@@ -172,7 +172,7 @@ mod tests {
         // Trigger shutdown from a spawned task after a short delay.
         let sh = shutdown.clone();
         rt.block_on(async move {
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::sleep(std::time::Duration::from_millis(50)).await;
                 sh.trigger();
             });
