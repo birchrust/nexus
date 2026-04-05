@@ -373,13 +373,8 @@ impl<S: Read + Write> Connecting<S> {
         // finish() is only called once (state == Done).
         let stream = unsafe { std::mem::ManuallyDrop::take(&mut self.stream) };
 
-        #[cfg(feature = "tls")]
-        let tls = self.tls.take();
-
         Ok(Client::from_parts_internal(
             stream,
-            #[cfg(feature = "tls")]
-            tls,
             reader,
             FrameWriter::new(Role::Client),
             WriteBuf::new(self.write_buf_capacity, self.write_buf_headroom),

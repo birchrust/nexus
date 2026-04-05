@@ -233,8 +233,9 @@ fn bench_reqwest_blocking(server_addr: SocketAddr) -> Histogram<u64> {
 
 fn main() {
     println!();
-    println!("=== REST GET Latency ({ITERATIONS} iterations, keep-alive) ===");
-    println!("Response: {} bytes JSON", RESPONSE_BODY.len());
+    println!("=== REST TCP Loopback Validation ===");
+    println!("Kernel-dominated — confirms end-to-end correctness, not runtime speed.");
+    println!("Response: {} bytes JSON, {ITERATIONS} iterations, keep-alive", RESPONSE_BODY.len());
     println!();
 
     // Each variant gets its own server to avoid port reuse issues.

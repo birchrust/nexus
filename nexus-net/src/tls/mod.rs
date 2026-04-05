@@ -26,7 +26,9 @@
 mod codec;
 mod config;
 mod error;
+mod stream;
 
 pub use codec::TlsCodec;
 pub use config::{TlsConfig, TlsConfigBuilder};
 pub use error::TlsError;
+pub use stream::TlsStream;

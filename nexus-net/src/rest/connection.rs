@@ -20,7 +20,7 @@ use super::response::RestResponse;
 use crate::http::{HttpError, ResponseReader};
 
 #[cfg(feature = "tls")]
-use crate::tls::{TlsCodec, TlsConfig, TlsError};
+use crate::tls::TlsConfig;
 
 // =============================================================================
 // URL parsing
@@ -173,9 +173,15 @@ impl ClientBuilder {
 
     /// Connect to an HTTP(S) endpoint (blocking).
     ///
-    /// TLS is auto-detected from the URL scheme.
-    #[cfg(not(feature = "nexus-rt"))]
-    pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, RestError> {
+    /// TLS is auto-detected from the URL scheme. When the `tls` feature is
+    /// enabled, returns `Client<MaybeTls<TcpStream>>` — `https://` uses
+    /// `MaybeTls::Tls`, `http://` uses `MaybeTls::Plain`. Without the `tls`
+    /// feature, returns `Client<TcpStream>` and errors on `https://`.
+    #[cfg(all(not(feature = "nexus-rt"), feature = "tls"))]
+    pub fn connect(
+        self,
+        url: &str,
+    ) -> Result<Client<crate::MaybeTls<std::net::TcpStream>>, RestError> {
         let parsed = parse_base_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
@@ -200,56 +206,68 @@ impl ClientBuilder {
             tcp.set_read_timeout(Some(timeout))?;
         }
 
-        self.connect_with(tcp, url)
-    }
-
-    /// Connect using a pre-connected socket.
-    #[cfg(not(feature = "nexus-rt"))]
-    #[allow(unused_mut)]
-    pub fn connect_with<S: Read + Write>(
-        self,
-        mut stream: S,
-        url: &str,
-    ) -> Result<Client<S>, RestError> {
-        let parsed = parse_base_url(url)?;
-
-        #[cfg(feature = "tls")]
-        let tls = if parsed.tls {
+        let stream = if parsed.tls {
             let config = match self.tls_config {
                 Some(c) => c,
                 None => TlsConfig::new().map_err(RestError::Tls)?,
             };
-            let mut codec = TlsCodec::new(&config, parsed.host)?;
-            // Drive the TLS handshake to completion.
-            while codec.is_handshaking() {
-                if codec.wants_write() {
-                    codec.write_tls_to(&mut stream)?;
-                }
-                if codec.wants_read() {
-                    codec.read_tls_from(&mut stream)?;
-                    codec.process_new_packets()?;
-                }
-            }
-            // Flush any remaining handshake data.
-            if codec.wants_write() {
-                codec.write_tls_to(&mut stream)?;
-            }
-            Some(codec)
+            let codec = crate::tls::TlsCodec::new(&config, parsed.host)?;
+            let mut tls = crate::tls::TlsStream::new(tcp, codec);
+            tls.handshake().map_err(RestError::Tls)?;
+            crate::MaybeTls::Tls(Box::new(tls))
         } else {
-            None
+            crate::MaybeTls::Plain(tcp)
         };
-
-        #[cfg(not(feature = "tls"))]
-        if parsed.tls {
-            return Err(RestError::TlsNotEnabled);
-        }
 
         Ok(Client {
             stream,
-            #[cfg(feature = "tls")]
-            tls,
             poisoned: false,
         })
+    }
+
+    /// Connect to an HTTP(S) endpoint (blocking, no TLS feature).
+    #[cfg(all(not(feature = "nexus-rt"), not(feature = "tls")))]
+    pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, RestError> {
+        let parsed = parse_base_url(url)?;
+        if parsed.tls {
+            return Err(RestError::TlsNotEnabled);
+        }
+        let addr = format!("{}:{}", parsed.host, parsed.port);
+
+        let tcp = match self.connect_timeout {
+            Some(timeout) => {
+                let addrs: Vec<std::net::SocketAddr> =
+                    std::net::ToSocketAddrs::to_socket_addrs(&addr)
+                        .map_err(RestError::Io)?
+                        .collect();
+                let first = addrs
+                    .first()
+                    .ok_or_else(|| RestError::Io(io::Error::other("DNS resolution failed")))?;
+                std::net::TcpStream::connect_timeout(first, timeout)?
+            }
+            None => std::net::TcpStream::connect(&addr)?,
+        };
+
+        if self.tcp_nodelay {
+            tcp.set_nodelay(true)?;
+        }
+        if let Some(timeout) = self.read_timeout {
+            tcp.set_read_timeout(Some(timeout))?;
+        }
+
+        Ok(Client {
+            stream: tcp,
+            poisoned: false,
+        })
+    }
+
+    /// Connect using a pre-connected socket.
+    ///
+    /// The stream must already handle TLS if connecting to `https://`.
+    /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
+    #[cfg(not(feature = "nexus-rt"))]
+    pub fn connect_with<S: Read + Write>(self, stream: S, _url: &str) -> Result<Client<S>, RestError> {
+        Ok(Client::new(stream))
     }
 
     /// Create a `RequestWriter` configured for this URL.
@@ -304,8 +322,6 @@ impl Default for ClientBuilder {
 /// ```
 pub struct Client<S> {
     pub(crate) stream: S,
-    #[cfg(feature = "tls")]
-    pub(crate) tls: Option<TlsCodec>,
     pub(crate) poisoned: bool,
 }
 
@@ -343,8 +359,6 @@ impl<S> Client<S> {
     pub fn new(stream: S) -> Self {
         Self {
             stream,
-            #[cfg(feature = "tls")]
-            tls: None,
             poisoned: false,
         }
     }
@@ -428,11 +442,6 @@ impl<S: Read + Write> Client<S> {
     /// report `ReadTimeout`. The connection is poisoned either way.
     #[allow(clippy::unused_self)]
     fn peek_is_dead(&self) -> bool {
-        #[cfg(feature = "tls")]
-        if self.tls.is_some() {
-            // Can't peek through TLS — conservatively report stale.
-            return true;
-        }
         // For generic S, assume alive (report ReadTimeout not ConnectionStale).
         // The caller still gets an error; it's just less specific.
         false
@@ -443,48 +452,12 @@ impl<S: Read + Write> Client<S> {
     // =========================================================================
 
     fn write_all(&mut self, data: &[u8]) -> Result<(), RestError> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            tls.encrypt(data)?;
-            while tls.wants_write() {
-                tls.write_tls_to(&mut self.stream)?;
-            }
-            self.stream.flush()?;
-            return Ok(());
-        }
-
         self.stream.write_all(data)?;
         self.stream.flush()?;
         Ok(())
     }
 
     fn read_into_reader(&mut self, reader: &mut ResponseReader) -> Result<usize, RestError> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            let mut tmp = [0u8; 4096];
-            for _ in 0..32 {
-                let tls_n = tls.read_tls_from(&mut self.stream)?;
-                if tls_n == 0 {
-                    return Ok(0);
-                }
-                tls.process_new_packets()?;
-                let n = tls.read_plaintext(&mut tmp).map_err(|e| match e {
-                    TlsError::Io(io) => RestError::Io(io),
-                    other => RestError::Tls(other),
-                })?;
-                if n > 0 {
-                    reader.read(&tmp[..n])?;
-                    return Ok(n);
-                }
-            }
-            return Err(RestError::Io(io::Error::other(
-                "TLS: too many non-data records",
-            )));
-        }
-
-        #[cfg(not(feature = "tls"))]
-        { /* fall through to plain path */ }
-
         let n = reader.read_from(&mut self.stream)?;
         Ok(n)
     }
@@ -664,32 +637,8 @@ impl<S: Read + Write> Client<S> {
         Ok(body)
     }
 
-    /// Read raw bytes from the socket (through TLS if present).
+    /// Read raw bytes from the socket.
     fn read_wire_bytes(&mut self, buf: &mut [u8]) -> Result<usize, RestError> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            for _ in 0..32 {
-                let tls_n = tls.read_tls_from(&mut self.stream)?;
-                if tls_n == 0 {
-                    return Ok(0);
-                }
-                tls.process_new_packets()?;
-                let n = tls.read_plaintext(buf).map_err(|e| match e {
-                    crate::tls::TlsError::Io(io) => RestError::Io(io),
-                    other => RestError::Tls(other),
-                })?;
-                if n > 0 {
-                    return Ok(n);
-                }
-            }
-            return Err(RestError::Io(io::Error::other(
-                "TLS: too many non-data records",
-            )));
-        }
-
-        #[cfg(not(feature = "tls"))]
-        { /* fall through */ }
-
         Ok(self.stream.read(buf)?)
     }
 }

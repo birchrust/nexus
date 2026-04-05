@@ -13,7 +13,10 @@
 
 pub mod buf;
 pub mod http;
+pub mod maybe_tls;
 pub mod rest;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub mod ws;
+
+pub use maybe_tls::MaybeTls;

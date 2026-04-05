@@ -17,7 +17,7 @@ use super::handshake::HandshakeError;
 use super::handshake;
 
 #[cfg(feature = "tls")]
-use crate::tls::{TlsCodec, TlsConfig, TlsError};
+use crate::tls::{TlsConfig, TlsError};
 
 // =============================================================================
 // URL parsing
@@ -195,6 +195,7 @@ impl From<TlsError> for Error {
 pub struct ClientBuilder {
     pub(crate) reader_builder: FrameReaderBuilder,
     pub(crate) write_buf_capacity: usize,
+    #[cfg_attr(feature = "nexus-rt", allow(dead_code))]
     pub(crate) write_buf_headroom: usize,
     #[cfg(feature = "tls")]
     pub(crate) tls_config: Option<TlsConfig>,
@@ -306,8 +307,16 @@ impl ClientBuilder {
     ///
     /// Creates a TCP socket, applies socket options, and performs the
     /// full handshake (TLS if `wss://`, then HTTP upgrade).
-    #[cfg(not(feature = "nexus-rt"))]
-    pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, Error> {
+    ///
+    /// When the `tls` feature is enabled, returns `Client<MaybeTls<TcpStream>>`
+    /// regardless of scheme — `ws://` uses `MaybeTls::Plain`, `wss://` uses
+    /// `MaybeTls::Tls`. Without the `tls` feature, returns `Client<TcpStream>`
+    /// and errors on `wss://`.
+    #[cfg(all(not(feature = "nexus-rt"), feature = "tls"))]
+    pub fn connect(
+        self,
+        url: &str,
+    ) -> Result<Client<crate::MaybeTls<std::net::TcpStream>>, Error> {
         let parsed = parse_ws_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
@@ -326,33 +335,18 @@ impl ClientBuilder {
         };
 
         self.apply_socket_opts(&tcp)?;
-        self.connect_with(tcp, url)
-    }
 
-    /// Connect using a pre-connected socket.
-    #[cfg(not(feature = "nexus-rt"))]
-    pub fn connect_with<S: Read + Write>(
-        self,
-        stream: S,
-        url: &str,
-    ) -> Result<Client<S>, Error> {
-        let parsed = parse_ws_url(url)?;
-
-        #[cfg(feature = "tls")]
-        let tls = if parsed.tls {
-            let config = match self.tls_config {
-                Some(c) => c,
-                None => TlsConfig::new().map_err(Error::Tls)?,
-            };
-            Some(TlsCodec::new(&config, parsed.host)?)
+        let stream = if parsed.tls {
+            let config = self
+                .tls_config
+                .unwrap_or(TlsConfig::new().map_err(Error::Tls)?);
+            let codec = crate::tls::TlsCodec::new(&config, parsed.host)?;
+            let mut tls = crate::tls::TlsStream::new(tcp, codec);
+            tls.handshake().map_err(Error::Tls)?;
+            crate::MaybeTls::Tls(Box::new(tls))
         } else {
-            None
+            crate::MaybeTls::Plain(tcp)
         };
-
-        #[cfg(not(feature = "tls"))]
-        if parsed.tls {
-            return Err(Error::TlsNotEnabled);
-        }
 
         let host_header = parsed.host_header();
         Client::connect_impl(
@@ -362,8 +356,65 @@ impl ClientBuilder {
             self.reader_builder,
             self.write_buf_capacity,
             self.write_buf_headroom,
-            #[cfg(feature = "tls")]
-            tls,
+        )
+    }
+
+    /// Connect to a WebSocket server (blocking, no TLS feature).
+    #[cfg(all(not(feature = "nexus-rt"), not(feature = "tls")))]
+    pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, Error> {
+        let parsed = parse_ws_url(url)?;
+        if parsed.tls {
+            return Err(Error::TlsNotEnabled);
+        }
+        let addr = format!("{}:{}", parsed.host, parsed.port);
+
+        let tcp = match self.connect_timeout {
+            Some(timeout) => {
+                let addrs: Vec<std::net::SocketAddr> =
+                    std::net::ToSocketAddrs::to_socket_addrs(&addr)
+                        .map_err(Error::Io)?
+                        .collect();
+                let first = addrs
+                    .first()
+                    .ok_or_else(|| Error::Io(io::Error::other("DNS resolution failed")))?;
+                std::net::TcpStream::connect_timeout(first, timeout)?
+            }
+            None => std::net::TcpStream::connect(&addr)?,
+        };
+
+        self.apply_socket_opts(&tcp)?;
+
+        let host_header = parsed.host_header();
+        Client::connect_impl(
+            tcp,
+            &host_header,
+            parsed.path,
+            self.reader_builder,
+            self.write_buf_capacity,
+            self.write_buf_headroom,
+        )
+    }
+
+    /// Connect using a pre-connected stream.
+    ///
+    /// The stream must already handle TLS if connecting to `wss://`.
+    /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
+    /// This method only performs the HTTP upgrade handshake.
+    #[cfg(not(feature = "nexus-rt"))]
+    pub fn connect_with<S: Read + Write>(
+        self,
+        stream: S,
+        url: &str,
+    ) -> Result<Client<S>, Error> {
+        let parsed = parse_ws_url(url)?;
+        let host_header = parsed.host_header();
+        Client::connect_impl(
+            stream,
+            &host_header,
+            parsed.path,
+            self.reader_builder,
+            self.write_buf_capacity,
+            self.write_buf_headroom,
         )
     }
 
@@ -436,8 +487,6 @@ impl Default for ClientBuilder {
 /// ```
 pub struct Client<S> {
     pub(crate) stream: S,
-    #[cfg(feature = "tls")]
-    pub(crate) tls: Option<TlsCodec>,
     pub(crate) reader: FrameReader,
     pub(crate) writer: FrameWriter,
     pub(crate) write_buf: WriteBuf,
@@ -459,8 +508,6 @@ impl<S> Client<S> {
     pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
             stream,
-            #[cfg(feature = "tls")]
-            tls: None,
             reader,
             writer,
             write_buf: WriteBuf::new(65_536, 14),
@@ -469,26 +516,7 @@ impl<S> Client<S> {
     }
 
     /// Internal constructor with all fields. Used by Connecting::finish().
-    #[cfg(feature = "tls")]
-    pub(crate) fn from_parts_internal(
-        stream: S,
-        tls: Option<TlsCodec>,
-        reader: FrameReader,
-        writer: FrameWriter,
-        write_buf: WriteBuf,
-    ) -> Self {
-        Self {
-            stream,
-            tls,
-            reader,
-            writer,
-            write_buf,
-            poisoned: false,
-        }
-    }
-
-    /// Internal constructor with all fields. Used by Connecting::finish().
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(feature = "nexus-rt"))]
     pub(crate) fn from_parts_internal(
         stream: S,
         reader: FrameReader,
@@ -615,38 +643,11 @@ impl<S: Read + Write> Client<S> {
     // Internal — read/write with optional TLS
     // =========================================================================
 
-    /// Read bytes into the FrameReader (through TLS if present).
+    /// Read bytes into the FrameReader.
+    ///
+    /// TLS is now handled at the stream level (`TlsStream<S>` or
+    /// `MaybeTls<S>`), so this always reads plaintext from `S`.
     fn read_into_reader(&mut self) -> io::Result<usize> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            // TLS may consume records without producing plaintext (e.g.
-            // session tickets after handshake, key updates). Loop until
-            // we get plaintext or EOF.
-            //
-            // On blocking sockets: read_tls_from blocks until data
-            // arrives, so this can't spin.
-            // On non-blocking sockets: read_tls_from returns WouldBlock
-            // which propagates via `?`, breaking the loop.
-            loop {
-                let tls_n = tls.read_tls_from(&mut self.stream)?;
-                if tls_n == 0 {
-                    return Ok(0); // EOF
-                }
-                let plaintext_n = tls.process_into(&mut self.reader).map_err(|e| match e {
-                    TlsError::Io(io) => io,
-                    other => io::Error::other(other),
-                })?;
-                if plaintext_n > 0 {
-                    return Ok(plaintext_n);
-                }
-                // No plaintext produced — TLS consumed a non-application
-                // record (session ticket, key update). Loop to read more.
-            }
-        }
-
-        #[cfg(not(feature = "tls"))]
-        { /* fall through */ }
-
         self.reader.read_from(&mut self.stream)
     }
 
@@ -657,32 +658,14 @@ impl<S: Read + Write> Client<S> {
         })
     }
 
-    /// Flush the write_buf to the socket (through TLS if present).
+    /// Flush the write_buf to the socket.
     fn flush_write_buf(&mut self) -> Result<(), Error> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            tls.encrypt(self.write_buf.data())?;
-            // Drain all buffered TLS records — write_tls_to may not
-            // flush everything in one call (partial write).
-            while tls.wants_write() {
-                tls.write_tls_to(&mut self.stream)?;
-            }
-            return Ok(());
-        }
-
         self.stream.write_all(self.write_buf.data())?;
         Ok(())
     }
 
-    /// Write raw bytes to the socket (through TLS if present).
+    /// Write raw bytes to the socket.
     fn write_raw(&mut self, data: &[u8]) -> Result<(), Error> {
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut self.tls {
-            tls.encrypt(data)?;
-            tls.write_tls_to(&mut self.stream)?;
-            return Ok(());
-        }
-
         self.stream.write_all(data)?;
         Ok(())
     }
@@ -691,6 +674,8 @@ impl<S: Read + Write> Client<S> {
     // Internal — handshake
     // =========================================================================
 
+    /// Perform the HTTP upgrade handshake on a stream that is already
+    /// plaintext-ready (TLS handled at the stream level).
     pub(crate) fn connect_impl(
         mut stream: S,
         host: &str,
@@ -698,26 +683,7 @@ impl<S: Read + Write> Client<S> {
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
         write_headroom: usize,
-        #[cfg(feature = "tls")] mut tls: Option<TlsCodec>,
     ) -> Result<Self, Error> {
-        // Phase 1: TLS handshake (if wss://)
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut tls {
-            while tls.is_handshaking() {
-                if tls.wants_write() {
-                    tls.write_tls_to(&mut stream)?;
-                }
-                if tls.wants_read() {
-                    tls.read_tls_from(&mut stream)?;
-                    tls.process_new_packets()?;
-                }
-            }
-            if tls.wants_write() {
-                tls.write_tls_to(&mut stream)?;
-            }
-        }
-
-        // Phase 2: HTTP upgrade
         let key = handshake::generate_key();
         let key_str = std::str::from_utf8(&key).expect("base64 output is valid ASCII");
 
@@ -733,50 +699,12 @@ impl<S: Read + Write> Client<S> {
         let n = crate::http::write_request("GET", path, &headers, &mut req_buf)
             .map_err(|_| HandshakeError::MalformedHttp)?;
 
-        // Write HTTP request (through TLS if present)
-        #[cfg(feature = "tls")]
-        if let Some(tls) = &mut tls {
-            tls.encrypt(&req_buf[..n])?;
-            tls.write_tls_to(&mut stream)?;
-        } else {
-            stream.write_all(&req_buf[..n])?;
-        }
-
-        #[cfg(not(feature = "tls"))]
         stream.write_all(&req_buf[..n])?;
 
-        // Read HTTP response
         let mut resp_reader = crate::http::ResponseReader::new(4096);
         let mut tmp = [0u8; 4096];
         loop {
-            #[cfg(feature = "tls")]
-            let bytes_read = if let Some(tls) = &mut tls {
-                // TLS may consume records without producing plaintext
-                // (e.g. session tickets after handshake). Retry bounded.
-                let mut plaintext_n = 0;
-                for _ in 0..4 {
-                    let tls_n = tls.read_tls_from(&mut stream)?;
-                    if tls_n == 0 {
-                        break; // EOF
-                    }
-                    tls.process_new_packets()?;
-                    plaintext_n = match tls.read_plaintext(&mut tmp) {
-                        Ok(n) => n,
-                        Err(TlsError::Io(io)) => return Err(Error::Io(io)),
-                        Err(e) => return Err(Error::Tls(e)),
-                    };
-                    if plaintext_n > 0 {
-                        break;
-                    }
-                }
-                plaintext_n
-            } else {
-                stream.read(&mut tmp)?
-            };
-
-            #[cfg(not(feature = "tls"))]
             let bytes_read = stream.read(&mut tmp)?;
-
             if bytes_read == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
             }
@@ -818,8 +746,6 @@ impl<S: Read + Write> Client<S> {
 
                     return Ok(Self {
                         stream,
-                        #[cfg(feature = "tls")]
-                        tls,
                         reader,
                         writer: FrameWriter::new(Role::Client),
                         write_buf: WriteBuf::new(write_cap, write_headroom),
@@ -909,8 +835,6 @@ impl<S: Read + Write> Client<S> {
 
         Ok(Self {
             stream,
-            #[cfg(feature = "tls")]
-            tls: None,
             reader,
             writer: FrameWriter::new(Role::Server),
             write_buf: WriteBuf::new(write_cap, write_headroom),

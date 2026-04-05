@@ -13,6 +13,10 @@ use super::error::RestError;
 use super::request::RequestWriter;
 use crate::http::ResponseReader;
 
+#[cfg(feature = "tls")]
+use crate::tls::{TlsCodec, TlsConfig, TlsStream};
+use crate::MaybeTls;
+
 // =============================================================================
 // ClientSlot — the item stored in the pool
 // =============================================================================
@@ -37,7 +41,7 @@ pub struct ClientSlot {
     /// Response parser. Fed by the connection during send.
     pub reader: ResponseReader,
     /// Transport. `None` if connection died and needs reconnect.
-    pub conn: Option<Client<TcpStream>>,
+    pub conn: Option<Client<MaybeTls<TcpStream>>>,
 }
 
 impl ClientSlot {
@@ -55,7 +59,7 @@ impl ClientSlot {
     /// which prevents the compiler from seeing disjoint field borrows.
     pub fn conn_and_reader(
         &mut self,
-    ) -> Result<(&mut Client<TcpStream>, &mut ResponseReader), RestError> {
+    ) -> Result<(&mut Client<MaybeTls<TcpStream>>, &mut ResponseReader), RestError> {
         let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
         Ok((conn, &mut self.reader))
     }
@@ -74,12 +78,11 @@ impl ClientSlot {
 ///
 /// ```ignore
 /// let pool = ClientPool::builder()
-///     .url("http://api.exchange.com")
+///     .url("https://api.exchange.com")
 ///     .base_path("/api/v3")
 ///     .default_header("X-API-KEY", &key)?
 ///     .connections(4)
-///     .build()
-///     .await?;
+///     .build()?;
 ///
 /// // Fast path — no reconnect, no wait
 /// let mut slot = pool.try_acquire().unwrap();
@@ -100,6 +103,11 @@ pub struct ClientPool {
 #[derive(Clone)]
 struct ReconnectConfig {
     addr: SocketAddr,
+    use_tls: bool,
+    #[cfg(feature = "tls")]
+    tls_config: Option<TlsConfig>,
+    #[cfg(feature = "tls")]
+    hostname: String,
     nodelay: bool,
 }
 
@@ -163,15 +171,18 @@ impl ClientPool {
     ///
     /// The task owns the `Pooled` guard. On successful reconnect, the
     /// guard drops and returns the healthy slot to the pool. On failure,
-    /// retries with exponential backoff.
+    /// retries with exponential backoff up to `MAX_RETRIES`. If all
+    /// retries fail, the slot returns to the pool still disconnected —
+    /// the next `try_acquire` will re-trigger reconnect.
     fn spawn_reconnect(&self, mut slot: Pooled<ClientSlot>) {
         let config = self.reconnect_config.clone();
         spawn(async move {
             const MAX_BACKOFF_MS: u64 = 5_000;
+            const MAX_RETRIES: u32 = 10;
             let mut backoff_ms = 100u64;
 
-            loop {
-                if let Ok(conn) = connect_one(&config) {
+            for _ in 0..MAX_RETRIES {
+                if let Ok(conn) = connect_one(&config).await {
                     slot.conn = Some(conn);
                     slot.reader.reset();
                     return;
@@ -179,19 +190,43 @@ impl ClientPool {
                 sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
             }
+            // Exhausted retries. Return slot to pool still disconnected.
+            // The pool's reset closure will clear the dead state. Next
+            // try_acquire will re-trigger reconnect.
         });
     }
 }
 
-/// Create a single TCP connection. Cold path — used for initial connect
+/// Create a single connection. Cold path — used for initial connect
 /// and reconnect.
-fn connect_one(config: &ReconnectConfig) -> Result<Client<TcpStream>, RestError> {
+#[allow(clippy::future_not_send, clippy::unused_async)] // Single-threaded runtime. Async for TLS handshake when tls feature enabled.
+async fn connect_one(config: &ReconnectConfig) -> Result<Client<MaybeTls<TcpStream>>, RestError> {
     let io = nexus_async_rt::io();
     let tcp = TcpStream::connect(config.addr, io)?;
     if config.nodelay {
         tcp.set_nodelay(true)?;
     }
-    Ok(Client::new(tcp))
+
+    let stream = if config.use_tls {
+        #[cfg(feature = "tls")]
+        {
+            let tls_config = config.tls_config.as_ref()
+                .ok_or_else(|| RestError::Io(std::io::Error::other("TLS config missing")))?;
+            let codec = TlsCodec::new(tls_config, &config.hostname)
+                .map_err(RestError::Tls)?;
+            let mut tls = TlsStream::new(tcp, codec);
+            tls.handshake_async().await.map_err(RestError::Tls)?;
+            MaybeTls::Tls(Box::new(tls))
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            return Err(RestError::TlsNotEnabled);
+        }
+    } else {
+        MaybeTls::Plain(tcp)
+    };
+
+    Ok(Client::new(stream))
 }
 
 // =============================================================================
@@ -204,6 +239,8 @@ pub struct ClientPoolBuilder {
     base_path: String,
     default_headers: Vec<(String, String)>,
     connections: usize,
+    #[cfg(feature = "tls")]
+    tls_config: Option<TlsConfig>,
     nodelay: bool,
     write_buffer_capacity: usize,
     response_buffer_capacity: usize,
@@ -218,6 +255,8 @@ impl ClientPoolBuilder {
             base_path: String::new(),
             default_headers: Vec::new(),
             connections: 1,
+            #[cfg(feature = "tls")]
+            tls_config: None,
             nodelay: false,
             write_buffer_capacity: 32 * 1024,
             response_buffer_capacity: 32 * 1024,
@@ -258,6 +297,16 @@ impl ClientPoolBuilder {
         self
     }
 
+    /// Custom TLS configuration.
+    ///
+    /// If not set, `https://` URLs use [`TlsConfig::new()`] (system defaults).
+    #[cfg(feature = "tls")]
+    #[must_use]
+    pub fn tls(mut self, config: &TlsConfig) -> Self {
+        self.tls_config = Some(config.clone());
+        self
+    }
+
     /// Disable Nagle's algorithm on each connection.
     #[must_use]
     pub fn disable_nagle(mut self) -> Self {
@@ -288,9 +337,11 @@ impl ClientPoolBuilder {
 
     /// Build the pool, establishing all connections.
     ///
-    /// Performs blocking DNS resolution and creates TCP connections.
+    /// Performs blocking DNS resolution and creates TCP connections
+    /// (with async TLS handshake if `https://`).
     /// Call during startup, not on the hot path.
-    pub fn build(self) -> Result<ClientPool, RestError> {
+    #[allow(clippy::future_not_send)]
+    pub async fn build(self) -> Result<ClientPool, RestError> {
         if self.url.is_empty() {
             return Err(RestError::InvalidUrl("url is required".to_string()));
         }
@@ -308,20 +359,35 @@ impl ClientPoolBuilder {
             .next()
             .ok_or_else(|| RestError::Io(std::io::Error::other("DNS resolution failed")))?;
 
-        let reconnect_config = ReconnectConfig {
-            addr,
-            nodelay: self.nodelay,
+        #[cfg(feature = "tls")]
+        let tls_config = if parsed.tls {
+            Some(match self.tls_config {
+                Some(c) => c,
+                None => TlsConfig::new().map_err(RestError::Tls)?,
+            })
+        } else {
+            None
         };
 
-        let io = nexus_async_rt::io();
+        #[cfg(not(feature = "tls"))]
+        if parsed.tls {
+            return Err(RestError::TlsNotEnabled);
+        }
+
+        let reconnect_config = ReconnectConfig {
+            addr,
+            use_tls: parsed.tls,
+            #[cfg(feature = "tls")]
+            tls_config,
+            #[cfg(feature = "tls")]
+            hostname: parsed.host.to_owned(),
+            nodelay: self.nodelay,
+        };
 
         // Build initial slots with live connections.
         let mut initial_slots = Vec::with_capacity(self.connections);
         for _ in 0..self.connections {
-            let tcp = TcpStream::connect(addr, io)?;
-            if self.nodelay {
-                tcp.set_nodelay(true)?;
-            }
+            let conn = connect_one(&reconnect_config).await?;
 
             let mut writer = RequestWriter::new(&host_header)?;
             if !self.base_path.is_empty() {
@@ -338,7 +404,7 @@ impl ClientPoolBuilder {
             initial_slots.push(ClientSlot {
                 writer,
                 reader,
-                conn: Some(Client::new(tcp)),
+                conn: Some(conn),
             });
         }
 
@@ -463,15 +529,6 @@ mod tests {
     fn conn_and_reader_error_when_no_conn() {
         let mut slot = make_disconnected_slot();
         assert!(slot.conn_and_reader().is_err());
-    }
-
-    #[test]
-    fn builder_validates_empty_url() {
-        // Can't call build() outside runtime context, but we can test
-        // validation by checking the error before DNS resolution.
-        let builder = ClientPoolBuilder::new().connections(1);
-        // url is empty — should error
-        assert!(builder.url.is_empty());
     }
 
     #[test]

@@ -360,23 +360,6 @@ impl<A: TaskAlloc + 'static> Runtime<A> {
         }));
         let mut root_cx = Context::from_waker(&root_waker);
 
-        // Tell the IO driver about the root future's task pointer so
-        // it can wake the root future via the woken flag instead of
-        // pushing to the spawned-task ready queue.
-        let root_task_ptr = {
-            let waker_ptr = root_cx.waker() as *const Waker as *const [*const (); 2];
-            // SAFETY: Waker layout validated by build script.
-            unsafe { (*waker_ptr)[1] as *mut u8 }
-        };
-        // SAFETY: woken lives on this stack frame, outlives the run loop.
-        // root_task_ptr is the value waker_to_ptr will extract from root_cx.
-        unsafe {
-            self.io.set_root_waker(
-                root_task_ptr,
-                std::sync::Arc::as_ptr(&woken),
-            );
-        }
-
         // Install thread-local context for spawn().
         let executor_ptr: *mut dyn SpawnErased = &mut self.executor;
         let _spawn_guard = RuntimeGuard::enter(executor_ptr);

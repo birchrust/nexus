@@ -8,6 +8,7 @@
 //! Use `FrameReader`/`FrameWriter` directly for sans-IO integration.
 //! Use `Client` for the convenience path with built-in HTTP upgrade.
 
+#[cfg(not(feature = "nexus-rt"))]
 mod connecting;
 mod error;
 pub(crate) mod frame;
@@ -22,6 +23,7 @@ mod stream;
 mod async_nexus;
 
 // User-facing types
+#[cfg(not(feature = "nexus-rt"))]
 pub use connecting::Connecting;
 pub use error::ProtocolError;
 pub use frame::Role;

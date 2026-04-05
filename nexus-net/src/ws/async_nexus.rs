@@ -13,7 +13,7 @@ use super::frame::Role;
 use super::frame_reader::FrameReaderBuilder;
 use super::frame_writer::FrameWriter;
 use super::message::{CloseCode, Message};
-use super::stream::{Error, Client, ClientBuilder, parse_ws_url};
+use super::stream::{Client, ClientBuilder, Error, parse_ws_url};
 use crate::buf::WriteBuf;
 use crate::ws::HandshakeError;
 
@@ -21,12 +21,10 @@ use crate::ws::HandshakeError;
 // Async I/O helpers
 // =============================================================================
 
-/// Read from an async stream, awaiting readiness.
 async fn read_async<S: AsyncRead + Unpin>(stream: &mut S, buf: &mut [u8]) -> io::Result<usize> {
     std::future::poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, buf)).await
 }
 
-/// Write all bytes to an async stream, handling partial writes.
 async fn write_all_async<S: AsyncWrite + Unpin>(
     stream: &mut S,
     mut buf: &[u8],
@@ -53,9 +51,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     ///
     /// Performs the HTTP upgrade handshake asynchronously.
     pub async fn connect_with(stream: S, url: &str) -> Result<Self, Error> {
-        ClientBuilder::new()
-            .connect_with(stream, url)
-            .await
+        ClientBuilder::new().connect_with(stream, url).await
     }
 
     /// Accept an incoming WebSocket connection (server-side, async).
@@ -65,9 +61,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     /// Receive the next message.
     ///
-    /// Reads bytes from the stream asynchronously and feeds them to the
-    /// FrameReader. Returns the next complete message, or `None` on EOF
-    /// or buffer full.
+    /// Reads bytes from the stream asynchronously (through TLS if
+    /// configured) and feeds them to the FrameReader.
     pub async fn recv(&mut self) -> Result<Option<Message<'_>>, Error> {
         loop {
             if self.reader.poll()? {
@@ -96,15 +91,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     pub async fn send_text(&mut self, text: &str) -> Result<(), Error> {
         self.writer
             .encode_text_into(text.as_bytes(), &mut self.write_buf);
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
+        self.flush_write_buf().await
     }
 
     /// Send a binary message.
     pub async fn send_binary(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer.encode_binary_into(data, &mut self.write_buf);
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
+        self.flush_write_buf().await
     }
 
     /// Send a ping.
@@ -112,8 +105,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.writer
             .encode_ping_into(data, &mut self.write_buf)
             .map_err(Error::Encode)?;
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
+        self.flush_write_buf().await
     }
 
     /// Send a pong.
@@ -121,8 +113,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.writer
             .encode_pong_into(data, &mut self.write_buf)
             .map_err(Error::Encode)?;
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
+        self.flush_write_buf().await
     }
 
     /// Initiate close handshake.
@@ -130,12 +121,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         if code == CloseCode::NoStatus {
             let mut dst = [0u8; 14];
             let n = self.writer.encode_empty_close(&mut dst);
-            write_all_async(&mut self.stream, &dst[..n]).await?;
+            self.write_raw(&dst[..n]).await
         } else {
             self.writer
                 .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
                 .map_err(Error::Encode)?;
-            write_all_async(&mut self.stream, self.write_buf.data()).await?;
+            self.flush_write_buf().await
+        }
+    }
+
+    // =========================================================================
+    // Internal — write helpers with TLS routing
+    // =========================================================================
+
+    /// Flush the write buffer to the stream. Poisons on failure.
+    async fn flush_write_buf(&mut self) -> Result<(), Error> {
+        let data = self.write_buf.data();
+        if let Err(e) = write_all_async(&mut self.stream, data).await {
+            self.poisoned = true;
+            return Err(Error::Io(e));
+        }
+        Ok(())
+    }
+
+    /// Write raw bytes to the stream. Poisons on failure.
+    async fn write_raw(&mut self, data: &[u8]) -> Result<(), Error> {
+        if let Err(e) = write_all_async(&mut self.stream, data).await {
+            self.poisoned = true;
+            return Err(Error::Io(e));
         }
         Ok(())
     }
@@ -145,6 +158,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 // Internal async handshake
 // =============================================================================
 
+/// Perform the async HTTP upgrade handshake on a stream that is already
+/// plaintext-ready (TLS handled at the stream level).
 async fn async_connect_impl<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     url: &str,
@@ -175,12 +190,12 @@ async fn async_connect_impl<S: AsyncRead + AsyncWrite + Unpin>(
     let mut resp_reader = crate::http::ResponseReader::new(4096);
     let mut tmp = [0u8; 4096];
     loop {
-        let n = read_async(&mut stream, &mut tmp).await?;
-        if n == 0 {
+        let bytes_read = read_async(&mut stream, &mut tmp).await?;
+        if bytes_read == 0 {
             return Err(HandshakeError::MalformedHttp.into());
         }
         resp_reader
-            .read(&tmp[..n])
+            .read(&tmp[..bytes_read])
             .map_err(|_| HandshakeError::MalformedHttp)?;
         match resp_reader.next() {
             Ok(Some(resp)) => {
@@ -220,8 +235,6 @@ async fn async_connect_impl<S: AsyncRead + AsyncWrite + Unpin>(
 
                 return Ok(Client {
                     stream,
-                    #[cfg(feature = "tls")]
-                    tls: None,
                     reader,
                     writer: FrameWriter::new(Role::Client),
                     write_buf: WriteBuf::new(write_cap, 14),
@@ -313,8 +326,6 @@ async fn async_accept_impl<S: AsyncRead + AsyncWrite + Unpin>(
 
     Ok(Client {
         stream,
-        #[cfg(feature = "tls")]
-        tls: None,
         reader,
         writer: FrameWriter::new(Role::Server),
         write_buf: WriteBuf::new(write_cap, 14),
@@ -329,9 +340,9 @@ async fn async_accept_impl<S: AsyncRead + AsyncWrite + Unpin>(
 impl ClientBuilder {
     /// Connect with a pre-connected async stream.
     ///
-    /// Buffer sizes from the builder are applied. Socket options and TLS
-    /// are the caller's responsibility — configure the stream before
-    /// passing it here.
+    /// The stream must already handle TLS if connecting to `wss://`.
+    /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
+    /// This method only performs the HTTP upgrade handshake.
     pub async fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(
         self,
         stream: S,
@@ -434,8 +445,6 @@ mod tests {
         Client::from_parts(mock, reader, writer)
     }
 
-    // Mock streams always return Poll::Ready, so we can drive futures
-    // synchronously with a single poll.
     fn block_on_mock<F: std::future::Future>(f: F) -> F::Output {
         let mut f = std::pin::pin!(f);
         let waker = noop_waker();
@@ -556,7 +565,6 @@ mod tests {
 
     #[test]
     fn send_on_broken_stream() {
-        /// Mock that fails all writes.
         struct BrokenWrite;
 
         impl AsyncRead for BrokenWrite {

@@ -47,8 +47,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     /// Send a request and read the response.
     ///
     /// Same API as the blocking [`Client::send`] but with `.await` on I/O.
-    ///
-    /// `Response` borrows from `reader` — drop before next send.
+    /// TLS is handled at the stream level (`TlsStream<S>` or `MaybeTls<S>`).
     #[allow(clippy::needless_pass_by_value)]
     pub async fn send<'r>(
         &mut self,
@@ -59,20 +58,176 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             return Err(RestError::ConnectionPoisoned);
         }
 
-        // Send request bytes
         if let Err(e) = write_all_async(&mut self.stream, req.as_bytes()).await {
             self.poisoned = true;
             return Err(RestError::Io(e));
         }
 
-        // Read response — poison on any error, diagnose timeouts.
-        match async_read_response(&mut self.stream, &mut self.poisoned, reader).await {
+        // Read response.
+        match self.async_read_response(reader).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 self.poisoned = true;
                 Err(diagnose_error(e))
             }
         }
+    }
+
+    async fn async_read_response<'r>(
+        &mut self,
+        reader: &'r mut ResponseReader,
+    ) -> Result<RestResponse<'r>, RestError> {
+        reader.consume_response();
+
+        let mut tmp = [0u8; 4096];
+        loop {
+            match reader.next() {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(e) => {
+                    self.poisoned = true;
+                    return Err(e.into());
+                }
+            }
+
+            let n = read_async(&mut self.stream, &mut tmp).await?;
+            if n > 0 {
+                reader.read(&tmp[..n])?;
+            }
+
+            if n == 0 {
+                self.poisoned = true;
+                return Err(RestError::ConnectionClosed(
+                    "server closed before response headers",
+                ));
+            }
+        }
+
+        let status = reader.status();
+
+        if matches!(status, 100..=199 | 204 | 304) {
+            reader.set_body_consumed(0);
+            return Ok(RestResponse::new(status, 0, reader));
+        }
+
+        if reader.is_chunked() {
+            let body = self.async_read_chunked_body(reader).await?;
+            reader.set_body_consumed(reader.body_remaining());
+            return Ok(RestResponse::new_chunked(status, body, reader));
+        }
+
+        let content_length = match reader.content_length() {
+            Some(Ok(n)) => n,
+            Some(Err(())) => {
+                return Err(RestError::Http(HttpError::Malformed(
+                    "invalid Content-Length header",
+                )));
+            }
+            None => {
+                self.poisoned = true;
+                return Err(RestError::Http(HttpError::Malformed(
+                    "no Content-Length and not chunked",
+                )));
+            }
+        };
+
+        let max_body = reader.max_body_size_limit();
+        if max_body > 0 && content_length > max_body {
+            self.poisoned = true;
+            return Err(RestError::BodyTooLarge {
+                size: content_length,
+                max: max_body,
+            });
+        }
+
+        while reader.body_remaining() < content_length {
+            let n = read_async(&mut self.stream, &mut tmp).await?;
+            if n > 0 {
+                reader.read(&tmp[..n])?;
+            }
+
+            if n == 0 {
+                self.poisoned = true;
+                return Err(RestError::ConnectionClosed(
+                    "server closed during body read",
+                ));
+            }
+        }
+
+        reader.set_body_consumed(content_length);
+        Ok(RestResponse::new(status, content_length, reader))
+    }
+
+    async fn async_read_chunked_body(
+        &mut self,
+        reader: &ResponseReader,
+    ) -> Result<Vec<u8>, RestError> {
+        use crate::http::ChunkedDecoder;
+
+        let max_body = reader.max_body_size_limit();
+        let mut decoder = ChunkedDecoder::new();
+        let mut body = Vec::with_capacity(4096);
+        let mut wire_buf = [0u8; 4096];
+        let mut decode_buf = [0u8; 4096];
+
+        // Decode any chunk data that arrived with the headers.
+        let remainder = reader.remainder();
+        if !remainder.is_empty() {
+            let mut pos = 0;
+            while pos < remainder.len() && !decoder.is_done() {
+                let (consumed, produced) = decoder
+                    .decode(&remainder[pos..], &mut decode_buf)
+                    .map_err(RestError::Http)?;
+                pos += consumed;
+                if produced > 0 {
+                    body.extend_from_slice(&decode_buf[..produced]);
+                    if max_body > 0 && body.len() > max_body {
+                        self.poisoned = true;
+                        return Err(RestError::BodyTooLarge {
+                            size: body.len(),
+                            max: max_body,
+                        });
+                    }
+                }
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+            }
+        }
+
+        while !decoder.is_done() {
+            let n = read_async(&mut self.stream, &mut wire_buf).await?;
+
+            if n == 0 {
+                self.poisoned = true;
+                return Err(RestError::ConnectionClosed(
+                    "server closed during chunked body",
+                ));
+            }
+
+            let mut pos = 0;
+            while pos < n && !decoder.is_done() {
+                let (consumed, produced) = decoder
+                    .decode(&wire_buf[pos..n], &mut decode_buf)
+                    .map_err(RestError::Http)?;
+                pos += consumed;
+                if produced > 0 {
+                    body.extend_from_slice(&decode_buf[..produced]);
+                    if max_body > 0 && body.len() > max_body {
+                        self.poisoned = true;
+                        return Err(RestError::BodyTooLarge {
+                            size: body.len(),
+                            max: max_body,
+                        });
+                    }
+                }
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+            }
+        }
+
+        Ok(body)
     }
 }
 
@@ -87,10 +242,6 @@ impl ClientBuilder {
     }
 }
 
-// =============================================================================
-// Internal — async response reading
-// =============================================================================
-
 /// Cold path: diagnose send failure.
 #[cold]
 fn diagnose_error(err: RestError) -> RestError {
@@ -102,185 +253,6 @@ fn diagnose_error(err: RestError) -> RestError {
         }
     }
     err
-}
-
-async fn async_read_response<'r, S: AsyncRead + Unpin>(
-    stream: &mut S,
-    poisoned: &mut bool,
-    reader: &'r mut ResponseReader,
-) -> Result<RestResponse<'r>, RestError> {
-    reader.consume_response();
-
-    let mut tmp = [0u8; 4096];
-    loop {
-        match reader.next() {
-            Ok(Some(_)) => break,
-            Ok(None) => {}
-            Err(e) => {
-                *poisoned = true;
-                return Err(e.into());
-            }
-        }
-        match read_async(stream, &mut tmp).await {
-            Ok(0) => {
-                *poisoned = true;
-                return Err(RestError::ConnectionClosed(
-                    "server closed before response headers",
-                ));
-            }
-            Ok(n) => {
-                if let Err(e) = reader.read(&tmp[..n]) {
-                    *poisoned = true;
-                    return Err(e.into());
-                }
-            }
-            Err(e) => {
-                *poisoned = true;
-                return Err(RestError::Io(e));
-            }
-        }
-    }
-
-    let status = reader.status();
-
-    // RFC 7230: 1xx, 204, 304 have no body.
-    if matches!(status, 100..=199 | 204 | 304) {
-        reader.set_body_consumed(0);
-        return Ok(RestResponse::new(status, 0, reader));
-    }
-
-    if reader.is_chunked() {
-        let body = async_read_chunked_body(stream, poisoned, reader).await?;
-        reader.set_body_consumed(reader.body_remaining());
-        return Ok(RestResponse::new_chunked(status, body, reader));
-    }
-
-    let content_length = match reader.content_length() {
-        Some(Ok(n)) => n,
-        Some(Err(())) => {
-            return Err(RestError::Http(HttpError::Malformed(
-                "invalid Content-Length header",
-            )));
-        }
-        None => {
-            *poisoned = true;
-            return Err(RestError::Http(HttpError::Malformed(
-                "no Content-Length and not chunked",
-            )));
-        }
-    };
-
-    let max_body = reader.max_body_size_limit();
-    if max_body > 0 && content_length > max_body {
-        *poisoned = true;
-        return Err(RestError::BodyTooLarge {
-            size: content_length,
-            max: max_body,
-        });
-    }
-
-    // Read remaining body bytes.
-    while reader.body_remaining() < content_length {
-        match read_async(stream, &mut tmp).await {
-            Ok(0) => {
-                *poisoned = true;
-                return Err(RestError::ConnectionClosed(
-                    "server closed during body read",
-                ));
-            }
-            Ok(n) => {
-                if let Err(e) = reader.read(&tmp[..n]) {
-                    *poisoned = true;
-                    return Err(e.into());
-                }
-            }
-            Err(e) => {
-                *poisoned = true;
-                return Err(RestError::Io(e));
-            }
-        }
-    }
-
-    reader.set_body_consumed(content_length);
-    Ok(RestResponse::new(status, content_length, reader))
-}
-
-async fn async_read_chunked_body<S: AsyncRead + Unpin>(
-    stream: &mut S,
-    poisoned: &mut bool,
-    reader: &ResponseReader,
-) -> Result<Vec<u8>, RestError> {
-    use crate::http::ChunkedDecoder;
-
-    let max_body = reader.max_body_size_limit();
-    let mut decoder = ChunkedDecoder::new();
-    let mut body = Vec::with_capacity(4096);
-    let mut wire_buf = [0u8; 4096];
-    let mut decode_buf = [0u8; 4096];
-
-    // Decode any chunk data that arrived with the headers.
-    let remainder = reader.remainder();
-    if !remainder.is_empty() {
-        let mut pos = 0;
-        while pos < remainder.len() && !decoder.is_done() {
-            let (consumed, produced) = decoder
-                .decode(&remainder[pos..], &mut decode_buf)
-                .map_err(RestError::Http)?;
-            pos += consumed;
-            if produced > 0 {
-                body.extend_from_slice(&decode_buf[..produced]);
-                if max_body > 0 && body.len() > max_body {
-                    *poisoned = true;
-                    return Err(RestError::BodyTooLarge {
-                        size: body.len(),
-                        max: max_body,
-                    });
-                }
-            }
-            if consumed == 0 && produced == 0 {
-                break;
-            }
-        }
-    }
-
-    while !decoder.is_done() {
-        let n = match read_async(stream, &mut wire_buf).await {
-            Ok(0) => {
-                *poisoned = true;
-                return Err(RestError::ConnectionClosed(
-                    "server closed during chunked body",
-                ));
-            }
-            Ok(n) => n,
-            Err(e) => {
-                *poisoned = true;
-                return Err(RestError::Io(e));
-            }
-        };
-
-        let mut pos = 0;
-        while pos < n && !decoder.is_done() {
-            let (consumed, produced) = decoder
-                .decode(&wire_buf[pos..n], &mut decode_buf)
-                .map_err(RestError::Http)?;
-            pos += consumed;
-            if produced > 0 {
-                body.extend_from_slice(&decode_buf[..produced]);
-                if max_body > 0 && body.len() > max_body {
-                    *poisoned = true;
-                    return Err(RestError::BodyTooLarge {
-                        size: body.len(),
-                        max: max_body,
-                    });
-                }
-            }
-            if consumed == 0 && produced == 0 {
-                break;
-            }
-        }
-    }
-
-    Ok(body)
 }
 
 // =============================================================================
