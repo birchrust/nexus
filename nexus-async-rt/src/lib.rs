@@ -45,6 +45,7 @@ mod timer;
 mod runtime;
 mod shutdown;
 mod backoff;
+pub mod channel;
 
 // Re-export slab type for convenience — users create the slab and hand it to the builder.
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
