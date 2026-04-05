@@ -1,4 +1,4 @@
-//! Async HTTP REST client — adapts nexus-net for async runtimes.
+//! MaybeTls — plain TCP or TLS, unified async I/O.
 
 #[cfg(feature = "tokio-rt")]
 mod tokio;

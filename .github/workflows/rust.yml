@@ -20,17 +20,19 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
-    - name: Run tests (all features, excluding nexus-net)
-      run: cargo test --workspace --all-features --verbose --exclude nexus-net
+    - name: Run tests (all features, excluding nexus-net and nexus-async-net)
+      run: cargo test --workspace --all-features --verbose --exclude nexus-net --exclude nexus-async-net
     - name: Test nexus-net (default - sync)
       run: cargo test -p nexus-net --verbose
     - name: Test nexus-net (sync + TLS)
       run: cargo test -p nexus-net --features tls --verbose
-    - name: Test nexus-net (async)
-      run: cargo test -p nexus-net --lib --features nexus-rt --verbose
-    - name: Test nexus-net (nexus-rt + TLS)
-      run: cargo test -p nexus-net --lib --features nexus-rt,tls --verbose
     - name: Test nexus-net (tokio)
       run: cargo test -p nexus-net --lib --features tokio --verbose
     - name: Test nexus-net (tokio + TLS)
       run: cargo test -p nexus-net --lib --features tokio,tls --verbose
+    - name: Test nexus-async-net (tokio-rt + tls, default)
+      run: cargo test -p nexus-async-net --verbose
+    - name: Test nexus-async-net (nexus-rt + tls)
+      run: cargo test -p nexus-async-net --no-default-features --features nexus-rt,tls --lib --verbose
+    - name: Test nexus-async-net (nexus-rt, no tls)
+      run: cargo test -p nexus-async-net --no-default-features --features nexus-rt --lib --verbose
