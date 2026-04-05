@@ -12,10 +12,10 @@ categories.workspace = true
 [dependencies]
 libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
-nexus-rt = { path = "../nexus-rt" }
+nexus-rt = { version = "2.0.0", path = "../nexus-rt" }
 slab = "0.4"
 nexus-slab = { version = "2.2.0", path = "../nexus-slab" }
-nexus-timer = { path = "../nexus-timer" }
+nexus-timer = { version = "1.4.0", path = "../nexus-timer" }
 signal-hook = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
 
