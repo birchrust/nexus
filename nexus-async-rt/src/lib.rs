@@ -1,12 +1,13 @@
 //! Single-threaded async runtime.
 //!
 //! Two spawn strategies:
-//! - **`spawn()`** — Box-allocated. Default. No setup needed.
+//! - **`spawn_boxed()`** — Box-allocated. Default. No setup needed.
 //! - **`spawn_slab()`** — Slab-allocated. Pre-allocated, zero-alloc
 //!   hot path. Requires slab configured via [`RuntimeBuilder::slab`].
 //!
 //! ```ignore
 //! use nexus_async_rt::*;
+//! use nexus_slab::byte::unbounded::Slab;
 //! use nexus_rt::WorldBuilder;
 //!
 //! let mut world = WorldBuilder::new().build();
@@ -14,16 +15,18 @@
 //! // Simple — Box-allocated tasks, no slab setup
 //! let mut rt = Runtime::new(&mut world);
 //! rt.block_on(async {
-//!     spawn(async { /* Box-allocated */ });
+//!     spawn_boxed(async { /* Box-allocated */ });
 //! });
 //!
 //! // Power user — with slab for hot-path tasks
+//! // SAFETY: single-threaded runtime.
+//! let slab = unsafe { Slab::<256>::with_chunk_capacity(64) };
 //! let mut rt = Runtime::builder(&mut world)
-//!     .slab::<256>(64)
+//!     .slab_unbounded(slab)
 //!     .build();
 //! rt.block_on(async {
-//!     spawn(async { /* Box-allocated */ });
-//!     spawn_slab(async { /* slab-allocated, zero-alloc */ });
+//!     spawn_boxed(async { /* Box-allocated, long-lived */ });
+//!     spawn_slab(async { /* slab-allocated, hot path */ });
 //! });
 //! ```
 
@@ -144,7 +147,7 @@ impl Executor {
     ///
     /// The task at `ptr` must have been constructed with `Task::new_with_free`
     /// and a valid `free_fn` for the slab allocator.
-    pub fn spawn_raw(&mut self, ptr: *mut u8) -> TaskId {
+    pub(crate) fn spawn_raw(&mut self, ptr: *mut u8) -> TaskId {
         self.enqueue(ptr);
         TaskId(ptr)
     }
@@ -240,7 +243,7 @@ impl Executor {
     }
 
     /// Returns mutable references for TLS setup.
-    pub fn poll_context_mut(&mut self) -> (&mut Vec<*mut u8>, &mut Vec<*mut u8>) {
+    pub(crate) fn poll_context_mut(&mut self) -> (&mut Vec<*mut u8>, &mut Vec<*mut u8>) {
         (&mut self.incoming, &mut self.deferred_free)
     }
 
@@ -258,6 +261,10 @@ impl Executor {
     /// Cancel a task by ID.
     pub fn cancel(&mut self, id: TaskId) {
         let ptr = id.0;
+        // Skip if already completed (e.g. double-cancel or cancel after poll).
+        if unsafe { task::is_completed(ptr) } {
+            return;
+        }
         self.incoming.retain(|p| *p != ptr);
         self.draining.retain(|p| *p != ptr);
         self.complete_task(ptr);

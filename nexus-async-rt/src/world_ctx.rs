@@ -31,7 +31,7 @@ use nexus_rt::World;
 /// # Examples
 ///
 /// ```ignore
-/// use nexus_async_rt::{DefaultBoundedAlloc, Executor, WorldCtx};
+/// use nexus_async_rt::{Executor, WorldCtx};
 /// use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler};
 ///
 /// let mut world = builder.build();
@@ -42,7 +42,7 @@ use nexus_rt::World;
 ///     books.update(q);
 /// }).into_handler(world.registry());
 ///
-/// let mut executor = Executor::new(DefaultBoundedAlloc::new(64), 64);
+/// let mut executor = Executor::new(64);
 /// executor.spawn_boxed(async move {
 ///     let data = read_socket().await;
 ///     // Single deref per resource at dispatch time

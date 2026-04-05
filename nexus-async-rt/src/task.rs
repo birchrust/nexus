@@ -351,7 +351,8 @@ mod tests {
             set_queued(ptr, false);
             assert!(!is_queued(ptr));
 
-            // Clean up via free_fn
+            // Drop future, then free storage (matches executor lifecycle).
+            drop_task_future(ptr);
             free_task(ptr);
         }
     }
@@ -372,7 +373,8 @@ mod tests {
         unsafe {
             assert_eq!(tracker_key(ptr), 42);
             assert_eq!(ref_count(ptr), 1);
-            // free_fn should deallocate without panic
+            // Drop future, then free storage.
+            drop_task_future(ptr);
             free_task(ptr);
         }
     }

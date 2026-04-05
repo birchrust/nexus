@@ -64,16 +64,15 @@ where
 ///
 /// Zero allocation — the task is placed directly into a pre-allocated
 /// slab slot via TLS. Requires a slab configured via
-/// [`RuntimeBuilder::slab`].
-///
-/// The const generic `S` must match the slot size configured on the
-/// runtime builder. Use [`slot_size`](crate::slot_size) to compute.
+/// [`RuntimeBuilder::slab_unbounded`] or [`RuntimeBuilder::slab_bounded`].
 ///
 /// # Panics
 ///
 /// - If called outside a runtime context.
 /// - If no slab is configured.
-pub fn spawn_slab<const S: usize, F>(future: F) -> TaskId
+/// - If the slab is full (bounded slab).
+/// - If the task future exceeds the slab's slot capacity.
+pub fn spawn_slab<F>(future: F) -> TaskId
 where
     F: Future<Output = ()> + 'static,
 {
@@ -82,7 +81,7 @@ where
         assert!(!ptr.is_null(), "spawn_slab() called outside of Runtime::block_on");
         let executor = unsafe { &mut *ptr };
         let tracker_key = executor.next_tracker_key();
-        let task_ptr = crate::alloc::slab_spawn::<F, S>(future, tracker_key);
+        let task_ptr = crate::alloc::slab_spawn(future, tracker_key);
         executor.spawn_raw(task_ptr)
     })
 }
@@ -96,7 +95,8 @@ where
 /// # Examples
 ///
 /// ```ignore
-/// use nexus_async_rt::{Runtime, spawn, spawn_slab, slot_size};
+/// use nexus_async_rt::{Runtime, spawn_boxed, spawn_slab};
+/// use nexus_slab::byte::unbounded::Slab;
 /// use nexus_rt::WorldBuilder;
 ///
 /// let mut world = WorldBuilder::new().build();
@@ -108,8 +108,9 @@ where
 /// });
 ///
 /// // With slab for hot-path tasks
+/// let slab = unsafe { Slab::<256>::with_chunk_capacity(64) };
 /// let mut rt = Runtime::builder(&mut world)
-///     .slab::<256>(64)
+///     .slab_unbounded(slab)
 ///     .build();
 /// rt.block_on(async {
 ///     spawn_boxed(async { /* Box-allocated */ });
@@ -140,8 +141,9 @@ pub struct Runtime {
     /// is accessed via TLS fn pointers — this field just owns the memory.
     _slab: Option<Box<dyn std::any::Any>>,
 
-    /// RAII guard for slab TLS. Dropped after the run loop exits.
-    _slab_guard: Option<crate::alloc::SlabGuard>,
+    /// Slab TLS config for deferred installation in run_loop.
+    /// None = no slab (Box-only).
+    slab_tls: Option<crate::alloc::SlabTlsConfig>,
 }
 
 impl Runtime {
@@ -180,8 +182,8 @@ impl Runtime {
 // RuntimeBuilder
 // =============================================================================
 
-/// Type-erased closure that creates a slab + installs TLS.
-type SlabInstaller = Box<dyn FnOnce() -> (Box<dyn std::any::Any>, crate::alloc::SlabGuard)>;
+/// Type-erased closure that boxes the slab and returns (ownership, TLS config).
+type SlabInstaller = Box<dyn FnOnce() -> (Box<dyn std::any::Any>, crate::alloc::SlabTlsConfig)>;
 
 /// Builder for configuring a [`Runtime`].
 ///
@@ -189,12 +191,14 @@ type SlabInstaller = Box<dyn FnOnce() -> (Box<dyn std::any::Any>, crate::alloc::
 ///
 /// ```ignore
 /// use nexus_async_rt::*;
+/// use nexus_slab::byte::unbounded::Slab;
 ///
 /// let mut world = nexus_rt::WorldBuilder::new().build();
+/// let slab = unsafe { Slab::<256>::with_chunk_capacity(64) };
 ///
 /// let mut rt = Runtime::builder(&mut world)
 ///     .tasks_per_cycle(128)
-///     .slab::<256>(64)
+///     .slab_unbounded(slab)
 ///     .signal_handlers(true)
 ///     .build();
 /// ```
@@ -253,12 +257,15 @@ impl<'w> RuntimeBuilder<'w> {
         self
     }
 
-    /// Hand off a pre-created slab for [`spawn_slab`].
+    /// Hand off a growable (unbounded) slab for [`spawn_slab`].
     ///
     /// `S` is the total slot size in bytes. The task header uses 32 bytes,
     /// so `Slab<256>` gives 224 bytes for the future. Most async IO
     /// futures are 128–256 bytes — `Slab<256>` or `Slab<512>` covers
     /// the common cases.
+    ///
+    /// The slab grows by allocating new chunks when full. No task spawn
+    /// will ever fail due to capacity.
     ///
     /// # Examples
     ///
@@ -269,10 +276,10 @@ impl<'w> RuntimeBuilder<'w> {
     /// let slab = unsafe { Slab::<256>::with_chunk_capacity(64) };
     ///
     /// let mut rt = Runtime::builder(&mut world)
-    ///     .slab(slab)
+    ///     .slab_unbounded(slab)
     ///     .build();
     /// ```
-    pub fn slab<const S: usize>(
+    pub fn slab_unbounded<const S: usize>(
         mut self,
         slab: nexus_slab::byte::unbounded::Slab<S>,
     ) -> Self {
@@ -283,11 +290,44 @@ impl<'w> RuntimeBuilder<'w> {
         self.slab_installer = Some(Box::new(move || {
             let slab = Box::new(slab);
             let slab_ptr = std::ptr::from_ref(slab.as_ref()).cast::<u8>();
-            let guard = crate::alloc::install_slab(
-                slab_ptr,
-                crate::alloc::slab_free_fn::<S>(),
-            );
-            (slab as Box<dyn std::any::Any>, guard)
+            let config = crate::alloc::make_unbounded_config::<S>(slab_ptr);
+            (slab as Box<dyn std::any::Any>, config)
+        }));
+        self
+    }
+
+    /// Hand off a fixed-capacity (bounded) slab for [`spawn_slab`].
+    ///
+    /// `S` is the total slot size in bytes. The slab has a fixed number
+    /// of slots — `spawn_slab` panics if the slab is full. Use this
+    /// when you want deterministic memory usage and know the maximum
+    /// number of concurrent hot-path tasks.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use nexus_slab::byte::bounded::Slab;
+    ///
+    /// // SAFETY: single-threaded runtime.
+    /// let slab = unsafe { Slab::<256>::with_capacity(64) };
+    ///
+    /// let mut rt = Runtime::builder(&mut world)
+    ///     .slab_bounded(slab)
+    ///     .build();
+    /// ```
+    pub fn slab_bounded<const S: usize>(
+        mut self,
+        slab: nexus_slab::byte::bounded::Slab<S>,
+    ) -> Self {
+        const {
+            assert!(S >= 64,
+                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)");
+        }
+        self.slab_installer = Some(Box::new(move || {
+            let slab = Box::new(slab);
+            let slab_ptr = std::ptr::from_ref(slab.as_ref()).cast::<u8>();
+            let config = crate::alloc::make_bounded_config::<S>(slab_ptr);
+            (slab as Box<dyn std::any::Any>, config)
         }));
         self
     }
@@ -305,12 +345,12 @@ impl<'w> RuntimeBuilder<'w> {
         let ctx = WorldCtx::new(self.world);
         let event_time = Cell::new(Instant::now());
 
-        // Install slab if configured.
-        let (slab, slab_guard) = self
+        // Create slab if configured. TLS is installed later in run_loop.
+        let (slab, slab_tls) = self
             .slab_installer
             .map_or((None, None), |install| {
-                let (slab, guard) = install();
-                (Some(slab), Some(guard))
+                let (slab, config) = install();
+                (Some(slab), Some(config))
             });
 
         let rt = Runtime {
@@ -321,7 +361,7 @@ impl<'w> RuntimeBuilder<'w> {
             event_time,
             shutdown,
             _slab: slab,
-            _slab_guard: slab_guard,
+            slab_tls,
         };
 
         if self.signal_handlers {
@@ -369,6 +409,9 @@ impl Runtime {
             &raw const self.event_time,
             std::sync::Arc::as_ptr(&self.shutdown.flag_ptr()),
         );
+
+        // Install slab TLS if configured (scoped to run_loop).
+        let _slab_guard = self.slab_tls.as_ref().map(crate::alloc::install_slab);
 
         let mut root: Pin<Box<dyn Future<Output = F::Output>>> = Box::pin(future);
 
@@ -623,9 +666,7 @@ mod tests {
         spawn_boxed(async {});
     }
 
-    const SLOT: usize = 256;
-
-    fn test_slab() -> nexus_slab::byte::unbounded::Slab<SLOT> {
+    fn test_slab() -> nexus_slab::byte::unbounded::Slab<256> {
         // SAFETY: single-threaded test.
         unsafe { nexus_slab::byte::unbounded::Slab::with_chunk_capacity(16) }
     }
@@ -638,7 +679,7 @@ mod tests {
         let mut rt = Runtime::new(&mut world);
 
         rt.block_on(async {
-            spawn_slab::<SLOT, _>(async {});
+            spawn_slab(async {});
         });
     }
 
@@ -649,11 +690,11 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = Runtime::builder(&mut world)
-            .slab(test_slab())
+            .slab_unbounded(test_slab())
             .build();
 
         rt.block_on(async move {
-            spawn_slab::<SLOT, _>(async move {
+            spawn_slab(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 = 77;
                 });
@@ -672,7 +713,7 @@ mod tests {
         let mut world = wb.build();
 
         let mut rt = Runtime::builder(&mut world)
-            .slab(test_slab())
+            .slab_unbounded(test_slab())
             .build();
 
         rt.block_on(async move {
@@ -683,7 +724,7 @@ mod tests {
                 });
             });
             // Slab-allocated
-            spawn_slab::<SLOT, _>(async move {
+            spawn_slab(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 += 20;
                 });
