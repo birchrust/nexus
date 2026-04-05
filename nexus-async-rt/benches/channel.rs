@@ -1,12 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nexus_async_rt::channel::mpsc;
+use nexus_async_rt::channel::local;
 
 // =============================================================================
 // Synchronous path benchmarks (no executor needed)
 // =============================================================================
 
 fn try_send_try_recv(c: &mut Criterion) {
-    let (tx, rx) = mpsc::channel::<u64>(64);
+    let (tx, rx) = local::channel::<u64>(64);
 
     c.bench_function("mpsc try_send+try_recv", |b| {
         b.iter(|| {
@@ -18,7 +18,7 @@ fn try_send_try_recv(c: &mut Criterion) {
 }
 
 fn try_send_burst_then_drain(c: &mut Criterion) {
-    let (tx, rx) = mpsc::channel::<u64>(64);
+    let (tx, rx) = local::channel::<u64>(64);
 
     c.bench_function("mpsc burst 64 send + 64 recv", |b| {
         b.iter(|| {
@@ -33,7 +33,7 @@ fn try_send_burst_then_drain(c: &mut Criterion) {
 }
 
 fn try_send_throughput(c: &mut Criterion) {
-    let (tx, rx) = mpsc::channel::<u64>(1024);
+    let (tx, rx) = local::channel::<u64>(1024);
 
     c.bench_function("mpsc 10k try_send+try_recv sequential", |b| {
         b.iter(|| {
@@ -64,7 +64,7 @@ fn async_send_recv(c: &mut Criterion) {
             let count_clone = count.clone();
 
             rt.block_on(async move {
-                let (tx, rx) = mpsc::channel::<u64>(64);
+                let (tx, rx) = local::channel::<u64>(64);
 
                 spawn_boxed(async move {
                     for i in 0..10_000u64 {
@@ -104,7 +104,7 @@ fn async_send_recv_small_buffer(c: &mut Criterion) {
             let count_clone = count.clone();
 
             rt.block_on(async move {
-                let (tx, rx) = mpsc::channel::<u64>(4);
+                let (tx, rx) = local::channel::<u64>(4);
 
                 spawn_boxed(async move {
                     for i in 0..10_000u64 {

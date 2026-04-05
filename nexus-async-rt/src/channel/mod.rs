@@ -1,18 +1,18 @@
-//! Local async channels for single-threaded task communication.
-//!
-//! `!Send`, `!Sync` — designed for the nexus-async-rt single-threaded
-//! executor. No atomics, no `Arc`, zero synchronization overhead.
+//! Async channels for task communication.
 //!
 //! # Channel Types
 //!
-//! - [`mpsc`] — bounded multi-producer, single-consumer channel
+//! - [`local`] — bounded MPSC for single-threaded use. `!Send`, `!Sync`.
+//!   No atomics, no `Arc`, zero synchronization overhead. Must be created
+//!   inside [`Runtime::block_on`](crate::Runtime::block_on).
 //!
 //! # Example
 //!
 //! ```ignore
-//! use nexus_async_rt::channel::mpsc;
+//! use nexus_async_rt::channel::local;
 //!
-//! let (tx, rx) = mpsc::channel::<u64>(64);
+//! // Inside block_on:
+//! let (tx, rx) = local::channel::<u64>(64);
 //!
 //! spawn_boxed(async move {
 //!     tx.send(42).await.unwrap();
@@ -22,7 +22,7 @@
 //! assert_eq!(value, 42);
 //! ```
 
-pub mod mpsc;
+pub mod local;
 
 use std::fmt;
 

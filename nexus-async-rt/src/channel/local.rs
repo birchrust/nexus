@@ -3,10 +3,13 @@
 //! `!Send`, `!Sync` — single-threaded only. No atomics, no `Arc`.
 //! Fixed-capacity power-of-two ring buffer with intrusive waiter list.
 //!
-//! ```ignore
-//! use nexus_async_rt::channel::mpsc;
+//! Must be created inside [`Runtime::block_on`](crate::Runtime::block_on).
 //!
-//! let (tx, rx) = mpsc::channel::<u64>(64);
+//! ```ignore
+//! use nexus_async_rt::channel::local;
+//!
+//! // Inside block_on:
+//! let (tx, rx) = local::channel::<u64>(64);
 //! tx.send(42).await.unwrap();
 //! assert_eq!(rx.recv().await.unwrap(), 42);
 //! ```
@@ -285,14 +288,22 @@ unsafe fn inner<T>(shared: &Shared<T>) -> &mut Inner<T> {
 // channel()
 // =============================================================================
 
-/// Create a bounded MPSC channel.
+/// Create a bounded local MPSC channel.
 ///
 /// `capacity` is rounded up to the next power of two.
 ///
 /// # Panics
 ///
-/// Panics if `capacity` is 0.
+/// - Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
+/// - Panics if `capacity` is 0.
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+    crate::context::assert_in_runtime(
+        "local::channel() called outside Runtime::block_on",
+    );
+    channel_inner(capacity)
+}
+
+fn channel_inner<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let shared: Shared<T> = Rc::new(UnsafeCell::new(Inner::new(capacity)));
     let tx = Sender {
         inner: shared.clone(),
@@ -566,7 +577,7 @@ mod tests {
     use std::task::{RawWaker, RawWakerVTable};
 
     // =========================================================================
-    // Minimal test executor
+    // Minimal test executor + fake runtime context
     // =========================================================================
 
     fn noop_waker() -> Waker {
@@ -689,7 +700,7 @@ mod tests {
 
     #[test]
     fn send_recv_single() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
 
         // try_send then try_recv
         tx.try_send(1).unwrap();
@@ -704,7 +715,7 @@ mod tests {
 
     #[test]
     fn fifo_ordering() {
-        let (tx, rx) = channel(8);
+        let (tx, rx) = channel_inner(8);
         for i in 0..8u32 {
             tx.try_send(i).unwrap();
         }
@@ -715,7 +726,7 @@ mod tests {
 
     #[test]
     fn try_send_full() {
-        let (tx, rx) = channel(2);
+        let (tx, rx) = channel_inner(2);
         tx.try_send(1u32).unwrap();
         tx.try_send(2).unwrap();
 
@@ -730,7 +741,7 @@ mod tests {
 
     #[test]
     fn try_recv_empty() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 
         tx.try_send(1).unwrap();
@@ -740,7 +751,7 @@ mod tests {
 
     #[test]
     fn sender_drop_signals_closed() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
         tx.try_send(42).unwrap();
         drop(tx);
 
@@ -752,7 +763,7 @@ mod tests {
 
     #[test]
     fn receiver_drop_signals_closed() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
         drop(rx);
 
         let err = tx.try_send(1).unwrap_err();
@@ -761,7 +772,7 @@ mod tests {
 
     #[test]
     fn multiple_senders() {
-        let (tx1, rx) = channel(8);
+        let (tx1, rx) = channel_inner(8);
         let tx2 = tx1.clone();
 
         tx1.try_send(1u32).unwrap();
@@ -775,7 +786,7 @@ mod tests {
 
     #[test]
     fn last_sender_drop_wakes_receiver() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
 
         let mut recv_fut = std::pin::pin!(rx.recv());
         // Poll recv — should be Pending (buffer empty, sender alive).
@@ -791,7 +802,7 @@ mod tests {
 
     #[test]
     fn recv_pending_then_ready() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
 
         let mut recv_fut = std::pin::pin!(rx.recv());
 
@@ -810,7 +821,7 @@ mod tests {
 
     #[test]
     fn send_pending_then_ready() {
-        let (tx, rx) = channel(2);
+        let (tx, rx) = channel_inner(2);
         tx.try_send(1u32).unwrap();
         tx.try_send(2).unwrap();
         // Buffer full.
@@ -836,7 +847,7 @@ mod tests {
 
     #[test]
     fn send_cancelled_on_drop() {
-        let (tx, rx) = channel(2);
+        let (tx, rx) = channel_inner(2);
         tx.try_send(1u32).unwrap();
         tx.try_send(2).unwrap();
 
@@ -859,7 +870,7 @@ mod tests {
 
     #[test]
     fn capacity_one() {
-        let (tx, rx) = channel(1);
+        let (tx, rx) = channel_inner(1);
         tx.try_send(42u32).unwrap();
         assert!(tx.try_send(43).unwrap_err().is_full());
         assert_eq!(rx.try_recv().unwrap(), 42);
@@ -870,7 +881,7 @@ mod tests {
     #[test]
     fn non_power_of_two_rounds_up() {
         // capacity 3 → 4, capacity 5 → 8
-        let (tx, rx) = channel(3);
+        let (tx, rx) = channel_inner(3);
         for i in 0..4u32 {
             tx.try_send(i).unwrap();
         }
@@ -882,7 +893,7 @@ mod tests {
 
     #[test]
     fn clone_sender_increments_count() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
         let tx2 = tx.clone();
         let tx3 = tx.clone();
 
@@ -899,7 +910,7 @@ mod tests {
 
     #[test]
     fn recv_drains_buffer_after_all_senders_drop() {
-        let (tx, rx) = channel(8);
+        let (tx, rx) = channel_inner(8);
         tx.try_send(1u32).unwrap();
         tx.try_send(2).unwrap();
         tx.try_send(3).unwrap();
@@ -914,7 +925,7 @@ mod tests {
 
     #[test]
     fn send_after_receiver_drop_returns_closed() {
-        let (tx, rx) = channel::<u32>(4);
+        let (tx, rx) = channel_inner::<u32>(4);
         drop(rx);
 
         let mut send_fut = std::pin::pin!(tx.send(1));
@@ -926,7 +937,7 @@ mod tests {
 
     #[test]
     fn multiple_senders_blocked_then_unblocked() {
-        let (tx1, rx) = channel(2);
+        let (tx1, rx) = channel_inner(2);
         let tx2 = tx1.clone();
         tx1.try_send(1u32).unwrap();
         tx2.try_send(2).unwrap();
@@ -960,7 +971,7 @@ mod tests {
 
     #[test]
     fn receiver_drop_wakes_blocked_senders() {
-        let (tx, rx) = channel(1);
+        let (tx, rx) = channel_inner(1);
         tx.try_send(1u32).unwrap();
 
         let mut send_fut = std::pin::pin!(tx.send(2));
@@ -988,7 +999,7 @@ mod tests {
             }
         }
 
-        let (tx, rx) = channel(4);
+        let (tx, rx) = channel_inner(4);
         tx.try_send(DropCounter(dropped.clone())).unwrap();
         tx.try_send(DropCounter(dropped.clone())).unwrap();
         tx.try_send(DropCounter(dropped.clone())).unwrap();
@@ -1006,7 +1017,7 @@ mod tests {
 
     #[test]
     fn stress_sequential_send_recv() {
-        let (tx, rx) = channel(64);
+        let (tx, rx) = channel_inner(64);
         for i in 0..100_000u64 {
             tx.try_send(i).unwrap();
             assert_eq!(rx.try_recv().unwrap(), i);
@@ -1015,7 +1026,7 @@ mod tests {
 
     #[test]
     fn stress_fill_drain_cycles() {
-        let (tx, rx) = channel(64);
+        let (tx, rx) = channel_inner(64);
         for _ in 0..1_000 {
             // Fill
             for i in 0..64u32 {
@@ -1034,7 +1045,7 @@ mod tests {
     #[test]
     fn stress_interleaved_small_buffer() {
         // Small buffer forces frequent wrap-around.
-        let (tx, rx) = channel(2);
+        let (tx, rx) = channel_inner(2);
         for i in 0..50_000u64 {
             tx.try_send(i).unwrap();
             assert_eq!(rx.try_recv().unwrap(), i);

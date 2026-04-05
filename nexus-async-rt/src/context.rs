@@ -86,6 +86,12 @@ impl Drop for ContextGuard {
     }
 }
 
+/// Assert that we're inside a runtime context. Panics with `msg` if not.
+pub(crate) fn assert_in_runtime(msg: &str) {
+    let ptr = CTX_WORLD.with(Cell::get);
+    assert!(!ptr.is_null(), "{msg}");
+}
+
 // =============================================================================
 // Public free functions — the user-facing API
 // =============================================================================

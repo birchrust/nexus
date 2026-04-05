@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use nexus_async_rt::channel::mpsc;
+use nexus_async_rt::channel::local;
 use nexus_async_rt::{Runtime, spawn_boxed};
 use nexus_rt::WorldBuilder;
 
@@ -21,7 +21,7 @@ fn single_producer_consumer() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let (tx, rx) = mpsc::channel::<u32>(16);
+        let (tx, rx) = local::channel::<u32>(16);
 
         spawn_boxed(async move {
             for i in 0..10 {
@@ -46,7 +46,7 @@ fn multiple_producers() {
     let total_clone = total.clone();
 
     rt.block_on(async move {
-        let (tx, rx) = mpsc::channel::<u64>(64);
+        let (tx, rx) = local::channel::<u64>(64);
 
         // Spawn 4 producers, each sending 100 values.
         for producer_id in 0u64..4 {
@@ -81,7 +81,7 @@ fn backpressure_with_small_buffer() {
 
     rt.block_on(async move {
         // Buffer of 2 — producer will block frequently.
-        let (tx, rx) = mpsc::channel::<u32>(2);
+        let (tx, rx) = local::channel::<u32>(2);
 
         spawn_boxed(async move {
             for i in 0..1000 {
@@ -106,7 +106,7 @@ fn sender_drop_closes_receiver() {
     let flag = closed.clone();
 
     rt.block_on(async move {
-        let (tx, rx) = mpsc::channel::<u32>(8);
+        let (tx, rx) = local::channel::<u32>(8);
 
         spawn_boxed(async move {
             tx.send(1).await.unwrap();
@@ -131,7 +131,7 @@ fn receiver_drop_signals_senders() {
     let flag = got_error.clone();
 
     rt.block_on(async move {
-        let (tx, rx) = mpsc::channel::<u32>(2);
+        let (tx, rx) = local::channel::<u32>(2);
 
         spawn_boxed(async move {
             // Fill buffer.
@@ -162,7 +162,7 @@ fn stress_high_throughput() {
     let total_clone = total.clone();
 
     rt.block_on(async move {
-        let (tx, rx) = mpsc::channel::<u64>(256);
+        let (tx, rx) = local::channel::<u64>(256);
 
         spawn_boxed(async move {
             for i in 0..100_000u64 {
