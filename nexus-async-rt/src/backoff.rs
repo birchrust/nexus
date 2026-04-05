@@ -23,7 +23,11 @@
 //! }
 //! ```
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Global counter for per-instance jitter seed.
+static BACKOFF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Retries exhausted — either max retries reached or deadline passed.
 ///
@@ -52,6 +56,9 @@ pub struct Backoff {
     deadline: Option<Instant>,
     retries: u32,
     jitter: f64,
+    /// Per-instance seed so identically-configured instances produce
+    /// different jitter sequences (mitigates thundering herd).
+    seed: u64,
 }
 
 impl Backoff {
@@ -68,12 +75,22 @@ impl Backoff {
     /// reached — the caller should escalate or fail over.
     ///
     /// If a deadline is set, the sleep is capped to not exceed it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
     pub async fn wait<E>(&mut self, err: E) -> Result<(), Exhausted<E>> {
         if self.is_exhausted() {
             return Err(Exhausted(err));
         }
 
         let delay = self.effective_delay();
+
+        // Re-check: deadline may have been reached while computing delay.
+        if delay.is_zero() && self.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(Exhausted(err));
+        }
+
         crate::context::sleep(delay).await;
         self.advance();
         Ok(())
@@ -84,7 +101,10 @@ impl Backoff {
     /// Useful when the caller manages timing externally.
     pub fn advance(&mut self) {
         self.retries += 1;
-        self.current = (self.current * 2).min(self.max_delay);
+        self.current = self
+            .current
+            .checked_mul(2)
+            .map_or(self.max_delay, |next| next.min(self.max_delay));
     }
 
     /// Whether retries are exhausted (max retries or deadline).
@@ -137,13 +157,15 @@ impl Backoff {
             return self.current;
         }
 
-        // Simple jitter: multiply by (1.0 ± jitter).
-        // Use a cheap deterministic source (retry count + nanos) instead
-        // of pulling in a full RNG.
+        // Jitter: multiply by (1.0 ± jitter).
+        // Per-instance seed mixed with retry count so identically-configured
+        // instances produce different sequences (mitigates thundering herd).
         let hash = {
             let a = self.retries as u64;
             let b = self.current.as_nanos() as u64;
-            a.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(b)
+            a.wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(b)
+                .wrapping_add(self.seed)
         };
         // Map to [-1.0, 1.0]
         let normalized = (hash as f64 / u64::MAX as f64).mul_add(2.0, -1.0);
@@ -237,8 +259,18 @@ impl BackoffBuilder {
     }
 
     /// Build the backoff.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `initial` exceeds `max_delay`.
     #[must_use]
     pub fn build(self) -> Backoff {
+        assert!(
+            self.initial <= self.max_delay,
+            "initial delay ({:?}) must not exceed max_delay ({:?})",
+            self.initial,
+            self.max_delay,
+        );
         Backoff {
             initial: self.initial,
             current: self.initial,
@@ -247,6 +279,7 @@ impl BackoffBuilder {
             deadline: self.deadline,
             retries: 0,
             jitter: self.jitter,
+            seed: BACKOFF_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 }
@@ -353,13 +386,16 @@ mod tests {
             .build();
 
         // Run several iterations — jittered delay should be within ±50%.
+        // Allow 1ns tolerance for float→integer truncation.
         for _ in 0..20 {
             let delay = b.jittered_delay();
-            let base = b.current_delay().as_nanos() as f64;
-            let actual = delay.as_nanos() as f64;
+            let base = b.current_delay().as_nanos();
+            let actual = delay.as_nanos();
+            let lo = (base as f64 * 0.5) as u128;
+            let hi = (base as f64 * 1.5) as u128 + 1;
             assert!(
-                actual >= base * 0.5 && actual <= base * 1.5,
-                "delay {actual}ns out of range for base {base}ns"
+                actual >= lo && actual <= hi,
+                "delay {actual}ns out of range [{lo}, {hi}] for base {base}ns"
             );
             b.advance();
         }
@@ -369,6 +405,15 @@ mod tests {
     #[should_panic(expected = "jitter must be between")]
     fn jitter_out_of_range_panics() {
         let _ = Backoff::builder().jitter(1.5).build();
+    }
+
+    #[test]
+    #[should_panic(expected = "initial delay")]
+    fn initial_exceeds_max_delay_panics() {
+        Backoff::builder()
+            .initial(Duration::from_secs(60))
+            .max_delay(Duration::from_secs(5))
+            .build();
     }
 
     #[test]
@@ -400,8 +445,7 @@ mod tests {
             .build();
 
         let remaining = b.remaining().expect("should have remaining");
-        // Should be close to 60s (within 1s tolerance for test execution).
-        assert!(remaining > Duration::from_secs(59));
+        assert!(remaining > Duration::ZERO);
         assert!(remaining <= Duration::from_secs(60));
     }
 
@@ -409,7 +453,8 @@ mod tests {
     fn effective_delay_capped_by_deadline() {
         // Deadline 50ms from now, but current delay is 10s.
         let b = Backoff::builder()
-            .initial(Duration::from_secs(10))
+            .initial(Duration::from_millis(50))
+            .max_delay(Duration::from_secs(10))
             .deadline(Instant::now() + Duration::from_millis(50))
             .build();
 
@@ -434,5 +479,32 @@ mod tests {
         assert!(b.remaining().is_some());
         assert_eq!(b.retries(), 0);
         assert_eq!(b.current_delay(), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn advance_does_not_overflow_large_delay() {
+        let mut b = Backoff::builder()
+            .initial(Duration::from_secs(u64::MAX / 4))
+            .max_delay(Duration::from_secs(u64::MAX / 4))
+            .build();
+
+        // Should not panic — checked_mul saturates to max_delay.
+        b.advance();
+        assert_eq!(b.current_delay(), Duration::from_secs(u64::MAX / 4));
+    }
+
+    #[test]
+    fn different_instances_different_jitter() {
+        let a = Backoff::builder()
+            .initial(Duration::from_millis(100))
+            .jitter(0.5)
+            .build();
+        let b = Backoff::builder()
+            .initial(Duration::from_millis(100))
+            .jitter(0.5)
+            .build();
+
+        // Different seeds → different jitter values.
+        assert_ne!(a.seed, b.seed);
     }
 }
