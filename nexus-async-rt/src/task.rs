@@ -12,6 +12,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicPtr;
 use std::task::{Context, Poll};
 
 // =============================================================================
@@ -20,7 +21,7 @@ use std::task::{Context, Poll};
 
 /// Header size in bytes. Must match the layout of `Task<F>` before the
 /// `future` field.
-pub const TASK_HEADER_SIZE: usize = 32;
+pub const TASK_HEADER_SIZE: usize = 40;
 
 /// Task header + future in a contiguous allocation. `repr(C)` for
 /// deterministic layout.
@@ -37,7 +38,8 @@ pub const TASK_HEADER_SIZE: usize = 32;
 /// offset 25: is_completed (1 byte, bool — future dropped, awaiting refcount drain)
 /// offset 26: ref_count    (2 bytes, u16 — number of live Waker clones)
 /// offset 28: tracker_key  (4 bytes, u32 — index in Executor::all_tasks slab)
-/// offset 32: future       (F bytes, the actual future)
+/// offset 32: cross_next   (8 bytes, AtomicPtr — intrusive cross-thread wake queue)
+/// offset 40: future       (F bytes, the actual future)
 /// ```
 #[repr(C)]
 pub(crate) struct Task<F> {
@@ -54,6 +56,9 @@ pub(crate) struct Task<F> {
     ref_count: u16,
     /// Index into the Executor's `all_tasks` slab. Set at spawn time.
     tracker_key: u32,
+    /// Intrusive next pointer for the cross-thread wake queue.
+    /// Null when the task is not in the cross-thread inbox.
+    cross_next: AtomicPtr<u8>,
     future: F,
 }
 
@@ -74,6 +79,7 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
             is_completed: false,
             ref_count: 1, // executor holds one reference
             tracker_key,
+            cross_next: AtomicPtr::new(std::ptr::null_mut()),
             future,
         }
     }
@@ -93,6 +99,7 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
             is_completed: false,
             ref_count: 1,
             tracker_key,
+            cross_next: AtomicPtr::new(std::ptr::null_mut()),
             future,
         }
     }
@@ -182,6 +189,21 @@ pub(crate) unsafe fn set_completed(ptr: *mut u8) {
 #[inline]
 pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
     unsafe { *ptr.add(25) != 0 }
+}
+
+/// Get a reference to the `cross_next` atomic pointer.
+///
+/// Used by the intrusive cross-thread wake queue. The pointer lives
+/// at offset 32 in the task header.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+#[allow(dead_code)] // Used by cross_wake module (coming next)
+pub(crate) unsafe fn cross_next(ptr: *mut u8) -> &'static AtomicPtr<u8> {
+    // SAFETY: cross_next is at offset 32 in repr(C) Task.
+    unsafe { &*ptr.add(32).cast::<AtomicPtr<u8>>() }
 }
 
 /// Read the `is_queued` flag from a task pointer.
@@ -298,8 +320,8 @@ mod tests {
 
     #[test]
     fn task_header_size() {
-        assert_eq!(TASK_HEADER_SIZE, 32);
-        assert_eq!(std::mem::size_of::<Task<()>>(), 32);
+        assert_eq!(TASK_HEADER_SIZE, 40);
+        assert_eq!(std::mem::size_of::<Task<()>>(), 40);
     }
 
     #[test]
@@ -311,13 +333,14 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Task<()>, is_completed), 25);
         assert_eq!(std::mem::offset_of!(Task<()>, ref_count), 26);
         assert_eq!(std::mem::offset_of!(Task<()>, tracker_key), 28);
-        assert_eq!(std::mem::offset_of!(Task<()>, future), 32);
+        assert_eq!(std::mem::offset_of!(Task<()>, cross_next), 32);
+        assert_eq!(std::mem::offset_of!(Task<()>, future), 40);
     }
 
     #[test]
     fn task_size_with_future() {
         #[allow(dead_code)]
-        struct SmallFuture([u8; 64]);
+        struct SmallFuture([u8; 24]);
         impl Future for SmallFuture {
             type Output = ();
             fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
@@ -325,9 +348,10 @@ mod tests {
             }
         }
 
+        // 40 byte header + 24 byte future = 64 bytes (fits in min slab slot)
         assert_eq!(
             std::mem::size_of::<Task<SmallFuture>>(),
-            TASK_HEADER_SIZE + 64
+            TASK_HEADER_SIZE + 24
         );
     }
 

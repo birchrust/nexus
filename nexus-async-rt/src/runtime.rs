@@ -181,6 +181,10 @@ pub struct Runtime {
     /// Graceful shutdown handle.
     shutdown: crate::ShutdownHandle,
 
+    /// Cross-thread wake context. Shared with cross-thread wakers via Arc.
+    /// Contains the intrusive MPSC inbox + mio::Waker for eventfd.
+    cross_wake: std::sync::Arc<crate::cross_wake::CrossWakeContext>,
+
     /// Optional slab allocator. Stored as a boxed trait object for
     /// type erasure (the const generic lives inside). The slab itself
     /// is accessed via TLS fn pointers — this field just owns the memory.
@@ -398,6 +402,11 @@ impl<'w> RuntimeBuilder<'w> {
                 (Some(slab), Some(config))
             });
 
+        let cross_wake = std::sync::Arc::new(crate::cross_wake::CrossWakeContext {
+            queue: crate::cross_wake::CrossWakeQueue::new(),
+            mio_waker: io.mio_waker(),
+        });
+
         let rt = Runtime {
             executor,
             io,
@@ -405,6 +414,7 @@ impl<'w> RuntimeBuilder<'w> {
             ctx,
             event_time,
             shutdown,
+            cross_wake,
             _slab: slab,
             slab_tls,
         };
@@ -458,6 +468,9 @@ impl Runtime {
         // Install slab TLS if configured (scoped to run_loop).
         let _slab_guard = self.slab_tls.as_ref().map(crate::alloc::install_slab);
 
+        // Install cross-thread wake context in TLS.
+        let _cross_wake_guard = crate::cross_wake::install_cross_wake(&self.cross_wake);
+
         let mut root: Pin<Box<dyn Future<Output = F::Output>>> = Box::pin(future);
 
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -485,6 +498,15 @@ impl Runtime {
                     Poll::Pending => {}
                 }
             }
+
+            // Drain cross-thread inbox into the local ready queue.
+            // SAFETY: we're the only consumer (single-threaded runtime).
+            // Arc::get_mut won't work (shared with wakers), so we use
+            // an unsafe cast — the queue's pop() is single-consumer safe.
+            let queue = unsafe {
+                &mut *std::sync::Arc::as_ptr(&self.cross_wake).cast_mut()
+            };
+            self.executor.drain_cross_thread(&mut queue.queue);
 
             self.executor.poll();
 
