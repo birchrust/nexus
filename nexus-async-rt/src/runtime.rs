@@ -86,6 +86,51 @@ where
     })
 }
 
+/// Access the current executor via TLS. Panics if outside `block_on`.
+pub(crate) fn with_executor<R>(f: impl FnOnce(&mut Executor) -> R) -> R {
+    CURRENT.with(|cell| {
+        let ptr = cell.get();
+        assert!(!ptr.is_null(), "called outside of Runtime::block_on");
+        let executor = unsafe { &mut *ptr };
+        f(executor)
+    })
+}
+
+/// Try to reserve a slab slot. Returns `None` if the slab is full.
+///
+/// Call `.spawn(future)` on the returned [`SlabClaim`](crate::alloc::SlabClaim)
+/// to write a task and enqueue it. If dropped without spawning, the
+/// slot is returned to the freelist automatically.
+///
+/// # Panics
+///
+/// - If called outside a runtime context.
+/// - If no slab is configured.
+pub fn try_claim_slab() -> Option<crate::alloc::SlabClaim> {
+    CURRENT.with(|cell| {
+        assert!(!cell.get().is_null(), "try_claim_slab() called outside of Runtime::block_on");
+    });
+    crate::alloc::try_claim()
+}
+
+/// Reserve a slab slot. Panics if full or no slab configured.
+///
+/// Call `.spawn(future)` on the returned [`SlabClaim`](crate::alloc::SlabClaim)
+/// to write a task and enqueue it. If dropped without spawning, the
+/// slot is returned to the freelist automatically.
+///
+/// # Panics
+///
+/// - If called outside a runtime context.
+/// - If no slab is configured.
+/// - If the slab is full (bounded slab).
+pub fn claim_slab() -> crate::alloc::SlabClaim {
+    CURRENT.with(|cell| {
+        assert!(!cell.get().is_null(), "claim_slab() called outside of Runtime::block_on");
+    });
+    crate::alloc::claim()
+}
+
 // =============================================================================
 // Runtime
 // =============================================================================
@@ -725,6 +770,103 @@ mod tests {
             });
             // Slab-allocated
             spawn_slab(async move {
+                crate::context::with_world(|world| {
+                    world.resource_mut::<Out>().0 += 20;
+                });
+            });
+
+            YieldOnce(false).await;
+        });
+
+        assert_eq!(world.resource::<Out>().0, 30);
+    }
+
+    // =========================================================================
+    // Claim API tests
+    // =========================================================================
+
+    #[test]
+    fn claim_slab_spawn_executes() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Out(0));
+        let mut world = wb.build();
+
+        let mut rt = Runtime::builder(&mut world)
+            .slab_unbounded(test_slab())
+            .build();
+
+        rt.block_on(async move {
+            let claim = claim_slab();
+            claim.spawn(async move {
+                crate::context::with_world(|world| {
+                    world.resource_mut::<Out>().0 = 55;
+                });
+            });
+
+            YieldOnce(false).await;
+        });
+
+        assert_eq!(world.resource::<Out>().0, 55);
+    }
+
+    #[test]
+    fn claim_slab_drop_returns_slot() {
+        let mut wb = WorldBuilder::new();
+        let mut world = wb.build();
+
+        let bounded = unsafe { nexus_slab::byte::bounded::Slab::<256>::with_capacity(1) };
+        let mut rt = Runtime::builder(&mut world)
+            .slab_bounded(bounded)
+            .build();
+
+        rt.block_on(async {
+            // Claim the only slot, then drop without spawning.
+            let claim = claim_slab();
+            drop(claim);
+
+            // Slot should be back — can claim again.
+            let claim = claim_slab();
+            claim.spawn(async {});
+
+            YieldOnce(false).await;
+        });
+    }
+
+    #[test]
+    fn try_claim_slab_returns_none_when_full() {
+        let mut wb = WorldBuilder::new();
+        let mut world = wb.build();
+
+        let bounded = unsafe { nexus_slab::byte::bounded::Slab::<256>::with_capacity(1) };
+        let mut rt = Runtime::builder(&mut world)
+            .slab_bounded(bounded)
+            .build();
+
+        rt.block_on(async {
+            let _held = claim_slab(); // hold the only slot
+            assert!(try_claim_slab().is_none());
+        });
+    }
+
+    #[test]
+    fn mixed_spawn_boxed_and_claim_slab() {
+        let mut wb = WorldBuilder::new();
+        wb.register(Out(0));
+        let mut world = wb.build();
+
+        let mut rt = Runtime::builder(&mut world)
+            .slab_unbounded(test_slab())
+            .build();
+
+        rt.block_on(async move {
+            spawn_boxed(async move {
+                crate::context::with_world(|world| {
+                    world.resource_mut::<Out>().0 += 10;
+                });
+            });
+
+            let claim = claim_slab();
+            claim.spawn(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 += 20;
                 });

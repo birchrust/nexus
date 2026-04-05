@@ -57,7 +57,8 @@ pub use net::{
     TcpStream, UdpSocket, WriteHalf,
 };
 pub use timer::{Sleep, TimerHandle};
-pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab};
+pub use alloc::SlabClaim;
+pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab, try_claim_slab, claim_slab};
 
 use std::future::Future;
 use std::task::Poll;
