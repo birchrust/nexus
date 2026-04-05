@@ -235,8 +235,8 @@ mod tests {
         }
 
         // Allocate real task headers so clone/drop can touch refcount.
-        let task_a = Box::new(Task::new(Noop, 0));
-        let task_b = Box::new(Task::new(Noop, 0));
+        let task_a = Box::new(Task::new_boxed(Noop, 0));
+        let task_b = Box::new(Task::new_boxed(Noop, 0));
         let ptr_a = Box::into_raw(task_a) as *mut u8;
         let ptr_b = Box::into_raw(task_b) as *mut u8;
 

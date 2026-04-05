@@ -1,157 +1,154 @@
-//! Task allocator abstraction.
+//! Slab task allocator — optional, power-user feature.
 //!
-//! The [`TaskAlloc`] sealed trait abstracts over bounded (fixed-capacity)
-//! and unbounded (growable) byte slab storage for tasks. Users choose
-//! their allocator before constructing the runtime.
+//! By default, tasks are Box-allocated. For zero-alloc hot-path spawning,
+//! configure a slab via [`RuntimeBuilder::slab`] and use [`spawn_pinned`].
 //!
-//! The const generic `S` is the internal slab slot size (future bytes +
-//! 24-byte task header). Use [`slot_size`](crate::slot_size) to compute:
-//!
-//! ```ignore
-//! use nexus_async_rt::{slot_size, BoundedTaskAlloc, UnboundedTaskAlloc};
-//!
-//! // 256-byte future capacity → 280-byte internal slot
-//! let alloc = BoundedTaskAlloc::<{ slot_size(256) }>::new(64);
-//! let alloc = UnboundedTaskAlloc::<{ slot_size(256) }>::new(64);
-//! ```
-//!
-//! For convenience, [`DefaultBoundedAlloc`] and [`DefaultUnboundedAlloc`]
-//! use 256-byte future capacity (covers most IO tasks).
+//! The slab is accessed via thread-local pointers — no dynamic dispatch,
+//! no Option checks. Default pointers panic with a clear message if
+//! `spawn_pinned` is called without a slab configured.
 
-use crate::task::{Task, TASK_HEADER_SIZE};
+use std::cell::Cell;
+use std::future::Future;
 
-mod sealed {
-    pub trait Sealed {}
+use crate::task::Task;
+
+// =============================================================================
+// TLS slots
+// =============================================================================
+
+type FreeFn = unsafe fn(*const u8, *mut u8);
+
+thread_local! {
+    /// Raw pointer to the slab instance. Type-erased.
+    static SLAB_PTR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+
+    /// Function pointer: free a task from the slab.
+    /// Args: (slab_ptr, task_ptr)
+    static SLAB_FREE: Cell<FreeFn> = const { Cell::new(no_slab_free) };
 }
 
-/// Sealed trait for task allocators. Cannot be implemented outside
-/// this crate.
+/// Panic stub — should never be reached if alloc was never called.
+unsafe fn no_slab_free(_slab: *const u8, _ptr: *mut u8) {
+    panic!("slab free called without a slab configured")
+}
+
+// =============================================================================
+// TLS install/guard
+// =============================================================================
+
+/// Install slab pointer and free fn into TLS.
+/// Returns an RAII guard that restores the previous values on drop.
+pub(crate) fn install_slab(slab_ptr: *const u8, free: FreeFn) -> SlabGuard {
+    let prev_ptr = SLAB_PTR.with(|c| c.replace(slab_ptr));
+    let prev_free = SLAB_FREE.with(|c| c.replace(free));
+    SlabGuard {
+        prev_ptr,
+        prev_free,
+    }
+}
+
+/// RAII guard that restores previous slab TLS values on drop.
+pub(crate) struct SlabGuard {
+    prev_ptr: *const u8,
+    prev_free: FreeFn,
+}
+
+impl Drop for SlabGuard {
+    fn drop(&mut self) {
+        SLAB_PTR.with(|c| c.set(self.prev_ptr));
+        SLAB_FREE.with(|c| c.set(self.prev_free));
+    }
+}
+
+// =============================================================================
+// Slab-based spawn
+// =============================================================================
+
+/// Allocate a task in the slab and return its raw pointer.
 ///
-/// The `alloc_task` method takes `Task<F>` which is `pub(crate)` — this
-/// is intentional. The trait is sealed, so only crate-internal code calls it.
-/// Users don't need this trait — pick [`BoundedTaskAlloc`] or
-/// [`UnboundedTaskAlloc`] and pass to [`RuntimeBuilder`](crate::RuntimeBuilder).
-#[allow(private_interfaces)]
-pub trait TaskAlloc: sealed::Sealed {
-    /// Allocate a task via placement new. Returns raw pointer.
-    fn alloc_task<F: std::future::Future<Output = ()> + 'static>(
-        &self,
-        task: Task<F>,
-    ) -> *mut u8;
-
-    /// Returns the maximum task capacity, or `None` if unbounded.
-    fn max_capacity(&self) -> Option<usize>;
-
-    /// Free a task slot.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must have been returned by `alloc_task` on this allocator.
-    unsafe fn free(&self, ptr: *mut u8);
-}
-
-// =============================================================================
-// Bounded
-// =============================================================================
-
-/// Fixed-capacity task allocator. Panics on spawn if full.
+/// The task is constructed with a slab-aware `free_fn` and placed
+/// directly into a slab slot via the TLS slab pointer.
 ///
-/// `S` is the internal slot size (use [`slot_size`](crate::slot_size)
-/// to compute from your max future size).
-pub struct BoundedTaskAlloc<const S: usize> {
-    slab: nexus_slab::byte::bounded::Slab<S>,
-    capacity: usize,
-}
-
-impl<const S: usize> BoundedTaskAlloc<S> {
-    /// Create a bounded allocator with `capacity` task slots.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `capacity` is zero.
-    pub fn new(capacity: usize) -> Self {
-        // SAFETY: single-threaded use. Slot lifetimes managed by Executor.
-        let slab = unsafe { nexus_slab::byte::bounded::Slab::with_capacity(capacity) };
-        Self { slab, capacity }
-    }
-
-    /// Returns the fixed capacity.
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-}
-
-impl<const S: usize> sealed::Sealed for BoundedTaskAlloc<S> {}
-
-#[allow(private_interfaces)]
-impl<const S: usize> TaskAlloc for BoundedTaskAlloc<S> {
-    fn alloc_task<F: std::future::Future<Output = ()> + 'static>(
-        &self,
-        task: Task<F>,
-    ) -> *mut u8 {
-        self.slab.alloc(task).into_raw()
-    }
-
-    fn max_capacity(&self) -> Option<usize> {
-        Some(self.capacity)
-    }
-
-    unsafe fn free(&self, ptr: *mut u8) {
-        let slot = unsafe { nexus_slab::byte::Slot::<u8>::from_raw(ptr) };
-        self.slab.free(slot);
-    }
-}
-
-// =============================================================================
-// Unbounded
-// =============================================================================
-
-/// Growable task allocator. Never fails — allocates new chunks as needed.
+/// # Panics
 ///
-/// `S` is the internal slot size (use [`slot_size`](crate::slot_size)).
-pub struct UnboundedTaskAlloc<const S: usize> {
+/// Panics if no slab is configured.
+pub(crate) fn slab_spawn<F: Future<Output = ()> + 'static, const S: usize>(
+    future: F,
+    tracker_key: u32,
+) -> *mut u8 {
+    let slab_ptr = SLAB_PTR.with(Cell::get);
+    assert!(
+        !slab_ptr.is_null(),
+        "spawn_pinned() called without a slab configured — \
+         use Runtime::builder().slab::<S>(capacity) to enable slab allocation"
+    );
+
+    let task = Task::new_with_free(future, tracker_key, slab_free_task);
+
+    // SAFETY: slab_ptr points to a valid Slab<S> installed by the runtime.
+    let slab = unsafe {
+        &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
+    };
+    let slot = slab.alloc(task);
+    slot.into_raw()
+}
+
+/// Free function stored in slab-allocated task headers.
+///
+/// Reads the slab pointer and free fn from TLS, calls through.
+///
+/// # Safety
+///
+/// `ptr` must point to a slab-allocated task.
+unsafe fn slab_free_task(ptr: *mut u8) {
+    let slab_ptr = SLAB_PTR.with(Cell::get);
+    let free_fn = SLAB_FREE.with(Cell::get);
+    // SAFETY: slab_ptr and free_fn were installed by the runtime.
+    unsafe { free_fn(slab_ptr, ptr) };
+}
+
+// =============================================================================
+// SlabAlloc — owned by Runtime, provides TLS pointers
+// =============================================================================
+
+/// Slab allocator instance. Owned by the runtime.
+///
+/// The const generic `S` is the slot size (use [`slot_size`](crate::slot_size)).
+pub struct SlabAlloc<const S: usize> {
     slab: nexus_slab::byte::unbounded::Slab<S>,
 }
 
-impl<const S: usize> UnboundedTaskAlloc<S> {
-    /// Create an unbounded allocator with `initial_chunk_capacity` slots
-    /// in the first chunk.
-    pub fn new(initial_chunk_capacity: usize) -> Self {
+impl<const S: usize> SlabAlloc<S> {
+    /// Create a slab allocator with `capacity` initial slots.
+    pub fn new(capacity: usize) -> Self {
         // SAFETY: single-threaded use. Slot lifetimes managed by Executor.
         let slab = unsafe {
-            nexus_slab::byte::unbounded::Slab::with_chunk_capacity(initial_chunk_capacity)
+            nexus_slab::byte::unbounded::Slab::<S>::with_chunk_capacity(capacity)
         };
         Self { slab }
     }
-}
 
-impl<const S: usize> sealed::Sealed for UnboundedTaskAlloc<S> {}
-
-#[allow(private_interfaces)]
-impl<const S: usize> TaskAlloc for UnboundedTaskAlloc<S> {
-    fn alloc_task<F: std::future::Future<Output = ()> + 'static>(
-        &self,
-        task: Task<F>,
-    ) -> *mut u8 {
-        self.slab.alloc(task).into_raw()
+    /// Get the raw pointer for TLS installation.
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        std::ptr::from_ref(&self.slab).cast::<u8>()
     }
 
-    fn max_capacity(&self) -> Option<usize> {
-        None // unbounded — always has room
-    }
-
-    unsafe fn free(&self, ptr: *mut u8) {
-        let slot = unsafe { nexus_slab::byte::Slot::<u8>::from_raw(ptr) };
-        self.slab.free(slot);
+    /// The free function pointer for TLS.
+    pub(crate) fn free_fn() -> FreeFn {
+        free_impl::<S>
     }
 }
 
-// =============================================================================
-// Defaults (256-byte future capacity)
-// =============================================================================
-
-/// Bounded allocator with 256-byte future capacity (280-byte slots).
-pub type DefaultBoundedAlloc = BoundedTaskAlloc<{ 256 + TASK_HEADER_SIZE }>;
-
-/// Unbounded allocator with 256-byte future capacity (280-byte slots).
-pub type DefaultUnboundedAlloc = UnboundedTaskAlloc<{ 256 + TASK_HEADER_SIZE }>;
+/// Slab free implementation. Releases the slot back to the slab.
+///
+/// # Safety
+///
+/// `slab_ptr` must point to a valid `Slab<S>`.
+/// `ptr` must have been returned by `slab.alloc()` on the same slab.
+unsafe fn free_impl<const S: usize>(slab_ptr: *const u8, ptr: *mut u8) {
+    let slab = unsafe {
+        &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
+    };
+    let slot = unsafe { nexus_slab::byte::Slot::<u8>::from_raw(ptr) };
+    slab.free(slot);
+}

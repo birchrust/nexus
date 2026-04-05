@@ -107,7 +107,7 @@ impl WorldCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DefaultBoundedAlloc, Executor};
+    use crate::Executor;
     use nexus_rt::{Handler, IntoHandler, Res, ResMut, WorldBuilder};
 
     nexus_rt::new_resource!(Val(u64));
@@ -121,7 +121,7 @@ mod tests {
         let mut world = wb.build();
         let ctx = WorldCtx::new(&mut world);
 
-        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
+        let mut executor = Executor::new(4);
         executor.spawn(async move {
             ctx.with_world(|world| {
                 let v = world.resource::<Val>().0;
@@ -143,7 +143,7 @@ mod tests {
         let result = std::cell::Cell::new(0u64);
         let result_ptr = &result as *const std::cell::Cell<u64>;
 
-        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
+        let mut executor = Executor::new(4);
         executor.spawn(async move {
             let v = ctx.with_world_ref(|world| world.resource::<Val>().0);
             // SAFETY: test-only, single-threaded, Cell is alive.
@@ -168,7 +168,7 @@ mod tests {
         })
         .into_handler(world.registry());
 
-        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
+        let mut executor = Executor::new(4);
         executor.spawn(async move {
             ctx.with_world(|world| handler.run(world, 10));
         });
@@ -187,7 +187,7 @@ mod tests {
         let result = std::cell::Cell::new(0u64);
         let result_ptr = &result as *const std::cell::Cell<u64>;
 
-        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
+        let mut executor = Executor::new(4);
         executor.spawn(async move {
             let v = ctx.with_world(|world| {
                 world.resource::<Val>().0 * 6
@@ -207,7 +207,7 @@ mod tests {
         let mut world = wb.build();
         let ctx = WorldCtx::new(&mut world);
 
-        let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
+        let mut executor = Executor::new(4);
 
         for i in 1..=3u64 {
             let ctx = ctx; // Copy

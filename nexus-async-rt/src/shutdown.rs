@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! let mut rt = DefaultRuntime::new(&mut world, 64);
+//! let mut rt = Runtime::new(&mut world);
 //!
 //! // Install signal handlers (call once at startup).
 //! rt.install_signal_handlers();
@@ -156,14 +156,14 @@ mod tests {
 
     #[test]
     fn shutdown_signal_resolves_after_trigger() {
-        use crate::{DefaultRuntime, spawn};
+        use crate::{Runtime, spawn};
         use nexus_rt::WorldBuilder;
         use std::cell::Cell;
         use std::rc::Rc;
 
         let wb = WorldBuilder::new();
         let mut world = wb.build();
-        let mut rt = DefaultRuntime::new(&mut world, 8);
+        let mut rt = Runtime::new(&mut world);
         let shutdown = rt.shutdown_handle();
 
         let done = Rc::new(Cell::new(false));

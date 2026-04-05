@@ -964,7 +964,7 @@ impl AsRawFd for TcpSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DefaultRuntime, spawn};
+    use crate::{Runtime, spawn};
     use nexus_rt::WorldBuilder;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -973,7 +973,7 @@ mod tests {
     fn tcp_echo() {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
-        let mut rt = DefaultRuntime::new(&mut world, 16);
+        let mut rt = Runtime::new(&mut world);
 
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();

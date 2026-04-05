@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use nexus_async_rt::{DefaultRuntime, TcpListener, TcpSocket, TcpStream, spawn};
+use nexus_async_rt::{Runtime, TcpListener, TcpSocket, TcpStream, spawn};
 use nexus_rt::WorldBuilder;
 
 // =============================================================================
@@ -18,7 +18,7 @@ use nexus_rt::WorldBuilder;
 fn tcp_echo_basic() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -53,7 +53,7 @@ fn tcp_echo_basic() {
 fn tcp_multiple_clients() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 32);
+    let mut rt = Runtime::new(&mut world);
     let count = Rc::new(Cell::new(0u32));
     let count2 = count.clone();
 
@@ -97,7 +97,7 @@ fn tcp_multiple_clients() {
 fn tcp_large_transfer() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
     let data: Vec<u8> = (0..1_000_000).map(|i| (i % 251) as u8).collect();
@@ -141,7 +141,7 @@ fn tcp_large_transfer() {
 fn tcp_split_borrowed() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -178,7 +178,7 @@ fn tcp_split_borrowed() {
 fn tcp_into_split_reunite() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
 
     rt.block_on(async move {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
@@ -207,7 +207,7 @@ fn tcp_into_split_reunite() {
 fn tcp_socket_options_on_stream() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -247,7 +247,7 @@ fn tcp_socket_options_on_stream() {
 fn tcp_socket_builder_bind_listen() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -291,7 +291,7 @@ fn tcp_socket_builder_bind_listen() {
 fn tcp_try_read_write() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -333,7 +333,7 @@ fn tcp_from_std() {
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -364,7 +364,7 @@ fn tcp_from_std() {
 fn tcp_into_std() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -403,7 +403,7 @@ fn tcp_connect_refused() {
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -430,7 +430,7 @@ fn tcp_connect_refused() {
 fn tcp_read_after_peer_close() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -466,7 +466,7 @@ fn tcp_read_after_peer_close() {
 fn tcp_listener_ttl() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 4);
+    let mut rt = Runtime::new(&mut world);
 
     rt.block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();

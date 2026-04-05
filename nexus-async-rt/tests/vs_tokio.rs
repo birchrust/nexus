@@ -50,12 +50,12 @@ fn print_distribution(name: &str, samples: &mut [u64]) {
 // =============================================================================
 
 fn nexus_tcp_echo_samples() -> Vec<u64> {
-    use nexus_async_rt::{DefaultRuntime, TcpListener, TcpStream, spawn};
+    use nexus_async_rt::{Runtime, TcpListener, TcpStream, spawn};
     use nexus_rt::WorldBuilder;
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
 
     let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -187,12 +187,12 @@ fn tokio_tcp_echo_samples() -> Vec<u64> {
 // =============================================================================
 
 fn nexus_udp_samples() -> Vec<u64> {
-    use nexus_async_rt::{DefaultRuntime, UdpSocket, spawn};
+    use nexus_async_rt::{Runtime, UdpSocket, spawn};
     use nexus_rt::WorldBuilder;
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
-    let mut rt = DefaultRuntime::new(&mut world, 16);
+    let mut rt = Runtime::new(&mut world);
 
     let a = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
     let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();

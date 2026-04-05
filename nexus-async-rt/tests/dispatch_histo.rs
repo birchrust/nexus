@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use nexus_async_rt::{DefaultBoundedAlloc, Executor};
+use nexus_async_rt::Executor;
 
 const WARMUP: usize = 10_000;
 const SAMPLES: usize = 500_000;
@@ -65,7 +65,7 @@ fn dispatch_per_poll_histogram() {
     let entries = Rc::new(Cell::new(Vec::with_capacity(total as usize)));
     let e = entries.clone();
 
-    let mut executor = Executor::new(DefaultBoundedAlloc::new(4), 4);
+    let mut executor = Executor::new(4);
     executor.spawn(InstrumentedTask {
         count: 0,
         target: total,
