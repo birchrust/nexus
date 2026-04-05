@@ -171,15 +171,15 @@ impl<F: Future> Future for Timeout<F> {
         // SAFETY: we never move the inner fields out of the Pin.
         let this = unsafe { self.get_unchecked_mut() };
 
-        // Check the inner future first.
+        // Check the deadline first so already-expired timeouts reliably
+        // return Err(Elapsed) even if the inner future is also ready.
+        if Pin::new(&mut this.sleep).poll(cx).is_ready() {
+            return Poll::Ready(Err(Elapsed));
+        }
+
         // SAFETY: this.future is pinned because self is pinned.
         if let Poll::Ready(val) = unsafe { Pin::new_unchecked(&mut this.future) }.poll(cx) {
             return Poll::Ready(Ok(val));
-        }
-
-        // Check the deadline.
-        if unsafe { Pin::new_unchecked(&mut this.sleep) }.poll(cx).is_ready() {
-            return Poll::Ready(Err(Elapsed));
         }
 
         Poll::Pending
@@ -221,6 +221,7 @@ pub struct Interval {
 
 impl Interval {
     pub(crate) fn new(period: Duration) -> Self {
+        assert!(!period.is_zero(), "interval period must be non-zero");
         let now = Instant::now();
         Self {
             period,
@@ -232,6 +233,7 @@ impl Interval {
     }
 
     pub(crate) fn new_at(start: Instant, period: Duration) -> Self {
+        assert!(!period.is_zero(), "interval period must be non-zero");
         Self {
             period,
             start,
@@ -248,8 +250,7 @@ impl Interval {
         }
 
         if let Some(ref mut sleep) = self.sleep {
-            // SAFETY: self is &mut, sleep won't move.
-            unsafe { Pin::new_unchecked(sleep) }.await;
+            Pin::new(sleep).await;
         }
 
         let now = Instant::now();
@@ -265,7 +266,8 @@ impl Interval {
                 if now >= self.next_deadline {
                     let elapsed = now.duration_since(self.start);
                     let periods = elapsed.as_nanos() / self.period.as_nanos();
-                    self.next_deadline = self.start + self.period * (periods as u32 + 1);
+                    let next = u32::try_from(periods).unwrap_or(u32::MAX).saturating_add(1);
+                    self.next_deadline = self.start + self.period * next;
                 } else {
                     self.next_deadline += self.period;
                 }

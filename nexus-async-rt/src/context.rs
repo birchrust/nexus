@@ -180,11 +180,12 @@ pub fn timeout<F: std::future::Future>(
 ///
 /// The first tick completes after `period`. Subsequent ticks are
 /// spaced `period` apart. If processing takes longer than `period`,
-/// the next tick fires immediately (no drift accumulation).
+/// behavior is controlled by [`MissedTickBehavior`](crate::MissedTickBehavior).
 ///
 /// # Panics
 ///
-/// Panics if called outside a runtime context.
+/// Panics if `period` is zero. Polling the interval (via `tick().await`)
+/// requires an active runtime context and will panic otherwise.
 pub fn interval(period: Duration) -> crate::timer::Interval {
     crate::timer::Interval::new(period)
 }
@@ -193,6 +194,8 @@ pub fn interval(period: Duration) -> crate::timer::Interval {
 ///
 /// Waits until `deadline`, then polls the future. Useful for
 /// scheduling deferred work at a specific time.
+///
+/// Polling requires an active runtime context.
 pub async fn after<F: std::future::Future>(deadline: Instant, future: F) -> F::Output {
     sleep_until(deadline).await;
     future.await
@@ -201,6 +204,8 @@ pub async fn after<F: std::future::Future>(deadline: Instant, future: F) -> F::O
 /// Run a future after `duration` elapses.
 ///
 /// Waits for `duration`, then polls the future.
+///
+/// Polling requires an active runtime context.
 pub async fn after_delay<F: std::future::Future>(duration: Duration, future: F) -> F::Output {
     sleep(duration).await;
     future.await
@@ -210,6 +215,10 @@ pub async fn after_delay<F: std::future::Future>(duration: Duration, future: F) 
 /// the deadline passes before the future completes.
 ///
 /// Like [`timeout`] but takes an [`Instant`] instead of a [`Duration`].
+///
+/// # Panics
+///
+/// Panics if called outside a runtime context.
 pub fn timeout_at<F: std::future::Future>(
     deadline: Instant,
     future: F,
@@ -220,6 +229,11 @@ pub fn timeout_at<F: std::future::Future>(
 /// Create an interval that starts ticking at `start`, then every `period`.
 ///
 /// If `start` is in the past, the first tick fires immediately.
+///
+/// # Panics
+///
+/// Panics if `period` is zero. Polling the interval requires an active
+/// runtime context.
 pub fn interval_at(start: Instant, period: Duration) -> crate::timer::Interval {
     crate::timer::Interval::new_at(start, period)
 }
