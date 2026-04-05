@@ -61,6 +61,19 @@ impl<T> Claim<'_, T> {
         // SAFETY: slot_ptr is valid and now occupied
         unsafe { Slot::from_ptr(slot_ptr) }
     }
+
+    /// Extract the raw slot pointer and chunk index, consuming the claim.
+    ///
+    /// Transfers ownership to the caller — the slot will NOT be returned
+    /// to the freelist on drop. The caller must either write a value and
+    /// eventually free it, or return the slot via `free_ptr()`.
+    #[inline]
+    pub(crate) fn into_ptr(self) -> (*mut SlotCell<T>, usize) {
+        let ptr = self.slot_ptr;
+        let chunk_idx = self.chunk_idx;
+        mem::forget(self);
+        (ptr, chunk_idx)
+    }
 }
 
 impl<T> fmt::Debug for Claim<'_, T> {
@@ -436,6 +449,38 @@ impl<T> Slab<T> {
             let value = (*slot_ptr).read_value();
             self.free_ptr(slot_ptr);
             value
+        }
+    }
+
+    /// Returns a slot to the freelist by pointer, given the chunk index.
+    ///
+    /// O(1) — goes directly to the correct chunk's freelist.
+    /// Does NOT drop the value — caller must drop before calling.
+    ///
+    /// # Safety
+    ///
+    /// - `slot_ptr` must point to a slot within chunk `chunk_idx`
+    /// - Value must already be dropped or moved out
+    #[doc(hidden)]
+    pub(crate) unsafe fn free_ptr_in_chunk(
+        &self,
+        slot_ptr: *mut SlotCell<T>,
+        chunk_idx: usize,
+    ) {
+        let chunk = self.chunk(chunk_idx);
+        let chunk_slab = &*chunk.inner;
+
+        let free_head = chunk_slab.free_head.get();
+        let was_full = free_head.is_null();
+
+        unsafe {
+            (*slot_ptr).set_next_free(free_head);
+        }
+        chunk_slab.free_head.set(slot_ptr);
+
+        if was_full {
+            chunk.next_with_space.set(self.head_with_space.get());
+            self.head_with_space.set(chunk_idx);
         }
     }
 

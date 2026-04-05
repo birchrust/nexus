@@ -58,6 +58,18 @@ impl<T> Claim<'_, T> {
         // SAFETY: slot_ptr is valid and now occupied
         unsafe { Slot::from_ptr(slot_ptr) }
     }
+
+    /// Extract the raw slot pointer, consuming the claim without writing.
+    ///
+    /// Transfers ownership to the caller — the slot will NOT be returned
+    /// to the freelist on drop. The caller must either write a value and
+    /// eventually free it, or return the slot via `free_ptr()`.
+    #[inline]
+    pub(crate) fn into_ptr(self) -> *mut SlotCell<T> {
+        let ptr = self.slot_ptr;
+        mem::forget(self);
+        ptr
+    }
 }
 
 impl<T> fmt::Debug for Claim<'_, T> {

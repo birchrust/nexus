@@ -196,6 +196,144 @@ impl<T> Drop for Slot<T> {
     }
 }
 
+// =============================================================================
+// ByteClaim — reserved byte slot handle
+// =============================================================================
+
+/// A reserved byte slab slot.
+///
+/// Write a value with [`.write()`](Self::write) or raw bytes with
+/// [`.write_raw()`](Self::write_raw). If dropped without writing, the
+/// slot is returned to the freelist automatically. Works with both
+/// bounded and unbounded byte slabs.
+pub struct ByteClaim {
+    ptr: *mut u8,
+    slab_ptr: *const u8,
+    free: unsafe fn(*const u8, *mut u8, usize),
+    chunk_idx: usize,
+    slot_size: usize,
+}
+
+impl ByteClaim {
+    /// Create a claim from raw components.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a valid, vacant slab slot.
+    /// - `slab_ptr` must point to the originating slab.
+    /// - `free(slab_ptr, ptr, chunk_idx)` must correctly return the slot to the freelist.
+    /// - `chunk_idx` must be the owning chunk index (0 for bounded slabs).
+    /// - `slot_size` must be the actual slot capacity in bytes.
+    pub(crate) unsafe fn from_raw_parts(
+        ptr: *mut u8,
+        slab_ptr: *const u8,
+        free: unsafe fn(*const u8, *mut u8, usize),
+        chunk_idx: usize,
+        slot_size: usize,
+    ) -> Self {
+        Self { ptr, slab_ptr, free, chunk_idx, slot_size }
+    }
+
+    /// Write a typed value into the slot. Consumes the claim.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `size_of::<T>() > slot_size`
+    /// - Panics if `align_of::<T>() > 8`
+    #[inline]
+    pub fn write<T>(self, value: T) -> Slot<T> {
+        validate_type_dynamic::<T>(self.slot_size);
+
+        // SAFETY: ptr points to a valid, vacant slot of at least slot_size bytes.
+        // AlignedBytes guarantees 8-byte alignment. validate_type checked fit.
+        unsafe { core::ptr::write(self.ptr.cast::<T>(), value) };
+
+        let ptr = self.ptr;
+        // Don't run Drop — the slot is now occupied.
+        core::mem::forget(self);
+
+        Slot {
+            ptr,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    /// Copy raw bytes into the slot. Consumes the claim.
+    ///
+    /// Returns the raw pointer to the written data.
+    ///
+    /// # Safety
+    ///
+    /// - `src` must point to `size` valid bytes.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `size > slot_size`.
+    #[inline]
+    pub unsafe fn write_raw(self, src: *const u8, size: usize) -> *mut u8 {
+        assert!(
+            size <= self.slot_size,
+            "write_raw size ({size}) exceeds slot size ({})",
+            self.slot_size
+        );
+
+        // SAFETY: ptr is valid and vacant, caller guarantees src validity.
+        unsafe { core::ptr::copy_nonoverlapping(src, self.ptr, size) };
+
+        let ptr = self.ptr;
+        core::mem::forget(self);
+        ptr
+    }
+
+    /// Raw pointer to the reserved slot.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    /// Slot capacity in bytes.
+    #[inline]
+    pub fn slot_size(&self) -> usize {
+        self.slot_size
+    }
+}
+
+impl Drop for ByteClaim {
+    fn drop(&mut self) {
+        // Slot was claimed but never written — return to freelist.
+        // SAFETY: free was set at claim time to the correct slab's freelist
+        // return function. The slot is vacant (no value to drop).
+        unsafe { (self.free)(self.slab_ptr, self.ptr, self.chunk_idx) };
+    }
+}
+
+impl core::fmt::Debug for ByteClaim {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ByteClaim")
+            .field("ptr", &self.ptr)
+            .field("slot_size", &self.slot_size)
+            .finish()
+    }
+}
+
+/// Validates that `T` fits in the given slot size with appropriate alignment.
+/// Used by `ByteClaim::write()` where the slot size is known at runtime.
+#[inline]
+fn validate_type_dynamic<T>(slot_size: usize) {
+    assert!(
+        core::mem::size_of::<T>() <= slot_size,
+        "type {} ({} bytes) exceeds byte slab slot size ({slot_size} bytes)",
+        core::any::type_name::<T>(),
+        core::mem::size_of::<T>(),
+    );
+    assert!(
+        core::mem::align_of::<T>() <= 8,
+        "type {} (align {}) exceeds byte slab alignment (8)",
+        core::any::type_name::<T>(),
+        core::mem::align_of::<T>(),
+    );
+}
+
 /// Validates that `T` fits in `N` bytes with appropriate alignment.
 #[inline]
 fn validate_type<T, const N: usize>() {
