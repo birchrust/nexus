@@ -14,7 +14,7 @@ libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
 nexus-rt = { path = "../nexus-rt" }
 slab = "0.4"
-nexus-slab = { path = "../nexus-slab" }
+nexus-slab = { version = "2.2.0", path = "../nexus-slab" }
 nexus-timer = { path = "../nexus-timer" }
 signal-hook = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
