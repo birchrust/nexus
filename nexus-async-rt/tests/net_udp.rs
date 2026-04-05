@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use nexus_async_rt::{Runtime, UdpSocket, spawn};
+use nexus_async_rt::{Runtime, UdpSocket, spawn_boxed};
 use nexus_rt::WorldBuilder;
 
 /// Bind a UDP socket to loopback:0, return (socket, addr).
@@ -31,7 +31,7 @@ fn udp_send_recv_basic() {
     rt.block_on(async move {
         let (recv_sock, recv_addr) = bind_udp();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut s = recv_sock;
             let mut buf = [0u8; 64];
             let (n, from) = s.recv_from(&mut buf).await.unwrap();
@@ -40,7 +40,7 @@ fn udp_send_recv_basic() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             s.send_to(b"hello udp", recv_addr).await.unwrap();
@@ -68,13 +68,13 @@ fn udp_connected_send_recv() {
         let (a_sock, a_addr) = bind_udp();
         let (b_sock, b_addr) = bind_udp();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut a = a_sock;
             a.connect(b_addr).unwrap();
             a.send(b"connected-msg").await.unwrap();
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut b = b_sock;
             b.connect(a_addr).unwrap();
@@ -105,14 +105,14 @@ fn udp_echo() {
     rt.block_on(async move {
         let (server_sock, server_addr) = bind_udp();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut s = server_sock;
             let mut buf = [0u8; 64];
             let (n, peer) = s.recv_from(&mut buf).await.unwrap();
             s.send_to(&buf[..n], peer).await.unwrap();
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             c.send_to(b"echo-me", server_addr).await.unwrap();
@@ -143,7 +143,7 @@ fn udp_multiple_datagrams() {
     rt.block_on(async move {
         let (recv_sock, recv_addr) = bind_udp();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut s = recv_sock;
             let mut buf = [0u8; 64];
             for _ in 0..5 {
@@ -153,7 +153,7 @@ fn udp_multiple_datagrams() {
             }
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             for i in 0..5u8 {
@@ -222,14 +222,14 @@ fn udp_try_send_recv() {
         let (a, a_addr) = bind_udp();
         let (b, b_addr) = bind_udp();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let a = a;
             a.connect(b_addr).unwrap();
             let n = a.try_send(b"try-data").unwrap();
             assert_eq!(n, 8);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(50)).await;
             let b = b;
             b.connect(a_addr).unwrap();
@@ -270,7 +270,7 @@ fn udp_from_std() {
     rt.block_on(async move {
         let sock = UdpSocket::from_std(std_sock, nexus_async_rt::io()).unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut s = sock;
             let mut buf = [0u8; 64];
             let (n, _) = s.recv_from(&mut buf).await.unwrap();
@@ -278,7 +278,7 @@ fn udp_from_std() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             s.send_to(b"from-std", addr).await.unwrap();
@@ -318,7 +318,7 @@ fn udp_peek_from() {
     rt.block_on(async move {
         let (recv_sock, recv_addr) = bind_udp();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut s = recv_sock;
             let mut buf = [0u8; 64];
             let (n, peer) = s.peek_from(&mut buf).await.unwrap();
@@ -329,7 +329,7 @@ fn udp_peek_from() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             s.send_to(b"peek-data", recv_addr).await.unwrap();
@@ -374,7 +374,7 @@ fn udp_multicast_loopback() {
     rt.block_on(async move {
         let recv_sock = UdpSocket::from_std(std_recv, nexus_async_rt::io()).unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let mut s = recv_sock;
             let mut buf = [0u8; 64];
             let (n, _) = s.recv_from(&mut buf).await.unwrap();
@@ -382,7 +382,7 @@ fn udp_multicast_loopback() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(50)).await;
             let mut s = UdpSocket::bind("0.0.0.0:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             let target: std::net::SocketAddr = format!("239.255.0.1:{recv_port}").parse().unwrap();

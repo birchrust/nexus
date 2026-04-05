@@ -418,7 +418,7 @@ impl Drop for UdpSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Runtime, spawn};
+    use crate::{Runtime, spawn_boxed};
     use nexus_rt::WorldBuilder;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -438,7 +438,7 @@ mod tests {
             let recv_addr = recv_sock.local_addr().unwrap();
             // Receiver task.
             let flag = done2;
-            spawn(async move {
+            spawn_boxed(async move {
                 let mut sock = recv_sock;
                 let mut buf = [0u8; 64];
                 let (n, _from) = sock.recv_from(&mut buf).await.unwrap();
@@ -447,7 +447,7 @@ mod tests {
             });
 
             // Sender task.
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
                 let mut sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
                 sock.send_to(b"test", recv_addr).await.unwrap();
@@ -473,7 +473,7 @@ mod tests {
             let server_addr = server_sock.local_addr().unwrap();
 
             // Server task: receive one datagram, echo back.
-            spawn(async move {
+            spawn_boxed(async move {
                 let mut server = server_sock;
                 let mut buf = [0u8; 64];
                 let (n, peer) = server.recv_from(&mut buf).await.unwrap();
@@ -482,7 +482,7 @@ mod tests {
 
             // Client task: send datagram, receive echo.
             let flag = done2;
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
                 let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
                 let mut client = UdpSocket::bind(client_addr, crate::context::io()).unwrap();
@@ -515,14 +515,14 @@ mod tests {
             let a_addr = a_sock.local_addr().unwrap();
             let b_addr = b_sock.local_addr().unwrap();
             // A sends to B via connected mode.
-            spawn(async move {
+            spawn_boxed(async move {
                 let mut a = a_sock;
                 a.connect(b_addr).unwrap();
                 a.send(b"connected").await.unwrap();
             });
 
             let flag = done2;
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
                 let mut b = b_sock;
                 b.connect(a_addr).unwrap();

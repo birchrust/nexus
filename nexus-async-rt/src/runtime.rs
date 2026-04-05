@@ -6,13 +6,13 @@
 //! [`block_on_busy`](Runtime::block_on_busy).
 //!
 //! Two spawn strategies:
-//! - **`spawn()`** — Box-allocated. Default. No setup needed.
-//! - **`spawn_pinned()`** — Slab-allocated. Zero-alloc hot path.
+//! - **`spawn_boxed()`** — Box-allocated. Default. No setup needed.
+//! - **`spawn_slab()`** — Slab-allocated. Zero-alloc hot path.
 //!   Requires slab configured via [`RuntimeBuilder::slab`].
 //!
 //! # Thread-local spawn
 //!
-//! [`spawn`] and [`spawn_pinned`] are free functions that push tasks into
+//! [`spawn`] and [`spawn_slab`] are free functions that push tasks into
 //! the current runtime via thread-local pointers set during `block_on`.
 //! Calling them outside `block_on` panics.
 
@@ -39,7 +39,7 @@ thread_local! {
 /// Spawn a Box-allocated task into the current runtime.
 ///
 /// The future is Box-allocated — no slab setup needed. For zero-alloc
-/// spawning on the hot path, use [`spawn_pinned`] with a configured slab.
+/// spawning on the hot path, use [`spawn_slab`] with a configured slab.
 ///
 /// Must be called from within [`Runtime::block_on`] or
 /// [`Runtime::block_on_busy`]. Panics otherwise.
@@ -47,16 +47,16 @@ thread_local! {
 /// # Panics
 ///
 /// - If called outside a runtime context.
-pub fn spawn<F>(future: F) -> TaskId
+pub fn spawn_boxed<F>(future: F) -> TaskId
 where
     F: Future<Output = ()> + 'static,
 {
     CURRENT.with(|cell| {
         let ptr = cell.get();
-        assert!(!ptr.is_null(), "spawn() called outside of Runtime::block_on");
+        assert!(!ptr.is_null(), "spawn_boxed() called outside of Runtime::block_on");
         // SAFETY: pointer valid for duration of block_on. Single-threaded.
         let executor = unsafe { &mut *ptr };
-        executor.spawn(future)
+        executor.spawn_boxed(future)
     })
 }
 
@@ -73,13 +73,13 @@ where
 ///
 /// - If called outside a runtime context.
 /// - If no slab is configured.
-pub fn spawn_pinned<const S: usize, F>(future: F) -> TaskId
+pub fn spawn_slab<const S: usize, F>(future: F) -> TaskId
 where
     F: Future<Output = ()> + 'static,
 {
     CURRENT.with(|cell| {
         let ptr = cell.get();
-        assert!(!ptr.is_null(), "spawn_pinned() called outside of Runtime::block_on");
+        assert!(!ptr.is_null(), "spawn_slab() called outside of Runtime::block_on");
         let executor = unsafe { &mut *ptr };
         let tracker_key = executor.next_tracker_key();
         let task_ptr = crate::alloc::slab_spawn::<F, S>(future, tracker_key);
@@ -96,7 +96,7 @@ where
 /// # Examples
 ///
 /// ```ignore
-/// use nexus_async_rt::{Runtime, spawn, spawn_pinned, slot_size};
+/// use nexus_async_rt::{Runtime, spawn, spawn_slab, slot_size};
 /// use nexus_rt::WorldBuilder;
 ///
 /// let mut world = WorldBuilder::new().build();
@@ -104,16 +104,16 @@ where
 /// // Simple — Box-allocated tasks
 /// let mut rt = Runtime::new(&mut world);
 /// rt.block_on(async {
-///     spawn(async { /* Box-allocated */ });
+///     spawn_boxed(async { /* Box-allocated */ });
 /// });
 ///
 /// // With slab for hot-path tasks
 /// let mut rt = Runtime::builder(&mut world)
-///     .slab::<{ slot_size(256) }>(64)
+///     .slab::<256>(64)
 ///     .build();
 /// rt.block_on(async {
-///     spawn(async { /* Box-allocated */ });
-///     spawn_pinned(async { /* slab-allocated */ });
+///     spawn_boxed(async { /* Box-allocated */ });
+///     spawn_slab(async { /* slab-allocated */ });
 /// });
 /// ```
 pub struct Runtime {
@@ -194,7 +194,7 @@ type SlabInstaller = Box<dyn FnOnce() -> (Box<dyn std::any::Any>, crate::alloc::
 ///
 /// let mut rt = Runtime::builder(&mut world)
 ///     .tasks_per_cycle(128)
-///     .slab::<{ slot_size(256) }>(64)
+///     .slab::<256>(64)
 ///     .signal_handlers(true)
 ///     .build();
 /// ```
@@ -253,28 +253,39 @@ impl<'w> RuntimeBuilder<'w> {
         self
     }
 
-    /// Configure a slab allocator for [`spawn_pinned`].
+    /// Hand off a pre-created slab for [`spawn_slab`].
     ///
-    /// `S` is the slot size — use [`slot_size`](crate::slot_size) to compute
-    /// from your maximum future size. `capacity` is the initial number of
-    /// pre-allocated slots.
+    /// `S` is the total slot size in bytes. The task header uses 32 bytes,
+    /// so `Slab<256>` gives 224 bytes for the future. Most async IO
+    /// futures are 128–256 bytes — `Slab<256>` or `Slab<512>` covers
+    /// the common cases.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// use nexus_async_rt::{Runtime, slot_size};
+    /// use nexus_slab::byte::unbounded::Slab;
+    ///
+    /// // SAFETY: single-threaded runtime.
+    /// let slab = unsafe { Slab::<256>::with_chunk_capacity(64) };
     ///
     /// let mut rt = Runtime::builder(&mut world)
-    ///     .slab::<{ slot_size(256) }>(64)  // 64 slots, 256-byte futures
+    ///     .slab(slab)
     ///     .build();
     /// ```
-    pub fn slab<const S: usize>(mut self, capacity: usize) -> Self {
+    pub fn slab<const S: usize>(
+        mut self,
+        slab: nexus_slab::byte::unbounded::Slab<S>,
+    ) -> Self {
+        const {
+            assert!(S >= 64,
+                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)");
+        }
         self.slab_installer = Some(Box::new(move || {
-            let slab = Box::new(crate::alloc::SlabAlloc::<S>::new(capacity));
-            // Take pointer AFTER boxing — the Box gives us a stable heap address.
+            let slab = Box::new(slab);
+            let slab_ptr = std::ptr::from_ref(slab.as_ref()).cast::<u8>();
             let guard = crate::alloc::install_slab(
-                slab.as_ptr(),
-                crate::alloc::SlabAlloc::<S>::free_fn(),
+                slab_ptr,
+                crate::alloc::slab_free_fn::<S>(),
             );
             (slab as Box<dyn std::any::Any>, guard)
         }));
@@ -546,7 +557,7 @@ mod tests {
 
         rt.block_on(async move {
             for i in 1..=3u64 {
-                spawn(async move {
+                spawn_boxed(async move {
                     crate::context::with_world(|world| {
                         world.resource_mut::<Out>().0 += i;
                     });
@@ -579,7 +590,7 @@ mod tests {
         let mut rt = Runtime::new(&mut world);
 
         rt.block_on_busy(async move {
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 = 99;
                 });
@@ -607,37 +618,42 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "spawn() called outside of Runtime::block_on")]
+    #[should_panic(expected = "spawn_boxed() called outside of Runtime::block_on")]
     fn spawn_outside_runtime_panics() {
-        spawn(async {});
+        spawn_boxed(async {});
     }
 
-    const SLOT: usize = crate::slot_size(256);
+    const SLOT: usize = 256;
+
+    fn test_slab() -> nexus_slab::byte::unbounded::Slab<SLOT> {
+        // SAFETY: single-threaded test.
+        unsafe { nexus_slab::byte::unbounded::Slab::with_chunk_capacity(16) }
+    }
 
     #[test]
-    #[should_panic(expected = "spawn_pinned() called without a slab")]
-    fn spawn_pinned_without_slab_panics() {
+    #[should_panic(expected = "spawn_slab() called without a slab")]
+    fn spawn_slab_without_slab_panics() {
         let mut wb = WorldBuilder::new();
         let mut world = wb.build();
         let mut rt = Runtime::new(&mut world);
 
         rt.block_on(async {
-            spawn_pinned::<SLOT, _>(async {});
+            spawn_slab::<SLOT, _>(async {});
         });
     }
 
     #[test]
-    fn spawn_pinned_with_slab() {
+    fn spawn_slab_with_slab() {
         let mut wb = WorldBuilder::new();
         wb.register(Out(0));
         let mut world = wb.build();
 
         let mut rt = Runtime::builder(&mut world)
-            .slab::<SLOT>(16)
+            .slab(test_slab())
             .build();
 
         rt.block_on(async move {
-            spawn_pinned::<SLOT, _>(async move {
+            spawn_slab::<SLOT, _>(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 = 77;
                 });
@@ -650,24 +666,24 @@ mod tests {
     }
 
     #[test]
-    fn mixed_spawn_and_spawn_pinned() {
+    fn mixed_spawn_and_spawn_slab() {
         let mut wb = WorldBuilder::new();
         wb.register(Out(0));
         let mut world = wb.build();
 
         let mut rt = Runtime::builder(&mut world)
-            .slab::<SLOT>(16)
+            .slab(test_slab())
             .build();
 
         rt.block_on(async move {
             // Box-allocated
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 += 10;
                 });
             });
             // Slab-allocated
-            spawn_pinned::<SLOT, _>(async move {
+            spawn_slab::<SLOT, _>(async move {
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 += 20;
                 });
@@ -711,7 +727,7 @@ mod tests {
 
         let before = Instant::now();
         rt.block_on(async move {
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(50)).await;
                 crate::context::with_world(|world| {
                     world.resource_mut::<Out>().0 = 42;

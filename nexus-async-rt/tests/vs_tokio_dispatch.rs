@@ -106,7 +106,7 @@ fn dispatch_nexus_vs_tokio() {
         let ts = timestamps.clone();
 
         let mut executor = Executor::new(4);
-        executor.spawn(BenchTask {
+        executor.spawn_boxed(BenchTask {
             count: 0,
             target: TOTAL_POLLS as u64,
             timestamps: ts,

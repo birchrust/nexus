@@ -17,7 +17,7 @@
 //! rt.install_signal_handlers();
 //!
 //! rt.block_on(async move {
-//!     spawn(connection_tasks...);
+//!     spawn_boxed(connection_tasks...);
 //!
 //!     // Wait for SIGTERM/SIGINT.
 //!     nexus_async_rt::shutdown_signal().await;
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn shutdown_signal_resolves_after_trigger() {
-        use crate::{Runtime, spawn};
+        use crate::{Runtime, spawn_boxed};
         use nexus_rt::WorldBuilder;
         use std::cell::Cell;
         use std::rc::Rc;
@@ -172,7 +172,7 @@ mod tests {
         // Trigger shutdown from a spawned task after a short delay.
         let sh = shutdown.clone();
         rt.block_on(async move {
-            spawn(async move {
+            spawn_boxed(async move {
                 crate::context::sleep(std::time::Duration::from_millis(50)).await;
                 sh.trigger();
             });

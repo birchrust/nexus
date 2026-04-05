@@ -43,7 +43,7 @@ use nexus_rt::World;
 /// }).into_handler(world.registry());
 ///
 /// let mut executor = Executor::new(DefaultBoundedAlloc::new(64), 64);
-/// executor.spawn(async move {
+/// executor.spawn_boxed(async move {
 ///     let data = read_socket().await;
 ///     // Single deref per resource at dispatch time
 ///     ctx.with_world(|world| on_quote.run(world, data));
@@ -122,7 +122,7 @@ mod tests {
         let ctx = WorldCtx::new(&mut world);
 
         let mut executor = Executor::new(4);
-        executor.spawn(async move {
+        executor.spawn_boxed(async move {
             ctx.with_world(|world| {
                 let v = world.resource::<Val>().0;
                 world.resource_mut::<Out>().0 = v + 10;
@@ -144,7 +144,7 @@ mod tests {
         let result_ptr = &result as *const std::cell::Cell<u64>;
 
         let mut executor = Executor::new(4);
-        executor.spawn(async move {
+        executor.spawn_boxed(async move {
             let v = ctx.with_world_ref(|world| world.resource::<Val>().0);
             // SAFETY: test-only, single-threaded, Cell is alive.
             unsafe { &*result_ptr }.set(v);
@@ -169,7 +169,7 @@ mod tests {
         .into_handler(world.registry());
 
         let mut executor = Executor::new(4);
-        executor.spawn(async move {
+        executor.spawn_boxed(async move {
             ctx.with_world(|world| handler.run(world, 10));
         });
 
@@ -188,7 +188,7 @@ mod tests {
         let result_ptr = &result as *const std::cell::Cell<u64>;
 
         let mut executor = Executor::new(4);
-        executor.spawn(async move {
+        executor.spawn_boxed(async move {
             let v = ctx.with_world(|world| {
                 world.resource::<Val>().0 * 6
             });
@@ -211,7 +211,7 @@ mod tests {
 
         for i in 1..=3u64 {
             let ctx = ctx; // Copy
-            executor.spawn(async move {
+            executor.spawn_boxed(async move {
                 ctx.with_world(|world| {
                     world.resource_mut::<Out>().0 += i;
                 });

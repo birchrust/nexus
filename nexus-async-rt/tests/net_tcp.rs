@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use nexus_async_rt::{Runtime, TcpListener, TcpSocket, TcpStream, spawn};
+use nexus_async_rt::{Runtime, TcpListener, TcpSocket, TcpStream, spawn_boxed};
 use nexus_rt::WorldBuilder;
 
 // =============================================================================
@@ -26,14 +26,14 @@ fn tcp_echo_basic() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 128];
             let n = s.read(&mut buf).await.unwrap();
             s.write_all(&buf[..n]).await.unwrap();
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             c.write_all(b"hello world").await.unwrap();
@@ -61,7 +61,7 @@ fn tcp_multiple_clients() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             for _ in 0..3 {
                 let (mut s, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 64];
@@ -71,7 +71,7 @@ fn tcp_multiple_clients() {
             }
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             for i in 0..3u8 {
                 let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
@@ -107,7 +107,7 @@ fn tcp_large_transfer() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             let mut received = Vec::new();
             let mut buf = [0u8; 8192];
@@ -121,7 +121,7 @@ fn tcp_large_transfer() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             c.write_all(&data).await.unwrap();
@@ -149,7 +149,7 @@ fn tcp_split_borrowed() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             let (mut rd, mut wr) = s.split();
             let mut buf = [0u8; 64];
@@ -158,7 +158,7 @@ fn tcp_split_borrowed() {
             std::future::poll_fn(|cx| std::pin::Pin::new(&mut wr).poll_write(cx, &buf[..n])).await.unwrap();
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             c.write_all(b"split").await.unwrap();
@@ -184,13 +184,13 @@ fn tcp_into_split_reunite() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (s, _) = listener.accept().await.unwrap();
             let (read_half, write_half) = s.into_split();
             let _stream = read_half.reunite(write_half).unwrap();
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let _c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
         });
@@ -215,7 +215,7 @@ fn tcp_socket_options_on_stream() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (s, _) = listener.accept().await.unwrap();
             s.set_nodelay(true).unwrap();
             assert!(s.nodelay().unwrap());
@@ -231,7 +231,7 @@ fn tcp_socket_options_on_stream() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let _c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             nexus_async_rt::sleep(Duration::from_millis(100)).await;
@@ -263,7 +263,7 @@ fn tcp_socket_builder_bind_listen() {
         let mut listener = socket.listen(128, nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 16];
             let n = s.read(&mut buf).await.unwrap();
@@ -271,7 +271,7 @@ fn tcp_socket_builder_bind_listen() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             c.write_all(b"via-socket").await.unwrap();
@@ -299,7 +299,7 @@ fn tcp_try_read_write() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (s, _) = listener.accept().await.unwrap();
             match s.try_write(b"data") {
                 Ok(n) => assert!(n > 0),
@@ -309,7 +309,7 @@ fn tcp_try_read_write() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let _c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             nexus_async_rt::sleep(Duration::from_millis(100)).await;
@@ -340,7 +340,7 @@ fn tcp_from_std() {
     rt.block_on(async move {
         let mut listener = TcpListener::from_std(std_listener, nexus_async_rt::io()).unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (mut s, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 16];
             let n = s.read(&mut buf).await.unwrap();
@@ -348,7 +348,7 @@ fn tcp_from_std() {
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             c.write_all(b"from_std").await.unwrap();
@@ -372,14 +372,14 @@ fn tcp_into_std() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (s, _) = listener.accept().await.unwrap();
             let std_stream = s.into_std().unwrap();
             assert!(std_stream.peer_addr().is_ok());
             flag.set(true);
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let _c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             nexus_async_rt::sleep(Duration::from_millis(100)).await;
@@ -408,7 +408,7 @@ fn tcp_connect_refused() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        spawn(async move {
+        spawn_boxed(async move {
             match TcpStream::connect(closed_addr, nexus_async_rt::io()) {
                 Err(_) => flag.set(true),
                 Ok(mut c) => {
@@ -438,11 +438,11 @@ fn tcp_read_after_peer_close() {
         let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
-        spawn(async move {
+        spawn_boxed(async move {
             let (_s, _) = listener.accept().await.unwrap();
         });
 
-        spawn(async move {
+        spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
             let mut c = TcpStream::connect(addr, nexus_async_rt::io()).unwrap();
             nexus_async_rt::sleep(Duration::from_millis(50)).await;

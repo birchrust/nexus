@@ -66,7 +66,7 @@ fn dispatch_per_poll_histogram() {
     let e = entries.clone();
 
     let mut executor = Executor::new(4);
-    executor.spawn(InstrumentedTask {
+    executor.spawn_boxed(InstrumentedTask {
         count: 0,
         target: total,
         entries: e,

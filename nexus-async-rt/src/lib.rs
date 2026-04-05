@@ -2,7 +2,7 @@
 //!
 //! Two spawn strategies:
 //! - **`spawn()`** — Box-allocated. Default. No setup needed.
-//! - **`spawn_pinned()`** — Slab-allocated. Pre-allocated, zero-alloc
+//! - **`spawn_slab()`** — Slab-allocated. Pre-allocated, zero-alloc
 //!   hot path. Requires slab configured via [`RuntimeBuilder::slab`].
 //!
 //! ```ignore
@@ -19,11 +19,11 @@
 //!
 //! // Power user — with slab for hot-path tasks
 //! let mut rt = Runtime::builder(&mut world)
-//!     .slab::<{ slot_size(256) }>(64)
+//!     .slab::<256>(64)
 //!     .build();
 //! rt.block_on(async {
 //!     spawn(async { /* Box-allocated */ });
-//!     spawn_pinned(async { /* slab-allocated, zero-alloc */ });
+//!     spawn_slab(async { /* slab-allocated, zero-alloc */ });
 //! });
 //! ```
 
@@ -42,7 +42,8 @@ mod timer;
 mod runtime;
 mod shutdown;
 
-pub use alloc::SlabAlloc;
+// Re-export slab type for convenience — users create the slab and hand it to the builder.
+pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
 pub use context::{event_time, io, shutdown_signal, sleep, sleep_until, with_world, with_world_ref};
 pub use task::{TaskId, TASK_HEADER_SIZE};
 pub use world_ctx::WorldCtx;
@@ -53,7 +54,7 @@ pub use net::{
     TcpStream, UdpSocket, WriteHalf,
 };
 pub use timer::{Sleep, TimerHandle};
-pub use runtime::{Runtime, RuntimeBuilder, spawn, spawn_pinned};
+pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab};
 
 use std::future::Future;
 use std::task::Poll;
@@ -61,21 +62,8 @@ use std::task::Poll;
 use task::Task;
 use waker::{set_poll_context, ReusableWaker};
 
-/// Computes the internal slab slot size from user-visible future capacity.
-///
-/// The slab stores a task header (32 bytes) alongside each future.
-/// Use this to compute the slot size for [`RuntimeBuilder::slab`]:
-///
-/// ```ignore
-/// use nexus_async_rt::slot_size;
-///
-/// let mut rt = Runtime::builder(&mut world)
-///     .slab::<{ slot_size(256) }>(64)  // 64 slots, 256-byte futures
-///     .build();
-/// ```
-pub const fn slot_size(future_capacity: usize) -> usize {
-    future_capacity + TASK_HEADER_SIZE
-}
+/// Minimum slab slot size: 64 bytes (32 for task header + 32 for future).
+pub const MIN_SLOT_SIZE: usize = 64;
 
 // =============================================================================
 // Executor
@@ -84,7 +72,7 @@ pub const fn slot_size(future_capacity: usize) -> usize {
 /// Single-threaded async executor.
 ///
 /// Manages task lifecycle: spawn, poll, complete, free. Tasks are
-/// allocated via Box (default) or slab (via `spawn_pinned`). Each
+/// allocated via Box (default) or slab (via `spawn_slab`). Each
 /// task's header contains a `free_fn` that knows how to deallocate
 /// its own storage — the executor doesn't know or care which
 /// allocator was used.
@@ -136,7 +124,7 @@ impl Executor {
     }
 
     /// Spawn an async task via Box allocation. Returns its [`TaskId`].
-    pub fn spawn<F>(&mut self, future: F) -> TaskId
+    pub fn spawn_boxed<F>(&mut self, future: F) -> TaskId
     where
         F: Future<Output = ()> + 'static,
     {
@@ -329,7 +317,7 @@ mod tests {
         let mut done = false;
         let flag = &raw mut done;
 
-        exec.spawn(async move {
+        exec.spawn_boxed(async move {
             // SAFETY: single-threaded, flag lives on stack.
             unsafe { *flag = true };
         });
@@ -346,7 +334,7 @@ mod tests {
         let mut exec = test_executor();
 
         for _ in 0..8 {
-            exec.spawn(async {});
+            exec.spawn_boxed(async {});
         }
 
         assert_eq!(exec.task_count(), 8);
@@ -364,7 +352,7 @@ mod tests {
         let mut exec = test_executor();
 
         // A future that is always pending.
-        exec.spawn(std::future::pending::<()>());
+        exec.spawn_boxed(std::future::pending::<()>());
 
         let completed = exec.poll();
         assert_eq!(completed, 0);
@@ -379,7 +367,7 @@ mod tests {
     fn immediate_task_completes() {
         let mut exec = test_executor();
 
-        exec.spawn(async {
+        exec.spawn_boxed(async {
             // Immediately ready.
         });
 
@@ -402,7 +390,7 @@ mod tests {
         let counter = Rc::new(Cell::new(0u32));
         let c = counter.clone();
 
-        exec.spawn(async move {
+        exec.spawn_boxed(async move {
             struct SelfWake {
                 counter: Rc<Cell<u32>>,
             }
@@ -441,7 +429,7 @@ mod tests {
     #[test]
     fn cancel_task() {
         let mut exec = test_executor();
-        let id = exec.spawn(std::future::pending::<()>());
+        let id = exec.spawn_boxed(std::future::pending::<()>());
 
         assert_eq!(exec.task_count(), 1);
         exec.cancel(id);
@@ -451,11 +439,11 @@ mod tests {
     #[test]
     fn cancel_frees_slot_for_reuse() {
         let mut exec = test_executor();
-        let id = exec.spawn(std::future::pending::<()>());
+        let id = exec.spawn_boxed(std::future::pending::<()>());
         exec.cancel(id);
 
         // Should be able to spawn again.
-        exec.spawn(async {});
+        exec.spawn_boxed(async {});
         assert_eq!(exec.task_count(), 1);
         exec.poll();
         assert_eq!(exec.task_count(), 0);
@@ -471,7 +459,7 @@ mod tests {
         exec.set_tasks_per_cycle(2);
 
         for _ in 0..5 {
-            exec.spawn(async {});
+            exec.spawn_boxed(async {});
         }
 
         // Only 2 polled per cycle.
@@ -517,7 +505,7 @@ mod tests {
             }
         }
 
-        let id = exec.spawn(WakeOnce(false));
+        let id = exec.spawn_boxed(WakeOnce(false));
 
         // First poll: sets is_queued again via wake_by_ref.
         exec.poll();
@@ -526,7 +514,7 @@ mod tests {
         exec.cancel(id);
 
         // Spawn a new task to prove we don't crash on the stale pointer.
-        exec.spawn(async move {
+        exec.spawn_boxed(async move {
             p.set(true);
         });
 
@@ -549,8 +537,8 @@ mod tests {
     #[test]
     fn executor_drop_cleans_up_queued_tasks() {
         let mut exec = test_executor();
-        exec.spawn(std::future::pending::<()>());
-        exec.spawn(std::future::pending::<()>());
+        exec.spawn_boxed(std::future::pending::<()>());
+        exec.spawn_boxed(std::future::pending::<()>());
         exec.poll(); // poll them once
         // Drop executor — should free all tasks without panic.
         drop(exec);
@@ -575,7 +563,7 @@ mod tests {
         }
 
         let mut exec = test_executor();
-        exec.spawn(Noop);
+        exec.spawn_boxed(Noop);
 
         // Warmup.
         for _ in 0..10_000 {

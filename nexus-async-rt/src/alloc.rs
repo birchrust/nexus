@@ -1,11 +1,11 @@
 //! Slab task allocator — optional, power-user feature.
 //!
 //! By default, tasks are Box-allocated. For zero-alloc hot-path spawning,
-//! configure a slab via [`RuntimeBuilder::slab`] and use [`spawn_pinned`].
+//! configure a slab via [`RuntimeBuilder::slab`] and use [`spawn_slab`].
 //!
 //! The slab is accessed via thread-local pointers — no dynamic dispatch,
 //! no Option checks. Default pointers panic with a clear message if
-//! `spawn_pinned` is called without a slab configured.
+//! `spawn_slab` is called without a slab configured.
 
 use std::cell::Cell;
 use std::future::Future;
@@ -27,7 +27,7 @@ thread_local! {
     static SLAB_FREE: Cell<FreeFn> = const { Cell::new(no_slab_free) };
 }
 
-/// Panic stub — should never be reached if alloc was never called.
+/// Panic stub.
 unsafe fn no_slab_free(_slab: *const u8, _ptr: *mut u8) {
     panic!("slab free called without a slab configured")
 }
@@ -66,9 +66,6 @@ impl Drop for SlabGuard {
 
 /// Allocate a task in the slab and return its raw pointer.
 ///
-/// The task is constructed with a slab-aware `free_fn` and placed
-/// directly into a slab slot via the TLS slab pointer.
-///
 /// # Panics
 ///
 /// Panics if no slab is configured.
@@ -79,8 +76,8 @@ pub(crate) fn slab_spawn<F: Future<Output = ()> + 'static, const S: usize>(
     let slab_ptr = SLAB_PTR.with(Cell::get);
     assert!(
         !slab_ptr.is_null(),
-        "spawn_pinned() called without a slab configured — \
-         use Runtime::builder().slab::<S>(capacity) to enable slab allocation"
+        "spawn_slab() called without a slab configured — \
+         use Runtime::builder().slab(slab) to enable slab allocation"
     );
 
     let task = Task::new_with_free(future, tracker_key, slab_free_task);
@@ -95,56 +92,24 @@ pub(crate) fn slab_spawn<F: Future<Output = ()> + 'static, const S: usize>(
 
 /// Free function stored in slab-allocated task headers.
 ///
-/// Reads the slab pointer and free fn from TLS, calls through.
-///
 /// # Safety
 ///
 /// `ptr` must point to a slab-allocated task.
 unsafe fn slab_free_task(ptr: *mut u8) {
     let slab_ptr = SLAB_PTR.with(Cell::get);
     let free_fn = SLAB_FREE.with(Cell::get);
-    // SAFETY: slab_ptr and free_fn were installed by the runtime.
     unsafe { free_fn(slab_ptr, ptr) };
 }
 
 // =============================================================================
-// SlabAlloc — owned by Runtime, provides TLS pointers
+// Free fn (monomorphized per S)
 // =============================================================================
 
-/// Slab allocator instance. Owned by the runtime.
-///
-/// The const generic `S` is the slot size (use [`slot_size`](crate::slot_size)).
-pub struct SlabAlloc<const S: usize> {
-    slab: nexus_slab::byte::unbounded::Slab<S>,
+/// Returns the free function pointer for a slab with slot size `S`.
+pub(crate) fn slab_free_fn<const S: usize>() -> FreeFn {
+    free_impl::<S>
 }
 
-impl<const S: usize> SlabAlloc<S> {
-    /// Create a slab allocator with `capacity` initial slots.
-    pub fn new(capacity: usize) -> Self {
-        // SAFETY: single-threaded use. Slot lifetimes managed by Executor.
-        let slab = unsafe {
-            nexus_slab::byte::unbounded::Slab::<S>::with_chunk_capacity(capacity)
-        };
-        Self { slab }
-    }
-
-    /// Get the raw pointer for TLS installation.
-    pub(crate) fn as_ptr(&self) -> *const u8 {
-        std::ptr::from_ref(&self.slab).cast::<u8>()
-    }
-
-    /// The free function pointer for TLS.
-    pub(crate) fn free_fn() -> FreeFn {
-        free_impl::<S>
-    }
-}
-
-/// Slab free implementation. Releases the slot back to the slab.
-///
-/// # Safety
-///
-/// `slab_ptr` must point to a valid `Slab<S>`.
-/// `ptr` must have been returned by `slab.alloc()` on the same slab.
 unsafe fn free_impl<const S: usize>(slab_ptr: *const u8, ptr: *mut u8) {
     let slab = unsafe {
         &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
