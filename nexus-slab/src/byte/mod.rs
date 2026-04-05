@@ -297,6 +297,13 @@ impl ByteClaim<'_> {
     pub fn slot_size(&self) -> usize {
         self.slot_size
     }
+
+    /// Chunk index (for unbounded slabs). Always 0 for bounded.
+    #[inline]
+    pub fn chunk_idx(&self) -> usize {
+        self.chunk_idx
+    }
+
 }
 
 impl Drop for ByteClaim<'_> {

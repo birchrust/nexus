@@ -100,6 +100,18 @@ impl<const N: usize> Slab<N> {
         }
     }
 
+    /// Free a raw pointer with known chunk index. O(1) — no linear scan.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a slot in chunk `chunk_idx` of this slab.
+    #[inline]
+    pub unsafe fn free_raw_in_chunk(&self, ptr: *mut u8, chunk_idx: usize) {
+        unsafe {
+            self.inner.free_ptr_in_chunk(ptr.cast(), chunk_idx);
+        }
+    }
+
     /// Claim a slot and copy raw bytes into it. Returns a raw pointer.
     ///
     /// # Safety
