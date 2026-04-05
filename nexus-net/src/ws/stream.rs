@@ -1,15 +1,20 @@
 //! WebSocket stream — I/O wrapper with HTTP upgrade handshake.
 
-use std::io::{self, Read, Write};
 use std::time::Duration;
 
 use super::error::ProtocolError;
 use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
-use super::handshake::{self, HandshakeError};
+#[cfg(not(feature = "nexus-rt"))]
 use super::message::{CloseCode, Message};
 use crate::buf::WriteBuf;
+
+#[cfg(not(feature = "nexus-rt"))]
+use std::io::{self, Read, Write};
+use super::handshake::HandshakeError;
+#[cfg(not(feature = "nexus-rt"))]
+use super::handshake;
 
 #[cfg(feature = "tls")]
 use crate::tls::{TlsCodec, TlsConfig, TlsError};
@@ -301,6 +306,7 @@ impl WsStreamBuilder {
     ///
     /// Creates a TCP socket, applies socket options, and performs the
     /// full handshake (TLS if `wss://`, then HTTP upgrade).
+    #[cfg(not(feature = "nexus-rt"))]
     pub fn connect(self, url: &str) -> Result<WsStream<std::net::TcpStream>, WsError> {
         let parsed = parse_ws_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
@@ -324,6 +330,7 @@ impl WsStreamBuilder {
     }
 
     /// Connect using a pre-connected socket.
+    #[cfg(not(feature = "nexus-rt"))]
     pub fn connect_with<S: Read + Write>(
         self,
         stream: S,
@@ -361,6 +368,7 @@ impl WsStreamBuilder {
     }
 
     /// Accept an incoming WebSocket connection (server-side).
+    #[cfg(not(feature = "nexus-rt"))]
     pub fn accept<S: Read + Write>(self, stream: S) -> Result<WsStream<S>, WsError> {
         WsStream::accept_impl(
             stream,
@@ -370,6 +378,7 @@ impl WsStreamBuilder {
         )
     }
 
+    #[cfg(not(feature = "nexus-rt"))]
     fn apply_socket_opts(&self, tcp: &std::net::TcpStream) -> Result<(), WsError> {
         if self.tcp_nodelay {
             tcp.set_nodelay(true)?;
@@ -426,13 +435,13 @@ impl Default for WsStreamBuilder {
 /// }
 /// ```
 pub struct WsStream<S> {
-    stream: S,
+    pub(crate) stream: S,
     #[cfg(feature = "tls")]
-    tls: Option<TlsCodec>,
-    reader: FrameReader,
-    writer: FrameWriter,
-    write_buf: WriteBuf,
-    poisoned: bool,
+    pub(crate) tls: Option<TlsCodec>,
+    pub(crate) reader: FrameReader,
+    pub(crate) writer: FrameWriter,
+    pub(crate) write_buf: WriteBuf,
+    pub(crate) poisoned: bool,
 }
 
 impl WsStream<std::net::TcpStream> {
@@ -443,19 +452,9 @@ impl WsStream<std::net::TcpStream> {
     }
 }
 
-impl<S: Read + Write> WsStream<S> {
-    /// Connect using a pre-connected socket with default configuration.
-    ///
-    /// IPv6 addresses must use bracket notation: `ws://[::1]:8080/path`.
-    pub fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
-        WsStreamBuilder::new().connect_with(stream, url)
-    }
+// -- Unbounded impl: accessors and constructors that need no I/O traits -------
 
-    /// Accept an incoming WebSocket connection (server-side).
-    pub fn accept(stream: S) -> Result<Self, WsError> {
-        WsStreamBuilder::new().accept(stream)
-    }
-
+impl<S> WsStream<S> {
     /// Create from pre-existing parts. For testing or custom handshakes.
     pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
@@ -505,6 +504,51 @@ impl<S: Read + Write> WsStream<S> {
         }
     }
 
+    /// Whether the stream is poisoned (I/O error occurred during send).
+    ///
+    /// A poisoned stream should not be reused — the connection may be
+    /// in an indeterminate state (partial frame written).
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Access the underlying stream.
+    pub fn stream(&self) -> &S {
+        &self.stream
+    }
+
+    /// Mutable access to the underlying stream.
+    pub fn stream_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+
+    /// Access the FrameReader.
+    pub fn reader(&self) -> &FrameReader {
+        &self.reader
+    }
+
+    /// Access the FrameWriter.
+    pub fn frame_writer(&self) -> &FrameWriter {
+        &self.writer
+    }
+}
+
+// -- Blocking I/O impl --------------------------------------------------------
+
+#[cfg(not(feature = "nexus-rt"))]
+impl<S: Read + Write> WsStream<S> {
+    /// Connect using a pre-connected socket with default configuration.
+    ///
+    /// IPv6 addresses must use bracket notation: `ws://[::1]:8080/path`.
+    pub fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
+        WsStreamBuilder::new().connect_with(stream, url)
+    }
+
+    /// Accept an incoming WebSocket connection (server-side).
+    pub fn accept(stream: S) -> Result<Self, WsError> {
+        WsStreamBuilder::new().accept(stream)
+    }
+
     /// Receive the next message. Reads from the socket as needed.
     ///
     /// Returns `Ok(None)` on EOF, buffer full, or `WouldBlock` (non-blocking sockets).
@@ -520,14 +564,6 @@ impl<S: Read + Write> WsStream<S> {
                 Err(e) => return Err(WsError::Io(e)),
             }
         }
-    }
-
-    /// Whether the stream is poisoned (I/O error occurred during send).
-    ///
-    /// A poisoned stream should not be reused — the connection may be
-    /// in an indeterminate state (partial frame written).
-    pub fn is_poisoned(&self) -> bool {
-        self.poisoned
     }
 
     /// Send a text message.
@@ -573,23 +609,6 @@ impl<S: Read + Write> WsStream<S> {
                 .map_err(WsError::Encode)?;
             self.flush_write_buf_or_poison()
         }
-    }
-
-    /// Access the underlying stream.
-    pub fn stream(&self) -> &S {
-        &self.stream
-    }
-    /// Mutable access to the underlying stream.
-    pub fn stream_mut(&mut self) -> &mut S {
-        &mut self.stream
-    }
-    /// Access the FrameReader.
-    pub fn reader(&self) -> &FrameReader {
-        &self.reader
-    }
-    /// Access the FrameWriter.
-    pub fn frame_writer(&self) -> &FrameWriter {
-        &self.writer
     }
 
     // =========================================================================
@@ -915,6 +934,7 @@ pub fn pair_with(role: Role, reader_builder: FrameReaderBuilder) -> (FrameReader
     (reader_builder.role(role).build(), FrameWriter::new(role))
 }
 
+#[cfg(not(feature = "nexus-rt"))]
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     haystack
         .as_bytes()
@@ -970,157 +990,46 @@ mod tests {
     }
 
     // =========================================================================
-    // pair()
+    // Blocking WsStream tests (gated off when nexus-rt is enabled)
     // =========================================================================
 
-    #[test]
-    fn pair_creates_matching_roles() {
-        let (mut reader, _writer) = pair(Role::Client);
-        // Reader built with Client role — accepts unmasked frames (from server)
-        let frame = make_frame(true, 0x1, b"test");
-        reader.read(&frame).unwrap();
-        let msg = reader.next().unwrap().unwrap();
-        assert!(matches!(msg, Message::Text(s) if s == "test"));
-    }
+    #[cfg(not(feature = "nexus-rt"))]
+    mod sync_tests {
+        use super::*;
+        use std::io::{self, Read, Write};
 
-    // =========================================================================
-    // WsStream via mock
-    // =========================================================================
-
-    /// Mock stream: delivers one byte at a time.
-    struct ByteAtATimeStream {
-        data: Vec<u8>,
-        pos: usize,
-    }
-
-    impl ByteAtATimeStream {
-        fn new(data: Vec<u8>) -> Self {
-            Self { data, pos: 0 }
+        #[test]
+        fn pair_creates_matching_roles() {
+            let (mut reader, _writer) = pair(Role::Client);
+            let frame = make_frame(true, 0x1, b"test");
+            reader.read(&frame).unwrap();
+            let msg = reader.next().unwrap().unwrap();
+            assert!(matches!(msg, Message::Text(s) if s == "test"));
         }
-    }
 
-    impl Read for ByteAtATimeStream {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            if self.pos >= self.data.len() {
-                return Ok(0);
-            }
-            buf[0] = self.data[self.pos];
-            self.pos += 1;
-            Ok(1)
+        struct ByteAtATimeStream {
+            data: Vec<u8>,
+            pos: usize,
         }
-    }
 
-    impl Write for ByteAtATimeStream {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn make_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
-        let mut frame = Vec::new();
-        let byte0 = if fin { 0x80 } else { 0x00 } | opcode;
-        frame.push(byte0);
-        if payload.len() <= 125 {
-            frame.push(payload.len() as u8);
-        } else if payload.len() <= 65535 {
-            frame.push(126);
-            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-        } else {
-            frame.push(127);
-            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
-        }
-        frame.extend_from_slice(payload);
-        frame
-    }
-
-    fn ws_from_bytes(data: Vec<u8>) -> WsStream<ByteAtATimeStream> {
-        let mock = ByteAtATimeStream::new(data);
-        let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
-        WsStream::from_parts(mock, reader, writer)
-    }
-
-    #[test]
-    fn recv_text() {
-        let frame = make_frame(true, 0x1, b"Hello");
-        let mut ws = ws_from_bytes(frame);
-        match ws.recv().unwrap().unwrap() {
-            Message::Text(s) => assert_eq!(s, "Hello"),
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn recv_ping() {
-        let frame = make_frame(true, 0x9, &[0x42; 125]);
-        let mut ws = ws_from_bytes(frame);
-        match ws.recv().unwrap().unwrap() {
-            Message::Ping(p) => assert_eq!(p.len(), 125),
-            other => panic!("expected Ping, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn recv_fragmented_text() {
-        let mut data = make_frame(false, 0x1, b"Hel");
-        data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
-        let mut ws = ws_from_bytes(data);
-        match ws.recv().unwrap().unwrap() {
-            Message::Text(s) => assert_eq!(s, "Hello"),
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn recv_fragment_with_ping() {
-        let mut data = make_frame(false, 0x1, b"Hel");
-        data.extend_from_slice(&make_frame(true, 0x9, b"ping"));
-        data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
-        let mut ws = ws_from_bytes(data);
-        match ws.recv().unwrap().unwrap() {
-            Message::Ping(p) => assert_eq!(p, b"ping"),
-            other => panic!("expected Ping, got {other:?}"),
-        }
-        match ws.recv().unwrap().unwrap() {
-            Message::Text(s) => assert_eq!(s, "Hello"),
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn recv_close() {
-        let mut payload = vec![];
-        payload.extend_from_slice(&1000u16.to_be_bytes());
-        payload.extend_from_slice(b"bye");
-        let frame = make_frame(true, 0x8, &payload);
-        let mut ws = ws_from_bytes(frame);
-        match ws.recv().unwrap().unwrap() {
-            Message::Close(cf) => {
-                assert_eq!(cf.code, CloseCode::Normal);
-                assert_eq!(cf.reason, "bye");
-            }
-            other => panic!("expected Close, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn eof_returns_none() {
-        let mut ws = ws_from_bytes(Vec::new());
-        assert!(ws.recv().unwrap().is_none());
-    }
-
-    #[test]
-    fn would_block_returns_none() {
-        struct WouldBlockStream;
-        impl Read for WouldBlockStream {
-            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"))
+        impl ByteAtATimeStream {
+            fn new(data: Vec<u8>) -> Self {
+                Self { data, pos: 0 }
             }
         }
-        impl Write for WouldBlockStream {
+
+        impl Read for ByteAtATimeStream {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.pos >= self.data.len() {
+                    return Ok(0);
+                }
+                buf[0] = self.data[self.pos];
+                self.pos += 1;
+                Ok(1)
+            }
+        }
+
+        impl Write for ByteAtATimeStream {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 Ok(buf.len())
             }
@@ -1129,9 +1038,120 @@ mod tests {
             }
         }
 
-        let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
-        let mut ws = WsStream::from_parts(WouldBlockStream, reader, writer);
-        assert!(ws.recv().unwrap().is_none());
+        fn make_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+            let mut frame = Vec::new();
+            let byte0 = if fin { 0x80 } else { 0x00 } | opcode;
+            frame.push(byte0);
+            if payload.len() <= 125 {
+                frame.push(payload.len() as u8);
+            } else if payload.len() <= 65535 {
+                frame.push(126);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            } else {
+                frame.push(127);
+                frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+            }
+            frame.extend_from_slice(payload);
+            frame
+        }
+
+        fn ws_from_bytes(data: Vec<u8>) -> WsStream<ByteAtATimeStream> {
+            let mock = ByteAtATimeStream::new(data);
+            let reader = FrameReader::builder().role(Role::Client).build();
+            let writer = FrameWriter::new(Role::Client);
+            WsStream::from_parts(mock, reader, writer)
+        }
+
+        #[test]
+        fn recv_text() {
+            let frame = make_frame(true, 0x1, b"Hello");
+            let mut ws = ws_from_bytes(frame);
+            match ws.recv().unwrap().unwrap() {
+                Message::Text(s) => assert_eq!(s, "Hello"),
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn recv_ping() {
+            let frame = make_frame(true, 0x9, &[0x42; 125]);
+            let mut ws = ws_from_bytes(frame);
+            match ws.recv().unwrap().unwrap() {
+                Message::Ping(p) => assert_eq!(p.len(), 125),
+                other => panic!("expected Ping, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn recv_fragmented_text() {
+            let mut data = make_frame(false, 0x1, b"Hel");
+            data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
+            let mut ws = ws_from_bytes(data);
+            match ws.recv().unwrap().unwrap() {
+                Message::Text(s) => assert_eq!(s, "Hello"),
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn recv_fragment_with_ping() {
+            let mut data = make_frame(false, 0x1, b"Hel");
+            data.extend_from_slice(&make_frame(true, 0x9, b"ping"));
+            data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
+            let mut ws = ws_from_bytes(data);
+            match ws.recv().unwrap().unwrap() {
+                Message::Ping(p) => assert_eq!(p, b"ping"),
+                other => panic!("expected Ping, got {other:?}"),
+            }
+            match ws.recv().unwrap().unwrap() {
+                Message::Text(s) => assert_eq!(s, "Hello"),
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn recv_close() {
+            let mut payload = vec![];
+            payload.extend_from_slice(&1000u16.to_be_bytes());
+            payload.extend_from_slice(b"bye");
+            let frame = make_frame(true, 0x8, &payload);
+            let mut ws = ws_from_bytes(frame);
+            match ws.recv().unwrap().unwrap() {
+                Message::Close(cf) => {
+                    assert_eq!(cf.code, CloseCode::Normal);
+                    assert_eq!(cf.reason, "bye");
+                }
+                other => panic!("expected Close, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn eof_returns_none() {
+            let mut ws = ws_from_bytes(Vec::new());
+            assert!(ws.recv().unwrap().is_none());
+        }
+
+        #[test]
+        fn would_block_returns_none() {
+            struct WouldBlockStream;
+            impl Read for WouldBlockStream {
+                fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                    Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"))
+                }
+            }
+            impl Write for WouldBlockStream {
+                fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> io::Result<()> {
+                    Ok(())
+                }
+            }
+
+            let reader = FrameReader::builder().role(Role::Client).build();
+            let writer = FrameWriter::new(Role::Client);
+            let mut ws = WsStream::from_parts(WouldBlockStream, reader, writer);
+            assert!(ws.recv().unwrap().is_none());
+        }
     }
 }

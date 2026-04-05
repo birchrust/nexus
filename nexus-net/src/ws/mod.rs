@@ -18,6 +18,9 @@ pub(crate) mod mask;
 mod message;
 mod stream;
 
+#[cfg(feature = "nexus-rt")]
+mod async_nexus;
+
 // User-facing types
 pub use connecting::WsConnecting;
 pub use error::ProtocolError;
