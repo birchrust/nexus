@@ -3,10 +3,10 @@
 //! Three layers:
 //! - **Message API**: [`Message`], [`OwnedMessage`], [`CloseCode`]
 //! - **Wire parser**: [`FrameReader`] (ReadBuf → Message)
-//! - **I/O wrapper**: [`WsStream`] (socket + handshake + reader/writer)
+//! - **I/O wrapper**: [`Client`] (socket + handshake + reader/writer)
 //!
 //! Use `FrameReader`/`FrameWriter` directly for sans-IO integration.
-//! Use `WsStream` for the convenience path with built-in HTTP upgrade.
+//! Use `Client` for the convenience path with built-in HTTP upgrade.
 
 mod connecting;
 mod error;
@@ -22,7 +22,7 @@ mod stream;
 mod async_nexus;
 
 // User-facing types
-pub use connecting::WsConnecting;
+pub use connecting::Connecting;
 pub use error::ProtocolError;
 pub use frame::Role;
 pub use frame_reader::{FrameReader, FrameReaderBuilder, ReadError};
@@ -30,4 +30,4 @@ pub use frame_writer::{EncodeError, FrameHeader, FrameWriter};
 pub use handshake::HandshakeError;
 pub use mask::apply_mask;
 pub use message::{CloseCode, CloseFrame, Message, OwnedCloseFrame, OwnedMessage};
-pub use stream::{ParsedUrl, WsError, WsStream, WsStreamBuilder, pair, pair_with, parse_ws_url};
+pub use stream::{Client, ClientBuilder, Error, ParsedUrl, pair, pair_with, parse_ws_url};

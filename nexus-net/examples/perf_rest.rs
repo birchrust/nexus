@@ -103,7 +103,7 @@ impl Write for MockRestStream {
 
 fn bench_nexus() {
     use nexus_net::http::ResponseReader;
-    use nexus_net::rest::{HttpConnection, RequestWriter};
+    use nexus_net::rest::{Client, RequestWriter};
 
     let mock = MockRestStream::new();
     let mut writer = RequestWriter::new("api.binance.com").unwrap();
@@ -117,7 +117,7 @@ fn bench_nexus() {
         .default_header("Content-Type", "application/json")
         .unwrap();
     let mut reader = ResponseReader::new(4096);
-    let mut conn = HttpConnection::new(mock);
+    let mut conn = Client::new(mock);
 
     let order_body = r#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","timeInForce":"GTC","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";

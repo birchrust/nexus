@@ -15,19 +15,19 @@
 #![cfg(feature = "tls")]
 
 use nexus_net::http::ResponseReader;
-use nexus_net::rest::{HttpConnection, RequestWriter};
+use nexus_net::rest::{Client, RequestWriter};
 use nexus_net::tls::TlsConfig;
 
 fn setup() -> (
     RequestWriter,
     ResponseReader,
-    HttpConnection<std::net::TcpStream>,
+    Client<std::net::TcpStream>,
 ) {
     let tls = TlsConfig::new().unwrap();
     let mut writer = RequestWriter::new("httpbin.org").unwrap();
     let _ = writer.default_header("Accept", "application/json");
     let reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);
-    let conn = HttpConnection::builder()
+    let conn = Client::builder()
         .tls(&tls)
         .disable_nagle()
         .connect("https://httpbin.org")
@@ -313,7 +313,7 @@ fn httpbin_default_headers_sent() {
         .default_header("X-Default-Test", "default-val")
         .unwrap();
     let mut reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);
-    let mut conn = HttpConnection::builder()
+    let mut conn = Client::builder()
         .tls(&tls)
         .disable_nagle()
         .connect("https://httpbin.org")

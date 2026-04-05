@@ -113,14 +113,14 @@ const BATCH: u64 = 16;
 
 fn main() {
     use nexus_net::http::ResponseReader;
-    use nexus_net::rest::{HttpConnection, RequestWriter};
+    use nexus_net::rest::{Client, RequestWriter};
 
     let mut writer = RequestWriter::new("api.binance.com").unwrap();
     writer
         .default_header("Content-Type", "application/json")
         .unwrap();
     let mut reader = ResponseReader::new(4096);
-    let mut conn = HttpConnection::new(MockStream::new());
+    let mut conn = Client::new(MockStream::new());
 
     // Reusable buffer for the to_vec path
     let mut json_buf: Vec<u8> = Vec::with_capacity(256);

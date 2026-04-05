@@ -105,9 +105,9 @@ nexus-net = { version = "0.2", features = ["full"] }
 ### WebSocket Client (ws://)
 
 ```rust
-use nexus_net::ws::{WsStream, Message, CloseCode};
+use nexus_net::ws::{Client, Message, CloseCode};
 
-let mut ws = WsStream::builder().connect("ws://exchange.com:80/ws/v1")?;
+let mut ws = Client::builder().connect("ws://exchange.com:80/ws/v1")?;
 
 ws.send_text(r#"{"subscribe":"trades.BTC-USD"}"#)?;
 
@@ -129,12 +129,12 @@ loop {
 ### WebSocket Client (wss://)
 
 ```rust
-use nexus_net::ws::WsStream;
+use nexus_net::ws::Client;
 use nexus_net::tls::TlsConfig;
 
 // TLS detected from wss:// scheme — create TlsConfig once at startup
 let tls = TlsConfig::new()?;
-let mut ws = WsStream::builder().tls(&tls).connect("wss://exchange.com/ws/v1")?;
+let mut ws = Client::builder().tls(&tls).connect("wss://exchange.com/ws/v1")?;
 
 // Same API — recv(), send_text(), send_binary(), etc.
 ```
@@ -142,11 +142,11 @@ let mut ws = WsStream::builder().tls(&tls).connect("wss://exchange.com/ws/v1")?;
 Or with custom TLS config:
 
 ```rust
-use nexus_net::ws::WsStream;
+use nexus_net::ws::Client;
 use nexus_net::tls::TlsConfig;
 
 let tls = TlsConfig::builder().tls13_only().build()?;
-let mut ws = WsStream::builder()
+let mut ws = Client::builder()
     .tls(&tls)
     .disable_nagle()
     .connect("wss://exchange.com/ws/v1")?;
@@ -155,7 +155,7 @@ let mut ws = WsStream::builder()
 ### REST Client (HTTP/1.1, blocking)
 
 ```rust
-use nexus_net::rest::{HttpConnection, RequestWriter};
+use nexus_net::rest::{Client, RequestWriter};
 use nexus_net::http::ResponseReader;
 
 // Protocol (sans-IO) — configured once at startup
@@ -167,7 +167,7 @@ let mut reader = ResponseReader::new(32 * 1024).max_body_size(32 * 1024);
 
 // Transport — TLS config created once, builder for connection
 let tls = nexus_net::tls::TlsConfig::new()?;
-let mut conn = HttpConnection::builder().tls(&tls).connect("https://httpbin.org")?;
+let mut conn = Client::builder().tls(&tls).connect("https://httpbin.org")?;
 
 // GET with query parameters
 let req = writer.get("/get")
@@ -260,9 +260,9 @@ archive.write(&order)?;               // still yours — archive after send
   validation. Returns `Message<'a>` (zero-copy borrowed) or `OwnedMessage`.
 - **`FrameWriter`** — sans-IO outbound encoder. Encodes into `&mut [u8]`
   or `WriteBuf`.
-- **`WsStream<S>`** — convenience I/O wrapper over any `Read + Write`.
+- **`Client<S>`** — convenience I/O wrapper over any `Read + Write`.
   HTTP upgrade handshake built in.
-- **`WsStream<S>` with TLS** — `wss://` URLs enable TLS transparently.
+- **`Client<S>` with TLS** — `wss://` URLs enable TLS transparently.
   Requires `tls` feature.
 - **`Message<'a>`** — `Text(&str)`, `Binary(&[u8])`, `Ping(&[u8])`,
   `Pong(&[u8])`, `Close(CloseFrame)`. Text is validated UTF-8. Close
@@ -275,7 +275,7 @@ archive.write(&order)?;               // still yours — archive after send
   query params (percent-encoded), per-request headers, `body()` (slice),
   `body_writer()` (serialize directly via `std::io::Write`),
   `body_fixed()` (known-size direct write), base path.
-- **`HttpConnection<S>`** — pure transport. 3 fields: stream, TLS,
+- **`Client<S>`** — pure transport. 3 fields: stream, TLS,
   poisoned. `send(req, &mut reader)` is the whole API (request moved
   on send).
 - **`RestResponse<'a>`** — borrows from `ResponseReader`. Status, headers,
@@ -329,7 +329,7 @@ uses `simdutf8`. HTTP header parsing uses `httparse` (SIMD vectorized).
 no crypto exchange uses it. Exchanges that compress use
 application-level gzip (e.g., OKX sends gzipped binary frames).
 
-**Layered, not coupled.** `ReadBuf` → `FrameReader` → `WsStream` are
+**Layered, not coupled.** `ReadBuf` → `FrameReader` → `Client` are
 independent layers. Use any combination. `TlsCodec` slots between
 socket and `FrameReader` without changing either.
 

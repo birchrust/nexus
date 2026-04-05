@@ -10,7 +10,7 @@ use std::io::{self, Cursor, Read, Write};
 use std::time::Instant;
 
 use nexus_net::http::ResponseReader;
-use nexus_net::rest::{HttpConnection, RequestWriter};
+use nexus_net::rest::{Client, RequestWriter};
 
 const CANNED_RESPONSE: &[u8] =
     b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nX-RateLimit-Remaining: 42\r\n\r\n{\"orderId\":123}";
@@ -59,7 +59,7 @@ fn main() {
         .unwrap();
 
     let mut reader = ResponseReader::new(4096).max_body_size(32 * 1024);
-    let mut conn = HttpConnection::new(MockStream::new());
+    let mut conn = Client::new(MockStream::new());
 
     let order_body = br#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","timeInForce":"GTC","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";

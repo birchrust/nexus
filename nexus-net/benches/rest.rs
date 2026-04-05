@@ -11,7 +11,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use std::io::{self, Cursor, Read, Write};
 
 use nexus_net::http::ResponseReader;
-use nexus_net::rest::{HttpConnection, RequestWriter};
+use nexus_net::rest::{Client, RequestWriter};
 
 // =============================================================================
 // Mock stream
@@ -118,7 +118,7 @@ fn bench_round_trip(c: &mut Criterion) {
     group.bench_function("GET_simple", |b| {
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(MockStream::new(CANNED_RESPONSE));
+        let mut conn = Client::new(MockStream::new(CANNED_RESPONSE));
 
         b.iter(|| {
             conn.stream_mut().reset();
@@ -138,7 +138,7 @@ fn bench_round_trip(c: &mut Criterion) {
             .default_header("Content-Type", "application/json")
             .unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(MockStream::new(CANNED_RESPONSE));
+        let mut conn = Client::new(MockStream::new(CANNED_RESPONSE));
 
         let body = br#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67234.50"}"#;
         let timestamp = "1700000000000";
@@ -162,7 +162,7 @@ fn bench_round_trip(c: &mut Criterion) {
     group.bench_function("GET_chunked_response", |b| {
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = HttpConnection::new(MockStream::new(CHUNKED_RESPONSE));
+        let mut conn = Client::new(MockStream::new(CHUNKED_RESPONSE));
 
         b.iter(|| {
             conn.stream_mut().reset();
@@ -191,7 +191,7 @@ fn bench_throughput(c: &mut Criterion) {
                 .default_header("Content-Type", "application/json")
                 .unwrap();
             let mut reader = ResponseReader::new(4096);
-            let mut conn = HttpConnection::new(MockStream::new(CANNED_RESPONSE));
+            let mut conn = Client::new(MockStream::new(CANNED_RESPONSE));
 
             let body = vec![b'x'; size];
 
@@ -288,7 +288,7 @@ fn bench_loopback(c: &mut Criterion) {
         .default_header("Content-Type", "application/json")
         .unwrap();
     let mut reader = ResponseReader::new(4096);
-    let mut conn = HttpConnection::new(tcp);
+    let mut conn = Client::new(tcp);
 
     let order_body = br#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67234.50"}"#;
 

@@ -13,16 +13,16 @@
 #![cfg(feature = "tls")]
 
 use nexus_net::tls::TlsConfig;
-use nexus_net::ws::{CloseCode, Message, WsStream};
+use nexus_net::ws::{CloseCode, Message, Client};
 use std::net::TcpStream;
 
-fn connect_echo(host: &str, port: u16, url: &str) -> WsStream<TcpStream> {
+fn connect_echo(host: &str, port: u16, url: &str) -> Client<TcpStream> {
     let tls_config = TlsConfig::new().expect("TLS config with system certs");
     let tcp = TcpStream::connect((host, port)).expect("TCP connect");
     tcp.set_nodelay(true).ok();
     tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .ok();
-    nexus_net::ws::WsStreamBuilder::new()
+    nexus_net::ws::ClientBuilder::new()
         .tls(&tls_config)
         .write_buffer_capacity(64 * 1024)
         .connect_with(tcp, url)

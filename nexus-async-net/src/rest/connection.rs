@@ -240,7 +240,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
 
     /// Send a request and read the response.
     ///
-    /// Same API as [`HttpConnection::send`](nexus_net::rest::HttpConnection::send)
+    /// Same API as [`Client::send`](nexus_net::rest::Client::send)
     /// but with `.await` on I/O.
     #[allow(clippy::needless_pass_by_value)] // Move by design — request is consumed after send.
     pub async fn send<'r>(

@@ -101,7 +101,7 @@ fn server_thread(listener: TcpListener) {
 
 fn bench_nexus(addr: std::net::SocketAddr) {
     use nexus_net::http::ResponseReader;
-    use nexus_net::rest::{HttpConnection, RequestWriter};
+    use nexus_net::rest::{Client, RequestWriter};
 
     const WARMUP: usize = 5_000;
     const SAMPLES: usize = 100_000;
@@ -120,7 +120,7 @@ fn bench_nexus(addr: std::net::SocketAddr) {
         .default_header("Content-Type", "application/json")
         .unwrap();
     let mut reader = ResponseReader::new(4096).max_body_size(32 * 1024);
-    let mut conn = HttpConnection::new(tcp);
+    let mut conn = Client::new(tcp);
 
     let order_body = br#"{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67234.50"}"#;
     let timestamp = "1700000000000";

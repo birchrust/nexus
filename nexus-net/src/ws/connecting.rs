@@ -6,7 +6,7 @@ use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
-use super::stream::{WsError, WsStream, WsStreamBuilder, parse_ws_url};
+use super::stream::{Error, Client, ClientBuilder, parse_ws_url};
 use crate::buf::WriteBuf;
 
 #[cfg(feature = "tls")]
@@ -15,7 +15,7 @@ use crate::tls::TlsCodec;
 /// A WebSocket connection in the handshake phase.
 ///
 /// Drive the handshake by calling [`poll()`](Self::poll) when the socket
-/// is ready. Returns [`WsStream<S>`] when complete.
+/// is ready. Returns [`Client<S>`] when complete.
 ///
 /// Check [`wants_read()`](Self::wants_read) / [`wants_write()`](Self::wants_write)
 /// to determine which readiness event to wait for in your event loop.
@@ -23,11 +23,11 @@ use crate::tls::TlsCodec;
 /// # Usage
 ///
 /// ```ignore
-/// use nexus_net::ws::{WsConnecting, WsStreamBuilder};
+/// use nexus_net::ws::{Connecting, ClientBuilder};
 ///
 /// let tcp = TcpStream::connect("exchange.com:443")?;
 /// tcp.set_nonblocking(true)?;
-/// let mut connecting = WsStreamBuilder::new()
+/// let mut connecting = ClientBuilder::new()
 ///     .begin_connect(tcp, "wss://exchange.com/ws")?;
 ///
 /// // In your event loop:
@@ -39,8 +39,8 @@ use crate::tls::TlsCodec;
 ///     }
 /// }
 /// ```
-pub struct WsConnecting<S> {
-    // ManuallyDrop: ownership transferred to WsStream in finish().
+pub struct Connecting<S> {
+    // ManuallyDrop: ownership transferred to Client in finish().
     // Drop impl handles cleanup if finish() is never called (error path).
     stream: std::mem::ManuallyDrop<S>,
     state: ConnectState,
@@ -75,11 +75,11 @@ enum ConnectState {
     Done,
 }
 
-impl WsStreamBuilder {
+impl ClientBuilder {
     /// Start a non-blocking connection handshake.
     ///
-    /// Returns a [`WsConnecting`] that must be driven to completion
-    /// via [`poll()`](WsConnecting::poll) before messages can be sent/received.
+    /// Returns a [`Connecting`] that must be driven to completion
+    /// via [`poll()`](Connecting::poll) before messages can be sent/received.
     ///
     /// The caller is responsible for setting the socket to non-blocking
     /// mode before calling this.
@@ -87,14 +87,14 @@ impl WsStreamBuilder {
         self,
         stream: S,
         url: &str,
-    ) -> Result<WsConnecting<S>, WsError> {
+    ) -> Result<Connecting<S>, Error> {
         let parsed = parse_ws_url(url)?;
 
         #[cfg(feature = "tls")]
         let tls = if parsed.tls {
             let config = match self.tls_config {
                 Some(c) => c,
-                None => crate::tls::TlsConfig::new().map_err(WsError::Tls)?,
+                None => crate::tls::TlsConfig::new().map_err(Error::Tls)?,
             };
             Some(TlsCodec::new(&config, parsed.host)?)
         } else {
@@ -103,7 +103,7 @@ impl WsStreamBuilder {
 
         #[cfg(not(feature = "tls"))]
         if parsed.tls {
-            return Err(WsError::TlsNotEnabled);
+            return Err(Error::TlsNotEnabled);
         }
 
         let ws_key = handshake::generate_key();
@@ -118,7 +118,7 @@ impl WsStreamBuilder {
         #[cfg(not(feature = "tls"))]
         let initial_state = ConnectState::HttpSend;
 
-        let mut connecting = WsConnecting {
+        let mut connecting = Connecting {
             stream: std::mem::ManuallyDrop::new(stream),
             state: initial_state,
             #[cfg(feature = "tls")]
@@ -145,18 +145,18 @@ impl WsStreamBuilder {
     }
 }
 
-impl<S: Read + Write> WsConnecting<S> {
+impl<S: Read + Write> Connecting<S> {
     /// Drive the handshake forward. Non-blocking.
     ///
     /// Returns `Ok(None)` while in progress, `Ok(Some(ws))` when the
-    /// connection is ready and [`recv()`](WsStream::recv) can be called.
+    /// connection is ready and [`recv()`](Client::recv) can be called.
     ///
     /// Call when the socket is readable or writable (check
     /// [`wants_read()`](Self::wants_read) / [`wants_write()`](Self::wants_write)).
     ///
     /// On `WouldBlock`, returns `Ok(None)` — call again when the socket
     /// is ready.
-    pub fn poll(&mut self) -> Result<Option<WsStream<S>>, WsError> {
+    pub fn poll(&mut self) -> Result<Option<Client<S>>, Error> {
         loop {
             match self.state {
                 #[cfg(feature = "tls")]
@@ -185,7 +185,7 @@ impl<S: Read + Write> WsConnecting<S> {
                         .as_mut()
                         .expect("TLS codec must exist in TLS handshake state");
                     match tls.read_tls_from(&mut *self.stream) {
-                        Ok(0) => return Err(WsError::Handshake(HandshakeError::MalformedHttp)),
+                        Ok(0) => return Err(Error::Handshake(HandshakeError::MalformedHttp)),
                         Ok(_) => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
                         Err(e) => return Err(e.into()),
@@ -238,7 +238,7 @@ impl<S: Read + Write> WsConnecting<S> {
                             Err(e) => return Err(e.into()),
                         };
                         if n == 0 {
-                            return Err(WsError::Io(io::Error::new(
+                            return Err(Error::Io(io::Error::new(
                                 io::ErrorKind::WriteZero,
                                 "write returned 0 during handshake",
                             )));
@@ -356,7 +356,7 @@ impl<S: Read + Write> WsConnecting<S> {
         self.req_offset = 0;
     }
 
-    fn finish(&mut self) -> Result<WsStream<S>, WsError> {
+    fn finish(&mut self) -> Result<Client<S>, Error> {
         self.finished = true;
 
         let reader_builder = std::mem::replace(&mut self.reader_builder, FrameReader::builder());
@@ -365,7 +365,7 @@ impl<S: Read + Write> WsConnecting<S> {
         if !remainder.is_empty() {
             reader
                 .read(remainder)
-                .map_err(|_| WsError::Handshake(HandshakeError::MalformedHttp))?;
+                .map_err(|_| Error::Handshake(HandshakeError::MalformedHttp))?;
         }
 
         // SAFETY: stream is ManuallyDrop. We take ownership here.
@@ -376,7 +376,7 @@ impl<S: Read + Write> WsConnecting<S> {
         #[cfg(feature = "tls")]
         let tls = self.tls.take();
 
-        Ok(WsStream::from_parts_internal(
+        Ok(Client::from_parts_internal(
             stream,
             #[cfg(feature = "tls")]
             tls,
@@ -389,17 +389,17 @@ impl<S: Read + Write> WsConnecting<S> {
     /// Read bytes through TLS or direct.
     /// Returns Ok(n) for data, Err(WouldBlock) for non-blocking no-data,
     /// Err(UnexpectedEof) for connection closed during handshake.
-    fn read_bytes(&mut self, dst: &mut [u8]) -> Result<usize, WsError> {
+    fn read_bytes(&mut self, dst: &mut [u8]) -> Result<usize, Error> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             return match tls.read_tls_from(&mut *self.stream) {
-                Ok(0) => Err(WsError::Io(io::Error::new(
+                Ok(0) => Err(Error::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "connection closed during TLS handshake",
                 ))),
                 Ok(_) => {
                     tls.process_new_packets()?;
-                    tls.read_plaintext(dst).map_err(WsError::Tls)
+                    tls.read_plaintext(dst).map_err(Error::Tls)
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(0),
                 Err(e) => Err(e.into()),
@@ -413,7 +413,7 @@ impl<S: Read + Write> WsConnecting<S> {
     }
 }
 
-impl<S> Drop for WsConnecting<S> {
+impl<S> Drop for Connecting<S> {
     fn drop(&mut self) {
         if !self.finished {
             // finish() was never called — drop the stream manually.

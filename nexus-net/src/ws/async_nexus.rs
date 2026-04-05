@@ -1,6 +1,6 @@
 //! Async WebSocket adapter for nexus-async-rt.
 //!
-//! Adds async methods to [`WsStream<S>`](super::WsStream) when `S`
+//! Adds async methods to [`Client<S>`](super::Client) when `S`
 //! implements [`AsyncRead`] + [`AsyncWrite`]. Same zero-copy parsing,
 //! same method names — the feature flag selects the impl.
 
@@ -13,7 +13,7 @@ use super::frame::Role;
 use super::frame_reader::FrameReaderBuilder;
 use super::frame_writer::FrameWriter;
 use super::message::{CloseCode, Message};
-use super::stream::{WsError, WsStream, WsStreamBuilder, parse_ws_url};
+use super::stream::{Error, Client, ClientBuilder, parse_ws_url};
 use crate::buf::WriteBuf;
 use crate::ws::HandshakeError;
 
@@ -45,22 +45,22 @@ async fn write_all_async<S: AsyncWrite + Unpin>(
 }
 
 // =============================================================================
-// Async impl on WsStream
+// Async impl on Client
 // =============================================================================
 
-impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
+impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     /// Connect with a pre-connected async stream using default configuration.
     ///
     /// Performs the HTTP upgrade handshake asynchronously.
-    pub async fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
-        WsStreamBuilder::new()
+    pub async fn connect_with(stream: S, url: &str) -> Result<Self, Error> {
+        ClientBuilder::new()
             .connect_with(stream, url)
             .await
     }
 
     /// Accept an incoming WebSocket connection (server-side, async).
-    pub async fn accept(stream: S) -> Result<Self, WsError> {
-        WsStreamBuilder::new().accept(stream).await
+    pub async fn accept(stream: S) -> Result<Self, Error> {
+        ClientBuilder::new().accept(stream).await
     }
 
     /// Receive the next message.
@@ -68,7 +68,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
     /// Reads bytes from the stream asynchronously and feeds them to the
     /// FrameReader. Returns the next complete message, or `None` on EOF
     /// or buffer full.
-    pub async fn recv(&mut self) -> Result<Option<Message<'_>>, WsError> {
+    pub async fn recv(&mut self) -> Result<Option<Message<'_>>, Error> {
         loop {
             if self.reader.poll()? {
                 return Ok(self.reader.next()?);
@@ -93,7 +93,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
     }
 
     /// Send a text message.
-    pub async fn send_text(&mut self, text: &str) -> Result<(), WsError> {
+    pub async fn send_text(&mut self, text: &str) -> Result<(), Error> {
         self.writer
             .encode_text_into(text.as_bytes(), &mut self.write_buf);
         write_all_async(&mut self.stream, self.write_buf.data()).await?;
@@ -101,32 +101,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
     }
 
     /// Send a binary message.
-    pub async fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
+    pub async fn send_binary(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer.encode_binary_into(data, &mut self.write_buf);
         write_all_async(&mut self.stream, self.write_buf.data()).await?;
         Ok(())
     }
 
     /// Send a ping.
-    pub async fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
+    pub async fn send_ping(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer
             .encode_ping_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
+            .map_err(Error::Encode)?;
         write_all_async(&mut self.stream, self.write_buf.data()).await?;
         Ok(())
     }
 
     /// Send a pong.
-    pub async fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
+    pub async fn send_pong(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer
             .encode_pong_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
+            .map_err(Error::Encode)?;
         write_all_async(&mut self.stream, self.write_buf.data()).await?;
         Ok(())
     }
 
     /// Initiate close handshake.
-    pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
+    pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), Error> {
         if code == CloseCode::NoStatus {
             let mut dst = [0u8; 14];
             let n = self.writer.encode_empty_close(&mut dst);
@@ -134,7 +134,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         } else {
             self.writer
                 .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
-                .map_err(WsError::Encode)?;
+                .map_err(Error::Encode)?;
             write_all_async(&mut self.stream, self.write_buf.data()).await?;
         }
         Ok(())
@@ -150,7 +150,7 @@ async fn async_connect_impl<S: AsyncRead + AsyncWrite + Unpin>(
     url: &str,
     reader_builder: FrameReaderBuilder,
     write_cap: usize,
-) -> Result<WsStream<S>, WsError> {
+) -> Result<Client<S>, Error> {
     let parsed = parse_ws_url(url)?;
     let host_header = parsed.host_header();
 
@@ -218,7 +218,7 @@ async fn async_connect_impl<S: AsyncRead + AsyncWrite + Unpin>(
                         .map_err(|_| HandshakeError::MalformedHttp)?;
                 }
 
-                return Ok(WsStream {
+                return Ok(Client {
                     stream,
                     #[cfg(feature = "tls")]
                     tls: None,
@@ -238,7 +238,7 @@ async fn async_accept_impl<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     reader_builder: FrameReaderBuilder,
     write_cap: usize,
-) -> Result<WsStream<S>, WsError> {
+) -> Result<Client<S>, Error> {
     let mut req_reader = crate::http::RequestReader::new(4096);
     let mut tmp = [0u8; 4096];
 
@@ -311,7 +311,7 @@ async fn async_accept_impl<S: AsyncRead + AsyncWrite + Unpin>(
             .map_err(|_| HandshakeError::MalformedHttp)?;
     }
 
-    Ok(WsStream {
+    Ok(Client {
         stream,
         #[cfg(feature = "tls")]
         tls: None,
@@ -326,7 +326,7 @@ async fn async_accept_impl<S: AsyncRead + AsyncWrite + Unpin>(
 // Async builder methods
 // =============================================================================
 
-impl WsStreamBuilder {
+impl ClientBuilder {
     /// Connect with a pre-connected async stream.
     ///
     /// Buffer sizes from the builder are applied. Socket options and TLS
@@ -336,7 +336,7 @@ impl WsStreamBuilder {
         self,
         stream: S,
         url: &str,
-    ) -> Result<WsStream<S>, WsError> {
+    ) -> Result<Client<S>, Error> {
         async_connect_impl(stream, url, self.reader_builder, self.write_buf_capacity).await
     }
 
@@ -344,7 +344,7 @@ impl WsStreamBuilder {
     pub async fn accept<S: AsyncRead + AsyncWrite + Unpin>(
         self,
         stream: S,
-    ) -> Result<WsStream<S>, WsError> {
+    ) -> Result<Client<S>, Error> {
         async_accept_impl(stream, self.reader_builder, self.write_buf_capacity).await
     }
 }
@@ -427,11 +427,11 @@ mod tests {
         frame
     }
 
-    fn ws_from_bytes(data: Vec<u8>) -> WsStream<MockStream> {
+    fn ws_from_bytes(data: Vec<u8>) -> Client<MockStream> {
         let mock = MockStream::new(data);
         let reader = FrameReader::builder().role(Role::Client).build();
         let writer = FrameWriter::new(Role::Client);
-        WsStream::from_parts(mock, reader, writer)
+        Client::from_parts(mock, reader, writer)
     }
 
     // Mock streams always return Poll::Ready, so we can drive futures
@@ -598,7 +598,7 @@ mod tests {
 
         let reader = FrameReader::builder().role(Role::Client).build();
         let writer = FrameWriter::new(Role::Client);
-        let mut ws = WsStream::from_parts(BrokenWrite, reader, writer);
+        let mut ws = Client::from_parts(BrokenWrite, reader, writer);
 
         let result = block_on_mock(ws.send_text("hello"));
         assert!(result.is_err(), "send on broken stream should fail");

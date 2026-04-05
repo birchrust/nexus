@@ -44,13 +44,13 @@ impl ParsedUrl<'_> {
     }
 }
 
-pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
+pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, Error> {
     let (tls, rest) = if let Some(r) = url.strip_prefix("wss://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("ws://") {
         (false, r)
     } else {
-        return Err(WsError::InvalidUrl(url.to_string()));
+        return Err(Error::InvalidUrl(url.to_string()));
     };
 
     let (host_port, path) = rest
@@ -58,7 +58,7 @@ pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
         .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
 
     if host_port.is_empty() {
-        return Err(WsError::InvalidUrl(format!("empty host: {url}")));
+        return Err(Error::InvalidUrl(format!("empty host: {url}")));
     }
 
     let default_port = if tls { 443 } else { 80 };
@@ -72,13 +72,13 @@ pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
                 if let Some(port_str) = rest.strip_prefix(':') {
                     let p = port_str
                         .parse::<u16>()
-                        .map_err(|_| WsError::InvalidUrl(format!("invalid port: {url}")))?;
+                        .map_err(|_| Error::InvalidUrl(format!("invalid port: {url}")))?;
                     (h, p)
                 } else {
                     (h, default_port)
                 }
             }
-            None => return Err(WsError::InvalidUrl(format!("unclosed bracket: {url}"))),
+            None => return Err(Error::InvalidUrl(format!("unclosed bracket: {url}"))),
         }
     } else {
         match host_port.rfind(':') {
@@ -90,7 +90,7 @@ pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
                 } else {
                     let p = port_str
                         .parse::<u16>()
-                        .map_err(|_| WsError::InvalidUrl(format!("invalid port: {url}")))?;
+                        .map_err(|_| Error::InvalidUrl(format!("invalid port: {url}")))?;
                     (&host_port[..i], p)
                 }
             }
@@ -106,12 +106,12 @@ pub fn parse_ws_url(url: &str) -> Result<ParsedUrl<'_>, WsError> {
 }
 
 // =============================================================================
-// WsError
+// Error
 // =============================================================================
 
 /// Unified error type for WebSocket stream operations.
 #[derive(Debug)]
-pub enum WsError {
+pub enum Error {
     /// I/O error from the underlying stream.
     Io(std::io::Error),
     /// WebSocket protocol error.
@@ -129,7 +129,7 @@ pub enum WsError {
     TlsNotEnabled,
 }
 
-impl std::fmt::Display for WsError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O error: {e}"),
@@ -144,30 +144,30 @@ impl std::fmt::Display for WsError {
     }
 }
 
-impl std::error::Error for WsError {}
+impl std::error::Error for Error {}
 
-impl From<std::io::Error> for WsError {
+impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
     }
 }
-impl From<ProtocolError> for WsError {
+impl From<ProtocolError> for Error {
     fn from(e: ProtocolError) -> Self {
         Self::Protocol(e)
     }
 }
-impl From<super::frame_writer::EncodeError> for WsError {
+impl From<super::frame_writer::EncodeError> for Error {
     fn from(e: super::frame_writer::EncodeError) -> Self {
         Self::Encode(e)
     }
 }
-impl From<HandshakeError> for WsError {
+impl From<HandshakeError> for Error {
     fn from(e: HandshakeError) -> Self {
         Self::Handshake(e)
     }
 }
 #[cfg(feature = "tls")]
-impl From<TlsError> for WsError {
+impl From<TlsError> for Error {
     fn from(e: TlsError) -> Self {
         match e {
             TlsError::Io(io) => Self::Io(io),
@@ -177,22 +177,22 @@ impl From<TlsError> for WsError {
 }
 
 // =============================================================================
-// WsStreamBuilder
+// ClientBuilder
 // =============================================================================
 
-/// Builder for [`WsStream`].
+/// Builder for [`Client`].
 ///
 /// Configures buffer sizes, socket options, and optional TLS.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// let mut ws = WsStream::builder()
+/// let mut ws = Client::builder()
 ///     .disable_nagle()
 ///     .buffer_capacity(2 * 1024 * 1024)
 ///     .connect("wss://exchange.com/ws")?;
 /// ```
-pub struct WsStreamBuilder {
+pub struct ClientBuilder {
     pub(crate) reader_builder: FrameReaderBuilder,
     pub(crate) write_buf_capacity: usize,
     pub(crate) write_buf_headroom: usize,
@@ -207,7 +207,7 @@ pub struct WsStreamBuilder {
     pub(crate) read_timeout: Option<Duration>,
 }
 
-impl WsStreamBuilder {
+impl ClientBuilder {
     /// Create a new builder with defaults.
     #[must_use]
     pub fn new() -> Self {
@@ -307,7 +307,7 @@ impl WsStreamBuilder {
     /// Creates a TCP socket, applies socket options, and performs the
     /// full handshake (TLS if `wss://`, then HTTP upgrade).
     #[cfg(not(feature = "nexus-rt"))]
-    pub fn connect(self, url: &str) -> Result<WsStream<std::net::TcpStream>, WsError> {
+    pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, Error> {
         let parsed = parse_ws_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
@@ -315,11 +315,11 @@ impl WsStreamBuilder {
             Some(timeout) => {
                 let addrs: Vec<std::net::SocketAddr> =
                     std::net::ToSocketAddrs::to_socket_addrs(&addr)
-                        .map_err(WsError::Io)?
+                        .map_err(Error::Io)?
                         .collect();
                 let first = addrs
                     .first()
-                    .ok_or_else(|| WsError::Io(io::Error::other("DNS resolution failed")))?;
+                    .ok_or_else(|| Error::Io(io::Error::other("DNS resolution failed")))?;
                 std::net::TcpStream::connect_timeout(first, timeout)?
             }
             None => std::net::TcpStream::connect(&addr)?,
@@ -335,14 +335,14 @@ impl WsStreamBuilder {
         self,
         stream: S,
         url: &str,
-    ) -> Result<WsStream<S>, WsError> {
+    ) -> Result<Client<S>, Error> {
         let parsed = parse_ws_url(url)?;
 
         #[cfg(feature = "tls")]
         let tls = if parsed.tls {
             let config = match self.tls_config {
                 Some(c) => c,
-                None => TlsConfig::new().map_err(WsError::Tls)?,
+                None => TlsConfig::new().map_err(Error::Tls)?,
             };
             Some(TlsCodec::new(&config, parsed.host)?)
         } else {
@@ -351,11 +351,11 @@ impl WsStreamBuilder {
 
         #[cfg(not(feature = "tls"))]
         if parsed.tls {
-            return Err(WsError::TlsNotEnabled);
+            return Err(Error::TlsNotEnabled);
         }
 
         let host_header = parsed.host_header();
-        WsStream::connect_impl(
+        Client::connect_impl(
             stream,
             &host_header,
             parsed.path,
@@ -369,8 +369,8 @@ impl WsStreamBuilder {
 
     /// Accept an incoming WebSocket connection (server-side).
     #[cfg(not(feature = "nexus-rt"))]
-    pub fn accept<S: Read + Write>(self, stream: S) -> Result<WsStream<S>, WsError> {
-        WsStream::accept_impl(
+    pub fn accept<S: Read + Write>(self, stream: S) -> Result<Client<S>, Error> {
+        Client::accept_impl(
             stream,
             self.reader_builder,
             self.write_buf_capacity,
@@ -379,7 +379,7 @@ impl WsStreamBuilder {
     }
 
     #[cfg(not(feature = "nexus-rt"))]
-    fn apply_socket_opts(&self, tcp: &std::net::TcpStream) -> Result<(), WsError> {
+    fn apply_socket_opts(&self, tcp: &std::net::TcpStream) -> Result<(), Error> {
         if self.tcp_nodelay {
             tcp.set_nodelay(true)?;
         }
@@ -400,14 +400,14 @@ impl WsStreamBuilder {
     }
 }
 
-impl Default for WsStreamBuilder {
+impl Default for ClientBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
 // =============================================================================
-// WsStream
+// Client
 // =============================================================================
 
 /// WebSocket stream — owns a socket, reader, writer, and buffers.
@@ -418,15 +418,15 @@ impl Default for WsStreamBuilder {
 /// # Usage
 ///
 /// ```ignore
-/// use nexus_net::ws::WsStream;
+/// use nexus_net::ws::Client;
 /// use nexus_net::tls::TlsConfig;
 ///
 /// // Plain WebSocket
-/// let mut ws = WsStream::builder().connect("ws://localhost:8080/ws")?;
+/// let mut ws = Client::builder().connect("ws://localhost:8080/ws")?;
 ///
 /// // TLS WebSocket (requires 'tls' feature)
 /// let tls = TlsConfig::new()?;
-/// let mut ws = WsStream::builder().tls(&tls).connect("wss://exchange.com/ws")?;
+/// let mut ws = Client::builder().tls(&tls).connect("wss://exchange.com/ws")?;
 ///
 /// // Same API for both:
 /// ws.send_text("Hello!")?;
@@ -434,7 +434,7 @@ impl Default for WsStreamBuilder {
 ///     // ...
 /// }
 /// ```
-pub struct WsStream<S> {
+pub struct Client<S> {
     pub(crate) stream: S,
     #[cfg(feature = "tls")]
     pub(crate) tls: Option<TlsCodec>,
@@ -444,17 +444,17 @@ pub struct WsStream<S> {
     pub(crate) poisoned: bool,
 }
 
-impl WsStream<std::net::TcpStream> {
+impl Client<std::net::TcpStream> {
     /// Create a builder for configuring buffer sizes, socket options, and TLS.
     #[must_use]
-    pub fn builder() -> WsStreamBuilder {
-        WsStreamBuilder::new()
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::new()
     }
 }
 
 // -- Unbounded impl: accessors and constructors that need no I/O traits -------
 
-impl<S> WsStream<S> {
+impl<S> Client<S> {
     /// Create from pre-existing parts. For testing or custom handshakes.
     pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
@@ -468,7 +468,7 @@ impl<S> WsStream<S> {
         }
     }
 
-    /// Internal constructor with all fields. Used by WsConnecting::finish().
+    /// Internal constructor with all fields. Used by Connecting::finish().
     #[cfg(feature = "tls")]
     pub(crate) fn from_parts_internal(
         stream: S,
@@ -487,7 +487,7 @@ impl<S> WsStream<S> {
         }
     }
 
-    /// Internal constructor with all fields. Used by WsConnecting::finish().
+    /// Internal constructor with all fields. Used by Connecting::finish().
     #[cfg(not(feature = "tls"))]
     pub(crate) fn from_parts_internal(
         stream: S,
@@ -536,23 +536,23 @@ impl<S> WsStream<S> {
 // -- Blocking I/O impl --------------------------------------------------------
 
 #[cfg(not(feature = "nexus-rt"))]
-impl<S: Read + Write> WsStream<S> {
+impl<S: Read + Write> Client<S> {
     /// Connect using a pre-connected socket with default configuration.
     ///
     /// IPv6 addresses must use bracket notation: `ws://[::1]:8080/path`.
-    pub fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
-        WsStreamBuilder::new().connect_with(stream, url)
+    pub fn connect_with(stream: S, url: &str) -> Result<Self, Error> {
+        ClientBuilder::new().connect_with(stream, url)
     }
 
     /// Accept an incoming WebSocket connection (server-side).
-    pub fn accept(stream: S) -> Result<Self, WsError> {
-        WsStreamBuilder::new().accept(stream)
+    pub fn accept(stream: S) -> Result<Self, Error> {
+        ClientBuilder::new().accept(stream)
     }
 
     /// Receive the next message. Reads from the socket as needed.
     ///
     /// Returns `Ok(None)` on EOF, buffer full, or `WouldBlock` (non-blocking sockets).
-    pub fn recv(&mut self) -> Result<Option<Message<'_>>, WsError> {
+    pub fn recv(&mut self) -> Result<Option<Message<'_>>, Error> {
         loop {
             if self.reader.poll()? {
                 return Ok(self.reader.next()?);
@@ -561,42 +561,42 @@ impl<S: Read + Write> WsStream<S> {
                 Ok(0) => return Ok(None),
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-                Err(e) => return Err(WsError::Io(e)),
+                Err(e) => return Err(Error::Io(e)),
             }
         }
     }
 
     /// Send a text message.
-    pub fn send_text(&mut self, text: &str) -> Result<(), WsError> {
+    pub fn send_text(&mut self, text: &str) -> Result<(), Error> {
         self.writer
             .encode_text_into(text.as_bytes(), &mut self.write_buf);
         self.flush_write_buf_or_poison()
     }
 
     /// Send a binary message.
-    pub fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
+    pub fn send_binary(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer.encode_binary_into(data, &mut self.write_buf);
         self.flush_write_buf_or_poison()
     }
 
     /// Send a ping.
-    pub fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
+    pub fn send_ping(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer
             .encode_ping_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
+            .map_err(Error::Encode)?;
         self.flush_write_buf_or_poison()
     }
 
     /// Send a pong.
-    pub fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
+    pub fn send_pong(&mut self, data: &[u8]) -> Result<(), Error> {
         self.writer
             .encode_pong_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
+            .map_err(Error::Encode)?;
         self.flush_write_buf_or_poison()
     }
 
     /// Initiate close handshake.
-    pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
+    pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), Error> {
         if code == CloseCode::NoStatus {
             let mut dst = [0u8; 14];
             let n = self.writer.encode_empty_close(&mut dst);
@@ -606,7 +606,7 @@ impl<S: Read + Write> WsStream<S> {
         } else {
             self.writer
                 .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
-                .map_err(WsError::Encode)?;
+                .map_err(Error::Encode)?;
             self.flush_write_buf_or_poison()
         }
     }
@@ -651,14 +651,14 @@ impl<S: Read + Write> WsStream<S> {
     }
 
     /// Flush write_buf, poisoning on I/O error.
-    fn flush_write_buf_or_poison(&mut self) -> Result<(), WsError> {
+    fn flush_write_buf_or_poison(&mut self) -> Result<(), Error> {
         self.flush_write_buf().inspect_err(|_| {
             self.poisoned = true;
         })
     }
 
     /// Flush the write_buf to the socket (through TLS if present).
-    fn flush_write_buf(&mut self) -> Result<(), WsError> {
+    fn flush_write_buf(&mut self) -> Result<(), Error> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             tls.encrypt(self.write_buf.data())?;
@@ -675,7 +675,7 @@ impl<S: Read + Write> WsStream<S> {
     }
 
     /// Write raw bytes to the socket (through TLS if present).
-    fn write_raw(&mut self, data: &[u8]) -> Result<(), WsError> {
+    fn write_raw(&mut self, data: &[u8]) -> Result<(), Error> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
             tls.encrypt(data)?;
@@ -699,7 +699,7 @@ impl<S: Read + Write> WsStream<S> {
         write_cap: usize,
         write_headroom: usize,
         #[cfg(feature = "tls")] mut tls: Option<TlsCodec>,
-    ) -> Result<Self, WsError> {
+    ) -> Result<Self, Error> {
         // Phase 1: TLS handshake (if wss://)
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut tls {
@@ -762,8 +762,8 @@ impl<S: Read + Write> WsStream<S> {
                     tls.process_new_packets()?;
                     plaintext_n = match tls.read_plaintext(&mut tmp) {
                         Ok(n) => n,
-                        Err(TlsError::Io(io)) => return Err(WsError::Io(io)),
-                        Err(e) => return Err(WsError::Tls(e)),
+                        Err(TlsError::Io(io)) => return Err(Error::Io(io)),
+                        Err(e) => return Err(Error::Tls(e)),
                     };
                     if plaintext_n > 0 {
                         break;
@@ -837,7 +837,7 @@ impl<S: Read + Write> WsStream<S> {
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
         write_headroom: usize,
-    ) -> Result<Self, WsError> {
+    ) -> Result<Self, Error> {
         let mut req_reader = crate::http::RequestReader::new(4096);
         let mut tmp = [0u8; 4096];
 
@@ -990,7 +990,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Blocking WsStream tests (gated off when nexus-rt is enabled)
+    // Blocking Client tests (gated off when nexus-rt is enabled)
     // =========================================================================
 
     #[cfg(not(feature = "nexus-rt"))]
@@ -1055,11 +1055,11 @@ mod tests {
             frame
         }
 
-        fn ws_from_bytes(data: Vec<u8>) -> WsStream<ByteAtATimeStream> {
+        fn ws_from_bytes(data: Vec<u8>) -> Client<ByteAtATimeStream> {
             let mock = ByteAtATimeStream::new(data);
             let reader = FrameReader::builder().role(Role::Client).build();
             let writer = FrameWriter::new(Role::Client);
-            WsStream::from_parts(mock, reader, writer)
+            Client::from_parts(mock, reader, writer)
         }
 
         #[test]
@@ -1150,7 +1150,7 @@ mod tests {
 
             let reader = FrameReader::builder().role(Role::Client).build();
             let writer = FrameWriter::new(Role::Client);
-            let mut ws = WsStream::from_parts(WouldBlockStream, reader, writer);
+            let mut ws = Client::from_parts(WouldBlockStream, reader, writer);
             assert!(ws.recv().unwrap().is_none());
         }
     }

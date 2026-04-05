@@ -182,14 +182,14 @@ impl Write for ReadWriteWrap {
 // =============================================================================
 
 fn bench_parse_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, WsStream};
+    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, Client};
 
     let cursor = CursorWrap(Cursor::new(wire));
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = WsStream::from_parts(cursor, reader, FrameWriter::new(Role::Client));
+    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client));
 
     let start = Instant::now();
     let mut received = 0u64;
@@ -238,14 +238,14 @@ fn bench_parse_deser_nexus<T: for<'de> Deserialize<'de>>(
     wire: &[u8],
     msg_count: u64,
 ) -> (Duration, u64) {
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, WsStream};
+    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, Client};
 
     let cursor = CursorWrap(Cursor::new(wire));
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = WsStream::from_parts(cursor, reader, FrameWriter::new(Role::Client));
+    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client));
 
     let start = Instant::now();
     let mut received = 0u64;
@@ -340,8 +340,8 @@ fn run_loopback(
 }
 
 fn loopback_nexus_client(tcp: TcpStream, msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{Message, WsStream};
-    let mut ws = WsStream::connect_with(tcp, "ws://127.0.0.1/").unwrap();
+    use nexus_net::ws::{Message, Client};
+    let mut ws = Client::connect_with(tcp, "ws://127.0.0.1/").unwrap();
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
@@ -445,9 +445,9 @@ fn tls_loopback_nexus_json_client<T: for<'de> Deserialize<'de>>(
     tls_config: nexus_net::tls::TlsConfig,
     msg_count: u64,
 ) -> (Duration, u64) {
-    use nexus_net::ws::{Message, WsStream};
+    use nexus_net::ws::{Message, Client};
 
-    let mut ws = match WsStream::builder()
+    let mut ws = match Client::builder()
         .tls(&tls_config)
         .connect_with(tcp, "wss://localhost/")
     {

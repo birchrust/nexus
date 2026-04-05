@@ -11,10 +11,10 @@
 //!
 //! ```ignore
 //! use nexus_net::tls::TlsConfig;
-//! use nexus_net::ws::WsStream;
+//! use nexus_net::ws::Client;
 //!
 //! let tls = TlsConfig::new()?;
-//! let mut ws = WsStream::builder()
+//! let mut ws = Client::builder()
 //!     .tls(&tls)
 //!     .connect("wss://exchange.com/ws/v1")?;
 //!

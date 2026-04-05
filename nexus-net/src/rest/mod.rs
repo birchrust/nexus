@@ -1,34 +1,29 @@
-//! Sans-IO HTTP/1.1 REST primitives + blocking transport.
+//! Sans-IO HTTP/1.1 REST primitives + transport.
 //!
 //! **Protocol layer (sans-IO):**
 //! - [`RequestWriter`] — typestate request encoder, produces [`Request`]
 //! - [`ResponseReader`](crate::http::ResponseReader) — response parser
 //!
-//! **Transport layer (blocking I/O):**
-//! - [`HttpConnection`] — sends request bytes, reads response bytes
+//! **Transport layer:**
+//! - [`Client`] — sends request bytes, reads response bytes
+//! - [`ClientPool`] — pre-allocated connection pool (requires `nexus-rt` feature)
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use nexus_net::rest::{HttpConnection, RequestWriter};
+//! use nexus_net::rest::{Client, RequestWriter};
 //! use nexus_net::http::ResponseReader;
 //!
-//! // Protocol (sans-IO)
 //! let mut writer = RequestWriter::new("api.exchange.com")?;
 //! writer.default_header("Authorization", "Bearer token123")?;
 //! let mut reader = ResponseReader::new(32 * 1024);
 //!
-//! // Transport
-//! let mut conn = HttpConnection::builder().connect("http://api.exchange.com")?;
+//! let mut conn = Client::builder().connect("http://api.exchange.com")?;
 //!
-//! // Build + send
 //! let req = writer.get("/api/v1/orders")
 //!     .query("symbol", "BTC-USD")
 //!     .finish()?;
 //! let resp = conn.send(req, &mut reader)?;
-//!
-//! println!("status: {}", resp.status());
-//! println!("body: {}", resp.body_str()?);
 //! ```
 
 mod connection;
@@ -36,9 +31,17 @@ mod error;
 mod request;
 mod response;
 
-pub use connection::{HttpConnection, HttpConnectionBuilder, ParsedUrl, parse_base_url};
+#[cfg(feature = "nexus-rt")]
+mod async_nexus;
+#[cfg(feature = "nexus-rt")]
+mod pool;
+
+pub use connection::{Client, ClientBuilder, ParsedUrl, parse_base_url};
 pub use error::RestError;
 pub use request::{
     BodyWriter, Headers, Method, Query, Ready, Request, RequestBuilder, RequestWriter,
 };
 pub use response::RestResponse;
+
+#[cfg(feature = "nexus-rt")]
+pub use pool::{ClientPool, ClientPoolBuilder, ClientSlot};

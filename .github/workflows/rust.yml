@@ -22,3 +22,7 @@ jobs:
       run: cargo test --verbose
     - name: Run tests (all features)
       run: cargo test --workspace --all-features --verbose
+    - name: Test nexus-net (default - sync)
+      run: cargo test -p nexus-net --lib --verbose
+    - name: Test nexus-net (nexus-rt - async)
+      run: cargo test -p nexus-net --lib --features nexus-rt --verbose
