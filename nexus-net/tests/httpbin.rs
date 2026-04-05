@@ -17,11 +17,12 @@
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{Client, RequestWriter};
 use nexus_net::tls::TlsConfig;
+use nexus_net::MaybeTls;
 
 fn setup() -> (
     RequestWriter,
     ResponseReader,
-    Client<std::net::TcpStream>,
+    Client<MaybeTls<std::net::TcpStream>>,
 ) {
     let tls = TlsConfig::new().unwrap();
     let mut writer = RequestWriter::new("httpbin.org").unwrap();

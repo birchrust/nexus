@@ -33,6 +33,8 @@ mod response;
 
 #[cfg(feature = "nexus-rt")]
 mod async_nexus;
+#[cfg(feature = "tokio")]
+mod async_tokio;
 #[cfg(feature = "nexus-rt")]
 mod pool;
 

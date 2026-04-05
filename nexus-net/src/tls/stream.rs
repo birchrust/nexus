@@ -21,6 +21,10 @@ use super::codec::TlsCodec;
 pub struct TlsStream<S> {
     stream: S,
     codec: TlsCodec,
+    /// Pending ciphertext from a partial write. When `poll_write` on the
+    /// underlying stream accepts fewer bytes than we produced, the
+    /// remainder is stored here and drained on the next poll.
+    pending_write: Vec<u8>,
 }
 
 impl<S> TlsStream<S> {
@@ -30,7 +34,11 @@ impl<S> TlsStream<S> {
     /// Call [`handshake`](Self::handshake) to complete the TLS handshake
     /// before reading or writing plaintext.
     pub fn new(stream: S, codec: TlsCodec) -> Self {
-        Self { stream, codec }
+        Self {
+            stream,
+            codec,
+            pending_write: Vec::new(),
+        }
     }
 
     /// Access the underlying transport stream.
@@ -214,25 +222,31 @@ impl<S: nexus_async_rt::AsyncRead + nexus_async_rt::AsyncWrite + Unpin>
     ) -> std::task::Poll<io::Result<usize>> {
         let this = self.get_mut();
 
+        // Drain any pending ciphertext from a previous partial write.
+        if let Err(e) = drain_pending(this, cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        if !this.pending_write.is_empty() {
+            // Still have pending data — can't accept more plaintext yet.
+            return std::task::Poll::Pending;
+        }
+
         this.codec.encrypt(buf).map_err(tls_to_io)?;
 
-        // Flush ciphertext. If the underlying stream can't accept it
-        // all, we still report all plaintext as written (it's buffered
-        // in rustls). The flush will drain the rest.
+        // Drain ciphertext from rustls into pending_write, then flush
+        // as much as we can to the underlying stream.
         let mut tmp = [0u8; 8192];
         while this.codec.wants_write() {
             let n = this.codec.write_tls_to(&mut tmp.as_mut_slice())?;
-            match std::pin::Pin::new(&mut this.stream).poll_write(cx, &tmp[..n]) {
-                std::task::Poll::Ready(Ok(_)) => {}
-                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
-                std::task::Poll::Pending => {
-                    // Underlying stream not ready. Plaintext is already
-                    // encrypted in rustls buffer. Return Pending — flush
-                    // will drain later.
-                    return std::task::Poll::Pending;
-                }
-            }
+            this.pending_write.extend_from_slice(&tmp[..n]);
         }
+
+        if let Err(e) = drain_pending(this, cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+
+        // Report all plaintext as written — ciphertext is either flushed
+        // or buffered in pending_write for the next poll.
         std::task::Poll::Ready(Ok(buf.len()))
     }
 
@@ -242,15 +256,21 @@ impl<S: nexus_async_rt::AsyncRead + nexus_async_rt::AsyncWrite + Unpin>
     ) -> std::task::Poll<io::Result<()>> {
         let this = self.get_mut();
 
+        // Drain any remaining rustls ciphertext.
         let mut tmp = [0u8; 8192];
         while this.codec.wants_write() {
             let n = this.codec.write_tls_to(&mut tmp.as_mut_slice())?;
-            match std::pin::Pin::new(&mut this.stream).poll_write(cx, &tmp[..n]) {
-                std::task::Poll::Ready(Ok(_)) => {}
-                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
-                std::task::Poll::Pending => return std::task::Poll::Pending,
-            }
+            this.pending_write.extend_from_slice(&tmp[..n]);
         }
+
+        // Flush pending ciphertext to the stream.
+        if let Err(e) = drain_pending(this, cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        if !this.pending_write.is_empty() {
+            return std::task::Poll::Pending;
+        }
+
         std::pin::Pin::new(&mut this.stream).poll_flush(cx)
     }
 
@@ -260,6 +280,212 @@ impl<S: nexus_async_rt::AsyncRead + nexus_async_rt::AsyncWrite + Unpin>
     ) -> std::task::Poll<io::Result<()>> {
         std::pin::Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
     }
+}
+
+/// Drain pending ciphertext to the underlying stream. Handles partial
+/// writes by advancing the buffer. Returns Ok(()) when fully drained
+/// or Pending data remains, Err on stream error.
+#[cfg(feature = "nexus-rt")]
+fn drain_pending<S: nexus_async_rt::AsyncWrite + Unpin>(
+    this: &mut TlsStream<S>,
+    cx: &mut std::task::Context<'_>,
+) -> io::Result<()> {
+    while !this.pending_write.is_empty() {
+        match std::pin::Pin::new(&mut this.stream).poll_write(cx, &this.pending_write) {
+            std::task::Poll::Ready(Ok(0)) => {
+                return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"));
+            }
+            std::task::Poll::Ready(Ok(n)) => {
+                this.pending_write.drain(..n);
+            }
+            std::task::Poll::Ready(Err(e)) => return Err(e),
+            std::task::Poll::Pending => return Ok(()), // Will be retried next poll.
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
+// AsyncRead + AsyncWrite — tokio path
+// =============================================================================
+
+#[cfg(feature = "tokio")]
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> TlsStream<S> {
+    /// Drive the TLS handshake to completion asynchronously (tokio).
+    ///
+    /// Call once after construction, before any read/write.
+    pub async fn handshake_async(&mut self) -> Result<(), super::TlsError> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut tmp = [0u8; 8192];
+        while self.codec.is_handshaking() {
+            if self.codec.wants_write() {
+                let n = self.codec.write_tls_to(&mut tmp.as_mut_slice())?;
+                self.stream.write_all(&tmp[..n]).await?;
+                self.stream.flush().await?;
+            }
+            if self.codec.wants_read() {
+                let n = self.stream.read(&mut tmp).await?;
+                if n == 0 {
+                    return Err(super::TlsError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed during TLS handshake",
+                    )));
+                }
+                self.codec.read_tls(&tmp[..n])?;
+                self.codec.process_new_packets()?;
+            }
+        }
+        if self.codec.wants_write() {
+            let n = self.codec.write_tls_to(&mut tmp.as_mut_slice())?;
+            self.stream.write_all(&tmp[..n]).await?;
+            self.stream.flush().await?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRead
+    for TlsStream<S>
+{
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        // Try reading already-buffered plaintext first.
+        let slice = buf.initialize_unfilled();
+        let n = this.codec.read_plaintext(slice).map_err(tls_to_io)?;
+        if n > 0 {
+            buf.advance(n);
+            return std::task::Poll::Ready(Ok(()));
+        }
+
+        // Need more ciphertext from the transport.
+        let mut tmp = [0u8; 8192];
+        let mut tmp_buf = tokio::io::ReadBuf::new(&mut tmp);
+        match std::pin::Pin::new(&mut this.stream).poll_read(cx, &mut tmp_buf) {
+            std::task::Poll::Ready(Ok(())) => {
+                let filled = tmp_buf.filled().len();
+                if filled == 0 {
+                    return std::task::Poll::Ready(Ok(())); // EOF
+                }
+                this.codec
+                    .read_tls(&tmp[..filled])
+                    .map_err(tls_to_io)?;
+                this.codec.process_new_packets().map_err(tls_to_io)?;
+                let slice = buf.initialize_unfilled();
+                let pn = this.codec.read_plaintext(slice).map_err(tls_to_io)?;
+                if pn > 0 {
+                    buf.advance(pn);
+                    std::task::Poll::Ready(Ok(()))
+                } else {
+                    // TLS consumed a non-application record. Need to poll
+                    // again — wake ourselves so the executor retries.
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
+    for TlsStream<S>
+{
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        let this = self.get_mut();
+
+        // Drain any pending ciphertext from a previous partial write.
+        if let Err(e) = tokio_drain_pending(this, cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        if !this.pending_write.is_empty() {
+            // Still have pending data — can't accept more plaintext yet.
+            return std::task::Poll::Pending;
+        }
+
+        this.codec.encrypt(buf).map_err(tls_to_io)?;
+
+        // Drain ciphertext from rustls into pending_write, then flush
+        // as much as we can to the underlying stream.
+        let mut tmp = [0u8; 8192];
+        while this.codec.wants_write() {
+            let n = this.codec.write_tls_to(&mut tmp.as_mut_slice())?;
+            this.pending_write.extend_from_slice(&tmp[..n]);
+        }
+
+        if let Err(e) = tokio_drain_pending(this, cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+
+        // Report all plaintext as written — ciphertext is either flushed
+        // or buffered in pending_write for the next poll.
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        // Drain any remaining rustls ciphertext.
+        let mut tmp = [0u8; 8192];
+        while this.codec.wants_write() {
+            let n = this.codec.write_tls_to(&mut tmp.as_mut_slice())?;
+            this.pending_write.extend_from_slice(&tmp[..n]);
+        }
+
+        // Flush pending ciphertext to the stream.
+        if let Err(e) = tokio_drain_pending(this, cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        if !this.pending_write.is_empty() {
+            return std::task::Poll::Pending;
+        }
+
+        std::pin::Pin::new(&mut this.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
+}
+
+/// Drain pending ciphertext to the underlying tokio stream. Handles partial
+/// writes by advancing the buffer.
+#[cfg(feature = "tokio")]
+fn tokio_drain_pending<S: tokio::io::AsyncWrite + Unpin>(
+    this: &mut TlsStream<S>,
+    cx: &mut std::task::Context<'_>,
+) -> io::Result<()> {
+    while !this.pending_write.is_empty() {
+        match std::pin::Pin::new(&mut this.stream).poll_write(cx, &this.pending_write) {
+            std::task::Poll::Ready(Ok(0)) => {
+                return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"));
+            }
+            std::task::Poll::Ready(Ok(n)) => {
+                this.pending_write.drain(..n);
+            }
+            std::task::Poll::Ready(Err(e)) => return Err(e),
+            std::task::Poll::Pending => return Ok(()), // Will be retried next poll.
+        }
+    }
+    Ok(())
 }
 
 // =============================================================================

@@ -10,13 +10,13 @@ use std::time::Duration;
 use super::error::RestError;
 use super::request::RequestWriter;
 
-#[cfg(not(feature = "nexus-rt"))]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 use std::io::{self, Read, Write};
-#[cfg(not(feature = "nexus-rt"))]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 use super::request::Request;
-#[cfg(not(feature = "nexus-rt"))]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 use super::response::RestResponse;
-#[cfg(not(feature = "nexus-rt"))]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 use crate::http::{HttpError, ResponseReader};
 
 #[cfg(feature = "tls")]
@@ -177,7 +177,7 @@ impl ClientBuilder {
     /// enabled, returns `Client<MaybeTls<TcpStream>>` — `https://` uses
     /// `MaybeTls::Tls`, `http://` uses `MaybeTls::Plain`. Without the `tls`
     /// feature, returns `Client<TcpStream>` and errors on `https://`.
-    #[cfg(all(not(feature = "nexus-rt"), feature = "tls"))]
+    #[cfg(all(not(any(feature = "nexus-rt", feature = "tokio")), feature = "tls"))]
     pub fn connect(
         self,
         url: &str,
@@ -226,7 +226,7 @@ impl ClientBuilder {
     }
 
     /// Connect to an HTTP(S) endpoint (blocking, no TLS feature).
-    #[cfg(all(not(feature = "nexus-rt"), not(feature = "tls")))]
+    #[cfg(all(not(any(feature = "nexus-rt", feature = "tokio")), not(feature = "tls")))]
     pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, RestError> {
         let parsed = parse_base_url(url)?;
         if parsed.tls {
@@ -265,8 +265,11 @@ impl ClientBuilder {
     ///
     /// The stream must already handle TLS if connecting to `https://`.
     /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
-    #[cfg(not(feature = "nexus-rt"))]
-    pub fn connect_with<S: Read + Write>(self, stream: S, _url: &str) -> Result<Client<S>, RestError> {
+    #[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
+    pub fn connect_with<S: Read + Write>(self, stream: S, url: &str) -> Result<Client<S>, RestError> {
+        // Validate the URL even though we don't use it for connection —
+        // catches malformed URLs early rather than at first request.
+        parse_base_url(url)?;
         Ok(Client::new(stream))
     }
 
@@ -381,7 +384,7 @@ impl<S> Client<S> {
 
 // -- Blocking I/O impl --------------------------------------------------------
 
-#[cfg(not(feature = "nexus-rt"))]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 impl<S: Read + Write> Client<S> {
     /// Send a request and read the response.
     ///
@@ -648,7 +651,7 @@ impl<S: Read + Write> Client<S> {
 // =============================================================================
 
 #[cfg(test)]
-#[cfg(not(feature = "nexus-rt"))]
+#[cfg(not(any(feature = "nexus-rt", feature = "tokio")))]
 mod tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
