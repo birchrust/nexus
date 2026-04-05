@@ -130,6 +130,207 @@ impl Future for Sleep {
     }
 }
 
+// =============================================================================
+// Timeout — wraps a future with a deadline
+// =============================================================================
+
+/// Error returned when a [`Timeout`] expires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Elapsed;
+
+impl std::fmt::Display for Elapsed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("deadline elapsed")
+    }
+}
+
+impl std::error::Error for Elapsed {}
+
+/// Future that completes with `Ok(T)` if the inner future finishes
+/// before the deadline, or `Err(Elapsed)` if the deadline fires first.
+pub struct Timeout<F> {
+    future: F,
+    sleep: Sleep,
+}
+
+impl<F> Timeout<F> {
+    pub(crate) fn new(future: F, sleep: Sleep) -> Self {
+        Self { future, sleep }
+    }
+
+    /// Recover the wrapped future, discarding the timeout.
+    pub fn into_inner(self) -> F {
+        self.future
+    }
+}
+
+impl<F: Future> Future for Timeout<F> {
+    type Output = Result<F::Output, Elapsed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: we never move the inner fields out of the Pin.
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // Check the deadline first so already-expired timeouts reliably
+        // return Err(Elapsed) even if the inner future is also ready.
+        if Pin::new(&mut this.sleep).poll(cx).is_ready() {
+            return Poll::Ready(Err(Elapsed));
+        }
+
+        // SAFETY: this.future is pinned because self is pinned.
+        if let Poll::Ready(val) = unsafe { Pin::new_unchecked(&mut this.future) }.poll(cx) {
+            return Poll::Ready(Ok(val));
+        }
+
+        Poll::Pending
+    }
+}
+
+// =============================================================================
+// Interval — periodic ticks
+// =============================================================================
+
+/// Strategy for handling missed interval ticks.
+///
+/// When processing takes longer than the interval period, ticks are
+/// "missed." This enum controls how the interval catches up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissedTickBehavior {
+    /// Fire missed ticks immediately to catch up (default).
+    /// Maintains the original schedule timestamps.
+    Burst,
+    /// Skip missed ticks and jump to the next future tick aligned
+    /// with the original start time.
+    Skip,
+    /// Reschedule from now — the next tick fires one full period
+    /// from the current time, discarding the original schedule.
+    Delay,
+}
+
+/// Periodic timer that ticks at a fixed interval.
+///
+/// Created via [`crate::context::interval`]. Call `.tick().await` to
+/// wait for the next tick.
+pub struct Interval {
+    period: Duration,
+    start: Instant,
+    next_deadline: Instant,
+    sleep: Option<Sleep>,
+    missed_tick_behavior: MissedTickBehavior,
+}
+
+impl Interval {
+    pub(crate) fn new(period: Duration) -> Self {
+        assert!(!period.is_zero(), "interval period must be non-zero");
+        let now = Instant::now();
+        Self {
+            period,
+            start: now,
+            next_deadline: now + period,
+            sleep: None,
+            missed_tick_behavior: MissedTickBehavior::Burst,
+        }
+    }
+
+    pub(crate) fn new_at(start: Instant, period: Duration) -> Self {
+        assert!(!period.is_zero(), "interval period must be non-zero");
+        Self {
+            period,
+            start,
+            next_deadline: start,
+            sleep: None,
+            missed_tick_behavior: MissedTickBehavior::Burst,
+        }
+    }
+
+    /// Wait for the next tick.
+    pub async fn tick(&mut self) {
+        if self.sleep.is_none() {
+            self.sleep = Some(crate::context::sleep_until(self.next_deadline));
+        }
+
+        if let Some(ref mut sleep) = self.sleep {
+            Pin::new(sleep).await;
+        }
+
+        let now = Instant::now();
+        self.sleep = None;
+
+        match self.missed_tick_behavior {
+            MissedTickBehavior::Burst => {
+                // Advance by one period. If behind, next tick fires immediately.
+                self.next_deadline += self.period;
+            }
+            MissedTickBehavior::Skip => {
+                // Jump to the next tick aligned with the original start.
+                if now >= self.next_deadline {
+                    let elapsed = now.duration_since(self.start);
+                    let periods = elapsed.as_nanos() / self.period.as_nanos();
+                    let next = u32::try_from(periods).unwrap_or(u32::MAX).saturating_add(1);
+                    self.next_deadline = self.start + self.period * next;
+                } else {
+                    self.next_deadline += self.period;
+                }
+            }
+            MissedTickBehavior::Delay => {
+                // Reschedule from now.
+                self.next_deadline = now + self.period;
+            }
+        }
+    }
+
+    /// Reset the interval to fire one period from now.
+    pub fn reset(&mut self) {
+        self.next_deadline = Instant::now() + self.period;
+        self.sleep = None;
+    }
+
+    /// Reset the interval to fire at a specific instant.
+    pub fn reset_at(&mut self, deadline: Instant) {
+        self.next_deadline = deadline;
+        self.sleep = None;
+    }
+
+    /// Get the interval period.
+    pub fn period(&self) -> Duration {
+        self.period
+    }
+
+    /// Get the current missed tick behavior.
+    pub fn missed_tick_behavior(&self) -> MissedTickBehavior {
+        self.missed_tick_behavior
+    }
+
+    /// Set the missed tick behavior.
+    pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
+        self.missed_tick_behavior = behavior;
+    }
+}
+
+// =============================================================================
+// YieldNow — cooperative yield
+// =============================================================================
+
+/// Future that yields once, then completes.
+///
+/// Returns `Pending` on first poll, wakes itself, completes on second poll.
+/// Other ready tasks get a turn before this task resumes.
+pub struct YieldNow(pub(crate) bool);
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

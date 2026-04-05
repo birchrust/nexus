@@ -47,7 +47,7 @@ mod shutdown;
 
 // Re-export slab type for convenience — users create the slab and hand it to the builder.
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
-pub use context::{event_time, io, shutdown_signal, sleep, sleep_until, with_world, with_world_ref};
+pub use context::{after, after_delay, event_time, interval, interval_at, io, shutdown_signal, sleep, sleep_until, timeout, timeout_at, with_world, with_world_ref, yield_now};
 pub use task::{TaskId, TASK_HEADER_SIZE};
 pub use world_ctx::WorldCtx;
 pub use io::IoHandle;
@@ -56,7 +56,7 @@ pub use net::{
     AsyncRead, AsyncWrite, OwnedReadHalf, OwnedWriteHalf, ReadHalf, TcpListener, TcpSocket,
     TcpStream, UdpSocket, WriteHalf,
 };
-pub use timer::{Sleep, TimerHandle};
+pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHandle, YieldNow};
 pub use alloc::SlabClaim;
 pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab, try_claim_slab, claim_slab};
 

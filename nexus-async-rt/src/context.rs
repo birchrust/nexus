@@ -163,6 +163,89 @@ pub fn event_time() -> Instant {
     unsafe { &*ptr }.get()
 }
 
+/// Wrap a future with a deadline. Returns `Err(Elapsed)` if the
+/// deadline expires before the future completes.
+///
+/// # Panics
+///
+/// Panics if called outside a runtime context.
+pub fn timeout<F: std::future::Future>(
+    duration: Duration,
+    future: F,
+) -> crate::timer::Timeout<F> {
+    crate::timer::Timeout::new(future, sleep(duration))
+}
+
+/// Create an interval that ticks at a fixed period.
+///
+/// The first tick completes after `period`. Subsequent ticks are
+/// spaced `period` apart. If processing takes longer than `period`,
+/// behavior is controlled by [`MissedTickBehavior`](crate::MissedTickBehavior).
+///
+/// # Panics
+///
+/// Panics if `period` is zero. Polling the interval (via `tick().await`)
+/// requires an active runtime context and will panic otherwise.
+pub fn interval(period: Duration) -> crate::timer::Interval {
+    crate::timer::Interval::new(period)
+}
+
+/// Run a future no earlier than `deadline`.
+///
+/// Waits until `deadline`, then polls the future. Useful for
+/// scheduling deferred work at a specific time.
+///
+/// Polling requires an active runtime context.
+pub async fn after<F: std::future::Future>(deadline: Instant, future: F) -> F::Output {
+    sleep_until(deadline).await;
+    future.await
+}
+
+/// Run a future after `duration` elapses.
+///
+/// Waits for `duration`, then polls the future.
+///
+/// Polling requires an active runtime context.
+pub async fn after_delay<F: std::future::Future>(duration: Duration, future: F) -> F::Output {
+    sleep(duration).await;
+    future.await
+}
+
+/// Wrap a future with an absolute deadline. Returns `Err(Elapsed)` if
+/// the deadline passes before the future completes.
+///
+/// Like [`timeout`] but takes an [`Instant`] instead of a [`Duration`].
+///
+/// # Panics
+///
+/// Panics if called outside a runtime context.
+pub fn timeout_at<F: std::future::Future>(
+    deadline: Instant,
+    future: F,
+) -> crate::timer::Timeout<F> {
+    crate::timer::Timeout::new(future, sleep_until(deadline))
+}
+
+/// Create an interval that starts ticking at `start`, then every `period`.
+///
+/// If `start` is in the past, the first tick fires immediately.
+///
+/// # Panics
+///
+/// Panics if `period` is zero. Polling the interval requires an active
+/// runtime context.
+pub fn interval_at(start: Instant, period: Duration) -> crate::timer::Interval {
+    crate::timer::Interval::new_at(start, period)
+}
+
+/// Cooperatively yield the current task.
+///
+/// Returns `Pending` once, wakes itself, then completes on the next
+/// poll. Other ready tasks get a turn before this task resumes.
+pub fn yield_now() -> crate::timer::YieldNow {
+    crate::timer::YieldNow(false)
+}
+
 /// Returns a future that resolves when shutdown is triggered.
 pub fn shutdown_signal() -> crate::ShutdownSignal {
     let ptr = CTX_SHUTDOWN.with(Cell::get);
