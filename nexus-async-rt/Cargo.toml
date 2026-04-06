@@ -9,6 +9,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+tokio-compat = ["dep:tokio"]
+
 [dependencies]
 libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
@@ -20,6 +24,7 @@ nexus-slab = { version = "2.2.0", path = "../nexus-slab" }
 nexus-timer = { version = "1.4.0", path = "../nexus-timer" }
 signal-hook = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

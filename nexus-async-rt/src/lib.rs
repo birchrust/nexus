@@ -48,6 +48,8 @@ mod backoff;
 mod cancel;
 pub mod channel;
 pub(crate) mod cross_wake;
+#[cfg(feature = "tokio-compat")]
+pub mod tokio_compat;
 
 // Re-export slab type for convenience — users create the slab and hand it to the builder.
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
