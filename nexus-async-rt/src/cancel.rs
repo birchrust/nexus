@@ -2,8 +2,10 @@
 //!
 //! Adapted from tokio-util's `CancellationToken` design, built for
 //! the nexus-async-rt runtime. `Clone + Send + Sync`. Hierarchical —
-//! cancelling a parent cancels all children. Zero-cost when not
-//! cancelled (single atomic load).
+//! cancelling a parent cancels all children.
+//!
+//! Lock-free: `is_cancelled()` is a single atomic load. Registration
+//! and cancellation use atomic Treiber stacks (CAS on head). No mutex.
 //!
 //! Any holder can cancel or await cancellation — no separate sender/
 //! receiver roles. This allows any task in a group to trigger shutdown.
@@ -31,77 +33,171 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 // =============================================================================
-// Inner state
+// Inner state — lock-free via atomic Treiber stacks
 // =============================================================================
 
 struct Inner {
     cancelled: AtomicBool,
-    /// Wakers registered by `cancelled()` futures. Protected by mutex
-    /// because cancellation is a cold path — the hot path is just
-    /// the atomic load in `is_cancelled()`.
-    waiters: Mutex<Vec<Waker>>,
-    /// Parent token. When the parent cancels, it cancels all children.
-    /// Children hold an Arc to the parent so they can check its state.
-    parent: Option<Arc<Inner>>,
+    /// Head of the waiter Treiber stack. Each node is a heap-allocated
+    /// `WaiterNode`. Push via CAS, drain-all via swap-to-null on cancel.
+    waiter_head: AtomicPtr<WaiterNode>,
+    /// Head of the child Treiber stack. Each node is a heap-allocated
+    /// `ChildNode`. Same push/drain pattern.
+    child_head: AtomicPtr<ChildNode>,
 }
 
+struct WaiterNode {
+    waker: Waker,
+    next: *mut WaiterNode,
+}
+
+struct ChildNode {
+    inner: Arc<Inner>,
+    next: *mut ChildNode,
+}
+
+// SAFETY: WaiterNode/ChildNode are only accessed via atomic stack
+// operations (push from any thread, drain from cancelling thread).
+// The Waker inside is Send+Sync. Arc<Inner> is Send+Sync.
+unsafe impl Send for WaiterNode {}
+unsafe impl Send for ChildNode {}
+
 impl Inner {
-    fn new(parent: Option<Arc<Inner>>) -> Arc<Self> {
+    fn new() -> Arc<Self> {
         Arc::new(Self {
             cancelled: AtomicBool::new(false),
-            waiters: Mutex::new(Vec::new()),
-            parent,
+            waiter_head: AtomicPtr::new(std::ptr::null_mut()),
+            child_head: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 
-    /// Check if this token or any ancestor is cancelled.
+    /// O(1) — single atomic load.
     fn is_cancelled(&self) -> bool {
-        if self.cancelled.load(Ordering::Acquire) {
-            return true;
-        }
-        // Walk parent chain.
-        if let Some(ref parent) = self.parent {
-            if parent.is_cancelled() {
-                // Cache the result so future checks are O(1).
-                self.cancelled.store(true, Ordering::Release);
-                return true;
-            }
-        }
-        false
+        self.cancelled.load(Ordering::Acquire)
     }
 
-    /// Cancel this token and wake all waiters.
+    /// Cancel: set flag, drain and wake all waiters, drain and cancel all children.
+    ///
+    /// Idempotent — safe to call multiple times. The flag swap is a no-op
+    /// if already true. The list drains are also idempotent (swap to null
+    /// on an already-null list is a no-op). This is important because
+    /// register()/add_child() call cancel() to catch nodes pushed during
+    /// a race window.
     fn cancel(&self) {
-        if self.cancelled.swap(true, Ordering::AcqRel) {
-            return; // Already cancelled — no-op.
+        // Set the flag. If it was already set, we still drain below to
+        // catch nodes pushed between a prior cancel()'s drain and now.
+        self.cancelled.store(true, Ordering::Release);
+
+        // Drain waiters — swap head to null, walk the list.
+        let mut waiter = self.waiter_head.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        while !waiter.is_null() {
+            // SAFETY: node was allocated by register() via Box::into_raw.
+            let node = unsafe { Box::from_raw(waiter) };
+            waiter = node.next;
+            node.waker.wake();
         }
-        // Wake all waiters.
-        if let Ok(mut waiters) = self.waiters.lock() {
-            for waker in waiters.drain(..) {
-                waker.wake();
+
+        // Drain children — swap head to null, cancel each.
+        let mut child = self.child_head.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        while !child.is_null() {
+            let node = unsafe { Box::from_raw(child) };
+            child = node.next;
+            node.inner.cancel();
+        }
+    }
+
+    /// Register a child. If already cancelled, cancels the child immediately.
+    fn add_child(&self, child: &Arc<Inner>) {
+        let node = Box::into_raw(Box::new(ChildNode {
+            inner: child.clone(),
+            next: std::ptr::null_mut(),
+        }));
+
+        // CAS push onto the child stack.
+        loop {
+            // Check cancelled before pushing — avoid leaking the node.
+            if self.is_cancelled() {
+                // SAFETY: we just allocated this node.
+                let node = unsafe { Box::from_raw(node) };
+                node.inner.cancel();
+                return;
+            }
+
+            let head = self.child_head.load(Ordering::Acquire);
+            unsafe { (*node).next = head };
+            if self
+                .child_head
+                .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                // Successfully pushed. But check if cancelled between
+                // our load and the CAS — if so, the cancel() call may
+                // have already drained and missed our node.
+                if self.is_cancelled() {
+                    // Re-cancel to catch our node (idempotent).
+                    self.cancel();
+                }
+                return;
             }
         }
     }
 
-    /// Register a waker to be notified on cancellation.
-    /// Returns true if already cancelled (caller should return Ready).
+    /// Register a waker. Returns true if already cancelled.
     fn register(&self, waker: &Waker) -> bool {
         if self.is_cancelled() {
             return true;
         }
-        if let Ok(mut waiters) = self.waiters.lock() {
-            // Re-check after lock to avoid lost wake.
+
+        let node = Box::into_raw(Box::new(WaiterNode {
+            waker: waker.clone(),
+            next: std::ptr::null_mut(),
+        }));
+
+        // CAS push onto the waiter stack.
+        loop {
             if self.is_cancelled() {
+                // SAFETY: we just allocated this node.
+                unsafe { drop(Box::from_raw(node)) };
                 return true;
             }
-            waiters.push(waker.clone());
+
+            let head = self.waiter_head.load(Ordering::Acquire);
+            unsafe { (*node).next = head };
+            if self
+                .waiter_head
+                .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                // Check for race: cancelled between load and CAS.
+                if self.is_cancelled() {
+                    self.cancel(); // idempotent — drains our node
+                    return true;
+                }
+                return false;
+            }
         }
-        false
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Clean up any remaining nodes (shouldn't happen normally,
+        // but guards against leaks if tokens are dropped without cancel).
+        let mut waiter = *self.waiter_head.get_mut();
+        while !waiter.is_null() {
+            let node = unsafe { Box::from_raw(waiter) };
+            waiter = node.next;
+        }
+        let mut child = *self.child_head.get_mut();
+        while !child.is_null() {
+            let node = unsafe { Box::from_raw(child) };
+            child = node.next;
+        }
     }
 }
 
@@ -135,27 +231,30 @@ impl CancellationToken {
     /// Create a new cancellation token.
     pub fn new() -> Self {
         Self {
-            inner: Inner::new(None),
+            inner: Inner::new(),
         }
     }
 
-    /// Create a child token. Cancelling this token's parent (or any
-    /// ancestor) also cancels the child. Cancelling the child does
-    /// NOT cancel the parent.
+    /// Create a child token. Cancelling this token (or any ancestor)
+    /// also cancels the child and wakes its waiters. Cancelling the
+    /// child does NOT cancel the parent.
     pub fn child(&self) -> Self {
-        Self {
-            inner: Inner::new(Some(self.inner.clone())),
-        }
+        let child = Self {
+            inner: Inner::new(),
+        };
+        self.inner.add_child(&child.inner);
+        child
     }
 
     /// Cancel this token. All futures awaiting [`cancelled()`](Self::cancelled)
-    /// will resolve. Child tokens are also considered cancelled.
+    /// will resolve. Child tokens are also cancelled.
     pub fn cancel(&self) {
         self.inner.cancel();
     }
 
-    /// Whether this token (or any ancestor) has been cancelled.
-    /// Zero-cost atomic load on the fast path.
+    /// Whether this token has been cancelled.
+    /// O(1) — single atomic load. Parent cancellation propagates
+    /// eagerly (sets the child's flag), so no chain traversal needed.
     pub fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()
     }
@@ -381,7 +480,6 @@ mod tests {
             clone.cancel();
         });
 
-        // Spin until cancelled.
         while !token.is_cancelled() {
             std::hint::spin_loop();
         }
@@ -396,7 +494,7 @@ mod tests {
         {
             let _guard = token.drop_guard();
             assert!(!clone.is_cancelled());
-        } // guard dropped here
+        }
         assert!(clone.is_cancelled());
     }
 
@@ -407,8 +505,6 @@ mod tests {
         let guard = token.drop_guard();
         let recovered = guard.disarm();
         drop(recovered);
-        // Token was NOT cancelled — disarm prevented it.
-        // (dropping the recovered token doesn't cancel; only DropGuard does)
         assert!(!clone.is_cancelled());
     }
 
@@ -423,7 +519,7 @@ mod tests {
         }));
 
         assert!(result.is_err());
-        assert!(clone.is_cancelled()); // guard cancelled on unwind
+        assert!(clone.is_cancelled());
     }
 
     #[test]
@@ -431,5 +527,34 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CancellationToken>();
         assert_send_sync::<Cancelled>();
+    }
+
+    #[test]
+    fn drop_without_cancel_cleans_up() {
+        // Tokens dropped without cancellation — nodes should be freed.
+        let token = CancellationToken::new();
+        let _child = token.child();
+        let mut fut = std::pin::pin!(token.cancelled());
+        let _ = poll_once(fut.as_mut()); // register a waiter
+        // Everything dropped — no leak (tested under miri if available).
+    }
+
+    #[test]
+    fn many_children() {
+        let parent = CancellationToken::new();
+        let children: Vec<_> = (0..100).map(|_| parent.child()).collect();
+
+        parent.cancel();
+        for child in &children {
+            assert!(child.is_cancelled());
+        }
+    }
+
+    #[test]
+    fn child_created_after_parent_cancelled() {
+        let parent = CancellationToken::new();
+        parent.cancel();
+        let child = parent.child();
+        assert!(child.is_cancelled());
     }
 }
