@@ -331,3 +331,178 @@ fn mpsc_cross_thread_latency() {
         print_histogram("mpsc cross-thread recv (park, eventfd wake)", &hist);
     }
 }
+
+// =============================================================================
+// SPSC channel
+// =============================================================================
+
+#[test]
+fn spsc_try_send_recv_latency() {
+    // Raw nexus_queue::spsc baseline.
+    let (tx, rx) = nexus_queue::spsc::ring_buffer::<u64>(1024);
+    let mut hist = Histogram::<u64>::new(3).unwrap();
+
+    for i in 0..WARMUP {
+        tx.push(i).unwrap();
+        let _ = rx.pop().unwrap();
+    }
+    for i in 0..ITERS {
+        let start = Instant::now();
+        tx.push(i).unwrap();
+        let _ = rx.pop().unwrap();
+        let elapsed = start.elapsed().as_nanos() as u64;
+        hist.record(elapsed).unwrap();
+    }
+    print_histogram("nexus_queue::spsc raw push+pop", &hist);
+}
+
+#[test]
+fn spsc_channel_try_send_recv_latency() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let (tx, rx) = nexus_async_rt::channel::spsc::channel::<u64>(1024);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            tx.try_send(i).unwrap();
+            let _ = rx.try_recv().unwrap();
+        }
+        for i in 0..ITERS {
+            let start = Instant::now();
+            tx.try_send(i).unwrap();
+            let _ = rx.try_recv().unwrap();
+            let elapsed = start.elapsed().as_nanos() as u64;
+            hist.record(elapsed).unwrap();
+        }
+        print_histogram("spsc channel try_send+try_recv", &hist);
+    });
+}
+
+#[test]
+fn spsc_async_send_recv_latency() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    let hist_cell = Rc::new(Cell::new(None::<Histogram<u64>>));
+    let hist_ref = hist_cell.clone();
+
+    rt.block_on(async move {
+        let (tx, rx) = nexus_async_rt::channel::spsc::channel::<u64>(64);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        spawn_boxed(async move {
+            for i in 0..(WARMUP + ITERS) {
+                tx.send(i).await.unwrap();
+            }
+        });
+
+        for _ in 0..WARMUP {
+            let _ = rx.recv().await.unwrap();
+        }
+        for _ in 0..ITERS {
+            let start = Instant::now();
+            let _ = rx.recv().await.unwrap();
+            let elapsed = start.elapsed().as_nanos() as u64;
+            hist.record(elapsed).unwrap();
+        }
+        hist_ref.set(Some(hist));
+    });
+
+    let hist = hist_cell.take().unwrap();
+    print_histogram("spsc async recv (executor dispatch)", &hist);
+}
+
+#[test]
+fn spsc_cross_thread_latency() {
+    // --- Busy spin ---
+    {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let hist_cell = Rc::new(Cell::new(None::<Histogram<u64>>));
+        let hist_ref = hist_cell.clone();
+
+        rt.block_on_busy(async move {
+            let (tx, rx) = nexus_async_rt::channel::spsc::channel::<u64>(1024);
+            let mut hist = Histogram::<u64>::new(3).unwrap();
+
+            std::thread::spawn(move || {
+                for i in 0..(WARMUP + ITERS) {
+                    loop {
+                        match tx.try_send(i) {
+                            Ok(()) => break,
+                            Err(e) if e.is_full() => {
+                                std::hint::spin_loop();
+                                continue;
+                            }
+                            Err(_) => panic!("channel closed"),
+                        }
+                    }
+                }
+            });
+
+            for _ in 0..WARMUP {
+                let _ = rx.recv().await.unwrap();
+            }
+            for _ in 0..ITERS {
+                let start = Instant::now();
+                let _ = rx.recv().await.unwrap();
+                let elapsed = start.elapsed().as_nanos() as u64;
+                hist.record(elapsed).unwrap();
+            }
+            hist_ref.set(Some(hist));
+        });
+
+        let hist = hist_cell.take().unwrap();
+        print_histogram("spsc cross-thread recv (busy spin)", &hist);
+    }
+
+    // --- Park, saturated ---
+    {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let hist_cell = Rc::new(Cell::new(None::<Histogram<u64>>));
+        let hist_ref = hist_cell.clone();
+
+        rt.block_on(async move {
+            let (tx, rx) = nexus_async_rt::channel::spsc::channel::<u64>(1024);
+            let mut hist = Histogram::<u64>::new(3).unwrap();
+
+            std::thread::spawn(move || {
+                for i in 0..(WARMUP + ITERS) {
+                    loop {
+                        match tx.try_send(i) {
+                            Ok(()) => break,
+                            Err(e) if e.is_full() => {
+                                std::hint::spin_loop();
+                                continue;
+                            }
+                            Err(_) => panic!("channel closed"),
+                        }
+                    }
+                }
+            });
+
+            for _ in 0..WARMUP {
+                let _ = rx.recv().await.unwrap();
+            }
+            for _ in 0..ITERS {
+                let start = Instant::now();
+                let _ = rx.recv().await.unwrap();
+                let elapsed = start.elapsed().as_nanos() as u64;
+                hist.record(elapsed).unwrap();
+            }
+            hist_ref.set(Some(hist));
+        });
+
+        let hist = hist_cell.take().unwrap();
+        print_histogram("spsc cross-thread recv (park, saturated)", &hist);
+    }
+}

@@ -6,8 +6,10 @@
 //!   No atomics, no `Arc`, zero synchronization overhead.
 //! - [`mpsc`] — bounded MPSC for cross-thread use. `Sender: Clone + Send + Sync`,
 //!   `Receiver: Send`. Lock-free atomic queue (nexus-queue).
+//! - [`spsc`] — bounded SPSC for cross-thread use. `Sender: Send`,
+//!   `Receiver: Send`. Single producer, single consumer. Fastest cross-thread channel.
 //!
-//! Both must be created inside [`Runtime::block_on`](crate::Runtime::block_on).
+//! All must be created inside [`Runtime::block_on`](crate::Runtime::block_on).
 //!
 //! # Example
 //!
@@ -27,6 +29,7 @@
 
 pub mod local;
 pub mod mpsc;
+pub mod spsc;
 
 use std::fmt;
 
