@@ -45,6 +45,8 @@ mod timer;
 mod runtime;
 mod shutdown;
 mod backoff;
+pub mod channel;
+pub(crate) mod cross_wake;
 
 // Re-export slab type for convenience — users create the slab and hand it to the builder.
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
@@ -161,6 +163,28 @@ impl Executor {
         unsafe { task::set_queued(ptr, true) };
         self.incoming.push(ptr);
         self.live_count += 1;
+    }
+
+    /// Drain the cross-thread wake inbox into the local ready queue.
+    ///
+    /// Called at the start of each poll cycle. Tasks pushed from other
+    /// threads via `CrossWakeQueue::push` are moved into `incoming`.
+    /// Drains at most `limit` tasks (remaining are picked up next cycle).
+    pub(crate) fn drain_cross_thread(
+        &mut self,
+        inbox: &crate::cross_wake::CrossWakeQueue,
+        limit: usize,
+    ) {
+        let mut drained = 0;
+        while drained < limit {
+            match inbox.pop() {
+                Some(task_ptr) => {
+                    self.incoming.push(task_ptr);
+                    drained += 1;
+                }
+                None => break,
+            }
+        }
     }
 
     /// Poll all ready tasks once.
