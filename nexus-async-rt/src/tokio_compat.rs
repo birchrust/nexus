@@ -75,7 +75,8 @@ fn tokio_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO_RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
-            .enable_all()
+            .enable_io()
+            .enable_time()
             .build()
             .expect("failed to create tokio compatibility runtime")
     })
@@ -110,9 +111,10 @@ fn ensure_tokio_context() {
 /// The returned future is then polled by our executor with cross-thread
 /// wakers bridging tokio's reactor back to us.
 ///
-/// # Panics
-///
-/// Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
+/// The returned [`TokioCompat`] future must be polled from within
+/// [`Runtime::block_on`](crate::Runtime::block_on). If polled without
+/// the runtime's cross-wake context installed, it will panic when
+/// a local runtime waker is used.
 pub fn with_tokio<F, Fut>(f: F) -> TokioCompat<Fut>
 where
     F: FnOnce() -> Fut,
@@ -159,54 +161,86 @@ fn make_cross_waker(cx: &Context<'_>) -> Waker {
         |task_ptr| {
             let ctx = crate::cross_wake::cross_wake_context()
                 .expect("with_tokio() requires runtime context");
-            CrossTaskWaker::into_waker(task_ptr, ctx)
+            make_cross_task_waker(task_ptr, ctx)
         },
     )
 }
 
-/// Cross-thread waker that pushes to our intrusive inbox.
-/// Created per-poll of `TokioCompat`. Shared across tokio's reactor
-/// via Arc clone.
-struct CrossTaskWaker {
+/// Cross-thread waker data. Heap-allocated, pointed to by `RawWaker::data`.
+/// Uses a custom vtable (not the `Wake` trait) so that clone/drop properly
+/// track the task's `ref_count` — matching the contract in `waker.rs`.
+struct CrossTaskWakerData {
     task_ptr: *mut u8,
     ctx: std::sync::Arc<crate::cross_wake::CrossWakeContext>,
 }
 
 // SAFETY: task_ptr is only used for atomic operations (try_set_queued,
-// is_completed) and queue push — all thread-safe.
-unsafe impl Send for CrossTaskWaker {}
-unsafe impl Sync for CrossTaskWaker {}
+// is_completed, ref_inc/ref_dec) and queue push — all thread-safe.
+unsafe impl Send for CrossTaskWakerData {}
+unsafe impl Sync for CrossTaskWakerData {}
 
-impl CrossTaskWaker {
-    fn into_waker(
-        task_ptr: *mut u8,
-        ctx: std::sync::Arc<crate::cross_wake::CrossWakeContext>,
-    ) -> Waker {
-        // Increment task refcount — the waker holds a reference.
-        unsafe { crate::task::ref_inc(task_ptr) };
-        let arc = std::sync::Arc::new(Self { task_ptr, ctx });
-        Waker::from(arc)
-    }
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
+
+static CROSS_TASK_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    cross_task_clone,
+    cross_task_wake,
+    cross_task_wake_by_ref,
+    cross_task_drop,
+);
+
+fn make_cross_task_waker(
+    task_ptr: *mut u8,
+    ctx: std::sync::Arc<crate::cross_wake::CrossWakeContext>,
+) -> Waker {
+    // Increment task refcount — this waker holds a reference.
+    unsafe { crate::task::ref_inc(task_ptr) };
+    let data = Box::into_raw(Box::new(CrossTaskWakerData { task_ptr, ctx }));
+    let raw = RawWaker::new(data.cast::<()>(), &CROSS_TASK_VTABLE);
+    unsafe { Waker::from_raw(raw) }
 }
 
-impl std::task::Wake for CrossTaskWaker {
-    fn wake(self: std::sync::Arc<Self>) {
-        self.wake_by_ref();
-    }
+/// Clone: new Box, Arc::clone ctx, inc task refcount.
+unsafe fn cross_task_clone(data: *const ()) -> RawWaker {
+    let orig = unsafe { &*data.cast::<CrossTaskWakerData>() };
+    unsafe { crate::task::ref_inc(orig.task_ptr) };
+    let cloned = Box::new(CrossTaskWakerData {
+        task_ptr: orig.task_ptr,
+        ctx: orig.ctx.clone(),
+    });
+    RawWaker::new(Box::into_raw(cloned).cast::<()>(), &CROSS_TASK_VTABLE)
+}
 
-    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+/// Wake by value: push to inbox, free box, dec refcount.
+unsafe fn cross_task_wake(data: *const ()) {
+    unsafe { cross_task_wake_by_ref(data) };
+    let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossTaskWakerData>()) };
+    let should_free = unsafe { crate::task::ref_dec(boxed.task_ptr) };
+    if should_free {
+        // Task completed + last waker dropped. Push to inbox so the
+        // executor can reclaim the slot on its next drain.
         unsafe {
-            crate::cross_wake::wake_task_cross_thread(self.task_ptr, &self.ctx);
+            crate::cross_wake::wake_task_cross_thread(boxed.task_ptr, &boxed.ctx);
         }
     }
 }
 
-impl Drop for CrossTaskWaker {
-    fn drop(&mut self) {
-        let should_free = unsafe { crate::task::ref_dec(self.task_ptr) };
-        if should_free {
-            // Task completed + all wakers dropped. The executor will
-            // clean up the slot on its next poll cycle.
+/// Wake by ref: push to cross-thread inbox. No refcount change.
+unsafe fn cross_task_wake_by_ref(data: *const ()) {
+    let waker_data = unsafe { &*data.cast::<CrossTaskWakerData>() };
+    unsafe {
+        crate::cross_wake::wake_task_cross_thread(waker_data.task_ptr, &waker_data.ctx);
+    }
+}
+
+/// Drop: free box, dec refcount.
+unsafe fn cross_task_drop(data: *const ()) {
+    let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossTaskWakerData>()) };
+    let should_free = unsafe { crate::task::ref_dec(boxed.task_ptr) };
+    if should_free {
+        // Task completed + last waker dropped. Push to inbox for cleanup.
+        unsafe {
+            crate::cross_wake::wake_task_cross_thread(boxed.task_ptr, &boxed.ctx);
         }
     }
 }
