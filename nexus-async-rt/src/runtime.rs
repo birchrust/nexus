@@ -26,6 +26,10 @@ use crate::{Executor, TaskId, WorldCtx};
 use crate::io::IoDriver;
 use crate::timer::TimerDriver;
 
+/// Default number of loop iterations between non-blocking IO polls.
+/// Matches tokio's heuristic (61, originally from Go's scheduler).
+const DEFAULT_EVENT_INTERVAL: u32 = 61;
+
 // =============================================================================
 // Thread-local spawn context
 // =============================================================================
@@ -188,6 +192,9 @@ pub struct Runtime {
     /// Max cross-thread wakes drained per poll cycle.
     cross_thread_drain_limit: usize,
 
+    /// Loop iterations between non-blocking IO polls.
+    event_interval: u32,
+
     /// Optional slab allocator. Stored as a boxed trait object for
     /// type erasure (the const generic lives inside). The slab itself
     /// is accessed via TLS fn pointers — this field just owns the memory.
@@ -258,6 +265,7 @@ pub struct RuntimeBuilder<'w> {
     world: &'w mut nexus_rt::World,
     tasks_per_cycle: usize,
     cross_thread_drain_limit: usize,
+    event_interval: u32,
     queue_capacity: usize,
     event_capacity: usize,
     token_capacity: usize,
@@ -272,6 +280,7 @@ impl<'w> RuntimeBuilder<'w> {
             world,
             tasks_per_cycle: crate::DEFAULT_TASKS_PER_CYCLE,
             cross_thread_drain_limit: usize::MAX,
+            event_interval: DEFAULT_EVENT_INTERVAL,
             queue_capacity: 64,
             event_capacity: 1024,
             token_capacity: 64,
@@ -284,6 +293,19 @@ impl<'w> RuntimeBuilder<'w> {
     /// Default: 64.
     pub fn tasks_per_cycle(mut self, limit: usize) -> Self {
         self.tasks_per_cycle = limit;
+        self
+    }
+
+    /// Number of loop iterations between non-blocking IO driver polls.
+    /// Default: 61 (matches tokio's heuristic).
+    ///
+    /// Every `event_interval` iterations the runtime does a non-blocking
+    /// `epoll_wait(0)` to check for socket events, even if tasks are
+    /// ready. Lower values improve IO responsiveness at the cost of
+    /// more syscalls; higher values favor task throughput.
+    pub fn event_interval(mut self, n: u32) -> Self {
+        assert!(n > 0, "event_interval must be > 0");
+        self.event_interval = n;
         self
     }
 
@@ -434,6 +456,7 @@ impl<'w> RuntimeBuilder<'w> {
             shutdown,
             cross_wake,
             cross_thread_drain_limit: self.cross_thread_drain_limit,
+            event_interval: self.event_interval,
             _slab: slab,
             slab_tls,
         };
@@ -516,7 +539,10 @@ impl Runtime {
             &mut *std::sync::Arc::as_ptr(&self.cross_wake).cast_mut()
         };
 
+        let mut tick: u32 = 0;
+
         loop {
+            // 1. Poll root future if woken or shutdown requested.
             if woken.swap(false, std::sync::atomic::Ordering::Acquire)
                 || self.shutdown.is_shutdown()
             {
@@ -526,47 +552,72 @@ impl Runtime {
                 }
             }
 
-            // Drain cross-thread inbox before polling tasks.
+            // 2. Drain cross-thread inbox.
             self.executor.drain_cross_thread(&mut cross_queue.queue, self.cross_thread_drain_limit);
 
+            // 3. Poll ready tasks (up to tasks_per_cycle).
             self.executor.poll();
 
-            let now = Instant::now();
-            self.timers.fire_expired(now);
+            // 4. Fire expired timers.
+            self.timers.fire_expired(Instant::now());
 
-            // Drain again: cross-thread wakes may have arrived during
-            // task polling or timer firing. Check before deciding to park.
+            // 5. Drain cross-thread inbox again (wakes during step 3/4).
             self.executor.drain_cross_thread(&mut cross_queue.queue, self.cross_thread_drain_limit);
 
-            let has_work = self.executor.has_ready()
-                || woken.load(std::sync::atomic::Ordering::Acquire);
-            let mio_timeout = match mode {
-                ParkMode::Park => {
-                    if has_work {
-                        Some(Duration::ZERO)
-                    } else {
-                        self.timers.next_deadline().map(|deadline| {
-                            deadline.saturating_duration_since(Instant::now())
-                        })
-                    }
+            tick = tick.wrapping_add(1);
+
+            // 6. Periodic non-blocking IO check every event_interval ticks.
+            //    Prevents IO starvation under sustained task load.
+            if tick % self.event_interval == 0 {
+                if let Err(e) = self.io.poll_io(Some(Duration::ZERO)) {
+                    assert!(
+                        e.kind() == std::io::ErrorKind::Interrupted,
+                        "mio::Poll::poll failed: {e}"
+                    );
                 }
-                ParkMode::Spin => Some(Duration::ZERO),
-            };
-
-            // Mark as parked before entering epoll. Cross-thread senders
-            // check this flag to decide whether to poke the eventfd.
-            cross_queue.parked.store(true, std::sync::atomic::Ordering::Release);
-
-            if let Err(e) = self.io.poll_io(mio_timeout) {
-                assert!(
-                    e.kind() == std::io::ErrorKind::Interrupted,
-                    "mio::Poll::poll failed: {e}"
-                );
+                self.event_time.set(Instant::now());
             }
 
-            cross_queue.parked.store(false, std::sync::atomic::Ordering::Release);
+            // 7. If work remains, loop immediately.
+            let has_work = self.executor.has_ready()
+                || woken.load(std::sync::atomic::Ordering::Acquire);
 
-            self.event_time.set(Instant::now());
+            if has_work {
+                continue;
+            }
+
+            // 8. No work. Spin mode loops; park mode sleeps in epoll.
+            match mode {
+                ParkMode::Spin => {
+                    // Non-blocking IO check before spinning again.
+                    if let Err(e) = self.io.poll_io(Some(Duration::ZERO)) {
+                        assert!(
+                            e.kind() == std::io::ErrorKind::Interrupted,
+                            "mio::Poll::poll failed: {e}"
+                        );
+                    }
+                    self.event_time.set(Instant::now());
+                }
+                ParkMode::Park => {
+                    // Park in epoll_wait until IO, timer, or cross-thread
+                    // eventfd wakes us.
+                    let timeout = self.timers.next_deadline().map(|d| {
+                        d.saturating_duration_since(Instant::now())
+                    });
+
+                    cross_queue.parked.store(true, std::sync::atomic::Ordering::Release);
+
+                    if let Err(e) = self.io.poll_io(timeout) {
+                        assert!(
+                            e.kind() == std::io::ErrorKind::Interrupted,
+                            "mio::Poll::poll failed: {e}"
+                        );
+                    }
+
+                    cross_queue.parked.store(false, std::sync::atomic::Ordering::Release);
+                    self.event_time.set(Instant::now());
+                }
+            }
         }
     }
 }

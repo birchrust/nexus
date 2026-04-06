@@ -14,6 +14,7 @@ libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
 nexus-rt = { version = "2.0.0", path = "../nexus-rt" }
 slab = "0.4"
+nexus-queue = { version = "1.2.0", path = "../nexus-queue" }
 nexus-slab = { version = "2.2.0", path = "../nexus-slab" }
 nexus-timer = { version = "1.4.0", path = "../nexus-timer" }
 signal-hook = "0.3"
@@ -21,6 +22,7 @@ socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+hdrhistogram = { workspace = true }
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "macros"] }
 
 [[bench]]

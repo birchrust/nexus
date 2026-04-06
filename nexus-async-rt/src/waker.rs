@@ -28,7 +28,7 @@
 //! valid until all wakers are dropped. For now, the single-threaded
 //! invariant is sufficient.
 
-use std::task::{Context, RawWaker, RawWakerVTable};
+use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 
 use crate::task;
 
@@ -145,7 +145,29 @@ impl ReusableWaker {
 // RawWaker vtable
 // =============================================================================
 
-static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
+pub(crate) static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
+
+/// Extract the task pointer from a local waker.
+///
+/// Returns the task `*mut u8` if the waker uses our local vtable.
+/// Returns `None` if it's a different waker (cross-thread, root, etc.).
+///
+/// # Safety
+///
+/// The waker must have been created by this runtime's `ReusableWaker`.
+pub(crate) fn task_ptr_from_local_waker(waker: &Waker) -> Option<*mut u8> {
+    // Waker layout: [vtable_ptr, data_ptr] — two pointers at offset 0 and 8.
+    // SAFETY: Waker is repr(transparent) over RawWaker which is [*const (), *const ()].
+    let raw: &[*const (); 2] = unsafe { &*(waker as *const Waker).cast::<[*const (); 2]>() };
+    let vtable_ptr = raw[0];
+    let data_ptr = raw[1];
+
+    if vtable_ptr == (&raw const VTABLE).cast::<()>() {
+        Some(data_ptr as *mut u8)
+    } else {
+        None
+    }
+}
 
 /// Clone: increment refcount, copy the pointer.
 unsafe fn clone_fn(data: *const ()) -> RawWaker {

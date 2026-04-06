@@ -3,8 +3,11 @@
 //! # Channel Types
 //!
 //! - [`local`] — bounded MPSC for single-threaded use. `!Send`, `!Sync`.
-//!   No atomics, no `Arc`, zero synchronization overhead. Must be created
-//!   inside [`Runtime::block_on`](crate::Runtime::block_on).
+//!   No atomics, no `Arc`, zero synchronization overhead.
+//! - [`mpsc`] — bounded MPSC for cross-thread use. `Sender: Clone + Send + Sync`,
+//!   `Receiver: Send`. Lock-free atomic queue (nexus-queue).
+//!
+//! Both must be created inside [`Runtime::block_on`](crate::Runtime::block_on).
 //!
 //! # Example
 //!
@@ -23,6 +26,7 @@
 //! ```
 
 pub mod local;
+pub mod mpsc;
 
 use std::fmt;
 
