@@ -213,6 +213,11 @@ pub(crate) struct CrossWakeContext {
     pub(crate) queue: CrossWakeQueue,
     /// The mio waker to interrupt epoll after pushing.
     pub(crate) mio_waker: Arc<mio::Waker>,
+    /// Whether the runtime is currently parked in epoll_wait.
+    /// Cross-thread senders read this to decide whether to poke
+    /// the eventfd — skip the syscall when the runtime is actively
+    /// polling (it will drain the inbox on the next iteration).
+    pub(crate) parked: std::sync::atomic::AtomicBool,
 }
 
 // SAFETY: CrossWakeQueue is Send + Sync, Arc<mio::Waker> is Send + Sync.
@@ -337,8 +342,12 @@ unsafe fn cross_wake_impl(data: *const ()) {
     // SAFETY: task_ptr is valid, not already in the queue (is_queued was 0).
     unsafe { waker_data.shared.queue.push(task_ptr) };
 
-    // Poke the eventfd to wake the runtime's epoll.
-    let _ = waker_data.shared.mio_waker.wake();
+    // Poke the eventfd only if the runtime is parked in epoll_wait.
+    // If it's actively polling, it will drain the inbox on the next
+    // iteration without needing a syscall to interrupt it.
+    if waker_data.shared.parked.load(Ordering::Acquire) {
+        let _ = waker_data.shared.mio_waker.wake();
+    }
 }
 
 // =============================================================================

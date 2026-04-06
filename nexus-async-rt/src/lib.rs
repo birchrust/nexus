@@ -169,11 +169,21 @@ impl Executor {
     ///
     /// Called at the start of each poll cycle. Tasks pushed from other
     /// threads via `CrossWakeQueue::push` are moved into `incoming`.
-    pub(crate) fn drain_cross_thread(&mut self, inbox: &mut crate::cross_wake::CrossWakeQueue) {
-        while let Some(task_ptr) = inbox.pop() {
-            // Task was already marked queued by the cross-thread waker.
-            // Just add to the local ready queue.
-            self.incoming.push(task_ptr);
+    /// Drains at most `limit` tasks (remaining are picked up next cycle).
+    pub(crate) fn drain_cross_thread(
+        &mut self,
+        inbox: &mut crate::cross_wake::CrossWakeQueue,
+        limit: usize,
+    ) {
+        let mut drained = 0;
+        while drained < limit {
+            match inbox.pop() {
+                Some(task_ptr) => {
+                    self.incoming.push(task_ptr);
+                    drained += 1;
+                }
+                None => break,
+            }
         }
     }
 

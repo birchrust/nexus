@@ -185,6 +185,9 @@ pub struct Runtime {
     /// Contains the intrusive MPSC inbox + mio::Waker for eventfd.
     cross_wake: std::sync::Arc<crate::cross_wake::CrossWakeContext>,
 
+    /// Max cross-thread wakes drained per poll cycle.
+    cross_thread_drain_limit: usize,
+
     /// Optional slab allocator. Stored as a boxed trait object for
     /// type erasure (the const generic lives inside). The slab itself
     /// is accessed via TLS fn pointers — this field just owns the memory.
@@ -254,6 +257,7 @@ type SlabInstaller = Box<dyn FnOnce() -> (Box<dyn std::any::Any>, crate::alloc::
 pub struct RuntimeBuilder<'w> {
     world: &'w mut nexus_rt::World,
     tasks_per_cycle: usize,
+    cross_thread_drain_limit: usize,
     queue_capacity: usize,
     event_capacity: usize,
     token_capacity: usize,
@@ -267,6 +271,7 @@ impl<'w> RuntimeBuilder<'w> {
         Self {
             world,
             tasks_per_cycle: crate::DEFAULT_TASKS_PER_CYCLE,
+            cross_thread_drain_limit: usize::MAX,
             queue_capacity: 64,
             event_capacity: 1024,
             token_capacity: 64,
@@ -279,6 +284,18 @@ impl<'w> RuntimeBuilder<'w> {
     /// Default: 64.
     pub fn tasks_per_cycle(mut self, limit: usize) -> Self {
         self.tasks_per_cycle = limit;
+        self
+    }
+
+    /// Maximum cross-thread wakes drained per poll cycle.
+    /// Default: unlimited.
+    ///
+    /// Caps how many tasks woken from other threads are moved into the
+    /// local ready queue per iteration. Prevents a firehose of
+    /// cross-thread wakes from starving local tasks and IO. Remaining
+    /// wakes are drained on the next iteration.
+    pub fn cross_thread_drain_limit(mut self, limit: usize) -> Self {
+        self.cross_thread_drain_limit = limit;
         self
     }
 
@@ -405,6 +422,7 @@ impl<'w> RuntimeBuilder<'w> {
         let cross_wake = std::sync::Arc::new(crate::cross_wake::CrossWakeContext {
             queue: crate::cross_wake::CrossWakeQueue::new(),
             mio_waker: io.mio_waker(),
+            parked: std::sync::atomic::AtomicBool::new(false),
         });
 
         let rt = Runtime {
@@ -415,6 +433,7 @@ impl<'w> RuntimeBuilder<'w> {
             event_time,
             shutdown,
             cross_wake,
+            cross_thread_drain_limit: self.cross_thread_drain_limit,
             _slab: slab,
             slab_tls,
         };
@@ -489,6 +508,14 @@ impl Runtime {
 
         self.event_time.set(Instant::now());
 
+        // SAFETY: we're the only consumer of the cross-thread inbox
+        // (single-threaded runtime). Arc::get_mut won't work because
+        // wakers hold clones, so we cast. The queue's pop() is
+        // single-consumer safe.
+        let cross_queue = unsafe {
+            &mut *std::sync::Arc::as_ptr(&self.cross_wake).cast_mut()
+        };
+
         loop {
             if woken.swap(false, std::sync::atomic::Ordering::Acquire)
                 || self.shutdown.is_shutdown()
@@ -499,19 +526,17 @@ impl Runtime {
                 }
             }
 
-            // Drain cross-thread inbox into the local ready queue.
-            // SAFETY: we're the only consumer (single-threaded runtime).
-            // Arc::get_mut won't work (shared with wakers), so we use
-            // an unsafe cast — the queue's pop() is single-consumer safe.
-            let queue = unsafe {
-                &mut *std::sync::Arc::as_ptr(&self.cross_wake).cast_mut()
-            };
-            self.executor.drain_cross_thread(&mut queue.queue);
+            // Drain cross-thread inbox before polling tasks.
+            self.executor.drain_cross_thread(&mut cross_queue.queue, self.cross_thread_drain_limit);
 
             self.executor.poll();
 
             let now = Instant::now();
             self.timers.fire_expired(now);
+
+            // Drain again: cross-thread wakes may have arrived during
+            // task polling or timer firing. Check before deciding to park.
+            self.executor.drain_cross_thread(&mut cross_queue.queue, self.cross_thread_drain_limit);
 
             let has_work = self.executor.has_ready()
                 || woken.load(std::sync::atomic::Ordering::Acquire);
@@ -527,12 +552,19 @@ impl Runtime {
                 }
                 ParkMode::Spin => Some(Duration::ZERO),
             };
+
+            // Mark as parked before entering epoll. Cross-thread senders
+            // check this flag to decide whether to poke the eventfd.
+            cross_queue.parked.store(true, std::sync::atomic::Ordering::Release);
+
             if let Err(e) = self.io.poll_io(mio_timeout) {
                 assert!(
                     e.kind() == std::io::ErrorKind::Interrupted,
                     "mio::Poll::poll failed: {e}"
                 );
             }
+
+            cross_queue.parked.store(false, std::sync::atomic::Ordering::Release);
 
             self.event_time.set(Instant::now());
         }
