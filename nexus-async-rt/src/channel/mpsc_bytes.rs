@@ -545,11 +545,11 @@ impl Clone for Sender {
 impl Drop for Sender {
     fn drop(&mut self) {
         // Mark our wake node as cancelled. If it's in the waiter list,
-        // wake_one/wake_all will skip it.
+        // wake_one/wake_all will skip it (they check cancelled with
+        // Acquire before reading the waker). The waker is NOT touched
+        // here — wake_one may be reading it concurrently on the
+        // receiver thread.
         self.wake_node.cancelled.store(true, Ordering::Release);
-        // SAFETY: we own the node exclusively (no concurrent reader can
-        // access the waker field because cancelled is set).
-        unsafe { *self.wake_node.waker.get() = None };
 
         if self.inner.sender_count.fetch_sub(1, Ordering::AcqRel) == 1 {
             // Last sender dropped -- wake receiver so it sees closed.

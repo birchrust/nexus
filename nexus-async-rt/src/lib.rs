@@ -172,7 +172,7 @@ impl Executor {
     /// Drains at most `limit` tasks (remaining are picked up next cycle).
     pub(crate) fn drain_cross_thread(
         &mut self,
-        inbox: &mut crate::cross_wake::CrossWakeQueue,
+        inbox: &crate::cross_wake::CrossWakeQueue,
         limit: usize,
     ) {
         let mut drained = 0;

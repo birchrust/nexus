@@ -531,13 +531,10 @@ impl Runtime {
 
         self.event_time.set(Instant::now());
 
-        // SAFETY: we're the only consumer of the cross-thread inbox
-        // (single-threaded runtime). Arc::get_mut won't work because
-        // wakers hold clones, so we cast. The queue's pop() is
-        // single-consumer safe.
-        let cross_queue = unsafe {
-            &mut *std::sync::Arc::as_ptr(&self.cross_wake).cast_mut()
-        };
+        // The cross-thread queue uses interior mutability (UnsafeCell)
+        // for the consumer head. pop() takes &self, so a shared ref
+        // from the Arc is sufficient. No unsafe cast needed.
+        let cross_queue = &*self.cross_wake;
 
         let mut tick: u32 = 0;
 
@@ -553,7 +550,7 @@ impl Runtime {
             }
 
             // 2. Drain cross-thread inbox.
-            self.executor.drain_cross_thread(&mut cross_queue.queue, self.cross_thread_drain_limit);
+            self.executor.drain_cross_thread(&cross_queue.queue, self.cross_thread_drain_limit);
 
             // 3. Poll ready tasks (up to tasks_per_cycle).
             self.executor.poll();
@@ -561,8 +558,14 @@ impl Runtime {
             // 4. Fire expired timers.
             self.timers.fire_expired(Instant::now());
 
+            // 4.5. Set parked early (park mode only) so cross-thread
+            // wakers arriving from here on will poke the eventfd.
+            if matches!(mode, ParkMode::Park) {
+                cross_queue.parked.store(true, std::sync::atomic::Ordering::Release);
+            }
+
             // 5. Drain cross-thread inbox again (wakes during step 3/4).
-            self.executor.drain_cross_thread(&mut cross_queue.queue, self.cross_thread_drain_limit);
+            self.executor.drain_cross_thread(&cross_queue.queue, self.cross_thread_drain_limit);
 
             tick = tick.wrapping_add(1);
 
@@ -583,6 +586,9 @@ impl Runtime {
                 || woken.load(std::sync::atomic::Ordering::Acquire);
 
             if has_work {
+                if matches!(mode, ParkMode::Park) {
+                    cross_queue.parked.store(false, std::sync::atomic::Ordering::Release);
+                }
                 continue;
             }
 
@@ -599,13 +605,12 @@ impl Runtime {
                     self.event_time.set(Instant::now());
                 }
                 ParkMode::Park => {
+                    // parked is already true (set at step 4.5).
                     // Park in epoll_wait until IO, timer, or cross-thread
                     // eventfd wakes us.
                     let timeout = self.timers.next_deadline().map(|d| {
                         d.saturating_duration_since(Instant::now())
                     });
-
-                    cross_queue.parked.store(true, std::sync::atomic::Ordering::Release);
 
                     if let Err(e) = self.io.poll_io(timeout) {
                         assert!(

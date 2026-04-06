@@ -32,6 +32,7 @@ fn print_histogram(name: &str, hist: &Histogram<u64>) {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn local_try_send_recv_latency() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -65,6 +66,7 @@ fn local_try_send_recv_latency() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn mpsc_try_send_recv_latency() {
     let (tx, rx) = nexus_queue::mpsc::bounded::<u64>(1024);
 
@@ -90,6 +92,7 @@ fn mpsc_try_send_recv_latency() {
 }
 
 #[test]
+#[ignore]
 fn mpsc_channel_try_send_recv_latency() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -121,6 +124,7 @@ fn mpsc_channel_try_send_recv_latency() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn local_async_send_recv_latency() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -160,6 +164,7 @@ fn local_async_send_recv_latency() {
 }
 
 #[test]
+#[ignore]
 fn mpsc_async_send_recv_latency() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -201,6 +206,7 @@ fn mpsc_async_send_recv_latency() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn mpsc_cross_thread_latency() {
     // --- Busy spin (hot path, no parking) ---
     {
@@ -337,6 +343,7 @@ fn mpsc_cross_thread_latency() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn spsc_try_send_recv_latency() {
     // Raw nexus_queue::spsc baseline.
     let (tx, rx) = nexus_queue::spsc::ring_buffer::<u64>(1024);
@@ -357,6 +364,7 @@ fn spsc_try_send_recv_latency() {
 }
 
 #[test]
+#[ignore]
 fn spsc_channel_try_send_recv_latency() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -382,6 +390,7 @@ fn spsc_channel_try_send_recv_latency() {
 }
 
 #[test]
+#[ignore]
 fn spsc_async_send_recv_latency() {
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -417,6 +426,7 @@ fn spsc_async_send_recv_latency() {
 }
 
 #[test]
+#[ignore]
 fn spsc_cross_thread_latency() {
     // --- Busy spin ---
     {

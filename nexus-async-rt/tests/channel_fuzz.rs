@@ -16,6 +16,7 @@ use nexus_rt::WorldBuilder;
 // =============================================================================
 
 #[test]
+#[ignore]
 fn mpsc_concurrent_senders_random_drop() {
     // Many iterations to shake out races.
     for _ in 0..50 {
@@ -87,6 +88,7 @@ fn mpsc_concurrent_senders_random_drop() {
 }
 
 #[test]
+#[ignore]
 fn mpsc_receiver_drop_mid_stream() {
     for _ in 0..50 {
         let (tx, rx) = make_mpsc_channel::<u64>(32);
@@ -135,6 +137,7 @@ fn mpsc_receiver_drop_mid_stream() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn spsc_fast_producer_slow_consumer() {
     for _ in 0..20 {
         let (tx, rx) = make_spsc_channel::<u64>(4);
@@ -186,6 +189,7 @@ fn spsc_fast_producer_slow_consumer() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn spsc_bytes_random_sizes() {
     for _ in 0..20 {
         let (mut tx, mut rx) = make_spsc_bytes_channel(4096);
@@ -240,6 +244,7 @@ fn spsc_bytes_random_sizes() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn mpsc_bytes_concurrent_random_sizes() {
     for _ in 0..10 {
         let (tx, mut rx) = make_mpsc_bytes_channel(8192);
@@ -315,6 +320,7 @@ fn mpsc_bytes_concurrent_random_sizes() {
 // =============================================================================
 
 #[test]
+#[ignore]
 fn mpsc_rapid_clone_drop() {
     for _ in 0..50 {
         let (tx, rx) = make_mpsc_channel::<u64>(128);

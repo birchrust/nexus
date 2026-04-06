@@ -72,9 +72,10 @@ impl RxWakerSlot {
         self.state.store(STORED, Ordering::Release);
     }
 
-    /// Register a foreign waker (e.g., root future). Falls back to storing
-    /// a cloned Waker in the legacy AtomicWaker slot on Inner.
-    /// Returns false if this is a local runtime waker (caller should use register()).
+    /// Try to register a local runtime waker. Returns true if the waker
+    /// is a local runtime waker and was registered via the zero-alloc
+    /// slot. Returns false for foreign wakers (caller should fall back
+    /// to the AtomicWaker slot on Inner).
     fn try_register_local(&self, waker: &Waker) -> bool {
         crate::waker::task_ptr_from_local_waker(waker).is_some_and(|task_ptr| {
             self.register(task_ptr);
@@ -465,12 +466,12 @@ impl<T> Clone for Sender<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         // Mark our wake node as cancelled. If it's in the waiter list,
-        // wake_one/wake_all will skip it. The node memory stays valid
-        // (Box lives until after this flag is set) but the waker inside
-        // is cleared to avoid waking a dead sender.
+        // wake_one/wake_all will skip it (they check cancelled with
+        // Acquire before reading the waker). The waker is NOT touched
+        // here — wake_one may be reading it concurrently on the
+        // receiver thread. The cancelled flag (Release here, Acquire
+        // on read) ensures wake_one sees the flag before reading.
         self.wake_node.cancelled.store(true, Ordering::Release);
-        // SAFETY: we own the node exclusively.
-        unsafe { *self.wake_node.waker.get() = None };
 
         if self.inner.sender_count.fetch_sub(1, Ordering::AcqRel) == 1 {
             // Last sender dropped — wake receiver so it sees closed.

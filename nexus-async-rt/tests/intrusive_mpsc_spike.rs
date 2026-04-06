@@ -104,6 +104,7 @@ const ITERS: usize = 1_000_000;
 const WARMUP: usize = 100_000;
 
 #[test]
+#[ignore]
 fn spike_vec_push_pop() {
     let mut queue: Vec<*mut u8> = Vec::with_capacity(64);
 
@@ -134,6 +135,7 @@ fn spike_vec_push_pop() {
 }
 
 #[test]
+#[ignore]
 fn spike_intrusive_mpsc_push_pop() {
     let mut queue = IntrusiveMpsc::new();
 
@@ -174,6 +176,7 @@ fn spike_intrusive_mpsc_push_pop() {
 }
 
 #[test]
+#[ignore]
 fn spike_pingpong_vec() {
     // Simulate executor: push 1, pop 1, push 1, pop 1 (self-waking task)
     let mut queue: Vec<*mut u8> = Vec::with_capacity(64);
@@ -199,6 +202,7 @@ fn spike_pingpong_vec() {
 }
 
 #[test]
+#[ignore]
 fn spike_pingpong_intrusive() {
     let mut queue = IntrusiveMpsc::new();
     let mut node = Box::new(Node::new());

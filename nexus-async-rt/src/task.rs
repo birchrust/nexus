@@ -12,7 +12,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, Ordering};
 use std::task::{Context, Poll};
 
 // =============================================================================
@@ -34,9 +34,9 @@ pub const TASK_HEADER_SIZE: usize = 40;
 /// offset  0: poll_fn      (8 bytes, fn pointer — polls the future)
 /// offset  8: drop_fn      (8 bytes, fn pointer — drops the future in place)
 /// offset 16: free_fn      (8 bytes, fn pointer — deallocates the task storage)
-/// offset 24: is_queued    (1 byte, bool)
-/// offset 25: is_completed (1 byte, bool — future dropped, awaiting refcount drain)
-/// offset 26: ref_count    (2 bytes, u16 — number of live Waker clones)
+/// offset 24: is_queued    (1 byte, AtomicU8 — cross-thread wakers CAS this)
+/// offset 25: is_completed (1 byte, AtomicU8 — cross-thread reads with Acquire)
+/// offset 26: ref_count    (2 bytes, AtomicU16 — number of live Waker clones)
 /// offset 28: tracker_key  (4 bytes, u32 — index in Executor::all_tasks slab)
 /// offset 32: cross_next   (8 bytes, AtomicPtr — intrusive cross-thread wake queue)
 /// offset 40: future       (F bytes, the actual future)
@@ -46,14 +46,14 @@ pub(crate) struct Task<F> {
     poll_fn: unsafe fn(*mut u8, &mut Context<'_>) -> Poll<()>,
     drop_fn: unsafe fn(*mut u8),
     free_fn: unsafe fn(*mut u8),
-    is_queued: bool,
+    is_queued: AtomicU8,
     /// Set when the future is dropped (completion/cancel). The slot
     /// stays alive until ref_count also hits 0.
-    is_completed: bool,
+    is_completed: AtomicU8,
     /// Number of live Waker clones. Incremented on waker clone,
     /// decremented on waker wake (by value) or drop. When this
     /// reaches 0 and is_completed is true, the slot is freed.
-    ref_count: u16,
+    ref_count: AtomicU16,
     /// Index into the Executor's `all_tasks` slab. Set at spawn time.
     tracker_key: u32,
     /// Intrusive next pointer for the cross-thread wake queue.
@@ -75,9 +75,9 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
             poll_fn: poll_fn::<F>,
             drop_fn: drop_fn::<F>,
             free_fn: box_free::<F>,
-            is_queued: false,
-            is_completed: false,
-            ref_count: 1, // executor holds one reference
+            is_queued: AtomicU8::new(0),
+            is_completed: AtomicU8::new(0),
+            ref_count: AtomicU16::new(1), // executor holds one reference
             tracker_key,
             cross_next: AtomicPtr::new(std::ptr::null_mut()),
             future,
@@ -95,9 +95,9 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
             poll_fn: poll_fn::<F>,
             drop_fn: drop_fn::<F>,
             free_fn,
-            is_queued: false,
-            is_completed: false,
-            ref_count: 1,
+            is_queued: AtomicU8::new(0),
+            is_completed: AtomicU8::new(0),
+            ref_count: AtomicU16::new(1),
             tracker_key,
             cross_next: AtomicPtr::new(std::ptr::null_mut()),
             future,
@@ -140,9 +140,10 @@ pub(crate) unsafe fn tracker_key(ptr: *mut u8) -> u32 {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn ref_inc(ptr: *mut u8) {
-    // SAFETY: ref_count is at offset 26 in repr(C) Task.
-    let rc = unsafe { &mut *ptr.add(26).cast::<u16>() };
-    *rc = rc.checked_add(1).expect("waker refcount overflow");
+    // SAFETY: ref_count is AtomicU16 at offset 26 in repr(C) Task.
+    let rc = unsafe { &*ptr.add(26).cast::<AtomicU16>() };
+    let prev = rc.fetch_add(1, Ordering::Relaxed);
+    assert!(prev < u16::MAX, "waker refcount overflow");
 }
 
 /// Decrement the refcount. Returns true if refcount hit 0 (slot can be freed).
@@ -152,11 +153,11 @@ pub(crate) unsafe fn ref_inc(ptr: *mut u8) {
 /// `ptr` must point to a live (or completed) `Task<F>`.
 #[inline]
 pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> bool {
-    // SAFETY: ref_count at offset 26.
-    let rc = unsafe { &mut *ptr.add(26).cast::<u16>() };
-    debug_assert!(*rc > 0, "waker refcount underflow");
-    *rc -= 1;
-    *rc == 0
+    // SAFETY: ref_count is AtomicU16 at offset 26.
+    let rc = unsafe { &*ptr.add(26).cast::<AtomicU16>() };
+    let prev = rc.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev > 0, "waker refcount underflow");
+    prev == 1
 }
 
 /// Read the refcount.
@@ -167,7 +168,8 @@ pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> bool {
 #[allow(dead_code)]
 #[inline]
 pub(crate) unsafe fn ref_count(ptr: *mut u8) -> u16 {
-    unsafe { *ptr.add(26).cast::<u16>() }
+    // SAFETY: ref_count is AtomicU16 at offset 26.
+    unsafe { &*ptr.add(26).cast::<AtomicU16>() }.load(Ordering::Relaxed)
 }
 
 /// Set the is_completed flag.
@@ -177,8 +179,8 @@ pub(crate) unsafe fn ref_count(ptr: *mut u8) -> u16 {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn set_completed(ptr: *mut u8) {
-    // SAFETY: is_completed is at offset 25 in repr(C) Task.
-    unsafe { *ptr.add(25) = 1 }
+    // SAFETY: is_completed is AtomicU8 at offset 25 in repr(C) Task.
+    unsafe { &*ptr.add(25).cast::<AtomicU8>() }.store(1, Ordering::Release);
 }
 
 /// Read the is_completed flag.
@@ -188,7 +190,8 @@ pub(crate) unsafe fn set_completed(ptr: *mut u8) {
 /// `ptr` must point to a (possibly completed) `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
-    unsafe { *ptr.add(25) != 0 }
+    // SAFETY: is_completed is AtomicU8 at offset 25.
+    unsafe { &*ptr.add(25).cast::<AtomicU8>() }.load(Ordering::Acquire) != 0
 }
 
 /// Get a reference to the `cross_next` atomic pointer.
@@ -213,8 +216,8 @@ pub(crate) unsafe fn cross_next(ptr: *mut u8) -> &'static AtomicPtr<u8> {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_queued(ptr: *mut u8) -> bool {
-    // SAFETY: is_queued is at offset 24 in repr(C) Task.
-    unsafe { *ptr.add(24) != 0 }
+    // SAFETY: is_queued is AtomicU8 at offset 24 in repr(C) Task.
+    unsafe { &*ptr.add(24).cast::<AtomicU8>() }.load(Ordering::Relaxed) != 0
 }
 
 /// Set the `is_queued` flag on a task.
@@ -224,7 +227,22 @@ pub(crate) unsafe fn is_queued(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn set_queued(ptr: *mut u8, queued: bool) {
-    unsafe { *ptr.add(24) = queued as u8 }
+    // SAFETY: is_queued is AtomicU8 at offset 24 in repr(C) Task.
+    unsafe { &*ptr.add(24).cast::<AtomicU8>() }.store(queued as u8, Ordering::Relaxed);
+}
+
+/// Atomically try to set `is_queued` from 0 to 1. Returns true if
+/// successful (was not queued). Used by cross-thread wakers to avoid
+/// TOCTOU races on the dedup check.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
+    // SAFETY: is_queued is AtomicU8 at offset 24.
+    let queued = unsafe { &*ptr.add(24).cast::<AtomicU8>() };
+    queued.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed).is_ok()
 }
 
 /// Poll the task's future.

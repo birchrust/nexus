@@ -16,7 +16,7 @@ fn runtime() -> (nexus_rt::World, Runtime) {
 
 #[test]
 fn single_producer_consumer() {
-    let (mut world, mut rt) = runtime();
+    let (_world, mut rt) = runtime();
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -41,7 +41,7 @@ fn single_producer_consumer() {
 
 #[test]
 fn multiple_producers() {
-    let (mut world, mut rt) = runtime();
+    let (_world, mut rt) = runtime();
     let total = Rc::new(Cell::new(0u64));
     let total_clone = total.clone();
 
@@ -75,7 +75,7 @@ fn multiple_producers() {
 
 #[test]
 fn backpressure_with_small_buffer() {
-    let (mut world, mut rt) = runtime();
+    let (_world, mut rt) = runtime();
     let done = Rc::new(Cell::new(false));
     let flag = done.clone();
 
@@ -101,7 +101,7 @@ fn backpressure_with_small_buffer() {
 
 #[test]
 fn sender_drop_closes_receiver() {
-    let (mut world, mut rt) = runtime();
+    let (_world, mut rt) = runtime();
     let closed = Rc::new(Cell::new(false));
     let flag = closed.clone();
 
@@ -126,7 +126,7 @@ fn sender_drop_closes_receiver() {
 
 #[test]
 fn receiver_drop_signals_senders() {
-    let (mut world, mut rt) = runtime();
+    let (_world, mut rt) = runtime();
     let got_error = Rc::new(Cell::new(false));
     let flag = got_error.clone();
 
@@ -157,7 +157,7 @@ fn receiver_drop_signals_senders() {
 
 #[test]
 fn stress_high_throughput() {
-    let (mut world, mut rt) = runtime();
+    let (_world, mut rt) = runtime();
     let total = Rc::new(Cell::new(0u64));
     let total_clone = total.clone();
 

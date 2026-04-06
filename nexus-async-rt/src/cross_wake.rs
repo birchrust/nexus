@@ -12,7 +12,7 @@
 //! Cross-thread wakes use this queue + eventfd. The executor drains
 //! both on each poll cycle.
 
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
@@ -75,7 +75,8 @@ pub(crate) fn cross_wake_context() -> Option<Arc<CrossWakeContext>> {
 /// just an `AtomicPtr` — not a real task.
 pub(crate) struct CrossWakeQueue {
     /// Consumer reads from here. Only touched by the runtime thread.
-    head: *mut u8,
+    /// Wrapped in UnsafeCell so pop() can take &self (interior mutability).
+    head: UnsafeCell<*mut u8>,
     /// Producers CAS here. Shared across threads.
     tail: AtomicPtr<u8>,
     /// Heap-allocated stub node. Stable address across moves.
@@ -96,7 +97,7 @@ impl CrossWakeQueue {
         let stub = Box::into_raw(Box::new(AtomicPtr::new(std::ptr::null_mut())));
         let stub_as_node = stub.cast::<u8>();
         Self {
-            head: stub_as_node,
+            head: UnsafeCell::new(stub_as_node),
             tail: AtomicPtr::new(stub_as_node),
             stub,
         }
@@ -154,10 +155,16 @@ impl CrossWakeQueue {
 
     /// Pop a task pointer from the queue. Single-consumer only.
     ///
+    /// Takes `&self` using interior mutability for `head` (UnsafeCell).
+    /// The single-consumer guarantee ensures no concurrent access to `head`.
+    ///
     /// Returns `None` if the queue is empty (or a producer hasn't
     /// finished linking yet — transient inconsistency).
-    pub(crate) fn pop(&mut self) -> Option<*mut u8> {
-        let mut head = self.head;
+    pub(crate) fn pop(&self) -> Option<*mut u8> {
+        // SAFETY: single-consumer guarantee — only the runtime thread
+        // calls pop(), never concurrently.
+        let head_ref = unsafe { &mut *self.head.get() };
+        let mut head = *head_ref;
         // SAFETY: head is either the stub or a previously pushed task.
         let mut next = unsafe { self.next_of(head) }.load(Ordering::Acquire);
 
@@ -168,14 +175,14 @@ impl CrossWakeQueue {
             if next.is_null() {
                 return None; // Queue is empty.
             }
-            self.head = next;
+            *head_ref = next;
             head = next;
             next = unsafe { self.next_of(head) }.load(Ordering::Acquire);
         }
 
-        // Normal case: head has a next → pop head, advance.
+        // Normal case: head has a next -> pop head, advance.
         if !next.is_null() {
-            self.head = next;
+            *head_ref = next;
             return Some(head);
         }
 
@@ -194,7 +201,7 @@ impl CrossWakeQueue {
         // Now check if head got a next pointer (the stub push linked it).
         next = unsafe { self.next_of(head) }.load(Ordering::Acquire);
         if !next.is_null() {
-            self.head = next;
+            *head_ref = next;
             return Some(head);
         }
 
@@ -224,97 +231,6 @@ pub(crate) struct CrossWakeContext {
 unsafe impl Send for CrossWakeContext {}
 unsafe impl Sync for CrossWakeContext {}
 
-/// Per-waker data for the cross-thread vtable. Stored in a Box,
-/// pointed to by `RawWaker::data`.
-///
-/// Clone increments `shared`'s strong count + task refcount.
-/// Drop decrements both.
-pub(crate) struct CrossWakerData {
-    pub(crate) task_ptr: *mut u8,
-    pub(crate) shared: Arc<CrossWakeContext>,
-}
-
-// SAFETY: task_ptr is only used for atomic queue push + refcount ops,
-// both of which are thread-safe.
-unsafe impl Send for CrossWakerData {}
-unsafe impl Sync for CrossWakerData {}
-
-// =============================================================================
-// Cross-thread waker vtable
-// =============================================================================
-
-use std::task::{RawWaker, RawWakerVTable, Waker};
-
-static CROSS_VTABLE: RawWakerVTable =
-    RawWakerVTable::new(cross_clone, cross_wake, cross_wake_by_ref, cross_drop);
-
-/// Create a cross-thread-safe Waker for a task.
-///
-/// Must be called on the runtime thread (reads `CrossWakeContext` from
-/// the runtime). The returned Waker can be sent to any thread.
-///
-/// # Safety
-///
-/// `task_ptr` must point to a live task. `ctx` must outlive all clones
-/// of the returned waker (guaranteed by Arc).
-pub(crate) fn cross_thread_waker(
-    task_ptr: *mut u8,
-    ctx: &Arc<CrossWakeContext>,
-) -> Waker {
-    // Increment task refcount — the waker holds a reference.
-    // SAFETY: task_ptr is a valid task.
-    unsafe { task::ref_inc(task_ptr) };
-
-    let data = Box::new(CrossWakerData {
-        task_ptr,
-        shared: Arc::clone(ctx),
-    });
-    let raw = RawWaker::new(Box::into_raw(data).cast::<()>(), &CROSS_VTABLE);
-    // SAFETY: raw waker is properly constructed with matching vtable.
-    unsafe { Waker::from_raw(raw) }
-}
-
-/// Clone: new Box with same task_ptr, Arc::clone shared, inc refcount.
-unsafe fn cross_clone(data: *const ()) -> RawWaker {
-    let orig = unsafe { &*data.cast::<CrossWakerData>() };
-    // SAFETY: task_ptr is valid (refcount > 0).
-    unsafe { task::ref_inc(orig.task_ptr) };
-    let cloned = Box::new(CrossWakerData {
-        task_ptr: orig.task_ptr,
-        shared: Arc::clone(&orig.shared),
-    });
-    RawWaker::new(Box::into_raw(cloned).cast::<()>(), &CROSS_VTABLE)
-}
-
-/// Wake by value: push to cross-thread queue, poke eventfd, free box, dec refcount.
-unsafe fn cross_wake(data: *const ()) {
-    // SAFETY: data is a valid BoxCrossWakerData.
-    unsafe { cross_wake_impl(data) };
-    let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossWakerData>()) };
-    let should_free = unsafe { task::ref_dec(boxed.task_ptr) };
-    if should_free {
-        // Task completed and all wakers dropped. Signal deferred free.
-        // For cross-thread: we can't access the deferred free list (TLS).
-        // The task will be cleaned up when the executor next polls and
-        // finds it completed. This is safe — the task slot isn't reused
-        // until freed by the executor.
-    }
-}
-
-/// Wake by ref: push to cross-thread queue, poke eventfd. No refcount change.
-unsafe fn cross_wake_by_ref(data: *const ()) {
-    unsafe { cross_wake_impl(data) };
-}
-
-/// Drop without waking: free box, dec refcount.
-unsafe fn cross_drop(data: *const ()) {
-    let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossWakerData>()) };
-    let should_free = unsafe { task::ref_dec(boxed.task_ptr) };
-    if should_free {
-        // Same as cross_wake — deferred free handled by executor.
-    }
-}
-
 /// Wake a task via the cross-thread path: push to intrusive inbox,
 /// conditionally poke eventfd. Zero allocation.
 ///
@@ -331,13 +247,9 @@ pub(crate) unsafe fn wake_task_cross_thread(
         return;
     }
 
-    // Dedup: atomic CAS on is_queued (offset 24) for thread safety.
-    let queued_ptr = unsafe { task_ptr.add(24) };
-    let queued = unsafe { &*(queued_ptr.cast::<std::sync::atomic::AtomicU8>()) };
-    if queued
-        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    // Dedup: atomic CAS on is_queued for thread safety.
+    // SAFETY: task_ptr is a valid task.
+    if !unsafe { task::try_set_queued(task_ptr) } {
         return;
     }
 
@@ -347,13 +259,6 @@ pub(crate) unsafe fn wake_task_cross_thread(
     if ctx.parked.load(Ordering::Acquire) {
         let _ = ctx.mio_waker.wake();
     }
-}
-
-/// Shared wake implementation for CrossWakerData-based wakers.
-unsafe fn cross_wake_impl(data: *const ()) {
-    let waker_data = unsafe { &*data.cast::<CrossWakerData>() };
-    // SAFETY: task_ptr is valid (refcount > 0), shared is valid (Arc).
-    unsafe { wake_task_cross_thread(waker_data.task_ptr, &waker_data.shared) };
 }
 
 // =============================================================================
@@ -387,7 +292,7 @@ mod tests {
 
     #[test]
     fn queue_push_pop_single() {
-        let mut q = CrossWakeQueue::new();
+        let q = CrossWakeQueue::new();
         let t1 = make_task();
 
         unsafe { q.push(t1) };
@@ -399,7 +304,7 @@ mod tests {
 
     #[test]
     fn queue_push_pop_multiple() {
-        let mut q = CrossWakeQueue::new();
+        let q = CrossWakeQueue::new();
         let t1 = make_task();
         let t2 = make_task();
         let t3 = make_task();
@@ -420,7 +325,7 @@ mod tests {
 
     #[test]
     fn queue_interleaved_push_pop() {
-        let mut q = CrossWakeQueue::new();
+        let q = CrossWakeQueue::new();
         let t1 = make_task();
         let t2 = make_task();
 
@@ -437,14 +342,14 @@ mod tests {
 
     #[test]
     fn queue_empty() {
-        let mut q = CrossWakeQueue::new();
+        let q = CrossWakeQueue::new();
         assert_eq!(q.pop(), None);
         assert_eq!(q.pop(), None);
     }
 
     #[test]
     fn queue_reuse_after_drain() {
-        let mut q = CrossWakeQueue::new();
+        let q = CrossWakeQueue::new();
         let t1 = make_task();
 
         for _ in 0..100 {
