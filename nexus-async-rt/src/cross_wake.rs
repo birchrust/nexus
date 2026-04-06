@@ -315,39 +315,45 @@ unsafe fn cross_drop(data: *const ()) {
     }
 }
 
-/// Shared wake implementation: push task to cross-thread queue, poke eventfd.
-unsafe fn cross_wake_impl(data: *const ()) {
-    let waker_data = unsafe { &*data.cast::<CrossWakerData>() };
-    let task_ptr = waker_data.task_ptr;
-
+/// Wake a task via the cross-thread path: push to intrusive inbox,
+/// conditionally poke eventfd. Zero allocation.
+///
+/// # Safety
+///
+/// `task_ptr` must point to a live task. `ctx` must be a valid
+/// `CrossWakeContext` (guaranteed by channel lifetime).
+pub(crate) unsafe fn wake_task_cross_thread(
+    task_ptr: *mut u8,
+    ctx: &CrossWakeContext,
+) {
     // Don't wake completed tasks.
     if unsafe { task::is_completed(task_ptr) } {
         return;
     }
 
-    // Dedup: don't queue twice. Use atomic CAS on is_queued for thread safety.
-    // The is_queued field is a plain bool (offset 24) — we need to be careful.
-    // For cross-thread: use a byte-level atomic compare-and-swap.
+    // Dedup: atomic CAS on is_queued (offset 24) for thread safety.
     let queued_ptr = unsafe { task_ptr.add(24) };
     let queued = unsafe { &*(queued_ptr.cast::<std::sync::atomic::AtomicU8>()) };
-    // Try to set is_queued from 0 → 1. If already 1, skip.
     if queued
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
     {
-        return; // Already queued (locally or cross-thread).
+        return;
     }
 
-    // Push to the cross-thread inbox.
-    // SAFETY: task_ptr is valid, not already in the queue (is_queued was 0).
-    unsafe { waker_data.shared.queue.push(task_ptr) };
+    // SAFETY: task_ptr valid, not already queued.
+    unsafe { ctx.queue.push(task_ptr) };
 
-    // Poke the eventfd only if the runtime is parked in epoll_wait.
-    // If it's actively polling, it will drain the inbox on the next
-    // iteration without needing a syscall to interrupt it.
-    if waker_data.shared.parked.load(Ordering::Acquire) {
-        let _ = waker_data.shared.mio_waker.wake();
+    if ctx.parked.load(Ordering::Acquire) {
+        let _ = ctx.mio_waker.wake();
     }
+}
+
+/// Shared wake implementation for CrossWakerData-based wakers.
+unsafe fn cross_wake_impl(data: *const ()) {
+    let waker_data = unsafe { &*data.cast::<CrossWakerData>() };
+    // SAFETY: task_ptr is valid (refcount > 0), shared is valid (Arc).
+    unsafe { wake_task_cross_thread(waker_data.task_ptr, &waker_data.shared) };
 }
 
 // =============================================================================
