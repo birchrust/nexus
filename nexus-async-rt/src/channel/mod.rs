@@ -8,6 +8,10 @@
 //!   `Receiver: Send`. Lock-free atomic queue (nexus-queue).
 //! - [`spsc`] — bounded SPSC for cross-thread use. `Sender: Send`,
 //!   `Receiver: Send`. Single producer, single consumer. Fastest cross-thread channel.
+//! - [`spsc_bytes`] — bounded SPSC byte channel. Variable-length `&[u8]` messages
+//!   over `nexus_logbuf::spsc`. Single producer, single consumer.
+//! - [`mpsc_bytes`] — bounded MPSC byte channel. Variable-length `&[u8]` messages
+//!   over `nexus_logbuf::mpsc`. `Sender: Clone + Send`, `Receiver: Send`.
 //!
 //! All must be created inside [`Runtime::block_on`](crate::Runtime::block_on).
 //!
@@ -30,6 +34,8 @@
 pub mod local;
 pub mod mpsc;
 pub mod spsc;
+pub mod spsc_bytes;
+pub mod mpsc_bytes;
 
 use std::fmt;
 

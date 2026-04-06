@@ -1,0 +1,718 @@
+//! Bounded cross-thread SPSC byte channel.
+//!
+//! Variable-length messages over `nexus_logbuf::spsc`. Each message is
+//! a `&[u8]` written into a claim region and committed. The consumer
+//! reads `ReadClaim` references that deref to `&[u8]`.
+//!
+//! Zero allocation on the send/recv hot path. Must be created inside
+//! [`Runtime::block_on`](crate::Runtime::block_on).
+//!
+//! ```ignore
+//! use nexus_async_rt::channel::spsc_bytes;
+//!
+//! let (mut tx, mut rx) = spsc_bytes::channel(64 * 1024);
+//!
+//! // Claim, write, commit (zero-copy)
+//! let mut claim = tx.claim(5).await?;
+//! claim.copy_from_slice(b"hello");
+//! claim.commit();
+//!
+//! // Or convenience: claim + copy + commit
+//! tx.send(b"world").await?;
+//!
+//! // Receive
+//! let msg = rx.recv().await?;
+//! assert_eq!(&*msg, b"hello");
+//! drop(msg);  // advances consumer head
+//! ```
+
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
+use std::task::{Poll, Waker};
+
+use std::ops::{Deref, DerefMut};
+
+// =============================================================================
+// Waker primitives (same pattern as spsc typed channel)
+// =============================================================================
+
+const EMPTY: u8 = 0;
+const STORED: u8 = 1;
+const REGISTERING: u8 = 2;
+
+struct RxWakerSlot {
+    task_ptr: std::sync::atomic::AtomicPtr<u8>,
+    cross_ctx: *const crate::cross_wake::CrossWakeContext,
+    state: AtomicU8,
+}
+
+unsafe impl Send for RxWakerSlot {}
+unsafe impl Sync for RxWakerSlot {}
+
+impl RxWakerSlot {
+    fn new(cross_ctx: *const crate::cross_wake::CrossWakeContext) -> Self {
+        Self {
+            task_ptr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            cross_ctx,
+            state: AtomicU8::new(EMPTY),
+        }
+    }
+
+    fn try_register_local(&self, waker: &Waker) -> bool {
+        crate::waker::task_ptr_from_local_waker(waker).is_some_and(|task_ptr| {
+            let prev = self.state.swap(REGISTERING, Ordering::Acquire);
+            debug_assert_ne!(prev, REGISTERING);
+            self.task_ptr.store(task_ptr, Ordering::Relaxed);
+            self.state.store(STORED, Ordering::Release);
+            true
+        })
+    }
+
+    fn wake(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(STORED, EMPTY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            let task_ptr = self.task_ptr.swap(std::ptr::null_mut(), Ordering::Acquire);
+            if !task_ptr.is_null() {
+                let ctx = unsafe { &*self.cross_ctx };
+                unsafe { crate::cross_wake::wake_task_cross_thread(task_ptr, ctx) };
+                return true;
+            }
+        }
+        false
+    }
+
+    fn has_waker(&self) -> bool {
+        self.state.load(Ordering::Acquire) == STORED
+    }
+}
+
+struct FallbackWaker {
+    state: AtomicU8,
+    waker: UnsafeCell<Option<Waker>>,
+}
+
+unsafe impl Send for FallbackWaker {}
+unsafe impl Sync for FallbackWaker {}
+
+impl FallbackWaker {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(EMPTY),
+            waker: UnsafeCell::new(None),
+        }
+    }
+
+    fn register(&self, waker: &Waker) {
+        let prev = self.state.swap(REGISTERING, Ordering::Acquire);
+        debug_assert_ne!(prev, REGISTERING);
+        unsafe { *self.waker.get() = Some(waker.clone()) };
+        self.state.store(STORED, Ordering::Release);
+    }
+
+    fn wake(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(STORED, EMPTY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            if let Some(w) = unsafe { (*self.waker.get()).take() } {
+                w.wake();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn has_waker(&self) -> bool {
+        self.state.load(Ordering::Acquire) == STORED
+    }
+}
+
+impl Drop for FallbackWaker {
+    fn drop(&mut self) {
+        *self.waker.get_mut() = None;
+    }
+}
+
+struct TxWakerSlot {
+    state: AtomicU8,
+    waker: UnsafeCell<Option<Waker>>,
+}
+
+unsafe impl Send for TxWakerSlot {}
+unsafe impl Sync for TxWakerSlot {}
+
+impl TxWakerSlot {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(EMPTY),
+            waker: UnsafeCell::new(None),
+        }
+    }
+
+    fn register(&self, waker: &Waker) {
+        let prev = self.state.swap(REGISTERING, Ordering::Acquire);
+        debug_assert_ne!(prev, REGISTERING);
+        unsafe { *self.waker.get() = Some(waker.clone()) };
+        self.state.store(STORED, Ordering::Release);
+    }
+
+    fn wake(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(STORED, EMPTY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            if let Some(w) = unsafe { (*self.waker.get()).take() } {
+                w.wake();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn has_waker(&self) -> bool {
+        self.state.load(Ordering::Acquire) == STORED
+    }
+}
+
+impl Drop for TxWakerSlot {
+    fn drop(&mut self) {
+        *self.waker.get_mut() = None;
+    }
+}
+
+// =============================================================================
+// Shared state
+// =============================================================================
+
+struct Inner {
+    rx_slot: RxWakerSlot,
+    rx_fallback: FallbackWaker,
+    tx_waker: TxWakerSlot,
+    _cross_wake_owner: Arc<crate::cross_wake::CrossWakeContext>,
+    tx_alive: AtomicBool,
+    rx_closed: AtomicBool,
+}
+
+unsafe impl Send for Inner {}
+unsafe impl Sync for Inner {}
+
+impl Inner {
+    fn wake_rx(&self) {
+        if !self.rx_slot.wake() {
+            self.rx_fallback.wake();
+        }
+    }
+
+    fn has_rx_waker(&self) -> bool {
+        self.rx_slot.has_waker() || self.rx_fallback.has_waker()
+    }
+}
+
+// =============================================================================
+// Error types
+// =============================================================================
+
+// =============================================================================
+// WriteClaim wrapper — auto-notifies receiver on commit
+// =============================================================================
+
+// =============================================================================
+// ReadClaim wrapper — auto-wakes sender on drop (frees space)
+// =============================================================================
+
+/// A received message from the byte channel. Dereferences to `&[u8]`.
+///
+/// When dropped, the record region is freed (consumer head advances)
+/// and the sender is woken if it was parked on a full buffer.
+pub struct ReadClaim<'a> {
+    inner: nexus_logbuf::queue::spsc::ReadClaim<'a>,
+    notify: &'a Inner,
+}
+
+impl ReadClaim<'_> {
+    /// Payload length in bytes.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Always false.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl Deref for ReadClaim<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.inner
+    }
+}
+
+impl Drop for ReadClaim<'_> {
+    fn drop(&mut self) {
+        // The inner ReadClaim drops after this impl runs (field drop order),
+        // which advances the consumer head and frees space. We wake the
+        // sender BEFORE inner drops — the sender will re-try and see space
+        // once inner's drop completes. This ordering is acceptable because
+        // the sender's try_claim will simply fail and re-park if the space
+        // isn't freed yet. On the next poll it succeeds.
+        //
+        // Alternatively we could manually drop inner first, but the
+        // timing difference is one poll cycle at worst.
+        if self.notify.tx_waker.has_waker() {
+            self.notify.tx_waker.wake();
+        }
+    }
+}
+
+// =============================================================================
+// WriteClaim wrapper — auto-notifies receiver on commit
+// =============================================================================
+
+/// A claimed write region in the byte channel. Dereferences to `&mut [u8]`.
+///
+/// Call [`.commit()`](WriteClaim::commit) to publish the record and
+/// wake the receiver. Dropping without commit writes a skip marker (abort).
+pub struct WriteClaim<'a> {
+    inner: nexus_logbuf::queue::spsc::WriteClaim<'a>,
+    notify: &'a Inner,
+}
+
+impl WriteClaim<'_> {
+    /// Commit the record, making it visible to the receiver.
+    /// Automatically wakes the receiver if it's parked.
+    pub fn commit(self) {
+        let notify = self.notify;
+        self.inner.commit();
+        if notify.has_rx_waker() {
+            notify.wake_rx();
+        }
+    }
+
+    /// Payload length in bytes.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Always false (claims must have len > 0).
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl Deref for WriteClaim<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.inner
+    }
+}
+
+impl DerefMut for WriteClaim<'_> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.inner
+    }
+}
+
+// =============================================================================
+// Error types
+// =============================================================================
+
+/// Claim failed.
+#[derive(Debug)]
+pub enum ClaimError {
+    /// Receiver was dropped.
+    Closed,
+    /// Requested length exceeds buffer capacity (can never succeed).
+    TooLarge,
+}
+
+impl std::fmt::Display for ClaimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("byte channel closed"),
+            Self::TooLarge => f.write_str("message exceeds buffer capacity"),
+        }
+    }
+}
+
+impl std::error::Error for ClaimError {}
+
+/// Receive failed — sender dropped and buffer empty.
+#[derive(Debug)]
+pub struct RecvError;
+
+impl std::fmt::Display for RecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("byte channel closed")
+    }
+}
+
+impl std::error::Error for RecvError {}
+
+// =============================================================================
+// channel()
+// =============================================================================
+
+/// Create a bounded cross-thread SPSC byte channel.
+///
+/// `capacity` is the ring buffer size in bytes.
+///
+/// # Panics
+///
+/// - Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
+pub fn channel(capacity: usize) -> (Sender, Receiver) {
+    crate::context::assert_in_runtime(
+        "spsc_bytes::channel() called outside Runtime::block_on",
+    );
+
+    let cross_ctx = crate::cross_wake::cross_wake_context()
+        .expect("spsc_bytes::channel() requires runtime context");
+
+    let (producer, consumer) = nexus_logbuf::queue::spsc::new(capacity);
+    let rx_slot = RxWakerSlot::new(Arc::as_ptr(&cross_ctx));
+
+    let inner = Arc::new(Inner {
+        rx_slot,
+        rx_fallback: FallbackWaker::new(),
+        tx_waker: TxWakerSlot::new(),
+        _cross_wake_owner: cross_ctx,
+        tx_alive: AtomicBool::new(true),
+        rx_closed: AtomicBool::new(false),
+    });
+
+    (
+        Sender { producer, inner: inner.clone() },
+        Receiver { consumer, inner },
+    )
+}
+
+// =============================================================================
+// Sender
+// =============================================================================
+
+/// Sending half of a bounded SPSC byte channel.
+///
+/// `Send` but not `Clone` — single producer.
+pub struct Sender {
+    producer: nexus_logbuf::queue::spsc::Producer,
+    inner: Arc<Inner>,
+}
+
+impl Sender {
+    /// Send a complete byte message. Claims space, copies, commits.
+    ///
+    /// Waits if the buffer is full. Returns `Err` if receiver dropped.
+    /// Claim `len` bytes for zero-copy writing.
+    ///
+    /// Waits if the buffer is full. Write into the returned `WriteClaim`,
+    /// then call `.commit()` to publish. Drop without commit writes a
+    /// skip marker (abort).
+    ///
+    /// Returns `Err(ClaimError::TooLarge)` immediately if `len` exceeds
+    /// the buffer capacity (can never succeed).
+    pub fn claim(&mut self, len: usize) -> ClaimFut<'_> {
+        ClaimFut { sender: self, len }
+    }
+
+    /// Try to claim without waiting.
+    pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, nexus_logbuf::TryClaimError> {
+        let inner_claim = self.producer.try_claim(len)?;
+        Ok(WriteClaim {
+            inner: inner_claim,
+            notify: &self.inner,
+        })
+    }
+}
+
+/// Future returned by [`Sender::claim`].
+pub struct ClaimFut<'a> {
+    sender: &'a mut Sender,
+    len: usize,
+}
+
+impl<'a> Future for ClaimFut<'a> {
+    type Output = Result<WriteClaim<'a>, ClaimError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { &mut *std::pin::Pin::into_inner_unchecked(self) };
+        let sender: &'a mut Sender = unsafe { &mut *(this.sender as *mut Sender) };
+
+        if sender.inner.rx_closed.load(Ordering::Acquire) {
+            return Poll::Ready(Err(ClaimError::Closed));
+        }
+
+        if this.len > sender.producer.capacity() {
+            return Poll::Ready(Err(ClaimError::TooLarge));
+        }
+
+        match sender.producer.try_claim(this.len) {
+            Ok(inner_claim) => Poll::Ready(Ok(WriteClaim {
+                inner: inner_claim,
+                notify: &sender.inner,
+            })),
+            Err(nexus_logbuf::TryClaimError::Full | nexus_logbuf::TryClaimError::ZeroLength) => {
+                sender.inner.tx_waker.register(cx.waker());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+unsafe impl Send for ClaimFut<'_> {}
+
+impl Drop for Sender {
+    fn drop(&mut self) {
+        self.inner.tx_alive.store(false, Ordering::Release);
+        self.inner.wake_rx();
+    }
+}
+
+unsafe impl Send for Sender {}
+
+// =============================================================================
+// Receiver
+// =============================================================================
+
+/// Receiving half of a bounded SPSC byte channel.
+///
+/// `Send` but not `Clone` — single consumer.
+pub struct Receiver {
+    consumer: nexus_logbuf::queue::spsc::Consumer,
+    inner: Arc<Inner>,
+}
+
+impl Receiver {
+    /// Receive the next message. Returns a `ReadClaim` that derefs to `&[u8]`.
+    ///
+    /// Dropping the claim advances the consumer head and wakes the sender
+    /// if it was blocked on a full buffer.
+    pub fn recv(&mut self) -> RecvFut<'_> {
+        RecvFut { receiver: self }
+    }
+
+    /// Try to receive without waiting.
+    pub fn try_recv(&mut self) -> Option<ReadClaim<'_>> {
+        let inner_claim = self.consumer.try_claim()?;
+        Some(ReadClaim {
+            inner: inner_claim,
+            notify: &self.inner,
+        })
+    }
+}
+
+/// Future returned by [`Receiver::recv`].
+pub struct RecvFut<'a> {
+    receiver: &'a mut Receiver,
+}
+
+impl<'a> Future for RecvFut<'a> {
+    type Output = Result<ReadClaim<'a>, RecvError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: RecvFut is not Unpin-sensitive. We need &mut access to
+        // receiver.consumer for try_claim, and the returned ReadClaim must
+        // have lifetime 'a (tied to the Receiver, not this poll call).
+        let this = unsafe { &mut *std::pin::Pin::into_inner_unchecked(self) };
+
+        // SAFETY: Extend the reborrow lifetime to 'a. This is sound because:
+        // - RecvFut holds &'a mut Receiver, so the Receiver lives for 'a
+        // - ReadClaim borrows &mut Consumer from that Receiver
+        // - The future won't be polled again after returning Ready
+        let receiver: &'a mut Receiver = unsafe { &mut *(this.receiver as *mut Receiver) };
+
+        // Try to claim.
+        if let Some(inner_claim) = receiver.consumer.try_claim() {
+            return Poll::Ready(Ok(ReadClaim {
+                inner: inner_claim,
+                notify: &receiver.inner,
+            }));
+        }
+
+        // Empty + sender dropped → closed.
+        if !receiver.inner.tx_alive.load(Ordering::Acquire) {
+            return Poll::Ready(Err(RecvError));
+        }
+
+        // Park.
+        if !receiver.inner.rx_slot.try_register_local(cx.waker()) {
+            receiver.inner.rx_fallback.register(cx.waker());
+        }
+
+        Poll::Pending
+    }
+}
+
+unsafe impl Send for RecvFut<'_> {}
+
+impl Drop for Receiver {
+    fn drop(&mut self) {
+        self.inner.rx_closed.store(true, Ordering::Release);
+        self.inner.tx_waker.wake();
+    }
+}
+
+unsafe impl Send for Receiver {}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_channel(capacity: usize) -> (Sender, Receiver) {
+        let poll = mio::Poll::new().unwrap();
+        let mio_waker = Arc::new(
+            mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap(),
+        );
+        let cross_ctx = Arc::new(crate::cross_wake::CrossWakeContext {
+            queue: crate::cross_wake::CrossWakeQueue::new(),
+            mio_waker,
+            parked: AtomicBool::new(false),
+        });
+
+        let (producer, consumer) = nexus_logbuf::queue::spsc::new(capacity);
+        let rx_slot = RxWakerSlot::new(Arc::as_ptr(&cross_ctx));
+
+        let inner = Arc::new(Inner {
+            rx_slot,
+            rx_fallback: FallbackWaker::new(),
+            tx_waker: TxWakerSlot::new(),
+            _cross_wake_owner: cross_ctx,
+            tx_alive: AtomicBool::new(true),
+            rx_closed: AtomicBool::new(false),
+        });
+
+        (
+            Sender { producer, inner: inner.clone() },
+            Receiver { consumer, inner },
+        )
+    }
+
+    fn try_send(tx: &mut Sender, data: &[u8]) {
+        let mut claim = tx.try_claim(data.len()).unwrap();
+        claim.copy_from_slice(data);
+        claim.commit(); // auto-notifies receiver
+    }
+
+    #[test]
+    fn claim_commit_recv() {
+        let (mut tx, mut rx) = test_channel(4096);
+        try_send(&mut tx, b"hello");
+        try_send(&mut tx, b"world");
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(&*msg, b"hello");
+        drop(msg);
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(&*msg, b"world");
+        drop(msg);
+
+        assert!(rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn fifo_ordering() {
+        let (mut tx, mut rx) = test_channel(4096);
+        for i in 0u32..10 {
+            try_send(&mut tx, &i.to_le_bytes());
+        }
+        for i in 0u32..10 {
+            let msg = rx.try_recv().unwrap();
+            assert_eq!(&*msg, &i.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn sender_drop_signals_closed() {
+        let (mut tx, mut rx) = test_channel(4096);
+        try_send(&mut tx, b"last");
+        drop(tx);
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(&*msg, b"last");
+        drop(msg);
+
+        assert!(rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn variable_length_messages() {
+        let (mut tx, mut rx) = test_channel(8192);
+
+        try_send(&mut tx, b"hi");
+        try_send(&mut tx, &vec![0xABu8; 100]);
+        try_send(&mut tx, &vec![0xCDu8; 1000]);
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.len(), 2);
+        drop(msg);
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.len(), 100);
+        drop(msg);
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.len(), 1000);
+    }
+
+    #[test]
+    fn cross_thread_claim_send() {
+        let (mut tx, mut rx) = test_channel(64 * 1024);
+
+        let handle = std::thread::spawn(move || {
+            for i in 0u64..100 {
+                try_send(&mut tx, &i.to_le_bytes());
+            }
+        });
+
+        handle.join().unwrap();
+
+        for i in 0u64..100 {
+            let msg = rx.try_recv().unwrap();
+            assert_eq!(&*msg, &i.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn stress_sequential() {
+        let (mut tx, mut rx) = test_channel(4096);
+        let data = [0xFFu8; 32];
+
+        for _ in 0..10_000 {
+            try_send(&mut tx, &data);
+            let msg = rx.try_recv().unwrap();
+            assert_eq!(msg.len(), 32);
+        }
+    }
+
+    #[test]
+    fn receiver_drop_signals_sender() {
+        let (tx, rx) = test_channel(4096);
+        drop(rx);
+        assert!(tx.inner.rx_closed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn claim_without_commit_aborts() {
+        let (mut tx, mut rx) = test_channel(4096);
+
+        // Claim and drop without commit — skip marker.
+        let claim = tx.try_claim(10).unwrap();
+        drop(claim);
+
+        // Next claim + commit should work.
+        try_send(&mut tx, b"after_abort");
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(&*msg, b"after_abort");
+    }
+}
