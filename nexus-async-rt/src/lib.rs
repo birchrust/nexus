@@ -45,6 +45,7 @@ mod timer;
 mod runtime;
 mod shutdown;
 mod backoff;
+mod cancel;
 pub mod channel;
 pub(crate) mod cross_wake;
 
@@ -61,6 +62,7 @@ pub use net::{
 };
 pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHandle, YieldNow};
 pub use backoff::{Backoff, BackoffBuilder, Exhausted};
+pub use cancel::{CancellationToken, DropGuard};
 pub use alloc::SlabClaim;
 pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab, try_claim_slab, claim_slab};
 
