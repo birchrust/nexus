@@ -28,7 +28,7 @@
 //! valid until all wakers are dropped. For now, the single-threaded
 //! invariant is sufficient.
 
-use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+use std::task::{RawWaker, RawWakerVTable, Waker};
 
 use crate::task;
 
@@ -73,74 +73,6 @@ impl Drop for PollContextGuard {
     fn drop(&mut self) {
         READY_QUEUE.with(|cell| cell.set(self.prev_ready));
         DEFERRED_FREE.with(|cell| cell.set(self.prev_free));
-    }
-}
-
-// =============================================================================
-// Waker construction
-// =============================================================================
-
-// =============================================================================
-// Reusable waker for poll loops
-// =============================================================================
-
-/// Pre-built waker + context for the poll loop. The vtable and Context
-/// layout are set once; only the data pointer (task pointer) is updated
-/// per iteration.
-///
-/// # Layout
-///
-/// `raw[0..2]` = Waker: `[vtable_ptr, data_ptr]`
-/// `raw[2..6]` = Context: `[&Waker, &Waker, 0, 0]` (32 bytes)
-///
-/// The Context fields are self-referential pointers to `raw[0]`.
-/// Call `init()` after construction to set them — must not be moved after.
-pub(crate) struct ReusableWaker {
-    raw: [*const (); 6],
-}
-
-impl ReusableWaker {
-    /// Build the waker skeleton. Vtable is set; self-refs are NOT set.
-    /// Call `init()` before first `set_task()`.
-    #[inline]
-    pub(crate) fn new() -> Self {
-        Self {
-            raw: [
-                (&raw const VTABLE).cast::<()>(), // vtable (constant)
-                std::ptr::null(),                 // data (updated per task)
-                std::ptr::null(),                 // &Waker (set by init)
-                std::ptr::null(),                 // &Waker duplicate
-                std::ptr::null(),                 // _ExtendedContext pad
-                std::ptr::null(),                 // _ExtendedContext pad
-            ],
-        }
-    }
-
-    /// Set self-referential pointers. Must be called exactly once,
-    /// after the struct is at its final stack location (no moves after).
-    #[inline]
-    pub(crate) fn init(&mut self) {
-        let waker_ptr = self.raw.as_ptr().cast::<()>();
-        self.raw[2] = waker_ptr;
-        self.raw[3] = waker_ptr;
-    }
-
-    /// Update the data pointer and return a `&mut Context` ready for
-    /// polling.
-    ///
-    /// # Safety
-    ///
-    /// `task_ptr` must point to a live task in the slab.
-    /// `init()` must have been called. `self` must not have been moved
-    /// since `init()`.
-    #[inline]
-    pub(crate) unsafe fn set_task(&mut self, task_ptr: *mut u8) -> &mut Context<'_> {
-        self.raw[1] = task_ptr.cast::<()>();
-        // SAFETY: raw[0..2] has Waker layout [vtable, data].
-        // raw[2..5] has Context layout [&Waker, &Waker, null].
-        // Self-ref pointers set by init() point to raw[0]. Caller
-        // guarantees no move since init().
-        unsafe { &mut *(self.raw.as_mut_ptr().add(2).cast::<Context<'_>>()) }
     }
 }
 
@@ -214,11 +146,10 @@ mod tests {
     use super::*;
     use std::task::{Poll, RawWaker, Waker};
 
-    /// Validate that our ReusableWaker layout matches Waker + Context.
-    /// If Rust changes the layout of Waker or Context, this test fails
-    /// and we know the ReusableWaker is unsound.
+    /// Validate Waker layout assumptions used by `task_ptr_from_local_waker`.
+    /// If Rust changes the layout of Waker, this test fails.
     #[test]
-    fn reusable_waker_layout_matches_std() {
+    fn waker_layout_matches_assumptions() {
         // Waker must be [vtable, data] = 16 bytes
         assert_eq!(std::mem::size_of::<Waker>(), 16);
         assert_eq!(std::mem::align_of::<Waker>(), 8);
@@ -242,84 +173,6 @@ mod tests {
         );
     }
 
-    /// Validate that ReusableWaker produces a functional Context.
-    /// The future receives the correct task pointer through the waker.
-    #[test]
-    fn reusable_waker_delivers_correct_task_ptr() {
-        use crate::task::Task;
-        use std::future::Future;
-        use std::pin::Pin;
-
-        struct Noop;
-        impl Future for Noop {
-            type Output = ();
-            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-                Poll::Ready(())
-            }
-        }
-
-        // Allocate real task headers so clone/drop can touch refcount.
-        let task_a = Box::new(Task::new_boxed(Noop, 0));
-        let task_b = Box::new(Task::new_boxed(Noop, 0));
-        let ptr_a = Box::into_raw(task_a) as *mut u8;
-        let ptr_b = Box::into_raw(task_b) as *mut u8;
-
-        let mut reusable = ReusableWaker::new();
-        reusable.init();
-
-        // First task
-        let cx = unsafe { reusable.set_task(ptr_a) };
-        // refcount starts at 1 (executor ref). Clone adds 1 → 2.
-        assert_eq!(unsafe { crate::task::ref_count(ptr_a) }, 1);
-        let cloned = cx.waker().clone();
-        let raw_a: &[u64; 2] = unsafe { &*(&cloned as *const Waker as *const [u64; 2]) };
-        assert_eq!(raw_a[1], ptr_a as u64);
-        assert_eq!(unsafe { crate::task::ref_count(ptr_a) }, 2);
-        drop(cloned); // decrements → 1 (executor ref remains)
-        assert_eq!(unsafe { crate::task::ref_count(ptr_a) }, 1);
-
-        // Second task — same ReusableWaker, different pointer
-        let cx = unsafe { reusable.set_task(ptr_b) };
-        assert_eq!(unsafe { crate::task::ref_count(ptr_b) }, 1);
-        let cloned = cx.waker().clone();
-        let raw_b: &[u64; 2] = unsafe { &*(&cloned as *const Waker as *const [u64; 2]) };
-        assert_eq!(raw_b[1], ptr_b as u64);
-        assert_eq!(unsafe { crate::task::ref_count(ptr_b) }, 2);
-        drop(cloned);
-        assert_eq!(unsafe { crate::task::ref_count(ptr_b) }, 1);
-
-        // Clean up.
-        unsafe {
-            drop(Box::from_raw(ptr_a as *mut Task<Noop>));
-            drop(Box::from_raw(ptr_b as *mut Task<Noop>));
-        }
-    }
-
-    /// Validate Context layout: Context wraps &Waker.
-    /// Our ReusableWaker stores the Context fields at raw[2..5].
-    #[test]
-    fn context_layout_matches_assumption() {
-        // Build a normal Context from a real Waker and inspect bytes.
-        let raw = RawWaker::new(std::ptr::null(), &VTABLE);
-        let waker = std::mem::ManuallyDrop::new(unsafe { Waker::from_raw(raw) });
-        let cx = Context::from_waker(&waker);
-
-        let cx_size = std::mem::size_of::<Context<'_>>();
-        // Context should be 4 pointers: [&Waker, &Waker, 0, 0] = 32 bytes.
-        assert!(
-            cx_size <= 32,
-            "Context size {} exceeds our 32-byte allocation",
-            cx_size
-        );
-
-        // The first field should be &Waker pointing to our waker
-        let cx_bytes: &[u64] =
-            unsafe { std::slice::from_raw_parts(&cx as *const _ as *const u64, cx_size / 8) };
-        assert_eq!(
-            cx_bytes[0], &*waker as *const Waker as u64,
-            "Context first field is not &Waker"
-        );
-    }
 }
 
 /// Queue a completed task slot for deferred freeing.
