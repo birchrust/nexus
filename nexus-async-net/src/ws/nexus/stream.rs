@@ -491,9 +491,10 @@ impl WsStreamBuilder {
 
     /// Resolve max_read_size: user override clamped to buffer, or default 1/8 of buffer.
     fn resolved_max_read_size(&self) -> usize {
-        self.max_read_size.map_or(self.buffer_capacity / 8, |n| {
-            n.min(self.buffer_capacity).max(1)
-        })
+        self.max_read_size.map_or_else(
+            || (self.buffer_capacity / 8).max(1),
+            |n| n.min(self.buffer_capacity).max(1),
+        )
     }
 
     /// ReadBuf capacity. Default: 1MB.

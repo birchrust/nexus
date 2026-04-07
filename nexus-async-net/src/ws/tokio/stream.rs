@@ -415,9 +415,10 @@ impl WsStreamBuilder {
 
     /// Resolve max_read_size: user override clamped to buffer, or default 1/8 of buffer.
     fn resolved_max_read_size(&self) -> usize {
-        self.max_read_size.map_or(self.buffer_capacity / 8, |n| {
-            n.min(self.buffer_capacity).max(1)
-        })
+        self.max_read_size.map_or_else(
+            || (self.buffer_capacity / 8).max(1),
+            |n| n.min(self.buffer_capacity).max(1),
+        )
     }
 
     /// ReadBuf capacity. Default: 1MB.
@@ -435,6 +436,10 @@ impl WsStreamBuilder {
     /// more frequent reads.
     ///
     /// Default: 1/8 of buffer capacity. Clamped to `[1, buffer_capacity]`.
+    ///
+    /// **Note:** This only affects `recv()`. The `Stream` implementation
+    /// uses the full spare slice for compatibility with `StreamExt` combinators.
+    /// For latency-sensitive code, use `recv()` directly.
     #[must_use]
     pub fn max_read_size(mut self, n: usize) -> Self {
         self.max_read_size = Some(n);
@@ -445,6 +450,9 @@ impl WsStreamBuilder {
     ///
     /// See [`FrameReaderBuilder::compact_at`](nexus_net::ws::FrameReaderBuilder::compact_at)
     /// for details. Default: 0.5.
+    ///
+    /// **Note:** This only affects `recv()`. The `Stream` implementation
+    /// does not use proactive compaction.
     #[must_use]
     pub fn compact_at(mut self, fraction: f64) -> Self {
         self.reader_builder = self.reader_builder.compact_at(fraction);

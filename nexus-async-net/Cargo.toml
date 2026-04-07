@@ -46,6 +46,7 @@ tokio-rustls = "0.26"
 
 [[example]]
 name = "perf_async_ws"
+required-features = ["tokio-rt"]
 
 [[example]]
 name = "perf_ws_cycles_tokio"
@@ -58,6 +59,14 @@ required-features = ["nexus"]
 [[example]]
 name = "perf_async_ws_nexus"
 required-features = ["nexus"]
+
+[[example]]
+name = "bench_pool_throughput"
+required-features = ["tokio-rt"]
+
+[[test]]
+name = "httpbin"
+required-features = ["tokio-rt"]
 
 [lints]
 workspace = true

@@ -200,12 +200,14 @@ impl FrameReader {
 
     /// Whether the ReadBuf should be compacted based on the configured threshold.
     ///
-    /// Returns `true` when consumed bytes exceed the threshold set by
-    /// [`FrameReaderBuilder::compact_at`] and there is unconsumed data to preserve.
+    /// Returns `true` when at least one byte has been consumed, consumed bytes
+    /// meet or exceed the threshold set by [`FrameReaderBuilder::compact_at`],
+    /// and there is unconsumed data to preserve.
     /// Default threshold is 50% of buffer capacity.
     #[inline]
     pub fn should_compact(&self) -> bool {
-        self.buf.consumed() >= self.buf_compact_at && !self.buf.is_empty()
+        let consumed = self.buf.consumed();
+        consumed > 0 && consumed >= self.buf_compact_at && !self.buf.is_empty()
     }
 
     /// Parse the next complete message.
@@ -804,8 +806,10 @@ impl FrameReaderBuilder {
     pub fn build(self) -> FrameReader {
         let buf_compact_at = if self.compact_at >= 1.0 {
             usize::MAX
+        } else if self.compact_at <= 0.0 {
+            0
         } else {
-            (self.buffer_capacity as f64 * self.compact_at) as usize
+            (self.buffer_capacity as f64 * self.compact_at).ceil() as usize
         };
         FrameReader {
             buf: ReadBuf::new(self.buffer_capacity, self.pre_padding, self.post_padding),
@@ -1678,5 +1682,92 @@ mod tests {
             }
         }
         assert!(r.next().unwrap().is_none());
+    }
+
+    // =========================================================================
+    // should_compact() edge cases
+    // =========================================================================
+
+    #[test]
+    fn should_compact_default_half() {
+        let mut r = FrameReader::builder()
+            .buffer_capacity(1024)
+            .role(Role::Client)
+            .build();
+        // Nothing consumed yet — should not compact.
+        assert!(!r.should_compact());
+
+        // Feed two frames. Consume the first, then call poll() to trigger
+        // deferred cleanup (ReadBuf advance). The second frame keeps data
+        // in the buffer so head doesn't auto-reset.
+        let mut data = make_frame(true, 0x2, &[0xAA; 600]);
+        data.extend_from_slice(&make_frame(true, 0x2, &[0xBB; 10]));
+        r.read(&data).unwrap();
+        let msg = r.next().unwrap();
+        assert!(msg.is_some());
+        drop(msg); // release borrow
+        // Trigger deferred cleanup — advances head past first frame.
+        let _ = r.poll().unwrap();
+        // consumed ~604 > 512 (50% of 1024) → should compact.
+        assert!(r.should_compact());
+    }
+
+    #[test]
+    fn should_compact_at_one_never_triggers() {
+        let mut r = FrameReader::builder()
+            .buffer_capacity(256)
+            .compact_at(1.0)
+            .role(Role::Client)
+            .build();
+        // Consume nearly all the buffer.
+        let frame = make_frame(true, 0x2, &[0xBB; 200]);
+        r.read(&frame).unwrap();
+        let _ = r.next().unwrap();
+        // compact_at(1.0) → buf_compact_at = usize::MAX, never triggers.
+        assert!(!r.should_compact());
+    }
+
+    #[test]
+    fn should_compact_at_zero() {
+        let mut r = FrameReader::builder()
+            .buffer_capacity(256)
+            .compact_at(0.0)
+            .role(Role::Client)
+            .build();
+        // Nothing consumed — should NOT compact even with threshold 0.
+        assert!(!r.should_compact());
+
+        // Feed two frames, consume the first, trigger deferred cleanup.
+        let mut data = make_frame(true, 0x2, &[0xCC; 10]);
+        data.extend_from_slice(&make_frame(true, 0x2, &[0xDD; 5]));
+        r.read(&data).unwrap();
+        let msg = r.next().unwrap();
+        assert!(msg.is_some());
+        drop(msg);
+        let _ = r.poll().unwrap(); // deferred advance
+        // Now consumed > 0 and threshold is 0 — should compact.
+        assert!(r.should_compact());
+    }
+
+    #[test]
+    fn should_compact_small_buffer_small_fraction() {
+        // buffer_capacity=64, compact_at=0.1 → ceil(6.4) = 7
+        let mut r = FrameReader::builder()
+            .buffer_capacity(64)
+            .compact_at(0.1)
+            .role(Role::Client)
+            .build();
+        assert!(!r.should_compact());
+
+        // Feed two small frames, consume the first, trigger deferred cleanup.
+        let mut data = make_frame(true, 0x2, &[0xDD; 10]);
+        data.extend_from_slice(&make_frame(true, 0x2, &[0xEE; 5]));
+        r.read(&data).unwrap();
+        let msg = r.next().unwrap();
+        assert!(msg.is_some());
+        drop(msg);
+        let _ = r.poll().unwrap(); // deferred advance
+        // consumed (12) >= 7 (ceil threshold) → should compact.
+        assert!(r.should_compact());
     }
 }
