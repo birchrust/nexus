@@ -16,6 +16,9 @@ std = ["alloc"]
 alloc = []
 rc = []
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dev-dependencies]
 hdrhistogram.workspace = true
 proptest = "1.4"

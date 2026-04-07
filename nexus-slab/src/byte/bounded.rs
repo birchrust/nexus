@@ -9,45 +9,32 @@ use super::{AlignedBytes, Slot, validate_type};
 
 /// Fixed-capacity byte slab. Mirrors [`crate::bounded::Slab`] but stores
 /// heterogeneous types in fixed-size byte slots.
+///
+/// # Safety Contract
+///
+/// Construction is `unsafe` because it opts you into manual memory
+/// management. By creating a slab, you accept these invariants:
+///
+/// - **Free from the correct slab.** Passing a [`Slot`] to a different
+///   slab's `free()` is undefined behavior — it corrupts the freelist.
+///   In debug builds, this is caught by `debug_assert!`.
+/// - **Free everything you allocate.** Dropping the slab does NOT drop
+///   values in occupied slots. Unfree'd slots leak silently.
+/// - **Single-threaded.** The slab is `!Send` and `!Sync`.
+///
+/// ## Why `free()` is safe
+///
+/// The safety contract is accepted once, at construction. After that:
+/// - [`Slot`] is move-only (no `Copy`, no `Clone`) — double-free is
+///   prevented by the type system.
+/// - `free()` consumes the `Slot` — the handle cannot be used after.
+/// - Cross-slab misuse is the only remaining hazard, and it was
+///   accepted as the caller's responsibility at construction time.
 pub struct Slab<const N: usize> {
     inner: crate::bounded::Slab<AlignedBytes<N>>,
 }
 
 impl<const N: usize> Slab<N> {
-    /// Creates an empty, uninitialized byte slab.
-    ///
-    /// This is a const function that performs no allocation. Call
-    /// [`init()`](Self::init) to allocate storage before use.
-    ///
-    /// # Safety
-    ///
-    /// See [`crate::bounded::Slab`] safety contract.
-    #[inline]
-    pub const unsafe fn new() -> Self {
-        Self {
-            // SAFETY: caller upholds the slab contract
-            inner: unsafe { crate::bounded::Slab::new() },
-        }
-    }
-
-    /// Initializes the byte slab with the given capacity.
-    ///
-    /// Must be called exactly once before any allocations.
-    ///
-    /// # Safety
-    ///
-    /// See [`crate::bounded::Slab`] safety contract.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if the slab is already initialized (capacity > 0)
-    /// - Panics if capacity is zero
-    #[inline]
-    pub unsafe fn init(&self, capacity: usize) {
-        // SAFETY: caller upholds the slab contract
-        unsafe { self.inner.init(capacity) };
-    }
-
     /// Creates a byte slab with the given capacity.
     ///
     /// # Safety
@@ -107,7 +94,7 @@ impl<const N: usize> Slab<N> {
 
     /// Try to reserve a slot without writing. Returns `None` if full.
     ///
-    /// The returned [`ByteClaim`] can be written to with `.write(value)`
+    /// The returned [`super::ByteClaim`] can be written to with `.write(value)`
     /// or `.write_raw(src, size)`. If dropped without writing, the slot
     /// is returned to the freelist.
     #[inline]
@@ -116,9 +103,7 @@ impl<const N: usize> Slab<N> {
         let ptr = claim.into_ptr().cast::<u8>();
         let slab_ptr = std::ptr::from_ref(&self.inner).cast::<u8>();
         // SAFETY: ptr is a valid vacant slot. Bounded = single chunk (idx 0).
-        Some(unsafe {
-            super::ByteClaim::from_raw_parts(ptr, slab_ptr, free_raw_impl::<N>, 0, N)
-        })
+        Some(unsafe { super::ByteClaim::from_raw_parts(ptr, slab_ptr, free_raw_impl::<N>, 0, N) })
     }
 
     /// Reserve a slot without writing. Panics if full.
@@ -153,7 +138,9 @@ impl<const N: usize> Slab<N> {
     #[inline]
     pub unsafe fn alloc_raw(&self, src: *const u8, size: usize) -> *mut u8 {
         assert!(size <= N, "raw alloc size {size} exceeds slot size {N}");
-        let slot_ptr = self.inner.claim_ptr()
+        let slot_ptr = self
+            .inner
+            .claim_ptr()
             .unwrap_or_else(|| panic!("byte slab full"));
         let dst = slot_ptr.cast::<u8>();
         // SAFETY: caller guarantees src has `size` valid bytes.
@@ -218,9 +205,7 @@ impl<const N: usize> Slab<N> {
 /// - `slab_ptr` must point to a live `crate::bounded::Slab<AlignedBytes<N>>`.
 /// - `slot_ptr` must point to a slot within that slab.
 unsafe fn free_raw_impl<const N: usize>(slab_ptr: *const u8, slot_ptr: *mut u8, _chunk_idx: usize) {
-    let slab = unsafe {
-        &*(slab_ptr as *const crate::bounded::Slab<super::AlignedBytes<N>>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const crate::bounded::Slab<super::AlignedBytes<N>>) };
     // SAFETY: Bounded slab has one chunk — chunk_idx is ignored.
     // free_ptr returns the slot to the freelist. For vacant slots
     // (ByteClaim abandoned without writing), no value needs dropping.
@@ -341,10 +326,7 @@ mod tests {
         let claim = slab.claim();
         let val: u64 = 99;
         let ptr = unsafe {
-            claim.write_raw(
-                &val as *const u64 as *const u8,
-                core::mem::size_of::<u64>(),
-            )
+            claim.write_raw(&val as *const u64 as *const u8, core::mem::size_of::<u64>())
         };
         assert_eq!(unsafe { *(ptr as *const u64) }, 99);
         let slot = unsafe { super::Slot::<u64>::from_raw(ptr) };

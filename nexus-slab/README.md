@@ -212,18 +212,18 @@ union SlotCell<T> {
 No tag, no metadata. Writing a value overwrites the freelist pointer.
 The `Slot` handle is the proof of occupancy.
 
-### Const Construction (thread_local!)
+### Unbounded Builder
 
 ```rust
-use nexus_slab::bounded::Slab;
+use nexus_slab::unbounded::Builder;
 
-thread_local! {
-    // SAFETY: one slab per type per thread
-    static ORDERS: Slab<Order> = const { unsafe { Slab::new() } };
-}
-
-// Initialize at runtime
-ORDERS.with(|s| unsafe { s.init(1024) });
+// SAFETY: caller guarantees slab contract
+let slab = unsafe {
+    Builder::new()
+        .chunk_capacity(4096)
+        .initial_chunks(4)
+        .build::<Order>()
+};
 ```
 
 ## Features
