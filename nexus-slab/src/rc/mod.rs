@@ -215,7 +215,7 @@ impl<T> RcCell<T> {
 ///
 /// 8 bytes (one pointer).
 pub struct RcSlot<T> {
-    /// Points to the RcCell<T> inside a SlotCell<RcCell<T>>.
+    /// Points to the `RcCell<T>` inside a `SlotCell<RcCell<T>>`.
     ptr: *mut RcCell<T>,
     _marker: PhantomData<T>,
 }
@@ -290,7 +290,7 @@ impl<T> RcSlot<T> {
     ///
     /// # Safety
     ///
-    /// Same as [`value_ptr`], plus: the caller must ensure exclusive access
+    /// Same as [`Self::value_ptr`], plus: the caller must ensure exclusive access
     /// (no other pointers or guards are reading/writing the value).
     #[inline]
     pub unsafe fn value_ptr_mut(&self) -> *mut T {

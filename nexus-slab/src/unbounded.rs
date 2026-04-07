@@ -133,29 +133,26 @@ struct ChunkEntry<T> {
 ///
 /// Uses independent chunks for growth — no copying when the slab grows.
 ///
-/// Construction is `unsafe` — by creating a slab, you accept the contract:
+/// # Safety Contract
 ///
+/// Construction is `unsafe` because it opts you into manual memory
+/// management. By creating a slab, you accept these invariants:
+///
+/// - **Free from the correct slab.** Passing a [`Slot`] to a different
+///   slab's `free()` is undefined behavior — it corrupts the freelist.
+///   In debug builds, this is caught by `debug_assert!`.
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
-///   values in occupied slots. Unfree'd slots leak silently.
-/// - **Free from the same slab.** Passing a [`Slot`] to a different
-///   slab's `free()` corrupts the freelist.
-/// - **Don't share across threads.** The slab is `!Send` and `!Sync`.
+///   values in occupied slots. Unfreed slots leak silently.
+/// - **Single-threaded.** The slab is `!Send` and `!Sync`.
 ///
-/// # Const Construction
+/// ## Why `free()` is safe
 ///
-/// ```no_run
-/// use nexus_slab::unbounded::Slab;
-///
-/// struct MyType(u64);
-///
-/// // SAFETY: single slab per type, freed before thread exit
-/// thread_local! {
-///     static SLAB: Slab<MyType> = const { unsafe { Slab::new() } };
-/// }
-/// SLAB.with(|s| unsafe { s.init(4096) });
-/// ```
-///
-/// For direct usage, prefer [`with_chunk_capacity()`](Self::with_chunk_capacity).
+/// The safety contract is accepted once, at construction. After that:
+/// - [`Slot`] is move-only (no `Copy`, no `Clone`) — double-free is
+///   prevented by the type system.
+/// - `free()` consumes the `Slot` — the handle cannot be used after.
+/// - Cross-slab misuse is the only remaining hazard, and it was
+///   accepted as the caller's responsibility at construction time.
 pub struct Slab<T> {
     chunks: core::cell::UnsafeCell<Vec<ChunkEntry<T>>>,
     chunk_capacity: Cell<usize>,
@@ -163,82 +160,21 @@ pub struct Slab<T> {
 }
 
 impl<T> Slab<T> {
-    /// Creates an empty, uninitialized slab.
-    ///
-    /// This is a const function that performs no allocation. Call [`init()`](Self::init)
-    /// to configure chunk capacity before use.
-    ///
-    /// For direct usage, prefer [`with_chunk_capacity()`](Self::with_chunk_capacity).
-    ///
-    /// # Safety
-    ///
-    /// See [struct-level safety contract](Self).
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use nexus_slab::unbounded::Slab;
-    ///
-    /// // SAFETY: single slab per type, freed before thread exit
-    /// thread_local! {
-    ///     static SLAB: Slab<u64> = const { unsafe { Slab::new() } };
-    /// }
-    /// ```
-    #[inline]
-    pub const unsafe fn new() -> Self {
-        Self {
-            chunks: core::cell::UnsafeCell::new(Vec::new()),
-            chunk_capacity: Cell::new(0),
-            head_with_space: Cell::new(CHUNK_NONE),
-        }
-    }
-
     /// Creates a new slab with the given chunk capacity.
     ///
     /// Chunks are allocated on-demand when slots are requested.
     ///
-    /// # Panics
-    ///
     /// # Safety
     ///
     /// See [struct-level safety contract](Self).
     ///
     /// # Panics
     ///
-    /// Panics if chunk_capacity is zero.
+    /// Panics if `chunk_capacity` is zero.
     #[inline]
     pub unsafe fn with_chunk_capacity(chunk_capacity: usize) -> Self {
         // SAFETY: caller upholds the slab contract
-        let slab = unsafe { Self::new() };
-        // SAFETY: caller upholds the slab contract
-        unsafe { slab.init(chunk_capacity) };
-        slab
-    }
-
-    /// Initializes the slab with the given chunk capacity.
-    ///
-    /// This configures the chunk parameters. Chunks are allocated on-demand
-    /// when slots are requested. Must be called exactly once before any allocations.
-    ///
-    /// # Safety
-    ///
-    /// See [struct-level safety contract](Self).
-    ///
-    /// # Panics
-    ///
-    /// - Panics if the slab is already initialized (chunk_capacity > 0)
-    /// - Panics if chunk_capacity is zero
-    pub unsafe fn init(&self, chunk_capacity: usize) {
-        assert!(self.chunk_capacity.get() == 0, "Slab already initialized");
-        assert!(chunk_capacity > 0, "chunk_capacity must be non-zero");
-
-        self.chunk_capacity.set(chunk_capacity);
-    }
-
-    /// Returns true if the slab has been initialized.
-    #[inline]
-    pub fn is_initialized(&self) -> bool {
-        self.chunk_capacity.get() > 0
+        unsafe { Builder::new().chunk_capacity(chunk_capacity).build() }
     }
 
     /// Returns the total capacity across all chunks.
@@ -462,11 +398,7 @@ impl<T> Slab<T> {
     /// - `slot_ptr` must point to a slot within chunk `chunk_idx`
     /// - Value must already be dropped or moved out
     #[doc(hidden)]
-    pub(crate) unsafe fn free_ptr_in_chunk(
-        &self,
-        slot_ptr: *mut SlotCell<T>,
-        chunk_idx: usize,
-    ) {
+    pub(crate) unsafe fn free_ptr_in_chunk(&self, slot_ptr: *mut SlotCell<T>, chunk_idx: usize) {
         let chunk = self.chunk(chunk_idx);
         let chunk_slab = &*chunk.inner;
 
@@ -523,6 +455,110 @@ impl<T> Slab<T> {
         }
 
         unreachable!("free_ptr: slot_ptr not found in any chunk");
+    }
+}
+
+// =============================================================================
+// Builder
+// =============================================================================
+
+/// Builder for [`Slab`].
+///
+/// Configures chunk capacity and optional pre-allocation before constructing
+/// the slab. The type parameter only appears at the terminal [`build()`](Self::build)
+/// call.
+///
+/// # Example
+///
+/// ```
+/// use nexus_slab::unbounded::Builder;
+///
+/// // SAFETY: caller guarantees slab contract (see Slab docs)
+/// let slab = unsafe {
+///     Builder::new()
+///         .chunk_capacity(4096)
+///         .initial_chunks(4)
+///         .build::<u64>()
+/// };
+/// let slot = slab.alloc(42);
+/// assert_eq!(*slot, 42);
+/// slab.free(slot);
+/// ```
+pub struct Builder {
+    chunk_capacity: usize,
+    initial_chunks: usize,
+}
+
+impl Builder {
+    /// Creates a new builder with default settings.
+    ///
+    /// Defaults: `chunk_capacity = 256`, `initial_chunks = 0` (lazy growth).
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            chunk_capacity: 256,
+            initial_chunks: 0,
+        }
+    }
+
+    /// Sets the capacity of each chunk.
+    ///
+    /// # Panics
+    ///
+    /// Panics at [`build()`](Self::build) if zero.
+    #[inline]
+    pub fn chunk_capacity(mut self, cap: usize) -> Self {
+        self.chunk_capacity = cap;
+        self
+    }
+
+    /// Sets the number of chunks to pre-allocate.
+    ///
+    /// Default is 0 (lazy growth — chunks allocated on first use).
+    #[inline]
+    pub fn initial_chunks(mut self, n: usize) -> Self {
+        self.initial_chunks = n;
+        self
+    }
+
+    /// Builds the slab.
+    ///
+    /// # Safety
+    ///
+    /// See [`Slab`] safety contract.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `chunk_capacity` is zero.
+    #[inline]
+    pub unsafe fn build<T>(self) -> Slab<T> {
+        assert!(self.chunk_capacity > 0, "chunk_capacity must be non-zero");
+
+        let slab = Slab {
+            chunks: core::cell::UnsafeCell::new(Vec::new()),
+            chunk_capacity: Cell::new(self.chunk_capacity),
+            head_with_space: Cell::new(CHUNK_NONE),
+        };
+
+        for _ in 0..self.initial_chunks {
+            slab.grow();
+        }
+        slab
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for Builder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Builder")
+            .field("chunk_capacity", &self.chunk_capacity)
+            .field("initial_chunks", &self.initial_chunks)
+            .finish()
     }
 }
 
@@ -625,5 +661,48 @@ mod tests {
         assert_eq!(*slot, 100);
 
         slab.free(slot);
+    }
+
+    // =========================================================================
+    // Builder tests
+    // =========================================================================
+
+    #[test]
+    fn builder_defaults() {
+        let slab = unsafe { Builder::new().build::<u64>() };
+        assert_eq!(slab.chunk_capacity(), 256);
+        assert_eq!(slab.chunk_count(), 0);
+
+        let slot = slab.alloc(42);
+        assert_eq!(*slot, 42);
+        slab.free(slot);
+    }
+
+    #[test]
+    fn builder_custom_chunk_capacity() {
+        let slab = unsafe { Builder::new().chunk_capacity(64).build::<u64>() };
+        assert_eq!(slab.chunk_capacity(), 64);
+
+        let slot = slab.alloc(1);
+        assert_eq!(slab.capacity(), 64);
+        slab.free(slot);
+    }
+
+    #[test]
+    fn builder_initial_chunks() {
+        let slab = unsafe {
+            Builder::new()
+                .chunk_capacity(32)
+                .initial_chunks(4)
+                .build::<u64>()
+        };
+        assert_eq!(slab.chunk_count(), 4);
+        assert_eq!(slab.capacity(), 128);
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk_capacity must be non-zero")]
+    fn builder_zero_chunk_capacity_panics() {
+        let _slab = unsafe { Builder::new().chunk_capacity(0).build::<u64>() };
     }
 }

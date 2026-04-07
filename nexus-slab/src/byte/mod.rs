@@ -232,7 +232,14 @@ impl ByteClaim<'_> {
         chunk_idx: usize,
         slot_size: usize,
     ) -> Self {
-        Self { ptr, slab_ptr, free, chunk_idx, slot_size, _borrow: core::marker::PhantomData }
+        Self {
+            ptr,
+            slab_ptr,
+            free,
+            chunk_idx,
+            slot_size,
+            _borrow: core::marker::PhantomData,
+        }
     }
 
     /// Write a typed value into the slot. Consumes the claim.
@@ -303,7 +310,6 @@ impl ByteClaim<'_> {
     pub fn chunk_idx(&self) -> usize {
         self.chunk_idx
     }
-
 }
 
 impl Drop for ByteClaim<'_> {

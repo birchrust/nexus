@@ -98,79 +98,39 @@ impl<T> Drop for Claim<'_, T> {
 
 /// Fixed-capacity slab allocator for manual memory management.
 ///
-/// Construction is `unsafe` — by creating a slab, you accept the contract:
-///
-/// - **Free everything you allocate.** Dropping the slab does NOT drop
-///   values in occupied slots. Unfree'd slots leak silently.
-/// - **Free from the same slab.** Passing a [`Slot`] to a different
-///   slab's `free()` corrupts the freelist.
-/// - **Don't share across threads.** The slab is `!Send` and `!Sync`.
-///
-/// In practice, most systems have one slab per type in `thread_local!`
-/// storage. Cross-slab free is a programming error caught by `debug_assert`.
-///
 /// Uses pointer-based freelist for O(1) allocation. ~20-24 cycle operations.
 ///
-/// # Const Construction
+/// # Safety Contract
 ///
-/// Supports const construction via [`new()`](Self::new) followed by
-/// runtime initialization via [`init()`](Self::init). This enables use with
-/// `thread_local!` using the `const { }` block syntax for zero-overhead TLS access.
+/// Construction is `unsafe` because it opts you into manual memory
+/// management. By creating a slab, you accept these invariants:
 ///
-/// ```no_run
-/// use nexus_slab::bounded::Slab;
+/// - **Free from the correct slab.** Passing a [`Slot`] to a different
+///   slab's `free()` is undefined behavior — it corrupts the freelist.
+///   In debug builds, this is caught by `debug_assert!`.
+/// - **Free everything you allocate.** Dropping the slab does NOT drop
+///   values in occupied slots. Unfreed slots leak silently.
+/// - **Single-threaded.** The slab is `!Send` and `!Sync`.
 ///
-/// struct MyType(u64);
+/// ## Why `free()` is safe
 ///
-/// // SAFETY: single slab per type, freed before thread exit
-/// thread_local! {
-///     static SLAB: Slab<MyType> = const { unsafe { Slab::new() } };
-/// }
-///
-/// // Later, at runtime:
-/// SLAB.with(|s| unsafe { s.init(1024) });
-/// ```
-///
-/// For direct usage, prefer [`with_capacity()`](Self::with_capacity).
+/// The safety contract is accepted once, at construction. After that:
+/// - [`Slot`] is move-only (no `Copy`, no `Clone`) — double-free is
+///   prevented by the type system.
+/// - `free()` consumes the `Slot` — the handle cannot be used after.
+/// - Cross-slab misuse is the only remaining hazard, and it was
+///   accepted as the caller's responsibility at construction time.
 pub struct Slab<T> {
     /// Slot storage. Wrapped in UnsafeCell for interior mutability.
     slots: core::cell::UnsafeCell<Vec<SlotCell<T>>>,
-    /// Capacity. Wrapped in Cell so it can be set during init.
-    capacity: Cell<usize>,
-    /// Head of freelist - raw pointer for fast allocation.
-    /// NULL when slab is full or uninitialized.
+    /// Fixed capacity, set at construction.
+    capacity: usize,
+    /// Head of freelist — raw pointer for fast allocation.
+    /// NULL when the slab is full.
     pub(crate) free_head: Cell<*mut SlotCell<T>>,
 }
 
 impl<T> Slab<T> {
-    /// Creates an empty, uninitialized slab.
-    ///
-    /// This is a const function that performs no allocation. Call [`init()`](Self::init)
-    /// to allocate storage before use.
-    ///
-    /// # Safety
-    ///
-    /// See [struct-level safety contract](Self).
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use nexus_slab::bounded::Slab;
-    ///
-    /// // SAFETY: single slab per type, freed before thread exit
-    /// thread_local! {
-    ///     static SLAB: Slab<u64> = const { unsafe { Slab::new() } };
-    /// }
-    /// ```
-    #[inline]
-    pub const unsafe fn new() -> Self {
-        Self {
-            slots: core::cell::UnsafeCell::new(Vec::new()),
-            capacity: Cell::new(0),
-            free_head: Cell::new(ptr::null_mut()),
-        }
-    }
-
     /// Creates a new slab with the given capacity.
     ///
     /// # Safety
@@ -182,36 +142,9 @@ impl<T> Slab<T> {
     /// Panics if capacity is zero.
     #[inline]
     pub unsafe fn with_capacity(capacity: usize) -> Self {
-        // SAFETY: caller upholds the slab contract
-        let slab = unsafe { Self::new() };
-        // SAFETY: caller upholds the slab contract
-        unsafe { slab.init(capacity) };
-        slab
-    }
-
-    /// Initializes the slab with the given capacity.
-    ///
-    /// This allocates slot storage and builds the freelist. Must be called
-    /// exactly once before any allocations.
-    ///
-    /// # Safety
-    ///
-    /// See [struct-level safety contract](Self).
-    ///
-    /// # Panics
-    ///
-    /// - Panics if the slab is already initialized (capacity > 0)
-    /// - Panics if capacity is zero
-    pub unsafe fn init(&self, capacity: usize) {
-        assert!(self.capacity.get() == 0, "Slab already initialized");
         assert!(capacity > 0, "capacity must be non-zero");
 
-        // SAFETY: We have &self and verified capacity == 0, so no other code
-        // can be accessing slots. This is the only mutation point.
-        let slots = unsafe { &mut *self.slots.get() };
-
-        // Allocate slots — all initially vacant
-        slots.reserve_exact(capacity);
+        let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             slots.push(SlotCell::vacant(ptr::null_mut()));
         }
@@ -225,20 +158,18 @@ impl<T> Slab<T> {
         // Last slot points to NULL (end of freelist) — already null from vacant()
 
         let free_head = slots.as_mut_ptr();
-        self.capacity.set(capacity);
-        self.free_head.set(free_head);
-    }
 
-    /// Returns true if the slab has been initialized.
-    #[inline]
-    pub fn is_initialized(&self) -> bool {
-        self.capacity.get() > 0
+        Self {
+            slots: core::cell::UnsafeCell::new(slots),
+            capacity,
+            free_head: Cell::new(free_head),
+        }
     }
 
     /// Returns the capacity.
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.capacity.get()
+        self.capacity
     }
 
     /// Returns the base pointer to the slots array.
@@ -256,7 +187,7 @@ impl<T> Slab<T> {
     #[inline]
     pub fn contains_ptr(&self, ptr: *const ()) -> bool {
         let base = self.slots_ptr() as usize;
-        let end = base + self.capacity.get() * core::mem::size_of::<SlotCell<T>>();
+        let end = base + self.capacity * core::mem::size_of::<SlotCell<T>>();
         let addr = ptr as usize;
         addr >= base && addr < end
     }
@@ -410,7 +341,7 @@ impl<T> Slab<T> {
 impl<T> fmt::Debug for Slab<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Slab")
-            .field("capacity", &self.capacity.get())
+            .field("capacity", &self.capacity)
             .finish()
     }
 }

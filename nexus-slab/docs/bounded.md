@@ -63,5 +63,4 @@ Both are `unsafe` because the caller must guarantee:
 
 ```rust
 assert_eq!(slab.capacity(), 1024);
-assert!(slab.is_initialized());
 ```
