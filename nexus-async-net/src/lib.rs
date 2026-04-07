@@ -8,16 +8,16 @@
 //! Exactly one async runtime must be enabled (mutually exclusive):
 //!
 //! - **`tokio-rt`** (default) — tokio-based adapters for WebSocket and REST.
-//! - **`nexus-rt`** — nexus-async-rt-based adapters (single-threaded, pre-allocated).
+//! - **`nexus`** — nexus-async-rt-based adapters (single-threaded, pre-allocated).
 //!
 //! # Modules
 //!
 //! - [`ws`] — Async WebSocket (wraps FrameReader/FrameWriter) — `tokio-rt` only
 //! - [`rest`] — Async HTTP REST client (wraps RequestWriter/ResponseReader)
 
-#[cfg(all(feature = "tokio-rt", feature = "nexus-rt"))]
+#[cfg(all(feature = "tokio-rt", feature = "nexus"))]
 compile_error!(
-    "features `tokio-rt` and `nexus-rt` are mutually exclusive — pick one async runtime"
+    "features `tokio-rt` and `nexus` are mutually exclusive — pick one async runtime"
 );
 
 pub(crate) mod maybe_tls;
