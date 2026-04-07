@@ -1,15 +1,15 @@
 # Bounded Slab
 
-Fixed-capacity slab. Allocates once at init, never grows. Zero allocation
-jitter after setup.
+Fixed-capacity slab. Allocates once at construction, never grows. Zero
+allocation jitter after setup.
 
 ## Construction
 
 ```rust
 use nexus_slab::bounded;
 
-// Pre-allocate 1024 slots
-let slab = bounded::Slab::<MyType>::with_capacity(1024);
+// SAFETY: caller upholds the slab contract (see struct docs)
+let slab = unsafe { bounded::Slab::<MyType>::with_capacity(1024) };
 ```
 
 All 1024 slots are allocated upfront. No further heap allocation ever.
@@ -27,8 +27,8 @@ match slab.try_alloc(MyType::new()) {
 }
 ```
 
-`alloc` returns a `RawSlot<T>` — a raw pointer wrapper. You must free it
-explicitly or convert to a `BoxSlot` for RAII.
+`alloc` returns a `Slot<T>` — a move-only pointer handle. You must free
+it explicitly via `slab.free(slot)`.
 
 ## Two-Phase Allocation (Claim)
 
@@ -49,15 +49,15 @@ without calling `write()`, the slot is returned to the freelist.
 
 ```rust
 // Free — drops the value and returns the slot to the freelist
-unsafe { slab.free(slot); }
+slab.free(slot);
 
 // Take — moves the value out and returns the slot to the freelist
-let value = unsafe { slab.take(slot); }
+let value = slab.take(slot);
 ```
 
-Both are `unsafe` because the caller must guarantee:
-- The slot was allocated from this slab
-- No references to the slot's value exist
+`free()` and `take()` are safe — the safety contract was accepted at
+construction time. `Slot` is move-only and consumed on free, preventing
+double-free at the type level.
 
 ## Capacity
 

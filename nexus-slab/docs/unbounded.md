@@ -8,12 +8,18 @@ handles remain valid when new chunks are added.
 ```rust
 use nexus_slab::unbounded;
 
-// Start with chunks of 1024 slots each
-let slab = unbounded::Slab::<MyType>::with_chunk_capacity(1024);
+// SAFETY: caller upholds the slab contract (see struct docs)
 
-// Pre-allocate multiple chunks upfront
-let slab = unbounded::Slab::<MyType>::with_chunk_capacity(1024);
-slab.reserve_chunks(4);  // 4 × 1024 = 4096 slots ready
+// Direct — start with chunks of 1024 slots each
+let slab = unsafe { unbounded::Slab::<MyType>::with_chunk_capacity(1024) };
+
+// Builder — configure chunk size and pre-allocate
+let slab = unsafe {
+    unbounded::Builder::new()
+        .chunk_capacity(1024)
+        .initial_chunks(4)   // 4 × 1024 = 4096 slots ready
+        .build::<MyType>()
+};
 ```
 
 ## Allocation
@@ -46,19 +52,17 @@ allocated, the chunk persists for the slab's lifetime.
 Same `claim()` API as bounded:
 
 ```rust
-let (claim, chunk_idx) = slab.claim();
+let claim = slab.claim();
 let slot = claim.write(MyType::new());
 ```
 
-The unbounded claim also returns the chunk index.
-
 ## Deallocation
 
-Same as bounded:
+Same as bounded — safe, move-only handles:
 
 ```rust
-unsafe { slab.free(slot); }
-let value = unsafe { slab.take(slot); }
+slab.free(slot);
+let value = slab.take(slot);
 ```
 
 Freed slots are returned to their chunk's freelist.
@@ -66,7 +70,7 @@ Freed slots are returned to their chunk's freelist.
 ## Capacity
 
 ```rust
-slab.capacity();      // total slots across all chunks
-slab.chunk_count();   // number of allocated chunks
+slab.capacity();        // total slots across all chunks
+slab.chunk_count();     // number of allocated chunks
 slab.reserve_chunks(n); // ensure at least n chunks exist
 ```
