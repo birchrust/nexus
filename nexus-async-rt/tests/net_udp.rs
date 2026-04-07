@@ -42,7 +42,8 @@ fn udp_send_recv_basic() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+            let mut s =
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             s.send_to(b"hello udp", recv_addr).await.unwrap();
         });
 
@@ -114,7 +115,8 @@ fn udp_echo() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut c = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+            let mut c =
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             c.send_to(b"echo-me", server_addr).await.unwrap();
             let mut buf = [0u8; 64];
             let (n, _) = c.recv_from(&mut buf).await.unwrap();
@@ -155,7 +157,8 @@ fn udp_multiple_datagrams() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut c = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+            let mut c =
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             for i in 0..5u8 {
                 c.send_to(&[i; 4], recv_addr).await.unwrap();
                 nexus_async_rt::sleep(Duration::from_millis(20)).await;
@@ -280,7 +283,8 @@ fn udp_from_std() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+            let mut s =
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             s.send_to(b"from-std", addr).await.unwrap();
         });
 
@@ -331,7 +335,8 @@ fn udp_peek_from() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+            let mut s =
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             s.send_to(b"peek-data", recv_addr).await.unwrap();
         });
 
@@ -357,10 +362,7 @@ fn udp_multicast_loopback() {
     let recv_port = std_recv.local_addr().unwrap().port();
 
     if std_recv
-        .join_multicast_v4(
-            &"239.255.0.1".parse().unwrap(),
-            &"0.0.0.0".parse().unwrap(),
-        )
+        .join_multicast_v4(&"239.255.0.1".parse().unwrap(), &"0.0.0.0".parse().unwrap())
         .is_err()
     {
         println!("multicast join failed — skipping test");
@@ -384,7 +386,8 @@ fn udp_multicast_loopback() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(50)).await;
-            let mut s = UdpSocket::bind("0.0.0.0:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+            let mut s =
+                UdpSocket::bind("0.0.0.0:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
             let target: std::net::SocketAddr = format!("239.255.0.1:{recv_port}").parse().unwrap();
             s.send_to(b"mcast", target).await.unwrap();
         });

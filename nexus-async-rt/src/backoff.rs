@@ -132,7 +132,8 @@ impl Backoff {
 
     /// Time remaining until deadline, if one is set.
     pub fn remaining(&self) -> Option<Duration> {
-        self.deadline.map(|d| d.saturating_duration_since(Instant::now()))
+        self.deadline
+            .map(|d| d.saturating_duration_since(Instant::now()))
     }
 
     /// Reset delay and retry count to initial state.

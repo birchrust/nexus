@@ -161,7 +161,8 @@ impl<T> Producer<T> {
         let tail = self.local_tail.get();
 
         if tail.wrapping_sub(self.cached_head.get()) > self.mask {
-            self.cached_head.set(self.shared.head.load(Ordering::Relaxed));
+            self.cached_head
+                .set(self.shared.head.load(Ordering::Relaxed));
 
             std::sync::atomic::fence(Ordering::Acquire);
             if tail.wrapping_sub(self.cached_head.get()) > self.mask {
@@ -230,7 +231,8 @@ impl<T> Consumer<T> {
         let head = self.local_head.get();
 
         if head == self.cached_tail.get() {
-            self.cached_tail.set(self.shared.tail.load(Ordering::Relaxed));
+            self.cached_tail
+                .set(self.shared.tail.load(Ordering::Relaxed));
             std::sync::atomic::fence(Ordering::Acquire);
 
             if head == self.cached_tail.get() {

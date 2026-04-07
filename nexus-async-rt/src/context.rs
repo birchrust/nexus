@@ -99,14 +99,17 @@ pub(crate) fn assert_in_runtime(msg: &str) {
 /// Access the [`World`](nexus_rt::World) with exclusive access.
 ///
 /// Runs the closure synchronously inline. Must be called from within
-/// [`Runtime::block_on`].
+/// [`crate::Runtime::block_on`].
 ///
 /// # Panics
 ///
 /// Panics if called outside a runtime context.
 pub fn with_world<R>(f: impl FnOnce(&mut nexus_rt::World) -> R) -> R {
     let ptr = CTX_WORLD.with(Cell::get);
-    assert!(!ptr.is_null(), "with_world() called outside Runtime::block_on");
+    assert!(
+        !ptr.is_null(),
+        "with_world() called outside Runtime::block_on"
+    );
     // SAFETY: ptr set by install(), valid for Runtime lifetime.
     // Single-threaded — exclusive access.
     let world = unsafe { &mut *ptr };
@@ -120,7 +123,10 @@ pub fn with_world<R>(f: impl FnOnce(&mut nexus_rt::World) -> R) -> R {
 /// Panics if called outside a runtime context.
 pub fn with_world_ref<R>(f: impl FnOnce(&nexus_rt::World) -> R) -> R {
     let ptr = CTX_WORLD.with(Cell::get);
-    assert!(!ptr.is_null(), "with_world_ref() called outside Runtime::block_on");
+    assert!(
+        !ptr.is_null(),
+        "with_world_ref() called outside Runtime::block_on"
+    );
     let world = unsafe { &*ptr };
     f(world)
 }
@@ -153,7 +159,10 @@ pub fn sleep(duration: Duration) -> crate::Sleep {
 /// Create a [`Sleep`](crate::Sleep) future that completes at `deadline`.
 pub fn sleep_until(deadline: Instant) -> crate::Sleep {
     let ptr = CTX_TIMER.with(Cell::get);
-    assert!(!ptr.is_null(), "sleep_until() called outside Runtime::block_on");
+    assert!(
+        !ptr.is_null(),
+        "sleep_until() called outside Runtime::block_on"
+    );
     let handle = TimerHandle::new(unsafe { &mut *ptr });
     handle.sleep_until(deadline)
 }
@@ -164,7 +173,10 @@ pub fn sleep_until(deadline: Instant) -> crate::Sleep {
 /// One clock read per cycle, not per event.
 pub fn event_time() -> Instant {
     let ptr = CTX_EVENT_TIME.with(Cell::get);
-    assert!(!ptr.is_null(), "event_time() called outside Runtime::block_on");
+    assert!(
+        !ptr.is_null(),
+        "event_time() called outside Runtime::block_on"
+    );
     // SAFETY: ptr valid for Runtime lifetime.
     unsafe { &*ptr }.get()
 }
@@ -175,10 +187,7 @@ pub fn event_time() -> Instant {
 /// # Panics
 ///
 /// Panics if called outside a runtime context.
-pub fn timeout<F: std::future::Future>(
-    duration: Duration,
-    future: F,
-) -> crate::timer::Timeout<F> {
+pub fn timeout<F: std::future::Future>(duration: Duration, future: F) -> crate::timer::Timeout<F> {
     crate::timer::Timeout::new(future, sleep(duration))
 }
 
@@ -255,6 +264,9 @@ pub fn yield_now() -> crate::timer::YieldNow {
 /// Returns a future that resolves when shutdown is triggered.
 pub fn shutdown_signal() -> crate::ShutdownSignal {
     let ptr = CTX_SHUTDOWN.with(Cell::get);
-    assert!(!ptr.is_null(), "shutdown_signal() called outside Runtime::block_on");
+    assert!(
+        !ptr.is_null(),
+        "shutdown_signal() called outside Runtime::block_on"
+    );
     crate::ShutdownSignal { flag: ptr }
 }

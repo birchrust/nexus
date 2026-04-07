@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_async_rt::{DefaultBoundedAlloc, Executor};
 use std::future::Future;
 use std::pin::Pin;
@@ -8,7 +8,9 @@ fn spawn_poll_immediate(c: &mut Criterion) {
     let mut executor = Executor::new(DefaultBoundedAlloc::new(64), 64);
     c.bench_function("spawn+poll immediate", |b| {
         b.iter(|| {
-            executor.spawn(async { black_box(42u64); });
+            executor.spawn(async {
+                black_box(42u64);
+            });
             executor.poll();
         });
     });

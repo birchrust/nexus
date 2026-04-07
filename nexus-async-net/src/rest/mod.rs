@@ -1,11 +1,11 @@
 //! Async HTTP REST client — adapts nexus-net for async runtimes.
 
-#[cfg(feature = "tokio-rt")]
-mod tokio;
 #[cfg(feature = "nexus-rt")]
 mod nexus;
-
 #[cfg(feature = "tokio-rt")]
-pub use self::tokio::*;
+mod tokio;
+
 #[cfg(feature = "nexus-rt")]
 pub use self::nexus::*;
+#[cfg(feature = "tokio-rt")]
+pub use self::tokio::*;

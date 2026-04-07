@@ -4,8 +4,8 @@ use nexus_net::buf::WriteBuf;
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{
-    CloseCode, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError, Message, Role,
-    Error as WsError, parse_ws_url,
+    CloseCode, Error as WsError, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError,
+    Message, Role, parse_ws_url,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -180,8 +180,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         let host_header = parsed.host_header();
 
         let key = nexus_net::ws::handshake::generate_key();
-        let key_str = std::str::from_utf8(&key)
-            .expect("base64-encoded key is always valid ASCII/UTF-8");
+        let key_str =
+            std::str::from_utf8(&key).expect("base64-encoded key is always valid ASCII/UTF-8");
 
         let headers: [(&str, &str); 5] = [
             ("Host", &host_header),

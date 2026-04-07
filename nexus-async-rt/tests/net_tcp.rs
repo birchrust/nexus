@@ -23,7 +23,8 @@ fn tcp_echo_basic() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -58,7 +59,8 @@ fn tcp_multiple_clients() {
     let count2 = count.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -104,7 +106,8 @@ fn tcp_large_transfer() {
     let expected = data.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -113,7 +116,9 @@ fn tcp_large_transfer() {
             let mut buf = [0u8; 8192];
             loop {
                 let n = s.read(&mut buf).await.unwrap();
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 received.extend_from_slice(&buf[..n]);
             }
             assert_eq!(received.len(), expected.len());
@@ -146,7 +151,8 @@ fn tcp_split_borrowed() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -154,8 +160,12 @@ fn tcp_split_borrowed() {
             let (mut rd, mut wr) = s.split();
             let mut buf = [0u8; 64];
             use nexus_async_rt::{AsyncRead, AsyncWrite};
-            let n = std::future::poll_fn(|cx| std::pin::Pin::new(&mut rd).poll_read(cx, &mut buf)).await.unwrap();
-            std::future::poll_fn(|cx| std::pin::Pin::new(&mut wr).poll_write(cx, &buf[..n])).await.unwrap();
+            let n = std::future::poll_fn(|cx| std::pin::Pin::new(&mut rd).poll_read(cx, &mut buf))
+                .await
+                .unwrap();
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut wr).poll_write(cx, &buf[..n]))
+                .await
+                .unwrap();
         });
 
         spawn_boxed(async move {
@@ -181,7 +191,8 @@ fn tcp_into_split_reunite() {
     let mut rt = Runtime::new(&mut world);
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -212,7 +223,8 @@ fn tcp_socket_options_on_stream() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -296,7 +308,8 @@ fn tcp_try_read_write() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -369,7 +382,8 @@ fn tcp_into_std() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -435,7 +449,8 @@ fn tcp_read_after_peer_close() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let mut listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -469,7 +484,8 @@ fn tcp_listener_ttl() {
     let mut rt = Runtime::new(&mut world);
 
     rt.block_on(async {
-        let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
+        let listener =
+            TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
         listener.set_ttl(42).unwrap();
         assert_eq!(listener.ttl().unwrap(), 42);
     });

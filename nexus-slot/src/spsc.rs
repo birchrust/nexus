@@ -193,7 +193,7 @@ impl<T: Pod> Reader<T> {
     /// }
     /// ```
     ///
-    /// Zero overhead vs [`read()`] — the version is derived from the
+    /// Zero overhead vs [`Self::read()`] — the version is derived from the
     /// seqlock sequence that is already loaded during the read.
     #[inline]
     pub fn read_versioned(&mut self) -> Option<(T, u64)> {

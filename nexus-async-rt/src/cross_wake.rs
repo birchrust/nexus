@@ -13,8 +13,8 @@
 //! both on each poll cycle.
 
 use std::cell::{Cell, UnsafeCell};
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::task;
 
@@ -121,7 +121,6 @@ impl CrossWakeQueue {
             unsafe { task::cross_next(node) }
         }
     }
-
 }
 
 impl Drop for CrossWakeQueue {
@@ -238,10 +237,7 @@ unsafe impl Sync for CrossWakeContext {}
 ///
 /// `task_ptr` must point to a live task. `ctx` must be a valid
 /// `CrossWakeContext` (guaranteed by channel lifetime).
-pub(crate) unsafe fn wake_task_cross_thread(
-    task_ptr: *mut u8,
-    ctx: &CrossWakeContext,
-) {
+pub(crate) unsafe fn wake_task_cross_thread(task_ptr: *mut u8, ctx: &CrossWakeContext) {
     // Don't wake completed tasks.
     if unsafe { task::is_completed(task_ptr) } {
         return;

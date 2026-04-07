@@ -5,8 +5,8 @@
 //!
 //! Run: `cargo test -p nexus-async-rt --test channel_fuzz --release`
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use nexus_async_rt::Runtime;
 use nexus_rt::WorldBuilder;
@@ -258,11 +258,9 @@ fn mpsc_bytes_concurrent_random_sizes() {
             let sent = sent.clone();
             handles.push(std::thread::spawn(move || {
                 for i in 0..total_per_sender {
-                    let size = 1 + (pseudo_random_seeded(
-                        (sender_id as u64) * 10_000 + i as u64,
-                        1,
-                        100,
-                    ) as usize);
+                    let size = 1
+                        + (pseudo_random_seeded((sender_id as u64) * 10_000 + i as u64, 1, 100)
+                            as usize);
                     let data = vec![(sender_id as u8).wrapping_add(i as u8); size];
                     loop {
                         match tx.try_claim(size) {
@@ -382,7 +380,9 @@ fn pseudo_random_seeded(seed: u64, min: u64, max: u64) -> u64 {
 }
 
 /// Create MPSC channel without runtime context (for cross-thread tests).
-fn make_mpsc_channel<T: Send + 'static>(capacity: usize) -> (
+fn make_mpsc_channel<T: Send + 'static>(
+    capacity: usize,
+) -> (
     nexus_async_rt::channel::mpsc::Sender<T>,
     nexus_async_rt::channel::mpsc::Receiver<T>,
 ) {
@@ -406,7 +406,9 @@ fn make_mpsc_channel<T: Send + 'static>(capacity: usize) -> (
     result.take().unwrap()
 }
 
-fn make_spsc_channel<T: Send + 'static>(capacity: usize) -> (
+fn make_spsc_channel<T: Send + 'static>(
+    capacity: usize,
+) -> (
     nexus_async_rt::channel::spsc::Sender<T>,
     nexus_async_rt::channel::spsc::Receiver<T>,
 ) {
@@ -428,7 +430,9 @@ fn make_spsc_channel<T: Send + 'static>(capacity: usize) -> (
     result.take().unwrap()
 }
 
-fn make_spsc_bytes_channel(capacity: usize) -> (
+fn make_spsc_bytes_channel(
+    capacity: usize,
+) -> (
     nexus_async_rt::channel::spsc_bytes::Sender,
     nexus_async_rt::channel::spsc_bytes::Receiver,
 ) {
@@ -450,7 +454,9 @@ fn make_spsc_bytes_channel(capacity: usize) -> (
     result.take().unwrap()
 }
 
-fn make_mpsc_bytes_channel(capacity: usize) -> (
+fn make_mpsc_bytes_channel(
+    capacity: usize,
+) -> (
     nexus_async_rt::channel::mpsc_bytes::Sender,
     nexus_async_rt::channel::mpsc_bytes::Receiver,
 ) {

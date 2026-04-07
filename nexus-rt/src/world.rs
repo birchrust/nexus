@@ -609,9 +609,9 @@ impl WorldBuilder {
     /// [`ResourceId`] values remain valid for the lifetime of the
     /// returned [`World`].
     ///
-    /// When the `reactors` feature is enabled, [`ReactorNotify`](crate::ReactorNotify),
-    /// [`DeferredRemovals`](crate::DeferredRemovals), and
-    /// [`SourceRegistry`](crate::SourceRegistry) are automatically registered
+    /// When the `reactors` feature is enabled, `ReactorNotify`,
+    /// `DeferredRemovals`, and
+    /// `SourceRegistry` are automatically registered
     /// if not already present.
     #[allow(unused_mut)]
     pub fn build(mut self) -> World {

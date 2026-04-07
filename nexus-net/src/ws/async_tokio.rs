@@ -25,10 +25,7 @@ async fn read_async<S: AsyncRead + Unpin>(stream: &mut S, buf: &mut [u8]) -> io:
     stream.read(buf).await
 }
 
-async fn write_all_async<S: AsyncWrite + Unpin>(
-    stream: &mut S,
-    buf: &[u8],
-) -> io::Result<()> {
+async fn write_all_async<S: AsyncWrite + Unpin>(stream: &mut S, buf: &[u8]) -> io::Result<()> {
     stream.write_all(buf).await?;
     stream.flush().await
 }
@@ -580,17 +577,11 @@ mod tests {
                 )))
             }
 
-            fn poll_flush(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<io::Result<()>> {
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
                 Poll::Ready(Ok(()))
             }
 
-            fn poll_shutdown(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<io::Result<()>> {
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
                 Poll::Ready(Ok(()))
             }
         }

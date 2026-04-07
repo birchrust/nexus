@@ -73,9 +73,7 @@ impl<S: Read + Write> Write for MaybeTls<S> {
 // =============================================================================
 
 #[cfg(feature = "tokio")]
-impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRead
-    for MaybeTls<S>
-{
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRead for MaybeTls<S> {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

@@ -86,11 +86,7 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
 
     /// Construct a task with a custom free function (for slab allocation).
     #[inline]
-    pub(crate) fn new_with_free(
-        future: F,
-        tracker_key: u32,
-        free_fn: unsafe fn(*mut u8),
-    ) -> Self {
+    pub(crate) fn new_with_free(future: F, tracker_key: u32, free_fn: unsafe fn(*mut u8)) -> Self {
         Self {
             poll_fn: poll_fn::<F>,
             drop_fn: drop_fn::<F>,
@@ -242,7 +238,9 @@ pub(crate) unsafe fn set_queued(ptr: *mut u8, queued: bool) {
 pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
     // SAFETY: is_queued is AtomicU8 at offset 24.
     let queued = unsafe { &*ptr.add(24).cast::<AtomicU8>() };
-    queued.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+    queued
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
 }
 
 /// Poll the task's future.
@@ -269,8 +267,7 @@ pub(crate) unsafe fn poll_task(ptr: *mut u8, cx: &mut Context<'_>) -> Poll<()> {
 #[inline]
 pub(crate) unsafe fn drop_task_future(ptr: *mut u8) {
     // SAFETY: drop_fn is at offset 8 in repr(C) Task.
-    let drop_fn: unsafe fn(*mut u8) =
-        unsafe { *(ptr.add(8) as *const unsafe fn(*mut u8)) };
+    let drop_fn: unsafe fn(*mut u8) = unsafe { *(ptr.add(8) as *const unsafe fn(*mut u8)) };
     let future_ptr = unsafe { ptr.add(TASK_HEADER_SIZE) };
     unsafe { drop_fn(future_ptr) }
 }
@@ -284,8 +281,7 @@ pub(crate) unsafe fn drop_task_future(ptr: *mut u8) {
 #[inline]
 pub(crate) unsafe fn free_task(ptr: *mut u8) {
     // SAFETY: free_fn is at offset 16 in repr(C) Task.
-    let free_fn: unsafe fn(*mut u8) =
-        unsafe { *(ptr.add(16) as *const unsafe fn(*mut u8)) };
+    let free_fn: unsafe fn(*mut u8) = unsafe { *(ptr.add(16) as *const unsafe fn(*mut u8)) };
     unsafe { free_fn(ptr) }
 }
 
@@ -299,10 +295,7 @@ pub(crate) unsafe fn free_task(ptr: *mut u8) {
 ///
 /// `ptr` must point to a live `F` at the future offset within a Task.
 /// Address is stable (Box or slab guarantee) so Pin is sound.
-unsafe fn poll_fn<F: Future<Output = ()>>(
-    ptr: *mut u8,
-    cx: &mut Context<'_>,
-) -> Poll<()> {
+unsafe fn poll_fn<F: Future<Output = ()>>(ptr: *mut u8, cx: &mut Context<'_>) -> Poll<()> {
     let future = unsafe { Pin::new_unchecked(&mut *ptr.cast::<F>()) };
     future.poll(cx)
 }

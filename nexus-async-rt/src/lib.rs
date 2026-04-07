@@ -3,7 +3,7 @@
 //! Two spawn strategies:
 //! - **`spawn_boxed()`** — Box-allocated. Default. No setup needed.
 //! - **`spawn_slab()`** — Slab-allocated. Pre-allocated, zero-alloc
-//!   hot path. Requires slab configured via [`RuntimeBuilder::slab`].
+//!   hot path. Requires slab configured via [`RuntimeBuilder::slab_unbounded`] or [`RuntimeBuilder::slab_bounded`].
 //!
 //! ```ignore
 //! use nexus_async_rt::*;
@@ -35,44 +35,47 @@
 #![cfg(unix)]
 
 mod alloc;
-mod context;
-mod task;
-mod waker;
-mod world_ctx;
-mod io;
-pub mod net;
-mod timer;
-mod runtime;
-mod shutdown;
 mod backoff;
 mod cancel;
 pub mod channel;
+mod context;
 pub(crate) mod cross_wake;
+mod io;
+pub mod net;
+mod runtime;
+mod shutdown;
+mod task;
+mod timer;
 #[cfg(feature = "tokio-compat")]
 pub mod tokio_compat;
+mod waker;
+mod world_ctx;
 
 // Re-export slab type for convenience — users create the slab and hand it to the builder.
-pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
-pub use context::{after, after_delay, event_time, interval, interval_at, io, shutdown_signal, sleep, sleep_until, timeout, timeout_at, with_world, with_world_ref, yield_now};
-pub use task::{TaskId, TASK_HEADER_SIZE};
-pub use world_ctx::WorldCtx;
+pub use alloc::SlabClaim;
+pub use backoff::{Backoff, BackoffBuilder, Exhausted};
+pub use cancel::{CancellationToken, DropGuard};
+pub use context::{
+    after, after_delay, event_time, interval, interval_at, io, shutdown_signal, sleep, sleep_until,
+    timeout, timeout_at, with_world, with_world_ref, yield_now,
+};
 pub use io::IoHandle;
-pub use shutdown::{ShutdownHandle, ShutdownSignal};
 pub use net::{
     AsyncRead, AsyncWrite, OwnedReadHalf, OwnedWriteHalf, ReadHalf, TcpListener, TcpSocket,
     TcpStream, UdpSocket, WriteHalf,
 };
+pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
+pub use runtime::{Runtime, RuntimeBuilder, claim_slab, spawn_boxed, spawn_slab, try_claim_slab};
+pub use shutdown::{ShutdownHandle, ShutdownSignal};
+pub use task::{TASK_HEADER_SIZE, TaskId};
 pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHandle, YieldNow};
-pub use backoff::{Backoff, BackoffBuilder, Exhausted};
-pub use cancel::{CancellationToken, DropGuard};
-pub use alloc::SlabClaim;
-pub use runtime::{Runtime, RuntimeBuilder, spawn_boxed, spawn_slab, try_claim_slab, claim_slab};
+pub use world_ctx::WorldCtx;
 
 use std::future::Future;
 use std::task::Poll;
 
 use task::Task;
-use waker::{set_poll_context, ReusableWaker};
+use waker::{ReusableWaker, set_poll_context};
 
 /// Minimum slab slot size: 64 bytes (32 for task header + 32 for future).
 pub const MIN_SLOT_SIZE: usize = 64;

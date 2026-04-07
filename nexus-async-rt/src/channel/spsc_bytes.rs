@@ -27,8 +27,8 @@
 //! ```
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::task::{Poll, Waker};
 
 use std::ops::{Deref, DerefMut};
@@ -367,9 +367,7 @@ impl std::error::Error for RecvError {}
 ///
 /// - Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
 pub fn channel(capacity: usize) -> (Sender, Receiver) {
-    crate::context::assert_in_runtime(
-        "spsc_bytes::channel() called outside Runtime::block_on",
-    );
+    crate::context::assert_in_runtime("spsc_bytes::channel() called outside Runtime::block_on");
 
     let cross_ctx = crate::cross_wake::cross_wake_context()
         .expect("spsc_bytes::channel() requires runtime context");
@@ -387,7 +385,10 @@ pub fn channel(capacity: usize) -> (Sender, Receiver) {
     });
 
     (
-        Sender { producer, inner: inner.clone() },
+        Sender {
+            producer,
+            inner: inner.clone(),
+        },
         Receiver { consumer, inner },
     )
 }
@@ -569,9 +570,7 @@ mod tests {
 
     fn test_channel(capacity: usize) -> (Sender, Receiver) {
         let poll = mio::Poll::new().unwrap();
-        let mio_waker = Arc::new(
-            mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap(),
-        );
+        let mio_waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap());
         let cross_ctx = Arc::new(crate::cross_wake::CrossWakeContext {
             queue: crate::cross_wake::CrossWakeQueue::new(),
             mio_waker,
@@ -591,7 +590,10 @@ mod tests {
         });
 
         (
-            Sender { producer, inner: inner.clone() },
+            Sender {
+                producer,
+                inner: inner.clone(),
+            },
             Receiver { consumer, inner },
         )
     }

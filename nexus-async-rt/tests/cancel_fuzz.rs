@@ -4,8 +4,8 @@
 //!
 //! Run: `cargo test -p nexus-async-rt --test cancel_fuzz --release -- --ignored`
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nexus_async_rt::CancellationToken;
 

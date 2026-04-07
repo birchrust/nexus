@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_async_rt::channel::local;
 use nexus_async_rt::{Runtime, spawn_boxed};
 use nexus_rt::WorldBuilder;
@@ -77,9 +77,5 @@ fn async_send_recv_small_buffer(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    async_send_recv,
-    async_send_recv_small_buffer,
-);
+criterion_group!(benches, async_send_recv, async_send_recv_small_buffer,);
 criterion_main!(benches);

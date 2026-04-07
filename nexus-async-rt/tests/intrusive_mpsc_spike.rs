@@ -31,9 +31,9 @@ impl Node {
 
 /// Vyukov MPSC queue. Lock-free producers, single consumer.
 struct IntrusiveMpsc {
-    head: *mut Node,  // consumer reads from here
-    tail: AtomicPtr<Node>,  // producers CAS here
-    stub: Box<Node>,  // sentinel
+    head: *mut Node,       // consumer reads from here
+    tail: AtomicPtr<Node>, // producers CAS here
+    stub: Box<Node>,       // sentinel
 }
 
 impl IntrusiveMpsc {
@@ -149,7 +149,9 @@ fn spike_intrusive_mpsc_push_pop() {
     }
     loop {
         let p = queue.pop();
-        if p.is_null() { break; }
+        if p.is_null() {
+            break;
+        }
     }
 
     // Measure push+pop
@@ -161,7 +163,9 @@ fn spike_intrusive_mpsc_push_pop() {
     let mut count = 0usize;
     loop {
         let p = queue.pop();
-        if p.is_null() { break; }
+        if p.is_null() {
+            break;
+        }
         black_box(p);
         count += 1;
     }

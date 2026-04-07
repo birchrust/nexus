@@ -192,9 +192,7 @@ impl TcpStream {
     /// Read without consuming from the buffer (MSG_PEEK).
     pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
         // SAFETY: u8 and MaybeUninit<u8> have the same layout.
-        let buf = unsafe {
-            &mut *(buf as *mut [u8] as *mut [std::mem::MaybeUninit<u8>])
-        };
+        let buf = unsafe { &mut *(buf as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
         self.socket_ref().peek(buf)
     }
 
@@ -288,8 +286,14 @@ impl TcpStream {
     pub fn split(&mut self) -> (ReadHalf<'_>, WriteHalf<'_>) {
         let ptr = self as *mut TcpStream;
         (
-            ReadHalf { stream: ptr, _marker: std::marker::PhantomData },
-            WriteHalf { stream: ptr, _marker: std::marker::PhantomData },
+            ReadHalf {
+                stream: ptr,
+                _marker: std::marker::PhantomData,
+            },
+            WriteHalf {
+                stream: ptr,
+                _marker: std::marker::PhantomData,
+            },
         )
     }
 
@@ -390,10 +394,7 @@ impl AsyncWrite for TcpStream {
         }
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         if let Err(e) = this.ensure_registered(cx) {
             return Poll::Ready(Err(e));
@@ -410,10 +411,7 @@ impl AsyncWrite for TcpStream {
         }
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         match this.inner.shutdown(std::net::Shutdown::Write) {
             Ok(()) => Poll::Ready(Ok(())),
@@ -543,8 +541,7 @@ impl OwnedReadHalf {
     pub fn reunite(self, write: OwnedWriteHalf) -> Result<TcpStream, ReuniteError> {
         if std::rc::Rc::ptr_eq(&self.stream, &write.stream) {
             drop(write);
-            let cell = std::rc::Rc::try_unwrap(self.stream)
-                .map_err(|_| ReuniteError)?;
+            let cell = std::rc::Rc::try_unwrap(self.stream).map_err(|_| ReuniteError)?;
             Ok(cell.into_inner())
         } else {
             Err(ReuniteError)
@@ -707,7 +704,9 @@ impl TcpListener {
 
     #[cold]
     fn do_register(&mut self, task_ptr: *mut u8, waker: Waker) -> io::Result<()> {
-        let token = self.io.register(&mut self.inner, Interest::READABLE, waker)?;
+        let token = self
+            .io
+            .register(&mut self.inner, Interest::READABLE, waker)?;
         self.token = Some(token);
         self.registered_task = task_ptr;
         Ok(())
@@ -979,10 +978,8 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let listener = TcpListener::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                crate::context::io(),
-            ).expect("bind failed");
+            let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), crate::context::io())
+                .expect("bind failed");
             let addr = listener.local_addr().unwrap();
             spawn_boxed(async move {
                 let mut listener = listener;
@@ -1009,8 +1006,6 @@ mod tests {
 
         assert!(done.get(), "echo exchange never completed");
     }
-
-
 
     #[test]
     fn tcp_socket_builder() {

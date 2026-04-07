@@ -44,7 +44,11 @@ impl TokenBucket {
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
         let nanos = now.saturating_duration_since(self.base).as_nanos();
-        if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
+        if nanos > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            nanos as u64
+        }
     }
 
     /// Computes available tokens without consuming.

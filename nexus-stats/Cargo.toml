@@ -1,6 +1,6 @@
 [package]
 name = "nexus-stats"
-version = "4.0.0"
+version = "4.0.1"
 description = "Fixed-memory, zero-allocation streaming statistics for real-time systems"
 readme = "README.md"
 edition.workspace = true
@@ -20,6 +20,9 @@ detection = ["dep:nexus-stats-detection", "smoothing"]
 regression = ["dep:nexus-stats-regression"]
 control = ["dep:nexus-stats-control"]
 full = ["smoothing", "detection", "regression", "control"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 nexus-stats-core = { version = "1.0.0", path = "../nexus-stats-core", default-features = false }

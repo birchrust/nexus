@@ -246,11 +246,7 @@ fn parse_member(field: &syn::Field) -> Result<MemberDef> {
     for attr in &field.attrs {
         if attr.path().is_ident("field") {
             let range = attr.parse_args_with(parse_bit_range)?;
-            return Ok(MemberDef::Field {
-                name,
-                ty,
-                range,
-            });
+            return Ok(MemberDef::Field { name, ty, range });
         } else if attr.path().is_ident("flag") {
             let bit: syn::LitInt = attr.parse_args()?;
             let bit: u32 = bit.base10_parse()?;

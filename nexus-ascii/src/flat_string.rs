@@ -27,7 +27,7 @@ use crate::string::{copy_short, find_null_byte};
 ///   For printable-only, use `FlatAsciiText`.
 ///
 /// For key-like strings that benefit from precomputed hashing and fast equality
-/// rejection, use [`AsciiString`] instead.
+/// rejection, use [`AsciiString`](crate::AsciiString) instead.
 ///
 /// # Null termination
 ///

@@ -297,9 +297,7 @@ unsafe fn inner<T>(shared: &Shared<T>) -> &mut Inner<T> {
 /// - Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
 /// - Panics if `capacity` is 0.
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
-    crate::context::assert_in_runtime(
-        "local::channel() called outside Runtime::block_on",
-    );
+    crate::context::assert_in_runtime("local::channel() called outside Runtime::block_on");
     channel_inner(capacity)
 }
 
@@ -585,8 +583,7 @@ mod tests {
         fn noop_clone(p: *const ()) -> RawWaker {
             RawWaker::new(p, &VTABLE)
         }
-        const VTABLE: RawWakerVTable =
-            RawWakerVTable::new(noop_clone, noop, noop, noop);
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
         unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
     }
 

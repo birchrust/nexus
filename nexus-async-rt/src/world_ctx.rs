@@ -66,7 +66,7 @@ impl WorldCtx {
     ///   a `WorldCtx` — all World access must go through `with_world`.
     /// - Single-threaded use only (no concurrent `with_world` calls).
     ///
-    /// These invariants are structurally enforced by [`Runtime`]:
+    /// These invariants are structurally enforced by [`crate::Runtime`]:
     /// the World is created before the runtime, `block_on` takes
     /// `&mut self` preventing direct World access during execution,
     /// and the single-threaded executor prevents concurrent polls.
@@ -189,9 +189,7 @@ mod tests {
 
         let mut executor = Executor::new(4);
         executor.spawn_boxed(async move {
-            let v = ctx.with_world(|world| {
-                world.resource::<Val>().0 * 6
-            });
+            let v = ctx.with_world(|world| world.resource::<Val>().0 * 6);
             // SAFETY: test-only, single-threaded, Cell is alive.
             unsafe { &*result_ptr }.set(v);
         });

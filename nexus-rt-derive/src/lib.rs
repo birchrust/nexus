@@ -476,14 +476,14 @@ fn derive_view_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn
                 return Err(syn::Error::new_spanned(
                     &input.ident,
                     "#[derive(View)] only supports structs with named fields",
-                ))
+                ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
                 "#[derive(View)] can only be used on structs",
-            ))
+            ));
         }
     };
 
@@ -521,7 +521,7 @@ fn derive_view_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn
             return Err(syn::Error::new_spanned(
                 &input.generics,
                 "#[derive(View)] supports at most one lifetime parameter",
-            ))
+            ));
         }
     };
 
@@ -529,30 +529,29 @@ fn derive_view_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn
     let marker_name = format_ident!("As{}", view_name);
 
     // Build ViewType<'a>, StaticViewType, and tick-lifetime tokens
-    let (view_type_with_a, static_view_type, view_type_tick) =
-        lifetime_param.as_ref().map_or_else(
-            || {
-                (
-                    quote! { #view_name },
-                    quote! { #view_name },
-                    quote! { #view_name },
-                )
-            },
-            |lt| {
-                let lt_ident = &lt.ident;
-                let mut static_generics = input.generics.clone();
-                LifetimeReplacer {
-                    from: lt_ident.to_string(),
-                }
-                .visit_generics_mut(&mut static_generics);
-                let (_, static_ty_generics, _) = static_generics.split_for_impl();
-                (
-                    quote! { #view_name<'a> },
-                    quote! { #view_name #static_ty_generics },
-                    quote! { #view_name<'_> },
-                )
-            },
-        );
+    let (view_type_with_a, static_view_type, view_type_tick) = lifetime_param.as_ref().map_or_else(
+        || {
+            (
+                quote! { #view_name },
+                quote! { #view_name },
+                quote! { #view_name },
+            )
+        },
+        |lt| {
+            let lt_ident = &lt.ident;
+            let mut static_generics = input.generics.clone();
+            LifetimeReplacer {
+                from: lt_ident.to_string(),
+            }
+            .visit_generics_mut(&mut static_generics);
+            let (_, static_ty_generics, _) = static_generics.split_for_impl();
+            (
+                quote! { #view_name<'a> },
+                quote! { #view_name #static_ty_generics },
+                quote! { #view_name<'_> },
+            )
+        },
+    );
 
     // Parse field info
     let field_infos: Vec<FieldInfo> = fields
@@ -614,9 +613,10 @@ struct FieldInfo {
 }
 
 fn parse_field_info(field: &syn::Field) -> Result<FieldInfo, syn::Error> {
-    let ident = field.ident.clone().ok_or_else(|| {
-        syn::Error::new_spanned(field, "View fields must be named")
-    })?;
+    let ident = field
+        .ident
+        .clone()
+        .ok_or_else(|| syn::Error::new_spanned(field, "View fields must be named"))?;
 
     let borrow = field.attrs.iter().any(|a| a.path().is_ident("borrow"));
 
