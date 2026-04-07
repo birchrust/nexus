@@ -14,14 +14,14 @@ categories.workspace = true
 default = ["tokio-tls"]
 full = ["tls", "socket-opts", "bytes"]
 tokio-rt = ["dep:tokio", "dep:futures-core", "dep:futures-sink"]
-nexus-rt = ["dep:nexus-async-rt"]
+nexus = ["dep:nexus-async-rt"]
 tls = ["nexus-net/tls"]
 tokio-tls = ["tokio-rt", "tls", "dep:tokio-rustls"]
 socket-opts = ["dep:socket2"]
 bytes = ["nexus-net/bytes"]
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["tokio-tls", "socket-opts", "bytes"]
 
 [dependencies]
 nexus-net = { version = "0.4.0", path = "../nexus-net" }
@@ -46,6 +46,27 @@ tokio-rustls = "0.26"
 
 [[example]]
 name = "perf_async_ws"
+required-features = ["tokio-rt"]
+
+[[example]]
+name = "perf_ws_cycles_tokio"
+required-features = ["tokio-rt"]
+
+[[example]]
+name = "perf_ws_cycles_nexus"
+required-features = ["nexus"]
+
+[[example]]
+name = "perf_async_ws_nexus"
+required-features = ["nexus"]
+
+[[example]]
+name = "bench_pool_throughput"
+required-features = ["tokio-rt"]
+
+[[test]]
+name = "httpbin"
+required-features = ["tokio-rt"]
 
 [lints]
 workspace = true

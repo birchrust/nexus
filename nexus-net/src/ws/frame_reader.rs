@@ -58,6 +58,8 @@ pub struct FrameReader {
     msg_buf: Vec<u8>,
     prealloc_capacity: usize,
     compact_threshold: usize,
+    /// ReadBuf compaction trigger: compact when consumed bytes exceed this.
+    buf_compact_at: usize,
 
     state: ParseState,
     remaining_payload: usize,
@@ -109,6 +111,7 @@ pub struct FrameReaderBuilder {
     post_padding: usize,
     prealloc_capacity: usize,
     compact_threshold: usize,
+    compact_at: f64,
     max_frame_size: u64,
     max_message_size: usize,
     role: Role,
@@ -124,6 +127,7 @@ impl FrameReader {
             post_padding: 4,
             prealloc_capacity: 4096,
             compact_threshold: 256 * 1024,
+            compact_at: 0.5,
             max_frame_size: 16 * 1024 * 1024,
             max_message_size: 16 * 1024 * 1024,
             role: Role::Server,
@@ -194,7 +198,20 @@ impl FrameReader {
         self.buf.compact();
     }
 
+    /// Whether the ReadBuf should be compacted based on the configured threshold.
+    ///
+    /// Returns `true` when at least one byte has been consumed, consumed bytes
+    /// meet or exceed the threshold set by [`FrameReaderBuilder::compact_at`],
+    /// and there is unconsumed data to preserve.
+    /// Default threshold is 50% of buffer capacity.
+    #[inline]
+    pub fn should_compact(&self) -> bool {
+        let consumed = self.buf.consumed();
+        consumed > 0 && consumed >= self.buf_compact_at && !self.buf.is_empty()
+    }
+
     /// Parse the next complete message.
+    #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Message<'_>>, ProtocolError> {
         // If poll() already prepared a message, return it
@@ -211,6 +228,7 @@ impl FrameReader {
 
     /// Advance the parser without constructing a Message.
     /// Returns `true` if the next call to `next()` will return a message.
+    #[inline]
     pub fn poll(&mut self) -> Result<bool, ProtocolError> {
         if self.pending_opcode.is_some() {
             return Ok(true);
@@ -291,6 +309,7 @@ impl FrameReader {
     ///
     /// For single-frame messages: payload stays in ReadBuf (zero-copy).
     /// For assembled messages: payload accumulated in msg_buf.
+    #[inline]
     fn pump(&mut self) -> Result<Option<RawOpcode>, ProtocolError> {
         loop {
             let state = self.state;
@@ -737,6 +756,30 @@ impl FrameReaderBuilder {
         self
     }
 
+    /// Fraction of buffer capacity consumed before proactive compaction.
+    ///
+    /// When the read head has advanced past this fraction of the buffer,
+    /// [`should_compact()`](FrameReader::should_compact) returns `true`.
+    /// This spreads compaction cost across messages instead of concentrating
+    /// it in a single stall when the buffer runs out of spare room.
+    ///
+    /// - `1.0`: never proactively compact — only when spare is empty.
+    /// - `0.5` (default): compact when half the buffer has been consumed.
+    /// - `0.0`: compact on every recv after the first byte is consumed
+    ///   (degenerate — not useful in practice).
+    ///
+    /// Lower values reduce tail latency at the cost of more frequent (but smaller)
+    /// memmoves.
+    #[must_use]
+    pub fn compact_at(mut self, fraction: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&fraction),
+            "compact_at fraction must be in 0.0..=1.0, got {fraction}"
+        );
+        self.compact_at = fraction;
+        self
+    }
+
     /// Maximum single frame payload. Default: 16MB.
     #[must_use]
     pub fn max_frame_size(mut self, n: u64) -> Self {
@@ -761,11 +804,19 @@ impl FrameReaderBuilder {
     /// Build the reader.
     #[must_use]
     pub fn build(self) -> FrameReader {
+        let buf_compact_at = if self.compact_at >= 1.0 {
+            usize::MAX
+        } else if self.compact_at <= 0.0 {
+            0
+        } else {
+            (self.buffer_capacity as f64 * self.compact_at).ceil() as usize
+        };
         FrameReader {
             buf: ReadBuf::new(self.buffer_capacity, self.pre_padding, self.post_padding),
             msg_buf: Vec::with_capacity(self.prealloc_capacity),
             prealloc_capacity: self.prealloc_capacity,
             compact_threshold: self.compact_threshold,
+            buf_compact_at,
             state: ParseState::Head,
             remaining_payload: 0,
             mask_key: None,
@@ -1631,5 +1682,92 @@ mod tests {
             }
         }
         assert!(r.next().unwrap().is_none());
+    }
+
+    // =========================================================================
+    // should_compact() edge cases
+    // =========================================================================
+
+    #[test]
+    fn should_compact_default_half() {
+        let mut r = FrameReader::builder()
+            .buffer_capacity(1024)
+            .role(Role::Client)
+            .build();
+        // Nothing consumed yet — should not compact.
+        assert!(!r.should_compact());
+
+        // Feed two frames. Consume the first, then call poll() to trigger
+        // deferred cleanup (ReadBuf advance). The second frame keeps data
+        // in the buffer so head doesn't auto-reset.
+        let mut data = make_frame(true, 0x2, &[0xAA; 600]);
+        data.extend_from_slice(&make_frame(true, 0x2, &[0xBB; 10]));
+        r.read(&data).unwrap();
+        let msg = r.next().unwrap();
+        assert!(msg.is_some());
+        drop(msg); // release borrow
+        // Trigger deferred cleanup — advances head past first frame.
+        let _ = r.poll().unwrap();
+        // consumed ~604 > 512 (50% of 1024) → should compact.
+        assert!(r.should_compact());
+    }
+
+    #[test]
+    fn should_compact_at_one_never_triggers() {
+        let mut r = FrameReader::builder()
+            .buffer_capacity(256)
+            .compact_at(1.0)
+            .role(Role::Client)
+            .build();
+        // Consume nearly all the buffer.
+        let frame = make_frame(true, 0x2, &[0xBB; 200]);
+        r.read(&frame).unwrap();
+        let _ = r.next().unwrap();
+        // compact_at(1.0) → buf_compact_at = usize::MAX, never triggers.
+        assert!(!r.should_compact());
+    }
+
+    #[test]
+    fn should_compact_at_zero() {
+        let mut r = FrameReader::builder()
+            .buffer_capacity(256)
+            .compact_at(0.0)
+            .role(Role::Client)
+            .build();
+        // Nothing consumed — should NOT compact even with threshold 0.
+        assert!(!r.should_compact());
+
+        // Feed two frames, consume the first, trigger deferred cleanup.
+        let mut data = make_frame(true, 0x2, &[0xCC; 10]);
+        data.extend_from_slice(&make_frame(true, 0x2, &[0xDD; 5]));
+        r.read(&data).unwrap();
+        let msg = r.next().unwrap();
+        assert!(msg.is_some());
+        drop(msg);
+        let _ = r.poll().unwrap(); // deferred advance
+        // Now consumed > 0 and threshold is 0 — should compact.
+        assert!(r.should_compact());
+    }
+
+    #[test]
+    fn should_compact_small_buffer_small_fraction() {
+        // buffer_capacity=64, compact_at=0.1 → ceil(6.4) = 7
+        let mut r = FrameReader::builder()
+            .buffer_capacity(64)
+            .compact_at(0.1)
+            .role(Role::Client)
+            .build();
+        assert!(!r.should_compact());
+
+        // Feed two small frames, consume the first, trigger deferred cleanup.
+        let mut data = make_frame(true, 0x2, &[0xDD; 10]);
+        data.extend_from_slice(&make_frame(true, 0x2, &[0xEE; 5]));
+        r.read(&data).unwrap();
+        let msg = r.next().unwrap();
+        assert!(msg.is_some());
+        drop(msg);
+        let _ = r.poll().unwrap(); // deferred advance
+        // consumed (12) >= 7 (ceil threshold) → should compact.
+        assert!(r.should_compact());
     }
 }
