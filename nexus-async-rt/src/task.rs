@@ -283,22 +283,24 @@ impl<T> JoinHandle<T> {
         unsafe { is_completed(self.ptr) }
     }
 
-    /// Abort the task. The future is dropped on the next poll cycle.
-    /// Returns `true` if the task was still running.
+    /// Abort the task and consume the handle.
     ///
-    /// # Panics
+    /// The future is dropped on the next poll cycle. Consumes the handle
+    /// so it cannot be awaited after abort — this is enforced at the type
+    /// level rather than via a runtime panic.
     ///
-    /// Awaiting the `JoinHandle` after abort panics. This is intentional —
-    /// the caller who aborts owns the decision. If you need to handle
-    /// abort gracefully, check [`is_finished()`](Self::is_finished) before awaiting.
+    /// Returns `true` if the task was still running, `false` if it had
+    /// already completed (output is dropped by `JoinHandle::drop`).
     #[must_use = "returns whether the task was still running"]
-    pub fn abort(&self) -> bool {
+    pub fn abort(self) -> bool {
         let ptr = self.ptr;
-        if unsafe { is_completed(ptr) } {
-            return false;
+        let was_running = !unsafe { is_completed(ptr) };
+        if was_running {
+            unsafe { set_flag(ptr, ABORTED) };
         }
-        unsafe { set_flag(ptr, ABORTED) };
-        true
+        // self is consumed — Drop runs, which clears HAS_JOIN,
+        // takes the join waker, and decrements refcount.
+        was_running
     }
 }
 
@@ -313,8 +315,13 @@ impl<T> Drop for JoinHandle<T> {
             unsafe { drop_task_future(ptr) };
         }
 
-        // Clear HAS_JOIN so complete_task knows nobody is waiting
+        // Clear HAS_JOIN so complete_task knows nobody is waiting.
         unsafe { clear_flag(ptr, HAS_JOIN) };
+
+        // If we previously polled to Pending, a cloned waker is stored in the
+        // task. Clear it so the parent task's refcount isn't kept alive until
+        // the child completes.
+        let _ = unsafe { take_join_waker(ptr) };
 
         // Release our reference
         let should_free = unsafe { ref_dec(ptr) };

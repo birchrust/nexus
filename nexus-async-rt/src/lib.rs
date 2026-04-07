@@ -76,7 +76,11 @@ use std::task::Poll;
 
 use waker::{ReusableWaker, set_poll_context};
 
-/// Minimum slab slot size: 128 bytes (64 for task header + 64 for future/output).
+/// Recommended minimum slab slot size.
+///
+/// The actual minimum depends on the task: header (64 bytes) + `max(size_of::<F>(),
+/// size_of::<T>())`. ZST futures need only 64 bytes. 128 is a conservative default
+/// that covers most small futures.
 pub const MIN_SLOT_SIZE: usize = 128;
 
 // =============================================================================
@@ -532,8 +536,7 @@ mod tests {
         let handle = exec.spawn_boxed(std::future::pending::<()>());
 
         assert_eq!(exec.task_count(), 1);
-        assert!(handle.abort()); // was running
-        drop(handle); // release JoinHandle ref before poll
+        assert!(handle.abort()); // was running, handle consumed
         exec.poll(); // abort takes effect on next poll
         assert_eq!(exec.task_count(), 0);
     }
@@ -542,8 +545,7 @@ mod tests {
     fn abort_frees_slot_for_reuse() {
         let mut exec = test_executor();
         let handle = exec.spawn_boxed(std::future::pending::<()>());
-        handle.abort();
-        drop(handle); // release JoinHandle ref
+        handle.abort(); // consumes handle
 
         exec.poll(); // process abort + deferred free
 
@@ -615,9 +617,8 @@ mod tests {
         // First poll: sets is_queued again via wake_by_ref.
         exec.poll();
 
-        // Abort while the task is in the ready queue.
+        // Abort while the task is in the ready queue (consumes handle).
         handle.abort();
-        drop(handle); // release ref before executor drop
 
         // Spawn a new task to prove we don't crash on the stale pointer.
         exec.spawn_boxed(async move {

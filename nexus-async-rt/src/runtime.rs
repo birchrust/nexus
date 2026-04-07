@@ -1277,8 +1277,7 @@ mod tests {
 
         rt.block_on(async {
             let handle = spawn_boxed(std::future::pending::<()>());
-            assert!(handle.abort()); // was running
-            drop(handle);
+            assert!(handle.abort()); // was running, handle consumed
         });
     }
 
@@ -1292,8 +1291,7 @@ mod tests {
             let handle = spawn_boxed(async { 42 });
             crate::context::yield_now().await;
             assert!(handle.is_finished());
-            assert!(!handle.abort()); // already done
-            let _ = handle.await;
+            assert!(!handle.abort()); // already done, handle consumed
         });
     }
 

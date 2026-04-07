@@ -128,8 +128,7 @@ fn drop_future_on_abort() {
             std::future::pending::<u64>().await
         });
 
-        let _ = handle.abort();
-        drop(handle);
+        let _ = handle.abort(); // consumes handle
         exec.poll();
         assert!(
             future_drop_count.get() >= 1,
@@ -169,8 +168,7 @@ fn interleaved_lifecycle_operations() {
                 0 => {
                     // Abort
                     if let Some(h) = handle_opt.take() {
-                        let _ = h.abort();
-                        drop(h);
+                        let _ = h.abort(); // consumes h
                     }
                 }
                 1 => {

@@ -327,6 +327,11 @@ mod tests {
 /// Called when the last reference drops (refcount hits 0) — either from
 /// a waker drop or from JoinHandle::Drop.
 ///
+/// If called outside a poll cycle (DEFERRED_FREE TLS is null), the slot
+/// is **not freed** — it will be reclaimed by `Executor::drop`. This is
+/// acceptable for correctness but means tasks whose last ref drops outside
+/// `block_on` are cleaned up lazily.
+///
 /// # Safety
 ///
 /// `ptr` must point to a completed task slot.

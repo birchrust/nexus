@@ -232,8 +232,7 @@ fn abort_before_poll() {
     // Abort before the task has been polled.
     let mut exec = test_executor();
     let handle = exec.spawn_boxed(std::future::pending::<u64>());
-    let _ = handle.abort();
-    drop(handle);
+    let _ = handle.abort(); // consumes handle
     exec.poll(); // processes the abort
 }
 
@@ -246,8 +245,7 @@ fn abort_drops_future() {
         let _keep = counter;
         std::future::pending::<()>().await;
     });
-    let _ = handle.abort();
-    drop(handle);
+    let _ = handle.abort(); // consumes handle
     exec.poll();
     assert!(count.get() >= 1, "future's captures must be dropped");
 }
@@ -258,7 +256,7 @@ fn abort_already_completed() {
     let handle = exec.spawn_boxed(async { 42u64 });
     exec.poll();
     assert!(!handle.abort(), "abort on completed task returns false");
-    drop(handle);
+    // handle consumed by abort
 }
 
 // =============================================================================
