@@ -32,7 +32,7 @@ jobs:
       run: cargo test -p nexus-net --lib --features tokio,tls --verbose
     - name: Test nexus-async-net (tokio-rt + tls, default)
       run: cargo test -p nexus-async-net --verbose
-    - name: Test nexus-async-net (nexus-rt + tls)
-      run: cargo test -p nexus-async-net --no-default-features --features nexus-rt,tls --lib --verbose
-    - name: Test nexus-async-net (nexus-rt, no tls)
-      run: cargo test -p nexus-async-net --no-default-features --features nexus-rt --lib --verbose
+    - name: Test nexus-async-net (nexus + tls)
+      run: cargo test -p nexus-async-net --no-default-features --features nexus,tls --lib --verbose
+    - name: Test nexus-async-net (nexus, no tls)
+      run: cargo test -p nexus-async-net --no-default-features --features nexus --lib --verbose
