@@ -316,10 +316,7 @@ fn bench_send_batched(label: &str, payload_size: usize) {
 fn main() {
     println!("\n  === WebSocket Cycle Benchmark (tokio backend) ===");
     println!("  Pure userspace, noop waker, memory-backed mock");
-    println!(
-        "  Per-message: {} warmup + {} samples",
-        WARMUP, SAMPLES
-    );
+    println!("  Per-message: {} warmup + {} samples", WARMUP, SAMPLES);
     println!(
         "  Batched: {} warmup + {} samples x {} ops\n",
         BATCH_WARMUP, BATCH_SAMPLES, BATCH

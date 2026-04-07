@@ -239,40 +239,51 @@ while let Some(msg) = ws.next().await {
 
 ## Performance
 
-### vs tokio-tungstenite (in-memory parse, binary frames)
+### Throughput (in-memory, 1M messages)
 
-| Payload | nexus-async-net | tokio-tungstenite | Speedup |
-|---------|-----------------|-------------------|---------|
-| 40B     | 19ns (52M/s)    | 61ns (16M/s)      | **3.2x** |
-| 128B    | 24ns (42M/s)    | 75ns (13M/s)      | **3.1x** |
-| 512B    | 49ns (20M/s)    | 105ns (10M/s)     | **2.1x** |
+| Payload | nexus-rt async | tokio-rt async | blocking | tungstenite |
+|---------|---------------|---------------|----------|-------------|
+| 40B     | **80.9M** (12ns) | 51.3M (19ns) | 66.3M (15ns) | 9.7M (104ns) |
+| 128B    | **55.6M** (18ns) | 38.2M (26ns) | 48.7M (21ns) | 8.6M (117ns) |
+| 512B    | **23.1M** (43ns) | 20.3M (49ns) | 21.2M (47ns) | 6.6M (151ns) |
 
-### vs tokio-tungstenite (JSON parse + sonic-rs deserialize)
+### TCP loopback (tokio, single-threaded)
 
-| Payload | nexus-async-net | tokio-tungstenite | Speedup |
-|---------|-----------------|-------------------|---------|
-| 77B quote tick  | 146ns (6.9M/s) | 205ns (4.9M/s) | **1.4x** |
-| 148B order update | 331ns (3.0M/s) | 382ns (2.6M/s) | **1.2x** |
-| 676B book snapshot | 1637ns (611K/s) | 1720ns (581K/s) | **1.1x** |
+| Payload | nexus-async-net | tungstenite | Speedup |
+|---------|----------------|-------------|---------|
+| 40B     | 51.5M (19ns)   | 7.9M (126ns) | **6.5x** |
+| 128B    | 31.5M (32ns)   | 6.9M (145ns) | **4.6x** |
 
-### Three-way comparison: async vs blocking vs tokio-tungstenite
+### TLS loopback (tokio)
 
-**TCP loopback (no TLS, pinned to cores 0,2):**
+| Payload | nexus-async-net | tungstenite | Speedup |
+|---------|----------------|-------------|---------|
+| 40B     | 29.4M (34ns)   | 8.3M (120ns) | **3.5x** |
+| 128B    | 12.3M (81ns)   | 5.5M (180ns) | **2.2x** |
 
-| Payload | nexus-async-net | nexus-net (blocking) | tokio-tungstenite |
-|---------|-----------------|---------------------|-------------------|
-| 40B     | 21ns (49M/s)    | 30ns (33M/s)        | 66ns (15M/s)      |
+### Cycle-level latency (nexus-rt, realistic TCP mock)
 
-**TLS loopback (pinned to cores 0,2):**
+Per-message (256KB buffer, compact@50%):
 
-| Payload | nexus-async-net | nexus-net (blocking) | tokio-tungstenite |
-|---------|-----------------|---------------------|-------------------|
-| 40B     | 32ns (31M/s)    | 34ns (29M/s)        | 112ns (9.0M/s)    |
-| 128B    | 80ns (13M/s)    | 78ns (13M/s)        | 183ns (5.5M/s)    |
+| Payload | p50 | p90 | p99 | p99.9 | p99/p50 |
+|---------|-----|-----|-----|-------|---------|
+| 40B     | 62  | 126 | 212 | 420   | 3.4x    |
+| 128B    | 56  | 86  | 182 | 214   | 3.3x    |
+| 1024B   | 136 | 146 | 174 | 292   | 1.3x    |
 
-**There is no meaningful tokio overhead.** The async path matches or beats blocking across all configurations — TCP and TLS. Both nexus paths are 2-3x faster than tungstenite.
+Batched x64 (amortized cycles/msg):
 
-Teams already on tokio should use nexus-async-net directly. There is no performance reason to avoid async.
+| Payload | p50 | p90 | p99 | p99.9 |
+|---------|-----|-----|-----|-------|
+| 40B     | 40  | 43  | 68  | 155   |
+| 128B    | 52  | 56  | 87  | 168   |
+
+The nexus-rt async path is faster than blocking (80.9M vs 66.3M at 40B).
+The noop-waker executor + monomorphized async state machine lets LLVM
+optimize better than `std::io::Read` trait dispatch in the blocking path.
+
+Teams already on tokio should use nexus-async-net directly. There is no
+performance reason to avoid async — the tokio path matches or beats blocking.
 
 ## Builder
 
@@ -295,10 +306,12 @@ let mut ws = WsStreamBuilder::new()
 
 | Feature | Default | Description |
 |---------|---------|-------------|
+| `tokio-rt` | **Yes** (via `tokio-tls`) | Tokio-based async adapters. |
+| `nexus` | No | nexus-async-rt-based adapters (single-threaded, pre-allocated). Mutually exclusive with `tokio-rt`. |
 | `tls` | **Yes** | TLS support via tokio-rustls + aws-lc-rs. `wss://` and `https://` URLs auto-detected. |
 | `socket-opts` | No | Socket options (`SO_RCVBUF`, `SO_SNDBUF`, TCP keepalive) via socket2 on all builders. |
 | `bytes` | No | Pass-through — enables `bytes::Bytes` conversion on nexus-net types. |
-| `full` | No | All features enabled. |
+| `full` | No | All non-runtime features (`tls`, `socket-opts`, `bytes`). |
 
 Disable TLS with `default-features = false` for TLS-free builds.
 

@@ -21,7 +21,7 @@ socket-opts = ["dep:socket2"]
 bytes = ["nexus-net/bytes"]
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["tokio-tls", "socket-opts", "bytes"]
 
 [dependencies]
 nexus-net = { version = "0.4.0", path = "../nexus-net" }

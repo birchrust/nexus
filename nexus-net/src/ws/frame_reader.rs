@@ -763,6 +763,8 @@ impl FrameReaderBuilder {
     ///
     /// - `1.0`: never proactively compact — only when spare is empty.
     /// - `0.5` (default): compact when half the buffer has been consumed.
+    /// - `0.0`: compact on every recv after the first byte is consumed
+    ///   (degenerate — not useful in practice).
     ///
     /// Lower values reduce tail latency at the cost of more frequent (but smaller)
     /// memmoves.

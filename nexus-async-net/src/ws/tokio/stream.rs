@@ -65,6 +65,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
     }
 
     /// Create from pre-existing parts. For testing or custom handshakes.
+    ///
+    /// `max_read_size` defaults to unlimited. Call [`set_max_read_size`](Self::set_max_read_size)
+    /// after construction to cap per-recv read size for better tail latency.
     pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
             stream,
@@ -438,6 +441,16 @@ impl WsStreamBuilder {
         self
     }
 
+    /// Fraction of buffer capacity consumed before proactive compaction.
+    ///
+    /// See [`FrameReaderBuilder::compact_at`](nexus_net::ws::FrameReaderBuilder::compact_at)
+    /// for details. Default: 0.5.
+    #[must_use]
+    pub fn compact_at(mut self, fraction: f64) -> Self {
+        self.reader_builder = self.reader_builder.compact_at(fraction);
+        self
+    }
+
     /// Maximum single frame payload. Default: 16MB.
     #[must_use]
     pub fn max_frame_size(mut self, n: u64) -> Self {
@@ -562,7 +575,14 @@ impl WsStreamBuilder {
         };
 
         let max_read_size = self.resolved_max_read_size();
-        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity, max_read_size).await
+        WsStream::connect_impl(
+            stream,
+            url,
+            self.reader_builder,
+            self.write_buf_capacity,
+            max_read_size,
+        )
+        .await
     }
 
     /// Connect with a pre-connected async stream.
@@ -572,7 +592,14 @@ impl WsStreamBuilder {
         url: &str,
     ) -> Result<WsStream<S>, WsError> {
         let max_read_size = self.resolved_max_read_size();
-        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity, max_read_size).await
+        WsStream::connect_impl(
+            stream,
+            url,
+            self.reader_builder,
+            self.write_buf_capacity,
+            max_read_size,
+        )
+        .await
     }
 
     /// Accept an incoming WebSocket connection (server-side).
@@ -581,7 +608,13 @@ impl WsStreamBuilder {
         stream: S,
     ) -> Result<WsStream<S>, WsError> {
         let max_read_size = self.resolved_max_read_size();
-        WsStream::accept_impl(stream, self.reader_builder, self.write_buf_capacity, max_read_size).await
+        WsStream::accept_impl(
+            stream,
+            self.reader_builder,
+            self.write_buf_capacity,
+            max_read_size,
+        )
+        .await
     }
 }
 
