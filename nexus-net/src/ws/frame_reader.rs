@@ -58,6 +58,8 @@ pub struct FrameReader {
     msg_buf: Vec<u8>,
     prealloc_capacity: usize,
     compact_threshold: usize,
+    /// ReadBuf compaction trigger: compact when consumed bytes exceed this.
+    buf_compact_at: usize,
 
     state: ParseState,
     remaining_payload: usize,
@@ -109,6 +111,7 @@ pub struct FrameReaderBuilder {
     post_padding: usize,
     prealloc_capacity: usize,
     compact_threshold: usize,
+    compact_at: f64,
     max_frame_size: u64,
     max_message_size: usize,
     role: Role,
@@ -124,6 +127,7 @@ impl FrameReader {
             post_padding: 4,
             prealloc_capacity: 4096,
             compact_threshold: 256 * 1024,
+            compact_at: 0.5,
             max_frame_size: 16 * 1024 * 1024,
             max_message_size: 16 * 1024 * 1024,
             role: Role::Server,
@@ -192,6 +196,16 @@ impl FrameReader {
     #[inline]
     pub fn compact(&mut self) {
         self.buf.compact();
+    }
+
+    /// Whether the ReadBuf should be compacted based on the configured threshold.
+    ///
+    /// Returns `true` when consumed bytes exceed the threshold set by
+    /// [`FrameReaderBuilder::compact_at`] and there is unconsumed data to preserve.
+    /// Default threshold is 50% of buffer capacity.
+    #[inline]
+    pub fn should_compact(&self) -> bool {
+        self.buf.consumed() >= self.buf_compact_at && !self.buf.is_empty()
     }
 
     /// Parse the next complete message.
@@ -740,6 +754,28 @@ impl FrameReaderBuilder {
         self
     }
 
+    /// Fraction of buffer capacity consumed before proactive compaction.
+    ///
+    /// When the read head has advanced past this fraction of the buffer,
+    /// [`should_compact()`](FrameReader::should_compact) returns `true`.
+    /// This spreads compaction cost across messages instead of concentrating
+    /// it in a single stall when the buffer runs out of spare room.
+    ///
+    /// - `1.0`: never proactively compact — only when spare is empty.
+    /// - `0.5` (default): compact when half the buffer has been consumed.
+    ///
+    /// Lower values reduce tail latency at the cost of more frequent (but smaller)
+    /// memmoves.
+    #[must_use]
+    pub fn compact_at(mut self, fraction: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&fraction),
+            "compact_at fraction must be in 0.0..=1.0, got {fraction}"
+        );
+        self.compact_at = fraction;
+        self
+    }
+
     /// Maximum single frame payload. Default: 16MB.
     #[must_use]
     pub fn max_frame_size(mut self, n: u64) -> Self {
@@ -764,11 +800,17 @@ impl FrameReaderBuilder {
     /// Build the reader.
     #[must_use]
     pub fn build(self) -> FrameReader {
+        let buf_compact_at = if self.compact_at >= 1.0 {
+            usize::MAX
+        } else {
+            (self.buffer_capacity as f64 * self.compact_at) as usize
+        };
         FrameReader {
             buf: ReadBuf::new(self.buffer_capacity, self.pre_padding, self.post_padding),
             msg_buf: Vec::with_capacity(self.prealloc_capacity),
             prealloc_capacity: self.prealloc_capacity,
             compact_threshold: self.compact_threshold,
+            buf_compact_at,
             state: ParseState::Head,
             remaining_payload: 0,
             mask_key: None,

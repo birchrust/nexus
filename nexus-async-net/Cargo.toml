@@ -55,5 +55,9 @@ required-features = ["tokio-rt"]
 name = "perf_ws_cycles_nexus"
 required-features = ["nexus"]
 
+[[example]]
+name = "perf_async_ws_nexus"
+required-features = ["nexus"]
+
 [lints]
 workspace = true

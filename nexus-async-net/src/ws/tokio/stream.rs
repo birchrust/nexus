@@ -44,6 +44,7 @@ pub struct WsStream<S> {
     reader: FrameReader,
     writer: FrameWriter,
     write_buf: WriteBuf,
+    max_read_size: usize,
 }
 
 // -- Generic impl for any async stream ---------------------------------------
@@ -70,6 +71,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
             reader,
             writer,
             write_buf: WriteBuf::new(65_536, 14),
+            max_read_size: usize::MAX,
         }
     }
 
@@ -80,6 +82,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
                 return Ok(self.reader.next()?);
             }
 
+            if self.reader.should_compact() {
+                self.reader.compact();
+            }
             if self.reader.spare().is_empty() {
                 self.reader.compact();
                 if self.reader.spare().is_empty() {
@@ -87,7 +92,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
                 }
             }
 
-            let n = self.stream.read(self.reader.spare()).await?;
+            let spare = self.reader.spare();
+            let cap = spare.len().min(self.max_read_size);
+            let n = self.stream.read(&mut spare[..cap]).await?;
             if n == 0 {
                 return Ok(None); // EOF
             }
@@ -163,6 +170,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         &self.writer
     }
 
+    /// Override max bytes read per recv call.
+    pub fn set_max_read_size(&mut self, n: usize) {
+        self.max_read_size = n.max(1);
+    }
+
     // =========================================================================
     // Internal — async handshake
     // =========================================================================
@@ -172,6 +184,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         url: &str,
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
+        max_read_size: usize,
     ) -> Result<Self, WsError> {
         let parsed = parse_ws_url(url)?;
         let host_header = parsed.host_header();
@@ -245,6 +258,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
                         reader,
                         writer: FrameWriter::new(Role::Client),
                         write_buf: WriteBuf::new(write_cap, 14),
+                        max_read_size,
                     });
                 }
                 Ok(None) => {} // need more bytes
@@ -261,6 +275,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         mut stream: S,
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
+        max_read_size: usize,
     ) -> Result<Self, WsError> {
         let mut req_reader = nexus_net::http::RequestReader::new(4096);
         let mut tmp = [0u8; 4096];
@@ -344,6 +359,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
             reader,
             writer: FrameWriter::new(Role::Server),
             write_buf: WriteBuf::new(write_cap, 14),
+            max_read_size,
         })
     }
 }
@@ -356,6 +372,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
 pub struct WsStreamBuilder {
     reader_builder: FrameReaderBuilder,
     write_buf_capacity: usize,
+    buffer_capacity: usize,
+    max_read_size: Option<usize>,
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
@@ -368,6 +386,8 @@ pub struct WsStreamBuilder {
     send_buf_size: Option<usize>,
 }
 
+const DEFAULT_BUFFER_CAPACITY: usize = 1024 * 1024;
+
 impl WsStreamBuilder {
     /// Create a new builder with defaults.
     #[must_use]
@@ -375,6 +395,8 @@ impl WsStreamBuilder {
         Self {
             reader_builder: FrameReader::builder(),
             write_buf_capacity: 65_536,
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            max_read_size: None,
             #[cfg(feature = "tls")]
             tls_config: None,
             nodelay: false,
@@ -388,10 +410,31 @@ impl WsStreamBuilder {
         }
     }
 
+    /// Resolve max_read_size: user override clamped to buffer, or default 1/8 of buffer.
+    fn resolved_max_read_size(&self) -> usize {
+        self.max_read_size.map_or(self.buffer_capacity / 8, |n| {
+            n.min(self.buffer_capacity).max(1)
+        })
+    }
+
     /// ReadBuf capacity. Default: 1MB.
     #[must_use]
     pub fn buffer_capacity(mut self, n: usize) -> Self {
+        self.buffer_capacity = n;
         self.reader_builder = self.reader_builder.buffer_capacity(n);
+        self
+    }
+
+    /// Maximum bytes to read from the transport per recv call.
+    ///
+    /// Caps the slice passed to the underlying read, bounding the worst-case
+    /// memcpy per message. Lower values reduce tail latency at the cost of
+    /// more frequent reads.
+    ///
+    /// Default: 1/8 of buffer capacity. Clamped to `[1, buffer_capacity]`.
+    #[must_use]
+    pub fn max_read_size(mut self, n: usize) -> Self {
+        self.max_read_size = Some(n);
         self
     }
 
@@ -518,7 +561,8 @@ impl WsStreamBuilder {
             MaybeTls::Plain(tcp)
         };
 
-        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity).await
+        let max_read_size = self.resolved_max_read_size();
+        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity, max_read_size).await
     }
 
     /// Connect with a pre-connected async stream.
@@ -527,7 +571,8 @@ impl WsStreamBuilder {
         stream: S,
         url: &str,
     ) -> Result<WsStream<S>, WsError> {
-        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity).await
+        let max_read_size = self.resolved_max_read_size();
+        WsStream::connect_impl(stream, url, self.reader_builder, self.write_buf_capacity, max_read_size).await
     }
 
     /// Accept an incoming WebSocket connection (server-side).
@@ -535,7 +580,8 @@ impl WsStreamBuilder {
         self,
         stream: S,
     ) -> Result<WsStream<S>, WsError> {
-        WsStream::accept_impl(stream, self.reader_builder, self.write_buf_capacity).await
+        let max_read_size = self.resolved_max_read_size();
+        WsStream::accept_impl(stream, self.reader_builder, self.write_buf_capacity, max_read_size).await
     }
 }
 

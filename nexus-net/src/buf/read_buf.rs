@@ -191,6 +191,14 @@ impl ReadBuf {
         self.tail = self.pre_padding;
     }
 
+    /// Bytes consumed from the front (how far head has advanced from start).
+    ///
+    /// Useful for determining when to proactively [`compact()`](Self::compact).
+    #[inline]
+    pub fn consumed(&self) -> usize {
+        self.head - self.pre_padding
+    }
+
     /// Reclaim consumed space by moving unconsumed data to the front.
     ///
     /// Call when [`spare()`](Self::spare) is empty but there is consumed

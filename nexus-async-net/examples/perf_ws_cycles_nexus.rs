@@ -93,14 +93,25 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 // Mock stream (nexus-async-rt traits)
 // =============================================================================
 
+/// Simulates TCP segment delivery. Returns at most one MSS per read,
+/// wraps around the wire buffer to stay cache-hot (steady-state behavior).
 struct MockStream<'a> {
     data: &'a [u8],
     pos: usize,
+    /// Bytes remaining before EOF. Separate from pos to allow wrap-around.
+    remaining: usize,
 }
 
+/// Typical TCP maximum segment size.
+const TCP_MSS: usize = 1460;
+
 impl<'a> MockStream<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+    fn new(data: &'a [u8], total_bytes: usize) -> Self {
+        Self {
+            data,
+            pos: 0,
+            remaining: total_bytes,
+        }
     }
 }
 
@@ -110,10 +121,18 @@ impl AsyncRead for MockStream<'_> {
         _cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        let remaining = &self.data[self.pos..];
-        let n = remaining.len().min(buf.len());
-        buf[..n].copy_from_slice(&remaining[..n]);
+        if self.remaining == 0 {
+            return Poll::Ready(Ok(0)); // EOF
+        }
+        let avail = (self.data.len() - self.pos).min(self.remaining);
+        let n = avail.min(buf.len()).min(TCP_MSS);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
         self.pos += n;
+        self.remaining -= n;
+        // Wrap around to stay cache-hot
+        if self.pos >= self.data.len() {
+            self.pos = 0;
+        }
         Poll::Ready(Ok(n))
     }
 }
@@ -154,18 +173,29 @@ fn make_frame(payload: &[u8], opcode: u8) -> Vec<u8> {
     frame
 }
 
-fn build_wire(payload_size: usize, count: usize) -> Vec<u8> {
+/// Build a small wire chunk (~16KB) of repeated frames. The mock wraps
+/// around this buffer, keeping it L1-hot — simulates steady-state where
+/// kernel socket buffers are always warm.
+fn build_wire_chunk(payload_size: usize) -> Vec<u8> {
     let payload = vec![0x42u8; payload_size];
     let frame = make_frame(&payload, 0x2); // binary
-    let mut wire = Vec::with_capacity(frame.len() * count);
-    for _ in 0..count {
+    // ~16KB chunk — fits comfortably in L1D (32KB)
+    let frames_per_chunk = (16 * 1024 / frame.len()).max(1);
+    let mut wire = Vec::with_capacity(frame.len() * frames_per_chunk);
+    for _ in 0..frames_per_chunk {
         wire.extend_from_slice(&frame);
     }
     wire
 }
 
-fn make_ws(wire: &[u8]) -> WsStream<MockStream<'_>> {
-    let mock = MockStream::new(wire);
+/// Total wire bytes needed for `count` messages at given payload size.
+fn wire_bytes(payload_size: usize, count: usize) -> usize {
+    let frame_len = payload_size + if payload_size <= 125 { 2 } else { 4 };
+    frame_len * count
+}
+
+fn make_ws(wire: &[u8], total_bytes: usize) -> WsStream<MockStream<'_>> {
+    let mock = MockStream::new(wire, total_bytes);
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(256 * 1024)
@@ -189,8 +219,9 @@ const BATCH_SAMPLES: usize = 10_000;
 
 fn bench_recv_per_msg(label: &str, payload_size: usize) {
     let total = WARMUP + SAMPLES;
-    let wire = build_wire(payload_size, total);
-    let mut ws = make_ws(&wire);
+    let wire = build_wire_chunk(payload_size);
+    let total_bytes = wire_bytes(payload_size, total);
+    let mut ws = make_ws(&wire, total_bytes);
     let mut samples = Vec::with_capacity(SAMPLES);
 
     for i in 0..total {
@@ -211,8 +242,9 @@ fn bench_recv_per_msg(label: &str, payload_size: usize) {
 fn bench_recv_batched(label: &str, payload_size: usize) {
     let total_batches = BATCH_WARMUP + BATCH_SAMPLES;
     let total_msgs = total_batches * BATCH as usize;
-    let wire = build_wire(payload_size, total_msgs);
-    let mut ws = make_ws(&wire);
+    let wire = build_wire_chunk(payload_size);
+    let total_bytes = wire_bytes(payload_size, total_msgs);
+    let mut ws = make_ws(&wire, total_bytes);
     let mut samples = Vec::with_capacity(BATCH_SAMPLES);
 
     for i in 0..total_batches {
@@ -238,8 +270,8 @@ fn bench_recv_batched(label: &str, payload_size: usize) {
 
 fn bench_send_per_msg(label: &str, payload_size: usize) {
     let text = "x".repeat(payload_size);
-    let wire: &[u8] = &[];
-    let mut ws = make_ws(wire);
+    let wire = build_wire_chunk(payload_size);
+    let mut ws = make_ws(&wire, 0);
     let mut samples = Vec::with_capacity(SAMPLES);
     let total = WARMUP + SAMPLES;
 
@@ -257,8 +289,8 @@ fn bench_send_per_msg(label: &str, payload_size: usize) {
 
 fn bench_send_batched(label: &str, payload_size: usize) {
     let text = "x".repeat(payload_size);
-    let wire: &[u8] = &[];
-    let mut ws = make_ws(wire);
+    let wire = build_wire_chunk(payload_size);
+    let mut ws = make_ws(&wire, 0);
     let mut samples = Vec::with_capacity(BATCH_SAMPLES);
     let total_batches = BATCH_WARMUP + BATCH_SAMPLES;
 
