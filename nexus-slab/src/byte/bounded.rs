@@ -19,7 +19,7 @@ use super::{AlignedBytes, Slot, validate_type};
 ///   slab's `free()` is undefined behavior — it corrupts the freelist.
 ///   In debug builds, this is caught by `debug_assert!`.
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
-///   values in occupied slots. Unfree'd slots leak silently.
+///   values in occupied slots. Unfreed slots leak silently.
 /// - **Single-threaded.** The slab is `!Send` and `!Sync`.
 ///
 /// ## Why `free()` is safe
