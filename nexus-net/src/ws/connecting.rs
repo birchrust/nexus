@@ -6,7 +6,7 @@ use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
-use super::stream::{Error, Client, ClientBuilder, parse_ws_url};
+use super::stream::{Client, ClientBuilder, Error, parse_ws_url};
 use crate::buf::WriteBuf;
 
 #[cfg(feature = "tls")]

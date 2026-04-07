@@ -43,7 +43,11 @@ impl TokenBucket {
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
         let nanos = now.saturating_duration_since(self.base).as_nanos();
-        if nanos > u64::MAX as u128 { u64::MAX } else { nanos as u64 }
+        if nanos > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            nanos as u64
+        }
     }
 
     /// Attempts to consume `cost` tokens (thread-safe).
@@ -66,8 +70,7 @@ impl TokenBucket {
                 return false;
             }
 
-            let consume_ticks =
-                (cost as u128 * period as u128).div_ceil(rate as u128) as u64;
+            let consume_ticks = (cost as u128 * period as u128).div_ceil(rate as u128) as u64;
             let new_zero_time = zero_time + consume_ticks;
 
             if self

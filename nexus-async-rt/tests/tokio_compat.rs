@@ -56,23 +56,35 @@ fn tokio_tcp_echo() {
         // Start a tokio TCP listener on a background thread.
         // (We use std::thread because tokio::spawn needs tokio's scheduler,
         // which we're only using for the reactor, not task scheduling.)
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Spawn a task that accepts and echoes.
         spawn_boxed(async move {
             let (mut stream, _) = with_tokio(|| listener.accept()).await.unwrap();
             let mut buf = [0u8; 64];
-            let n = with_tokio(|| tokio::io::AsyncReadExt::read(&mut stream, &mut buf)).await.unwrap();
-            with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n])).await.unwrap();
+            let n = with_tokio(|| tokio::io::AsyncReadExt::read(&mut stream, &mut buf))
+                .await
+                .unwrap();
+            with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]))
+                .await
+                .unwrap();
         });
 
         // Connect and send from another spawned task.
-        let mut client = with_tokio(|| tokio::net::TcpStream::connect(addr)).await.unwrap();
-        with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")).await.unwrap();
+        let mut client = with_tokio(|| tokio::net::TcpStream::connect(addr))
+            .await
+            .unwrap();
+        with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut client, b"hello"))
+            .await
+            .unwrap();
 
         let mut buf = [0u8; 64];
-        let n = with_tokio(|| tokio::io::AsyncReadExt::read(&mut client, &mut buf)).await.unwrap();
+        let n = with_tokio(|| tokio::io::AsyncReadExt::read(&mut client, &mut buf))
+            .await
+            .unwrap();
         assert_eq!(&buf[..n], b"hello");
 
         flag.set(true);
@@ -95,10 +107,12 @@ fn tokio_timeout_success() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let result = with_tokio(|| tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            tokio::time::sleep(std::time::Duration::from_millis(10)),
-        ))
+        let result = with_tokio(|| {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::time::sleep(std::time::Duration::from_millis(10)),
+            )
+        })
         .await;
         assert!(result.is_ok()); // Completed before timeout.
         flag.set(true);
@@ -117,10 +131,12 @@ fn tokio_timeout_expires() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let result = with_tokio(|| tokio::time::timeout(
-            std::time::Duration::from_millis(10),
-            tokio::time::sleep(std::time::Duration::from_secs(10)),
-        ))
+        let result = with_tokio(|| {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                tokio::time::sleep(std::time::Duration::from_secs(10)),
+            )
+        })
         .await;
         assert!(result.is_err()); // Timed out.
         flag.set(true);
@@ -143,7 +159,9 @@ fn tokio_multi_await_block() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Server: single with_tokio block, multiple awaits inside.
@@ -151,19 +169,29 @@ fn tokio_multi_await_block() {
             with_tokio(|| async {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 64];
-                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
-                tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]).await.unwrap();
-            }).await;
+                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n])
+                    .await
+                    .unwrap();
+            })
+            .await;
         });
 
         // Client: single block with multiple awaits.
         let result = with_tokio(|| async {
             let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut client, b"multi-await").await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut client, b"multi-await")
+                .await
+                .unwrap();
             let mut buf = [0u8; 64];
-            let n = tokio::io::AsyncReadExt::read(&mut client, &mut buf).await.unwrap();
+            let n = tokio::io::AsyncReadExt::read(&mut client, &mut buf)
+                .await
+                .unwrap();
             String::from_utf8(buf[..n].to_vec()).unwrap()
-        }).await;
+        })
+        .await;
 
         assert_eq!(result, "multi-await");
         flag.set(true);
@@ -234,7 +262,9 @@ fn tokio_compat_tcp_latency() {
     let hist_ref = hist_cell.clone();
 
     rt.block_on(async move {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Echo server in a spawned task.
@@ -253,10 +283,13 @@ fn tokio_compat_tcp_latency() {
                         Err(_) => break,
                     }
                 }
-            }).await;
+            })
+            .await;
         });
 
-        let mut client = with_tokio(|| tokio::net::TcpStream::connect(addr)).await.unwrap();
+        let mut client = with_tokio(|| tokio::net::TcpStream::connect(addr))
+            .await
+            .unwrap();
         client.set_nodelay(true).unwrap();
 
         let msg = b"ping1234"; // 8 bytes
@@ -264,16 +297,24 @@ fn tokio_compat_tcp_latency() {
 
         // Warmup
         for _ in 0..WARMUP {
-            with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut client, msg)).await.unwrap();
-            with_tokio(|| tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf)).await.unwrap();
+            with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut client, msg))
+                .await
+                .unwrap();
+            with_tokio(|| tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf))
+                .await
+                .unwrap();
         }
 
         // Measure
         let mut hist = Histogram::<u64>::new(3).unwrap();
         for _ in 0..ITERS {
             let start = Instant::now();
-            with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut client, msg)).await.unwrap();
-            with_tokio(|| tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf)).await.unwrap();
+            with_tokio(|| tokio::io::AsyncWriteExt::write_all(&mut client, msg))
+                .await
+                .unwrap();
+            with_tokio(|| tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf))
+                .await
+                .unwrap();
             let elapsed = start.elapsed().as_nanos() as u64;
             hist.record(elapsed).unwrap();
         }
@@ -327,7 +368,9 @@ fn tokio_compat_stress_rapid_tcp() {
     let mut rt = Runtime::new(&mut world);
 
     rt.block_on(async {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         spawn_boxed(async move {
@@ -338,7 +381,9 @@ fn tokio_compat_stress_rapid_tcp() {
                             let mut buf = [0u8; 64];
                             match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
                                 Ok(n) if n > 0 => {
-                                    let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]).await;
+                                    let _ =
+                                        tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n])
+                                            .await;
                                 }
                                 _ => {}
                             }
@@ -346,18 +391,24 @@ fn tokio_compat_stress_rapid_tcp() {
                         Err(_) => break,
                     }
                 }
-            }).await;
+            })
+            .await;
         });
 
         for i in 0u32..100 {
             with_tokio(|| async {
                 let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
                 let msg = i.to_le_bytes();
-                tokio::io::AsyncWriteExt::write_all(&mut client, &msg).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut client, &msg)
+                    .await
+                    .unwrap();
                 let mut buf = [0u8; 4];
-                tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf).await.unwrap();
+                tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf)
+                    .await
+                    .unwrap();
                 assert_eq!(buf, msg);
-            }).await;
+            })
+            .await;
         }
     });
 }
@@ -394,10 +445,8 @@ fn tokio_compat_waker_bridge_latency() {
     // Long-lived sender thread with per-iteration barrier.
     // Barrier ensures background thread has the oneshot sender
     // and is about to send BEFORE we start timing.
-    let (coord_tx, coord_rx) = std::sync::mpsc::channel::<(
-        tokio::sync::oneshot::Sender<()>,
-        Arc<Barrier>,
-    )>();
+    let (coord_tx, coord_rx) =
+        std::sync::mpsc::channel::<(tokio::sync::oneshot::Sender<()>, Arc<Barrier>)>();
 
     std::thread::spawn(move || {
         while let Ok((tx, barrier)) = coord_rx.recv() {
@@ -426,7 +475,10 @@ fn tokio_compat_waker_bridge_latency() {
             }
         }
 
-        print_histogram("tokio-compat waker bridge (busy spin, no epoll)", &hist_park);
+        print_histogram(
+            "tokio-compat waker bridge (busy spin, no epoll)",
+            &hist_park,
+        );
         hist_ref.set(Some(hist_park));
     });
 
@@ -447,7 +499,9 @@ fn tokio_tcp_bidirectional_conversation() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Server: multi-round conversation.
@@ -457,14 +511,19 @@ fn tokio_tcp_bidirectional_conversation() {
                 let mut buf = [0u8; 256];
 
                 for round in 0u32..10 {
-                    let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
+                    let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                        .await
+                        .unwrap();
                     let msg = std::str::from_utf8(&buf[..n]).unwrap();
                     assert_eq!(msg, format!("ping-{round}"));
 
                     let reply = format!("pong-{round}");
-                    tokio::io::AsyncWriteExt::write_all(&mut stream, reply.as_bytes()).await.unwrap();
+                    tokio::io::AsyncWriteExt::write_all(&mut stream, reply.as_bytes())
+                        .await
+                        .unwrap();
                 }
-            }).await;
+            })
+            .await;
         });
 
         // Client: send ping, receive pong, 10 rounds.
@@ -473,14 +532,19 @@ fn tokio_tcp_bidirectional_conversation() {
 
             for round in 0u32..10 {
                 let msg = format!("ping-{round}");
-                tokio::io::AsyncWriteExt::write_all(&mut client, msg.as_bytes()).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut client, msg.as_bytes())
+                    .await
+                    .unwrap();
 
                 let mut buf = [0u8; 256];
-                let n = tokio::io::AsyncReadExt::read(&mut client, &mut buf).await.unwrap();
+                let n = tokio::io::AsyncReadExt::read(&mut client, &mut buf)
+                    .await
+                    .unwrap();
                 let reply = std::str::from_utf8(&buf[..n]).unwrap();
                 assert_eq!(reply, format!("pong-{round}"));
             }
-        }).await;
+        })
+        .await;
 
         flag.set(true);
     });
@@ -502,7 +566,9 @@ fn tokio_tcp_concurrent_clients() {
     let count_ref = count.clone();
 
     rt.block_on(async move {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Server: accept multiple connections, echo each.
@@ -511,10 +577,15 @@ fn tokio_tcp_concurrent_clients() {
                 for _ in 0..5 {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut buf = [0u8; 64];
-                    let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await.unwrap();
-                    tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]).await.unwrap();
+                    let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                        .await
+                        .unwrap();
+                    tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n])
+                        .await
+                        .unwrap();
                 }
-            }).await;
+            })
+            .await;
         });
 
         // 5 concurrent client tasks.
@@ -524,11 +595,16 @@ fn tokio_tcp_concurrent_clients() {
                 with_tokio(|| async {
                     let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
                     let msg = i.to_le_bytes();
-                    tokio::io::AsyncWriteExt::write_all(&mut client, &msg).await.unwrap();
+                    tokio::io::AsyncWriteExt::write_all(&mut client, &msg)
+                        .await
+                        .unwrap();
                     let mut buf = [0u8; 4];
-                    tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf).await.unwrap();
+                    tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf)
+                        .await
+                        .unwrap();
                     assert_eq!(buf, msg);
-                }).await;
+                })
+                .await;
                 c.set(c.get() + 1);
             });
         }
@@ -558,7 +634,9 @@ fn tokio_timeout_on_slow_server() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Server: accept but never respond (simulate slow/dead server).
@@ -567,7 +645,8 @@ fn tokio_timeout_on_slow_server() {
                 let (_stream, _) = listener.accept().await.unwrap();
                 // Hold connection open, never write.
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            }).await;
+            })
+            .await;
         });
 
         // Client: connect with timeout. Should timeout, not hang.
@@ -577,8 +656,10 @@ fn tokio_timeout_on_slow_server() {
             tokio::time::timeout(
                 std::time::Duration::from_millis(50),
                 tokio::io::AsyncReadExt::read(&mut client, &mut buf),
-            ).await
-        }).await;
+            )
+            .await
+        })
+        .await;
 
         assert!(result.is_err()); // Elapsed — timeout fired.
         flag.set(true);
@@ -686,7 +767,9 @@ fn fuzz_tcp_connect_storm() {
     let mut rt = Runtime::new(&mut world);
 
     rt.block_on(async {
-        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0")).await.unwrap();
+        let listener = with_tokio(|| tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Server: accept everything, echo, close.
@@ -698,7 +781,9 @@ fn fuzz_tcp_connect_storm() {
                             let mut buf = [0u8; 8];
                             match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
                                 Ok(n) if n > 0 => {
-                                    let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n]).await;
+                                    let _ =
+                                        tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n])
+                                            .await;
                                 }
                                 _ => {}
                             }
@@ -706,7 +791,8 @@ fn fuzz_tcp_connect_storm() {
                         Err(_) => break,
                     }
                 }
-            }).await;
+            })
+            .await;
         });
 
         // Rapid connect/send/recv/close — 200 connections.
@@ -714,11 +800,16 @@ fn fuzz_tcp_connect_storm() {
             with_tokio(|| async {
                 let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
                 let msg = i.to_le_bytes();
-                tokio::io::AsyncWriteExt::write_all(&mut client, &msg).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut client, &msg)
+                    .await
+                    .unwrap();
                 let mut buf = [0u8; 4];
-                tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf).await.unwrap();
+                tokio::io::AsyncReadExt::read_exact(&mut client, &mut buf)
+                    .await
+                    .unwrap();
                 assert_eq!(buf, msg);
-            }).await;
+            })
+            .await;
         }
     });
 }

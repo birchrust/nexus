@@ -51,8 +51,8 @@
 //! - **Sharded pools**: Hash to a pool based on thread ID
 //! - **Message passing**: Send pre-allocated buffers via channels
 //!
-//! If you truly need MPMC semantics, consider [`crossbeam::ArrayQueue`] or
-//! [`crossbeam::SegQueue`] which are well-optimized for that use case.
+//! If you truly need MPMC semantics, consider `crossbeam::ArrayQueue` or
+//! `crossbeam::SegQueue` which are well-optimized for that use case.
 //!
 //! ## Use Cases
 //!

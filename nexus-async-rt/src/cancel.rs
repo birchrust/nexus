@@ -33,8 +33,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::task::{Context, Poll, Waker};
 
 // =============================================================================
@@ -94,7 +94,9 @@ impl Inner {
         self.cancelled.store(true, Ordering::Release);
 
         // Drain waiters — swap head to null, walk the list.
-        let mut waiter = self.waiter_head.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let mut waiter = self
+            .waiter_head
+            .swap(std::ptr::null_mut(), Ordering::AcqRel);
         while !waiter.is_null() {
             // SAFETY: node was allocated by register() via Box::into_raw.
             let node = unsafe { Box::from_raw(waiter) };
@@ -353,8 +355,7 @@ mod tests {
         fn noop_clone(p: *const ()) -> RawWaker {
             RawWaker::new(p, &VTABLE)
         }
-        const VTABLE: RawWakerVTable =
-            RawWakerVTable::new(noop_clone, noop, noop, noop);
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
         unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
     }
 

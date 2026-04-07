@@ -80,7 +80,9 @@ fn compute_batched_samples(timestamps: &[u64], warmup: usize, batch: usize) -> V
     let data = &timestamps[warmup..];
     let mut samples = Vec::with_capacity(data.len() / batch);
     for chunk in data.chunks(batch) {
-        if chunk.len() < 2 { continue; }
+        if chunk.len() < 2 {
+            continue;
+        }
         let elapsed = chunk.last().unwrap().wrapping_sub(chunk[0]);
         samples.push(elapsed / chunk.len() as u64);
     }

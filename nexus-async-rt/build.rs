@@ -70,8 +70,7 @@ fn main() {
     );
 
     let cx = Context::from_waker(&waker);
-    let first_word: *const () =
-        unsafe { ptr::read(ptr::addr_of!(cx).cast::<*const ()>()) };
+    let first_word: *const () = unsafe { ptr::read(ptr::addr_of!(cx).cast::<*const ()>()) };
 
     assert!(
         first_word == (ptr::addr_of!(*waker) as *const ()),

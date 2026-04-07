@@ -13,7 +13,7 @@
 #![cfg(feature = "tls")]
 
 use nexus_net::tls::TlsConfig;
-use nexus_net::ws::{CloseCode, Message, Client};
+use nexus_net::ws::{Client, CloseCode, Message};
 use std::net::TcpStream;
 
 fn connect_echo(host: &str, port: u16, url: &str) -> Client<TcpStream> {

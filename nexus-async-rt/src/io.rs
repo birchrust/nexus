@@ -99,7 +99,11 @@ impl IoDriver {
         wakers.resize_with(token_capacity, || None);
         readiness.resize(token_capacity, Readiness::default());
         for i in 0..token_capacity {
-            next_free.push(if i + 1 < token_capacity { i + 1 } else { NO_FREE });
+            next_free.push(if i + 1 < token_capacity {
+                i + 1
+            } else {
+                NO_FREE
+            });
         }
 
         Ok(Self {
@@ -233,11 +237,11 @@ impl IoDriver {
 /// [`Copy`] handle for IO operations from async tasks.
 ///
 /// Provides source registration with the mio reactor. Obtained from
-/// [`nexus_async_rt::io`].
+/// [`crate::io()`].
 ///
 /// # Safety
 ///
-/// The raw pointers are valid for the lifetime of the [`Runtime`].
+/// The raw pointers are valid for the lifetime of the [`crate::Runtime`].
 /// Single-threaded — no concurrent access.
 #[derive(Clone, Copy)]
 pub struct IoHandle {

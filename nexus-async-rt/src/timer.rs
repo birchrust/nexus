@@ -26,9 +26,7 @@ pub(crate) struct TimerDriver {
 impl TimerDriver {
     pub(crate) fn new(capacity: usize) -> Self {
         let now = Instant::now();
-        let wheel = WheelBuilder::default()
-            .unbounded(capacity)
-            .build(now);
+        let wheel = WheelBuilder::default().unbounded(capacity).build(now);
         Self {
             wheel,
             expired: Vec::with_capacity(64),

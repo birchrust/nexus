@@ -182,7 +182,7 @@ impl Write for ReadWriteWrap {
 // =============================================================================
 
 fn bench_parse_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, Client};
+    use nexus_net::ws::{Client, FrameReader, FrameWriter, Message, Role};
 
     let cursor = CursorWrap(Cursor::new(wire));
     let reader = FrameReader::builder()
@@ -238,7 +238,7 @@ fn bench_parse_deser_nexus<T: for<'de> Deserialize<'de>>(
     wire: &[u8],
     msg_count: u64,
 ) -> (Duration, u64) {
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role, Client};
+    use nexus_net::ws::{Client, FrameReader, FrameWriter, Message, Role};
 
     let cursor = CursorWrap(Cursor::new(wire));
     let reader = FrameReader::builder()
@@ -340,7 +340,7 @@ fn run_loopback(
 }
 
 fn loopback_nexus_client(tcp: TcpStream, msg_count: u64) -> (Duration, u64) {
-    use nexus_net::ws::{Message, Client};
+    use nexus_net::ws::{Client, Message};
     let mut ws = Client::connect_with(tcp, "ws://127.0.0.1/").unwrap();
     let start = Instant::now();
     let mut received = 0u64;
@@ -445,7 +445,7 @@ fn tls_loopback_nexus_json_client<T: for<'de> Deserialize<'de>>(
     tls_config: nexus_net::tls::TlsConfig,
     msg_count: u64,
 ) -> (Duration, u64) {
-    use nexus_net::ws::{Message, Client};
+    use nexus_net::ws::{Client, Message};
 
     let mut ws = match Client::builder()
         .tls(&tls_config)

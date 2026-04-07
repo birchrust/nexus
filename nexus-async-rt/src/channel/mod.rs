@@ -33,9 +33,9 @@
 
 pub mod local;
 pub mod mpsc;
+pub mod mpsc_bytes;
 pub mod spsc;
 pub mod spsc_bytes;
-pub mod mpsc_bytes;
 
 use std::fmt;
 

@@ -22,10 +22,7 @@ async fn read_async<S: AsyncRead + Unpin>(stream: &mut S, buf: &mut [u8]) -> io:
     stream.read(buf).await
 }
 
-async fn write_all_async<S: AsyncWrite + Unpin>(
-    stream: &mut S,
-    buf: &[u8],
-) -> io::Result<()> {
+async fn write_all_async<S: AsyncWrite + Unpin>(stream: &mut S, buf: &[u8]) -> io::Result<()> {
     stream.write_all(buf).await?;
     stream.flush().await
 }

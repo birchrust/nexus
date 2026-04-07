@@ -30,8 +30,8 @@
 //! ```
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::task::{Poll, Waker};
 
 use std::ops::{Deref, DerefMut};
@@ -225,7 +225,9 @@ impl SenderWaitList {
 
             unsafe {
                 (*cursor).queued.store(false, Ordering::Release);
-                (*cursor).next.store(std::ptr::null_mut(), Ordering::Relaxed);
+                (*cursor)
+                    .next
+                    .store(std::ptr::null_mut(), Ordering::Relaxed);
             }
 
             if !cancelled && !woken {
@@ -246,7 +248,12 @@ impl SenderWaitList {
                     unsafe { (*cursor).queued.store(true, Ordering::Relaxed) };
                     if self
                         .head
-                        .compare_exchange_weak(cur_head, cursor, Ordering::AcqRel, Ordering::Relaxed)
+                        .compare_exchange_weak(
+                            cur_head,
+                            cursor,
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
                         .is_ok()
                     {
                         break;
@@ -464,9 +471,7 @@ impl std::error::Error for RecvError {}
 ///
 /// - Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
 pub fn channel(capacity: usize) -> (Sender, Receiver) {
-    crate::context::assert_in_runtime(
-        "mpsc_bytes::channel() called outside Runtime::block_on",
-    );
+    crate::context::assert_in_runtime("mpsc_bytes::channel() called outside Runtime::block_on");
 
     let cross_ctx = crate::cross_wake::cross_wake_context()
         .expect("mpsc_bytes::channel() requires runtime context");
@@ -705,9 +710,7 @@ mod tests {
 
     fn test_channel(capacity: usize) -> (Sender, Receiver) {
         let poll = mio::Poll::new().unwrap();
-        let mio_waker = Arc::new(
-            mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap(),
-        );
+        let mio_waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap());
         let cross_ctx = Arc::new(crate::cross_wake::CrossWakeContext {
             queue: crate::cross_wake::CrossWakeQueue::new(),
             mio_waker,

@@ -14,10 +14,10 @@
 
 #![cfg(feature = "tls")]
 
+use nexus_net::MaybeTls;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{Client, RequestWriter};
 use nexus_net::tls::TlsConfig;
-use nexus_net::MaybeTls;
 
 fn setup() -> (
     RequestWriter,

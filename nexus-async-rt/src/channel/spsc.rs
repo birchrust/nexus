@@ -22,8 +22,8 @@
 use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::task::{Context, Poll, Waker};
 
 use super::{RecvError, SendError, TryRecvError, TrySendError};
@@ -238,9 +238,7 @@ impl<T> Inner<T> {
 /// - Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
 /// - Panics if `capacity` is 0.
 pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
-    crate::context::assert_in_runtime(
-        "spsc::channel() called outside Runtime::block_on",
-    );
+    crate::context::assert_in_runtime("spsc::channel() called outside Runtime::block_on");
 
     assert!(capacity > 0, "channel capacity must be > 0");
 
@@ -262,7 +260,9 @@ pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         rx_closed: AtomicBool::new(false),
     });
 
-    let tx = Sender { inner: inner.clone() };
+    let tx = Sender {
+        inner: inner.clone(),
+    };
     let rx = Receiver { inner };
     (tx, rx)
 }
@@ -461,9 +461,7 @@ mod tests {
 
     fn test_channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         let poll = mio::Poll::new().unwrap();
-        let mio_waker = Arc::new(
-            mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap(),
-        );
+        let mio_waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(usize::MAX)).unwrap());
         let cross_ctx = Arc::new(crate::cross_wake::CrossWakeContext {
             queue: crate::cross_wake::CrossWakeQueue::new(),
             mio_waker,
@@ -484,7 +482,9 @@ mod tests {
             rx_closed: AtomicBool::new(false),
         });
         (
-            Sender { inner: inner.clone() },
+            Sender {
+                inner: inner.clone(),
+            },
             Receiver { inner },
         )
     }

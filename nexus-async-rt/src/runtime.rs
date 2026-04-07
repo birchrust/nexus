@@ -22,9 +22,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
-use crate::{Executor, TaskId, WorldCtx};
 use crate::io::IoDriver;
 use crate::timer::TimerDriver;
+use crate::{Executor, TaskId, WorldCtx};
 
 /// Default number of loop iterations between non-blocking IO polls.
 /// Matches tokio's heuristic (61, originally from Go's scheduler).
@@ -57,7 +57,10 @@ where
 {
     CURRENT.with(|cell| {
         let ptr = cell.get();
-        assert!(!ptr.is_null(), "spawn_boxed() called outside of Runtime::block_on");
+        assert!(
+            !ptr.is_null(),
+            "spawn_boxed() called outside of Runtime::block_on"
+        );
         // SAFETY: pointer valid for duration of block_on. Single-threaded.
         let executor = unsafe { &mut *ptr };
         executor.spawn_boxed(future)
@@ -82,7 +85,10 @@ where
 {
     CURRENT.with(|cell| {
         let ptr = cell.get();
-        assert!(!ptr.is_null(), "spawn_slab() called outside of Runtime::block_on");
+        assert!(
+            !ptr.is_null(),
+            "spawn_slab() called outside of Runtime::block_on"
+        );
         let executor = unsafe { &mut *ptr };
         let tracker_key = executor.next_tracker_key();
         let task_ptr = crate::alloc::slab_spawn(future, tracker_key);
@@ -112,7 +118,10 @@ pub(crate) fn with_executor<R>(f: impl FnOnce(&mut Executor) -> R) -> R {
 /// - If no slab is configured.
 pub fn try_claim_slab() -> Option<crate::alloc::SlabClaim> {
     CURRENT.with(|cell| {
-        assert!(!cell.get().is_null(), "try_claim_slab() called outside of Runtime::block_on");
+        assert!(
+            !cell.get().is_null(),
+            "try_claim_slab() called outside of Runtime::block_on"
+        );
     });
     crate::alloc::try_claim()
 }
@@ -130,7 +139,10 @@ pub fn try_claim_slab() -> Option<crate::alloc::SlabClaim> {
 /// - If the slab is full (bounded slab).
 pub fn claim_slab() -> crate::alloc::SlabClaim {
     CURRENT.with(|cell| {
-        assert!(!cell.get().is_null(), "claim_slab() called outside of Runtime::block_on");
+        assert!(
+            !cell.get().is_null(),
+            "claim_slab() called outside of Runtime::block_on"
+        );
     });
     crate::alloc::claim()
 }
@@ -225,10 +237,7 @@ impl Runtime {
 
     /// Install signal handlers for SIGTERM and SIGINT.
     pub fn install_signal_handlers(&self) {
-        crate::shutdown::install_signal_handlers(
-            &self.shutdown.flag_ptr(),
-            &self.io.mio_waker(),
-        );
+        crate::shutdown::install_signal_handlers(&self.shutdown.flag_ptr(), &self.io.mio_waker());
     }
 
     /// Number of live spawned tasks.
@@ -372,8 +381,10 @@ impl<'w> RuntimeBuilder<'w> {
         slab: nexus_slab::byte::unbounded::Slab<S>,
     ) -> Self {
         const {
-            assert!(S >= 64,
-                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)");
+            assert!(
+                S >= 64,
+                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)"
+            );
         }
         self.slab_installer = Some(Box::new(move || {
             let slab = Box::new(slab);
@@ -408,8 +419,10 @@ impl<'w> RuntimeBuilder<'w> {
         slab: nexus_slab::byte::bounded::Slab<S>,
     ) -> Self {
         const {
-            assert!(S >= 64,
-                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)");
+            assert!(
+                S >= 64,
+                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)"
+            );
         }
         self.slab_installer = Some(Box::new(move || {
             let slab = Box::new(slab);
@@ -434,12 +447,10 @@ impl<'w> RuntimeBuilder<'w> {
         let event_time = Cell::new(Instant::now());
 
         // Create slab if configured. TLS is installed later in run_loop.
-        let (slab, slab_tls) = self
-            .slab_installer
-            .map_or((None, None), |install| {
-                let (slab, config) = install();
-                (Some(slab), Some(config))
-            });
+        let (slab, slab_tls) = self.slab_installer.map_or((None, None), |install| {
+            let (slab, config) = install();
+            (Some(slab), Some(config))
+        });
 
         let cross_wake = std::sync::Arc::new(crate::cross_wake::CrossWakeContext {
             queue: crate::cross_wake::CrossWakeQueue::new(),
@@ -550,7 +561,8 @@ impl Runtime {
             }
 
             // 2. Drain cross-thread inbox.
-            self.executor.drain_cross_thread(&cross_queue.queue, self.cross_thread_drain_limit);
+            self.executor
+                .drain_cross_thread(&cross_queue.queue, self.cross_thread_drain_limit);
 
             // 3. Poll ready tasks (up to tasks_per_cycle).
             self.executor.poll();
@@ -561,11 +573,14 @@ impl Runtime {
             // 4.5. Set parked early (park mode only) so cross-thread
             // wakers arriving from here on will poke the eventfd.
             if matches!(mode, ParkMode::Park) {
-                cross_queue.parked.store(true, std::sync::atomic::Ordering::Release);
+                cross_queue
+                    .parked
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
 
             // 5. Drain cross-thread inbox again (wakes during step 3/4).
-            self.executor.drain_cross_thread(&cross_queue.queue, self.cross_thread_drain_limit);
+            self.executor
+                .drain_cross_thread(&cross_queue.queue, self.cross_thread_drain_limit);
 
             tick = tick.wrapping_add(1);
 
@@ -582,12 +597,14 @@ impl Runtime {
             }
 
             // 7. If work remains, loop immediately.
-            let has_work = self.executor.has_ready()
-                || woken.load(std::sync::atomic::Ordering::Acquire);
+            let has_work =
+                self.executor.has_ready() || woken.load(std::sync::atomic::Ordering::Acquire);
 
             if has_work {
                 if matches!(mode, ParkMode::Park) {
-                    cross_queue.parked.store(false, std::sync::atomic::Ordering::Release);
+                    cross_queue
+                        .parked
+                        .store(false, std::sync::atomic::Ordering::Release);
                 }
                 continue;
             }
@@ -608,9 +625,10 @@ impl Runtime {
                     // parked is already true (set at step 4.5).
                     // Park in epoll_wait until IO, timer, or cross-thread
                     // eventfd wakes us.
-                    let timeout = self.timers.next_deadline().map(|d| {
-                        d.saturating_duration_since(Instant::now())
-                    });
+                    let timeout = self
+                        .timers
+                        .next_deadline()
+                        .map(|d| d.saturating_duration_since(Instant::now()));
 
                     if let Err(e) = self.io.poll_io(timeout) {
                         assert!(
@@ -619,7 +637,9 @@ impl Runtime {
                         );
                     }
 
-                    cross_queue.parked.store(false, std::sync::atomic::Ordering::Release);
+                    cross_queue
+                        .parked
+                        .store(false, std::sync::atomic::Ordering::Release);
                     self.event_time.set(Instant::now());
                 }
             }
@@ -925,9 +945,7 @@ mod tests {
         let mut world = wb.build();
 
         let bounded = unsafe { nexus_slab::byte::bounded::Slab::<256>::with_capacity(1) };
-        let mut rt = Runtime::builder(&mut world)
-            .slab_bounded(bounded)
-            .build();
+        let mut rt = Runtime::builder(&mut world).slab_bounded(bounded).build();
 
         rt.block_on(async {
             // Claim the only slot, then drop without spawning.
@@ -948,9 +966,7 @@ mod tests {
         let mut world = wb.build();
 
         let bounded = unsafe { nexus_slab::byte::bounded::Slab::<256>::with_capacity(1) };
-        let mut rt = Runtime::builder(&mut world)
-            .slab_bounded(bounded)
-            .build();
+        let mut rt = Runtime::builder(&mut world).slab_bounded(bounded).build();
 
         rt.block_on(async {
             let _held = claim_slab(); // hold the only slot
@@ -1006,8 +1022,14 @@ mod tests {
         });
         let elapsed = before.elapsed();
 
-        assert!(elapsed >= Duration::from_millis(40), "elapsed {elapsed:?} too short");
-        assert!(elapsed < Duration::from_millis(200), "elapsed {elapsed:?} too long");
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "elapsed {elapsed:?} too short"
+        );
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "elapsed {elapsed:?} too long"
+        );
     }
 
     #[test]
@@ -1073,10 +1095,7 @@ mod tests {
         let mut rt = Runtime::new(&mut world);
 
         let result = rt.block_on(async {
-            crate::context::timeout(
-                Duration::from_millis(500),
-                async { 42u64 },
-            ).await
+            crate::context::timeout(Duration::from_millis(500), async { 42u64 }).await
         });
 
         assert_eq!(result.unwrap(), 42);
@@ -1092,7 +1111,8 @@ mod tests {
             crate::context::timeout(
                 Duration::from_millis(10),
                 crate::context::sleep(Duration::from_secs(10)),
-            ).await
+            )
+            .await
         });
 
         assert!(result.is_err());
@@ -1118,8 +1138,14 @@ mod tests {
         });
         let elapsed = before.elapsed();
 
-        assert!(elapsed >= Duration::from_millis(50), "too fast: {elapsed:?}");
-        assert!(elapsed < Duration::from_millis(200), "too slow: {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(50),
+            "too fast: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "too slow: {elapsed:?}"
+        );
     }
 
     // =========================================================================

@@ -11,10 +11,10 @@ use super::message::{CloseCode, Message};
 use crate::buf::WriteBuf;
 
 #[cfg(not(feature = "tokio"))]
-use std::io::{self, Read, Write};
+use super::handshake;
 use super::handshake::HandshakeError;
 #[cfg(not(feature = "tokio"))]
-use super::handshake;
+use std::io::{self, Read, Write};
 
 #[cfg(feature = "tls")]
 use crate::tls::{TlsConfig, TlsError};
@@ -313,10 +313,7 @@ impl ClientBuilder {
     /// `MaybeTls::Tls`. Without the `tls` feature, returns `Client<TcpStream>`
     /// and errors on `wss://`.
     #[cfg(all(not(feature = "tokio"), feature = "tls"))]
-    pub fn connect(
-        self,
-        url: &str,
-    ) -> Result<Client<crate::MaybeTls<std::net::TcpStream>>, Error> {
+    pub fn connect(self, url: &str) -> Result<Client<crate::MaybeTls<std::net::TcpStream>>, Error> {
         let parsed = parse_ws_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
@@ -402,11 +399,7 @@ impl ClientBuilder {
     /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
     /// This method only performs the HTTP upgrade handshake.
     #[cfg(not(feature = "tokio"))]
-    pub fn connect_with<S: Read + Write>(
-        self,
-        stream: S,
-        url: &str,
-    ) -> Result<Client<S>, Error> {
+    pub fn connect_with<S: Read + Write>(self, stream: S, url: &str) -> Result<Client<S>, Error> {
         let parsed = parse_ws_url(url)?;
         let host_header = parsed.host_header();
         Client::connect_impl(

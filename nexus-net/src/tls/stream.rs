@@ -204,9 +204,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRe
                 if filled == 0 {
                     return std::task::Poll::Ready(Ok(())); // EOF
                 }
-                this.codec
-                    .read_tls(&tmp[..filled])
-                    .map_err(tls_to_io)?;
+                this.codec.read_tls(&tmp[..filled]).map_err(tls_to_io)?;
                 this.codec.process_new_packets().map_err(tls_to_io)?;
                 let slice = buf.initialize_unfilled();
                 let pn = this.codec.read_plaintext(slice).map_err(tls_to_io)?;
@@ -329,4 +327,3 @@ fn tls_to_io(e: super::TlsError) -> io::Error {
         other => io::Error::other(other),
     }
 }
-

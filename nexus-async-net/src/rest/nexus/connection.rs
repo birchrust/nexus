@@ -51,11 +51,17 @@ async fn handshake_tls(
         if codec.wants_write() {
             let mut buf = Vec::new();
             codec.write_tls_to(&mut buf)?;
-            write_all_async(stream, &buf).await.map_err(nexus_net::tls::TlsError::Io)?;
-            flush_async(stream).await.map_err(nexus_net::tls::TlsError::Io)?;
+            write_all_async(stream, &buf)
+                .await
+                .map_err(nexus_net::tls::TlsError::Io)?;
+            flush_async(stream)
+                .await
+                .map_err(nexus_net::tls::TlsError::Io)?;
         }
         if codec.wants_read() {
-            let n = read_async(stream, &mut tmp).await.map_err(nexus_net::tls::TlsError::Io)?;
+            let n = read_async(stream, &mut tmp)
+                .await
+                .map_err(nexus_net::tls::TlsError::Io)?;
             if n == 0 {
                 return Err(nexus_net::tls::TlsError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -71,8 +77,12 @@ async fn handshake_tls(
     if codec.wants_write() {
         let mut buf = Vec::new();
         codec.write_tls_to(&mut buf)?;
-        write_all_async(stream, &buf).await.map_err(nexus_net::tls::TlsError::Io)?;
-        flush_async(stream).await.map_err(nexus_net::tls::TlsError::Io)?;
+        write_all_async(stream, &buf)
+            .await
+            .map_err(nexus_net::tls::TlsError::Io)?;
+        flush_async(stream)
+            .await
+            .map_err(nexus_net::tls::TlsError::Io)?;
     }
 
     Ok(())
@@ -203,8 +213,7 @@ impl AsyncHttpConnectionBuilder {
                     None => TlsConfig::new().map_err(RestError::Tls)?,
                 };
 
-                let mut codec =
-                    nexus_net::tls::TlsCodec::new(&tls_config, parsed.host)?;
+                let mut codec = nexus_net::tls::TlsCodec::new(&tls_config, parsed.host)?;
 
                 handshake_tls(&mut tcp, &mut codec).await?;
 
@@ -635,8 +644,7 @@ mod tests {
         fn noop_clone(p: *const ()) -> RawWaker {
             RawWaker::new(p, &VTABLE)
         }
-        const VTABLE: RawWakerVTable =
-            RawWakerVTable::new(noop_clone, noop, noop, noop);
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
 
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
         let mut cx = Context::from_waker(&waker);

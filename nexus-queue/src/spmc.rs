@@ -282,7 +282,9 @@ impl<T> Producer<T> {
 impl<T> Drop for Producer<T> {
     fn drop(&mut self) {
         // Publish final tail for Shared::drop cleanup
-        self.shared.tail.store(self.local_tail.get(), Ordering::Relaxed);
+        self.shared
+            .tail
+            .store(self.local_tail.get(), Ordering::Relaxed);
         self.shared.producer_alive.store(false, Ordering::Release);
     }
 }

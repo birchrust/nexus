@@ -81,9 +81,7 @@ fn dispatch_per_poll_histogram() {
     // Gap = time from one poll entry to the next = executor overhead
     // + wake_by_ref + queue management.
     let data = &timestamps[WARMUP..];
-    let mut gaps: Vec<u64> = data.windows(2)
-        .map(|w| w[1].wrapping_sub(w[0]))
-        .collect();
+    let mut gaps: Vec<u64> = data.windows(2).map(|w| w[1].wrapping_sub(w[0])).collect();
 
     gaps.sort_unstable();
     let len = gaps.len();

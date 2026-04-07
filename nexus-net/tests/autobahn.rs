@@ -23,7 +23,7 @@
 //! podman stop autobahn
 //! ```
 
-use nexus_net::ws::{CloseCode, Message, OwnedMessage, ProtocolError, Error, Client};
+use nexus_net::ws::{Client, CloseCode, Error, Message, OwnedMessage, ProtocolError};
 use std::net::TcpStream;
 
 const AUTOBAHN_HOST: &str = "127.0.0.1:9001";

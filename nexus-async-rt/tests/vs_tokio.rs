@@ -72,7 +72,9 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
             let mut buf = [0u8; MSG_SIZE];
             loop {
                 let n = s.read(&mut buf).await.unwrap();
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 s.write_all(&buf[..n]).await.unwrap();
             }
         });
@@ -145,8 +147,12 @@ fn tokio_tcp_echo_samples() -> Vec<u64> {
             s.set_nodelay(true).unwrap();
             let mut buf = [0u8; MSG_SIZE];
             loop {
-                let n = tokio::io::AsyncReadExt::read(&mut s, &mut buf).await.unwrap();
-                if n == 0 { break; }
+                let n = tokio::io::AsyncReadExt::read(&mut s, &mut buf)
+                    .await
+                    .unwrap();
+                if n == 0 {
+                    break;
+                }
                 s.write_all(&buf[..n]).await.unwrap();
             }
         });
@@ -162,14 +168,18 @@ fn tokio_tcp_echo_samples() -> Vec<u64> {
 
             for _ in 0..WARMUP {
                 c.write_all(&msg).await.unwrap();
-                tokio::io::AsyncReadExt::read_exact(&mut c, &mut buf).await.unwrap();
+                tokio::io::AsyncReadExt::read_exact(&mut c, &mut buf)
+                    .await
+                    .unwrap();
             }
 
             let mut samples = Vec::with_capacity(SAMPLES);
             for _ in 0..SAMPLES {
                 let start = rdtsc();
                 c.write_all(&msg).await.unwrap();
-                tokio::io::AsyncReadExt::read_exact(&mut c, &mut buf).await.unwrap();
+                tokio::io::AsyncReadExt::read_exact(&mut c, &mut buf)
+                    .await
+                    .unwrap();
                 let end = rdtscp();
                 samples.push(end.wrapping_sub(start));
             }
@@ -210,7 +220,9 @@ fn nexus_udp_samples() -> Vec<u64> {
             let mut buf = [0u8; MSG_SIZE];
             loop {
                 let n = b.recv(&mut buf).await.unwrap();
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 b.send(&buf[..n]).await.unwrap();
             }
         });
@@ -273,7 +285,9 @@ fn tokio_udp_samples() -> Vec<u64> {
             let mut buf = [0u8; MSG_SIZE];
             loop {
                 let n = b.recv(&mut buf).await.unwrap();
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 b.send(&buf[..n]).await.unwrap();
             }
         });
@@ -315,7 +329,9 @@ fn tokio_udp_samples() -> Vec<u64> {
 #[test]
 #[ignore]
 fn tcp_echo_vs_tokio() {
-    println!("\n=== TCP Echo Latency: nexus-async-rt vs tokio LocalSet ({MSG_SIZE}B msg, {SAMPLES} samples) ===\n");
+    println!(
+        "\n=== TCP Echo Latency: nexus-async-rt vs tokio LocalSet ({MSG_SIZE}B msg, {SAMPLES} samples) ===\n"
+    );
     println!("All values in cycles (rdtsc)\n");
 
     let mut nexus = nexus_tcp_echo_samples();
@@ -329,15 +345,23 @@ fn tcp_echo_vs_tokio() {
     let nexus_p50 = nexus[nexus.len() / 2];
     let tokio_p50 = tokio[tokio.len() / 2];
     let ratio = tokio_p50 as f64 / nexus_p50 as f64;
-    println!("\n  nexus p50: {nexus_p50} cy  ({:.0} ns)", nexus_p50 as f64 / 3.5);
-    println!("  tokio p50: {tokio_p50} cy  ({:.0} ns)", tokio_p50 as f64 / 3.5);
+    println!(
+        "\n  nexus p50: {nexus_p50} cy  ({:.0} ns)",
+        nexus_p50 as f64 / 3.5
+    );
+    println!(
+        "  tokio p50: {tokio_p50} cy  ({:.0} ns)",
+        tokio_p50 as f64 / 3.5
+    );
     println!("  ratio:     {ratio:.2}x (>1 = nexus faster)");
 }
 
 #[test]
 #[ignore]
 fn udp_echo_vs_tokio() {
-    println!("\n=== UDP Echo Latency: nexus-async-rt vs tokio LocalSet ({MSG_SIZE}B msg, {SAMPLES} samples) ===\n");
+    println!(
+        "\n=== UDP Echo Latency: nexus-async-rt vs tokio LocalSet ({MSG_SIZE}B msg, {SAMPLES} samples) ===\n"
+    );
     println!("All values in cycles (rdtsc)\n");
 
     let mut nexus = nexus_udp_samples();
@@ -351,7 +375,13 @@ fn udp_echo_vs_tokio() {
     let nexus_p50 = nexus[nexus.len() / 2];
     let tokio_p50 = tokio[tokio.len() / 2];
     let ratio = tokio_p50 as f64 / nexus_p50 as f64;
-    println!("\n  nexus p50: {nexus_p50} cy  ({:.0} ns)", nexus_p50 as f64 / 3.5);
-    println!("  tokio p50: {tokio_p50} cy  ({:.0} ns)", tokio_p50 as f64 / 3.5);
+    println!(
+        "\n  nexus p50: {nexus_p50} cy  ({:.0} ns)",
+        nexus_p50 as f64 / 3.5
+    );
+    println!(
+        "  tokio p50: {tokio_p50} cy  ({:.0} ns)",
+        tokio_p50 as f64 / 3.5
+    );
     println!("  ratio:     {ratio:.2}x (>1 = nexus faster)");
 }

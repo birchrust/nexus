@@ -57,7 +57,10 @@ pub(crate) fn set_poll_context(
 ) -> PollContextGuard {
     let prev_ready = READY_QUEUE.with(|cell| cell.replace(ready as *mut Vec<*mut u8>));
     let prev_free = DEFERRED_FREE.with(|cell| cell.replace(deferred_free as *mut Vec<*mut u8>));
-    PollContextGuard { prev_ready, prev_free }
+    PollContextGuard {
+        prev_ready,
+        prev_free,
+    }
 }
 
 pub(crate) struct PollContextGuard {
@@ -104,11 +107,11 @@ impl ReusableWaker {
         Self {
             raw: [
                 (&raw const VTABLE).cast::<()>(), // vtable (constant)
-                std::ptr::null(),                   // data (updated per task)
-                std::ptr::null(),                   // &Waker (set by init)
-                std::ptr::null(),                   // &Waker duplicate
-                std::ptr::null(),                   // _ExtendedContext pad
-                std::ptr::null(),                   // _ExtendedContext pad
+                std::ptr::null(),                 // data (updated per task)
+                std::ptr::null(),                 // &Waker (set by init)
+                std::ptr::null(),                 // &Waker duplicate
+                std::ptr::null(),                 // _ExtendedContext pad
+                std::ptr::null(),                 // _ExtendedContext pad
             ],
         }
     }
@@ -145,7 +148,8 @@ impl ReusableWaker {
 // RawWaker vtable
 // =============================================================================
 
-pub(crate) static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
+pub(crate) static VTABLE: RawWakerVTable =
+    RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
 
 /// Extract the task pointer from a local waker.
 ///
@@ -224,8 +228,7 @@ mod tests {
         let raw = RawWaker::new(sentinel, &VTABLE);
         let waker = std::mem::ManuallyDrop::new(unsafe { Waker::from_raw(raw) });
 
-        let bytes: &[u64; 2] =
-            unsafe { &*(&*waker as *const Waker as *const [u64; 2]) };
+        let bytes: &[u64; 2] = unsafe { &*(&*waker as *const Waker as *const [u64; 2]) };
 
         // First field should be vtable pointer, second should be data
         assert_eq!(
@@ -234,8 +237,7 @@ mod tests {
             "Waker layout changed: vtable not at offset 0"
         );
         assert_eq!(
-            bytes[1],
-            sentinel as u64,
+            bytes[1], sentinel as u64,
             "Waker layout changed: data not at offset 8"
         );
     }
@@ -270,8 +272,7 @@ mod tests {
         // refcount starts at 1 (executor ref). Clone adds 1 → 2.
         assert_eq!(unsafe { crate::task::ref_count(ptr_a) }, 1);
         let cloned = cx.waker().clone();
-        let raw_a: &[u64; 2] =
-            unsafe { &*(&cloned as *const Waker as *const [u64; 2]) };
+        let raw_a: &[u64; 2] = unsafe { &*(&cloned as *const Waker as *const [u64; 2]) };
         assert_eq!(raw_a[1], ptr_a as u64);
         assert_eq!(unsafe { crate::task::ref_count(ptr_a) }, 2);
         drop(cloned); // decrements → 1 (executor ref remains)
@@ -281,8 +282,7 @@ mod tests {
         let cx = unsafe { reusable.set_task(ptr_b) };
         assert_eq!(unsafe { crate::task::ref_count(ptr_b) }, 1);
         let cloned = cx.waker().clone();
-        let raw_b: &[u64; 2] =
-            unsafe { &*(&cloned as *const Waker as *const [u64; 2]) };
+        let raw_b: &[u64; 2] = unsafe { &*(&cloned as *const Waker as *const [u64; 2]) };
         assert_eq!(raw_b[1], ptr_b as u64);
         assert_eq!(unsafe { crate::task::ref_count(ptr_b) }, 2);
         drop(cloned);
@@ -316,8 +316,7 @@ mod tests {
         let cx_bytes: &[u64] =
             unsafe { std::slice::from_raw_parts(&cx as *const _ as *const u64, cx_size / 8) };
         assert_eq!(
-            cx_bytes[0],
-            &*waker as *const Waker as u64,
+            cx_bytes[0], &*waker as *const Waker as u64,
             "Context first field is not &Waker"
         );
     }

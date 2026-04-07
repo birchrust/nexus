@@ -1,6 +1,6 @@
 [package]
 name = "nexus-net"
-version = "0.4.0"
+version = "0.4.1"
 description = "Low-latency WebSocket, HTTP/1.1, and TLS primitives. Sans-IO, zero-copy, SIMD-accelerated."
 readme = "README.md"
 edition.workspace = true
@@ -17,6 +17,9 @@ tls = ["dep:rustls", "dep:rustls-native-certs"]
 socket-opts = ["dep:socket2"]
 bytes = ["dep:bytes"]
 tokio = ["dep:tokio"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 httparse = "1"

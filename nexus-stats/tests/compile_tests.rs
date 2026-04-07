@@ -423,7 +423,11 @@ fn works_with_online_gd() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(
+    feature = "regression",
+    feature = "alloc",
+    any(feature = "std", feature = "libm")
+))]
 #[test]
 fn works_with_adagrad() {
     use nexus_stats::learning::AdaGradF64;
@@ -451,7 +455,11 @@ fn works_with_adagrad() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(
+    feature = "regression",
+    feature = "alloc",
+    any(feature = "std", feature = "libm")
+))]
 #[test]
 fn works_with_adam() {
     use nexus_stats::learning::AdamF64;
@@ -474,7 +482,11 @@ fn works_with_adam() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(
+    feature = "regression",
+    feature = "alloc",
+    any(feature = "std", feature = "libm")
+))]
 #[test]
 fn works_with_adam_weight_decay() {
     use nexus_stats::learning::AdamF64;
@@ -498,7 +510,11 @@ fn works_with_adam_weight_decay() {
     assert_eq!(opt.count(), 1);
 }
 
-#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(
+    feature = "regression",
+    feature = "alloc",
+    any(feature = "std", feature = "libm")
+))]
 #[test]
 fn works_with_logistic_regression() {
     use nexus_stats::regression::LogisticRegressionF64;
@@ -547,7 +563,11 @@ fn works_with_online_kmeans() {
 
 // === Realistic usage pattern ===
 
-#[cfg(all(feature = "regression", feature = "alloc", any(feature = "std", feature = "libm")))]
+#[cfg(all(
+    feature = "regression",
+    feature = "alloc",
+    any(feature = "std", feature = "libm")
+))]
 #[test]
 fn realistic_training_loop() {
     use nexus_stats::learning::AdamF64;

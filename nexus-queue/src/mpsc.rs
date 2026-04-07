@@ -244,7 +244,8 @@ impl<T> Producer<T> {
             // Check against cached head (avoids atomic load most of the time)
             if tail.wrapping_sub(self.cached_head.get()) >= self.capacity {
                 // Cache miss: refresh from shared head
-                self.cached_head.set(self.shared.head.load(Ordering::Acquire));
+                self.cached_head
+                    .set(self.shared.head.load(Ordering::Acquire));
 
                 // Re-check with fresh head - if still full, return error
                 if tail.wrapping_sub(self.cached_head.get()) >= self.capacity {

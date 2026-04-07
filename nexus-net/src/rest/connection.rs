@@ -11,13 +11,13 @@ use super::error::RestError;
 use super::request::RequestWriter;
 
 #[cfg(not(feature = "tokio"))]
-use std::io::{self, Read, Write};
-#[cfg(not(feature = "tokio"))]
 use super::request::Request;
 #[cfg(not(feature = "tokio"))]
 use super::response::RestResponse;
 #[cfg(not(feature = "tokio"))]
 use crate::http::{HttpError, ResponseReader};
+#[cfg(not(feature = "tokio"))]
+use std::io::{self, Read, Write};
 
 #[cfg(feature = "tls")]
 use crate::tls::TlsConfig;
@@ -266,7 +266,11 @@ impl ClientBuilder {
     /// The stream must already handle TLS if connecting to `https://`.
     /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
     #[cfg(not(feature = "tokio"))]
-    pub fn connect_with<S: Read + Write>(self, stream: S, url: &str) -> Result<Client<S>, RestError> {
+    pub fn connect_with<S: Read + Write>(
+        self,
+        stream: S,
+        url: &str,
+    ) -> Result<Client<S>, RestError> {
         // Validate the URL even though we don't use it for connection —
         // catches malformed URLs early rather than at first request.
         parse_base_url(url)?;

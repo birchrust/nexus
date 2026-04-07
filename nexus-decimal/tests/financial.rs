@@ -525,7 +525,12 @@ fn write_to_buf_matches_display() {
         let mut buf = [0u8; 64];
         let len = d.write_to_buf(&mut buf);
         let buf_str = std::str::from_utf8(&buf[..len]).unwrap();
-        assert_eq!(buf_str, display_str.as_str(), "mismatch for raw={}", d.to_raw());
+        assert_eq!(
+            buf_str,
+            display_str.as_str(),
+            "mismatch for raw={}",
+            d.to_raw()
+        );
     }
 }
 
@@ -536,7 +541,7 @@ fn write_to_buf_matches_display() {
 #[test]
 fn ceil_to_tick_basic() {
     let price = D64::new(1, 23_000_000); // 1.23
-    let tick = D64::new(0, 5_000_000);   // 0.05
+    let tick = D64::new(0, 5_000_000); // 0.05
     let result = price.ceil_to_tick(tick).unwrap();
     assert_eq!(result, D64::new(1, 25_000_000)); // 1.25
 }
@@ -544,7 +549,7 @@ fn ceil_to_tick_basic() {
 #[test]
 fn ceil_to_tick_already_aligned() {
     let price = D64::new(1, 25_000_000); // 1.25
-    let tick = D64::new(0, 25_000_000);  // 0.25
+    let tick = D64::new(0, 25_000_000); // 0.25
     let result = price.ceil_to_tick(tick).unwrap();
     assert_eq!(result, price);
 }

@@ -140,10 +140,7 @@ impl Drop for SlabGuard {
 /// - If no slab is configured.
 /// - If the slab is full (bounded slab).
 /// - If the task exceeds the slab's slot size.
-pub(crate) fn slab_spawn<F: Future<Output = ()> + 'static>(
-    future: F,
-    tracker_key: u32,
-) -> *mut u8 {
+pub(crate) fn slab_spawn<F: Future<Output = ()> + 'static>(future: F, tracker_key: u32) -> *mut u8 {
     let task = Task::new_with_free(future, tracker_key, slab_free_task);
     let size = std::mem::size_of_val(&task);
     let src = std::ptr::from_ref(&task).cast::<u8>();
@@ -322,26 +319,20 @@ pub(crate) fn make_bounded_config<const S: usize>(slab_ptr: *const u8) -> SlabTl
 
 unsafe fn unbounded_claim<const S: usize>(src: *const u8, size: usize) -> *mut u8 {
     let slab_ptr = SLAB_PTR.with(Cell::get);
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>) };
     unsafe { slab.alloc_raw(src, size) }
 }
 
 unsafe fn unbounded_free<const S: usize>(ptr: *mut u8) {
     let slab_ptr = SLAB_PTR.with(Cell::get);
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>) };
     let slot = unsafe { nexus_slab::byte::Slot::<u8>::from_raw(ptr) };
     slab.free(slot);
 }
 
 unsafe fn unbounded_try_claim<const S: usize>() -> (*mut u8, usize) {
     let slab_ptr = SLAB_PTR.with(Cell::get);
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>) };
     let claim = slab.claim();
     let ptr = claim.as_ptr();
     let chunk_idx = claim.chunk_idx();
@@ -355,9 +346,7 @@ unsafe fn unbounded_claim_free<const S: usize>(
     ptr: *mut u8,
     chunk_idx: usize,
 ) {
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::unbounded::Slab<S>) };
     // O(1) — goes directly to the correct chunk's freelist.
     unsafe { slab.free_raw_in_chunk(ptr, chunk_idx) };
 }
@@ -366,26 +355,20 @@ unsafe fn unbounded_claim_free<const S: usize>(
 
 unsafe fn bounded_claim<const S: usize>(src: *const u8, size: usize) -> *mut u8 {
     let slab_ptr = SLAB_PTR.with(Cell::get);
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>) };
     unsafe { slab.alloc_raw(src, size) }
 }
 
 unsafe fn bounded_free<const S: usize>(ptr: *mut u8) {
     let slab_ptr = SLAB_PTR.with(Cell::get);
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>) };
     let slot = unsafe { nexus_slab::byte::Slot::<u8>::from_raw(ptr) };
     slab.free(slot);
 }
 
 unsafe fn bounded_try_claim<const S: usize>() -> (*mut u8, usize) {
     let slab_ptr = SLAB_PTR.with(Cell::get);
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>)
-    };
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>) };
     slab.try_claim().map_or((std::ptr::null_mut(), 0), |claim| {
         let ptr = claim.as_ptr();
         std::mem::forget(claim);
@@ -393,13 +376,7 @@ unsafe fn bounded_try_claim<const S: usize>() -> (*mut u8, usize) {
     })
 }
 
-unsafe fn bounded_claim_free<const S: usize>(
-    slab_ptr: *const u8,
-    ptr: *mut u8,
-    _chunk_idx: usize,
-) {
-    let slab = unsafe {
-        &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>)
-    };
+unsafe fn bounded_claim_free<const S: usize>(slab_ptr: *const u8, ptr: *mut u8, _chunk_idx: usize) {
+    let slab = unsafe { &*(slab_ptr as *const nexus_slab::byte::bounded::Slab<S>) };
     unsafe { slab.free_raw(ptr) };
 }
