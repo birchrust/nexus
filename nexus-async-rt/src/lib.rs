@@ -271,18 +271,31 @@ impl Executor {
     }
 
     /// Complete a task: handle joinable vs fire-and-forget paths.
+    ///
+    /// Three branches based on task state:
+    /// - **Aborted:** drop F (still live — poll_join short-circuited), notify joiner
+    /// - **Joinable (HAS_JOIN):** T is live in the union, don't touch it — JoinHandle owns it
+    /// - **Fire-and-forget / detached:** drop the value (F or T) and free
+    ///
+    /// # Safety invariants
+    ///
+    /// `ptr` must point to a task that just returned `Poll::Ready(())` from poll_task.
+    /// All accessor calls are safe because the task is live and single-threaded.
     fn complete_task(&mut self, ptr: *mut u8) {
         let aborted = unsafe { task::is_aborted(ptr) };
 
         if aborted {
-            // Aborted task — future is still live (poll_join returned early).
-            // Drop the future, mark completed, wake joiner if any.
+            // Aborted: poll_join saw ABORTED and returned Ready without polling F.
+            // F is still live in the union. drop_fn still targets F.
+            // SAFETY: drop_fn = drop_future_in_union::<F>, F is live.
             unsafe { task::drop_task_future(ptr) };
             unsafe { task::set_completed(ptr) };
             self.live_count -= 1;
 
             if unsafe { task::has_join(ptr) } {
-                // Wake joiner — it will see ABORTED and panic.
+                // JoinHandle still alive — wake it. It will see ABORTED and panic.
+                // (In practice, abort() consumes the handle, so has_join is false.
+                // This branch exists for defensive correctness.)
                 let waker = unsafe { task::take_join_waker(ptr) };
                 if let Some(w) = waker {
                     w.wake();
@@ -293,33 +306,40 @@ impl Executor {
             let should_free = unsafe { task::ref_dec(ptr) };
             if should_free {
                 let key = unsafe { task::tracker_key(ptr) } as usize;
+                // SAFETY: future already dropped above, refcount 0.
                 unsafe { task::free_task(ptr) };
                 self.all_tasks.remove(key);
             }
         } else if unsafe { task::has_join(ptr) } {
-            // Joinable task completed normally — output is live in the slot.
-            // Don't drop it — JoinHandle will read or drop it.
+            // Joinable: poll_join dropped F and wrote T. drop_fn = drop_output::<T>.
+            // Don't drop T — JoinHandle will read it (ptr::read) or drop it (on handle drop).
             unsafe { task::set_completed(ptr) };
             self.live_count -= 1;
 
-            // Wake the joiner (parent task awaiting the JoinHandle).
+            // Wake the joiner so it can poll the JoinHandle and read T.
             let waker = unsafe { task::take_join_waker(ptr) };
             if let Some(w) = waker {
                 w.wake();
             }
 
-            // Release executor's reference. JoinHandle still holds one.
+            // Release executor's reference. JoinHandle still holds one (refcount >= 1).
             let should_free = unsafe { task::ref_dec(ptr) };
             if should_free {
-                // JoinHandle already dropped (detached after completion).
-                // Output was never read — drop it, then free.
+                // Refcount hit 0 — JoinHandle was already dropped (detached).
+                // HAS_JOIN was cleared by JoinHandle::Drop, but we checked it before
+                // the flag was cleared (this branch). Output T was never read.
+                // SAFETY: drop_fn = drop_output::<T>, T is live.
                 unsafe { task::drop_task_future(ptr) };
                 let key = unsafe { task::tracker_key(ptr) } as usize;
                 unsafe { task::free_task(ptr) };
                 self.all_tasks.remove(key);
             }
         } else {
-            // Fire-and-forget or detached — drop the value and free.
+            // Fire-and-forget or detached (HAS_JOIN cleared by JoinHandle::Drop).
+            // SAFETY: If the task had a JoinHandle that was dropped before completion,
+            // drop_fn still targets F (poll_join hasn't completed yet — it returned
+            // Ready(()) meaning F→T happened, so drop_fn = drop_output::<T>).
+            // Either way, drop_fn targets the correct live value.
             unsafe { task::drop_task_future(ptr) };
             unsafe { task::set_completed(ptr) };
             self.live_count -= 1;
