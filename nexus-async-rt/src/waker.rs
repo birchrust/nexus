@@ -322,6 +322,20 @@ mod tests {
     }
 }
 
+/// Queue a completed task slot for deferred freeing.
+///
+/// Called when the last reference drops (refcount hits 0) — either from
+/// a waker drop or from JoinHandle::Drop.
+///
+/// # Safety
+///
+/// `ptr` must point to a completed task slot.
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn defer_free(ptr: *mut u8) {
+    unsafe { free_completed_slot(ptr) };
+}
+
 /// Queue a completed task slot for deferred freeing. Called when the
 /// last waker clone drops (refcount hits 0).
 ///
