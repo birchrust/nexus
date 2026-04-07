@@ -47,5 +47,13 @@ tokio-rustls = "0.26"
 [[example]]
 name = "perf_async_ws"
 
+[[example]]
+name = "perf_ws_cycles_tokio"
+required-features = ["tokio-rt"]
+
+[[example]]
+name = "perf_ws_cycles_nexus"
+required-features = ["nexus"]
+
 [lints]
 workspace = true

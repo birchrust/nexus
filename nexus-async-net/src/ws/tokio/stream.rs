@@ -80,17 +80,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
                 return Ok(self.reader.next()?);
             }
 
-            let spare = self.reader.spare();
-            if spare.is_empty() {
+            if self.reader.spare().is_empty() {
                 self.reader.compact();
-                let spare = self.reader.spare();
-                if spare.is_empty() {
+                if self.reader.spare().is_empty() {
                     return Ok(None); // buffer genuinely full
                 }
             }
 
-            let spare = self.reader.spare();
-            let n = self.stream.read(spare).await?;
+            let n = self.stream.read(self.reader.spare()).await?;
             if n == 0 {
                 return Ok(None); // EOF
             }
