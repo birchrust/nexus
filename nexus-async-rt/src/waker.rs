@@ -322,6 +322,25 @@ mod tests {
     }
 }
 
+/// Queue a completed task slot for deferred freeing.
+///
+/// Called when the last reference drops (refcount hits 0) — either from
+/// a waker drop or from JoinHandle::Drop.
+///
+/// If called outside a poll cycle (DEFERRED_FREE TLS is null), the slot
+/// is **not freed** — it will be reclaimed by `Executor::drop`. This is
+/// acceptable for correctness but means tasks whose last ref drops outside
+/// `block_on` are cleaned up lazily.
+///
+/// # Safety
+///
+/// `ptr` must point to a completed task slot.
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn defer_free(ptr: *mut u8) {
+    unsafe { free_completed_slot(ptr) };
+}
+
 /// Queue a completed task slot for deferred freeing. Called when the
 /// last waker clone drops (refcount hits 0).
 ///

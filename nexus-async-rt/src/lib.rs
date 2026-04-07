@@ -67,18 +67,21 @@ pub use net::{
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
 pub use runtime::{Runtime, RuntimeBuilder, claim_slab, spawn_boxed, spawn_slab, try_claim_slab};
 pub use shutdown::{ShutdownHandle, ShutdownSignal};
-pub use task::{TASK_HEADER_SIZE, TaskId};
+pub use task::{JoinHandle, TASK_HEADER_SIZE};
 pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHandle, YieldNow};
 pub use world_ctx::WorldCtx;
 
 use std::future::Future;
 use std::task::Poll;
 
-use task::Task;
 use waker::{ReusableWaker, set_poll_context};
 
-/// Minimum slab slot size: 64 bytes (32 for task header + 32 for future).
-pub const MIN_SLOT_SIZE: usize = 64;
+/// Recommended minimum slab slot size.
+///
+/// The actual minimum depends on the task: header (64 bytes) + `max(size_of::<F>(),
+/// size_of::<T>())`. ZST futures need only 64 bytes. 128 is a conservative default
+/// that covers most small futures.
+pub const MIN_SLOT_SIZE: usize = 128;
 
 // =============================================================================
 // Executor
@@ -138,30 +141,30 @@ impl Executor {
         key as u32
     }
 
-    /// Spawn an async task via Box allocation. Returns its [`TaskId`].
-    pub fn spawn_boxed<F>(&mut self, future: F) -> TaskId
+    /// Spawn an async task via Box allocation. Returns a [`JoinHandle`]
+    /// that can be awaited for the task's output.
+    pub fn spawn_boxed<F>(&mut self, future: F) -> task::JoinHandle<F::Output>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future + 'static,
+        F::Output: 'static,
     {
         let tracker_key = self.all_tasks.vacant_key();
         debug_assert!(
             u32::try_from(tracker_key).is_ok(),
             "more than 4 billion concurrent tasks — tracker_key overflow"
         );
-        let task = Task::new_boxed(future, tracker_key as u32);
-        let ptr = Box::into_raw(Box::new(task)) as *mut u8;
+        let ptr = task::box_spawn_joinable(future, tracker_key as u32);
 
         self.enqueue(ptr);
-        TaskId(ptr)
+        task::JoinHandle::new(ptr)
     }
 
     /// Spawn a task with a pre-allocated pointer (from slab).
     ///
-    /// The task at `ptr` must have been constructed with `Task::new_with_free`
-    /// and a valid `free_fn` for the slab allocator.
-    pub(crate) fn spawn_raw(&mut self, ptr: *mut u8) -> TaskId {
+    /// The task at `ptr` must have been constructed with joinable or
+    /// fire-and-forget constructors and a valid `free_fn`.
+    pub(crate) fn spawn_raw(&mut self, ptr: *mut u8) {
         self.enqueue(ptr);
-        TaskId(ptr)
     }
 
     /// Common enqueue logic for spawn and spawn_raw.
@@ -262,17 +265,66 @@ impl Executor {
         self.tasks_per_cycle = limit;
     }
 
-    /// Complete a task: drop future, mark completed, release refcount.
+    /// Complete a task: handle joinable vs fire-and-forget paths.
     fn complete_task(&mut self, ptr: *mut u8) {
-        unsafe { task::drop_task_future(ptr) };
-        unsafe { task::set_completed(ptr) };
-        self.live_count -= 1;
+        let aborted = unsafe { task::is_aborted(ptr) };
 
-        let should_free = unsafe { task::ref_dec(ptr) };
-        if should_free {
-            let key = unsafe { task::tracker_key(ptr) } as usize;
-            unsafe { task::free_task(ptr) };
-            self.all_tasks.remove(key);
+        if aborted {
+            // Aborted task — future is still live (poll_join returned early).
+            // Drop the future, mark completed, wake joiner if any.
+            unsafe { task::drop_task_future(ptr) };
+            unsafe { task::set_completed(ptr) };
+            self.live_count -= 1;
+
+            if unsafe { task::has_join(ptr) } {
+                // Wake joiner — it will see ABORTED and panic.
+                let waker = unsafe { task::take_join_waker(ptr) };
+                if let Some(w) = waker {
+                    w.wake();
+                }
+            }
+
+            // Release executor's reference.
+            let should_free = unsafe { task::ref_dec(ptr) };
+            if should_free {
+                let key = unsafe { task::tracker_key(ptr) } as usize;
+                unsafe { task::free_task(ptr) };
+                self.all_tasks.remove(key);
+            }
+        } else if unsafe { task::has_join(ptr) } {
+            // Joinable task completed normally — output is live in the slot.
+            // Don't drop it — JoinHandle will read or drop it.
+            unsafe { task::set_completed(ptr) };
+            self.live_count -= 1;
+
+            // Wake the joiner (parent task awaiting the JoinHandle).
+            let waker = unsafe { task::take_join_waker(ptr) };
+            if let Some(w) = waker {
+                w.wake();
+            }
+
+            // Release executor's reference. JoinHandle still holds one.
+            let should_free = unsafe { task::ref_dec(ptr) };
+            if should_free {
+                // JoinHandle already dropped (detached after completion).
+                // Output was never read — drop it, then free.
+                unsafe { task::drop_task_future(ptr) };
+                let key = unsafe { task::tracker_key(ptr) } as usize;
+                unsafe { task::free_task(ptr) };
+                self.all_tasks.remove(key);
+            }
+        } else {
+            // Fire-and-forget or detached — drop the value and free.
+            unsafe { task::drop_task_future(ptr) };
+            unsafe { task::set_completed(ptr) };
+            self.live_count -= 1;
+
+            let should_free = unsafe { task::ref_dec(ptr) };
+            if should_free {
+                let key = unsafe { task::tracker_key(ptr) } as usize;
+                unsafe { task::free_task(ptr) };
+                self.all_tasks.remove(key);
+            }
         }
     }
 
@@ -293,7 +345,8 @@ impl Executor {
     }
 
     /// Cancel a task by ID.
-    pub fn cancel(&mut self, id: TaskId) {
+    #[allow(dead_code)]
+    pub(crate) fn cancel(&mut self, id: task::TaskId) {
         let ptr = id.0;
         // Skip if already completed (e.g. double-cancel or cancel after poll).
         if unsafe { task::is_completed(ptr) } {
@@ -307,9 +360,13 @@ impl Executor {
 
 impl Drop for Executor {
     fn drop(&mut self) {
-        // Free deferred slots first (completed tasks whose last waker dropped).
+        // Free deferred slots first (completed tasks whose last ref dropped).
         for ptr in self.deferred_free.drain(..) {
+            let key = unsafe { task::tracker_key(ptr) } as usize;
             unsafe { task::free_task(ptr) };
+            if self.all_tasks.contains(key) {
+                self.all_tasks.remove(key);
+            }
         }
 
         for (_, &ptr) in &self.all_tasks {
@@ -321,12 +378,17 @@ impl Drop for Executor {
             }
 
             let rc = unsafe { task::ref_count(ptr) };
-            debug_assert!(
-                rc == 0,
-                "executor dropped with {} outstanding waker clone(s) — \
-                 all wakers must be dropped before the Runtime",
-                rc,
-            );
+            if rc > 0 {
+                // Outstanding references (wakers or JoinHandles) still alive.
+                // Freeing would create dangling pointers — leak instead.
+                // This is a bug in the caller, but leak > UB.
+                debug_assert!(
+                    false,
+                    "executor dropped with {rc} outstanding reference(s) — \
+                     all wakers and JoinHandles must be dropped before the Runtime",
+                );
+                continue;
+            }
 
             unsafe { task::free_task(ptr) };
         }
@@ -343,6 +405,7 @@ mod tests {
     use std::hint::black_box;
     use std::pin::Pin;
     use std::task::Context;
+    use task::Task;
 
     fn test_executor() -> Executor {
         Executor::new(16)
@@ -468,20 +531,23 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn cancel_task() {
+    fn abort_task() {
         let mut exec = test_executor();
-        let id = exec.spawn_boxed(std::future::pending::<()>());
+        let handle = exec.spawn_boxed(std::future::pending::<()>());
 
         assert_eq!(exec.task_count(), 1);
-        exec.cancel(id);
+        assert!(handle.abort()); // was running, handle consumed
+        exec.poll(); // abort takes effect on next poll
         assert_eq!(exec.task_count(), 0);
     }
 
     #[test]
-    fn cancel_frees_slot_for_reuse() {
+    fn abort_frees_slot_for_reuse() {
         let mut exec = test_executor();
-        let id = exec.spawn_boxed(std::future::pending::<()>());
-        exec.cancel(id);
+        let handle = exec.spawn_boxed(std::future::pending::<()>());
+        handle.abort(); // consumes handle
+
+        exec.poll(); // process abort + deferred free
 
         // Should be able to spawn again.
         exec.spawn_boxed(async {});
@@ -546,20 +612,20 @@ mod tests {
             }
         }
 
-        let id = exec.spawn_boxed(WakeOnce(false));
+        let handle = exec.spawn_boxed(WakeOnce(false));
 
         // First poll: sets is_queued again via wake_by_ref.
         exec.poll();
 
-        // Cancel while the task is in the ready queue.
-        exec.cancel(id);
+        // Abort while the task is in the ready queue (consumes handle).
+        handle.abort();
 
         // Spawn a new task to prove we don't crash on the stale pointer.
         exec.spawn_boxed(async move {
             p.set(true);
         });
 
-        exec.poll();
+        exec.poll(); // processes abort + new task
         assert!(polled.get());
     }
 

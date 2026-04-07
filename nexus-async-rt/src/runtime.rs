@@ -23,8 +23,9 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use crate::io::IoDriver;
+use crate::task::JoinHandle;
 use crate::timer::TimerDriver;
-use crate::{Executor, TaskId, WorldCtx};
+use crate::{Executor, WorldCtx};
 
 /// Default number of loop iterations between non-blocking IO polls.
 /// Matches tokio's heuristic (61, originally from Go's scheduler).
@@ -42,8 +43,8 @@ thread_local! {
 
 /// Spawn a Box-allocated task into the current runtime.
 ///
-/// The future is Box-allocated — no slab setup needed. For zero-alloc
-/// spawning on the hot path, use [`spawn_slab`] with a configured slab.
+/// Returns a [`JoinHandle`] that can be awaited for the task's output.
+/// Drop the handle to detach the task.
 ///
 /// Must be called from within [`Runtime::block_on`] or
 /// [`Runtime::block_on_busy`]. Panics otherwise.
@@ -51,9 +52,10 @@ thread_local! {
 /// # Panics
 ///
 /// - If called outside a runtime context.
-pub fn spawn_boxed<F>(future: F) -> TaskId
+pub fn spawn_boxed<F>(future: F) -> JoinHandle<F::Output>
 where
-    F: Future<Output = ()> + 'static,
+    F: Future + 'static,
+    F::Output: 'static,
 {
     CURRENT.with(|cell| {
         let ptr = cell.get();
@@ -69,9 +71,9 @@ where
 
 /// Spawn a slab-allocated task into the current runtime.
 ///
+/// Returns a [`JoinHandle`] that can be awaited for the task's output.
 /// Zero allocation — the task is placed directly into a pre-allocated
-/// slab slot via TLS. Requires a slab configured via
-/// [`RuntimeBuilder::slab_unbounded`] or [`RuntimeBuilder::slab_bounded`].
+/// slab slot via TLS.
 ///
 /// # Panics
 ///
@@ -79,9 +81,10 @@ where
 /// - If no slab is configured.
 /// - If the slab is full (bounded slab).
 /// - If the task future exceeds the slab's slot capacity.
-pub fn spawn_slab<F>(future: F) -> TaskId
+pub fn spawn_slab<F>(future: F) -> JoinHandle<F::Output>
 where
-    F: Future<Output = ()> + 'static,
+    F: Future + 'static,
+    F::Output: 'static,
 {
     CURRENT.with(|cell| {
         let ptr = cell.get();
@@ -92,7 +95,8 @@ where
         let executor = unsafe { &mut *ptr };
         let tracker_key = executor.next_tracker_key();
         let task_ptr = crate::alloc::slab_spawn(future, tracker_key);
-        executor.spawn_raw(task_ptr)
+        executor.spawn_raw(task_ptr);
+        JoinHandle::new(task_ptr)
     })
 }
 
@@ -1191,5 +1195,170 @@ mod tests {
                 Poll::Pending
             }
         }
+    }
+
+    // =========================================================================
+    // JoinHandle tests
+    // =========================================================================
+
+    #[test]
+    fn join_handle_await_gets_value() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            let handle = spawn_boxed(async { 42u64 });
+            let result = handle.await;
+            assert_eq!(result, 42);
+        });
+    }
+
+    #[test]
+    fn join_handle_await_string() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            let handle = spawn_boxed(async { String::from("hello world") });
+            let result = handle.await;
+            assert_eq!(result, "hello world");
+        });
+    }
+
+    #[test]
+    fn join_handle_detach() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let ran = Rc::new(Cell::new(false));
+        let r = ran.clone();
+
+        rt.block_on(async move {
+            // Spawn and immediately drop handle (detach).
+            drop(spawn_boxed(async move {
+                r.set(true);
+            }));
+            // Yield to let the spawned task run.
+            crate::context::yield_now().await;
+        });
+
+        assert!(ran.get());
+    }
+
+    #[test]
+    fn join_handle_is_finished() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            let handle = spawn_boxed(async { 1 });
+            // The task hasn't been polled yet.
+            assert!(!handle.is_finished());
+            // Yield to let the task run.
+            crate::context::yield_now().await;
+            assert!(handle.is_finished());
+            let val = handle.await;
+            assert_eq!(val, 1);
+        });
+    }
+
+    #[test]
+    fn join_handle_abort_returns_true() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            let handle = spawn_boxed(std::future::pending::<()>());
+            assert!(handle.abort()); // was running, handle consumed
+        });
+    }
+
+    #[test]
+    fn join_handle_abort_completed_returns_false() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            let handle = spawn_boxed(async { 42 });
+            crate::context::yield_now().await;
+            assert!(handle.is_finished());
+            assert!(!handle.abort()); // already done, handle consumed
+        });
+    }
+
+    #[test]
+    fn join_handle_drop_after_completion_drops_output() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        let drop_count = Rc::new(Cell::new(0u32));
+        let dc = drop_count.clone();
+
+        struct DropCounter(Rc<Cell<u32>>);
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        rt.block_on(async move {
+            let handle = spawn_boxed(async move { DropCounter(dc) });
+            // Let it complete.
+            crate::context::yield_now().await;
+            assert!(handle.is_finished());
+            // Drop handle without reading — output should be dropped.
+            drop(handle);
+        });
+
+        assert_eq!(drop_count.get(), 1, "output should be dropped exactly once");
+    }
+
+    #[test]
+    fn join_handle_multiple_concurrent() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            let h1 = spawn_boxed(async { 10u64 });
+            let h2 = spawn_boxed(async { 20u64 });
+            let h3 = spawn_boxed(async { 30u64 });
+
+            let r3 = h3.await;
+            let r1 = h1.await;
+            let r2 = h2.await;
+
+            assert_eq!(r1, 10);
+            assert_eq!(r2, 20);
+            assert_eq!(r3, 30);
+        });
+    }
+
+    #[test]
+    fn join_handle_output_larger_than_future() {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            // The future is tiny, the output is large.
+            let handle = spawn_boxed(async { [42u64; 32] });
+            let result = handle.await;
+            assert_eq!(result[0], 42);
+            assert_eq!(result[31], 42);
+        });
     }
 }

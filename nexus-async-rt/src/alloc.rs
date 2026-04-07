@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::future::Future;
 
-use crate::task::Task;
+// Task construction goes through crate::task::{new_joinable_slab, ...}
 
 // =============================================================================
 // TLS slots
@@ -133,15 +133,19 @@ impl Drop for SlabGuard {
 // spawn_slab — allocate + enqueue in one step
 // =============================================================================
 
-/// Allocate a task in the slab and return its raw pointer.
+/// Allocate a joinable task in the slab and return its raw pointer.
 ///
 /// # Panics
 ///
 /// - If no slab is configured.
 /// - If the slab is full (bounded slab).
 /// - If the task exceeds the slab's slot size.
-pub(crate) fn slab_spawn<F: Future<Output = ()> + 'static>(future: F, tracker_key: u32) -> *mut u8 {
-    let task = Task::new_with_free(future, tracker_key, slab_free_task);
+pub(crate) fn slab_spawn<F>(future: F, tracker_key: u32) -> *mut u8
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
+    let task = crate::task::new_joinable_slab(future, tracker_key, slab_free_task);
     let size = std::mem::size_of_val(&task);
     let src = std::ptr::from_ref(&task).cast::<u8>();
 
@@ -190,10 +194,14 @@ impl SlabClaim {
     ///
     /// Consumes the claim. The future is constructed, placed in the
     /// slab slot, and pushed to the executor's ready queue.
-    pub fn spawn<F: Future<Output = ()> + 'static>(self, future: F) -> crate::TaskId {
+    pub fn spawn<F>(self, future: F) -> crate::task::JoinHandle<F::Output>
+    where
+        F: Future + 'static,
+        F::Output: 'static,
+    {
         crate::runtime::with_executor(|exec| {
             let tracker_key = exec.next_tracker_key();
-            let task = Task::new_with_free(future, tracker_key, slab_free_task);
+            let task = crate::task::new_joinable_slab(future, tracker_key, slab_free_task);
             let size = std::mem::size_of_val(&task);
 
             assert!(
@@ -211,7 +219,8 @@ impl SlabClaim {
             // Don't run Drop — the slot is now occupied.
             std::mem::forget(self);
 
-            exec.spawn_raw(ptr)
+            exec.spawn_raw(ptr);
+            crate::task::JoinHandle::new(ptr)
         })
     }
 
