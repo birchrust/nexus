@@ -23,19 +23,19 @@ get back the slot you just freed — still hot in L1).
 ┌─────────────────────────────────────────────┐
 │              User Code                       │
 │                                              │
-│  let slot = Allocator::try_alloc(value)?;    │
+│  let slot = slab.alloc(value);               │
 │  // use *slot                                │
-│  unsafe { Allocator::free(slot); }           │
-└──────────────┬──────────────────────────┬────┘
-               │                          │
-       ┌───────▼────────┐        ┌────────▼────────┐
-       │  Macro-Generated │        │   Direct API     │
-       │  TLS Allocator   │        │   (bounded::Slab, │
-       │  (zero-sized,    │        │    unbounded::Slab)│
-       │   thread-local)  │        │                   │
-       └───────┬──────────┘        └────────┬──────────┘
-               │                            │
-               ▼                            ▼
+│  slab.free(slot);                            │
+└──────────────────────┬───────────────────────┘
+                       │
+               ┌───────▼──────────────────┐
+               │   bounded::Slab           │
+               │   unbounded::Slab         │
+               │   byte::bounded::Slab     │
+               │   byte::unbounded::Slab   │
+               └───────┬──────────────────┘
+                       │
+                       ▼
        ┌──────────────────────────────────────────┐
        │            SlotCell<T> Array              │
        │                                           │
@@ -62,54 +62,46 @@ no reallocation of existing slots. Existing handles remain valid across
 growth. A small latency spike (~40 cycles) on the allocation that triggers
 growth; all other allocations are ~20 cycles.
 
-## Two Usage Patterns
+## Usage
 
-### Direct API — `bounded::Slab` / `unbounded::Slab`
-
-Create a slab, allocate into it, free from it. You own the slab.
+Create a slab, allocate into it, free from it. Construction is `unsafe`
+because it opts into manual memory management — see the struct-level
+docs for the full safety contract.
 
 ```rust
 use nexus_slab::bounded;
 
-let slab = bounded::Slab::<String>::with_capacity(1024);
+// SAFETY: caller upholds the slab contract
+let slab = unsafe { bounded::Slab::<String>::with_capacity(1024) };
 let slot = slab.alloc("hello".to_string());
 
 // Use the value
 println!("{}", *slot);  // Deref to &String
 
-// Free the slot
-unsafe { slab.free(slot); }
+// Free the slot — safe, consumes the handle
+slab.free(slot);
 ```
 
-### Macro Allocators — TLS-backed
-
-Generate a thread-local allocator via macro. The allocator is a zero-sized
-unit struct. Allocation goes through TLS.
+For unbounded slabs with multiple configuration knobs, use the builder:
 
 ```rust
-mod my_alloc {
-    nexus_slab::bounded_allocator!(MyType);
-}
+use nexus_slab::unbounded;
 
-// Initialize (once per thread)
-my_alloc::Allocator::builder().capacity(1024).build();
-
-// Allocate via BoxSlot (RAII — auto-frees on drop)
-let item = my_alloc::BoxSlot::try_new(MyType::default()).unwrap();
+let slab = unsafe {
+    unbounded::Builder::new()
+        .chunk_capacity(4096)
+        .initial_chunks(4)
+        .build::<String>()
+};
 ```
-
-See [Macro Allocators](macros.md) for details.
 
 ## Handle Types
 
 | Handle | Ownership | Drop behavior |
 |--------|-----------|---------------|
-| `RawSlot<T>` | Move-only, no RAII | Must call `free()` explicitly |
-| `BoxSlot<T, A>` | Move-only, RAII | Frees slot on drop |
-| `RcSlot<T, A>` | Reference-counted | Frees when last strong ref drops |
-| `WeakSlot<T, A>` | Weak reference | Does not prevent deallocation |
+| `Slot<T>` | Move-only, no RAII | Must call `free()` explicitly |
 
-See [BoxSlot & RcSlot](smart-handles.md) for details.
+See [Byte Slab](byte-slab.md) for type-erased storage with `byte::Slot<T>`.
 
 ## Performance
 
