@@ -195,6 +195,7 @@ impl FrameReader {
     }
 
     /// Parse the next complete message.
+    #[inline]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Message<'_>>, ProtocolError> {
         // If poll() already prepared a message, return it
@@ -211,6 +212,7 @@ impl FrameReader {
 
     /// Advance the parser without constructing a Message.
     /// Returns `true` if the next call to `next()` will return a message.
+    #[inline]
     pub fn poll(&mut self) -> Result<bool, ProtocolError> {
         if self.pending_opcode.is_some() {
             return Ok(true);
@@ -291,6 +293,7 @@ impl FrameReader {
     ///
     /// For single-frame messages: payload stays in ReadBuf (zero-copy).
     /// For assembled messages: payload accumulated in msg_buf.
+    #[inline]
     fn pump(&mut self) -> Result<Option<RawOpcode>, ProtocolError> {
         loop {
             let state = self.state;
