@@ -688,7 +688,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Stream for WsStream<S> {
             if this.reader.spare().is_empty() {
                 this.reader.compact();
                 if this.reader.spare().is_empty() {
-                    return Poll::Ready(None); // buffer genuinely full
+                    // Buffer full is not EOF — return an error so Stream
+                    // consumers don't silently stop receiving.
+                    return Poll::Ready(Some(Err(
+                        std::io::Error::other("websocket read buffer full").into(),
+                    )));
                 }
             }
 

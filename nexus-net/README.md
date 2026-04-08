@@ -88,68 +88,12 @@ Each layer is a pure state machine. No syscalls, no sockets, no async.
 Bytes in, messages out. The I/O layer is yours — mio, io_uring, tokio,
 raw `libc::read`, kernel bypass.
 
-## Async Runtimes
+## Async Adapters
 
-nexus-net supports two async runtimes via mutually exclusive feature flags.
-Without either flag, you get the blocking sync API.
-
-```toml
-[dependencies]
-# Blocking sync API (default)
-nexus-net = { version = "0.3", features = ["tls"] }
-
-# nexus-async-rt — single-threaded, zero-alloc dispatch, 58 cy p50
-# Best for dedicated trading threads where every microsecond matters.
-nexus-net = { version = "0.3", features = ["nexus-rt", "tls"] }
-
-# tokio — multi-threaded, ecosystem compatibility
-# Best when integrating with existing tokio services.
-nexus-net = { version = "0.3", features = ["tokio", "tls"] }
-```
-
-Both runtimes expose the same API — same method names, same types:
-
-```rust
-// This code works with either runtime. The feature flag selects the impl.
-let mut ws = ws::Client::connect_with(tcp, "ws://exchange.com/ws").await?;
-ws.send_text(r#"{"subscribe":"trades"}"#).await?;
-while let Some(msg) = ws.recv().await? {
-    handle(msg);
-}
-```
-
-| | nexus-async-rt | tokio |
-|---|---|---|
-| Threading | Single-threaded | Multi-threaded or current_thread |
-| Dispatch p50 | 58 cycles | 146 cycles |
-| Task alloc | Slab (pre-allocated) | Box (heap) |
-| Waker | Zero-alloc (raw pointer) | Arc-based |
-| IO driver | mio (direct) | mio (through tokio) |
-| Ecosystem | Standalone | Full tokio ecosystem |
-| Use case | Hot-path trading | Everything else |
-
-The codec is identical — same `FrameReader`, same `FrameWriter`, same zero-copy
-`Message<'_>`. The runtime only affects how `.await` is scheduled and how IO
-events are dispatched.
-
-### nexus-async-rt + ClientPool
-
-The `nexus-rt` feature also enables `rest::ClientPool` — a pre-allocated
-connection pool with LIFO acquire, bounded reconnect, and RAII guards:
-
-```rust
-let pool = rest::ClientPool::builder()
-    .url("https://api.exchange.com")
-    .base_path("/api/v3")
-    .connections(4)
-    .build()
-    .await?;
-
-let mut slot = pool.try_acquire().unwrap();
-let req = slot.writer.post("/order").body(json).finish()?;
-let (conn, reader) = slot.conn_and_reader()?;
-let resp = conn.send(req, reader).await?;
-```
+For async usage, see [nexus-async-net](https://crates.io/crates/nexus-async-net) —
+thin async wrappers over the same sans-IO primitives. Supports both tokio and
+nexus-async-rt (single-threaded, zero-alloc dispatch). The codec is identical;
+only the I/O scheduling differs.
 
 ## Quick Start
 

@@ -221,9 +221,13 @@ while let Some(msg) = ws.recv().await? {
 }
 ```
 
-### Stream/Sink (ergonomic)
+### Stream/Sink (ergonomic, tokio-rt only)
 
-`Stream<Item = Result<OwnedMessage, WsError>>` allocates per message but enables the full `StreamExt`/`SinkExt` combinator API. Use this when ergonomics matter more than nanoseconds.
+`Stream<Item = Result<OwnedMessage, WsError>>` allocates per message but
+enables the full `StreamExt`/`SinkExt` combinator API. Use this when
+ergonomics matter more than nanoseconds. Only available on the `tokio-rt`
+backend — the `nexus` backend uses direct `recv()`/`send_*()` methods
+for explicit poll-loop control.
 
 ```rust
 use futures::StreamExt;
