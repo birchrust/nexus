@@ -749,7 +749,11 @@ impl FrameReaderBuilder {
         self
     }
 
-    /// Shrink msg_buf when capacity exceeds this. Default: 256KB.
+    /// Shrink `msg_buf` (multi-frame assembly buffer) when its capacity exceeds
+    /// this threshold after a message is consumed. Default: 256KB.
+    ///
+    /// This is unrelated to [`compact_at`](Self::compact_at), which controls
+    /// proactive compaction of the `ReadBuf` (wire data buffer).
     #[must_use]
     pub fn compact_threshold(mut self, n: usize) -> Self {
         self.compact_threshold = n;

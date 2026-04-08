@@ -168,7 +168,7 @@ impl ClientPool {
     /// Spawn a local task to reconnect a dead slot.
     fn spawn_reconnect(&self, mut slot: Pooled<ClientSlot>) {
         let config = self.reconnect_config.clone();
-        nexus_async_rt::spawn_boxed(async move {
+        drop(nexus_async_rt::spawn_boxed(async move {
             const MAX_BACKOFF_MS: u64 = 5_000;
             let mut backoff_ms = 100u64;
 
@@ -181,7 +181,7 @@ impl ClientPool {
                 nexus_async_rt::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
             }
-        });
+        }));
     }
 
     async fn connect_one_with(

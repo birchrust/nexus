@@ -250,19 +250,22 @@ impl<T: 'static> Future for JoinHandle<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
         let ptr = self.ptr;
 
+        // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
         if unsafe { is_completed(ptr) } {
             let flags = unsafe { task_flags(ptr) };
             assert!(
                 flags & ABORTED == 0,
                 "polled JoinHandle after task was aborted"
             );
-            // Read output from union slot
+            // SAFETY: Task completed, so poll_join already transitioned the union
+            // from F to T. The output is live at storage_offset. ptr::read moves
+            // it out (bitwise copy). OUTPUT_TAKEN prevents double-read.
             let output_ptr = unsafe { ptr.add(storage_offset(ptr)) };
             let value = unsafe { std::ptr::read(output_ptr.cast::<T>()) };
             unsafe { set_flag(ptr, OUTPUT_TAKEN) };
             Poll::Ready(value)
         } else {
-            // Store our waker for completion notification
+            // SAFETY: Task still running, single-threaded — safe to write waker.
             unsafe { set_join_waker(ptr, cx.waker().clone()) };
             Poll::Pending
         }
@@ -307,11 +310,15 @@ impl<T> JoinHandle<T> {
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
         let ptr = self.ptr;
+        // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
+        // All accessor calls below are single-threaded and target valid
+        // header fields at known offsets.
         let flags = unsafe { task_flags(ptr) };
 
         if unsafe { is_completed(ptr) } && (flags & OUTPUT_TAKEN == 0) && (flags & ABORTED == 0) {
             // Task completed but output was never read — drop it.
-            // drop_fn was overwritten by poll_join to target T (not F).
+            // SAFETY: poll_join overwrote drop_fn to drop_output::<T>,
+            // so this drops the output T (not the future F).
             unsafe { drop_task_future(ptr) };
         }
 
@@ -320,15 +327,17 @@ impl<T> Drop for JoinHandle<T> {
 
         // If we previously polled to Pending, a cloned waker is stored in the
         // task. Clear it so the parent task's refcount isn't kept alive until
-        // the child completes.
+        // the child completes. take() returns None if no waker was stored.
         let _ = unsafe { take_join_waker(ptr) };
 
-        // Release our reference
+        // Release our reference. If refcount hits 0, the task is complete and
+        // all other refs (executor, wakers) are gone — defer the free.
         let should_free = unsafe { ref_dec(ptr) };
         if should_free {
-            // Task completed and no references alive — defer free
-            // We can't free directly here because we might be outside
-            // the poll cycle. Push to deferred free if available.
+            // SAFETY: refcount is 0, task is completed. Can't free directly
+            // because we may be outside the poll cycle. defer_free pushes to
+            // TLS deferred list (or leaks if TLS unavailable — Executor::drop
+            // catches those).
             unsafe { defer_free_slot(ptr) };
         }
     }
