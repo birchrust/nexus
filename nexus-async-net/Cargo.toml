@@ -43,6 +43,8 @@ sonic-rs = "0.3"
 rcgen = "0.13"
 rustls = { version = "0.23", features = ["std", "tls12", "aws_lc_rs"] }
 tokio-rustls = "0.26"
+nexus-rt = { path = "../nexus-rt" }
+nexus-async-rt = { path = "../nexus-async-rt" }
 
 [[example]]
 name = "perf_async_ws"

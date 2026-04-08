@@ -30,7 +30,7 @@ thread_local! {
 /// Install the cross-wake context in TLS. Returns a guard that clears
 /// it on drop.
 pub(crate) fn install_cross_wake(ctx: &Arc<CrossWakeContext>) -> CrossWakeGuard {
-    let prev = CTX_CROSS_WAKE.with(|c| c.replace(ctx as *const Arc<CrossWakeContext>));
+    let prev = CTX_CROSS_WAKE.with(|c| c.replace(std::ptr::from_ref(ctx)));
     CrossWakeGuard { prev }
 }
 

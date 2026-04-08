@@ -57,7 +57,7 @@ pub struct FrameReader {
     buf: ReadBuf,
     msg_buf: Vec<u8>,
     prealloc_capacity: usize,
-    compact_threshold: usize,
+    msg_buf_shrink_threshold: usize,
     /// ReadBuf compaction trigger: compact when consumed bytes exceed this.
     buf_compact_at: usize,
 
@@ -110,7 +110,7 @@ pub struct FrameReaderBuilder {
     pre_padding: usize,
     post_padding: usize,
     prealloc_capacity: usize,
-    compact_threshold: usize,
+    msg_buf_shrink_threshold: usize,
     compact_at: f64,
     max_frame_size: u64,
     max_message_size: usize,
@@ -126,7 +126,7 @@ impl FrameReader {
             pre_padding: 16,
             post_padding: 4,
             prealloc_capacity: 4096,
-            compact_threshold: 256 * 1024,
+            msg_buf_shrink_threshold: 256 * 1024,
             compact_at: 0.5,
             max_frame_size: 16 * 1024 * 1024,
             max_message_size: 16 * 1024 * 1024,
@@ -299,7 +299,7 @@ impl FrameReader {
     #[cold]
     fn do_cleanup_msg_buf(&mut self) {
         self.msg_buf.clear();
-        if self.msg_buf.capacity() > self.compact_threshold {
+        if self.msg_buf.capacity() > self.msg_buf_shrink_threshold {
             self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
         }
     }
@@ -755,8 +755,8 @@ impl FrameReaderBuilder {
     /// This is unrelated to [`compact_at`](Self::compact_at), which controls
     /// proactive compaction of the `ReadBuf` (wire data buffer).
     #[must_use]
-    pub fn compact_threshold(mut self, n: usize) -> Self {
-        self.compact_threshold = n;
+    pub fn msg_buf_shrink_threshold(mut self, n: usize) -> Self {
+        self.msg_buf_shrink_threshold = n;
         self
     }
 
@@ -819,7 +819,7 @@ impl FrameReaderBuilder {
             buf: ReadBuf::new(self.buffer_capacity, self.pre_padding, self.post_padding),
             msg_buf: Vec::with_capacity(self.prealloc_capacity),
             prealloc_capacity: self.prealloc_capacity,
-            compact_threshold: self.compact_threshold,
+            msg_buf_shrink_threshold: self.msg_buf_shrink_threshold,
             buf_compact_at,
             state: ParseState::Head,
             remaining_payload: 0,
@@ -1312,7 +1312,7 @@ mod tests {
         let mut r = FrameReader::builder()
             .role(Role::Client)
             .message_capacity(64)
-            .compact_threshold(256)
+            .msg_buf_shrink_threshold(256)
             .buffer_capacity(128 * 1024)
             .max_frame_size(128 * 1024)
             .max_message_size(128 * 1024)

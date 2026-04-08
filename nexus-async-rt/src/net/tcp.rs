@@ -284,7 +284,7 @@ impl TcpStream {
     /// Both halves borrow the stream — they can be used concurrently
     /// within a single task but cannot be moved to different tasks.
     pub fn split(&mut self) -> (ReadHalf<'_>, WriteHalf<'_>) {
-        let ptr = self as *mut TcpStream;
+        let ptr = std::ptr::from_mut(self);
         (
             ReadHalf {
                 stream: ptr,

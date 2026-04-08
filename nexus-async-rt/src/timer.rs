@@ -71,7 +71,7 @@ pub struct TimerHandle {
 impl TimerHandle {
     pub(crate) fn new(driver: &mut TimerDriver) -> Self {
         Self {
-            driver: driver as *mut TimerDriver,
+            driver: std::ptr::from_mut(driver),
         }
     }
 

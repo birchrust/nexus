@@ -47,8 +47,8 @@ pub(crate) fn set_poll_context(
     ready: &mut Vec<*mut u8>,
     deferred_free: &mut Vec<*mut u8>,
 ) -> PollContextGuard {
-    let prev_ready = READY_QUEUE.with(|cell| cell.replace(ready as *mut Vec<*mut u8>));
-    let prev_free = DEFERRED_FREE.with(|cell| cell.replace(deferred_free as *mut Vec<*mut u8>));
+    let prev_ready = READY_QUEUE.with(|cell| cell.replace(std::ptr::from_mut(ready)));
+    let prev_free = DEFERRED_FREE.with(|cell| cell.replace(std::ptr::from_mut(deferred_free)));
     PollContextGuard {
         prev_ready,
         prev_free,
@@ -88,23 +88,13 @@ pub(crate) unsafe fn task_waker(ptr: *mut u8) -> Waker {
     unsafe { Waker::from_raw(raw) }
 }
 
-/// Extract the task pointer from a local waker.
+/// Extract the task pointer from a waker if it belongs to this runtime.
 ///
 /// Returns the task `*mut u8` if the waker uses our local vtable.
 /// Returns `None` if it's a different waker (cross-thread, root, etc.).
-///
-/// # Safety
-///
-/// The waker must have been created by this runtime's `ReusableWaker`.
 pub(crate) fn task_ptr_from_local_waker(waker: &Waker) -> Option<*mut u8> {
-    // Waker layout: [vtable_ptr, data_ptr] — two pointers at offset 0 and 8.
-    // SAFETY: Waker is repr(transparent) over RawWaker which is [*const (), *const ()].
-    let raw: &[*const (); 2] = unsafe { &*(waker as *const Waker).cast::<[*const (); 2]>() };
-    let vtable_ptr = raw[0];
-    let data_ptr = raw[1];
-
-    if vtable_ptr == (&raw const VTABLE).cast::<()>() {
-        Some(data_ptr as *mut u8)
+    if waker.vtable() == &VTABLE {
+        Some(waker.data() as *mut u8)
     } else {
         None
     }
@@ -149,35 +139,31 @@ unsafe fn drop_fn(data: *const ()) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::task::{Poll, RawWaker, Waker};
+    use std::task::{RawWaker, Waker};
 
-    /// Validate Waker layout assumptions used by `task_ptr_from_local_waker`.
-    /// If Rust changes the layout of Waker, this test fails.
     #[test]
-    fn waker_layout_matches_assumptions() {
-        // Waker must be [vtable, data] = 16 bytes
-        assert_eq!(std::mem::size_of::<Waker>(), 16);
-        assert_eq!(std::mem::align_of::<Waker>(), 8);
+    fn task_ptr_from_local_waker_roundtrip() {
+        let sentinel = 0xDEAD_BEEF_usize as *mut u8;
+        let waker = unsafe { Waker::from_raw(RawWaker::new(sentinel.cast(), &VTABLE)) };
+        let waker = std::mem::ManuallyDrop::new(waker);
 
-        // Verify field order: construct a Waker and check byte layout
-        let sentinel = 0xDEAD_BEEF_u64 as *const ();
-        let raw = RawWaker::new(sentinel, &VTABLE);
-        let waker = std::mem::ManuallyDrop::new(unsafe { Waker::from_raw(raw) });
-
-        let bytes: &[u64; 2] = unsafe { &*(&*waker as *const Waker as *const [u64; 2]) };
-
-        // First field should be vtable pointer, second should be data
-        assert_eq!(
-            bytes[0],
-            (&raw const VTABLE) as u64,
-            "Waker layout changed: vtable not at offset 0"
-        );
-        assert_eq!(
-            bytes[1], sentinel as u64,
-            "Waker layout changed: data not at offset 8"
-        );
+        let ptr = task_ptr_from_local_waker(&waker);
+        assert_eq!(ptr, Some(sentinel));
     }
 
+    #[test]
+    fn task_ptr_from_foreign_waker_returns_none() {
+        static OTHER: RawWakerVTable = RawWakerVTable::new(
+            |p| RawWaker::new(p, &OTHER),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &OTHER)) };
+        let waker = std::mem::ManuallyDrop::new(waker);
+
+        assert!(task_ptr_from_local_waker(&waker).is_none());
+    }
 }
 
 /// Queue a completed task slot for deferred freeing.
