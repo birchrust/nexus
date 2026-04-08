@@ -72,7 +72,7 @@ impl WorldCtx {
     /// and the single-threaded executor prevents concurrent polls.
     pub fn new(world: &mut World) -> Self {
         Self {
-            ptr: world as *mut World,
+            ptr: std::ptr::from_mut(world),
         }
     }
 
@@ -141,7 +141,7 @@ mod tests {
         let ctx = WorldCtx::new(&mut world);
 
         let result = std::cell::Cell::new(0u64);
-        let result_ptr = &result as *const std::cell::Cell<u64>;
+        let result_ptr = std::ptr::from_ref(&result);
 
         let mut executor = Executor::new(4);
         executor.spawn_boxed(async move {
@@ -185,7 +185,7 @@ mod tests {
         let ctx = WorldCtx::new(&mut world);
 
         let result = std::cell::Cell::new(0u64);
-        let result_ptr = &result as *const std::cell::Cell<u64>;
+        let result_ptr = std::ptr::from_ref(&result);
 
         let mut executor = Executor::new(4);
         executor.spawn_boxed(async move {

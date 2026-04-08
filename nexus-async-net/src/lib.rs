@@ -13,7 +13,9 @@
 //!
 //! # Modules
 //!
-//! - [`ws`] — Async WebSocket (wraps FrameReader/FrameWriter) — `tokio-rt` only
+//! - [`ws`] — Async WebSocket (wraps FrameReader/FrameWriter).
+//!   Both backends provide `recv()`/`send_*()`. The tokio backend also
+//!   implements `Stream`/`Sink` for ecosystem integration.
 //! - [`rest`] — Async HTTP REST client (wraps RequestWriter/ResponseReader)
 
 #[cfg(all(feature = "tokio-rt", feature = "nexus"))]

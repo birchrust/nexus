@@ -667,7 +667,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Stream for WsStream<S> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
-        // Try parsing from buffered data (synchronous, no I/O)
+        // Same recv loop structure as recv() — including should_compact
+        // and max_read_size — so Stream users get identical tail latency.
         loop {
             match this.reader.poll() {
                 Ok(true) => {
@@ -681,18 +682,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Stream for WsStream<S> {
                 Err(e) => return Poll::Ready(Some(Err(e.into()))),
             }
 
-            // Need bytes from socket — try a non-blocking read
-            let spare = this.reader.spare();
-            if spare.is_empty() {
+            if this.reader.should_compact() {
                 this.reader.compact();
-                let spare = this.reader.spare();
-                if spare.is_empty() {
-                    return Poll::Ready(None); // buffer full
+            }
+            if this.reader.spare().is_empty() {
+                this.reader.compact();
+                if this.reader.spare().is_empty() {
+                    // Buffer full is not EOF — return an error so Stream
+                    // consumers don't silently stop receiving.
+                    return Poll::Ready(Some(Err(
+                        std::io::Error::other("websocket read buffer full").into(),
+                    )));
                 }
             }
 
             let spare = this.reader.spare();
-            let mut read_buf = tokio::io::ReadBuf::new(spare);
+            let cap = spare.len().min(this.max_read_size);
+            let mut read_buf = tokio::io::ReadBuf::new(&mut spare[..cap]);
             match Pin::new(&mut this.stream).poll_read(cx, &mut read_buf) {
                 Poll::Ready(Ok(())) => {
                     let n = read_buf.filled().len();

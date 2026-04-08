@@ -160,10 +160,10 @@ let token = CancellationToken::new();
 let child = token.child_token();
 
 spawn_boxed(async move {
-    tokio::select! {
-        _ = child.cancelled() => { /* cleanup */ }
-        _ = do_work() => {}
+    while !child.is_cancelled() {
+        do_work().await;
     }
+    // cleanup
 });
 
 token.cancel(); // cancels all children
@@ -179,6 +179,18 @@ token.cancel(); // cancels all children
 - **Check** — `handle.is_finished()` for non-blocking status
 
 `JoinHandle` is `!Send` and `!Sync` — stays on the executor thread.
+
+## Performance
+
+| Path | p50 |
+|------|-----|
+| Task dispatch (poll cycle) | 55-64 cycles |
+| Local channel try_send+try_recv | 13 ns |
+| MPSC channel try_send+try_recv | 22 ns |
+| SPSC channel try_send+try_recv | 15 ns |
+| Cross-thread channel (busy spin) | 15 ns |
+| Cross-thread channel (park/epoll) | 1.7 us |
+| Tokio-compat waker bridge | 76 ns |
 
 ## Features
 

@@ -255,8 +255,8 @@ impl IoHandle {
     /// Create a handle from driver references.
     pub(crate) fn new(driver: &mut IoDriver) -> Self {
         Self {
-            registry: driver.registry() as *const mio::Registry,
-            driver: driver as *mut IoDriver,
+            registry: std::ptr::from_ref(driver.registry()),
+            driver: std::ptr::from_mut(driver),
         }
     }
 

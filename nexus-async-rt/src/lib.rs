@@ -333,10 +333,8 @@ impl Executor {
             }
         } else {
             // Fire-and-forget or detached (HAS_JOIN cleared by JoinHandle::Drop).
-            // SAFETY: If the task had a JoinHandle that was dropped before completion,
-            // drop_fn still targets F (poll_join hasn't completed yet — it returned
-            // Ready(()) meaning F→T happened, so drop_fn = drop_output::<T>).
-            // Either way, drop_fn targets the correct live value.
+            // SAFETY: poll_join returned Ready(()), so the F→T transition completed.
+            // drop_fn = drop_output::<T>. This drops T, which is the correct live value.
             unsafe { task::drop_task_future(ptr) };
             unsafe { task::set_completed(ptr) };
             self.live_count -= 1;
