@@ -1,32 +1,24 @@
-//! Zero-allocation single-threaded waker.
+//! Refcounted single-threaded waker.
 //!
-//! The waker stores the task's raw pointer (from the byte slab) directly
-//! in the `RawWaker` data field. `wake()` sets the task's `is_queued`
-//! flag and pushes the pointer to the ready queue (obtained from TLS).
+//! The waker stores the task's raw pointer directly in the `RawWaker` data
+//! field. No `Box`, no `Arc` — the waker is two pointers (vtable + data).
 //!
-//! No `Box`, no `Arc`, no atomics. Clone is a pointer copy. Drop is a no-op.
+//! **Clone** increments the task's `ref_count` (AtomicU16) and copies the pointer.
+//! **Drop** decrements `ref_count`; if it hits 0 on a completed task, the slot
+//! is pushed to the deferred free list. **Wake** pushes the task pointer to the
+//! TLS ready queue (with `is_queued` dedup) and then decrements `ref_count`
+//! (consuming the waker).
 //!
 //! # Safety
 //!
-//! Single-threaded only. The ready queue pointer in TLS must be valid
-//! during the entire poll cycle.
+//! Single-threaded only. The ready queue and deferred free list pointers in TLS
+//! must be valid during the entire poll cycle.
 //!
-//! # Waker Lifetime Invariant
+//! # Waker Lifetime
 //!
-//! Wakers are **non-owning** raw pointers to task slab slots. They do
-//! not prevent the slot from being freed. This means:
-//!
-//! - A waker must not be used after its task is cancelled or completed.
-//! - IO registrations and timer entries that hold wakers must be cleaned
-//!   up before the task slot is freed.
-//! - In practice, the single-threaded executor enforces this: timers fire
-//!   before cancel, IO sources are deregistered before cancel, and task
-//!   completion happens synchronously during poll (no concurrent free).
-//!
-//! A future improvement could add a lightweight in-task refcount
-//! (incremented on clone, decremented on drop/wake) so the slot stays
-//! valid until all wakers are dropped. For now, the single-threaded
-//! invariant is sufficient.
+//! Wakers hold a ref to the task via `ref_count`. The task slot stays alive as
+//! long as any waker, JoinHandle, or the executor holds a reference. When the
+//! last ref drops (refcount hits 0), the slot is deferred for freeing.
 
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
@@ -82,6 +74,19 @@ impl Drop for PollContextGuard {
 
 pub(crate) static VTABLE: RawWakerVTable =
     RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
+
+/// Create a `Waker` for a task. Increments `ref_count` to account for
+/// the waker's reference. The waker's `drop_fn` will decrement it.
+///
+/// # Safety
+///
+/// `ptr` must point to a live task with `ref_count >= 1`.
+#[inline]
+pub(crate) unsafe fn task_waker(ptr: *mut u8) -> Waker {
+    unsafe { task::ref_inc(ptr) };
+    let raw = RawWaker::new(ptr.cast(), &VTABLE);
+    unsafe { Waker::from_raw(raw) }
+}
 
 /// Extract the task pointer from a local waker.
 ///

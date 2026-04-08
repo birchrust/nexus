@@ -72,7 +72,7 @@ pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHand
 pub use world_ctx::WorldCtx;
 
 use std::future::Future;
-use std::task::{Context, Poll, RawWaker, Waker};
+use std::task::{Context, Poll};
 
 use waker::set_poll_context;
 
@@ -226,12 +226,9 @@ impl Executor {
 
             unsafe { task::set_queued(ptr, false) };
 
-            // Construct a fresh Waker for this task. ref_inc balances the
-            // drop at the end of this iteration. No allocation — Waker is
-            // two pointers on the stack.
-            unsafe { task::ref_inc(ptr) };
-            let raw_waker = RawWaker::new(ptr.cast(), &crate::waker::VTABLE);
-            let waker = unsafe { Waker::from_raw(raw_waker) };
+            // SAFETY: ptr is a live task, ref_count >= 1 (executor holds a ref).
+            // task_waker increments ref_count; drop after poll decrements it.
+            let waker = unsafe { crate::waker::task_waker(ptr) };
             let mut cx = Context::from_waker(&waker);
 
             let poll_result = unsafe { task::poll_task(ptr, &mut cx) };
