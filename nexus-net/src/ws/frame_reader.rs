@@ -56,8 +56,6 @@ impl std::error::Error for ReadError {}
 pub struct FrameReader {
     buf: ReadBuf,
     msg_buf: Vec<u8>,
-    prealloc_capacity: usize,
-    msg_buf_shrink_threshold: usize,
     /// ReadBuf compaction trigger: compact when consumed bytes exceed this.
     buf_compact_at: usize,
 
@@ -110,7 +108,6 @@ pub struct FrameReaderBuilder {
     pre_padding: usize,
     post_padding: usize,
     prealloc_capacity: usize,
-    msg_buf_shrink_threshold: usize,
     compact_at: f64,
     max_frame_size: u64,
     max_message_size: usize,
@@ -126,7 +123,6 @@ impl FrameReader {
             pre_padding: 16,
             post_padding: 4,
             prealloc_capacity: 4096,
-            msg_buf_shrink_threshold: 256 * 1024,
             compact_at: 0.5,
             max_frame_size: 16 * 1024 * 1024,
             max_message_size: 16 * 1024 * 1024,
@@ -295,13 +291,11 @@ impl FrameReader {
         self.pending_cleanup = PendingCleanup::None;
     }
 
-    /// Cold path: clear msg_buf with potential compaction.
+    /// Cold path: clear msg_buf (multi-frame assembly buffer).
+    /// Capacity is retained — no allocation, no shrinking.
     #[cold]
     fn do_cleanup_msg_buf(&mut self) {
         self.msg_buf.clear();
-        if self.msg_buf.capacity() > self.msg_buf_shrink_threshold {
-            self.msg_buf = Vec::with_capacity(self.prealloc_capacity);
-        }
     }
 
     /// State machine: consume frames from ReadBuf.
@@ -749,17 +743,6 @@ impl FrameReaderBuilder {
         self
     }
 
-    /// Shrink `msg_buf` (multi-frame assembly buffer) when its capacity exceeds
-    /// this threshold after a message is consumed. Default: 256KB.
-    ///
-    /// This is unrelated to [`compact_at`](Self::compact_at), which controls
-    /// proactive compaction of the `ReadBuf` (wire data buffer).
-    #[must_use]
-    pub fn msg_buf_shrink_threshold(mut self, n: usize) -> Self {
-        self.msg_buf_shrink_threshold = n;
-        self
-    }
-
     /// Fraction of buffer capacity consumed before proactive compaction.
     ///
     /// When the read head has advanced past this fraction of the buffer,
@@ -818,8 +801,6 @@ impl FrameReaderBuilder {
         FrameReader {
             buf: ReadBuf::new(self.buffer_capacity, self.pre_padding, self.post_padding),
             msg_buf: Vec::with_capacity(self.prealloc_capacity),
-            prealloc_capacity: self.prealloc_capacity,
-            msg_buf_shrink_threshold: self.msg_buf_shrink_threshold,
             buf_compact_at,
             state: ParseState::Head,
             remaining_payload: 0,
@@ -1305,14 +1286,13 @@ mod tests {
         }
     }
 
-    // === Compact threshold (#10) ===
+    // === msg_buf clear retains capacity (#10) ===
 
     #[test]
-    fn msg_buf_compaction() {
+    fn msg_buf_clear_retains_capacity() {
         let mut r = FrameReader::builder()
             .role(Role::Client)
             .message_capacity(64)
-            .msg_buf_shrink_threshold(256)
             .buffer_capacity(128 * 1024)
             .max_frame_size(128 * 1024)
             .max_message_size(128 * 1024)
@@ -1325,12 +1305,13 @@ mod tests {
 
         let msg = r.next().unwrap().unwrap();
         assert!(matches!(&msg, Message::Binary(b) if b.len() == 512));
-        // Ensure msg is consumed before next call triggers cleanup
         let _ = msg;
 
-        // Next call triggers cleanup — msg_buf should compact
+        // Next call triggers cleanup — msg_buf cleared but capacity retained.
+        // No reallocation: buffer stays warm for the next continuation set.
         assert!(r.next().unwrap().is_none());
-        assert!(r.msg_buf.capacity() <= 64);
+        assert!(r.msg_buf.capacity() >= 512);
+        assert!(r.msg_buf.is_empty());
     }
 
     // === 64-bit payload length (#11) ===
