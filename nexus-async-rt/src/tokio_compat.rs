@@ -5,10 +5,20 @@
 //! owns and polls the futures. Cross-thread wakers bridge the gap.
 //!
 //! A lazy tokio runtime (single worker thread) is created on first use.
-//! Its only job is running the IO reactor (epoll) — it never schedules
-//! or polls futures.
 //!
-//! # How it works
+//! # Two modes
+//!
+//! **`with_tokio(|| future_expr)`** — poll a tokio future on our executor.
+//! Tokio provides the reactor (epoll) and timers; our executor polls the
+//! future. Tokio never polls it — it just fires wakers.
+//!
+//! **`spawn_on_tokio(future)`** — run a future on tokio's thread pool.
+//! The future is scheduled and polled by tokio. The result is delivered
+//! back to our executor via the cross-thread waker bridge. Use this for
+//! cold-path I/O (reqwest, database drivers, AWS SDK) that needs the
+//! full tokio ecosystem.
+//!
+//! # How `with_tokio` works
 //!
 //! 1. `with_tokio(|| future_expr)` installs tokio's runtime context on
 //!    the current thread via `Handle::enter()`. The closure runs with
@@ -19,8 +29,6 @@
 //!    intrusive inbox + conditionally pokes the eventfd.
 //! 4. When tokio's reactor detects IO readiness, it fires our waker.
 //! 5. Our executor wakes up, re-polls the task, the future reads data.
-//!
-//! Tokio never polls the future. It just fires wakers.
 //!
 //! # Performance
 //!
@@ -260,9 +268,12 @@ unsafe fn cross_task_drop(data: *const ()) {
 /// (reqwest, database drivers, AWS SDK, databento) without blocking
 /// the hot-path executor.
 ///
-/// # Panics
+/// # Requirements
 ///
-/// Panics if called outside [`Runtime::block_on`](crate::Runtime::block_on).
+/// The returned handle must be awaited from within
+/// [`Runtime::block_on`](crate::Runtime::block_on) so the cross-thread
+/// waker bridge can deliver the result. Spawning itself works from any
+/// context with a tokio runtime installed.
 ///
 /// # Example
 ///

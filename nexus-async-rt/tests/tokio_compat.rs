@@ -914,9 +914,12 @@ fn spawn_on_tokio_is_finished() {
 
     rt.block_on(async {
         let handle = spawn_on_tokio(async { 42 });
-        // Give it time to complete on tokio's thread.
-        with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(50))).await;
-        assert!(handle.is_finished());
+        // Bounded retry — avoid fixed sleep that's flaky on slow CI.
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while !handle.is_finished() && Instant::now() < deadline {
+            with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(5))).await;
+        }
+        assert!(handle.is_finished(), "tokio task did not complete before timeout");
         let val = handle.await.unwrap();
         assert_eq!(val, 42);
     });
@@ -1002,6 +1005,6 @@ fn spawn_on_tokio_tcp_io() {
         .unwrap();
 
         assert_eq!(echo, "hello");
-        let _ = server.await;
+        server.await.unwrap();
     });
 }
