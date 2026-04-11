@@ -127,10 +127,11 @@ impl HuberEmaF64Builder {
     }
 
     /// Samples for weight to decay by half.
+    #[cfg(feature = "std")]
     #[inline]
     #[must_use]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let alpha = 1.0 - (-core::f64::consts::LN_2 / halflife).exp();
+        let alpha = 1.0 - nexus_stats_core::math::exp(-core::f64::consts::LN_2 / halflife);
         self.alpha = Some(alpha);
         self
     }

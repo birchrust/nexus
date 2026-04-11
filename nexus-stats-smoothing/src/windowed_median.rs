@@ -222,7 +222,7 @@ macro_rules! impl_windowed_median_float {
                 assert!(q >= (0.0 as $ty) && q <= (1.0 as $ty), "quantile must be in [0.0, 1.0]");
                 let len = self.current_len();
                 if len == 0 { return Option::None; }
-                let sorted = self.sorted();
+                let sorted = &self.sorted()[..len];
                 let idx = ((len - 1) as $ty * q) as usize;
                 Option::Some(sorted[idx])
             }

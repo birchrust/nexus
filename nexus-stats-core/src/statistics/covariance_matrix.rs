@@ -84,12 +84,16 @@ impl OnlineCovarianceF64 {
             self.means[i] = observation[i] - self.means[i]; // means[i] is now delta_i
         }
 
-        // Update covariance using the deltas (stored in self.means).
+        // Update covariance using the stable EW recurrence.
+        // The (1 - alpha) factor on the increment matches the scalar EwmaVar
+        // recurrence: cov = (1-α) * cov + α * (1-α) * δ_i * δ_j.
+        // Without it, covariance would be biased upward by ~1/(1-α).
+        let alpha_times_one_minus = alpha * one_minus_alpha;
         for i in 0..d {
             for j in i..d {
                 let idx = i * d + j;
                 self.cov[idx] = one_minus_alpha * self.cov[idx]
-                    + alpha * self.means[i] * self.means[j];
+                    + alpha_times_one_minus * self.means[i] * self.means[j];
                 if i != j {
                     self.cov[j * d + i] = self.cov[idx];
                 }
@@ -122,6 +126,7 @@ impl OnlineCovarianceF64 {
     /// Pearson correlation between dimensions `i` and `j`.
     ///
     /// Returns `None` if not primed or if either variance is zero.
+    #[cfg(any(feature = "std", feature = "libm"))]
     #[inline]
     #[must_use]
     pub fn correlation(&self, i: usize, j: usize) -> Option<f64> {
@@ -130,7 +135,7 @@ impl OnlineCovarianceF64 {
         if var_i < f64::EPSILON || var_j < f64::EPSILON {
             return None;
         }
-        Some(self.covariance(i, j)? / (var_i.sqrt() * var_j.sqrt()))
+        Some(self.covariance(i, j)? / (crate::math::sqrt(var_i) * crate::math::sqrt(var_j)))
     }
 
     /// Variance of dimension `i`.
@@ -203,10 +208,11 @@ impl OnlineCovarianceF64Builder {
     }
 
     /// Halflife for exponential weighting (required).
+    #[cfg(any(feature = "std", feature = "libm"))]
     #[inline]
     #[must_use]
     pub fn halflife(mut self, h: f64) -> Self {
-        let alpha = 1.0 - (-core::f64::consts::LN_2 / h).exp();
+        let alpha = 1.0 - crate::math::exp(-core::f64::consts::LN_2 / h);
         self.alpha = Some(alpha);
         self
     }
