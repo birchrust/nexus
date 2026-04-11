@@ -171,6 +171,52 @@ macro_rules! impl_kalman2d {
                 self.last_innovation_var
             }
 
+            /// Override measurement noise (R) for subsequent updates.
+            ///
+            /// Use this to increase R when an observation looks like an outlier
+            /// (innovation > 3σ) — the Kalman will trust the observation less.
+            /// Set back to baseline when done.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `r` is negative, NaN, or infinite.
+            #[inline]
+            pub fn set_measurement_noise(&mut self, r: $ty) {
+                assert!(r > 0.0 && r.is_finite(), "measurement noise R must be positive and finite, got {r}");
+                self.r = r;
+            }
+
+            /// Override process noise (Q) for subsequent updates.
+            ///
+            /// Use this to increase Q when CUSUM detects a regime shift —
+            /// the Kalman will adapt faster to the new level.
+            ///
+            /// # Panics
+            ///
+            /// Panics if any element is NaN or infinite.
+            #[inline]
+            pub fn set_process_noise(&mut self, q: [[$ty; 2]; 2]) {
+                assert!(
+                    q.iter().flat_map(|r| r.iter()).all(|v| v.is_finite()),
+                    "process noise Q elements must be finite"
+                );
+                self.q = [q[0][0], q[0][1], q[1][0], q[1][1]];
+            }
+
+            /// Returns the current measurement noise (R).
+            #[inline]
+            #[must_use]
+            pub fn measurement_noise(&self) -> $ty {
+                self.r
+            }
+
+            /// Returns the current process noise (Q) as a 2x2 matrix.
+            #[inline]
+            #[must_use]
+            pub fn process_noise(&self) -> [[$ty; 2]; 2] {
+                [[self.q[0], self.q[1]], [self.q[2], self.q[3]]]
+            }
+
             /// Number of updates performed.
             #[inline]
             #[must_use]
@@ -441,6 +487,62 @@ mod tests {
             (s[0] - 199.0).abs() < 5.0,
             "position = {}, expected ~199",
             s[0]
+        );
+    }
+
+    #[test]
+    fn noise_setter_getters() {
+        let mut kf = Kalman2dF64::builder()
+            .process_noise([[0.01, 0.0], [0.0, 0.01]])
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+
+        assert_eq!(kf.measurement_noise(), 1.0);
+        kf.set_measurement_noise(10.0);
+        assert_eq!(kf.measurement_noise(), 10.0);
+
+        let q = kf.process_noise();
+        assert_eq!(q[0][0], 0.01);
+        kf.set_process_noise([[1.0, 0.0], [0.0, 1.0]]);
+        assert_eq!(kf.process_noise()[0][0], 1.0);
+    }
+
+    #[test]
+    fn high_r_trusts_observation_less() {
+        // Two Kalmans: one with normal R, one with high R.
+        // Feed same outlier — high R should move state less.
+        let mut kf_normal = Kalman2dF64::builder()
+            .process_noise([[0.01, 0.0], [0.0, 0.01]])
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        let mut kf_high_r = kf_normal.clone();
+
+        // Converge both to ~50
+        for _ in 0..50 {
+            kf_normal.predict();
+            kf_normal.update(50.0, [1.0, 0.0]).unwrap();
+            kf_high_r.predict();
+            kf_high_r.update(50.0, [1.0, 0.0]).unwrap();
+        }
+
+        let before = kf_normal.state()[0];
+
+        // Feed outlier
+        kf_normal.predict();
+        kf_normal.update(200.0, [1.0, 0.0]).unwrap();
+
+        kf_high_r.set_measurement_noise(1000.0);
+        kf_high_r.predict();
+        kf_high_r.update(200.0, [1.0, 0.0]).unwrap();
+
+        let move_normal = (kf_normal.state()[0] - before).abs();
+        let move_high_r = (kf_high_r.state()[0] - before).abs();
+
+        assert!(
+            move_high_r < move_normal,
+            "high R should move less: normal={move_normal}, high_r={move_high_r}"
         );
     }
 

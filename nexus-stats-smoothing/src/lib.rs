@@ -14,7 +14,9 @@
 //! | [`HoltF64`] / [`HoltF32`] | Double exponential smoothing (level + trend) | — |
 //! | [`SpringF64`] / [`SpringF32`] | Critically damped spring (chase without overshoot) | — |
 //! | [`Kalman1dF64`] / [`Kalman1dF32`] | 1D Kalman filter (position + velocity) | — |
+//! | [`HuberEmaF64`] | Outlier-robust EMA (bounded step per observation) | — |
 //! | [`KamaF64`] / [`KamaF32`] | Kaufman Adaptive Moving Average | `alloc` |
+//! | [`HampelF64`] | Three-zone outlier filter (pass / Winsorize / reject) | `alloc` |
 //! | [`WindowedMedianF64`] / [`WindowedMedianF32`] | Running median over a sliding window | `alloc` |
 //!
 //! # Re-export
@@ -43,15 +45,22 @@ mod holt;
 mod kalman1d;
 mod spring;
 
+mod huber_ema;
+
+#[cfg(feature = "alloc")]
+mod hampel;
 #[cfg(feature = "alloc")]
 mod kama;
 #[cfg(feature = "alloc")]
 mod windowed_median;
 
 pub use holt::*;
+pub use huber_ema::*;
 pub use kalman1d::*;
 pub use spring::*;
 
+#[cfg(feature = "alloc")]
+pub use hampel::*;
 #[cfg(feature = "alloc")]
 pub use kama::*;
 #[cfg(feature = "alloc")]
