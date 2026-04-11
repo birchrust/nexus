@@ -5,10 +5,20 @@
 //! owns and polls the futures. Cross-thread wakers bridge the gap.
 //!
 //! A lazy tokio runtime (single worker thread) is created on first use.
-//! Its only job is running the IO reactor (epoll) — it never schedules
-//! or polls futures.
 //!
-//! # How it works
+//! # Two modes
+//!
+//! **`with_tokio(|| future_expr)`** — poll a tokio future on our executor.
+//! Tokio provides the reactor (epoll) and timers; our executor polls the
+//! future. Tokio never polls it — it just fires wakers.
+//!
+//! **`spawn_on_tokio(future)`** — run a future on tokio's thread pool.
+//! The future is scheduled and polled by tokio. The result is delivered
+//! back to our executor via the cross-thread waker bridge. Use this for
+//! cold-path I/O (reqwest, database drivers, AWS SDK) that needs the
+//! full tokio ecosystem.
+//!
+//! # How `with_tokio` works
 //!
 //! 1. `with_tokio(|| future_expr)` installs tokio's runtime context on
 //!    the current thread via `Handle::enter()`. The closure runs with
@@ -19,8 +29,6 @@
 //!    intrusive inbox + conditionally pokes the eventfd.
 //! 4. When tokio's reactor detects IO readiness, it fires our waker.
 //! 5. Our executor wakes up, re-polls the task, the future reads data.
-//!
-//! Tokio never polls the future. It just fires wakers.
 //!
 //! # Performance
 //!
@@ -242,5 +250,156 @@ unsafe fn cross_task_drop(data: *const ()) {
         unsafe {
             crate::cross_wake::wake_task_cross_thread(boxed.task_ptr, &boxed.ctx);
         }
+    }
+}
+
+// =============================================================================
+// spawn_on_tokio — run a future on tokio's thread pool
+// =============================================================================
+
+/// Spawn a future onto the tokio thread pool. Returns a handle
+/// that can be awaited from nexus-async-rt.
+///
+/// The future runs on tokio's worker thread — it must be `Send + 'static`.
+/// The result is delivered back to our executor via the cross-thread
+/// waker bridge.
+///
+/// Use this for cold-path operations that need the tokio ecosystem
+/// (reqwest, database drivers, AWS SDK, databento) without blocking
+/// the hot-path executor.
+///
+/// # Requirements
+///
+/// The returned handle must be awaited from within
+/// [`Runtime::block_on`](crate::Runtime::block_on) so the cross-thread
+/// waker bridge can deliver the result. Spawning itself works from any
+/// context with a tokio runtime installed.
+///
+/// # Example
+///
+/// ```ignore
+/// use nexus_async_rt::tokio_compat::spawn_on_tokio;
+///
+/// rt.block_on(async {
+///     let data = spawn_on_tokio(async {
+///         reqwest::get("https://api.exchange.com/ticker")
+///             .await
+///             .unwrap()
+///             .text()
+///             .await
+///             .unwrap()
+///     }).await.unwrap();
+///
+///     // Back on our executor — process the result
+///     process(data);
+/// });
+/// ```
+pub fn spawn_on_tokio<F, T>(future: F) -> TokioJoinHandle<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = tokio_runtime().handle().spawn(future);
+    TokioJoinHandle {
+        inner: handle,
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+// =============================================================================
+// TokioJoinHandle
+// =============================================================================
+
+/// Handle to a future running on the tokio thread pool.
+///
+/// Await to get the result. Dropping aborts the tokio task.
+///
+/// Unlike [`JoinHandle`](crate::JoinHandle) (which detaches on drop),
+/// `TokioJoinHandle` aborts on drop — tokio tasks may hold remote
+/// resources that should be released promptly.
+///
+/// `!Send` — must be awaited from the nexus-async-rt executor thread.
+#[must_use = "dropping a TokioJoinHandle aborts the tokio task"]
+pub struct TokioJoinHandle<T> {
+    inner: tokio::task::JoinHandle<T>,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl<T> Future for TokioJoinHandle<T> {
+    type Output = Result<T, TokioJoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Build cross-thread waker so tokio can wake our executor.
+        let cross_waker = make_cross_waker(cx);
+        let mut cross_cx = Context::from_waker(&cross_waker);
+
+        // Poll tokio's JoinHandle with the cross-thread waker.
+        // tokio::JoinHandle is Unpin — safe pin projection.
+        let inner = Pin::new(&mut self.get_mut().inner);
+        match inner.poll(&mut cross_cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(val)) => Poll::Ready(Ok(val)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(TokioJoinError(e))),
+        }
+    }
+}
+
+impl<T> TokioJoinHandle<T> {
+    /// Returns `true` if the tokio task has completed.
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// Abort the tokio task.
+    pub fn abort(&self) {
+        self.inner.abort();
+    }
+}
+
+impl<T> Drop for TokioJoinHandle<T> {
+    fn drop(&mut self) {
+        // Abort the tokio task — we can't observe the result, and
+        // the task may hold connections or file handles on tokio's side.
+        self.inner.abort();
+    }
+}
+
+// =============================================================================
+// TokioJoinError
+// =============================================================================
+
+/// Error returned when a tokio-spawned task fails.
+///
+/// Wraps `tokio::task::JoinError`. The task either panicked or was
+/// cancelled (via [`TokioJoinHandle::abort`] or handle drop).
+pub struct TokioJoinError(tokio::task::JoinError);
+
+impl TokioJoinError {
+    /// Returns `true` if the task was cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    /// Returns `true` if the task panicked.
+    pub fn is_panic(&self) -> bool {
+        self.0.is_panic()
+    }
+}
+
+impl std::fmt::Display for TokioJoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::fmt::Debug for TokioJoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for TokioJoinError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
     }
 }
