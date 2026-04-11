@@ -209,6 +209,53 @@ macro_rules! impl_kalman3d {
                 self.last_innovation_var
             }
 
+            /// Override measurement noise (R) for subsequent updates.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `r` is negative, NaN, or infinite.
+            #[inline]
+            pub fn set_measurement_noise(&mut self, r: $ty) {
+                assert!(r >= 0.0 && r.is_finite(), "measurement noise R must be non-negative and finite, got {r}");
+                self.r = r;
+            }
+
+            /// Override process noise (Q) for subsequent updates.
+            ///
+            /// # Panics
+            ///
+            /// Panics if any element is NaN or infinite.
+            #[inline]
+            pub fn set_process_noise(&mut self, q: [[$ty; 3]; 3]) {
+                assert!(
+                    q.iter().flat_map(|r| r.iter()).all(|v| v.is_finite()),
+                    "process noise Q elements must be finite"
+                );
+                self.q = [
+                    q[0][0], q[0][1], q[0][2],
+                    q[1][0], q[1][1], q[1][2],
+                    q[2][0], q[2][1], q[2][2],
+                ];
+            }
+
+            /// Returns the current measurement noise (R).
+            #[inline]
+            #[must_use]
+            pub fn measurement_noise(&self) -> $ty {
+                self.r
+            }
+
+            /// Returns the current process noise (Q) as a 3x3 matrix.
+            #[inline]
+            #[must_use]
+            pub fn process_noise(&self) -> [[$ty; 3]; 3] {
+                [
+                    [self.q[0], self.q[1], self.q[2]],
+                    [self.q[3], self.q[4], self.q[5]],
+                    [self.q[6], self.q[7], self.q[8]],
+                ]
+            }
+
             /// Number of updates performed.
             #[inline]
             #[must_use]

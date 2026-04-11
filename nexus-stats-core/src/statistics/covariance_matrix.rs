@@ -1,0 +1,355 @@
+//! Streaming d×d covariance matrix with exponential weighting.
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+/// Streaming d×d covariance matrix with exponential weighting.
+///
+/// Tracks means and an EW covariance matrix from observation vectors.
+/// All updates are O(d²) per sample. Memory: O(d²) for the matrix.
+///
+/// # Use Cases
+///
+/// - Natural gradient optimizer (Fisher information approximation)
+/// - Portfolio risk decomposition
+/// - Feature correlation monitoring
+#[derive(Debug, Clone)]
+pub struct OnlineCovarianceF64 {
+    cov: Vec<f64>,
+    means: Vec<f64>,
+    dim: usize,
+    alpha: f64,
+    count: u64,
+}
+
+/// Builder for [`OnlineCovarianceF64`].
+#[derive(Debug, Clone)]
+pub struct OnlineCovarianceF64Builder {
+    dim: Option<usize>,
+    alpha: Option<f64>,
+}
+
+impl OnlineCovarianceF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> OnlineCovarianceF64Builder {
+        OnlineCovarianceF64Builder {
+            dim: None,
+            alpha: None,
+        }
+    }
+
+    /// Feed an observation vector.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `observation.len() != dim`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` or `DataError::Infinite` if any
+    /// element is not finite.
+    pub fn update(&mut self, observation: &[f64]) -> Result<(), crate::DataError> {
+        assert_eq!(
+            observation.len(),
+            self.dim,
+            "observation dimension ({}) != configured dim ({})",
+            observation.len(),
+            self.dim,
+        );
+        for &v in observation {
+            check_finite!(v);
+        }
+
+        self.count += 1;
+        let d = self.dim;
+
+        if self.count == 1 {
+            self.means.copy_from_slice(observation);
+            // Covariance stays at zero — need 2+ samples.
+            return Ok(());
+        }
+
+        // Compute all deltas from current (pre-update) means BEFORE modifying
+        // anything. This ensures the covariance update uses consistent deltas —
+        // mixing old and new means would introduce bias in cov[i,i].
+        let alpha = self.alpha;
+        let one_minus_alpha = 1.0 - alpha;
+
+        // Temporarily repurpose means as deltas: means[i] = obs[i] - old_mean[i].
+        // Then update covariance, then restore means to new_mean.
+        // This avoids any allocation.
+        for i in 0..d {
+            self.means[i] = observation[i] - self.means[i]; // means[i] is now delta_i
+        }
+
+        // Update covariance using the deltas (stored in self.means).
+        for i in 0..d {
+            for j in i..d {
+                let idx = i * d + j;
+                self.cov[idx] = one_minus_alpha * self.cov[idx]
+                    + alpha * self.means[i] * self.means[j];
+                if i != j {
+                    self.cov[j * d + i] = self.cov[idx];
+                }
+            }
+        }
+
+        // Restore means: new_mean = old_mean + alpha * delta = (obs - delta) + alpha * delta
+        //                         = obs - delta * (1 - alpha)
+        for i in 0..d {
+            self.means[i] = (-self.means[i]).mul_add(one_minus_alpha, observation[i]);
+        }
+
+        Ok(())
+    }
+
+    /// Covariance between dimensions `i` and `j`.
+    ///
+    /// Returns `None` if fewer than 2 observations have been fed
+    /// (covariance is undefined with fewer than 2 data points).
+    #[inline]
+    #[must_use]
+    pub fn covariance(&self, i: usize, j: usize) -> Option<f64> {
+        if !self.is_primed() {
+            return None;
+        }
+        debug_assert!(i < self.dim && j < self.dim);
+        Some(self.cov[i * self.dim + j])
+    }
+
+    /// Pearson correlation between dimensions `i` and `j`.
+    ///
+    /// Returns `None` if not primed or if either variance is zero.
+    #[inline]
+    #[must_use]
+    pub fn correlation(&self, i: usize, j: usize) -> Option<f64> {
+        let var_i = self.variance(i)?;
+        let var_j = self.variance(j)?;
+        if var_i < f64::EPSILON || var_j < f64::EPSILON {
+            return None;
+        }
+        Some(self.covariance(i, j)? / (var_i.sqrt() * var_j.sqrt()))
+    }
+
+    /// Variance of dimension `i`.
+    ///
+    /// Returns `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn variance(&self, i: usize) -> Option<f64> {
+        self.covariance(i, i)
+    }
+
+    /// Mean of dimension `i`.
+    ///
+    /// Returns `None` if no observations have been fed.
+    #[inline]
+    #[must_use]
+    pub fn mean(&self, i: usize) -> Option<f64> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(self.means[i])
+    }
+
+    /// The full covariance matrix as a flat row-major slice.
+    ///
+    /// Returns zeroes if not primed — check [`is_primed()`](Self::is_primed)
+    /// before interpreting values.
+    #[inline]
+    #[must_use]
+    pub fn as_matrix(&self) -> &[f64] {
+        &self.cov
+    }
+
+    /// Dimensionality.
+    #[inline]
+    #[must_use]
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Whether at least 2 observations have been fed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= 2
+    }
+
+    /// Number of observations processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Reset to initial state.
+    pub fn reset(&mut self) {
+        self.cov.iter_mut().for_each(|v| *v = 0.0);
+        self.means.iter_mut().for_each(|v| *v = 0.0);
+        self.count = 0;
+    }
+}
+
+impl OnlineCovarianceF64Builder {
+    /// Number of dimensions (required).
+    #[inline]
+    #[must_use]
+    pub fn dim(mut self, d: usize) -> Self {
+        self.dim = Some(d);
+        self
+    }
+
+    /// Halflife for exponential weighting (required).
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, h: f64) -> Self {
+        let alpha = 1.0 - (-core::f64::consts::LN_2 / h).exp();
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Direct smoothing factor.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Build.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if dim or alpha are missing/invalid.
+    pub fn build(self) -> Result<OnlineCovarianceF64, crate::ConfigError> {
+        let dim = self
+            .dim
+            .ok_or(crate::ConfigError::Missing("dim"))?;
+        if dim == 0 {
+            return Err(crate::ConfigError::Invalid("dim must be > 0"));
+        }
+        let alpha = self
+            .alpha
+            .ok_or(crate::ConfigError::Missing("halflife or alpha"))?;
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+        }
+
+        Ok(OnlineCovarianceF64 {
+            cov: vec![0.0; dim * dim],
+            means: vec![0.0; dim],
+            dim,
+            alpha,
+            count: 0,
+        })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    fn basic_cov(dim: usize) -> OnlineCovarianceF64 {
+        OnlineCovarianceF64::builder()
+            .dim(dim)
+            .halflife(50.0)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn uncorrelated_2d() {
+        let mut cov = basic_cov(2);
+        // Feed independent signals
+        for i in 0..200 {
+            let x = (i % 10) as f64;
+            let y = ((i * 7) % 13) as f64;
+            cov.update(&[x, y]).unwrap();
+        }
+        // Variances should be positive
+        assert!(cov.variance(0).unwrap() > 0.0);
+        assert!(cov.variance(1).unwrap() > 0.0);
+        // Correlation should be near zero (not perfectly, small sample)
+        let corr = cov.correlation(0, 1).unwrap().abs();
+        assert!(corr < 0.5, "expected low correlation, got {corr}");
+    }
+
+    #[test]
+    fn perfectly_correlated_2d() {
+        let mut cov = basic_cov(2);
+        for i in 0..200 {
+            let x = i as f64;
+            cov.update(&[x, x * 2.0 + 1.0]).unwrap();
+        }
+        let corr = cov.correlation(0, 1).unwrap();
+        assert!(
+            corr > 0.95,
+            "expected high correlation, got {corr}"
+        );
+    }
+
+    #[test]
+    fn symmetry() {
+        let mut cov = basic_cov(3);
+        for i in 0..100 {
+            let v = [i as f64, (i * 2) as f64, (i * 3) as f64];
+            cov.update(&v).unwrap();
+        }
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (cov.covariance(i, j).unwrap() - cov.covariance(j, i).unwrap()).abs() < 1e-10,
+                    "cov({i},{j}) != cov({j},{i})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "observation dimension")]
+    fn wrong_dimension_panics() {
+        let mut cov = basic_cov(3);
+        let _ = cov.update(&[1.0, 2.0]);
+    }
+
+    #[test]
+    fn priming() {
+        let mut cov = basic_cov(2);
+        assert!(!cov.is_primed());
+        assert!(cov.covariance(0, 1).is_none());
+        assert!(cov.correlation(0, 1).is_none());
+        assert!(cov.variance(0).is_none());
+        assert!(cov.mean(0).is_none());
+
+        cov.update(&[1.0, 2.0]).unwrap();
+        assert!(!cov.is_primed());
+        assert!(cov.covariance(0, 1).is_none());
+        assert!(cov.mean(0).is_some()); // mean available after 1 sample
+
+        cov.update(&[3.0, 4.0]).unwrap();
+        assert!(cov.is_primed());
+        assert!(cov.covariance(0, 1).is_some());
+    }
+
+    #[test]
+    fn reset_clears() {
+        let mut cov = basic_cov(2);
+        for i in 0..50 {
+            cov.update(&[i as f64, i as f64]).unwrap();
+        }
+        cov.reset();
+        assert_eq!(cov.count(), 0);
+        assert!(!cov.is_primed());
+    }
+
+    #[test]
+    fn invalid_config() {
+        assert!(OnlineCovarianceF64::builder().alpha(0.1).build().is_err()); // missing dim
+        assert!(OnlineCovarianceF64::builder().dim(2).build().is_err()); // missing alpha
+        assert!(OnlineCovarianceF64::builder().dim(0).alpha(0.1).build().is_err()); // dim = 0
+    }
+}

@@ -206,6 +206,27 @@ macro_rules! impl_windowed_median_float {
                 }
             }
 
+            /// Returns the q-th quantile of the current window.
+            ///
+            /// `q = 0.0` returns the minimum, `q = 1.0` returns the maximum,
+            /// `q = 0.5` matches [`median()`](Self::median) for odd window sizes.
+            ///
+            /// Returns `None` if the window is empty.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `q` is not in `[0.0, 1.0]`.
+            #[inline]
+            #[must_use]
+            pub fn quantile(&self, q: $ty) -> Option<$ty> {
+                assert!(q >= (0.0 as $ty) && q <= (1.0 as $ty), "quantile must be in [0.0, 1.0]");
+                let len = self.current_len();
+                if len == 0 { return Option::None; }
+                let sorted = self.sorted();
+                let idx = ((len - 1) as $ty * q) as usize;
+                Option::Some(sorted[idx])
+            }
+
             /// Median Absolute Deviation (MAD), or `None` if empty.
             #[inline]
             #[must_use]
@@ -803,5 +824,51 @@ mod tests {
             Err(nexus_stats_core::DataError::Infinite)
         ));
         assert_eq!(wm.count(), 0);
+    }
+
+    #[test]
+    fn quantile_matches_median() {
+        let mut wm = WindowedMedianF64::new(5);
+        for &v in &[3.0, 1.0, 4.0, 1.0, 5.0] {
+            wm.update(v).unwrap();
+        }
+        // sorted: [1.0, 1.0, 3.0, 4.0, 5.0] — median = 3.0
+        assert_eq!(wm.quantile(0.5).unwrap(), wm.median().unwrap());
+    }
+
+    #[test]
+    fn quantile_extremes() {
+        let mut wm = WindowedMedianF64::new(5);
+        for &v in &[10.0, 20.0, 30.0, 40.0, 50.0] {
+            wm.update(v).unwrap();
+        }
+        // sorted: [10, 20, 30, 40, 50]
+        assert_eq!(wm.quantile(0.0).unwrap(), 10.0);
+        assert_eq!(wm.quantile(1.0).unwrap(), 50.0);
+    }
+
+    #[test]
+    fn quantile_75th() {
+        let mut wm = WindowedMedianF64::new(5);
+        for &v in &[10.0, 20.0, 30.0, 40.0, 50.0] {
+            wm.update(v).unwrap();
+        }
+        // sorted: [10, 20, 30, 40, 50]
+        // idx = (4) * 0.75 = 3.0 → sorted[3] = 40.0
+        assert_eq!(wm.quantile(0.75).unwrap(), 40.0);
+    }
+
+    #[test]
+    fn quantile_empty_returns_none() {
+        let wm = WindowedMedianF64::new(5);
+        assert!(wm.quantile(0.5).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "quantile must be in [0.0, 1.0]")]
+    fn quantile_out_of_range() {
+        let mut wm = WindowedMedianF64::new(5);
+        wm.update(1.0).unwrap();
+        let _ = wm.quantile(1.5);
     }
 }
