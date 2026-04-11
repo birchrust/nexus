@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 ///
 /// Same Folly-style algorithm as [`local::TokenBucket`](crate::local::TokenBucket)
 /// but uses `AtomicU64` fields with CAS loops for lock-free concurrent access.
+/// See the local variant's documentation for precision characteristics —
+/// `nanos_per_token = ceil(period / rate)` guarantees no over-issuance.
 ///
 /// # Thread Safety
 ///
@@ -124,14 +126,14 @@ impl TokenBucket {
         if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        if period_nanos / rate == 0 {
+        let nanos_per_token = period_nanos.div_ceil(rate);
+        if nanos_per_token == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
         self.rate.store(rate, Ordering::Release);
         self.period.store(period_nanos, Ordering::Release);
         self.burst.store(burst, Ordering::Release);
-        self.nanos_per_token
-            .store(period_nanos / rate, Ordering::Release);
+        self.nanos_per_token.store(nanos_per_token, Ordering::Release);
         Ok(())
     }
 
@@ -244,7 +246,8 @@ impl TokenBucketBuilder {
         if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        if period_nanos / rate == 0 {
+        let nanos_per_token = period_nanos.div_ceil(rate);
+        if nanos_per_token == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
 
@@ -253,7 +256,7 @@ impl TokenBucketBuilder {
             rate: AtomicU64::new(rate),
             period: AtomicU64::new(period_nanos),
             burst: AtomicU64::new(burst),
-            nanos_per_token: AtomicU64::new(period_nanos / rate),
+            nanos_per_token: AtomicU64::new(nanos_per_token),
             base: now,
         })
     }

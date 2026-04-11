@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 ///
 /// Same algorithm as [`local::Gcra`](crate::local::Gcra) but uses an
 /// `AtomicU64` for the TAT with a CAS loop for lock-free concurrent access.
+/// See the local variant's documentation for precision characteristics —
+/// `ceil(period / rate)` guarantees no over-issuance.
 ///
 /// # Thread Safety
 ///
@@ -123,7 +125,7 @@ impl Gcra {
         if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        let ei = period_nanos / rate;
+        let ei = period_nanos.div_ceil(rate);
         if ei == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
@@ -244,7 +246,7 @@ impl GcraBuilder {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
 
-        let ei = period_nanos / rate;
+        let ei = period_nanos.div_ceil(rate);
         if ei == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }

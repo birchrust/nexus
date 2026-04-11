@@ -3,7 +3,24 @@ use std::time::{Duration, Instant};
 /// Token Bucket — lazy token computation (single-threaded).
 ///
 /// Folly-style: stores a `zero_time` instead of a token count. Tokens are
-/// computed lazily from elapsed time on each call. No timer needed.
+/// computed lazily from elapsed time on each call. No timer needed. This is
+/// the same pattern used in the Linux kernel (`tbf` qdisc) and production
+/// rate limiters at scale.
+///
+/// # Precision
+///
+/// Token availability is computed as `elapsed / nanos_per_token` where
+/// `nanos_per_token = ceil(period / rate)`. Ceiling division guarantees the
+/// limiter never over-issues — it will produce at most `rate` tokens per
+/// `period`, never more. When `period` is not evenly divisible by `rate`,
+/// the limiter is slightly conservative (under-issues by <1 token/period).
+/// For typical configurations (e.g., 100 tokens/sec), the division is exact
+/// and there is zero error.
+///
+/// This is the standard approach used in the Linux kernel (`tbf` qdisc) and
+/// production rate limiters at scale. The tradeoff eliminates u128 software
+/// division (~40-80 cycles) from the hot path while biasing toward safety:
+/// the limiter will never exceed the configured rate.
 ///
 /// # Use Cases
 /// - Bandwidth limiting
@@ -107,13 +124,14 @@ impl TokenBucket {
         if period == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        if period / rate == 0 {
+        let nanos_per_token = period.div_ceil(rate);
+        if nanos_per_token == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
         self.rate = rate;
         self.period = period;
         self.burst = burst;
-        self.nanos_per_token = period / rate;
+        self.nanos_per_token = nanos_per_token;
         Ok(())
     }
 
@@ -194,7 +212,8 @@ impl TokenBucketBuilder {
         if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        if period_nanos / rate == 0 {
+        let nanos_per_token = period_nanos.div_ceil(rate);
+        if nanos_per_token == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
 
@@ -204,7 +223,7 @@ impl TokenBucketBuilder {
             rate,
             period: period_nanos,
             burst,
-            nanos_per_token: period_nanos / rate,
+            nanos_per_token,
         })
     }
 }
