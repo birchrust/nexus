@@ -48,6 +48,8 @@ mod task;
 mod timer;
 #[cfg(feature = "tokio-compat")]
 pub mod tokio_compat;
+#[cfg(feature = "tokio-compat")]
+pub use tokio_compat::{TokioJoinError, TokioJoinHandle, spawn_on_tokio};
 mod waker;
 mod world_ctx;
 

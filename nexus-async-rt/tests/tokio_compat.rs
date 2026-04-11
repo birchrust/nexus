@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use nexus_async_rt::tokio_compat::with_tokio;
+use nexus_async_rt::tokio_compat::{spawn_on_tokio, with_tokio};
 use nexus_async_rt::{Runtime, spawn_boxed};
 use nexus_rt::WorldBuilder;
 
@@ -811,5 +811,197 @@ fn fuzz_tcp_connect_storm() {
             })
             .await;
         }
+    });
+}
+
+// =============================================================================
+// spawn_on_tokio tests
+// =============================================================================
+
+#[test]
+fn spawn_on_tokio_basic() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let result = spawn_on_tokio(async { 42u64 }).await.unwrap();
+        assert_eq!(result, 42);
+    });
+}
+
+#[test]
+fn spawn_on_tokio_string() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let result = spawn_on_tokio(async { String::from("from tokio pool") })
+            .await
+            .unwrap();
+        assert_eq!(result, "from tokio pool");
+    });
+}
+
+#[test]
+fn spawn_on_tokio_with_sleep() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let result = spawn_on_tokio(async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            "after sleep"
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, "after sleep");
+    });
+}
+
+#[test]
+fn spawn_on_tokio_abort() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let handle = spawn_on_tokio(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            42u64
+        });
+        handle.abort();
+        let result = handle.await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_cancelled());
+    });
+}
+
+#[test]
+fn spawn_on_tokio_drop_aborts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    let completed = Arc::new(AtomicBool::new(false));
+    let flag = completed.clone();
+
+    rt.block_on(async move {
+        {
+            let _handle = spawn_on_tokio(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                flag.store(true, Ordering::Relaxed);
+            });
+            // _handle drops here → task aborted
+        }
+        // Give tokio a moment to process the abort.
+        with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(50))).await;
+    });
+
+    assert!(!completed.load(Ordering::Relaxed), "task should have been aborted");
+}
+
+#[test]
+fn spawn_on_tokio_is_finished() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let handle = spawn_on_tokio(async { 42 });
+        // Give it time to complete on tokio's thread.
+        with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(50))).await;
+        assert!(handle.is_finished());
+        let val = handle.await.unwrap();
+        assert_eq!(val, 42);
+    });
+}
+
+#[test]
+fn spawn_on_tokio_panic_in_task() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let result = spawn_on_tokio(async {
+            panic!("intentional test panic");
+            #[allow(unreachable_code)]
+            42u64
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_panic());
+    });
+}
+
+#[test]
+fn spawn_on_tokio_multiple_concurrent() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        let h1 = spawn_on_tokio(async { 10u64 });
+        let h2 = spawn_on_tokio(async { 20u64 });
+        let h3 = spawn_on_tokio(async { 30u64 });
+
+        let r1 = h1.await.unwrap();
+        let r2 = h2.await.unwrap();
+        let r3 = h3.await.unwrap();
+
+        assert_eq!(r1 + r2 + r3, 60);
+    });
+}
+
+#[test]
+fn spawn_on_tokio_tcp_io() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+    let mut rt = Runtime::new(&mut world);
+
+    rt.block_on(async {
+        // Start a listener on tokio's thread pool.
+        let listener = spawn_on_tokio(async {
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()
+        })
+        .await
+        .unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server on tokio's pool.
+        let server = spawn_on_tokio(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 64];
+            let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &buf[..n])
+                .await
+                .unwrap();
+        });
+
+        // Client on tokio's pool.
+        let echo = spawn_on_tokio(async move {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")
+                .await
+                .unwrap();
+            let mut buf = [0u8; 64];
+            let n = tokio::io::AsyncReadExt::read(&mut client, &mut buf)
+                .await
+                .unwrap();
+            String::from_utf8(buf[..n].to_vec()).unwrap()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(echo, "hello");
+        let _ = server.await;
     });
 }
