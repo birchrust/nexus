@@ -100,12 +100,11 @@ macro_rules! impl_jitter_float {
             }
 
             /// Jitter as a fraction of the smoothed mean, or `None` if not primed
-            /// or mean is zero.
+            /// or mean is near zero (absolute value < epsilon).
             #[inline]
             #[must_use]
             pub fn jitter_ratio(&self) -> Option<$ty> {
-                #[allow(clippy::float_cmp)]
-                if self.count >= self.min_samples && self.mean != (0.0 as $ty) {
+                if self.count >= self.min_samples && self.mean.abs() > <$ty>::EPSILON {
                     Option::Some(self.jitter / self.mean)
                 } else {
                     Option::None
