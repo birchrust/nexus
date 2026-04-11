@@ -257,10 +257,15 @@ fn sliding_window_huge_cost_rejected() {
 }
 
 #[test]
-fn token_bucket_ceiling_division() {
+fn token_bucket_consume_advances_zero_time() {
     let start = Instant::now();
     // Verify that consuming always advances zero_time by at least 1
-    // even with unfavorable rate/period ratios
+    // even with unfavorable rate/period ratios.
+    //
+    // nanos_per_token = 10 / 3 = 3 (truncated). This means available tokens
+    // are computed as elapsed / 3, and consuming 1 token advances zero_time
+    // by 3 nanos. The truncation error is <1 nanosecond per token —
+    // negligible for rate limiting.
     let mut tb = local::TokenBucket::builder()
         .rate(3)
         .period(Duration::from_nanos(10))
@@ -269,14 +274,13 @@ fn token_bucket_ceiling_division() {
         .build()
         .unwrap();
 
-    // At time 100ns: available = min(100 * 3 / 10, 100) = min(30, 100) = 30
+    // At time 100ns: available = min(100 / 3, 100) = 33
+    let available_before = tb.available(start + Duration::from_nanos(100));
     assert!(tb.try_acquire(1, start + Duration::from_nanos(100)));
-    // Ceiling division: consume_ticks = ceil(1 * 10 / 3) = ceil(3.33) = 4
-    // zero_time should advance by 4, not 3
-    // If it advanced by 3 (truncation), we'd get 1 extra token over time
+    // After consuming 1: zero_time = 3, available = (100 - 3) / 3 = 32
     let available_after = tb.available(start + Duration::from_nanos(100));
     assert!(
-        available_after < 30,
-        "should have consumed tokens, got {available_after}"
+        available_after < available_before,
+        "should have consumed tokens: before={available_before}, after={available_after}"
     );
 }

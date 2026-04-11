@@ -160,8 +160,16 @@ impl Gcra {
 
     /// Resets the limiter to full capacity as of `now`.
     ///
-    /// Equivalent to freshly constructing the limiter at this instant:
-    /// burst+1 requests are available immediately.
+    /// Stores `now` as the theoretical arrival time (TAT), making burst+1
+    /// requests available immediately.
+    ///
+    /// # Difference from `local::Gcra::reset`
+    ///
+    /// The local variant also rebases the internal time origin (`base`), which
+    /// is possible because it takes `&mut self`. This variant keeps the original
+    /// `base` (immutable behind `&self`) and adjusts TAT relative to it. The
+    /// observable behavior is equivalent: full burst capacity is available after
+    /// reset.
     #[inline]
     pub fn reset(&self, now: Instant) {
         self.tat

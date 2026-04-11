@@ -14,6 +14,7 @@ pub struct TokenBucket {
     rate: AtomicU64,
     period: AtomicU64,
     burst: AtomicU64,
+    nanos_per_token: AtomicU64,
     base: Instant,
 }
 
@@ -42,12 +43,10 @@ impl TokenBucket {
     /// Converts an `Instant` to nanoseconds relative to the base instant.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
-        let nanos = now.saturating_duration_since(self.base).as_nanos();
-        if nanos > u64::MAX as u128 {
-            u64::MAX
-        } else {
-            nanos as u64
-        }
+        let dur = now.saturating_duration_since(self.base);
+        dur.as_secs()
+            .saturating_mul(1_000_000_000)
+            .saturating_add(dur.subsec_nanos() as u64)
     }
 
     /// Attempts to consume `cost` tokens (thread-safe).
@@ -57,21 +56,19 @@ impl TokenBucket {
     #[must_use]
     pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
         let now = self.nanos_since_base(now);
-        let rate = self.rate.load(Ordering::Relaxed);
-        let period = self.period.load(Ordering::Relaxed);
+        let nanos_per_token = self.nanos_per_token.load(Ordering::Relaxed);
         let burst = self.burst.load(Ordering::Relaxed);
         loop {
             let zero_time = self.zero_time.load(Ordering::Relaxed);
             let elapsed = now.saturating_sub(zero_time);
-            let tokens = elapsed as u128 * rate as u128 / period as u128;
-            let available = tokens.min(burst as u128) as u64;
+            let available = (elapsed / nanos_per_token).min(burst);
 
             if available < cost {
                 return false;
             }
 
-            let consume_ticks = (cost as u128 * period as u128).div_ceil(rate as u128) as u64;
-            let new_zero_time = zero_time + consume_ticks;
+            let consume_ticks = cost.saturating_mul(nanos_per_token);
+            let new_zero_time = zero_time.saturating_add(consume_ticks);
 
             if self
                 .zero_time
@@ -92,14 +89,12 @@ impl TokenBucket {
     #[inline]
     #[must_use]
     pub fn available(&self, now: Instant) -> u64 {
-        let now = self.nanos_since_base(now);
-        let rate = self.rate.load(Ordering::Relaxed);
-        let period = self.period.load(Ordering::Relaxed);
+        let nanos_per_token = self.nanos_per_token.load(Ordering::Relaxed);
         let burst = self.burst.load(Ordering::Relaxed);
         let zero_time = self.zero_time.load(Ordering::Relaxed);
+        let now = self.nanos_since_base(now);
         let elapsed = now.saturating_sub(zero_time);
-        let tokens = elapsed as u128 * rate as u128 / period as u128;
-        tokens.min(burst as u128) as u64
+        (elapsed / nanos_per_token).min(burst)
     }
 
     /// Reconfigure rate and burst. Control-plane operation.
@@ -135,6 +130,8 @@ impl TokenBucket {
         self.rate.store(rate, Ordering::Release);
         self.period.store(period_nanos, Ordering::Release);
         self.burst.store(burst, Ordering::Release);
+        self.nanos_per_token
+            .store(period_nanos / rate, Ordering::Release);
         Ok(())
     }
 
@@ -144,17 +141,14 @@ impl TokenBucket {
     #[inline]
     pub fn release(&self, cost: u64, now: Instant) {
         let now_ns = self.nanos_since_base(now);
-        let rate = self.rate.load(Ordering::Relaxed);
-        let period = self.period.load(Ordering::Relaxed);
+        let nanos_per_token = self.nanos_per_token.load(Ordering::Relaxed);
         let burst = self.burst.load(Ordering::Relaxed);
         loop {
             let zero_time = self.zero_time.load(Ordering::Relaxed);
             let elapsed = now_ns.saturating_sub(zero_time);
-            let tokens = elapsed as u128 * rate as u128 / period as u128;
-            let available = tokens.min(burst as u128) as u64;
+            let available = (elapsed / nanos_per_token).min(burst);
             let new_available = available.saturating_add(cost).min(burst);
-            let ticks_for_tokens =
-                (new_available as u128 * period as u128).div_ceil(rate as u128) as u64;
+            let ticks_for_tokens = new_available.saturating_mul(nanos_per_token);
             let new_zero_time = now_ns.saturating_sub(ticks_for_tokens);
 
             if self
@@ -187,6 +181,10 @@ impl core::fmt::Debug for TokenBucket {
             .field("rate", &self.rate.load(Ordering::Relaxed))
             .field("period", &self.period.load(Ordering::Relaxed))
             .field("burst", &self.burst.load(Ordering::Relaxed))
+            .field(
+                "nanos_per_token",
+                &self.nanos_per_token.load(Ordering::Relaxed),
+            )
             .field("base", &self.base)
             .finish()
     }
@@ -255,6 +253,7 @@ impl TokenBucketBuilder {
             rate: AtomicU64::new(rate),
             period: AtomicU64::new(period_nanos),
             burst: AtomicU64::new(burst),
+            nanos_per_token: AtomicU64::new(period_nanos / rate),
             base: now,
         })
     }
