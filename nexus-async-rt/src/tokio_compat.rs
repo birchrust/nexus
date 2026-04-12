@@ -223,10 +223,19 @@ unsafe fn cross_task_clone(data: *const ()) -> RawWaker {
 unsafe fn cross_task_wake(data: *const ()) {
     unsafe { cross_task_wake_by_ref(data) };
     let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossTaskWakerData>()) };
-    // Refcount bookkeeping. If should_free, the task is already in the
-    // queue from wake_by_ref above. drain_cross_thread will see
-    // is_completed and route to deferred_free.
-    let _should_free = unsafe { crate::task::ref_dec(boxed.task_ptr) };
+    let task_ptr = boxed.task_ptr;
+    let should_free = unsafe { crate::task::ref_dec(task_ptr) };
+    if should_free {
+        // wake_by_ref may have skipped the push (task already completed).
+        // Ensure the task is queued for executor cleanup. try_set_queued
+        // prevents double-push if wake_by_ref DID queue it.
+        if unsafe { crate::task::try_set_queued(task_ptr) } {
+            unsafe { boxed.ctx.queue.push(task_ptr) };
+            if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = boxed.ctx.mio_waker.wake();
+            }
+        }
+    }
 }
 
 /// Wake by ref: push to cross-thread inbox. No refcount change.
