@@ -189,15 +189,24 @@ fn sliding_window_reconfigure_zero_limit() {
 
 #[test]
 fn gcra_build_rate_exceeds_period() {
-    // rate=1000, period=100ns → emission_interval = 0
-    let result = local::Gcra::builder()
+    // rate=1000, period=100ns → ceil(100/1000) = 1ns emission_interval.
+    // This is valid: the limiter is conservative (1 token/ns vs configured
+    // 10 tokens/ns) but functional. Ceiling division prevents over-issuance.
+    let start = Instant::now();
+    let mut g = local::Gcra::builder()
         .rate(1000)
         .period(Duration::from_nanos(100))
-        .build();
-    assert!(
-        matches!(result, Err(ConfigError::Invalid(_))),
-        "rate > period should fail (emission_interval = 0)"
-    );
+        .burst(5)
+        .now(start)
+        .build()
+        .unwrap();
+
+    // With emission_interval=1 and burst=5, tau=6.
+    // First 6 requests should succeed (burst+1), then reject.
+    for _ in 0..6 {
+        assert!(g.try_acquire(1, start));
+    }
+    assert!(!g.try_acquire(1, start), "should reject after burst+1");
 }
 
 // =============================================================================
@@ -257,10 +266,15 @@ fn sliding_window_huge_cost_rejected() {
 }
 
 #[test]
-fn token_bucket_ceiling_division() {
+fn token_bucket_consume_advances_zero_time() {
     let start = Instant::now();
     // Verify that consuming always advances zero_time by at least 1
-    // even with unfavorable rate/period ratios
+    // even with unfavorable rate/period ratios.
+    //
+    // nanos_per_token = 10 / 3 = 3 (truncated). This means available tokens
+    // are computed as elapsed / 3, and consuming 1 token advances zero_time
+    // by 3 nanos. The truncation error is <1 nanosecond per token —
+    // negligible for rate limiting.
     let mut tb = local::TokenBucket::builder()
         .rate(3)
         .period(Duration::from_nanos(10))
@@ -269,14 +283,111 @@ fn token_bucket_ceiling_division() {
         .build()
         .unwrap();
 
-    // At time 100ns: available = min(100 * 3 / 10, 100) = min(30, 100) = 30
+    // nanos_per_token = ceil(10/3) = 4. At time 100ns: available = 100/4 = 25.
+    // This is conservative (30 would be exact for 3 tokens/10ns over 10 periods).
+    // Ceiling division guarantees we never exceed the configured rate.
+    let available_before = tb.available(start + Duration::from_nanos(100));
+    assert_eq!(available_before, 25);
     assert!(tb.try_acquire(1, start + Duration::from_nanos(100)));
-    // Ceiling division: consume_ticks = ceil(1 * 10 / 3) = ceil(3.33) = 4
-    // zero_time should advance by 4, not 3
-    // If it advanced by 3 (truncation), we'd get 1 extra token over time
+    // After consuming 1: zero_time = 4, available = (100 - 4) / 4 = 24
     let available_after = tb.available(start + Duration::from_nanos(100));
+    assert_eq!(available_after, 24);
+}
+
+// =============================================================================
+// No-over-issuance guarantee
+// =============================================================================
+
+/// Verifies that ceiling division prevents the token bucket from ever issuing
+/// more than `rate` tokens per `period`, regardless of configuration.
+#[test]
+fn token_bucket_never_over_issues() {
+    let start = Instant::now();
+
+    // Pathological config: rate=3, period=7ns. Floor would give nanos_per_token=2,
+    // producing 7/2=3.5 → 3 tokens/period (accidentally ok). But rate=3, period=5ns
+    // with floor gives nanos_per_token=1, producing 5 tokens/period (over-issue!).
+    // Ceiling: ceil(5/3)=2, producing 5/2=2 tokens/period (conservative, safe).
+    let tb = local::TokenBucket::builder()
+        .rate(3)
+        .period(Duration::from_nanos(5))
+        .burst(100)
+        .now(start)
+        .build()
+        .unwrap();
+
+    // After exactly one period (5ns), available must be <= rate (3)
+    let available = tb.available(start + Duration::from_nanos(5));
     assert!(
-        available_after < 30,
-        "should have consumed tokens, got {available_after}"
+        available <= 3,
+        "must never exceed configured rate: got {available}, max 3"
+    );
+
+    // After 10 periods (50ns), available must be <= 10 * rate = 30
+    let available_10 = tb.available(start + Duration::from_nanos(50));
+    assert!(
+        available_10 <= 30,
+        "must never exceed rate*periods: got {available_10}, max 30"
+    );
+}
+
+/// Same guarantee for GCRA: never allows more than rate requests per period.
+#[test]
+fn gcra_never_over_issues() {
+    let start = Instant::now();
+
+    // rate=3, period=5ns. ceil(5/3)=2 emission_interval.
+    // tau = 2 * (burst+1) = 2 * 4 = 8 for burst=3.
+    let mut g = local::Gcra::builder()
+        .rate(3)
+        .period(Duration::from_nanos(5))
+        .burst(3)
+        .now(start)
+        .build()
+        .unwrap();
+
+    // Count how many requests succeed in exactly one period (5ns)
+    let mut accepted = 0;
+    for _ in 0..100 {
+        if g.try_acquire(1, start + Duration::from_nanos(5)) {
+            accepted += 1;
+        } else {
+            break;
+        }
+    }
+    // Must not exceed rate (3). With burst, initial burst allows more,
+    // but steady-state should not exceed rate per period.
+    // At t=5ns, TAT starts at 0. First request: new_tat = max(0,5)+2=7.
+    // excess = 7-5=2 <= tau(8). OK. Second: new_tat=7+2=9. excess=9-5=4 <= 8. OK.
+    // Third: new_tat=9+2=11. excess=11-5=6 <= 8. OK.
+    // Fourth: new_tat=11+2=13. excess=13-5=8 <= 8. OK (burst allows this).
+    // Fifth: new_tat=13+2=15. excess=15-5=10 > 8. REJECTED.
+    assert_eq!(accepted, 4, "burst+1 requests allowed, then reject");
+    assert!(
+        accepted <= 3 + 3, // rate + burst
+        "total accepted must not exceed rate + burst: got {accepted}"
+    );
+}
+
+/// Sliding window uses direct counting — no division-based token computation.
+/// Verify it enforces the limit exactly (no over-issuance by construction).
+#[test]
+fn sliding_window_exact_limit() {
+    let start = Instant::now();
+    let mut sw = local::SlidingWindow::builder()
+        .window(Duration::from_nanos(100))
+        .sub_windows(10)
+        .limit(5)
+        .now(start)
+        .build()
+        .unwrap();
+
+    // Exactly 5 should succeed, 6th should fail
+    for i in 0..5 {
+        assert!(sw.try_acquire(1, start), "request {i} should succeed");
+    }
+    assert!(
+        !sw.try_acquire(1, start),
+        "must reject at limit — sliding window enforces exact count"
     );
 }

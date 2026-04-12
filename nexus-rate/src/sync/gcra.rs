@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 ///
 /// Same algorithm as [`local::Gcra`](crate::local::Gcra) but uses an
 /// `AtomicU64` for the TAT with a CAS loop for lock-free concurrent access.
+/// See the local variant's documentation for precision characteristics —
+/// `ceil(period / rate)` guarantees no over-issuance.
 ///
 /// # Thread Safety
 ///
@@ -123,7 +125,7 @@ impl Gcra {
         if period_nanos == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        let ei = period_nanos / rate;
+        let ei = period_nanos.div_ceil(rate);
         if ei == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
@@ -160,8 +162,16 @@ impl Gcra {
 
     /// Resets the limiter to full capacity as of `now`.
     ///
-    /// Equivalent to freshly constructing the limiter at this instant:
-    /// burst+1 requests are available immediately.
+    /// Stores `now` as the theoretical arrival time (TAT), making burst+1
+    /// requests available immediately.
+    ///
+    /// # Difference from `local::Gcra::reset`
+    ///
+    /// The local variant also rebases the internal time origin (`base`), which
+    /// is possible because it takes `&mut self`. This variant keeps the original
+    /// `base` (immutable behind `&self`) and adjusts TAT relative to it. The
+    /// observable behavior is equivalent: full burst capacity is available after
+    /// reset.
     #[inline]
     pub fn reset(&self, now: Instant) {
         self.tat
@@ -236,7 +246,7 @@ impl GcraBuilder {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
 
-        let ei = period_nanos / rate;
+        let ei = period_nanos.div_ceil(rate);
         if ei == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }

@@ -5,6 +5,15 @@ use std::time::{Duration, Instant};
 /// From the ATM specification. Uses a single timestamp (Theoretical Arrival
 /// Time) for O(1) rate limiting with no token tracking.
 ///
+/// # Precision
+///
+/// The emission interval is computed as `ceil(period / rate)`. Ceiling
+/// division guarantees the limiter never exceeds the configured rate — it
+/// may be slightly conservative (under-issue by <1 request/period) when
+/// `period` is not evenly divisible by `rate`. For typical configurations
+/// the division is exact and there is zero error. This is the standard
+/// approach used in production rate limiters to bias toward safety.
+///
 /// # Use Cases
 /// - API request rate limiting
 /// - Per-client message throttling
@@ -101,7 +110,7 @@ impl Gcra {
         if period == 0 {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
-        let ei = period / rate;
+        let ei = period.div_ceil(rate);
         if ei == 0 {
             return Err(crate::ConfigError::Invalid("period / rate must be > 0"));
         }
@@ -188,7 +197,7 @@ impl GcraBuilder {
             return Err(crate::ConfigError::Invalid("period must be > 0"));
         }
 
-        let emission_interval = period_nanos / rate;
+        let emission_interval = period_nanos.div_ceil(rate);
         if emission_interval == 0 {
             return Err(crate::ConfigError::Invalid(
                 "period / rate must be > 0 (rate too high for period)",

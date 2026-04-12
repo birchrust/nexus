@@ -15,8 +15,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub struct SlidingWindow {
     base: Instant,
-    buckets: *mut u64,
-    num_buckets: usize,
+    buckets: Vec<u64>,
     total: u64,
     current_bucket: usize,
     bucket_duration: u64,
@@ -24,18 +23,7 @@ pub struct SlidingWindow {
     limit: u64,
 }
 
-// SAFETY: buffer is exclusively owned, u64 is Copy + Send
-unsafe impl Send for SlidingWindow {}
-
 impl SlidingWindow {
-    #[inline]
-    fn ring_mut(&mut self) -> &mut [u64] {
-        // SAFETY: self.buckets was allocated via Vec with capacity self.num_buckets
-        // in build(), and is exclusively owned (&mut self guarantees no aliasing).
-        // The pointer remains valid until drop().
-        unsafe { core::slice::from_raw_parts_mut(self.buckets, self.num_buckets) }
-    }
-
     /// Converts an `Instant` to nanoseconds relative to the internal base.
     #[inline]
     fn nanos_since_base(&self, now: Instant) -> u64 {
@@ -80,17 +68,18 @@ impl SlidingWindow {
             return;
         }
 
-        let buckets_to_clear = buckets_to_advance.min(self.num_buckets);
-        let num_buckets = self.num_buckets;
+        let num_buckets = self.buckets.len();
+        let buckets_to_clear = buckets_to_advance.min(num_buckets);
         let mut current = self.current_bucket;
         let mut total = self.total;
-        // SAFETY: buffer allocated with capacity num_buckets, all initialized
-        let ring = unsafe { core::slice::from_raw_parts_mut(self.buckets, num_buckets) };
 
         for _ in 0..buckets_to_clear {
-            current = (current + 1) % num_buckets;
-            total = total.saturating_sub(ring[current]);
-            ring[current] = 0;
+            current += 1;
+            if current >= num_buckets {
+                current = 0;
+            }
+            total = total.saturating_sub(self.buckets[current]);
+            self.buckets[current] = 0;
         }
 
         self.current_bucket = current;
@@ -109,7 +98,7 @@ impl SlidingWindow {
 
         if self.limit.saturating_sub(self.total) >= cost {
             let idx = self.current_bucket;
-            self.ring_mut()[idx] += cost;
+            self.buckets[idx] += cost;
             self.total += cost;
             true
         } else {
@@ -125,9 +114,8 @@ impl SlidingWindow {
         let now_ns = self.nanos_since_base(now);
         self.advance_time(now_ns);
         let idx = self.current_bucket;
-        let bucket = &mut self.ring_mut()[idx];
-        let decrement = cost.min(*bucket);
-        *bucket -= decrement;
+        let decrement = cost.min(self.buckets[idx]);
+        self.buckets[idx] -= decrement;
         self.total -= decrement;
     }
 
@@ -164,22 +152,11 @@ impl SlidingWindow {
     /// After reset, the window is empty and `now` becomes the new time origin.
     #[inline]
     pub fn reset(&mut self, now: Instant) {
-        self.ring_mut().fill(0);
+        self.buckets.fill(0);
         self.total = 0;
         self.current_bucket = 0;
         self.last_bucket_time = 0;
         self.base = now;
-    }
-}
-
-impl Drop for SlidingWindow {
-    fn drop(&mut self) {
-        // SAFETY: self.buckets was created from a Vec::into_raw_parts (via ManuallyDrop)
-        // in build() with capacity self.num_buckets. Length is 0 because u64 has no
-        // drop glue — we only need the Vec to deallocate the buffer.
-        unsafe {
-            let _ = Vec::from_raw_parts(self.buckets, 0, self.num_buckets);
-        }
     }
 }
 
@@ -251,13 +228,9 @@ impl SlidingWindowBuilder {
             ));
         }
 
-        let mut vec = core::mem::ManuallyDrop::new(vec![0u64; sub_windows]);
-        let buckets = vec.as_mut_ptr();
-
         Ok(SlidingWindow {
             base: now,
-            buckets,
-            num_buckets: sub_windows,
+            buckets: vec![0u64; sub_windows],
             total: 0,
             current_bucket: 0,
             bucket_duration,
@@ -484,6 +457,18 @@ mod tests {
         assert_eq!(sw.count(), 10);
         sw.release(3, base);
         assert_eq!(sw.count(), 7);
+    }
+
+    #[test]
+    fn clone_is_independent() {
+        let start = Instant::now();
+        let mut sw = make_window(start);
+        let _ = sw.try_acquire(50, start);
+        let mut cloned = sw.clone();
+        // Mutations on clone don't affect original
+        let _ = cloned.try_acquire(50, start);
+        assert_eq!(sw.count(), 50); // original unchanged
+        assert_eq!(cloned.count(), 100);
     }
 
     #[test]
