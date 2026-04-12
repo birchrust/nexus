@@ -82,7 +82,13 @@ macro_rules! impl_bitfield {
                 /// Set field value in packed integer.
                 ///
                 /// Clears existing bits in field, then sets new value.
-                /// Returns error if `field_val` exceeds `max_value()`.
+                /// Returns error if the unsigned magnitude of `field_val`
+                /// exceeds `max_value()`.
+                ///
+                /// For signed types, negative values are stored as their
+                /// two's complement bit pattern, truncated to the field width.
+                /// Use the derive macro's builder for range-checked signed
+                /// field packing.
                 #[inline]
                 pub const fn set(self, val: $ty, field_val: $ty) -> Result<$ty, Overflow<$ty>> {
                     let max = self.max_value();
@@ -92,15 +98,15 @@ macro_rules! impl_bitfield {
                     Ok(self.set_unchecked(val, field_val))
                 }
 
-                /// Set field value without bounds checking.
+                /// Set field value without overflow checking.
                 ///
-                /// # Safety
-                ///
-                /// Caller must ensure `field_val <= max_value()`.
+                /// Values larger than [`max_value()`](Self::max_value) are silently
+                /// truncated to the field width. Use [`set()`](Self::set) if overflow
+                /// detection is needed.
                 #[inline]
                 pub const fn set_unchecked(self, val: $ty, field_val: $ty) -> $ty {
                     let cleared = val & !self.mask;
-                    cleared | (field_val << self.start)
+                    cleared | ((field_val << self.start) & self.mask)
                 }
 
                 /// Clear field to zero.

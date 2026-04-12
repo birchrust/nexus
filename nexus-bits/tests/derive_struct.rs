@@ -1096,6 +1096,80 @@ fn signed_fields_min_values() {
 }
 
 // =============================================================================
+// Narrow signed fields — sign extension (#11)
+// =============================================================================
+
+#[bit_storage(repr = u32)]
+pub struct NarrowSignedFields {
+    #[field(start = 0, len = 4)]
+    narrow_i8: i8, // 4-bit signed: -8 to 7
+    #[field(start = 4, len = 12)]
+    narrow_i16: i16, // 12-bit signed: -2048 to 2047
+}
+
+#[test]
+fn narrow_signed_positive() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(7)
+        .narrow_i16(2047)
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), 7);
+    assert_eq!(unpacked.narrow_i16(), 2047);
+}
+
+#[test]
+fn narrow_signed_negative() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(-1)
+        .narrow_i16(-1)
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), -1);
+    assert_eq!(unpacked.narrow_i16(), -1);
+}
+
+#[test]
+fn narrow_signed_min() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(-8) // min for 4-bit signed
+        .narrow_i16(-2048) // min for 12-bit signed
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), -8);
+    assert_eq!(unpacked.narrow_i16(), -2048);
+}
+
+#[test]
+fn narrow_signed_roundtrip_all_4bit() {
+    // Exhaustive test for 4-bit signed field: all values -8..=7
+    for v in -8i8..=7 {
+        let s = NarrowSignedFields::builder()
+            .narrow_i8(v)
+            .narrow_i16(0)
+            .build()
+            .unwrap();
+        let unpacked = NarrowSignedFields::from_raw(s.raw());
+        assert_eq!(unpacked.narrow_i8(), v, "roundtrip failed for {v}");
+    }
+}
+
+#[test]
+fn narrow_signed_zero() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(0)
+        .narrow_i16(0)
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), 0);
+    assert_eq!(unpacked.narrow_i16(), 0);
+}
+
+// =============================================================================
 // Builder overwrite behavior
 // =============================================================================
 
