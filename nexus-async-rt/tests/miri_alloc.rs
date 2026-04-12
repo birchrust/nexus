@@ -3,7 +3,12 @@
 //! Exercises slab_spawn copy_nonoverlapping, slab_free_fn, and
 //! bounded slab exhaustion paths under miri.
 //!
-//! Run: `cargo +nightly miri test -p nexus-async-rt --test miri_alloc`
+//! **Requires tree borrows.** The slab's Cell<*mut SlotCell<T>> freelist
+//! triggers a known stacked borrows false positive when accessed through
+//! a type-erased TLS pointer round-trip (*const u8 → *const Slab → &Slab).
+//! Tree borrows handles the Cell/UnsafeCell interaction correctly.
+//!
+//! Run: `MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-ignore-leaks" cargo +nightly miri test -p nexus-async-rt --test miri_alloc`
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -15,14 +20,7 @@ use nexus_rt::WorldBuilder;
 // Tests
 // =============================================================================
 
-// NOTE: These tests previously hit a stacked borrows violation because
-// RuntimeBuilder::slab_unbounded/slab_bounded derived the slab_ptr from
-// a shared ref (`slab.as_ref()`). Fixed by using `from_mut(slab.as_mut())`
-// to get write provenance. Same class of fix as the btree/rbtree issue
-// in nexus-collections (Batch 4).
-
 #[test]
-#[cfg_attr(miri, ignore)] // Pre-existing slab provenance — deeper than runtime.rs fix. See feedback.md.
 fn slab_spawn_and_free() {
     // Configure unbounded slab, spawn 10 tasks via spawn_slab, complete all.
     // Tasks are detached (handle dropped) so free_task fires inline during
@@ -53,7 +51,6 @@ fn slab_spawn_and_free() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore)] // Pre-existing slab provenance — deeper than runtime.rs fix. See feedback.md.
 fn slab_spawn_with_drop_tracker() {
     // Verify slab-spawned tasks drop their captures.
     let count = Rc::new(Cell::new(0u32));
@@ -84,7 +81,6 @@ fn slab_spawn_with_drop_tracker() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore)] // Pre-existing slab provenance — deeper than runtime.rs fix. See feedback.md.
 fn slab_claim_and_spawn() {
     // Use claim_slab() → SlabClaim → .spawn(future).
     // Detach the handle so free fires inline.
@@ -108,7 +104,6 @@ fn slab_claim_and_spawn() {
 
 // Bounded slab variant — same provenance fix applied.
 #[test]
-#[cfg_attr(miri, ignore)] // Pre-existing slab provenance — deeper than runtime.rs fix. See feedback.md.
 fn slab_bounded_reuse_after_free() {
     // Configure bounded slab with 4 slots. Spawn 4 tasks, complete them,
     // then spawn 4 more (reusing freed slots).

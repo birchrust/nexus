@@ -741,3 +741,117 @@ mod byte_tests {
         slab.free(ptr);
     }
 }
+
+// =============================================================================
+// Provenance: stored pointer → claim → write through returned pointer
+//
+// The async-rt slab integration stores a raw pointer to the slab in TLS,
+// casts back to &Slab, calls claim_ptr(), and writes through the returned
+// pointer. This exercises the exact provenance chain that stacked borrows
+// has trouble with (Cell<*mut> read through &self retag). These tests
+// verify the pattern is sound under tree borrows and catches regressions
+// in slots_ptr / claim_ptr provenance.
+// =============================================================================
+
+#[test]
+fn miri_bounded_alloc_through_stored_pointer() {
+    // Simulate the async-rt pattern: store raw pointer, cast to &Slab,
+    // alloc (claim + write), read, free. Exercises the full provenance
+    // chain through a stored pointer round-trip.
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
+    let slab_ptr: *const BoundedSlab<u64> = &slab;
+
+    // Access through raw pointer → &Slab (same as TLS round-trip)
+    let slab_ref = unsafe { &*slab_ptr };
+    let slot = slab_ref.alloc(42u64);
+    assert_eq!(*slot, 42);
+    slab_ref.free(slot);
+}
+
+#[test]
+fn miri_bounded_alloc_cycle_through_stored_pointer() {
+    // Multiple alloc/free cycles through stored pointer — exercises freelist
+    // pointer provenance across reuse.
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(2) };
+    let slab_ptr: *const BoundedSlab<u64> = &slab;
+
+    for i in 0..10u64 {
+        let slab_ref = unsafe { &*slab_ptr };
+        let slot = slab_ref.alloc(i);
+        assert_eq!(*slot, i);
+        slab_ref.free(slot);
+    }
+}
+
+#[test]
+fn miri_bounded_two_slots_through_stored_pointer() {
+    // Claim two slots via alloc, free in reverse order.
+    // Exercises freelist pointer provenance when multiple slots are live.
+    let slab = unsafe { BoundedSlab::<String>::with_capacity(4) };
+    let slab_ptr: *const BoundedSlab<String> = &slab;
+
+    let slab_ref = unsafe { &*slab_ptr };
+    let slot1 = slab_ref.alloc(String::from("first"));
+    let slot2 = slab_ref.alloc(String::from("second"));
+
+    assert_eq!(&*slot1, "first");
+    assert_eq!(&*slot2, "second");
+
+    slab_ref.free(slot2);
+    slab_ref.free(slot1);
+}
+
+#[test]
+fn miri_bounded_claim_write_through_stored_pointer() {
+    // Two-phase alloc (claim + write) through stored pointer.
+    // Exercises claim_ptr → write_value provenance chain.
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
+    let slab_ptr: *const BoundedSlab<u64> = &slab;
+
+    let slab_ref = unsafe { &*slab_ptr };
+    let claim = slab_ref.claim().unwrap();
+    let slot = claim.write(99u64);
+    assert_eq!(*slot, 99);
+    slab_ref.free(slot);
+}
+
+#[test]
+fn miri_unbounded_claim_write_through_stored_pointer() {
+    // Same pattern for unbounded slab — exercises chunk-based allocation.
+    let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
+    let slab_ptr: *const UnboundedSlab<u64> = &slab;
+
+    for i in 0..20u64 {
+        let slab_ref = unsafe { &*slab_ptr };
+        let slot = slab_ref.alloc(i);
+        assert_eq!(*slot, i);
+        slab_ref.free(slot);
+    }
+}
+
+#[test]
+fn miri_unbounded_stored_pointer_cross_chunk() {
+    // Allocate enough to trigger chunk growth, all through stored pointer.
+    let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(2) };
+    let slab_ptr: *const UnboundedSlab<u64> = &slab;
+
+    let slab_ref = unsafe { &*slab_ptr };
+
+    // 6 allocs with capacity 2 per chunk = 3 chunks
+    let s1 = slab_ref.alloc(1);
+    let s2 = slab_ref.alloc(2);
+    let s3 = slab_ref.alloc(3); // triggers chunk growth
+    let s4 = slab_ref.alloc(4);
+    let s5 = slab_ref.alloc(5); // triggers chunk growth
+    let s6 = slab_ref.alloc(6);
+
+    assert_eq!(*s1, 1);
+    assert_eq!(*s6, 6);
+
+    slab_ref.free(s1);
+    slab_ref.free(s2);
+    slab_ref.free(s3);
+    slab_ref.free(s4);
+    slab_ref.free(s5);
+    slab_ref.free(s6);
+}
