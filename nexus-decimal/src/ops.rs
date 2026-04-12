@@ -123,8 +123,15 @@ macro_rules! impl_decimal_mul_div_ops {
             type Output = Self;
 
             /// Remainder on the raw scaled values (`self.value % rhs.value`).
+            ///
+            /// # Panics
+            ///
+            /// Panics if `rhs` is zero.
             #[inline(always)]
             fn rem(self, rhs: Self) -> Self {
+                if rhs.value == 0 {
+                    panic_div_zero()
+                }
                 Self {
                     value: self.value % rhs.value,
                 }

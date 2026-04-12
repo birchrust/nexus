@@ -6,6 +6,7 @@ type D32 = Decimal<i32, 4>;
 type D64 = Decimal<i64, 8>;
 type D96 = Decimal<i128, 12>;
 type D128 = Decimal<i128, 18>;
+type D0_128 = Decimal<i128, 0>;
 
 // ============================================================================
 // Basic multiplication
@@ -434,4 +435,82 @@ fn const_div_d64() {
         None => panic!("overflow"),
     };
     assert_eq!(QUOTIENT, D64::new(2, 50_000_000));
+}
+
+// ============================================================================
+// Regression: #4 — from_unsigned i128 negation panics for i128::MIN
+// ============================================================================
+
+#[test]
+fn checked_mul_producing_i128_min() {
+    // D=0: SCALE=1, so checked_mul is just a * b / 1 = a * b
+    // i128::MIN * 1 = i128::MIN — the quotient is exactly (i128::MAX as u128) + 1,
+    // which triggered a panic via -(quotient as i128) in debug mode.
+    let min = D0_128::from_raw(i128::MIN);
+    let one = D0_128::from_raw(1);
+    assert_eq!(min.checked_mul(one), Some(min));
+}
+
+#[test]
+fn checked_mul_i128_min_by_neg_one() {
+    // i128::MIN * -1 = 2^127 which exceeds i128::MAX = 2^127-1
+    let min = D0_128::from_raw(i128::MIN);
+    let neg_one = D0_128::from_raw(-1);
+    assert_eq!(min.checked_mul(neg_one), None);
+}
+
+// ============================================================================
+// Regression: #2/#3 — wide division with large divisors (>= 2^64)
+// ============================================================================
+
+#[test]
+fn checked_div_large_divisor_d18() {
+    // Decimal<i128, 18>: 1000.0 / 20.0
+    // b_raw = 20 * 10^18 = 2 * 10^19 > 2^64, exercises the large-divisor path
+    let a = D128::new(1000, 0);
+    let b = D128::new(20, 0);
+    let result = a.checked_div(b);
+    assert_eq!(result, Some(D128::new(50, 0)));
+}
+
+#[test]
+fn checked_div_large_divisor_d18_fractional() {
+    // 100.0 / 33.0 ≈ 3.030303...
+    let a = D128::new(100, 0);
+    let b = D128::new(33, 0);
+    let result = a.checked_div(b).unwrap();
+    // 100 / 33 * 10^18 = 3030303030303030303 (truncated)
+    assert_eq!(result.to_raw(), 3_030_303_030_303_030_303);
+}
+
+#[test]
+fn checked_div_by_zero_all_types() {
+    assert_eq!(D32::from_raw(100).checked_div(D32::ZERO), None);
+    assert_eq!(D64::from_raw(100).checked_div(D64::ZERO), None);
+    assert_eq!(D128::from_raw(100).checked_div(D128::ZERO), None);
+}
+
+// ============================================================================
+// Regression: #34 — Rem by zero
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "division")]
+fn rem_by_zero_panics_i32() {
+    let a = D32::from_raw(100);
+    let _ = a % D32::ZERO;
+}
+
+#[test]
+#[should_panic(expected = "division")]
+fn rem_by_zero_panics_i64() {
+    let a = D64::from_raw(100);
+    let _ = a % D64::ZERO;
+}
+
+#[test]
+#[should_panic(expected = "division")]
+fn rem_by_zero_panics_i128() {
+    let a = D128::from_raw(100);
+    let _ = a % D128::ZERO;
 }

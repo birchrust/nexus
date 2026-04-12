@@ -167,6 +167,29 @@ fn approx_eq_outside_tolerance() {
 }
 
 #[test]
+fn approx_eq_extreme_values_i64() {
+    // MAX - MIN overflows i64. Must not panic, must return false.
+    let max = D64::MAX;
+    let min = D64::MIN;
+    let tol = D64::from_raw(100);
+    assert!(!max.approx_eq(min, tol));
+    assert!(!min.approx_eq(max, tol));
+}
+
+#[test]
+fn approx_eq_extreme_values_i32() {
+    type D32 = Decimal<i32, 4>;
+    assert!(!D32::MAX.approx_eq(D32::MIN, D32::from_raw(1)));
+    assert!(!D32::MIN.approx_eq(D32::MAX, D32::from_raw(1)));
+}
+
+#[test]
+fn approx_eq_extreme_values_i128() {
+    assert!(!D96::MAX.approx_eq(D96::MIN, D96::from_raw(1)));
+    assert!(!D96::MIN.approx_eq(D96::MAX, D96::from_raw(1)));
+}
+
+#[test]
 fn clamp_price() {
     let min = D64::new(90, 0);
     let max = D64::new(110, 0);
