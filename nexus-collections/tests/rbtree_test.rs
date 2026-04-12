@@ -328,3 +328,62 @@ fn slab_ops_trait_generic() {
     insert_and_remove(&mut tree, &unbounded_slab);
     assert!(tree.is_empty());
 }
+
+// =============================================================================
+// Debug-mode Drop detection
+// =============================================================================
+
+/// Verifies that dropping a non-empty RbTree panics in debug builds,
+/// catching the leak-without-clear() mistake.
+#[test]
+#[cfg(debug_assertions)]
+fn drop_non_empty_tree_panics() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab: UnboundedSlab<RbNode<u64, u64>> =
+            unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = RbTree::new();
+        tree.insert(&slab, 1, 100);
+        // tree dropped here without clear() — should panic
+    }));
+    let err = result.expect_err("non-empty tree drop should panic in debug");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("RbTree dropped with"),
+        "unexpected panic message: {msg}"
+    );
+}
+
+/// Verifies the Drop guard does NOT fire during unwinding (no double-panic).
+#[test]
+#[cfg(debug_assertions)]
+fn drop_non_empty_tree_during_unwind_no_double_panic() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab: UnboundedSlab<RbNode<u64, u64>> =
+            unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = RbTree::new();
+        tree.insert(&slab, 1, 100);
+        panic!("intentional outer panic");
+    }));
+    let err = result.expect_err("should have panicked");
+    let msg = err.downcast_ref::<&str>().copied().unwrap_or("");
+    assert_eq!(
+        msg, "intentional outer panic",
+        "should be the outer panic, not the drop panic"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn non_empty_drop_panics_in_debug() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = RbTree::<u64, u64>::new();
+        tree.insert(&slab, 1, 100);
+        // drop without clear — should panic in debug
+    }));
+    assert!(result.is_err(), "dropping non-empty rbtree should panic in debug");
+}

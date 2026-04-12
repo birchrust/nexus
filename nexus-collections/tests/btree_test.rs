@@ -267,3 +267,55 @@ fn unbounded_insert() {
 
     tree.clear(&slab);
 }
+
+// =============================================================================
+// Debug-mode Drop detection
+// =============================================================================
+
+#[test]
+#[cfg(debug_assertions)]
+fn drop_non_empty_btree_panics() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab: UnboundedSlab<BTreeNode<u64, u64, 8>> =
+            unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = BTree::<u64, u64, 8>::new();
+        tree.insert(&slab, 1, 100);
+    }));
+    let err = result.expect_err("non-empty btree drop should panic in debug");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("BTree dropped with"),
+        "unexpected panic message: {msg}"
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn drop_non_empty_btree_during_unwind_no_double_panic() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab: UnboundedSlab<BTreeNode<u64, u64, 8>> =
+            unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = BTree::<u64, u64, 8>::new();
+        tree.insert(&slab, 1, 100);
+        panic!("intentional outer panic");
+    }));
+    let err = result.expect_err("should have panicked");
+    let msg = err.downcast_ref::<&str>().copied().unwrap_or("");
+    assert_eq!(msg, "intentional outer panic");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn non_empty_drop_panics_in_debug() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = BTree::<u64, u64, 8>::new();
+        tree.insert(&slab, 1, 100);
+        // drop without clear — should panic in debug
+    }));
+    assert!(result.is_err(), "dropping non-empty btree should panic in debug");
+}

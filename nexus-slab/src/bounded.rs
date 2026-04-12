@@ -149,20 +149,26 @@ impl<T> Slab<T> {
             slots.push(SlotCell::vacant(ptr::null_mut()));
         }
 
+        // Wrap in UnsafeCell BEFORE wiring the freelist so all pointers
+        // are derived with write provenance from the UnsafeCell. Deriving
+        // pointers from the owned Vec and then moving into UnsafeCell gives
+        // them stale (read-only) provenance under stacked borrows.
+        let slots = core::cell::UnsafeCell::new(slots);
+        let base = unsafe { (*slots.get()).as_mut_ptr() };
+
         // Wire up the freelist: each slot's next_free points to the next slot
         for i in 0..(capacity - 1) {
-            let next_ptr = slots.as_mut_ptr().wrapping_add(i + 1);
-            // SAFETY: Slot is vacant, wiring up the freelist during init
-            unsafe { slots[i].set_next_free(next_ptr) };
+            let next_ptr = base.wrapping_add(i + 1);
+            // SAFETY: Slot is vacant, wiring up the freelist during init.
+            // base is derived from UnsafeCell with write provenance.
+            unsafe { (*base.add(i)).set_next_free(next_ptr) };
         }
         // Last slot points to NULL (end of freelist) — already null from vacant()
 
-        let free_head = slots.as_mut_ptr();
-
         Self {
-            slots: core::cell::UnsafeCell::new(slots),
+            slots,
             capacity,
-            free_head: Cell::new(free_head),
+            free_head: Cell::new(base),
         }
     }
 

@@ -151,10 +151,17 @@ thread_local! {
 }
 
 /// Returns a unique (per-thread) collection ID for ownership checking.
+///
+/// IDs are per-thread and wrap after `usize::MAX` allocations. On 64-bit,
+/// this is ~18 quintillion — effectively impossible. On 32-bit, wrapping
+/// after ~4B creates is theoretically possible but practically unreachable
+/// for a slab-backed collection (slab capacity would be exhausted first).
+/// We skip ID 0 to avoid colliding with potential sentinel values.
 fn next_collection_id() -> usize {
     NEXT_COLLECTION_ID.with(|c| {
         let id = c.get();
-        c.set(id + 1);
+        let next = id.wrapping_add(1);
+        c.set(if next == 0 { 1 } else { next });
         id
     })
 }

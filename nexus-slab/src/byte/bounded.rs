@@ -101,7 +101,7 @@ impl<const N: usize> Slab<N> {
     pub fn try_claim(&self) -> Option<super::ByteClaim<'_>> {
         let claim = self.inner.claim()?;
         let ptr = claim.into_ptr().cast::<u8>();
-        let slab_ptr = std::ptr::from_ref(&self.inner).cast::<u8>();
+        let slab_ptr = core::ptr::from_ref(&self.inner).cast::<u8>();
         // SAFETY: ptr is a valid vacant slot. Bounded = single chunk (idx 0).
         Some(unsafe { super::ByteClaim::from_raw_parts(ptr, slab_ptr, free_raw_impl::<N>, 0, N) })
     }

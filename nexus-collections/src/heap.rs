@@ -657,11 +657,34 @@ impl<T: Ord> Default for Heap<T> {
     }
 }
 
+// Heap does NOT implement Drop in release. The user must call clear() with
+// the slab to release the heap's strong references.
+//
+// In debug builds, we panic on non-empty drop to catch slot leaks early.
+#[cfg(debug_assertions)]
+impl<T: Ord> Drop for Heap<T> {
+    #[allow(clippy::manual_assert)]
+    fn drop(&mut self) {
+        if self.len > 0 && !std::thread::panicking() {
+            panic!(
+                "Heap dropped with {} elements without calling clear(). \
+                 This leaks slab slots. Call heap.clear(&slab) before dropping.",
+                self.len
+            );
+        }
+    }
+}
+
 // =============================================================================
 // Drain
 // =============================================================================
 
 /// Draining iterator that pops elements in sorted (min-first) order.
+///
+/// Unlike [`RbTree::drain`](crate::rbtree::Drain) and
+/// [`BTree::drain`](crate::btree::DrainBTree), this iterator does NOT
+/// clear remaining elements on drop. Partially consumed drains leave
+/// the remaining elements in the heap.
 pub struct Drain<'a, T: Ord> {
     heap: &'a mut Heap<T>,
 }

@@ -537,3 +537,63 @@ fn move_middle_to_back_verify_order() {
     slab.free(h2);
     slab.free(h3);
 }
+
+// =============================================================================
+// Debug-mode Drop detection
+// =============================================================================
+
+#[test]
+#[cfg(debug_assertions)]
+fn drop_non_empty_list_panics() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = make_u64_slab();
+        let mut list = List::new();
+        let h = slab.alloc(ListNode::new(42));
+        list.link_back(&h);
+        // Forget the handle so its debug Drop doesn't fire first
+        std::mem::forget(h);
+        // list drops without clear() — should panic
+    }));
+    let err = result.expect_err("non-empty list drop should panic in debug");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("List dropped with"),
+        "unexpected panic message: {msg}"
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn drop_non_empty_list_during_unwind_no_double_panic() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = make_u64_slab();
+        let mut list = List::new();
+        let h = slab.alloc(ListNode::new(42));
+        list.link_back(&h);
+        std::mem::forget(h);
+        panic!("intentional outer panic");
+    }));
+    let err = result.expect_err("should have panicked");
+    let msg = err.downcast_ref::<&str>().copied().unwrap_or("");
+    assert_eq!(msg, "intentional outer panic");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn non_empty_drop_panics_in_debug() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut list = List::new();
+        let order = Order {
+            id: 1,
+            price: 100.0,
+        };
+        list.push_back(&slab, order);
+        // drop without clear — should panic in debug
+    }));
+    assert!(result.is_err(), "dropping non-empty list should panic in debug");
+}

@@ -100,7 +100,9 @@ unsafe fn node_deref<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *const BTre
 /// `ptr` must be non-null and point to an occupied `SlotCell`. The caller
 /// must ensure no other references to this node exist.
 unsafe fn node_deref_mut<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *mut BTreeNode<K, V, B> {
-    unsafe { (*ptr).value_ptr().cast_mut() }
+    // Use value_ptr_mut to avoid creating &SlotCell which would give
+    // read-only provenance under stacked borrows.
+    unsafe { nexus_slab::shared::SlotCell::value_ptr_mut(ptr) }
 }
 
 // =============================================================================
@@ -369,6 +371,14 @@ fn prefetch_read_node<K, V, const B: usize>(ptr: NodePtr<K, V, B>) {
 // =============================================================================
 
 /// A cache-friendly sorted map with external slab allocation.
+///
+/// # Panic Safety
+///
+/// If a comparator panics during a tree mutation (insert/remove), the tree
+/// may be left in an inconsistent state with partially-updated node splits
+/// or merges. Subsequent operations on such a tree are undefined behavior.
+/// Callers are responsible for ensuring their `Compare` implementation does
+/// not panic.
 pub struct BTree<K, V, const B: usize = 8, C = Natural> {
     root: NodePtr<K, V, B>,
     len: usize,
@@ -436,6 +446,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             if found {
                 let result = unsafe { self.remove_found(slab, current, idx, &path, path_len) };
                 self.len -= 1;
+
                 return Some(result);
             }
             if unsafe { node_is_leaf(current) } {
@@ -473,6 +484,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         unsafe { shift_left(current, 0) };
         self.fixup_after_remove(slab, current, &path, path_len);
         self.len -= 1;
+
         Some(result)
     }
 
@@ -501,6 +513,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         unsafe { (*node_deref_mut(current)).len -= 1 };
         self.fixup_after_remove(slab, current, &path, path_len);
         self.len -= 1;
+
         Some(result)
     }
 
@@ -1591,6 +1604,7 @@ impl<K, V, const B: usize> BTree<K, V, B> {
             root: ptr::null_mut(),
             len: 0,
             depth: 0,
+
             _marker: PhantomData,
         }
     }
@@ -1599,6 +1613,22 @@ impl<K, V, const B: usize> BTree<K, V, B> {
 impl<K, V, const B: usize> Default for BTree<K, V, B> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// BTree does NOT implement Drop in release. The user must call clear() with
+// the slab to release nodes. In debug builds, we panic to catch slot leaks.
+#[cfg(debug_assertions)]
+impl<K, V, const B: usize, C> Drop for BTree<K, V, B, C> {
+    #[allow(clippy::manual_assert)]
+    fn drop(&mut self) {
+        if self.len > 0 && !std::thread::panicking() {
+            panic!(
+                "BTree dropped with {} elements without calling clear(). \
+                 This leaks slab slots. Call tree.clear(&slab) before dropping.",
+                self.len
+            );
+        }
     }
 }
 
@@ -1617,6 +1647,7 @@ impl<K, V, const B: usize, C> BTree<K, V, B, C> {
             root: ptr::null_mut(),
             len: 0,
             depth: 0,
+
             _marker: PhantomData,
         }
     }
@@ -2078,6 +2109,9 @@ impl<'a, K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
         old
     }
     /// Remove entry.
+    // TODO(perf): Entry removal re-searches from root because the rebalancing
+    // algorithm needs the full path. Storing the path in the entry would avoid
+    // this O(log n) overhead but costs ~512 bytes of stack.
     pub fn remove(self) -> (K, V) {
         // SAFETY: self.node is a valid node; keys[self.idx] is initialized.
         // ManuallyDrop prevents double-free — remove_entry will properly take it.

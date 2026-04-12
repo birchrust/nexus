@@ -87,7 +87,7 @@ impl<const N: usize> Slab<N> {
     pub fn claim(&self) -> super::ByteClaim<'_> {
         let claim = self.inner.claim();
         let (ptr, chunk_idx) = claim.into_ptr();
-        let slab_ptr = std::ptr::from_ref(&self.inner).cast::<u8>();
+        let slab_ptr = core::ptr::from_ref(&self.inner).cast::<u8>();
         // SAFETY: ptr is a valid vacant slot. chunk_idx identifies the owning chunk.
         unsafe {
             super::ByteClaim::from_raw_parts(
