@@ -307,3 +307,15 @@ fn drop_non_empty_btree_during_unwind_no_double_panic() {
     let msg = err.downcast_ref::<&str>().copied().unwrap_or("");
     assert_eq!(msg, "intentional outer panic");
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn non_empty_drop_panics_in_debug() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = BTree::<u64, u64, 8>::new();
+        tree.insert(&slab, 1, 100);
+        // drop without clear — should panic in debug
+    }));
+    assert!(result.is_err(), "dropping non-empty btree should panic in debug");
+}

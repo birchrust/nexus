@@ -375,3 +375,15 @@ fn drop_non_empty_tree_during_unwind_no_double_panic() {
         "should be the outer panic, not the drop panic"
     );
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn non_empty_drop_panics_in_debug() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
+        let mut tree = RbTree::<u64, u64>::new();
+        tree.insert(&slab, 1, 100);
+        // drop without clear — should panic in debug
+    }));
+    assert!(result.is_err(), "dropping non-empty rbtree should panic in debug");
+}
