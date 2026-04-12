@@ -188,15 +188,17 @@ macro_rules! impl_decimal_financial {
 
             /// Returns `true` if `self` is within `tolerance` of `other`.
             ///
-            /// Equivalent to `|self - other| <= tolerance`.
+            /// Equivalent to `|self - other| <= tolerance`. Returns `false`
+            /// when the difference overflows (values with opposite signs
+            /// near `MAX`/`MIN`).
             #[inline]
             pub const fn approx_eq(self, other: Self, tolerance: Self) -> bool {
-                let diff = if self.value >= other.value {
-                    self.value - other.value
+                let (diff, overflow) = if self.value >= other.value {
+                    self.value.overflowing_sub(other.value)
                 } else {
-                    other.value - self.value
+                    other.value.overflowing_sub(self.value)
                 };
-                diff <= tolerance.value
+                !overflow && diff <= tolerance.value
             }
 
             /// Clamp to a price range `[min, max]`.

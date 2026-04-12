@@ -678,7 +678,7 @@ impl<const D: u8> Decimal<i128, D> {
                 return None;
             }
             Some(Self {
-                value: -(quotient as i128),
+                value: (quotient as i128).wrapping_neg(),
             })
         } else {
             if quotient > i128::MAX as u128 {
