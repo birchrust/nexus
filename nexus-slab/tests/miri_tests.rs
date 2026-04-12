@@ -634,3 +634,110 @@ mod rc_tests {
         slab.free(h1);
     }
 }
+
+// =============================================================================
+// Byte Slab — Memory Safety
+// =============================================================================
+
+mod byte_tests {
+    use super::*;
+    use nexus_slab::byte::bounded::Slab as ByteBoundedSlab;
+    use nexus_slab::byte::unbounded::Slab as ByteUnboundedSlab;
+
+    #[test]
+    fn miri_byte_bounded_alloc_write_free() {
+        let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(8) };
+
+        let ptr = slab.alloc(42u64);
+        assert_eq!(*ptr, 42);
+        slab.free(ptr);
+    }
+
+    #[test]
+    fn miri_byte_bounded_alloc_write_different_types() {
+        let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(8) };
+
+        // Write a u64 (8 bytes)
+        let ptr = slab.alloc(0xDEAD_BEEF_u64);
+        assert_eq!(*ptr, 0xDEAD_BEEF_u64);
+        slab.free(ptr);
+
+        // Reuse the same slot with a different type: [u8; 32]
+        let ptr = slab.alloc([0xABu8; 32]);
+        assert_eq!(ptr[0], 0xAB);
+        assert_eq!(ptr[31], 0xAB);
+        slab.free(ptr);
+    }
+
+    #[test]
+    fn miri_byte_bounded_abandon_claim() {
+        let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(1) };
+
+        // Claim and drop without writing — slot returns to freelist
+        {
+            let claim = slab.claim();
+            drop(claim);
+        }
+
+        // Should be able to alloc again
+        let ptr = slab.alloc(99u64);
+        assert_eq!(*ptr, 99);
+        slab.free(ptr);
+    }
+
+    #[test]
+    fn miri_byte_unbounded_alloc_write_free() {
+        let slab: ByteUnboundedSlab<64> = unsafe { ByteUnboundedSlab::with_chunk_capacity(4) };
+
+        let ptr = slab.alloc(42u64);
+        assert_eq!(*ptr, 42);
+        slab.free(ptr);
+    }
+
+    #[test]
+    fn miri_byte_unbounded_multiple_chunks() {
+        let slab: ByteUnboundedSlab<64> = unsafe { ByteUnboundedSlab::with_chunk_capacity(2) };
+
+        // Alloc enough to span multiple chunks
+        let mut ptrs = Vec::new();
+        for i in 0..10u64 {
+            ptrs.push(slab.alloc(i));
+        }
+
+        // Verify values across chunks
+        for (i, ptr) in ptrs.iter().enumerate() {
+            assert_eq!(**ptr, i as u64);
+        }
+
+        // Free all
+        for ptr in ptrs {
+            slab.free(ptr);
+        }
+    }
+
+    #[test]
+    fn miri_byte_slab_drop_tracker() {
+        reset_drop_count();
+
+        let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(4) };
+
+        let ptr = slab.alloc(DropTracker(1));
+        assert_eq!(get_drop_count(), 0);
+
+        // Typed free — should drop the value exactly once
+        slab.free(ptr);
+        assert_eq!(get_drop_count(), 1);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn miri_byte_claim_write_aligned_type() {
+        let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(4) };
+
+        // f64 has alignment 8 — must be respected
+        let claim = slab.claim();
+        let ptr = claim.write(1.23456_f64);
+        assert_eq!(*ptr, 1.23456_f64);
+        slab.free(ptr);
+    }
+}

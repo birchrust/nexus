@@ -134,6 +134,25 @@ impl<T> SlotCell<T> {
         unsafe { self.value.as_ptr() }
     }
 
+    /// Returns a raw mutable pointer to the value storage from a raw pointer.
+    ///
+    /// This avoids creating an intermediate `&SlotCell<T>` reference, which
+    /// would give the result read-only provenance under stacked borrows.
+    /// Use this when you need `*mut T` from a `*mut SlotCell<T>`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be non-null and point to an occupied `SlotCell<T>`.
+    #[inline]
+    pub unsafe fn value_ptr_mut(ptr: *mut SlotCell<T>) -> *mut T {
+        // SAFETY: SlotCell is repr(C) and value is ManuallyDrop<MaybeUninit<T>>.
+        // ManuallyDrop is repr(transparent), MaybeUninit is repr(transparent)
+        // for the value. The value field is at offset 0 (repr(C) union).
+        // We cast through the raw pointer without creating a reference,
+        // preserving write provenance.
+        ptr.cast::<T>()
+    }
+
     /// Returns the next_free pointer.
     ///
     /// # Safety

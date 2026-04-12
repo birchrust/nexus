@@ -157,7 +157,9 @@ unsafe fn node_deref<K, V>(ptr: NodePtr<K, V>) -> *const RbNode<K, V> {
 /// `ptr` must be non-null and point to an occupied `SlotCell`. The caller
 /// must ensure no other references to this node exist.
 unsafe fn node_deref_mut<K, V>(ptr: NodePtr<K, V>) -> *mut RbNode<K, V> {
-    unsafe { (*ptr).value_ptr().cast_mut() }
+    // Use value_ptr_mut to avoid creating &SlotCell which would give
+    // read-only provenance under stacked borrows.
+    unsafe { nexus_slab::shared::SlotCell::value_ptr_mut(ptr) }
 }
 
 // =============================================================================
