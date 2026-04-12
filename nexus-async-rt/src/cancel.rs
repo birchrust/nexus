@@ -272,7 +272,7 @@ impl CancellationToken {
     pub fn cancelled(&self) -> Cancelled {
         Cancelled {
             inner: self.inner.clone(),
-            registered: false,
+            last_waker: None,
         }
     }
 }
@@ -298,9 +298,14 @@ impl std::fmt::Debug for CancellationToken {
 /// Future that resolves when a [`CancellationToken`] is cancelled.
 ///
 /// Created by [`CancellationToken::cancelled()`].
+///
+/// Tracks the last registered waker and re-registers if the waker changes
+/// (e.g., the future is moved between tasks via `select!` or `Timeout`).
+/// Each registration allocates a `WaiterNode` on the heap. Prior nodes
+/// are cleaned up when `cancel()` drains the Treiber stack.
 pub struct Cancelled {
     inner: Arc<Inner>,
-    registered: bool,
+    last_waker: Option<Waker>,
 }
 
 impl Future for Cancelled {
@@ -310,12 +315,21 @@ impl Future for Cancelled {
         if self.inner.is_cancelled() {
             return Poll::Ready(());
         }
-        if !self.registered {
+
+        // Register (or re-register) if this is the first poll or
+        // the waker has changed since last registration.
+        let needs_register = self
+            .last_waker
+            .as_ref()
+            .is_none_or(|prev| !prev.will_wake(cx.waker()));
+
+        if needs_register {
             if self.inner.register(cx.waker()) {
                 return Poll::Ready(());
             }
-            self.registered = true;
+            self.last_waker = Some(cx.waker().clone());
         }
+
         Poll::Pending
     }
 }

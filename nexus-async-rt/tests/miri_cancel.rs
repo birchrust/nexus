@@ -28,6 +28,32 @@ fn poll_once<F: Future>(f: Pin<&mut F>) -> Poll<F::Output> {
     f.poll(&mut cx)
 }
 
+/// A waker that sets a Cell<bool> to true when woken.
+/// Each call creates a new vtable instance so will_wake() returns false
+/// between different tracking_waker calls — exercising the re-registration path.
+fn tracking_waker(flag: &std::cell::Cell<bool>) -> Waker {
+    // Store the flag pointer as the waker data.
+    let data = flag as *const std::cell::Cell<bool> as *const ();
+
+    // Use a unique vtable per call site — this ensures will_wake() returns
+    // false between different tracking_waker instances, even with same flag.
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |p| RawWaker::new(p, &VTABLE),
+        |p| {
+            // wake: set the flag
+            let flag = unsafe { &*(p as *const std::cell::Cell<bool>) };
+            flag.set(true);
+        },
+        |p| {
+            // wake_by_ref: set the flag
+            let flag = unsafe { &*(p as *const std::cell::Cell<bool>) };
+            flag.set(true);
+        },
+        |_| {}, // drop: no-op
+    );
+    unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -124,6 +150,75 @@ fn cancel_drop_without_cancel() {
     drop(futures);
     drop(_children);
     drop(token);
+}
+
+/// Cancelled future re-registers when polled with a different waker.
+/// Verifies the will_wake() check and re-registration path.
+/// Miri catches any leaked WaiterNodes from stale registrations.
+#[test]
+fn cancel_waker_update_on_repoll() {
+    let token = CancellationToken::new();
+    let mut fut = Box::pin(token.cancelled());
+
+    // Poll with waker A — registers WaiterNode with waker A.
+    let waker_a = noop_waker();
+    let mut cx_a = Context::from_waker(&waker_a);
+    assert_eq!(fut.as_mut().poll(&mut cx_a), Poll::Pending);
+
+    // Poll with waker B (different noop_waker instance) — should re-register.
+    // Note: two noop_wakers from our helper share the same vtable pointer and
+    // null data, so will_wake returns true. Use a tracking waker instead.
+    let woke = std::cell::Cell::new(false);
+    let waker_b = tracking_waker(&woke);
+    let mut cx_b = Context::from_waker(&waker_b);
+    assert_eq!(fut.as_mut().poll(&mut cx_b), Poll::Pending);
+
+    // Cancel — should wake via the latest registered waker.
+    token.cancel();
+
+    // The tracking waker should have been called.
+    // (Note: the noop waker from the first registration also fires — that's fine,
+    // it's a no-op. The important thing is waker_b fires.)
+    assert!(woke.get(), "latest waker must be woken on cancel");
+
+    // Final poll confirms Ready.
+    assert_eq!(fut.as_mut().poll(&mut cx_b), Poll::Ready(()));
+}
+
+/// Multiple waker changes across polls. Exercises repeated re-registration
+/// without leaking WaiterNodes (miri catches leaks).
+#[test]
+fn cancel_many_waker_changes() {
+    let token = CancellationToken::new();
+    let mut fut = Box::pin(token.cancelled());
+
+    // Keep all flags alive until after cancel — cancel() drains ALL
+    // WaiterNodes and wakes their wakers, including stale ones from
+    // prior registrations. The flags must outlive the drain.
+    let flags: Vec<std::cell::Cell<bool>> =
+        (0..10).map(|_| std::cell::Cell::new(false)).collect();
+
+    // Poll 10 times with different wakers.
+    for flag in &flags {
+        let waker = tracking_waker(flag);
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(fut.as_mut().poll(&mut cx), Poll::Pending);
+    }
+
+    // Cancel — all WaiterNodes drained and freed. Miri checks for leaks.
+    token.cancel();
+    assert_eq!(poll_once(fut.as_mut()), Poll::Ready(()));
+}
+
+/// Cancel before any poll — future resolves immediately on first poll.
+/// No WaiterNode allocated.
+#[test]
+fn cancel_before_poll() {
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let mut fut = Box::pin(token.cancelled());
+    assert_eq!(poll_once(fut.as_mut()), Poll::Ready(()));
 }
 
 /// Drop child token clone before parent cancels. The ChildNode in the parent's
