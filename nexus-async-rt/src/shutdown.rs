@@ -96,8 +96,16 @@ impl ShutdownHandle {
 
 /// Future that resolves when shutdown is triggered.
 ///
-/// Registers a waker on first poll so that `ShutdownHandle::trigger()`
-/// (or a signal handler) can wake the awaiting task directly.
+/// Registers (and updates) a waker on every poll so that
+/// `ShutdownHandle::trigger()` (or a signal handler) can wake the
+/// awaiting task directly. The waker is overwritten on each poll to
+/// handle the case where the future is re-polled from a different
+/// task context.
+///
+/// **Single waiter only.** Only one task may await `ShutdownSignal` at a
+/// time. If a second task polls while a waker is already registered, the
+/// waker is replaced (not duplicated). For multi-waiter shutdown, use
+/// [`CancellationToken`](crate::CancellationToken) instead.
 ///
 /// Holds a raw pointer to the AtomicBool flag, valid for the lifetime
 /// of the Runtime (which outlives `block_on` which outlives all tasks).
@@ -117,7 +125,9 @@ impl Future for ShutdownSignal {
             return Poll::Ready(());
         }
 
-        // Register the waker so trigger() can wake us directly.
+        // Register (or update) the waker so trigger() can wake us.
+        // Always update — the waker may have changed if the future was
+        // re-polled from a different task context.
         if let Ok(mut guard) = self.task_waker.lock() {
             *guard = Some(cx.waker().clone());
         }
@@ -206,5 +216,60 @@ mod tests {
         });
 
         assert!(done.get());
+    }
+
+    #[test]
+    fn shutdown_signal_waker_updates_on_repoll() {
+        // Verify the waker is updated on each poll (not stale from first poll).
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+
+        let handle = ShutdownHandle::new();
+        let mut signal = Box::pin(handle.signal());
+
+        // First poll with noop waker — registers it.
+        let noop = unsafe {
+            static V: RawWakerVTable =
+                RawWakerVTable::new(|p| RawWaker::new(p, &V), |_| {}, |_| {}, |_| {});
+            Waker::from_raw(RawWaker::new(std::ptr::null(), &V))
+        };
+        let mut cx = Context::from_waker(&noop);
+        assert_eq!(signal.as_mut().poll(&mut cx), Poll::Pending);
+
+        // Second poll with a tracking waker — should overwrite.
+        let woke = std::cell::Cell::new(false);
+        let flag_ptr = &woke as *const std::cell::Cell<bool> as *const ();
+        let tracking = unsafe {
+            static V2: RawWakerVTable = RawWakerVTable::new(
+                |p| RawWaker::new(p, &V2),
+                |p| unsafe { (*(p as *const std::cell::Cell<bool>)).set(true) },
+                |p| unsafe { (*(p as *const std::cell::Cell<bool>)).set(true) },
+                |_| {},
+            );
+            Waker::from_raw(RawWaker::new(flag_ptr, &V2))
+        };
+        let mut cx2 = Context::from_waker(&tracking);
+        assert_eq!(signal.as_mut().poll(&mut cx2), Poll::Pending);
+
+        // Trigger shutdown — must wake the tracking waker, not the noop.
+        handle.trigger();
+        assert!(woke.get(), "latest waker must fire on trigger");
+    }
+
+    #[test]
+    fn shutdown_signal_already_triggered() {
+        // Trigger before first poll — immediate Ready, no waker registration.
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+
+        let handle = ShutdownHandle::new();
+        handle.trigger();
+
+        let mut signal = Box::pin(handle.signal());
+        let waker = unsafe {
+            static V: RawWakerVTable =
+                RawWakerVTable::new(|p| RawWaker::new(p, &V), |_| {}, |_| {}, |_| {});
+            Waker::from_raw(RawWaker::new(std::ptr::null(), &V))
+        };
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(signal.as_mut().poll(&mut cx), Poll::Ready(()));
     }
 }
