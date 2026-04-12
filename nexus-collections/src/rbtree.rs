@@ -56,6 +56,14 @@ type NodePtr<K, V> = *mut SlotCell<RbNode<K, V>>;
 // RbNode<K, V>
 // =============================================================================
 
+// Verify that node alignment is sufficient for color-in-LSB encoding.
+// RbNode uses the LSB of parent pointers for color storage, requiring
+// at least 2-byte alignment of the node allocation.
+const _: () = assert!(
+    core::mem::align_of::<RbNode<(), ()>>() >= 2,
+    "RbNode must be at least 2-byte aligned for color-in-LSB encoding"
+);
+
 /// A node in a red-black tree sorted map.
 ///
 /// Color is packed into the LSB of the parent pointer (slab nodes are at
@@ -270,6 +278,13 @@ fn prefetch_read_node<K, V>(ptr: NodePtr<K, V>) {
 // =============================================================================
 
 /// A self-balancing sorted map with external slab allocation.
+///
+/// # Panic Safety
+///
+/// If a comparator panics during a tree mutation (insert/remove), the tree
+/// may be left in an inconsistent state with partially-updated pointers.
+/// Subsequent operations on such a tree are undefined behavior. Callers
+/// are responsible for ensuring their `Compare` implementation does not panic.
 pub struct RbTree<K, V, C = Natural> {
     root: NodePtr<K, V>,
     leftmost: NodePtr<K, V>,
@@ -323,7 +338,10 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
     /// Removes the node with the given key and returns `(key, value)`.
     pub fn remove_entry(&mut self, slab: &impl SlabOps<RbNode<K, V>>, key: &K) -> Option<(K, V)> {
         let ptr = self.find(key)?;
-        Some(self.remove_node(slab, ptr))
+
+        let result = self.remove_node(slab, ptr);
+
+        Some(result)
     }
 
     /// Removes and returns the first (smallest) key-value pair.
@@ -331,7 +349,10 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         if self.leftmost.is_null() {
             return None;
         }
-        Some(self.remove_node(slab, self.leftmost))
+
+        let result = self.remove_node(slab, self.leftmost);
+
+        Some(result)
     }
 
     /// Removes and returns the last (largest) key-value pair.
@@ -339,7 +360,10 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         if self.rightmost.is_null() {
             return None;
         }
-        Some(self.remove_node(slab, self.rightmost))
+
+        let result = self.remove_node(slab, self.rightmost);
+
+        Some(result)
     }
 
     // =========================================================================
@@ -364,6 +388,8 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
             parent = current;
             // SAFETY: current is non-null and a valid tree node.
             let node = unsafe { &*node_deref(current) };
+            prefetch_read_node(node.left.get());
+            prefetch_read_node(node.right.get());
             match C::cmp(&key, &node.key) {
                 Ordering::Equal => {
                     // SAFETY: current is a valid node; &mut self ensures exclusivity.
@@ -384,7 +410,9 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         match slab.try_alloc(RbNode::new(key, value)) {
             Ok(slot) => {
                 let ptr = slot.into_raw();
+
                 self.link_new_node(ptr, parent, is_left);
+
                 Ok(None)
             }
             Err(full) => Err(Full(full.into_inner().into_value())),
@@ -406,6 +434,8 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
             parent = current;
             // SAFETY: current is non-null and a valid tree node.
             let node = unsafe { &*node_deref(current) };
+            prefetch_read_node(node.left.get());
+            prefetch_read_node(node.right.get());
             match C::cmp(&key, &node.key) {
                 Ordering::Equal => {
                     // SAFETY: current is a valid node; &mut self ensures exclusivity.
@@ -425,7 +455,9 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
 
         let slot = slab.alloc(RbNode::new(key, value));
         let ptr = slot.into_raw();
+
         self.link_new_node(ptr, parent, is_left);
+
         None
     }
 
@@ -451,6 +483,8 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         while !current.is_null() {
             parent = current;
             let node = unsafe { &*node_deref(current) };
+            prefetch_read_node(node.left.get());
+            prefetch_read_node(node.right.get());
             match C::cmp(&key, &node.key) {
                 Ordering::Equal => {
                     drop(key);
@@ -589,6 +623,9 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         while !current.is_null() {
             // SAFETY: current is non-null and a valid tree node (root or child).
             let node = unsafe { &*node_deref(current) };
+            // Prefetch both children before the comparison stalls on result
+            prefetch_read_node(node.left.get());
+            prefetch_read_node(node.right.get());
             match C::cmp(key, &node.key) {
                 Ordering::Equal => return Some(current),
                 Ordering::Less => current = node.left.get(),
@@ -603,6 +640,8 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         let mut current = self.root;
         while !current.is_null() {
             let node = unsafe { &*node_deref(current) };
+            prefetch_read_node(node.left.get());
+            prefetch_read_node(node.right.get());
             if C::cmp(key, &node.key) == Ordering::Greater {
                 current = node.right.get();
             } else {
@@ -618,6 +657,8 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         let mut current = self.root;
         while !current.is_null() {
             let node = unsafe { &*node_deref(current) };
+            prefetch_read_node(node.left.get());
+            prefetch_read_node(node.right.get());
             if C::cmp(key, &node.key) == Ordering::Less {
                 result = current;
                 current = node.left.get();
@@ -1092,6 +1133,7 @@ impl<K, V> RbTree<K, V> {
             leftmost: ptr::null_mut(),
             rightmost: ptr::null_mut(),
             len: 0,
+
             _marker: PhantomData,
         }
     }
@@ -1100,6 +1142,22 @@ impl<K, V> RbTree<K, V> {
 impl<K, V> Default for RbTree<K, V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// RbTree does NOT implement Drop in release. The user must call clear() with
+// the slab to release nodes. In debug builds, we panic to catch slot leaks.
+#[cfg(debug_assertions)]
+impl<K, V, C> Drop for RbTree<K, V, C> {
+    #[allow(clippy::manual_assert)]
+    fn drop(&mut self) {
+        if self.len > 0 && !std::thread::panicking() {
+            panic!(
+                "RbTree dropped with {} elements without calling clear(). \
+                 This leaks slab slots. Call tree.clear(&slab) before dropping.",
+                self.len
+            );
+        }
     }
 }
 
@@ -1116,6 +1174,7 @@ impl<K, V, C> RbTree<K, V, C> {
             leftmost: ptr::null_mut(),
             rightmost: ptr::null_mut(),
             len: 0,
+
             _marker: PhantomData,
         }
     }

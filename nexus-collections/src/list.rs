@@ -862,11 +862,26 @@ impl<T> Default for List<T> {
     }
 }
 
-// Note: List does NOT implement Drop. The user must call clear() with the slab
-// to release the list's strong references. If the list is dropped without
-// clearing, the list's cloned refs are leaked (refcounts stay incremented).
-// This is deliberate: the list doesn't store a slab reference, so it can't
-// free on drop.
+// List does NOT implement Drop in release. The user must call clear() with
+// the slab to release the list's strong references. If the list is dropped
+// without clearing, the list's cloned refs are leaked (refcounts stay
+// incremented). This is deliberate: the list doesn't store a slab reference,
+// so it can't free on drop.
+//
+// In debug builds, we panic on non-empty drop to catch slot leaks early.
+#[cfg(debug_assertions)]
+impl<T> Drop for List<T> {
+    #[allow(clippy::manual_assert)]
+    fn drop(&mut self) {
+        if self.len > 0 && !std::thread::panicking() {
+            panic!(
+                "List dropped with {} elements without calling clear(). \
+                 This leaks slab slots. Call list.clear(&slab) before dropping.",
+                self.len
+            );
+        }
+    }
+}
 
 // =============================================================================
 // Cursor
