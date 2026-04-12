@@ -337,11 +337,39 @@ mod tests {
 
     #[test]
     fn div_large_divisor_exactly_2e64() {
-        // Exactly 2^64 — boundary between small and large divisor paths
-        let divisor: u128 = (u64::MAX as u128) + 1;
-        // 7 * 2^64 fits in (lo, hi) with hi=0 since 7 * 2^64 < 2^128
-        let dividend = divisor * 7;
-        assert_eq!(div_192_by_u128(dividend, 0, divisor), Some(7));
+        // Exactly 2^64 — boundary between small and large divisor paths.
+        // Use a dividend with non-zero hi so we actually exercise the
+        // large-divisor Knuth path, not the hi==0 fast return.
+        let divisor: u128 = (u64::MAX as u128) + 1; // 2^64
+        let hi: u128 = 1; // hi < divisor
+        let lo: u128 = divisor * 7;
+        // dividend = (1 << 128) + 7 * 2^64 = 2^128 + 7 * 2^64
+        // quotient = (2^128 + 7 * 2^64) / 2^64 = 2^64 + 7
+        let expected: u128 = divisor + 7;
+        assert_eq!(div_192_by_u128(lo, hi, divisor), Some(expected));
+    }
+
+    #[test]
+    fn div_small_divisor_boundary_2e64_minus_1() {
+        // 2^64 - 1 is the largest value that takes the small-divisor path.
+        // Verify it works with non-zero hi.
+        let divisor: u128 = u64::MAX as u128; // 2^64 - 1
+        let hi: u128 = divisor - 1; // max valid hi (must be < divisor)
+        let lo: u128 = 0;
+        // dividend = (2^64 - 2) << 128 = (2^64 - 2) * 2^128
+        // quotient = ((2^64 - 2) * 2^128) / (2^64 - 1)
+        let result = div_wide(lo, hi, divisor).unwrap();
+        // Verify via roundtrip: result * divisor <= dividend < (result+1) * divisor
+        let (check_lo, check_hi) = mul_wide(result, divisor);
+        assert!(
+            check_hi < hi || (check_hi == hi && check_lo <= lo),
+            "result too large"
+        );
+        let (over_lo, over_hi) = mul_wide(result + 1, divisor);
+        assert!(
+            over_hi > hi || (over_hi == hi && over_lo > lo),
+            "result too small"
+        );
     }
 
     #[test]
