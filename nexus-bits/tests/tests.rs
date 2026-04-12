@@ -205,13 +205,32 @@ fn bitfield_set_unchecked_basic() {
 #[test]
 fn bitfield_set_unchecked_truncates() {
     const FIELD: BitField<u64> = BitField::<u64>::new(0, 8);
-    // 0x1FF = 511, but only 8 bits, so upper bits spill into bit 8
+    // 0x1FF = 511, but field is only 8 bits — truncated to 0xFF
     let result = FIELD.set_unchecked(0, 0x1FF);
-    // This will set bits 0-8, mask only covers 0-7
-    // cleared = 0 & !0xFF = 0
-    // result = 0 | (0x1FF << 0) = 0x1FF
-    // The overflow bits leak!
-    assert_eq!(result, 0x1FF);
+    assert_eq!(result, 0xFF); // masked, no spill
+    assert_eq!(FIELD.get(result), 0xFF);
+}
+
+#[test]
+fn set_unchecked_masks_oversized_value() {
+    let field = BitField::<u32>::new(4, 8); // bits 4-11
+    let packed = field.set_unchecked(0, 0x1FF); // 9 bits, field is 8
+    // Only bits 4-11 should be set, bit 12 should NOT be corrupted
+    assert_eq!(field.get(packed), 0xFF); // truncated to 8 bits
+    assert_eq!(packed & (1 << 12), 0); // adjacent bit clean
+}
+
+#[test]
+fn set_unchecked_preserves_adjacent_fields() {
+    const LOW: BitField<u64> = BitField::<u64>::new(0, 8);
+    const HIGH: BitField<u64> = BitField::<u64>::new(8, 8);
+
+    let mut val = 0u64;
+    val = HIGH.set(val, 0xAB).unwrap();
+    // Oversized value in LOW field shouldn't corrupt HIGH
+    val = LOW.set_unchecked(val, 0xFFF);
+    assert_eq!(HIGH.get(val), 0xAB); // HIGH preserved
+    assert_eq!(LOW.get(val), 0xFF); // LOW truncated
 }
 
 // =============================================================================

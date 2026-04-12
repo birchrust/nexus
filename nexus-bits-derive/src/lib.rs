@@ -289,6 +289,34 @@ fn is_primitive(ty: &Type) -> bool {
     false
 }
 
+fn is_signed_primitive(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(ident) = type_path.path.get_ident() {
+            return matches!(
+                ident.to_string().as_str(),
+                "i8" | "i16" | "i32" | "i64" | "i128"
+            );
+        }
+    }
+    false
+}
+
+fn primitive_bits(ty: &Type) -> u32 {
+    if let Type::Path(type_path) = ty {
+        if let Some(ident) = type_path.path.get_ident() {
+            return match ident.to_string().as_str() {
+                "u8" | "i8" => 8,
+                "u16" | "i16" => 16,
+                "u32" | "i32" => 32,
+                "u64" | "i64" => 64,
+                "u128" | "i128" => 128,
+                _ => 0,
+            };
+        }
+    }
+    0
+}
+
 fn repr_bits(repr: &Ident) -> u32 {
     match repr.to_string().as_str() {
         "u8" | "i8" => 8,
@@ -297,6 +325,19 @@ fn repr_bits(repr: &Ident) -> u32 {
         "u64" | "i64" => 64,
         "u128" | "i128" => 128,
         _ => 0,
+    }
+}
+
+/// Generate a bitmask of `len` ones for the given repr type.
+///
+/// For full-width fields (`len >= repr_bits`), uses `!0` which is all-ones
+/// for both signed and unsigned reprs. For partial-width, computes the mask
+/// in u128 to avoid signed overflow, then casts to the repr type.
+fn field_mask(repr: &Ident, len: u32, repr_bit_count: u32) -> TokenStream2 {
+    if len >= repr_bit_count {
+        quote! { (!0 as #repr) }
+    } else {
+        quote! { (((1u128 << #len) - 1) as #repr) }
     }
 }
 
@@ -457,17 +498,26 @@ fn generate_struct_newtype_impl(
             MemberDef::Field { name: field_name, ty, range } => {
                 let start = range.start;
                 let len = range.len;
-                let mask = if len >= repr_bit_count {
-                    quote! { #repr::MAX }
-                } else {
-                    quote! { ((1 as #repr) << #len) - 1 }
-                };
+                let mask = field_mask(repr, len, repr_bit_count);
 
                 if is_primitive(ty) {
-                    quote! {
-                        #[inline]
-                        pub const fn #field_name(&self) -> #ty {
-                            ((self.0 >> #start) & #mask) as #ty
+                    let type_bits = primitive_bits(ty);
+                    if is_signed_primitive(ty) && len < type_bits {
+                        // Sign-extend: shift left to MSB, arithmetic right shift back
+                        let shift = type_bits - len;
+                        quote! {
+                            #[inline]
+                            pub const fn #field_name(&self) -> #ty {
+                                let raw = ((self.0 >> #start) & #mask) as #ty;
+                                (raw << #shift) >> #shift
+                            }
+                        }
+                    } else {
+                        quote! {
+                            #[inline]
+                            pub const fn #field_name(&self) -> #ty {
+                                ((self.0 >> #start) & #mask) as #ty
+                            }
                         }
                     }
                 } else {
@@ -572,11 +622,7 @@ fn generate_struct_builder_impl(
                 let field_str = field_name.to_string();
                 let len = range.len;
 
-                let max_val = if len >= repr_bit_count {
-                    quote! { #repr::MAX }
-                } else {
-                    quote! { ((1 as #repr) << #len) - 1 }
-                };
+                let max_val = field_mask(repr, len, repr_bit_count);
 
                 if is_primitive(ty) {
                     let type_bits: u32 = match ty {
@@ -676,11 +722,7 @@ fn generate_struct_builder_impl(
                 } => {
                     let start = range.start;
                     let len = range.len;
-                    let mask = if len >= repr_bit_count {
-                        quote! { #repr::MAX }
-                    } else {
-                        quote! { ((1 as #repr) << #len) - 1 }
-                    };
+                    let mask = field_mask(repr, len, repr_bit_count);
 
                     if is_primitive(ty) {
                         quote! {
@@ -987,11 +1029,7 @@ fn generate_enum_parent_impl(
         "discriminant length must be <= 64 bits (got {disc_len})"
     );
 
-    let disc_mask = if disc_len >= repr_bit_count {
-        quote! { #repr::MAX }
-    } else {
-        quote! { ((1 as #repr) << #disc_len) - 1 }
-    };
+    let disc_mask = field_mask(repr, disc_len, repr_bit_count);
 
     // kind() match arms
     let kind_arms: Vec<TokenStream2> = variants
@@ -1046,11 +1084,7 @@ fn generate_enum_parent_impl(
                             let start = range.start;
                             let len = range.len;
                             let repr_bit_count = repr_bits(repr);
-                            let mask = if len >= repr_bit_count {
-                                quote! { #repr::MAX }
-                            } else {
-                                quote! { ((1 as #repr) << #len) - 1 }
-                            };
+                            let mask = field_mask(repr, len, repr_bit_count);
                             return Some(quote! {
                                 let field_repr = ((self.0 >> #start) & #mask);
                                 if <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _).is_none() {
@@ -1161,17 +1195,25 @@ fn generate_enum_variant_impls(
                         MemberDef::Field { name: field_name, ty, range } => {
                             let start = range.start;
                             let len = range.len;
-                            let mask = if len >= repr_bit_count {
-                                quote! { #repr::MAX }
-                            } else {
-                                quote! { ((1 as #repr) << #len) - 1 }
-                            };
+                            let mask = field_mask(repr, len, repr_bit_count);
 
                             if is_primitive(ty) {
-                                quote! {
-                                    #[inline]
-                                    pub const fn #field_name(&self) -> #ty {
-                                        ((self.0 >> #start) & #mask) as #ty
+                                let type_bits = primitive_bits(ty);
+                                if is_signed_primitive(ty) && len < type_bits {
+                                    let shift = type_bits - len;
+                                    quote! {
+                                        #[inline]
+                                        pub const fn #field_name(&self) -> #ty {
+                                            let raw = ((self.0 >> #start) & #mask) as #ty;
+                                            (raw << #shift) >> #shift
+                                        }
+                                    }
+                                } else {
+                                    quote! {
+                                        #[inline]
+                                        pub const fn #field_name(&self) -> #ty {
+                                            ((self.0 >> #start) & #mask) as #ty
+                                        }
                                     }
                                 }
                             } else {
@@ -1278,11 +1320,7 @@ fn generate_enum_builder_impls(
                         let field_str = field_name.to_string();
                         let len = range.len;
 
-                        let max_val = if len >= repr_bit_count {
-                            quote! { #repr::MAX }
-                        } else {
-                            quote! { ((1 as #repr) << #len) - 1 }
-                        };
+                        let max_val = field_mask(repr, len, repr_bit_count);
 
                         if is_primitive(ty) {
                             let type_bits: u32 = match ty {
@@ -1367,11 +1405,7 @@ fn generate_enum_builder_impls(
                         MemberDef::Field { name: field_name, ty, range } => {
                             let start = range.start;
                             let len = range.len;
-                            let mask = if len >= repr_bit_count {
-                                quote! { #repr::MAX }
-                            } else {
-                                quote! { ((1 as #repr) << #len) - 1 }
-                            };
+                            let mask = field_mask(repr, len, repr_bit_count);
 
                             if is_primitive(ty) {
                                 quote! {

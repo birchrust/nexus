@@ -1096,6 +1096,123 @@ fn signed_fields_min_values() {
 }
 
 // =============================================================================
+// Narrow signed fields — sign extension (#11)
+// =============================================================================
+
+#[bit_storage(repr = u32)]
+pub struct NarrowSignedFields {
+    #[field(start = 0, len = 4)]
+    narrow_i8: i8, // 4-bit signed: -8 to 7
+    #[field(start = 4, len = 12)]
+    narrow_i16: i16, // 12-bit signed: -2048 to 2047
+}
+
+#[test]
+fn narrow_signed_positive() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(7)
+        .narrow_i16(2047)
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), 7);
+    assert_eq!(unpacked.narrow_i16(), 2047);
+}
+
+#[test]
+fn narrow_signed_negative() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(-1)
+        .narrow_i16(-1)
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), -1);
+    assert_eq!(unpacked.narrow_i16(), -1);
+}
+
+#[test]
+fn narrow_signed_min() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(-8) // min for 4-bit signed
+        .narrow_i16(-2048) // min for 12-bit signed
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), -8);
+    assert_eq!(unpacked.narrow_i16(), -2048);
+}
+
+#[test]
+fn narrow_signed_roundtrip_all_4bit() {
+    // Exhaustive test for 4-bit signed field: all values -8..=7
+    for v in -8i8..=7 {
+        let s = NarrowSignedFields::builder()
+            .narrow_i8(v)
+            .narrow_i16(0)
+            .build()
+            .unwrap();
+        let unpacked = NarrowSignedFields::from_raw(s.raw());
+        assert_eq!(unpacked.narrow_i8(), v, "roundtrip failed for {v}");
+    }
+}
+
+#[test]
+fn narrow_signed_zero() {
+    let s = NarrowSignedFields::builder()
+        .narrow_i8(0)
+        .narrow_i16(0)
+        .build()
+        .unwrap();
+    let unpacked = NarrowSignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.narrow_i8(), 0);
+    assert_eq!(unpacked.narrow_i16(), 0);
+}
+
+// =============================================================================
+// Signed repr — full-width and near-full-width fields
+// =============================================================================
+
+#[bit_storage(repr = i64)]
+pub struct SignedReprFields {
+    #[field(start = 0, len = 63)]
+    almost_full: i64, // 63-bit signed field in i64 repr
+}
+
+#[test]
+fn signed_repr_near_full_width_positive() {
+    // 63-bit signed field: range is -(2^62) to (2^62 - 1)
+    let max_val = (1i64 << 62) - 1;
+    let s = SignedReprFields::builder()
+        .almost_full(max_val)
+        .build()
+        .unwrap();
+    let unpacked = SignedReprFields::from_raw(s.raw());
+    assert_eq!(unpacked.almost_full(), max_val);
+}
+
+#[test]
+fn signed_repr_near_full_width_negative() {
+    let min_val = -(1i64 << 62);
+    let s = SignedReprFields::builder()
+        .almost_full(min_val)
+        .build()
+        .unwrap();
+    let unpacked = SignedReprFields::from_raw(s.raw());
+    assert_eq!(unpacked.almost_full(), min_val);
+}
+
+#[test]
+fn signed_repr_near_full_width_neg_one() {
+    let s = SignedReprFields::builder()
+        .almost_full(-1)
+        .build()
+        .unwrap();
+    let unpacked = SignedReprFields::from_raw(s.raw());
+    assert_eq!(unpacked.almost_full(), -1);
+}
+
+// =============================================================================
 // Builder overwrite behavior
 // =============================================================================
 
