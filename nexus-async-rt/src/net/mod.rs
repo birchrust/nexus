@@ -81,11 +81,7 @@ pub trait AsyncWrite {
 /// Extract the task pointer from a `Context`'s waker.
 ///
 /// Our wakers store the task pointer as the `RawWaker` data field.
-/// `Waker` layout is `[vtable, data]` — data is at offset 8.
-/// Validated by the build script at compile time.
+/// Uses the stable `Waker::data()` API (Rust 1.83+).
 pub(crate) fn waker_to_ptr(cx: &Context<'_>) -> *mut u8 {
-    // SAFETY: Waker layout validated by build script. data at offset 8.
-    let waker_ptr = cx.waker() as *const std::task::Waker as *const [*const (); 2];
-    let data = unsafe { (*waker_ptr)[1] };
-    data as *mut u8
+    cx.waker().data() as *mut u8
 }

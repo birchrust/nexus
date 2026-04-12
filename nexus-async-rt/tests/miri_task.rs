@@ -27,12 +27,8 @@ fn test_executor() -> Executor {
 
 /// Minimal noop waker for polling futures outside a runtime.
 fn noop_waker() -> Waker {
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |p| RawWaker::new(p, &VTABLE),
-        |_| {},
-        |_| {},
-        |_| {},
-    );
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), |_| {}, |_| {}, |_| {});
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 
@@ -422,6 +418,86 @@ fn zst_output() {
         Poll::Pending => panic!("expected Ready"),
     }
     drop(handle);
+}
+
+// =============================================================================
+// Deferred free, complete paths, waker push (Phase 3 additions)
+// =============================================================================
+
+#[test]
+fn deferred_free_drain_cycle() {
+    // Spawn joinable task, poll to completion. Drop JoinHandle (pushes to
+    // deferred_free via TLS). Poll again — deferred_free is drained and
+    // slot is freed. Under miri, verifies no UB in the free path.
+    let mut exec = test_executor();
+    let handle = exec.spawn_boxed(async { String::from("freed") });
+    exec.poll(); // task completes, executor ref_dec → ref still 1 (JoinHandle)
+    assert!(handle.is_finished());
+    drop(handle); // ref_dec → should_free → deferred_free
+    exec.poll(); // drain deferred_free → free_task
+    assert_eq!(exec.task_count(), 0);
+}
+
+#[test]
+fn complete_task_fire_and_forget() {
+    // Spawn without holding JoinHandle (detach immediately). Complete.
+    // Verify future is dropped, slot freed.
+    let (counter, count) = DropCounter::new();
+    let mut exec = test_executor();
+    let handle = exec.spawn_boxed(async move {
+        let _keep = counter;
+    });
+    drop(handle); // detach
+    exec.poll(); // task completes, future dropped, slot freed
+    assert!(count.get() >= 1, "future's captures must be dropped");
+    assert_eq!(exec.task_count(), 0);
+}
+
+#[test]
+fn complete_task_joinable_detached() {
+    // Spawn joinable task, drop handle (detach), then complete.
+    // The complete_task joinable branch sees should_free=true (handle
+    // already decremented), drops output, frees.
+    let (counter, count) = DropCounter::new();
+    let mut exec = test_executor();
+    let handle = exec.spawn_boxed(YieldThenReturn::new(counter));
+    drop(handle); // detach before completion
+    exec.poll(); // first poll: yields
+    exec.poll(); // second poll: completes, drops output
+    assert!(count.get() >= 1, "output must be dropped");
+    assert_eq!(exec.task_count(), 0);
+}
+
+#[test]
+fn waker_fires_during_poll() {
+    // Spawn YieldThenReturn task. First poll returns Pending and calls
+    // wake_by_ref. Second poll returns Ready. Verify the waker push to
+    // ready queue and re-poll cycle under miri.
+    let mut exec = test_executor();
+    let handle = exec.spawn_boxed(YieldThenReturn::new(42u64));
+
+    // First poll: yields, wakes self
+    let completed = exec.poll();
+    assert_eq!(completed, 0);
+    assert!(!handle.is_finished());
+
+    // Second poll: completes
+    let completed = exec.poll();
+    assert_eq!(completed, 1);
+    assert!(handle.is_finished());
+    drop(handle);
+}
+
+#[test]
+fn executor_drop_drains_deferred_free() {
+    // Spawn task, complete, drop handle (deferred free pending).
+    // Drop executor. Verify executor drop drains deferred_free.
+    let mut exec = test_executor();
+    let handle = exec.spawn_boxed(async { vec![1u32, 2, 3] });
+    exec.poll(); // task completes
+    drop(handle); // pushes to deferred_free
+    drop(exec); // should drain deferred_free and free_task
+    // No leak, no UB — miri will catch.
 }
 
 // =============================================================================

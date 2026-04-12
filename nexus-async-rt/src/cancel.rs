@@ -272,6 +272,7 @@ impl CancellationToken {
     pub fn cancelled(&self) -> Cancelled {
         Cancelled {
             inner: self.inner.clone(),
+            registered: false,
         }
     }
 }
@@ -299,17 +300,23 @@ impl std::fmt::Debug for CancellationToken {
 /// Created by [`CancellationToken::cancelled()`].
 pub struct Cancelled {
     inner: Arc<Inner>,
+    registered: bool,
 }
 
 impl Future for Cancelled {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.inner.register(cx.waker()) {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.inner.is_cancelled() {
+            return Poll::Ready(());
         }
+        if !self.registered {
+            if self.inner.register(cx.waker()) {
+                return Poll::Ready(());
+            }
+            self.registered = true;
+        }
+        Poll::Pending
     }
 }
 

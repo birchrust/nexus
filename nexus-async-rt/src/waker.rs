@@ -153,12 +153,8 @@ mod tests {
 
     #[test]
     fn task_ptr_from_foreign_waker_returns_none() {
-        static OTHER: RawWakerVTable = RawWakerVTable::new(
-            |p| RawWaker::new(p, &OTHER),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
+        static OTHER: RawWakerVTable =
+            RawWakerVTable::new(|p| RawWaker::new(p, &OTHER), |_| {}, |_| {}, |_| {});
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &OTHER)) };
         let waker = std::mem::ManuallyDrop::new(waker);
 

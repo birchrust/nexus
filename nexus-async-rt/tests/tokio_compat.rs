@@ -881,8 +881,8 @@ fn spawn_on_tokio_abort() {
 
 #[test]
 fn spawn_on_tokio_drop_aborts() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -903,7 +903,10 @@ fn spawn_on_tokio_drop_aborts() {
         with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(50))).await;
     });
 
-    assert!(!completed.load(Ordering::Relaxed), "task should have been aborted");
+    assert!(
+        !completed.load(Ordering::Relaxed),
+        "task should have been aborted"
+    );
 }
 
 #[test]
@@ -919,7 +922,10 @@ fn spawn_on_tokio_is_finished() {
         while !handle.is_finished() && Instant::now() < deadline {
             with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(5))).await;
         }
-        assert!(handle.is_finished(), "tokio task did not complete before timeout");
+        assert!(
+            handle.is_finished(),
+            "tokio task did not complete before timeout"
+        );
         let val = handle.await.unwrap();
         assert_eq!(val, 42);
     });
@@ -970,11 +976,10 @@ fn spawn_on_tokio_tcp_io() {
 
     rt.block_on(async {
         // Start a listener on tokio's thread pool.
-        let listener = spawn_on_tokio(async {
-            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()
-        })
-        .await
-        .unwrap();
+        let listener =
+            spawn_on_tokio(async { tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap() })
+                .await
+                .unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Server on tokio's pool.

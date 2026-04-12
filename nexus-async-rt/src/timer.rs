@@ -81,6 +81,7 @@ impl TimerHandle {
             deadline: Instant::now() + duration,
             driver: self.driver,
             registered: false,
+            waker: None,
         }
     }
 
@@ -90,6 +91,7 @@ impl TimerHandle {
             deadline,
             driver: self.driver,
             registered: false,
+            waker: None,
         }
     }
 }
@@ -101,12 +103,14 @@ impl TimerHandle {
 /// Future that completes when a deadline expires.
 ///
 /// On first poll, registers the deadline with the timer wheel. On
-/// subsequent polls, checks if the deadline has passed. The timer
-/// driver wakes the task when the deadline expires.
+/// subsequent polls, re-registers if the waker has changed (the timer
+/// wheel stores a clone of the waker — a stale waker means the
+/// expiry notification goes to the wrong task).
 pub struct Sleep {
     deadline: Instant,
     driver: *mut TimerDriver,
     registered: bool,
+    waker: Option<Waker>,
 }
 
 impl Future for Sleep {
@@ -117,11 +121,15 @@ impl Future for Sleep {
             return Poll::Ready(());
         }
 
-        if !self.registered {
+        let needs_register =
+            !self.registered || self.waker.as_ref().is_none_or(|w| !w.will_wake(cx.waker()));
+
+        if needs_register {
             // SAFETY: driver pointer is valid (Runtime lifetime).
             let driver = unsafe { &mut *self.driver };
             driver.schedule(self.deadline, cx.waker().clone());
             self.registered = true;
+            self.waker = Some(cx.waker().clone());
         }
 
         Poll::Pending
@@ -263,9 +271,14 @@ impl Interval {
                 // Jump to the next tick aligned with the original start.
                 if now >= self.next_deadline {
                     let elapsed = now.duration_since(self.start);
-                    let periods = elapsed.as_nanos() / self.period.as_nanos();
-                    let next = u32::try_from(periods).unwrap_or(u32::MAX).saturating_add(1);
-                    self.next_deadline = self.start + self.period * next;
+                    let period_nanos = self.period.as_nanos();
+                    let periods = elapsed.as_nanos() / period_nanos;
+                    // Compute next deadline in nanos to avoid u32 truncation
+                    // (Duration * u32 wraps after ~49 days at 1ms intervals).
+                    let next_nanos = (periods + 1).saturating_mul(period_nanos);
+                    let offset =
+                        Duration::from_nanos(u64::try_from(next_nanos).unwrap_or(u64::MAX));
+                    self.next_deadline = self.start + offset;
                 } else {
                     self.next_deadline += self.period;
                 }

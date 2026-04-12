@@ -181,6 +181,8 @@ impl Executor {
     ///
     /// Called at the start of each poll cycle. Tasks pushed from other
     /// threads via `CrossWakeQueue::push` are moved into `incoming`.
+    /// Completed tasks are routed to `deferred_free` instead — they
+    /// were pushed for cleanup (not re-polling) by `cross_task_drop`.
     /// Drains at most `limit` tasks (remaining are picked up next cycle).
     pub(crate) fn drain_cross_thread(
         &mut self,
@@ -191,7 +193,11 @@ impl Executor {
         while drained < limit {
             match inbox.pop() {
                 Some(task_ptr) => {
-                    self.incoming.push(task_ptr);
+                    if unsafe { task::is_completed(task_ptr) } {
+                        self.deferred_free.push(task_ptr);
+                    } else {
+                        self.incoming.push(task_ptr);
+                    }
                     drained += 1;
                 }
                 None => break,
@@ -355,8 +361,13 @@ impl Executor {
         (&mut self.incoming, &mut self.deferred_free)
     }
 
-    /// Run the executor until all tasks complete.
-    pub fn drain(&mut self) {
+    /// Run until all tasks complete. Only drives task polling — does NOT
+    /// drive IO, timers, or cross-thread wakes. For test/internal use only.
+    ///
+    /// Tasks awaiting IO or timers will hang. Use `Runtime::block_on` for
+    /// full runtime driving.
+    #[allow(dead_code)]
+    pub(crate) fn drain(&mut self) {
         while self.task_count() > 0 {
             if self.has_ready() {
                 self.poll();
@@ -404,12 +415,20 @@ impl Drop for Executor {
                 // Outstanding references (wakers or JoinHandles) still alive.
                 // Freeing would create dangling pointers — leak instead.
                 // This is a bug in the caller, but leak > UB.
-                debug_assert!(
-                    false,
+                #[cfg(debug_assertions)]
+                panic!(
                     "executor dropped with {rc} outstanding reference(s) — \
-                     all wakers and JoinHandles must be dropped before the Runtime",
+                     all wakers and JoinHandles must be dropped before the Runtime"
                 );
-                continue;
+                #[cfg(not(debug_assertions))]
+                eprintln!(
+                    "nexus-async-rt: executor dropped with {rc} outstanding task \
+                     reference(s) — leaking to avoid UB"
+                );
+                #[allow(unreachable_code)]
+                {
+                    continue;
+                }
             }
 
             unsafe { task::free_task(ptr) };

@@ -22,12 +22,8 @@ fn test_executor() -> Executor {
 }
 
 fn noop_waker() -> Waker {
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |p| RawWaker::new(p, &VTABLE),
-        |_| {},
-        |_| {},
-        |_| {},
-    );
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), |_| {}, |_| {}, |_| {});
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 
@@ -109,7 +105,11 @@ fn drop_once_detach_before_completion() {
         drop(handle); // detach — clears HAS_JOIN
 
         exec.poll(); // complete_task sees !HAS_JOIN, drops output
-        assert_eq!(count.get(), 1, "output dropped exactly once by complete_task");
+        assert_eq!(
+            count.get(),
+            1,
+            "output dropped exactly once by complete_task"
+        );
     }
 }
 
@@ -157,9 +157,9 @@ fn interleaved_lifecycle_operations() {
             let count = Rc::new(Cell::new(0u32));
             drop_counts.push(count.clone());
             let c = count;
-            handles.push(Some(exec.spawn_boxed(async move {
-                DropTracker::new(c, i as u64)
-            })));
+            handles.push(Some(
+                exec.spawn_boxed(async move { DropTracker::new(c, i as u64) }),
+            ));
         }
 
         // Randomly abort, detach, or keep some handles

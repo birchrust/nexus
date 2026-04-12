@@ -428,16 +428,15 @@ pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
     unsafe { &*ptr.add(25).cast::<AtomicBool>() }.load(Ordering::Acquire)
 }
 
-/// Get a reference to the `cross_next` atomic pointer.
+/// Get a raw pointer to the `cross_next` atomic pointer.
 ///
 /// # Safety
 ///
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
-#[allow(dead_code)]
-pub(crate) unsafe fn cross_next(ptr: *mut u8) -> &'static AtomicPtr<u8> {
+pub(crate) unsafe fn cross_next(ptr: *mut u8) -> *const AtomicPtr<u8> {
     // SAFETY: cross_next is at offset 32 in repr(C) Task.
-    unsafe { &*ptr.add(32).cast::<AtomicPtr<u8>>() }
+    unsafe { ptr.add(32).cast::<AtomicPtr<u8>>() }
 }
 
 /// Read the `is_queued` flag from a task pointer.
@@ -855,19 +854,11 @@ mod tests {
     fn poll_join_panic_in_drop_prevents_double_drop() {
         use std::task::{RawWaker, RawWakerVTable, Waker};
 
-        let noop_vtable = RawWakerVTable::new(
-            |p| RawWaker::new(p, &NOOP_VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
+        let noop_vtable =
+            RawWakerVTable::new(|p| RawWaker::new(p, &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
         // Need a named static for the clone fn to reference.
-        static NOOP_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |p| RawWaker::new(p, &NOOP_VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
+        static NOOP_VTABLE: RawWakerVTable =
+            RawWakerVTable::new(|p| RawWaker::new(p, &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NOOP_VTABLE)) };
         let mut cx = Context::from_waker(&waker);
 
@@ -908,12 +899,8 @@ mod tests {
     fn drop_fn_transitions_correctly_on_normal_completion() {
         use std::task::{RawWaker, RawWakerVTable, Waker};
 
-        static NOOP_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |p| RawWaker::new(p, &NOOP_VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
+        static NOOP_VTABLE: RawWakerVTable =
+            RawWakerVTable::new(|p| RawWaker::new(p, &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NOOP_VTABLE)) };
         let mut cx = Context::from_waker(&waker);
 

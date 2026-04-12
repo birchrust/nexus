@@ -18,6 +18,7 @@
 //! ```
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,8 @@ thread_local! {
         const { Cell::new(std::ptr::null()) };
     static CTX_SHUTDOWN: Cell<*const AtomicBool> =
         const { Cell::new(std::ptr::null()) };
+    static CTX_SHUTDOWN_WAKER: Cell<*const Arc<std::sync::Mutex<Option<std::task::Waker>>>> =
+        const { Cell::new(std::ptr::null()) };
 }
 
 // =============================================================================
@@ -53,6 +56,7 @@ pub(crate) fn install(
     timer: *mut TimerDriver,
     event_time: *const Cell<Instant>,
     shutdown_flag: *const AtomicBool,
+    shutdown_waker: *const Arc<std::sync::Mutex<Option<std::task::Waker>>>,
 ) -> ContextGuard {
     let prev = PrevContext {
         world: CTX_WORLD.with(|c| c.replace(world)),
@@ -60,6 +64,7 @@ pub(crate) fn install(
         timer: CTX_TIMER.with(|c| c.replace(timer)),
         event_time: CTX_EVENT_TIME.with(|c| c.replace(event_time)),
         shutdown: CTX_SHUTDOWN.with(|c| c.replace(shutdown_flag)),
+        shutdown_waker: CTX_SHUTDOWN_WAKER.with(|c| c.replace(shutdown_waker)),
     };
     ContextGuard { prev }
 }
@@ -70,6 +75,7 @@ struct PrevContext {
     timer: *mut TimerDriver,
     event_time: *const Cell<Instant>,
     shutdown: *const AtomicBool,
+    shutdown_waker: *const Arc<std::sync::Mutex<Option<std::task::Waker>>>,
 }
 
 pub(crate) struct ContextGuard {
@@ -83,6 +89,7 @@ impl Drop for ContextGuard {
         CTX_TIMER.with(|c| c.set(self.prev.timer));
         CTX_EVENT_TIME.with(|c| c.set(self.prev.event_time));
         CTX_SHUTDOWN.with(|c| c.set(self.prev.shutdown));
+        CTX_SHUTDOWN_WAKER.with(|c| c.set(self.prev.shutdown_waker));
     }
 }
 
@@ -268,5 +275,11 @@ pub fn shutdown_signal() -> crate::ShutdownSignal {
         !ptr.is_null(),
         "shutdown_signal() called outside Runtime::block_on"
     );
-    crate::ShutdownSignal { flag: ptr }
+    let waker_ptr = CTX_SHUTDOWN_WAKER.with(Cell::get);
+    // SAFETY: waker_ptr was set by install() and is valid for Runtime lifetime.
+    let task_waker = unsafe { (*waker_ptr).clone() };
+    crate::ShutdownSignal {
+        flag: ptr,
+        task_waker,
+    }
 }
