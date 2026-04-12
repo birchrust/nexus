@@ -1170,6 +1170,49 @@ fn narrow_signed_zero() {
 }
 
 // =============================================================================
+// Signed repr — full-width and near-full-width fields
+// =============================================================================
+
+#[bit_storage(repr = i64)]
+pub struct SignedReprFields {
+    #[field(start = 0, len = 63)]
+    almost_full: i64, // 63-bit signed field in i64 repr
+}
+
+#[test]
+fn signed_repr_near_full_width_positive() {
+    // 63-bit signed field: range is -(2^62) to (2^62 - 1)
+    let max_val = (1i64 << 62) - 1;
+    let s = SignedReprFields::builder()
+        .almost_full(max_val)
+        .build()
+        .unwrap();
+    let unpacked = SignedReprFields::from_raw(s.raw());
+    assert_eq!(unpacked.almost_full(), max_val);
+}
+
+#[test]
+fn signed_repr_near_full_width_negative() {
+    let min_val = -(1i64 << 62);
+    let s = SignedReprFields::builder()
+        .almost_full(min_val)
+        .build()
+        .unwrap();
+    let unpacked = SignedReprFields::from_raw(s.raw());
+    assert_eq!(unpacked.almost_full(), min_val);
+}
+
+#[test]
+fn signed_repr_near_full_width_neg_one() {
+    let s = SignedReprFields::builder()
+        .almost_full(-1)
+        .build()
+        .unwrap();
+    let unpacked = SignedReprFields::from_raw(s.raw());
+    assert_eq!(unpacked.almost_full(), -1);
+}
+
+// =============================================================================
 // Builder overwrite behavior
 // =============================================================================
 
