@@ -385,5 +385,8 @@ fn non_empty_drop_panics_in_debug() {
         tree.insert(&slab, 1, 100);
         // drop without clear — should panic in debug
     }));
-    assert!(result.is_err(), "dropping non-empty rbtree should panic in debug");
+    assert!(
+        result.is_err(),
+        "dropping non-empty rbtree should panic in debug"
+    );
 }

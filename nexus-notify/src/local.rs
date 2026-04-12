@@ -126,7 +126,7 @@ impl LocalNotify {
     #[inline]
     pub fn mark(&mut self, token: Token) {
         let idx = token.index();
-        debug_assert!(
+        assert!(
             idx < self.num_tokens,
             "token index {} out of range ({})",
             idx,
@@ -172,7 +172,11 @@ impl LocalNotify {
             self.bits.fill(0);
             self.dispatch_list.clear();
         } else {
-            // Partial drain — clear bits for drained tokens, shift remainder
+            // Partial drain — clear bits for drained tokens, shift remainder.
+            // Vec::drain memmoves remaining elements. Cost is O(remaining),
+            // acceptable for typical token counts (<100). A cursor-based
+            // approach would avoid the memmove but adds complexity for a
+            // cold-path operation.
             for &idx in &self.dispatch_list[..drain_count] {
                 self.bits[idx / 64] &= !(1 << (idx % 64));
             }

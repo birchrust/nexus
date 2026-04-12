@@ -148,10 +148,14 @@ impl Producer {
     ///
     /// # Safety Contract
     ///
-    /// `len` must not exceed `LEN_MASK`. This is checked with
-    /// `debug_assert!` only.
+    /// `len` must not exceed `LEN_MASK`. On 64-bit this is ~9.2 exabytes
+    /// (unreachable in practice). On 32-bit, records >2GB could set
+    /// `SKIP_BIT` and corrupt the stream — enforced with `assert!`.
     #[inline]
     pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, TryClaimError> {
+        #[cfg(target_pointer_width = "32")]
+        assert!(len <= LEN_MASK, "payload too large for 32-bit logbuf");
+        #[cfg(not(target_pointer_width = "32"))]
         debug_assert!(len <= LEN_MASK, "payload too large");
         if len == 0 {
             return Err(TryClaimError::ZeroLength);
@@ -231,7 +235,9 @@ impl Producer {
                         committed: false,
                     });
                 }
-                // CAS failed, retry
+                // CAS failed — another producer claimed first. Pause to
+                // reduce pipeline pressure, then retry with fresh tail.
+                core::hint::spin_loop();
                 continue;
             }
 
@@ -251,7 +257,8 @@ impl Producer {
                     committed: false,
                 });
             }
-            // CAS failed, retry
+            // CAS failed — pause before retry.
+            core::hint::spin_loop();
         }
     }
 
@@ -288,6 +295,12 @@ impl std::fmt::Debug for Producer {
 /// Dereferences to `&mut [u8]` for the payload region. Call [`commit`](WriteClaim::commit)
 /// when done writing to publish the record. If dropped without committing, a skip
 /// marker is written so the consumer can advance past the dead region.
+///
+/// # Important
+///
+/// Leaking a `WriteClaim` via [`mem::forget`](std::mem::forget) will permanently
+/// block the consumer at this record's offset. This is not undefined behavior
+/// but causes an unrecoverable deadlock. Always drop or explicitly abort claims.
 pub struct WriteClaim<'a> {
     shared: &'a Shared,
     offset: usize,

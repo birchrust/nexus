@@ -67,18 +67,21 @@ pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
         );
     };
 
+    // Start at 2 instead of 0 so that wrapping on 32-bit never hits
+    // 0 (the "never written" sentinel). Sequence uses even values for
+    // "write complete" and odd for "write in progress": 2→3→4→5→...
     let inner = Arc::new(Inner {
-        seq: AtomicUsize::new(0),
+        seq: AtomicUsize::new(2),
         data: UnsafeCell::new(MaybeUninit::uninit()),
     });
 
     (
         Writer {
-            local_seq: 0,
+            local_seq: 2,
             inner: Arc::clone(&inner),
         },
         Reader {
-            cached_seq: 0,
+            cached_seq: 2,
             inner,
         },
     )
@@ -539,14 +542,14 @@ mod tests {
         let (mut writer, mut reader) = slot::<TestData>();
 
         writer.write(TestData { a: 1, b: 2 });
-        let (val, ver) = reader.read_versioned().unwrap();
+        let (val, ver1) = reader.read_versioned().unwrap();
         assert_eq!(val.a, 1);
-        assert_eq!(ver, 1);
 
         writer.write(TestData { a: 3, b: 4 });
-        let (val, ver) = reader.read_versioned().unwrap();
+        let (val, ver2) = reader.read_versioned().unwrap();
         assert_eq!(val.a, 3);
-        assert_eq!(ver, 2);
+        // Each write increments version by 1.
+        assert_eq!(ver2.wrapping_sub(ver1), 1);
     }
 
     #[test]
@@ -558,19 +561,18 @@ mod tests {
             writer.write(TestData { a: i, b: 0 });
         }
 
-        let (val, ver) = reader.read_versioned().unwrap();
+        let (val, ver1) = reader.read_versioned().unwrap();
         assert_eq!(val.a, 4); // last write
-        assert_eq!(ver, 5); // 5th write
 
         // No new data
         assert!(reader.read_versioned().is_none());
 
         // Write again
         writer.write(TestData { a: 99, b: 0 });
-        let (val, ver) = reader.read_versioned().unwrap();
+        let (val, ver2) = reader.read_versioned().unwrap();
         assert_eq!(val.a, 99);
-        assert_eq!(ver, 6);
-        // Missed = ver - last_ver - 1 = 6 - 5 - 1 = 0 (no conflation)
+        // Missed = ver2 - ver1 - 1 = 1 - 1 = 0 (no conflation since last read)
+        assert_eq!(ver2.wrapping_sub(ver1), 1);
     }
 
     #[test]

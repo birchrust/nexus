@@ -126,7 +126,7 @@ impl UuidV7 {
     #[inline]
     pub fn next_raw(&mut self, now: Instant) -> Result<(u64, u64), SequenceExhausted> {
         // Calculate Unix timestamp from Instant offset
-        let offset_ms = now.duration_since(self.epoch).as_millis() as u64;
+        let offset_ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
         let ts_ms = self.unix_base_ms.wrapping_add(offset_ms);
 
         // Handle sequence

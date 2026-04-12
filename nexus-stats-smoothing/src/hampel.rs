@@ -87,8 +87,7 @@ impl HampelF64 {
         } else if z <= self.outer_threshold {
             // Winsorize — shrink toward median
             // Linear interpolation between x (at inner) and median (at outer)
-            let t =
-                (z - self.inner_threshold) / (self.outer_threshold - self.inner_threshold);
+            let t = (z - self.inner_threshold) / (self.outer_threshold - self.inner_threshold);
             (median - x).mul_add(t, x)
         } else {
             // Reject — replace with median
@@ -281,9 +280,15 @@ mod tests {
         // Now feed a value that's between thresholds
         let result = h2.update(16.0).unwrap();
         // Should be shrunk toward median but not replaced entirely
-        assert!(result < 16.0, "should be Winsorized below 16.0, got {result}");
+        assert!(
+            result < 16.0,
+            "should be Winsorized below 16.0, got {result}"
+        );
         let median = h2.median().unwrap();
-        assert!(result > median, "should be above median {median}, got {result}");
+        assert!(
+            result > median,
+            "should be above median {median}, got {result}"
+        );
     }
 
     #[test]
@@ -328,11 +333,13 @@ mod tests {
     #[test]
     fn rejects_invalid_config() {
         assert!(HampelF64::builder().inner_threshold(0.0).build().is_err());
-        assert!(HampelF64::builder()
-            .inner_threshold(3.0)
-            .outer_threshold(2.0)
-            .build()
-            .is_err());
+        assert!(
+            HampelF64::builder()
+                .inner_threshold(3.0)
+                .outer_threshold(2.0)
+                .build()
+                .is_err()
+        );
         assert!(HampelF64::builder().window_size(2).build().is_err());
     }
 }

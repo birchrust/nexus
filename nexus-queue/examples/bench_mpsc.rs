@@ -33,7 +33,7 @@ fn rdtscp() -> u64 {
 }
 
 fn bench_nexus_mpsc() -> Histogram<u64> {
-    let (mut tx, mut rx) = mpsc::bounded::<u64>(CAPACITY);
+    let (mut tx, mut rx) = mpsc::ring_buffer::<u64>(CAPACITY);
     let done = Arc::new(AtomicBool::new(false));
     let done_clone = Arc::clone(&done);
 
@@ -87,7 +87,7 @@ fn bench_nexus_mpsc() -> Histogram<u64> {
 }
 
 fn bench_nexus_mpsc_multi(num_producers: usize) -> Histogram<u64> {
-    let (tx, mut rx) = mpsc::bounded::<u64>(CAPACITY);
+    let (tx, mut rx) = mpsc::ring_buffer::<u64>(CAPACITY);
     let done = Arc::new(AtomicBool::new(false));
     let done_clone = Arc::clone(&done);
 

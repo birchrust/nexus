@@ -36,6 +36,7 @@ unsafe impl<T: Send + Sync> Sync for Slot<T> {}
 struct Inner<T> {
     slots: Box<[Slot<T>]>,
     free_head: AtomicU32,
+    free_count: AtomicU32,
     reset: Box<dyn Fn(&mut T) + Send + Sync>,
 }
 
@@ -63,7 +64,10 @@ impl<T> Inner<T> {
                 Ordering::Release, // Publishes value write + next write
                 Ordering::Relaxed, // Failure just retries
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    self.free_count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
                 Err(_) => std::hint::spin_loop(),
             }
         }
@@ -86,7 +90,10 @@ impl<T> Inner<T> {
                 Ordering::Acquire, // Syncs with pusher's Release
                 Ordering::Acquire, // On fail, need to see new head
             ) {
-                Ok(_) => return Some(head),
+                Ok(_) => {
+                    self.free_count.fetch_sub(1, Ordering::Relaxed);
+                    return Some(head);
+                }
                 Err(_) => {
                     // Pusher added something newer - retry for hotter item
                     std::hint::spin_loop();
@@ -187,6 +194,10 @@ impl<T> Pool<T> {
     /// # Panics
     ///
     /// Panics if capacity is zero or exceeds `u32::MAX - 1`.
+    ///
+    /// The `reset` closure must not panic. If it does, the value is leaked
+    /// and the pool slot is not returned. Use simple operations like
+    /// `Vec::clear()` or field resets.
     pub fn new<I, R>(capacity: usize, mut init: I, reset: R) -> Self
     where
         I: FnMut() -> T,
@@ -215,6 +226,7 @@ impl<T> Pool<T> {
             inner: Arc::new(Inner {
                 slots,
                 free_head: AtomicU32::new(0), // Head of free list
+                free_count: AtomicU32::new(capacity as u32),
                 reset: Box::new(reset),
             }),
         }
@@ -238,16 +250,11 @@ impl<T> Pool<T> {
 
     /// Returns the number of available objects.
     ///
-    /// Note: This is a snapshot and may be immediately outdated if other
-    /// threads are returning objects concurrently.
+    /// O(1) — backed by an atomic counter. This is a snapshot and may
+    /// be immediately outdated if other threads are returning objects
+    /// concurrently.
     pub fn available(&self) -> usize {
-        let mut count = 0;
-        let mut idx = self.inner.free_head.load(Ordering::Relaxed);
-        while idx != NONE {
-            count += 1;
-            idx = self.inner.slots[idx as usize].next.load(Ordering::Relaxed);
-        }
-        count
+        self.inner.free_count.load(Ordering::Relaxed) as usize
     }
 }
 

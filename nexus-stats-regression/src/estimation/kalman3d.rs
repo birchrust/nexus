@@ -216,7 +216,10 @@ macro_rules! impl_kalman3d {
             /// Panics if `r` is negative, NaN, or infinite.
             #[inline]
             pub fn set_measurement_noise(&mut self, r: $ty) {
-                assert!(r > 0.0 && r.is_finite(), "measurement noise R must be positive and finite, got {r}");
+                assert!(
+                    r > 0.0 && r.is_finite(),
+                    "measurement noise R must be positive and finite, got {r}"
+                );
                 self.r = r;
             }
 
@@ -232,9 +235,7 @@ macro_rules! impl_kalman3d {
                     "process noise Q elements must be finite"
                 );
                 self.q = [
-                    q[0][0], q[0][1], q[0][2],
-                    q[1][0], q[1][1], q[1][2],
-                    q[2][0], q[2][1], q[2][2],
+                    q[0][0], q[0][1], q[0][2], q[1][0], q[1][1], q[1][2], q[2][0], q[2][1], q[2][2],
                 ];
             }
 

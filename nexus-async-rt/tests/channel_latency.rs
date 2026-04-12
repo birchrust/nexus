@@ -68,7 +68,7 @@ fn local_try_send_recv_latency() {
 #[test]
 #[ignore]
 fn mpsc_try_send_recv_latency() {
-    let (tx, rx) = nexus_queue::mpsc::bounded::<u64>(1024);
+    let (tx, rx) = nexus_queue::mpsc::ring_buffer::<u64>(1024);
 
     // We use the raw nexus_queue producer/consumer here to measure
     // the atomic data path without the channel wrapper overhead.

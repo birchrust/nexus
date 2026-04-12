@@ -314,6 +314,12 @@ impl<T> Pool<T> {
     ///
     /// Calls the reset function, then pushes the value back onto the
     /// available stack for reuse.
+    ///
+    /// # Panics
+    ///
+    /// If the reset closure panics, the value is leaked and the pool slot
+    /// is not returned. The panic propagates normally. Reset closures must
+    /// not panic — use simple operations like `Vec::clear()` or field resets.
     pub fn put(&self, mut value: T) {
         self.inner.return_value(&mut value);
         self.inner.push(value);

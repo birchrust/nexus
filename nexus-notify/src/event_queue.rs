@@ -314,7 +314,7 @@ pub fn event_queue(max_tokens: usize) -> (Notifier, Poller) {
         .map(|_| AtomicBool::new(false))
         .collect::<Vec<_>>()
         .into();
-    let (tx, rx) = mpsc::bounded(max_tokens);
+    let (tx, rx) = mpsc::ring_buffer(max_tokens);
     (
         Notifier {
             flags: Arc::clone(&flags),

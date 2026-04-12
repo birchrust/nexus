@@ -119,7 +119,7 @@ impl UlidGenerator {
     /// if you need overflow detection.
     #[inline]
     pub fn next(&mut self, now: Instant) -> Ulid {
-        let offset_ms = now.duration_since(self.epoch).as_millis() as u64;
+        let offset_ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
         let ts_ms = self.unix_base_ms.wrapping_add(offset_ms);
 
         let (rand_hi, rand_lo) = if ts_ms == self.last_ts_ms {
@@ -151,7 +151,7 @@ impl UlidGenerator {
     /// This is extremely unlikely (would require 2^80 generations in one ms).
     #[inline]
     pub fn try_next(&mut self, now: Instant) -> Result<Ulid, SequenceExhausted> {
-        let offset_ms = now.duration_since(self.epoch).as_millis() as u64;
+        let offset_ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
         let ts_ms = self.unix_base_ms.wrapping_add(offset_ms);
 
         let (rand_hi, rand_lo) = if ts_ms == self.last_ts_ms {

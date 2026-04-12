@@ -87,19 +87,21 @@ pub fn shared_slot<T: Pod>() -> (Writer<T>, SharedReader<T>) {
         );
     };
 
+    // Start at 2 instead of 0 so that wrapping on 32-bit never hits
+    // 0 (the "never written" sentinel). See spsc.rs for detailed rationale.
     let inner = Arc::new(Inner {
-        seq: AtomicUsize::new(0),
+        seq: AtomicUsize::new(2),
         writer_alive: AtomicBool::new(true),
         data: UnsafeCell::new(MaybeUninit::uninit()),
     });
 
     (
         Writer {
-            local_seq: 0,
+            local_seq: 2,
             inner: Arc::clone(&inner),
         },
         SharedReader {
-            cached_seq: 0,
+            cached_seq: 2,
             inner,
         },
     )

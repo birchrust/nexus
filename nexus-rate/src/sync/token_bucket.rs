@@ -133,7 +133,8 @@ impl TokenBucket {
         self.rate.store(rate, Ordering::Release);
         self.period.store(period_nanos, Ordering::Release);
         self.burst.store(burst, Ordering::Release);
-        self.nanos_per_token.store(nanos_per_token, Ordering::Release);
+        self.nanos_per_token
+            .store(nanos_per_token, Ordering::Release);
         Ok(())
     }
 

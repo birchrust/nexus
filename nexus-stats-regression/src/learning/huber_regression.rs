@@ -264,16 +264,8 @@ mod tests {
         }
 
         let w = reg.weights();
-        assert!(
-            (w[0] - 2.0).abs() < 0.5,
-            "w[0]={}, expected ~2.0",
-            w[0]
-        );
-        assert!(
-            (w[1] - 3.0).abs() < 0.5,
-            "w[1]={}, expected ~3.0",
-            w[1]
-        );
+        assert!((w[0] - 2.0).abs() < 0.5, "w[0]={}, expected ~2.0", w[0]);
+        assert!((w[1] - 3.0).abs() < 0.5, "w[1]={}, expected ~3.0", w[1]);
     }
 
     #[test]
@@ -352,20 +344,26 @@ mod tests {
 
     #[test]
     fn invalid_config() {
-        assert!(HuberRegressionF64::builder()
-            .learning_rate(0.01)
-            .delta(1.0)
-            .build()
-            .is_err()); // missing dim
-        assert!(HuberRegressionF64::builder()
-            .dimensions(2)
-            .delta(1.0)
-            .build()
-            .is_err()); // missing lr
-        assert!(HuberRegressionF64::builder()
-            .dimensions(2)
-            .learning_rate(0.01)
-            .build()
-            .is_err()); // missing delta
+        assert!(
+            HuberRegressionF64::builder()
+                .learning_rate(0.01)
+                .delta(1.0)
+                .build()
+                .is_err()
+        ); // missing dim
+        assert!(
+            HuberRegressionF64::builder()
+                .dimensions(2)
+                .delta(1.0)
+                .build()
+                .is_err()
+        ); // missing lr
+        assert!(
+            HuberRegressionF64::builder()
+                .dimensions(2)
+                .learning_rate(0.01)
+                .build()
+                .is_err()
+        ); // missing delta
     }
 }

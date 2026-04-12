@@ -196,8 +196,7 @@ fn cancel_many_waker_changes() {
     // Keep all flags alive until after cancel — cancel() drains ALL
     // WaiterNodes and wakes their wakers, including stale ones from
     // prior registrations. The flags must outlive the drain.
-    let flags: Vec<std::cell::Cell<bool>> =
-        (0..10).map(|_| std::cell::Cell::new(false)).collect();
+    let flags: Vec<std::cell::Cell<bool>> = (0..10).map(|_| std::cell::Cell::new(false)).collect();
 
     // Poll 10 times with different wakers.
     for flag in &flags {
