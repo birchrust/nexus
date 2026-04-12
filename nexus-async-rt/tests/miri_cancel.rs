@@ -29,14 +29,15 @@ fn poll_once<F: Future>(f: Pin<&mut F>) -> Poll<F::Output> {
 }
 
 /// A waker that sets a Cell<bool> to true when woken.
-/// Each call creates a new vtable instance so will_wake() returns false
-/// between different tracking_waker calls — exercising the re-registration path.
+/// All instances share the same static vtable; `will_wake()` differs between
+/// calls because the raw waker data stores the `flag` pointer. Two tracking
+/// wakers built from different flags will not `will_wake()`, which exercises
+/// the re-registration path. Using the same flag returns true.
 fn tracking_waker(flag: &std::cell::Cell<bool>) -> Waker {
-    // Store the flag pointer as the waker data.
+    // Store the flag pointer as the waker data. Distinct flags produce
+    // distinct wakers because the data pointer differs.
     let data = flag as *const std::cell::Cell<bool> as *const ();
 
-    // Use a unique vtable per call site — this ensures will_wake() returns
-    // false between different tracking_waker instances, even with same flag.
     static VTABLE: RawWakerVTable = RawWakerVTable::new(
         |p| RawWaker::new(p, &VTABLE),
         |p| {

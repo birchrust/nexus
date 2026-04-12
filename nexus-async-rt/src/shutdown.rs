@@ -96,12 +96,15 @@ impl ShutdownHandle {
 
 /// Future that resolves when shutdown is triggered.
 ///
-/// Registers a waker on first poll so that `ShutdownHandle::trigger()`
-/// (or a signal handler) can wake the awaiting task directly.
+/// Registers (and updates) a waker on every poll so that
+/// `ShutdownHandle::trigger()` (or a signal handler) can wake the
+/// awaiting task directly. The waker is overwritten on each poll to
+/// handle the case where the future is re-polled from a different
+/// task context.
 ///
 /// **Single waiter only.** Only one task may await `ShutdownSignal` at a
 /// time. If a second task polls while a waker is already registered, the
-/// waker is updated (not duplicated). For multi-waiter shutdown, use
+/// waker is replaced (not duplicated). For multi-waiter shutdown, use
 /// [`CancellationToken`](crate::CancellationToken) instead.
 ///
 /// Holds a raw pointer to the AtomicBool flag, valid for the lifetime
