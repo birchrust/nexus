@@ -181,9 +181,10 @@ impl<T> Slab<T> {
     /// Returns the base pointer to the slots array.
     #[inline]
     pub(crate) fn slots_ptr(&self) -> *mut SlotCell<T> {
-        // SAFETY: We're returning a pointer for use with raw pointer access
-        let slots = unsafe { &*self.slots.get() };
-        slots.as_ptr().cast_mut()
+        // Derive from *mut Vec (via UnsafeCell::get) to preserve write provenance.
+        // Creating &Vec first would give read-only provenance — writes through
+        // the returned pointer would be UB under stacked/tree borrows.
+        unsafe { (*self.slots.get()).as_mut_ptr() }
     }
 
     /// Returns `true` if `ptr` falls within this slab's slot array.

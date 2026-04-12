@@ -360,8 +360,8 @@ impl<'w> RuntimeBuilder<'w> {
 
     /// Hand off a growable (unbounded) slab for [`spawn_slab`].
     ///
-    /// `S` is the total slot size in bytes. The task header uses 32 bytes,
-    /// so `Slab<256>` gives 224 bytes for the future. Most async IO
+    /// `S` is the total slot size in bytes. The task header uses 64 bytes,
+    /// so `Slab<256>` gives 192 bytes for the future. Most async IO
     /// futures are 128–256 bytes — `Slab<256>` or `Slab<512>` covers
     /// the common cases.
     ///
@@ -387,12 +387,15 @@ impl<'w> RuntimeBuilder<'w> {
         const {
             assert!(
                 S >= 64,
-                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)"
+                "slab slot size must be at least 64 bytes (TASK_HEADER_SIZE)"
             );
         }
         self.slab_installer = Some(Box::new(move || {
-            let slab = Box::new(slab);
-            let slab_ptr = std::ptr::from_ref(slab.as_ref()).cast::<u8>();
+            let mut slab = Box::new(slab);
+            // Derive pointer via &mut to get write provenance. Using &ref
+            // gives read-only provenance under stacked borrows, but the
+            // allocator writes through this pointer.
+            let slab_ptr = std::ptr::from_mut(slab.as_mut()).cast::<u8>();
             let config = crate::alloc::make_unbounded_config::<S>(slab_ptr);
             (slab as Box<dyn std::any::Any>, config)
         }));
@@ -425,12 +428,15 @@ impl<'w> RuntimeBuilder<'w> {
         const {
             assert!(
                 S >= 64,
-                "slab slot size must be at least 64 bytes (32 for task header + 32 for future)"
+                "slab slot size must be at least 64 bytes (TASK_HEADER_SIZE)"
             );
         }
         self.slab_installer = Some(Box::new(move || {
-            let slab = Box::new(slab);
-            let slab_ptr = std::ptr::from_ref(slab.as_ref()).cast::<u8>();
+            let mut slab = Box::new(slab);
+            // Derive pointer via &mut to get write provenance. Using &ref
+            // gives read-only provenance under stacked borrows, but the
+            // allocator writes through this pointer.
+            let slab_ptr = std::ptr::from_mut(slab.as_mut()).cast::<u8>();
             let config = crate::alloc::make_bounded_config::<S>(slab_ptr);
             (slab as Box<dyn std::any::Any>, config)
         }));
@@ -520,6 +526,7 @@ impl Runtime {
             &raw mut self.timers,
             &raw const self.event_time,
             std::sync::Arc::as_ptr(&self.shutdown.flag_ptr()),
+            std::ptr::from_ref(&self.shutdown.task_waker),
         );
 
         // Install slab TLS if configured (scoped to run_loop).

@@ -1,4 +1,3 @@
-#![allow(dead_code)] // Wired into executor + channel in subsequent commits.
 //! Cross-thread wake infrastructure.
 //!
 //! An intrusive MPSC queue (Vyukov style) for waking tasks from other
@@ -118,7 +117,8 @@ impl CrossWakeQueue {
             unsafe { &*self.stub }
         } else {
             // SAFETY: caller guarantees `node` is a valid task pointer.
-            unsafe { task::cross_next(node) }
+            // cross_next returns a raw pointer; we dereference explicitly.
+            unsafe { &*task::cross_next(node) }
         }
     }
 }

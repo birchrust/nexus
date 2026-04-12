@@ -30,7 +30,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 
 /// Shared shutdown flag.
 #[derive(Clone)]
@@ -38,6 +38,10 @@ pub struct ShutdownHandle {
     flag: Arc<AtomicBool>,
     /// Mio waker to break epoll_wait when shutdown is triggered.
     mio_waker: Option<Arc<mio::Waker>>,
+    /// Task waker slot — the ShutdownSignal future registers here.
+    /// Protected by Mutex because the signal handler thread may
+    /// call wake(). Only contested at shutdown time (once per process).
+    pub(crate) task_waker: Arc<std::sync::Mutex<Option<Waker>>>,
 }
 
 impl ShutdownHandle {
@@ -45,6 +49,7 @@ impl ShutdownHandle {
         Self {
             flag: Arc::new(AtomicBool::new(false)),
             mio_waker: None,
+            task_waker: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -55,10 +60,16 @@ impl ShutdownHandle {
 
     /// Trigger shutdown programmatically.
     ///
-    /// Sets the flag and breaks epoll_wait so the runtime loop
-    /// re-polls the root future.
+    /// Sets the flag, wakes the registered task waker (if any), and
+    /// breaks epoll_wait so the runtime loop re-polls the root future.
     pub fn trigger(&self) {
         self.flag.store(true, Ordering::Release);
+        // Wake the task waker first — signal the future directly.
+        if let Ok(mut guard) = self.task_waker.lock() {
+            if let Some(w) = guard.take() {
+                w.wake();
+            }
+        }
         if let Some(w) = &self.mio_waker {
             let _ = w.wake();
         }
@@ -78,33 +89,45 @@ impl ShutdownHandle {
     pub fn signal(&self) -> ShutdownSignal {
         ShutdownSignal {
             flag: Arc::as_ptr(&self.flag),
+            task_waker: self.task_waker.clone(),
         }
     }
 }
 
 /// Future that resolves when shutdown is triggered.
 ///
-/// Checked by the Runtime's poll loop — when the shutdown flag is set,
-/// the root future gets re-polled automatically.
-/// Future that resolves when shutdown is triggered.
+/// Registers a waker on first poll so that `ShutdownHandle::trigger()`
+/// (or a signal handler) can wake the awaiting task directly.
 ///
 /// Holds a raw pointer to the AtomicBool flag, valid for the lifetime
 /// of the Runtime (which outlives `block_on` which outlives all tasks).
 pub struct ShutdownSignal {
     pub(crate) flag: *const AtomicBool,
+    pub(crate) task_waker: Arc<std::sync::Mutex<Option<Waker>>>,
 }
 
 impl Future for ShutdownSignal {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         // SAFETY: flag points to the AtomicBool inside the Runtime's
         // ShutdownHandle (Arc-allocated, stable address). Valid for
         // Runtime lifetime.
         if unsafe { &*self.flag }.load(Ordering::Acquire) {
             return Poll::Ready(());
         }
-        Poll::Pending
+
+        // Register the waker so trigger() can wake us directly.
+        if let Ok(mut guard) = self.task_waker.lock() {
+            *guard = Some(cx.waker().clone());
+        }
+
+        // Double-check after registration (lost wakeup prevention).
+        if unsafe { &*self.flag }.load(Ordering::Acquire) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 

@@ -431,6 +431,8 @@ pub enum ClaimError {
     Closed,
     /// Requested length exceeds buffer capacity (can never succeed).
     TooLarge,
+    /// Requested length is zero (claims must be non-empty).
+    ZeroLength,
 }
 
 impl std::fmt::Display for ClaimError {
@@ -438,6 +440,7 @@ impl std::fmt::Display for ClaimError {
         match self {
             Self::Closed => f.write_str("byte channel closed"),
             Self::TooLarge => f.write_str("message exceeds buffer capacity"),
+            Self::ZeroLength => f.write_str("zero-length claim"),
         }
     }
 }
@@ -600,7 +603,7 @@ impl<'a> Future for ClaimFut<'a> {
                 inner: inner_claim,
                 notify: &sender.inner,
             })),
-            Err(nexus_logbuf::TryClaimError::Full | nexus_logbuf::TryClaimError::ZeroLength) => {
+            Err(nexus_logbuf::TryClaimError::Full) => {
                 let node = &sender.wake_node;
                 if !node.queued.load(Ordering::Acquire) {
                     // Not in list yet -- safe to write waker, then push.
@@ -609,6 +612,9 @@ impl<'a> Future for ClaimFut<'a> {
                     sender.inner.tx_waiters.push(node);
                 }
                 Poll::Pending
+            }
+            Err(nexus_logbuf::TryClaimError::ZeroLength) => {
+                Poll::Ready(Err(ClaimError::ZeroLength))
             }
         }
     }
