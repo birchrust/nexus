@@ -73,13 +73,20 @@ use crossbeam_utils::CachePadded;
 
 use crate::Full;
 
+/// Creates a bounded MPSC ring buffer. Renamed to [`ring_buffer`].
+#[deprecated(since = "1.3.0", note = "renamed to ring_buffer()")]
+#[inline]
+pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    ring_buffer(capacity)
+}
+
 /// Creates a bounded MPSC queue with the given capacity.
 ///
 /// Capacity is rounded up to the next power of two.
 ///
 /// # Panics
 ///
-/// Panics if `capacity` is zero.
+/// Panics if `capacity` is zero or too large to round to a power of two.
 pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     assert!(capacity > 0, "capacity must be non-zero");
 
