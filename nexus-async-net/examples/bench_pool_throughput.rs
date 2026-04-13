@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use nexus_async_net::rest::MaybeTls;
-use nexus_async_net::rest::{AsyncHttpConnection, ClientSlot};
+use nexus_async_net::rest::{HttpConnection, ClientSlot};
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::RequestWriter;
 use nexus_pool::local::Pool;
@@ -46,7 +46,7 @@ async fn bench_single_connection(addr: std::net::SocketAddr, iterations: u64) {
     let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
     tcp.set_nodelay(true).unwrap();
     let stream = MaybeTls::Plain(tcp);
-    let mut conn = AsyncHttpConnection::new(stream);
+    let mut conn = HttpConnection::new(stream);
     let mut writer = RequestWriter::new(&addr.to_string()).unwrap();
     writer
         .default_header("Content-Type", "application/json")
@@ -97,7 +97,7 @@ async fn bench_pool(addr: std::net::SocketAddr, pool_size: usize, iterations: u6
         let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
         tcp.set_nodelay(true).unwrap();
         let stream = MaybeTls::Plain(tcp);
-        let conn = AsyncHttpConnection::new(stream);
+        let conn = HttpConnection::new(stream);
         let mut writer = RequestWriter::new(&addr.to_string()).unwrap();
         writer
             .default_header("Content-Type", "application/json")
@@ -164,7 +164,7 @@ async fn bench_pool_concurrent(
         let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
         tcp.set_nodelay(true).unwrap();
         let stream = MaybeTls::Plain(tcp);
-        let conn = AsyncHttpConnection::new(stream);
+        let conn = HttpConnection::new(stream);
         let mut writer = RequestWriter::new(&addr.to_string()).unwrap();
         writer
             .default_header("Content-Type", "application/json")

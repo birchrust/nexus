@@ -1,12 +1,12 @@
 //! Async HTTP/1.1 REST client integration tests against httpbin.org.
 //!
-//! Mirrors nexus-net's httpbin tests but uses AsyncHttpConnection.
+//! Mirrors nexus-net's httpbin tests but uses HttpConnection.
 //! Proves the async adapter produces identical results to sync.
 //!
 //! Run with:
 //!   cargo test -p nexus-async-net --test httpbin -- --ignored --nocapture
 
-use nexus_async_net::rest::AsyncHttpConnection;
+use nexus_async_net::rest::HttpConnection;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::RequestWriter;
 use nexus_net::tls::TlsConfig;
@@ -14,13 +14,13 @@ use nexus_net::tls::TlsConfig;
 async fn setup() -> (
     RequestWriter,
     ResponseReader,
-    AsyncHttpConnection<nexus_async_net::rest::MaybeTls>,
+    HttpConnection<nexus_async_net::rest::MaybeTls>,
 ) {
     let tls = TlsConfig::new().unwrap();
     let mut writer = RequestWriter::new("httpbin.org").unwrap();
     let _ = writer.default_header("Accept", "application/json");
     let reader = ResponseReader::new(64 * 1024).max_body_size(64 * 1024);
-    let conn = nexus_async_net::rest::AsyncHttpConnectionBuilder::new()
+    let conn = nexus_async_net::rest::HttpConnectionBuilder::new()
         .tls(&tls)
         .disable_nagle()
         .connect("https://httpbin.org")
