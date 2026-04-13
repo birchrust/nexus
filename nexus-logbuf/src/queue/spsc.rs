@@ -155,10 +155,16 @@ impl Producer {
     ///
     /// # Safety Contract
     ///
-    /// `len` must not exceed `LEN_MASK`. This is checked with
+    /// `len` must not exceed `LEN_MASK`. On 64-bit this is ~9.2 exabytes
+    /// (unreachable in practice). On 32-bit, records >2GB could set
+    /// `SKIP_BIT` and corrupt the stream — enforced with `assert!`.
+    /// This is checked with
     /// `debug_assert!` only.
     #[inline]
     pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, TryClaimError> {
+        #[cfg(target_pointer_width = "32")]
+        assert!(len <= LEN_MASK, "payload too large for 32-bit logbuf");
+        #[cfg(not(target_pointer_width = "32"))]
         debug_assert!(len <= LEN_MASK, "payload too large");
         if len == 0 {
             return Err(TryClaimError::ZeroLength);
@@ -250,8 +256,10 @@ impl Producer {
     /// graceful shutdown detection, not for correctness. For reliable
     /// disconnection detection, use the channel layer (`channel::spsc`)
     /// which tracks disconnection via dedicated atomic flags.
-    // TODO: consider adding an AtomicBool flag if reliable detection is
-    // needed at the raw queue level.
+    // Decision: No AtomicBool flag at the raw queue level. The channel
+    // layer (channel::spsc) provides reliable detection via dedicated
+    // flags. Adding one here would cost an atomic on every push/pop
+    // for a feature only the channel layer needs.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.shared) == 1
@@ -275,6 +283,12 @@ impl std::fmt::Debug for Producer {
 /// Dereferences to `&mut [u8]` for the payload region. Call [`commit`](WriteClaim::commit)
 /// when done writing to publish the record. If dropped without committing, a skip
 /// marker is written so the consumer can advance past the dead region.
+///
+/// # Important
+///
+/// Leaking a `WriteClaim` via [`mem::forget`](std::mem::forget) will permanently
+/// block the consumer at this record's offset. This is not undefined behavior
+/// but causes an unrecoverable deadlock. Always drop or explicitly abort claims.
 pub struct WriteClaim<'a> {
     producer: &'a mut Producer,
     offset: usize,

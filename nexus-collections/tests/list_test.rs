@@ -595,5 +595,8 @@ fn non_empty_drop_panics_in_debug() {
         list.push_back(&slab, order);
         // drop without clear — should panic in debug
     }));
-    assert!(result.is_err(), "dropping non-empty list should panic in debug");
+    assert!(
+        result.is_err(),
+        "dropping non-empty list should panic in debug"
+    );
 }

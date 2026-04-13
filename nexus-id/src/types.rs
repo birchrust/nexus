@@ -125,35 +125,14 @@ impl<const CAP: usize> Uuid<CAP> {
 
     /// Decode the UUID back to raw (hi, lo) bytes.
     ///
-    /// This parses the hex digits and reconstructs the 128-bit value.
+    /// Uses SIMD (SSSE3) hex decoding when available, falling back to
+    /// scalar on other architectures.
+    #[inline]
     pub fn decode(&self) -> (u64, u64) {
-        let bytes = self.0.as_bytes();
-        // Parse hex chars, skipping dashes at positions 8, 13, 18, 23
-        let mut hi: u64 = 0;
-        let mut lo: u64 = 0;
-
-        // Bytes 0-7 (chars 0-7) -> hi bits 32-63
-        for &b in &bytes[0..8] {
-            hi = (hi << 4) | hex_digit(b) as u64;
-        }
-        // Bytes 9-12 (chars 9-12, skip dash at 8) -> hi bits 16-31
-        for &b in &bytes[9..13] {
-            hi = (hi << 4) | hex_digit(b) as u64;
-        }
-        // Bytes 14-17 (chars 14-17, skip dash at 13) -> hi bits 0-15
-        for &b in &bytes[14..18] {
-            hi = (hi << 4) | hex_digit(b) as u64;
-        }
-        // Bytes 19-22 (chars 19-22, skip dash at 18) -> lo bits 48-63
-        for &b in &bytes[19..23] {
-            lo = (lo << 4) | hex_digit(b) as u64;
-        }
-        // Bytes 24-35 (chars 24-35, skip dash at 23) -> lo bits 0-47
-        for &b in &bytes[24..36] {
-            lo = (lo << 4) | hex_digit(b) as u64;
-        }
-
-        (hi, lo)
+        // SAFETY: self.0 was validated at construction — always valid hex+dashes.
+        // Uuid is always 36 bytes. try_into is infallible here.
+        let bytes: &[u8; 36] = self.0.as_bytes().try_into().unwrap();
+        unsafe { crate::simd::uuid_parse_dashed(bytes).unwrap_unchecked() }
     }
 
     /// Extract the UUID version (4 bits).
@@ -218,10 +197,11 @@ impl<const CAP: usize> Uuid<CAP> {
     }
 
     /// Check if this is the nil UUID (all zeros).
+    ///
+    /// Compares raw bytes directly — no hex decoding needed.
     #[inline]
     pub fn is_nil(&self) -> bool {
-        let (hi, lo) = self.decode();
-        hi == 0 && lo == 0
+        self.0.as_bytes() == b"00000000-0000-0000-0000-000000000000"
     }
 
     /// Extract the timestamp for UUID v7 (milliseconds since Unix epoch).
@@ -416,10 +396,11 @@ impl<const CAP: usize> UuidCompact<CAP> {
     }
 
     /// Check if this is the nil UUID.
+    ///
+    /// Compares raw bytes directly — no hex decoding needed.
     #[inline]
     pub fn is_nil(&self) -> bool {
-        let (hi, lo) = self.decode();
-        hi == 0 && lo == 0
+        self.0.as_bytes() == b"00000000000000000000000000000000"
     }
 
     /// Get the raw 128-bit value as big-endian bytes.

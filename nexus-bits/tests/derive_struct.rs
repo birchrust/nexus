@@ -1204,10 +1204,7 @@ fn signed_repr_near_full_width_negative() {
 
 #[test]
 fn signed_repr_near_full_width_neg_one() {
-    let s = SignedReprFields::builder()
-        .almost_full(-1)
-        .build()
-        .unwrap();
+    let s = SignedReprFields::builder().almost_full(-1).build().unwrap();
     let unpacked = SignedReprFields::from_raw(s.raw());
     assert_eq!(unpacked.almost_full(), -1);
 }

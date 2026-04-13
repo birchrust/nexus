@@ -285,8 +285,20 @@ mod tests {
     fn rejects_invalid_config() {
         assert!(HuberEmaF64::builder().delta(5.0).build().is_err()); // missing alpha
         assert!(HuberEmaF64::builder().alpha(0.1).build().is_err()); // missing delta
-        assert!(HuberEmaF64::builder().alpha(0.0).delta(5.0).build().is_err()); // alpha = 0
-        assert!(HuberEmaF64::builder().alpha(0.1).delta(-1.0).build().is_err()); // negative delta
+        assert!(
+            HuberEmaF64::builder()
+                .alpha(0.0)
+                .delta(5.0)
+                .build()
+                .is_err()
+        ); // alpha = 0
+        assert!(
+            HuberEmaF64::builder()
+                .alpha(0.1)
+                .delta(-1.0)
+                .build()
+                .is_err()
+        ); // negative delta
     }
 
     #[test]

@@ -41,8 +41,8 @@ fn rdtscp() -> u64 {
 // ============================================================================
 
 fn pingpong_nexus_spmc() -> Histogram<u64> {
-    let (mut tx_fwd, mut rx_fwd) = spmc::bounded::<u64>(1024);
-    let (mut tx_back, mut rx_back) = spmc::bounded::<()>(1024);
+    let (mut tx_fwd, mut rx_fwd) = spmc::ring_buffer::<u64>(1024);
+    let (mut tx_back, mut rx_back) = spmc::ring_buffer::<()>(1024);
 
     let consumer = thread::spawn(move || {
         for _ in 0..(WARMUP + SAMPLES) {
@@ -154,7 +154,7 @@ fn pingpong_crossbeam() -> Histogram<u64> {
 // ============================================================================
 
 fn throughput_nexus_spmc(num_consumers: usize) -> f64 {
-    let (mut tx, rx) = spmc::bounded::<u64>(1024);
+    let (mut tx, rx) = spmc::ring_buffer::<u64>(1024);
     let total = Arc::new(AtomicU64::new(0));
 
     let consumers: Vec<_> = (0..num_consumers)

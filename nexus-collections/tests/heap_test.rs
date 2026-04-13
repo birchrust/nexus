@@ -344,5 +344,8 @@ fn non_empty_drop_panics_in_debug() {
         heap.push(&slab, 42u64);
         // drop without clear — should panic in debug
     }));
-    assert!(result.is_err(), "dropping non-empty heap should panic in debug");
+    assert!(
+        result.is_err(),
+        "dropping non-empty heap should panic in debug"
+    );
 }

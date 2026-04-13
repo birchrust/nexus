@@ -8,10 +8,10 @@
 use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
-const NONE: u32 = u32::MAX;
+const NONE: usize = usize::MAX;
 
 // =============================================================================
 // Slot - individual pool entry
@@ -19,14 +19,14 @@ const NONE: u32 = u32::MAX;
 
 struct Slot<T> {
     value: UnsafeCell<MaybeUninit<T>>,
-    next: AtomicU32,
+    next: AtomicUsize,
 }
 
 // SAFETY: Slot is Send because value is only accessed when the slot is "owned"
-// (popped from free list), so no concurrent access occurs. next is AtomicU32.
+// (popped from free list), so no concurrent access occurs. next is AtomicUsize.
 unsafe impl<T: Send> Send for Slot<T> {}
 // SAFETY: Slot is Sync because value (UnsafeCell) is only accessed when owned
-// (not in the free list), so no data race is possible. next is AtomicU32 (Sync).
+// (not in the free list), so no data race is possible. next is AtomicUsize (Sync).
 unsafe impl<T: Send + Sync> Sync for Slot<T> {}
 
 // =============================================================================
@@ -35,13 +35,14 @@ unsafe impl<T: Send + Sync> Sync for Slot<T> {}
 
 struct Inner<T> {
     slots: Box<[Slot<T>]>,
-    free_head: AtomicU32,
+    free_head: AtomicUsize,
+    free_count: AtomicUsize,
     reset: Box<dyn Fn(&mut T) + Send + Sync>,
 }
 
 impl<T> Inner<T> {
     /// Push a slot back onto the free list. Called from any thread.
-    fn push(&self, idx: u32, mut value: T) {
+    fn push(&self, idx: usize, mut value: T) {
         // Reset the value
         (self.reset)(&mut value);
 
@@ -49,13 +50,13 @@ impl<T> Inner<T> {
         // No other thread can access it until we push it back. MaybeUninit::write
         // initializes the slot for the next acquirer.
         unsafe {
-            (*self.slots[idx as usize].value.get()).write(value);
+            (*self.slots[idx].value.get()).write(value);
         }
 
         // Link into free list with CAS loop
         loop {
             let head = self.free_head.load(Ordering::Relaxed);
-            self.slots[idx as usize].next.store(head, Ordering::Relaxed);
+            self.slots[idx].next.store(head, Ordering::Relaxed);
 
             match self.free_head.compare_exchange_weak(
                 head,
@@ -63,14 +64,17 @@ impl<T> Inner<T> {
                 Ordering::Release, // Publishes value write + next write
                 Ordering::Relaxed, // Failure just retries
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    self.free_count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
                 Err(_) => std::hint::spin_loop(),
             }
         }
     }
 
     /// Pop a slot from the free list. Called only from Acquirer thread.
-    fn pop(&self) -> Option<u32> {
+    fn pop(&self) -> Option<usize> {
         loop {
             let head = self.free_head.load(Ordering::Acquire);
             if head == NONE {
@@ -78,7 +82,7 @@ impl<T> Inner<T> {
             }
 
             // Read next - safe because we Acquired head, syncs with pusher's Release
-            let next = self.slots[head as usize].next.load(Ordering::Relaxed);
+            let next = self.slots[head].next.load(Ordering::Relaxed);
 
             match self.free_head.compare_exchange_weak(
                 head,
@@ -86,7 +90,10 @@ impl<T> Inner<T> {
                 Ordering::Acquire, // Syncs with pusher's Release
                 Ordering::Acquire, // On fail, need to see new head
             ) {
-                Ok(_) => return Some(head),
+                Ok(_) => {
+                    self.free_count.fetch_sub(1, Ordering::Relaxed);
+                    return Some(head);
+                }
                 Err(_) => {
                     // Pusher added something newer - retry for hotter item
                     std::hint::spin_loop();
@@ -100,12 +107,12 @@ impl<T> Inner<T> {
     /// # Safety
     ///
     /// Caller must own the slot (have popped it) and slot must contain valid value.
-    unsafe fn read_value(&self, idx: u32) -> T {
+    unsafe fn read_value(&self, idx: usize) -> T {
         // SAFETY: Caller guarantees slot was popped (owned) and contains a valid value
         // written by new() or push(). assume_init_read moves the value out without
         // dropping the MaybeUninit, which is correct since the slot will be rewritten
         // on the next push.
-        unsafe { (*self.slots[idx as usize].value.get()).assume_init_read() }
+        unsafe { (*self.slots[idx].value.get()).assume_init_read() }
     }
 }
 
@@ -122,9 +129,9 @@ impl<T> Drop for Inner<T> {
             // assume_init_read in pop and are handled by Pooled's Drop. get_mut is
             // safe because we have &mut self (exclusive access during drop).
             unsafe {
-                (*self.slots[idx as usize].value.get()).assume_init_drop();
+                (*self.slots[idx].value.get()).assume_init_drop();
             }
-            idx = *self.slots[idx as usize].next.get_mut();
+            idx = *self.slots[idx].next.get_mut();
         }
         // MaybeUninit doesn't drop contents, so Box<[Slot<T>]> will just
         // deallocate memory without double-dropping.
@@ -186,7 +193,11 @@ impl<T> Pool<T> {
     ///
     /// # Panics
     ///
-    /// Panics if capacity is zero or exceeds `u32::MAX - 1`.
+    /// Panics if capacity is zero or exceeds `usize::MAX - 1`.
+    ///
+    /// The `reset` closure must not panic. If it does, the value is leaked
+    /// and the pool slot is not returned. Use simple operations like
+    /// `Vec::clear()` or field resets.
     pub fn new<I, R>(capacity: usize, mut init: I, reset: R) -> Self
     where
         I: FnMut() -> T,
@@ -194,7 +205,7 @@ impl<T> Pool<T> {
     {
         assert!(capacity > 0, "capacity must be non-zero");
         assert!(
-            capacity < NONE as usize,
+            capacity < NONE,
             "capacity must be less than {}",
             NONE
         );
@@ -203,18 +214,15 @@ impl<T> Pool<T> {
         let slots: Box<[Slot<T>]> = (0..capacity)
             .map(|i| Slot {
                 value: UnsafeCell::new(MaybeUninit::new(init())),
-                next: AtomicU32::new(if i + 1 < capacity {
-                    (i + 1) as u32
-                } else {
-                    NONE
-                }),
+                next: AtomicUsize::new(if i + 1 < capacity { i + 1 } else { NONE }),
             })
             .collect();
 
         Self {
             inner: Arc::new(Inner {
                 slots,
-                free_head: AtomicU32::new(0), // Head of free list
+                free_head: AtomicUsize::new(0), // Head of free list
+                free_count: AtomicUsize::new(capacity),
                 reset: Box::new(reset),
             }),
         }
@@ -238,16 +246,11 @@ impl<T> Pool<T> {
 
     /// Returns the number of available objects.
     ///
-    /// Note: This is a snapshot and may be immediately outdated if other
-    /// threads are returning objects concurrently.
+    /// O(1) — backed by an atomic counter. This is a snapshot and may
+    /// be immediately outdated if other threads are returning objects
+    /// concurrently.
     pub fn available(&self) -> usize {
-        let mut count = 0;
-        let mut idx = self.inner.free_head.load(Ordering::Relaxed);
-        while idx != NONE {
-            count += 1;
-            idx = self.inner.slots[idx as usize].next.load(Ordering::Relaxed);
-        }
-        count
+        self.inner.free_count.load(Ordering::Relaxed)
     }
 }
 
@@ -261,7 +264,7 @@ impl<T> Pool<T> {
 /// is automatically returned to the pool (if the pool still exists).
 pub struct Pooled<T> {
     value: ManuallyDrop<T>,
-    idx: u32,
+    idx: usize,
     inner: Weak<Inner<T>>,
 }
 

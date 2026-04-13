@@ -108,7 +108,7 @@ impl<T> RcCell<T> {
     #[inline]
     fn inc_ref(&self) {
         let state = self.state.get();
-        assert!(
+        debug_assert!(
             (state & REFCOUNT_MASK) < REFCOUNT_MASK,
             "RcSlot refcount overflow"
         );

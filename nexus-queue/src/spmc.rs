@@ -44,7 +44,7 @@
 //! use nexus_queue::spmc;
 //! use std::thread;
 //!
-//! let (tx, rx) = spmc::bounded::<u64>(1024);
+//! let (tx, rx) = spmc::ring_buffer::<u64>(1024);
 //!
 //! let rx2 = rx.clone();
 //! let rx1 = rx;
@@ -98,17 +98,26 @@ use crossbeam_utils::CachePadded;
 
 use crate::Full;
 
+/// Creates a bounded SPMC ring buffer. Renamed to [`ring_buffer`].
+#[deprecated(since = "1.3.0", note = "renamed to ring_buffer()")]
+#[inline]
+pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+    ring_buffer(capacity)
+}
+
 /// Creates a bounded SPMC queue with the given capacity.
 ///
 /// Capacity is rounded up to the next power of two.
 ///
 /// # Panics
 ///
-/// Panics if `capacity` is zero.
-pub fn bounded<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+/// Panics if `capacity` is zero or too large to round to a power of two.
+pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     assert!(capacity > 0, "capacity must be non-zero");
 
-    let capacity = capacity.next_power_of_two();
+    let capacity = capacity
+        .checked_next_power_of_two()
+        .expect("capacity too large (must be <= usize::MAX / 2)");
     let mask = capacity - 1;
 
     // Allocate slots with turn counters initialized to 0 (ready for turn 0 producer)
@@ -414,7 +423,7 @@ mod tests {
 
     #[test]
     fn basic_push_pop() {
-        let (tx, rx) = bounded::<u64>(4);
+        let (tx, rx) = ring_buffer::<u64>(4);
 
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_ok());
@@ -428,14 +437,14 @@ mod tests {
 
     #[test]
     fn empty_pop_returns_none() {
-        let (_, rx) = bounded::<u64>(4);
+        let (_, rx) = ring_buffer::<u64>(4);
         assert_eq!(rx.pop(), None);
         assert_eq!(rx.pop(), None);
     }
 
     #[test]
     fn fill_then_drain() {
-        let (tx, rx) = bounded::<u64>(4);
+        let (tx, rx) = ring_buffer::<u64>(4);
 
         for i in 0..4 {
             assert!(tx.push(i).is_ok());
@@ -450,7 +459,7 @@ mod tests {
 
     #[test]
     fn push_returns_error_when_full() {
-        let (tx, _rx) = bounded::<u64>(4);
+        let (tx, _rx) = ring_buffer::<u64>(4);
 
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_ok());
@@ -467,7 +476,7 @@ mod tests {
 
     #[test]
     fn interleaved_single_consumer() {
-        let (tx, rx) = bounded::<u64>(8);
+        let (tx, rx) = ring_buffer::<u64>(8);
 
         for i in 0..1000 {
             assert!(tx.push(i).is_ok());
@@ -477,7 +486,7 @@ mod tests {
 
     #[test]
     fn partial_fill_drain_cycles() {
-        let (tx, rx) = bounded::<u64>(8);
+        let (tx, rx) = ring_buffer::<u64>(8);
 
         for round in 0..100 {
             for i in 0..4 {
@@ -498,7 +507,7 @@ mod tests {
     fn two_consumers_single_producer() {
         use std::thread;
 
-        let (tx, rx) = bounded::<u64>(64);
+        let (tx, rx) = ring_buffer::<u64>(64);
         let rx2 = rx.clone();
 
         let rx1 = rx;
@@ -555,7 +564,7 @@ mod tests {
     fn four_consumers_single_producer() {
         use std::thread;
 
-        let (tx, rx) = bounded::<u64>(256);
+        let (tx, rx) = ring_buffer::<u64>(256);
 
         let handles: Vec<_> = (0..4)
             .map(|_| {
@@ -603,7 +612,7 @@ mod tests {
 
     #[test]
     fn single_slot_bounded() {
-        let (tx, rx) = bounded::<u64>(1);
+        let (tx, rx) = ring_buffer::<u64>(1);
 
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_err());
@@ -618,7 +627,7 @@ mod tests {
 
     #[test]
     fn consumer_detects_producer_drop() {
-        let (tx, rx) = bounded::<u64>(4);
+        let (tx, rx) = ring_buffer::<u64>(4);
 
         assert!(!rx.is_disconnected());
         drop(tx);
@@ -627,7 +636,7 @@ mod tests {
 
     #[test]
     fn producer_detects_all_consumers_drop() {
-        let (tx, rx) = bounded::<u64>(4);
+        let (tx, rx) = ring_buffer::<u64>(4);
 
         assert!(!tx.is_disconnected());
         drop(rx);
@@ -636,7 +645,7 @@ mod tests {
 
     #[test]
     fn one_consumer_drops_others_alive() {
-        let (tx, rx) = bounded::<u64>(4);
+        let (tx, rx) = ring_buffer::<u64>(4);
         let rx2 = rx.clone();
 
         assert!(!tx.is_disconnected());
@@ -666,7 +675,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let (tx, rx) = bounded::<DropCounter>(4);
+        let (tx, rx) = ring_buffer::<DropCounter>(4);
 
         let _ = tx.push(DropCounter);
         let _ = tx.push(DropCounter);
@@ -686,7 +695,7 @@ mod tests {
 
     #[test]
     fn zero_sized_type() {
-        let (tx, rx) = bounded::<()>(8);
+        let (tx, rx) = ring_buffer::<()>(8);
 
         let _ = tx.push(());
         let _ = tx.push(());
@@ -698,7 +707,7 @@ mod tests {
 
     #[test]
     fn string_type() {
-        let (tx, rx) = bounded::<String>(4);
+        let (tx, rx) = ring_buffer::<String>(4);
 
         let _ = tx.push("hello".to_string());
         let _ = tx.push("world".to_string());
@@ -710,7 +719,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "capacity must be non-zero")]
     fn zero_capacity_panics() {
-        let _ = bounded::<u64>(0);
+        let _ = ring_buffer::<u64>(0);
     }
 
     #[test]
@@ -720,7 +729,7 @@ mod tests {
             data: [u8; 256],
         }
 
-        let (tx, rx) = bounded::<LargeMessage>(8);
+        let (tx, rx) = ring_buffer::<LargeMessage>(8);
 
         let msg = LargeMessage { data: [42u8; 256] };
         assert!(tx.push(msg).is_ok());
@@ -732,7 +741,7 @@ mod tests {
 
     #[test]
     fn multiple_laps() {
-        let (tx, rx) = bounded::<u64>(4);
+        let (tx, rx) = ring_buffer::<u64>(4);
 
         // 10 full laps through 4-slot buffer
         for i in 0..40 {
@@ -743,10 +752,10 @@ mod tests {
 
     #[test]
     fn capacity_rounds_to_power_of_two() {
-        let (tx, _) = bounded::<u64>(100);
+        let (tx, _) = ring_buffer::<u64>(100);
         assert_eq!(tx.capacity(), 128);
 
-        let (tx, _) = bounded::<u64>(1000);
+        let (tx, _) = ring_buffer::<u64>(1000);
         assert_eq!(tx.capacity(), 1024);
     }
 
@@ -760,7 +769,7 @@ mod tests {
 
         const COUNT: u64 = 100_000;
 
-        let (tx, rx) = bounded::<u64>(1024);
+        let (tx, rx) = ring_buffer::<u64>(1024);
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
@@ -796,7 +805,7 @@ mod tests {
         const CONSUMERS: usize = 4;
         const TOTAL: u64 = 100_000;
 
-        let (tx, rx) = bounded::<u64>(1024);
+        let (tx, rx) = ring_buffer::<u64>(1024);
 
         let handles: Vec<_> = (0..CONSUMERS)
             .map(|_| {

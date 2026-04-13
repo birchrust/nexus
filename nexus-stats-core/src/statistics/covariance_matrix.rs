@@ -231,9 +231,7 @@ impl OnlineCovarianceF64Builder {
     ///
     /// Returns `ConfigError` if dim or alpha are missing/invalid.
     pub fn build(self) -> Result<OnlineCovarianceF64, crate::ConfigError> {
-        let dim = self
-            .dim
-            .ok_or(crate::ConfigError::Missing("dim"))?;
+        let dim = self.dim.ok_or(crate::ConfigError::Missing("dim"))?;
         if dim == 0 {
             return Err(crate::ConfigError::Invalid("dim must be > 0"));
         }
@@ -292,10 +290,7 @@ mod tests {
             cov.update(&[x, x * 2.0 + 1.0]).unwrap();
         }
         let corr = cov.correlation(0, 1).unwrap();
-        assert!(
-            corr > 0.95,
-            "expected high correlation, got {corr}"
-        );
+        assert!(corr > 0.95, "expected high correlation, got {corr}");
     }
 
     #[test]
@@ -356,6 +351,12 @@ mod tests {
     fn invalid_config() {
         assert!(OnlineCovarianceF64::builder().alpha(0.1).build().is_err()); // missing dim
         assert!(OnlineCovarianceF64::builder().dim(2).build().is_err()); // missing alpha
-        assert!(OnlineCovarianceF64::builder().dim(0).alpha(0.1).build().is_err()); // dim = 0
+        assert!(
+            OnlineCovarianceF64::builder()
+                .dim(0)
+                .alpha(0.1)
+                .build()
+                .is_err()
+        ); // dim = 0
     }
 }

@@ -22,7 +22,7 @@
 //! // MPSC - multiple producers, one consumer
 //! use nexus_queue::mpsc;
 //!
-//! let (tx, rx) = mpsc::bounded::<u64>(1024);
+//! let (tx, rx) = mpsc::ring_buffer::<u64>(1024);
 //! let tx2 = tx.clone();  // Clone for second producer
 //!
 //! tx.push(1).unwrap();
@@ -36,7 +36,7 @@
 //! // SPMC - one producer, multiple consumers
 //! use nexus_queue::spmc;
 //!
-//! let (tx, rx) = spmc::bounded::<u64>(1024);
+//! let (tx, rx) = spmc::ring_buffer::<u64>(1024);
 //! let rx2 = rx.clone();  // Clone for second consumer
 //!
 //! tx.push(1).unwrap();

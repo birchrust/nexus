@@ -62,7 +62,9 @@ use crate::Full;
 pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     assert!(capacity > 0, "capacity must be non-zero");
 
-    let capacity = capacity.next_power_of_two();
+    let capacity = capacity
+        .checked_next_power_of_two()
+        .expect("capacity too large (must be <= usize::MAX / 2)");
     let mask = capacity - 1;
 
     let mut slots = ManuallyDrop::new(Vec::<T>::with_capacity(capacity));

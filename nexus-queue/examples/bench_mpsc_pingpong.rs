@@ -26,8 +26,8 @@ fn rdtscp() -> u64 {
 }
 
 fn bench_nexus_mpsc() -> Histogram<u64> {
-    let (mut tx_fwd, mut rx_fwd) = mpsc::bounded::<u64>(1024);
-    let (mut tx_back, mut rx_back) = mpsc::bounded::<()>(1024);
+    let (mut tx_fwd, mut rx_fwd) = mpsc::ring_buffer::<u64>(1024);
+    let (mut tx_back, mut rx_back) = mpsc::ring_buffer::<()>(1024);
 
     let consumer = thread::spawn(move || {
         for _ in 0..(WARMUP + SAMPLES) {

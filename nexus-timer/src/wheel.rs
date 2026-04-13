@@ -601,7 +601,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
     #[inline]
     fn ticks_to_instant(&self, ticks: u64) -> Instant {
-        self.epoch + Duration::from_nanos(ticks * self.tick_ns)
+        self.epoch + Duration::from_nanos(ticks.saturating_mul(self.tick_ns))
     }
 
     // =========================================================================

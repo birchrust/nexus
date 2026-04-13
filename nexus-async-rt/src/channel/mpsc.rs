@@ -391,7 +391,7 @@ pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let cross_ctx = crate::cross_wake::cross_wake_context()
         .expect("mpsc::channel() requires runtime context for cross-thread wake");
 
-    let (producer, consumer) = nexus_queue::mpsc::bounded(capacity);
+    let (producer, consumer) = nexus_queue::mpsc::ring_buffer(capacity);
 
     let rx_slot = RxWakerSlot::new(Arc::as_ptr(&cross_ctx));
 
@@ -657,7 +657,7 @@ mod tests {
             parked: AtomicBool::new(false),
         });
 
-        let (producer, consumer) = nexus_queue::mpsc::bounded(capacity);
+        let (producer, consumer) = nexus_queue::mpsc::ring_buffer(capacity);
         let rx_slot = RxWakerSlot::new(Arc::as_ptr(&cross_ctx));
 
         let inner = Arc::new(Inner {
