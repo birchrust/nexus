@@ -9,5 +9,5 @@ mod connection;
 mod pool;
 
 pub use crate::maybe_tls::MaybeTls;
-pub use connection::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+pub use connection::{HttpConnection, HttpConnectionBuilder};
 pub use pool::{ClientPool, ClientPoolBuilder, ClientSlot};

@@ -9,7 +9,7 @@ use nexus_net::rest::{RequestWriter, RestError};
 use nexus_net::tls::TlsConfig;
 use nexus_pool::local::{Pool, Pooled};
 
-use super::connection::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+use super::connection::{HttpConnection, HttpConnectionBuilder};
 use crate::maybe_tls::MaybeTls;
 
 // =============================================================================
@@ -36,7 +36,7 @@ pub struct ClientSlot {
     /// Response parser. Fed by the connection during send.
     pub reader: ResponseReader,
     /// Transport. `None` if connection died and needs reconnect.
-    pub conn: Option<AsyncHttpConnection<MaybeTls>>,
+    pub conn: Option<HttpConnection<MaybeTls>>,
 }
 
 impl ClientSlot {
@@ -44,14 +44,14 @@ impl ClientSlot {
     pub fn needs_reconnect(&self) -> bool {
         self.conn
             .as_ref()
-            .is_none_or(AsyncHttpConnection::is_poisoned)
+            .is_none_or(HttpConnection::is_poisoned)
     }
 
     /// Split borrow: get mutable references to conn + reader
     /// while writer is borrowed by a `Request<'_>`.
     pub fn conn_and_reader(
         &mut self,
-    ) -> Result<(&mut AsyncHttpConnection<MaybeTls>, &mut ResponseReader), RestError> {
+    ) -> Result<(&mut HttpConnection<MaybeTls>, &mut ResponseReader), RestError> {
         let conn = self.conn.as_mut().ok_or(RestError::ConnectionPoisoned)?;
         Ok((conn, &mut self.reader))
     }
@@ -65,7 +65,7 @@ impl ClientSlot {
 ///
 /// Pre-allocated slots with LIFO acquire for cache locality. Each slot
 /// owns a [`RequestWriter`], [`ResponseReader`], and
-/// [`AsyncHttpConnection`].
+/// [`HttpConnection`].
 ///
 /// # Usage
 ///
@@ -186,8 +186,8 @@ impl ClientPool {
 
     async fn connect_one_with(
         config: &ReconnectConfig,
-    ) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
-        let mut builder = AsyncHttpConnectionBuilder::new();
+    ) -> Result<HttpConnection<MaybeTls>, RestError> {
+        let mut builder = HttpConnectionBuilder::new();
         #[cfg(feature = "tls")]
         if let Some(ref tls) = config.tls_config {
             builder = builder.tls(tls);
@@ -380,7 +380,7 @@ impl ClientPoolBuilder {
         // Connect all slots sequentially (cold path -- startup only).
         let mut initial_slots = Vec::with_capacity(self.connections);
         for _ in 0..self.connections {
-            let mut builder = AsyncHttpConnectionBuilder::new();
+            let mut builder = HttpConnectionBuilder::new();
             #[cfg(feature = "tls")]
             if let Some(ref tls) = self.tls_config {
                 builder = builder.tls(tls);

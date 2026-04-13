@@ -11,7 +11,7 @@ use nexus_net::rest::{RequestWriter, RestError};
 use nexus_net::tls::TlsConfig;
 use nexus_pool::sync::{Pool, Pooled};
 
-use super::connection::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+use super::connection::{HttpConnection, HttpConnectionBuilder};
 use crate::maybe_tls::MaybeTls;
 
 // =============================================================================
@@ -144,8 +144,8 @@ impl AtomicClientPool {
 
     async fn connect_one_with(
         config: &ReconnectConfig,
-    ) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
-        let mut builder = AsyncHttpConnectionBuilder::new();
+    ) -> Result<HttpConnection<MaybeTls>, RestError> {
+        let mut builder = HttpConnectionBuilder::new();
         #[cfg(feature = "tls")]
         if let Some(ref tls) = config.tls_config {
             builder = builder.tls(tls);
@@ -379,7 +379,7 @@ impl AtomicClientPoolBuilder {
                 let mut slot = pool
                     .try_acquire()
                     .expect("pool should have slots during initial setup");
-                let mut builder = AsyncHttpConnectionBuilder::new();
+                let mut builder = HttpConnectionBuilder::new();
                 #[cfg(feature = "tls")]
                 if let Some(ref tls) = self.tls_config {
                     builder = builder.tls(tls);
@@ -487,7 +487,7 @@ mod tests {
 
         let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
         let stream = MaybeTls::Plain(tcp);
-        let conn = AsyncHttpConnection::new(stream);
+        let conn = HttpConnection::new(stream);
 
         let pool = make_pool(1);
         {
@@ -576,7 +576,7 @@ mod tests {
                 let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
                 tcp.set_nodelay(true).unwrap();
                 let stream = MaybeTls::Plain(tcp);
-                slot.conn = Some(AsyncHttpConnection::new(stream));
+                slot.conn = Some(HttpConnection::new(stream));
                 slot.writer = RequestWriter::new(&addr.to_string()).unwrap();
 
                 let s: &mut AtomicClientSlot = &mut slot;

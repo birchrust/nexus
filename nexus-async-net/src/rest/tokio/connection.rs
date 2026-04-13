@@ -13,8 +13,8 @@ use crate::maybe_tls::MaybeTls;
 // Builder
 // =============================================================================
 
-/// Builder for [`AsyncHttpConnection`].
-pub struct AsyncHttpConnectionBuilder {
+/// Builder for [`HttpConnection`].
+pub struct HttpConnectionBuilder {
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     nodelay: bool,
@@ -27,7 +27,7 @@ pub struct AsyncHttpConnectionBuilder {
     send_buf_size: Option<usize>,
 }
 
-impl AsyncHttpConnectionBuilder {
+impl HttpConnectionBuilder {
     /// Create a new builder with defaults.
     #[must_use]
     pub fn new() -> Self {
@@ -95,7 +95,7 @@ impl AsyncHttpConnectionBuilder {
     }
 
     /// Connect to an HTTP(S) endpoint. TLS auto-detected from scheme.
-    pub async fn connect(self, url: &str) -> Result<AsyncHttpConnection<MaybeTls>, RestError> {
+    pub async fn connect(self, url: &str) -> Result<HttpConnection<MaybeTls>, RestError> {
         let parsed = nexus_net::rest::parse_base_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
 
@@ -145,7 +145,7 @@ impl AsyncHttpConnectionBuilder {
             MaybeTls::Plain(tcp)
         };
 
-        Ok(AsyncHttpConnection {
+        Ok(HttpConnection {
             stream,
             poisoned: false,
         })
@@ -155,8 +155,8 @@ impl AsyncHttpConnectionBuilder {
     pub fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(
         self,
         stream: S,
-    ) -> AsyncHttpConnection<S> {
-        AsyncHttpConnection {
+    ) -> HttpConnection<S> {
+        HttpConnection {
             stream,
             poisoned: false,
         }
@@ -164,7 +164,7 @@ impl AsyncHttpConnectionBuilder {
 }
 
 #[cfg(feature = "socket-opts")]
-impl AsyncHttpConnectionBuilder {
+impl HttpConnectionBuilder {
     fn apply_socket_opts(&self, tcp: &TcpStream) -> Result<(), RestError> {
         let sock = socket2::SockRef::from(tcp);
         if let Some(idle) = self.tcp_keepalive {
@@ -181,14 +181,14 @@ impl AsyncHttpConnectionBuilder {
     }
 }
 
-impl Default for AsyncHttpConnectionBuilder {
+impl Default for HttpConnectionBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
 // =============================================================================
-// AsyncHttpConnection — pure async transport
+// HttpConnection — pure async transport
 // =============================================================================
 
 /// Async HTTP/1.1 keep-alive connection — pure transport.
@@ -202,13 +202,13 @@ impl Default for AsyncHttpConnectionBuilder {
 /// ```ignore
 /// use nexus_net::rest::RequestWriter;
 /// use nexus_net::http::ResponseReader;
-/// use nexus_async_net::rest::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+/// use nexus_async_net::rest::{HttpConnection, HttpConnectionBuilder};
 /// use nexus_net::tls::TlsConfig;
 ///
 /// let mut writer = RequestWriter::new("api.binance.com").unwrap();
 /// let mut reader = ResponseReader::new(32 * 1024);
 /// let tls = TlsConfig::new()?;
-/// let mut conn = AsyncHttpConnectionBuilder::new()
+/// let mut conn = HttpConnectionBuilder::new()
 ///     .tls(&tls)
 ///     .connect("https://api.binance.com")
 ///     .await?;
@@ -216,14 +216,14 @@ impl Default for AsyncHttpConnectionBuilder {
 /// let req = writer.get("/orders").query("symbol", "BTC").finish()?;
 /// let resp = conn.send(req, &mut reader).await?;
 /// ```
-pub struct AsyncHttpConnection<S> {
+pub struct HttpConnection<S> {
     stream: S,
     poisoned: bool,
 }
 
-// MaybeTls connections are created exclusively through `AsyncHttpConnectionBuilder`.
+// MaybeTls connections are created exclusively through `HttpConnectionBuilder`.
 
-impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
+impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
     /// Wrap a pre-connected async stream.
     pub fn new(stream: S) -> Self {
         Self {
@@ -234,8 +234,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncHttpConnection<S> {
 
     /// Create a builder.
     #[must_use]
-    pub fn builder() -> AsyncHttpConnectionBuilder {
-        AsyncHttpConnectionBuilder::new()
+    pub fn builder() -> HttpConnectionBuilder {
+        HttpConnectionBuilder::new()
     }
 
     /// Send a request and read the response.
@@ -562,7 +562,7 @@ mod tests {
         let mock = MockAsyncStream::new(&ok_response(r#"{"ok":true}"#));
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = AsyncHttpConnection::new(mock);
+        let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/status").finish().unwrap();
         let resp = conn.send(req, &mut reader).await.unwrap();
@@ -581,7 +581,7 @@ mod tests {
         let mock = MockAsyncStream::new(&ok_response(r#"{"filled":true}"#));
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = AsyncHttpConnection::new(mock);
+        let mut conn = HttpConnection::new(mock);
 
         let body = br#"{"symbol":"BTC","side":"buy"}"#;
         let req = writer.post("/order").body(body).finish().unwrap();
@@ -601,7 +601,7 @@ mod tests {
         let mock = MockAsyncStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = AsyncHttpConnection::new(mock);
+        let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).await.unwrap();
@@ -617,7 +617,7 @@ mod tests {
         let mock = MockAsyncStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = AsyncHttpConnection::new(mock);
+        let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let result = conn.send(req, &mut reader).await;
@@ -637,7 +637,7 @@ mod tests {
         let mock = MockAsyncStream::new(resp_bytes);
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
-        let mut conn = AsyncHttpConnection::new(mock);
+        let mut conn = HttpConnection::new(mock);
 
         let req = writer.get("/test").finish().unwrap();
         let resp = conn.send(req, &mut reader).await.unwrap();
