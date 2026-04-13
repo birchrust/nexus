@@ -57,6 +57,8 @@ pub enum DataError {
     NotANumber,
     /// Input contained positive or negative infinity.
     Infinite,
+    /// Input contained a negative value where non-negative was required.
+    Negative,
 }
 
 impl core::fmt::Display for DataError {
@@ -64,6 +66,7 @@ impl core::fmt::Display for DataError {
         match self {
             Self::NotANumber => write!(f, "input contained NaN"),
             Self::Infinite => write!(f, "input contained infinity"),
+            Self::Negative => write!(f, "input contained a negative value"),
         }
     }
 }

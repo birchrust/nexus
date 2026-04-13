@@ -1,0 +1,312 @@
+use alloc::collections::VecDeque;
+
+use crate::statistics::EwmaVarF64;
+
+/// Variance Ratio VR(q) test for mean-reversion detection.
+///
+/// Compares the variance of q-period returns to q times the variance of
+/// 1-period returns. Under a random walk, VR(q) = 1. Values below 1
+/// suggest mean reversion; above 1 suggests trending.
+///
+/// Uses exponentially weighted variance for both the 1-period and q-period
+/// return variances so the statistic adapts to changing regimes.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::statistics::VarianceRatioF64;
+///
+/// let mut vr = VarianceRatioF64::builder()
+///     .q(5)
+///     .alpha(0.05)
+///     .build()
+///     .unwrap();
+///
+/// // Feed mean-reverting data (alternating)
+/// for i in 0..500 {
+///     let val = 100.0 + if i % 2 == 0 { 5.0 } else { -5.0 };
+///     vr.update(val).unwrap();
+/// }
+///
+/// if let Some(ratio) = vr.variance_ratio() {
+///     assert!(ratio < 1.0, "mean-reverting data should have VR < 1");
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct VarianceRatioF64 {
+    q: usize,
+    short_var: EwmaVarF64,
+    long_var: EwmaVarF64,
+    buffer: VecDeque<f64>,
+    prev: f64,
+    count: u64,
+}
+
+/// Builder for [`VarianceRatioF64`].
+#[derive(Debug, Clone)]
+pub struct VarianceRatioF64Builder {
+    q: Option<usize>,
+    alpha: Option<f64>,
+}
+
+impl VarianceRatioF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> VarianceRatioF64Builder {
+        VarianceRatioF64Builder {
+            q: None,
+            alpha: None,
+        }
+    }
+
+    /// Feed a price level or cumulative return.
+    ///
+    /// Internally computes 1-period and q-period returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError` if the value is NaN or infinite.
+    #[inline]
+    pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
+        check_finite!(value);
+
+        self.buffer.push_back(value);
+        self.count += 1;
+
+        if self.count >= 2 {
+            // 1-period return
+            let ret1 = value - self.prev;
+            let _ = self.short_var.update(ret1)?;
+        }
+
+        if self.buffer.len() > self.q + 1 {
+            self.buffer.pop_front();
+        }
+
+        // q-period return (need q+1 values in buffer)
+        if self.buffer.len() == self.q + 1 {
+            let ret_q = value - self.buffer[0];
+            let _ = self.long_var.update(ret_q)?;
+        }
+
+        self.prev = value;
+        Ok(())
+    }
+
+    /// VR(q) = Var(q-period return) / (q * Var(1-period return)).
+    ///
+    /// Returns `None` if not primed or if 1-period variance is zero.
+    #[inline]
+    #[must_use]
+    pub fn variance_ratio(&self) -> Option<f64> {
+        let var1 = self.short_var.variance()?;
+        let var_q = self.long_var.variance()?;
+
+        if var1 <= 0.0 {
+            return None;
+        }
+
+        Some(var_q / (self.q as f64 * var1))
+    }
+
+    /// Whether VR(q) < 1.0 (mean-reverting).
+    #[inline]
+    #[must_use]
+    pub fn is_mean_reverting(&self) -> bool {
+        self.variance_ratio().is_some_and(|vr| vr < 1.0)
+    }
+
+    /// Whether VR(q) > 1.0 (trending).
+    #[inline]
+    #[must_use]
+    pub fn is_trending(&self) -> bool {
+        self.variance_ratio().is_some_and(|vr| vr > 1.0)
+    }
+
+    /// The q parameter.
+    #[inline]
+    #[must_use]
+    pub fn q(&self) -> usize {
+        self.q
+    }
+
+    /// Total observations fed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether enough observations for VR computation.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.short_var.is_primed() && self.long_var.is_primed()
+    }
+
+    /// Reset all state.
+    pub fn reset(&mut self) {
+        self.short_var.reset();
+        self.long_var.reset();
+        self.buffer.clear();
+        self.prev = 0.0;
+        self.count = 0;
+    }
+}
+
+impl VarianceRatioF64Builder {
+    /// The ratio period. VR(q) compares q-period to 1-period variance.
+    /// Required. Must be >= 2.
+    #[inline]
+    #[must_use]
+    pub fn q(mut self, q: usize) -> Self {
+        self.q = Some(q);
+        self
+    }
+
+    /// EW smoothing factor for both variance trackers.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Build the variance ratio tracker.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if q or alpha is missing/invalid.
+    pub fn build(self) -> Result<VarianceRatioF64, crate::ConfigError> {
+        let q = self.q.ok_or(crate::ConfigError::Missing("q"))?;
+        if q < 2 {
+            return Err(crate::ConfigError::Invalid("q must be >= 2"));
+        }
+
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+
+        let short_var = EwmaVarF64::builder().alpha(alpha).build()?;
+        let long_var = EwmaVarF64::builder().alpha(alpha).build()?;
+
+        let mut buffer = VecDeque::new();
+        buffer.reserve_exact(q + 1);
+
+        Ok(VarianceRatioF64 {
+            q,
+            short_var,
+            long_var,
+            buffer,
+            prev: 0.0,
+            count: 0,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trending_series_vr_above_1() {
+        let mut vr = VarianceRatioF64::builder()
+            .q(5)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+
+        // Monotonic trend — q-period returns should have higher variance
+        // relative to q * 1-period variance.
+        let mut price = 100.0;
+        for i in 0..500 {
+            // Trending with noise
+            price += 1.0 + (i as f64 * 0.001);
+            vr.update(price).unwrap();
+        }
+
+        assert!(vr.is_primed());
+        let ratio = vr.variance_ratio().unwrap();
+        assert!(
+            ratio > 0.8, // trending should push VR > 1, but EW makes it noisy
+            "VR should be > 0.8 for trending, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn mean_reverting_series_vr_below_1() {
+        let mut vr = VarianceRatioF64::builder()
+            .q(5)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+
+        // Mean-reverting: alternates around a center
+        for i in 0..500 {
+            let val = 100.0 + if i % 2 == 0 { 5.0 } else { -5.0 };
+            vr.update(val).unwrap();
+        }
+
+        assert!(vr.is_primed());
+        let ratio = vr.variance_ratio().unwrap();
+        assert!(
+            ratio < 1.0,
+            "VR should be < 1.0 for mean-reverting, got {ratio}"
+        );
+        assert!(vr.is_mean_reverting());
+    }
+
+    #[test]
+    fn not_primed_early() {
+        let mut vr = VarianceRatioF64::builder()
+            .q(5)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+
+        vr.update(100.0).unwrap();
+        assert!(!vr.is_primed());
+        assert!(vr.variance_ratio().is_none());
+    }
+
+    #[test]
+    fn q_must_be_at_least_2() {
+        let result = VarianceRatioF64::builder().q(1).alpha(0.05).build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut vr = VarianceRatioF64::builder()
+            .q(5)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+
+        for i in 0..100 {
+            vr.update(i as f64).unwrap();
+        }
+        vr.reset();
+        assert_eq!(vr.count(), 0);
+        assert!(!vr.is_primed());
+    }
+
+    #[test]
+    fn nan_rejected() {
+        let mut vr = VarianceRatioF64::builder()
+            .q(5)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+        assert!(vr.update(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn inf_rejected() {
+        let mut vr = VarianceRatioF64::builder()
+            .q(5)
+            .alpha(0.05)
+            .build()
+            .unwrap();
+        assert!(vr.update(f64::INFINITY).is_err());
+    }
+}
