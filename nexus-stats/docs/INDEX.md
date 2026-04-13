@@ -109,6 +109,7 @@ Domain-specific recipes showing how to compose primitives for real problems.
 - [Network Quality](use-cases/network-quality.md) — RTT, jitter, packet loss, bandwidth
 - [Industrial Monitoring](use-cases/industrial-monitoring.md) — Sensor validation, process control
 - [SRE Observability](use-cases/sre-observability.md) — SLOs, error budgets, resource tracking
+- [Trading Systems](use-cases/trading.md) — Market impact, signal analysis, regime detection, execution quality
 
 ## Guides
 

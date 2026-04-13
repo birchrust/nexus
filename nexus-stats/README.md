@@ -248,6 +248,25 @@ nexus-stats is split into five workspace crates for independent compilation and 
 
 The top-level `nexus-stats` crate re-exports everything. Use the sub-crates directly if you only need a subset.
 
+## Trading & Signal Analysis (v4.2)
+
+New primitives for market making, signal quality measurement, and regime detection.
+See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with examples.
+
+| Use Case | Type | Crate |
+|----------|------|-------|
+| Market impact | `KyleLambdaF64` | regression |
+| Illiquidity | `AmihudF64` | core |
+| Bar construction | `BucketAccumulator` | core |
+| Signal decay curve | `SignalDecayCurve` | regression |
+| Lagged prediction / markout | `LaggedPredictor` | regression |
+| Mean-reversion speed | `HalfLifeF64` | core |
+| Trending vs mean-reverting | `HurstF64` | core |
+| Random walk test | `VarianceRatioF64` | core |
+| Distribution change | `DistributionShiftF64` | core |
+| Win rate | `HitRateF64` | core |
+| Conditional smoothing | `ConditionalEmaF64` | smoothing |
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
