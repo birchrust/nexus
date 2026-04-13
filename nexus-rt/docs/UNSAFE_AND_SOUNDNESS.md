@@ -196,8 +196,10 @@ ECS systems like Bevy) and fully covered by miri.
 MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test -p nexus-rt --test miri_tests
 ```
 
-`-Zmiri-ignore-leaks` is required because World uses `Box::leak`-style
-patterns for stable resource addresses in some configurations.
+`-Zmiri-ignore-leaks` is included for consistency with the workspace
+miri convention. World uses `Box::into_raw` / `Box::from_raw` (not
+`Box::leak`) — resources are properly freed in `World::drop`. The flag
+is harmless but not strictly required for nexus-rt alone.
 
 ### Test inventory
 

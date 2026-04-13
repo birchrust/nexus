@@ -222,6 +222,11 @@ fn stress_fuzz_all_subsystems() {
     // + 2 channel send values = ~11 DropTrackers per cycle.
     // Exact count varies with shuffle order, but all must be dropped.
     let total = drop_count.get();
-    assert!(total > 0, "no drops recorded — test is broken");
-    // No leak under miri — miri would catch unreleased allocations.
+    // 10 cycles × ~9 DropTrackers per cycle = ~90 expected.
+    // Exact count depends on channel backpressure and shuffle order,
+    // but must be at least 10 (one per cycle minimum).
+    assert!(
+        total >= 10,
+        "too few drops: {total} — expected at least 10 (1 per cycle)"
+    );
 }

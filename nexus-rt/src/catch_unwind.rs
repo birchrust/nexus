@@ -75,7 +75,7 @@ impl<E, H: Handler<E>> Handler<E> for CatchAssertUnwindSafe<H> {
             handler.run(world, event);
         }));
         if result.is_err() {
-            self.panic_count += 1;
+            self.panic_count = self.panic_count.saturating_add(1);
         }
     }
 
