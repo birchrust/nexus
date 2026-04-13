@@ -179,6 +179,8 @@ let (mut writer, mut reader) = nexus_slot::spsc::slot::<OrderBook>();
 
 ## Implementation
 
+The sequence counter starts at 2 (not 0) to provide 32-bit wrap protection. Starting at 0 would mean a full 32-bit wrap lands back on 0, which is indistinguishable from "no writes have occurred." Starting at 2 shifts the wrap point away from the initial state.
+
 Uses a sequence lock (seqlock) internally:
 
 1. Writer increments sequence to odd (write in progress)

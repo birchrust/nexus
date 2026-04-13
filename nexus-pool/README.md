@@ -155,6 +155,12 @@ loop {
 }
 ```
 
+## Implementation Notes
+
+**Reset closure panics**: If the reset closure passed to the pool constructor panics during `put()` or guard drop, the object is lost (not returned to the pool). The panic propagates normally. Design reset closures to be infallible.
+
+**sync::Pool internals**: `sync::Pool` uses `AtomicUsize` for the free-list head pointer, enabling lock-free return from any thread. Acquire is single-threaded only (`&mut self`).
+
 ## Minimum Supported Rust Version
 
 Rust 1.85 or later.

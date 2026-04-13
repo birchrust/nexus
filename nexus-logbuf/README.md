@@ -15,6 +15,12 @@ and I/O strategy on top.
 - Event sourcing / journaling
 - FIX message archival
 
+## Important
+
+**WriteClaim and mem::forget**: Calling `mem::forget` on a `WriteClaim` will deadlock the ring buffer. The claim holds a reserved region that is only committed or aborted on drop. If the claim is leaked, the consumer will spin forever waiting for the commit marker. This is inherent to the RAII claim design -- do not use `mem::forget` on claims.
+
+**Consumer zeroing**: The consumer zeros each record region after reading. This is required for correctness with variable-length messages. The Aeron-style protocol uses zeroing instead of triple buffering -- the zero bytes serve as the "uncommitted" marker for the next lap. Without zeroing, stale commit markers from a previous lap would cause the consumer to read garbage data.
+
 ## Design
 
 - **Flat byte buffer** with free-running offsets, power-of-2 capacity

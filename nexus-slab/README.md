@@ -199,6 +199,10 @@ overflow headroom without crashing.
 
 ## Architecture
 
+### Pointer Provenance
+
+Freelist pointers are derived from `UnsafeCell` for correct write provenance under stacked borrows. This ensures that miri accepts the freelist manipulation as valid -- pointers written into vacant slots carry the correct provenance tag from the `UnsafeCell` wrapping the union, not from a stale read-only reference.
+
 ### SlotCell (SLUB-style union)
 
 ```rust

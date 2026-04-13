@@ -174,6 +174,10 @@ cargo build --release --example perf_timer -p nexus-timer
 taskset -c 0 ./target/release/examples/perf_timer
 ```
 
+### Overflow Handling
+
+`ticks_to_instant` uses saturating arithmetic when converting tick counts back to `Instant` values. If the tick count would overflow the `Duration` representation, it saturates to `Duration::MAX` rather than panicking. This prevents crashes when timers are scheduled far into the future or when the wheel has been running for extended periods.
+
 ### Thread Safety
 
 `Send` (if `T: Send`), `!Sync`. Timer wheels can be moved to another

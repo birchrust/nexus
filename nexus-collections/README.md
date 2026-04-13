@@ -27,6 +27,12 @@ heap, giving you:
 - **Bounded or unbounded** — fixed capacity with `try_` methods, or
   growable with infallible methods
 
+## Important
+
+All collections require `clear(&slab)` before drop. In debug builds, dropping a non-empty collection panics (leak detection). This is intentional -- the slab owns the memory, and the collection must return its nodes before going out of scope.
+
+Comparator functions passed to RbTree and BTree must not panic. A panic during comparison leaves the tree in an inconsistent state. Use total orderings only.
+
 ## Quick Start
 
 ```rust

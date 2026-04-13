@@ -49,6 +49,10 @@ type Usd = Decimal<i64, 2>;           // 2dp cents
 - **Display** — configurable precision, scientific notation
 - **Serialization** — optional `serde` support
 
+## Wide Division (i128)
+
+For i128 backing types, multiplication of two `Decimal<i128, D>` values requires 256-bit intermediate results. nexus-decimal uses Knuth Algorithm D (TAOCP Vol 2, Section 4.3.1) for correct 256/128-bit wide division, avoiding the need for compiler-provided `__divti3` or external bignum libraries. This enables high-precision financial math (up to 38 decimal places) with correct rounding.
+
 ## Feature Flags
 
 | Flag | Default | Description |

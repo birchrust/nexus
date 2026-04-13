@@ -206,6 +206,12 @@ token.cancel(); // cancels all children
 - **nexus-timer** — Hierarchical timer wheel
 - **nexus-queue** / **nexus-logbuf** — Lock-free internal queues
 
+## Design Notes
+
+`Runtime::block_on` is the only entry point for driving the executor. The `drain()` method was removed -- all task completion is handled within `block_on`'s poll loop.
+
+Cross-thread wakes use a deferred-free strategy: tasks woken from another thread are queued via an intrusive Vyukov MPSC queue and processed on the next executor poll. Task memory is freed on the executor thread, not the waking thread, to avoid cross-thread deallocation.
+
 ## Platform support
 
 Unix only (`#![cfg(unix)]`). Linux is the primary target, macOS supported.

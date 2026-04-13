@@ -2,7 +2,7 @@
 
 High-performance ID generators for low-latency systems.
 
-All generators avoid syscalls on the hot path, produce stack-allocated output, and operate entirely in registers where possible. Hex encode/decode uses SIMD acceleration (SSE2/SSSE3) on x86_64.
+All generators avoid syscalls on the hot path, produce stack-allocated output, and operate entirely in registers where possible. Hex encode and decode use SIMD acceleration (SSE2 for decode, SSSE3 for encode) on x86_64. UuidV7 and ULID generators use `saturating_duration_since` for clock safety -- monotonic clock jumps (e.g., NTP adjustments) clamp to zero rather than panicking.
 
 ## Generators
 

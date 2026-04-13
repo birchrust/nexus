@@ -1,18 +1,19 @@
 # nexus-queue
 
-A high-performance SPSC (Single-Producer Single-Consumer) ring buffer for Rust, optimized for ultra-low-latency messaging.
+High-performance SPSC, MPSC, and SPMC ring buffers for Rust, optimized for ultra-low-latency messaging.
 
 ## Performance
 
-Benchmarked on AMD Ryzen (single-socket), 2.69 GHz base clock, pinned to physical cores:
+Benchmarked on Intel Core Ultra 7 165U, 2.69 GHz, pinned to physical P-cores (0,2):
 
-| Metric | nexus-queue | rtrb | crossbeam (MPMC) |
-|--------|-------------|------|------------------|
-| **p50 latency** | 68 cycles (25 ns) | 67 cycles (25 ns) | 83 cycles (31 ns) |
-| **p99 latency** | 130 cycles | 123 cycles | 160 cycles |
-| **Throughput** | 640 M msgs/sec | 485 M msgs/sec | 92 M msgs/sec |
+| Variant | p50 latency | p99 latency | Throughput |
+|---------|-------------|-------------|------------|
+| **SPSC** | 200 cycles (74 ns) | 210 cycles | 113 M msgs/sec |
+| **MPSC** | 180 cycles (67 ns) | 304 cycles | — |
+| **SPMC** | 169 cycles (63 ns) | 325 cycles | 47 M msgs/sec (1 consumer) |
+| crossbeam (MPMC) | 520 cycles | 580 cycles | — |
 
-See [BENCHMARKS.md](./BENCHMARKS.md) for detailed methodology and results.
+All variants use a unified `ring_buffer()` constructor. See [BENCHMARKS.md](./BENCHMARKS.md) for detailed methodology and results.
 
 ## Usage
 
@@ -111,13 +112,12 @@ On x86 these compile to no instructions (strong memory model), but they're requi
 ## When to Use This
 
 **Use nexus-queue when:**
-- You have exactly one producer and one consumer
+- You know your producer/consumer topology at compile time
 - You need the lowest possible latency
 - You're building trading systems, audio pipelines, or real-time applications
 
 **Consider alternatives when:**
-- Multiple producers → use MPSC queues
-- Multiple consumers → use MPMC queues
+- Multiple producers AND multiple consumers → use MPMC queues (crossbeam)
 - You need async/await → use `tokio::sync::mpsc`
 
 ## License

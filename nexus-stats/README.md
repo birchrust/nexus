@@ -236,6 +236,18 @@ One of `std` or `libm` must be enabled. Update hot paths never use
 transcendentals — `sqrt` and `exp` are only used in queries (`std_dev()`)
 and construction (`halflife()`).
 
+## Sub-Crates
+
+nexus-stats is split into five workspace crates for independent compilation and feature gating:
+
+- **nexus-stats-core** — shared traits, error types, and builder infrastructure
+- **nexus-stats-smoothing** — EMA, KAMA, Kalman, Holt, Spring, Slew, WindowedMedian
+- **nexus-stats-detection** — CUSUM, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold
+- **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression
+- **nexus-stats-control** — DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow
+
+The top-level `nexus-stats` crate re-exports everything. Use the sub-crates directly if you only need a subset.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
