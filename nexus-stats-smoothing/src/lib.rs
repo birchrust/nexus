@@ -41,6 +41,7 @@ macro_rules! check_finite {
     };
 }
 
+mod conditional_ema;
 mod holt;
 mod kalman1d;
 mod spring;
@@ -54,6 +55,7 @@ mod kama;
 #[cfg(feature = "alloc")]
 mod windowed_median;
 
+pub use conditional_ema::*;
 pub use holt::*;
 pub use huber_ema::*;
 pub use kalman1d::*;
