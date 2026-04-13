@@ -174,7 +174,9 @@ mod tests {
         }
 
         assert!(kyle.is_primed());
-        // R² should be low-ish (not necessarily near 0 due to EW weighting)
+        // Lambda and R² should be available once primed.
+        assert!(kyle.lambda().is_some());
+        assert!(kyle.r_squared().is_some());
     }
 
     #[test]

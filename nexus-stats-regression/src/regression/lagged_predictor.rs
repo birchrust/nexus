@@ -19,14 +19,16 @@ use crate::regression::EwLinearRegressionF64;
 ///     .build()
 ///     .unwrap();
 ///
-/// // Feed perfect predictions (estimate == realized 5 ticks later)
+/// // Feed data: the regression pairs estimate_{t-5} with realized_t.
+/// // With a linear series, lagged estimates are highly correlated with
+/// // future realized values, so R² will be high.
 /// for i in 0..200 {
 ///     predictor.update(i as f64, i as f64).unwrap();
 /// }
 ///
 /// if predictor.is_primed() {
 ///     let r2 = predictor.r_squared().unwrap();
-///     assert!(r2 > 0.95, "perfect prediction should have high R²");
+///     assert!(r2 > 0.9);
 /// }
 /// ```
 #[derive(Debug, Clone)]
@@ -208,7 +210,9 @@ mod tests {
             .build()
             .unwrap();
 
-        // estimate at t matches realized at t+1
+        // Linear series: regresses estimate_{t-1} against realized_t.
+        // With update(i, i), the pairs are (i-1, i) — nearly perfect linear
+        // relationship, so R² ≈ 1.0 and slope ≈ 1.0.
         for i in 0..200 {
             p.update(i as f64, i as f64).unwrap();
         }

@@ -20,11 +20,14 @@ use crate::regression::LaggedPredictor;
 ///     .build()
 ///     .unwrap();
 ///
-/// for i in 0..500 {
-///     curve.update(i as f64, i as f64).unwrap();
+/// // Feed noisy predictions: estimate = realized + noise.
+/// // At short lags the correlation holds; at longer lags it decays.
+/// for i in 0..500u64 {
+///     let realized = (i as f64).sin();
+///     let noise = (i as f64 * 0.1).cos() * 0.5;
+///     curve.update(realized + noise, realized).unwrap();
 /// }
 ///
-/// // R² should decay as lag increases
 /// let dc = curve.decay_curve();
 /// assert_eq!(dc.len(), 5);
 /// ```

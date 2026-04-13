@@ -230,9 +230,10 @@ impl BucketAccumulator {
         let should_close = match self.policy {
             BucketPolicy::WallTimeNanos(duration_ns) => {
                 let base = self.base_instant.get_or_insert(now);
-                let elapsed_ns = now.saturating_duration_since(*base).as_nanos() as u64;
+                let elapsed_nanos = now.saturating_duration_since(*base).as_nanos();
+                let elapsed_ns = if elapsed_nanos > u64::MAX as u128 { u64::MAX } else { elapsed_nanos as u64 };
                 if elapsed_ns >= duration_ns {
-                    self.base_instant = Some(now);
+                    // base_instant is reset in close_inner() — no need to set here.
                     true
                 } else {
                     false

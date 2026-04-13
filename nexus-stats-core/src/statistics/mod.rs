@@ -10,7 +10,7 @@ mod ewma_var;
 mod half_life;
 mod harmonic_mean;
 mod hit_rate;
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod hurst;
 mod moments;
 mod percentile;
@@ -28,7 +28,7 @@ pub use ewma_var::*;
 pub use half_life::*;
 pub use harmonic_mean::*;
 pub use hit_rate::*;
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use hurst::*;
 pub use moments::*;
 pub use percentile::*;

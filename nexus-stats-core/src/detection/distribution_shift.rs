@@ -150,8 +150,13 @@ impl DistributionShiftF64Builder {
     }
 
     /// Build the detector.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `fast_window` is 0.
     pub fn build(self) -> DistributionShiftF64 {
         let fast_window = self.fast_window.unwrap_or(50);
+        assert!(fast_window > 0, "fast_window must be > 0");
 
         DistributionShiftF64 {
             fast: MomentsF64::new(),
