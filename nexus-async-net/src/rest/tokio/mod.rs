@@ -8,14 +8,14 @@
 //! ```ignore
 //! use nexus_net::rest::RequestWriter;
 //! use nexus_net::http::ResponseReader;
-//! use nexus_async_net::rest::AsyncHttpConnectionBuilder;
+//! use nexus_async_net::rest::HttpConnectionBuilder;
 //!
 //! let mut writer = RequestWriter::new("api.binance.com")?;
 //! writer.default_header("X-API-KEY", &key)?;
 //! let mut reader = ResponseReader::new(32 * 1024);
 //!
 //! let tls = nexus_net::tls::TlsConfig::new()?;
-//! let mut conn = AsyncHttpConnectionBuilder::new()
+//! let mut conn = HttpConnectionBuilder::new()
 //!     .tls(&tls)
 //!     .connect("https://api.binance.com")
 //!     .await?;
@@ -31,5 +31,5 @@ mod pool;
 
 pub use crate::maybe_tls::MaybeTls;
 pub use atomic_pool::{AtomicClientPool, AtomicClientPoolBuilder, AtomicClientSlot};
-pub use connection::{AsyncHttpConnection, AsyncHttpConnectionBuilder};
+pub use connection::{HttpConnection, HttpConnectionBuilder};
 pub use pool::{ClientPool, ClientPoolBuilder, ClientSlot};

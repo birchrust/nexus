@@ -5,7 +5,7 @@ Async adapters for [nexus-net](../nexus-net). Tokio-compatible.
 Same sans-IO primitives, same performance — just `.await` on socket I/O.
 
 - **WebSocket** — `WsStream<S>` wrapping nexus-net's FrameReader/FrameWriter
-- **REST HTTP/1.1** — `AsyncHttpConnection<S>` wrapping nexus-net's RequestWriter/ResponseReader
+- **REST HTTP/1.1** — `HttpConnection<S>` wrapping nexus-net's RequestWriter/ResponseReader
 - **Client Pool** — `ClientPool` (single-threaded) and `AtomicClientPool` (thread-safe) for connection reuse with LIFO acquire, inline reconnect, and RAII guards
 
 ## Quick Start
@@ -36,7 +36,7 @@ while let Some(msg) = ws.recv().await? {
 ```rust
 use nexus_net::rest::RequestWriter;
 use nexus_net::http::ResponseReader;
-use nexus_async_net::rest::AsyncHttpConnectionBuilder;
+use nexus_async_net::rest::HttpConnectionBuilder;
 
 // Same sans-IO primitives as blocking nexus-net
 let mut writer = RequestWriter::new("httpbin.org")?;
@@ -45,7 +45,7 @@ let mut reader = ResponseReader::new(32 * 1024).max_body_size(32 * 1024);
 
 // Async transport — TLS config created once at startup
 let tls = nexus_net::tls::TlsConfig::new()?;
-let mut conn = AsyncHttpConnectionBuilder::new()
+let mut conn = HttpConnectionBuilder::new()
     .tls(&tls)
     .connect("https://httpbin.org")
     .await?;
@@ -73,9 +73,9 @@ blocking `nexus-net`. The only difference is `.await` on the transport.
 
 ```rust
 use std::time::Duration;
-use nexus_async_net::rest::AsyncHttpConnectionBuilder;
+use nexus_async_net::rest::HttpConnectionBuilder;
 
-let mut conn = AsyncHttpConnectionBuilder::new()
+let mut conn = HttpConnectionBuilder::new()
     .connect_timeout(Duration::from_secs(5))
     .disable_nagle()
     .connect("https://api.binance.com")
@@ -135,7 +135,7 @@ println!("{}", resp.body_str()?);
 ```
 
 Each slot owns a complete pipeline: `RequestWriter` + `ResponseReader` +
-`AsyncHttpConnection`. No shared state between slots.
+`HttpConnection`. No shared state between slots.
 
 ## Client Pool Performance
 
@@ -323,7 +323,7 @@ Disable TLS with `default-features = false` for TLS-free builds.
 - **Stream/Sink** — `OwnedMessage` for `StreamExt`/`SinkExt` ergonomics
 - **Zero-alloc REST** — same `RequestWriter`/`ResponseReader` as blocking, just `.await` on I/O
 - **Automatic TLS** — `wss://` and `https://` URLs handled transparently via tokio-rustls
-- **Connect timeout** — `WsStreamBuilder::connect_timeout()` and `AsyncHttpConnectionBuilder::connect_timeout()`
+- **Connect timeout** — `WsStreamBuilder::connect_timeout()` and `HttpConnectionBuilder::connect_timeout()`
 - **Server-side WebSocket** — `WsStream::accept(stream)` for incoming connections
 - **Chunked transfer encoding** — decoded transparently for REST responses
 - **Same sans-IO primitives** — identical parse path as blocking nexus-net
