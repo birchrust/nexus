@@ -52,6 +52,12 @@ use crate::world::World;
 /// They must be the same struct with different lifetime parameters. The
 /// framework performs a pointer cast between them in `with_view()`.
 ///
+/// For view structs with borrowed fields (e.g., `&'a str`), use `#[repr(C)]`
+/// to guarantee layout stability across lifetime parameters. Rust does not
+/// currently guarantee that `repr(Rust)` types with different lifetime
+/// parameters have identical layouts, though all current compilers do so.
+/// `#[repr(C)]` removes any theoretical risk.
+///
 /// Incorrect implementations (e.g., `StaticViewType` being a different struct)
 /// cause undefined behavior. Use the `#[derive(View)]` macro when available
 /// to generate correct implementations.

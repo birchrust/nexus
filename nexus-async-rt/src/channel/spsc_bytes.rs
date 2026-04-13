@@ -325,6 +325,7 @@ impl DerefMut for WriteClaim<'_> {
 
 /// Claim failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ClaimError {
     /// Receiver was dropped.
     Closed,

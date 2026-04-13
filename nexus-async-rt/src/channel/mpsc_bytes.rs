@@ -426,6 +426,7 @@ impl Drop for ReadClaim<'_> {
 
 /// Claim failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ClaimError {
     /// All receivers were dropped.
     Closed,

@@ -42,6 +42,8 @@ use crate::world::World;
 /// ```
 pub struct CatchAssertUnwindSafe<H> {
     handler: H,
+    /// Number of panics caught since construction.
+    panic_count: u64,
 }
 
 impl<H> CatchAssertUnwindSafe<H> {
@@ -50,16 +52,31 @@ impl<H> CatchAssertUnwindSafe<H> {
     /// The caller asserts that the handler and any resources it touches
     /// are safe to continue using after a caught panic.
     pub fn new(handler: H) -> Self {
-        Self { handler }
+        Self {
+            handler,
+            panic_count: 0,
+        }
+    }
+
+    /// Number of panics caught since construction.
+    ///
+    /// Poll this periodically in health checks to detect handlers that
+    /// are silently failing. A non-zero value means the handler panicked
+    /// at least once — investigate the root cause.
+    pub fn panic_count(&self) -> u64 {
+        self.panic_count
     }
 }
 
 impl<E, H: Handler<E>> Handler<E> for CatchAssertUnwindSafe<H> {
     fn run(&mut self, world: &mut World, event: E) {
         let handler = &mut self.handler;
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             handler.run(world, event);
         }));
+        if result.is_err() {
+            self.panic_count += 1;
+        }
     }
 
     fn name(&self) -> &'static str {

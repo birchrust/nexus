@@ -361,22 +361,6 @@ impl Executor {
         (&mut self.incoming, &mut self.deferred_free)
     }
 
-    /// Run until all tasks complete. Only drives task polling — does NOT
-    /// drive IO, timers, or cross-thread wakes. For test/internal use only.
-    ///
-    /// Tasks awaiting IO or timers will hang. Use `Runtime::block_on` for
-    /// full runtime driving.
-    #[allow(dead_code)]
-    pub(crate) fn drain(&mut self) {
-        while self.task_count() > 0 {
-            if self.has_ready() {
-                self.poll();
-            } else {
-                std::thread::yield_now();
-            }
-        }
-    }
-
     /// Cancel a task by ID.
     #[allow(dead_code)]
     pub(crate) fn cancel(&mut self, id: task::TaskId) {
