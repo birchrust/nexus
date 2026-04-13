@@ -3,6 +3,10 @@
 Slab-backed intrusive collections with O(1) insert/remove and zero
 allocation after init.
 
+## Architecture
+
+- [Architecture](ARCHITECTURE.md) — Design decisions, ownership model, performance
+
 ## User Guide
 
 - [Overview](overview.md) — Architecture, collection types, ownership model

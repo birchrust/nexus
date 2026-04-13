@@ -425,6 +425,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Requires real UDP sockets — not miri-compatible.
     fn udp_send_recv() {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
@@ -462,6 +463,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Requires real UDP sockets — not miri-compatible.
     fn udp_echo() {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
@@ -503,6 +505,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Requires real UDP sockets — not miri-compatible.
     fn udp_connected() {
         let wb = WorldBuilder::new();
         let mut world = wb.build();

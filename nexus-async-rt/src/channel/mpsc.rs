@@ -819,7 +819,8 @@ mod tests {
     #[test]
     fn stress_sequential() {
         let (tx, rx) = test_channel(64);
-        for i in 0..100_000u64 {
+        let n = if cfg!(miri) { 100 } else { 100_000 };
+        for i in 0..n {
             tx.try_send(i).unwrap();
             assert_eq!(rx.try_recv().unwrap(), i);
         }

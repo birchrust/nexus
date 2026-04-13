@@ -44,7 +44,7 @@ Intel Core Ultra 7 165U (hybrid P+E cores), 2.69 GHz base clock, Linux 6.18.
 
 | Queue | min | p50 | p99 | p999 | max |
 |-------|-----|-----|-----|------|-----|
-| **nexus-queue SPSC** | ~180 | 208 | 237 | 405 | ~4k |
+| **nexus-queue SPSC** | ~180 | 200 | 210 | 266 | ~4k |
 | rtrb | ~180 | ~210 | ~240 | ~400 | ~4k |
 | crossbeam (MPMC) | ~450 | 520 | 580 | 820 | ~8k |
 
@@ -52,43 +52,45 @@ Intel Core Ultra 7 165U (hybrid P+E cores), 2.69 GHz base clock, Linux 6.18.
 
 | Queue | M msgs/sec | ns/msg |
 |-------|------------|--------|
-| **nexus-queue SPSC** | ~50 | ~20 |
+| **nexus-queue SPSC** | 113 | ~9 |
 
 ### MPSC Latency (one-way, cycles)
 
 | Queue | p50 | p99 | p999 | Notes |
 |-------|-----|-----|------|-------|
-| **nexus-queue MPSC** | 202 | 276-411 | 350-540 | CAS + turn counter |
+| **nexus-queue MPSC** | 180 | 304 | 414 | CAS + turn counter |
 | crossbeam ArrayQueue | 522-532 | 574-584 | 817-876 | MPMC overhead |
 
 ### MPSC Latency (one-way, nanoseconds)
 
 | Queue | p50 | p99 | p999 |
 |-------|-----|-----|------|
-| **nexus-queue MPSC** | 75 ns | 103-153 ns | 130-201 ns |
+| **nexus-queue MPSC** | 67 ns | 113 ns | 154 ns |
 | crossbeam ArrayQueue | 195 ns | 213-217 ns | 304-326 ns |
 
 ### SPMC Latency (one-way, cycles)
 
 | Queue | p50 | p99 | p999 |
 |-------|-----|-----|------|
-| **nexus-queue SPMC** | 185 | 394 | 535 |
+| **nexus-queue SPMC** | 169 | 325 | 462 |
 | crossbeam ArrayQueue | 505 | 567 | 775 |
 
 ### SPMC Latency (one-way, nanoseconds)
 
 | Queue | p50 | p99 | p999 |
 |-------|-----|-----|------|
-| **nexus-queue SPMC** | 68.8 ns | 146.6 ns | 199.0 ns |
+| **nexus-queue SPMC** | 63 ns | 121 ns | 172 ns |
 | crossbeam ArrayQueue | 187.9 ns | 210.9 ns | 288.3 ns |
 
-### SPMC Fan-out Throughput (10M msgs)
+### SPMC Throughput
 
 | Consumers | nexus-queue SPMC | crossbeam ArrayQueue | Delta |
 |-----------|-----------------|---------------------|-------|
-| 1 | 50 M/s | 85 M/s | -41% |
+| 1 | 47 M/s | 85 M/s | -45% |
 | 2 | 27 M/s | 57 M/s | -53% |
 | 4 | 17 M/s | 47 M/s | -63% |
+
+Note: crossbeam wins on sustained-saturation fan-out throughput. See Analysis section for why this tradeoff is acceptable.
 
 ## Analysis
 

@@ -815,7 +815,9 @@ impl SourceRegistry {
     fn get_map<K: Hash + Eq + Send + 'static>(&self) -> Option<&FxHashMap<K, DataSource>> {
         self.maps.get(&TypeId::of::<K>()).map(|boxed| {
             // Invariant: map was inserted with type K, so downcast always succeeds.
-            boxed.downcast_ref::<FxHashMap<K, DataSource>>().unwrap()
+            boxed
+                .downcast_ref::<FxHashMap<K, DataSource>>()
+                .expect("invariant: TypeId matches stored map type")
         })
     }
 
@@ -824,7 +826,9 @@ impl SourceRegistry {
     ) -> Option<&mut FxHashMap<K, DataSource>> {
         self.maps.get_mut(&TypeId::of::<K>()).map(|boxed| {
             // Invariant: map was inserted with type K, so downcast always succeeds.
-            boxed.downcast_mut::<FxHashMap<K, DataSource>>().unwrap()
+            boxed
+                .downcast_mut::<FxHashMap<K, DataSource>>()
+                .expect("invariant: TypeId matches stored map type")
         })
     }
 

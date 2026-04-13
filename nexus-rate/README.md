@@ -155,6 +155,10 @@ taskset -c 0 ./target/release/examples/perf_rate
 GCRA and TokenBucket work without any features (`no_std`, no `alloc`).
 SlidingWindow requires `alloc`.
 
+## Hot Path Internals
+
+GCRA and TokenBucket precompute `nanos_per_token` at construction and reconfiguration time, avoiding u128 divisions on the hot path. Token computation uses ceil-division to guarantee that fractional tokens are never silently lost -- `try_acquire(1, now)` always consumes at least one token's worth of time.
+
 ## Timestamps
 
 All timestamps are `u64`. The caller defines what the units mean —

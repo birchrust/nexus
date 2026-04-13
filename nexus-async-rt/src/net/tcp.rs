@@ -969,6 +969,7 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Requires real TCP sockets — not miri-compatible.
     fn tcp_echo() {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
@@ -1008,6 +1009,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Requires real TCP sockets — not miri-compatible.
     fn tcp_socket_builder() {
         let socket = TcpSocket::new_v4().unwrap();
         socket.set_reuseaddr(true).unwrap();

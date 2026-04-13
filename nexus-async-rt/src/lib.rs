@@ -96,12 +96,33 @@ pub const MIN_SLOT_SIZE: usize = 128;
 /// task's header contains a `free_fn` that knows how to deallocate
 /// its own storage — the executor doesn't know or care which
 /// allocator was used.
+/// # UnsafeCell on `incoming` and `deferred_free`
+///
+/// These fields are wrapped in `UnsafeCell` to prevent a provenance
+/// aliasing violation. During `poll()`, raw pointers to these Vecs are
+/// stored in TLS for wakers to push into. Later in the same `poll()`,
+/// `complete_task(&mut self)` takes `&mut self` — which under Rust's
+/// aliasing rules asserts exclusive access to ALL fields. Without
+/// `UnsafeCell`, this invalidates the TLS pointers because two `&mut`
+/// paths to the same memory exist. `UnsafeCell` opts these fields out
+/// of `&mut`'s exclusivity guarantee, telling the compiler they may be
+/// accessed through other paths (the TLS raw pointers).
+///
+/// This is NOT a performance concern — `UnsafeCell` is zero-sized and
+/// `get()` compiles to a no-op pointer cast. The only effect is that
+/// the compiler won't optimize based on exclusive access to these fields.
 pub struct Executor {
     /// Incoming ready tasks. Wakers and spawn push here.
     /// Swapped with `draining` at the start of each poll cycle.
-    incoming: Vec<*mut u8>,
+    ///
+    /// Wrapped in `UnsafeCell` because raw pointers to this Vec are stored
+    /// in TLS during `poll()`. Without `UnsafeCell`, `&mut self` on methods
+    /// like `complete_task` would invalidate the TLS pointer's provenance
+    /// (exclusive `&mut` covers all non-UnsafeCell fields).
+    incoming: std::cell::UnsafeCell<Vec<*mut u8>>,
 
     /// Tasks being drained this cycle. Iterated linearly.
+    /// Does NOT need UnsafeCell — only accessed through `&mut self` in poll().
     draining: Vec<*mut u8>,
 
     /// All live task pointers. Slab-indexed for O(1) removal.
@@ -114,7 +135,9 @@ pub struct Executor {
     tasks_per_cycle: usize,
 
     /// Completed task slots awaiting deferred free.
-    deferred_free: Vec<*mut u8>,
+    ///
+    /// Same UnsafeCell rationale as `incoming` — TLS pointer stored during poll.
+    deferred_free: std::cell::UnsafeCell<Vec<*mut u8>>,
 }
 
 /// Default poll limit.
@@ -124,12 +147,12 @@ impl Executor {
     /// Create an executor.
     pub fn new(initial_capacity: usize) -> Self {
         Self {
-            incoming: Vec::with_capacity(initial_capacity),
+            incoming: std::cell::UnsafeCell::new(Vec::with_capacity(initial_capacity)),
             draining: Vec::with_capacity(initial_capacity),
             all_tasks: slab::Slab::with_capacity(initial_capacity),
             live_count: 0,
             tasks_per_cycle: DEFAULT_TASKS_PER_CYCLE,
-            deferred_free: Vec::new(),
+            deferred_free: std::cell::UnsafeCell::new(Vec::new()),
         }
     }
 
@@ -173,7 +196,8 @@ impl Executor {
     fn enqueue(&mut self, ptr: *mut u8) {
         self.all_tasks.insert(ptr);
         unsafe { task::set_queued(ptr, true) };
-        self.incoming.push(ptr);
+        // SAFETY: single-threaded, no concurrent access during enqueue.
+        unsafe { &mut *self.incoming.get() }.push(ptr);
         self.live_count += 1;
     }
 
@@ -193,10 +217,11 @@ impl Executor {
         while drained < limit {
             match inbox.pop() {
                 Some(task_ptr) => {
+                    // SAFETY: single-threaded, called from poll() before TLS is set.
                     if unsafe { task::is_completed(task_ptr) } {
-                        self.deferred_free.push(task_ptr);
+                        unsafe { &mut *self.deferred_free.get() }.push(task_ptr);
                     } else {
-                        self.incoming.push(task_ptr);
+                        unsafe { &mut *self.incoming.get() }.push(task_ptr);
                     }
                     drained += 1;
                 }
@@ -210,7 +235,8 @@ impl Executor {
         let mut completed = 0;
 
         // Drain deferred frees from last cycle.
-        for ptr in self.deferred_free.drain(..) {
+        // SAFETY: single-threaded, TLS not yet set for this cycle.
+        for ptr in unsafe { &mut *self.deferred_free.get() }.drain(..) {
             let key = unsafe { task::tracker_key(ptr) } as usize;
             // SAFETY: free_fn was set at spawn time.
             unsafe { task::free_task(ptr) };
@@ -219,9 +245,14 @@ impl Executor {
             }
         }
 
-        std::mem::swap(&mut self.incoming, &mut self.draining);
+        // SAFETY: single-threaded, swapping before TLS is set.
+        std::mem::swap(unsafe { &mut *self.incoming.get() }, &mut self.draining);
 
-        let _guard = set_poll_context(&mut self.incoming, &mut self.deferred_free);
+        // Derive TLS pointers from UnsafeCell — NOT from &mut self field borrows.
+        // This is critical: complete_task(&mut self) later in this function must
+        // not invalidate the TLS pointers. UnsafeCell fields are excluded from
+        // &mut self's exclusivity guarantee.
+        let _guard = set_poll_context(self.incoming.get(), self.deferred_free.get());
 
         let limit = self.tasks_per_cycle.min(self.draining.len());
         let draining_ptr: *const Vec<*mut u8> = &raw const self.draining;
@@ -253,7 +284,8 @@ impl Executor {
         }
 
         if limit < self.draining.len() {
-            self.incoming.extend_from_slice(&self.draining[limit..]);
+            // SAFETY: single-threaded, TLS guard is about to drop.
+            unsafe { &mut *self.incoming.get() }.extend_from_slice(&self.draining[limit..]);
         }
         self.draining.clear();
 
@@ -265,9 +297,17 @@ impl Executor {
         self.live_count
     }
 
+    /// Number of completed task slots awaiting deferred free.
+    #[cfg(test)]
+    pub fn deferred_free_count(&self) -> usize {
+        // SAFETY: single-threaded, read-only snapshot.
+        unsafe { &*self.deferred_free.get() }.len()
+    }
+
     /// Returns `true` if any tasks are queued for polling.
     pub fn has_ready(&self) -> bool {
-        !self.incoming.is_empty()
+        // SAFETY: single-threaded, read-only snapshot.
+        !unsafe { &*self.incoming.get() }.is_empty()
     }
 
     /// Set the maximum tasks to poll per cycle.
@@ -356,25 +396,12 @@ impl Executor {
         }
     }
 
-    /// Returns mutable references for TLS setup.
-    pub(crate) fn poll_context_mut(&mut self) -> (&mut Vec<*mut u8>, &mut Vec<*mut u8>) {
-        (&mut self.incoming, &mut self.deferred_free)
-    }
-
-    /// Run until all tasks complete. Only drives task polling — does NOT
-    /// drive IO, timers, or cross-thread wakes. For test/internal use only.
+    /// Returns raw pointers for TLS setup.
     ///
-    /// Tasks awaiting IO or timers will hang. Use `Runtime::block_on` for
-    /// full runtime driving.
-    #[allow(dead_code)]
-    pub(crate) fn drain(&mut self) {
-        while self.task_count() > 0 {
-            if self.has_ready() {
-                self.poll();
-            } else {
-                std::thread::yield_now();
-            }
-        }
+    /// Takes `&self` because `UnsafeCell::get()` only needs a shared reference.
+    /// The raw pointers carry write provenance from the `UnsafeCell`.
+    pub(crate) fn poll_context_ptrs(&self) -> (*mut Vec<*mut u8>, *mut Vec<*mut u8>) {
+        (self.incoming.get(), self.deferred_free.get())
     }
 
     /// Cancel a task by ID.
@@ -385,7 +412,8 @@ impl Executor {
         if unsafe { task::is_completed(ptr) } {
             return;
         }
-        self.incoming.retain(|p| *p != ptr);
+        // SAFETY: single-threaded, no TLS active during cancel.
+        unsafe { &mut *self.incoming.get() }.retain(|p| *p != ptr);
         self.draining.retain(|p| *p != ptr);
         self.complete_task(ptr);
     }
@@ -394,7 +422,8 @@ impl Executor {
 impl Drop for Executor {
     fn drop(&mut self) {
         // Free deferred slots first (completed tasks whose last ref dropped).
-        for ptr in self.deferred_free.drain(..) {
+        // SAFETY: &mut self in Drop, no concurrent access.
+        for ptr in unsafe { &mut *self.deferred_free.get() }.drain(..) {
             let key = unsafe { task::tracker_key(ptr) } as usize;
             unsafe { task::free_task(ptr) };
             if self.all_tasks.contains(key) {

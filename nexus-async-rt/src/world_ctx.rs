@@ -49,7 +49,7 @@ use nexus_rt::World;
 ///     ctx.with_world(|world| on_quote.run(world, data));
 /// });
 ///
-/// executor.drain();
+/// while executor.task_count() > 0 { executor.poll(); }
 /// ```
 #[derive(Clone, Copy)]
 pub struct WorldCtx {
@@ -129,7 +129,9 @@ mod tests {
             });
         });
 
-        executor.drain();
+        while executor.task_count() > 0 {
+            executor.poll();
+        }
         assert_eq!(world.resource::<Out>().0, 52);
     }
 
@@ -150,7 +152,9 @@ mod tests {
             unsafe { &*result_ptr }.set(v);
         });
 
-        executor.drain();
+        while executor.task_count() > 0 {
+            executor.poll();
+        }
         assert_eq!(result.get(), 99);
     }
 
@@ -173,7 +177,9 @@ mod tests {
             ctx.with_world(|world| handler.run(world, 10));
         });
 
-        executor.drain();
+        while executor.task_count() > 0 {
+            executor.poll();
+        }
         assert_eq!(world.resource::<Out>().0, 52);
     }
 
@@ -194,7 +200,9 @@ mod tests {
             unsafe { &*result_ptr }.set(v);
         });
 
-        executor.drain();
+        while executor.task_count() > 0 {
+            executor.poll();
+        }
         assert_eq!(result.get(), 42);
     }
 
@@ -216,7 +224,9 @@ mod tests {
             });
         }
 
-        executor.drain();
+        while executor.task_count() > 0 {
+            executor.poll();
+        }
         assert_eq!(world.resource::<Out>().0, 6); // 1 + 2 + 3
     }
 }

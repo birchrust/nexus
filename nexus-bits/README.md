@@ -253,6 +253,12 @@ let err: UnknownDiscriminant<u64> = UnknownDiscriminant {
 };
 ```
 
+## Signed Fields
+
+Fields can use signed backing types (`i8`, `i16`, `i32`, `i64`, `i128`). On read, the value is sign-extended from the field width to the full backing type width. For example, a 4-bit signed field storing `-3` returns `-3` as the full `i8`, not `13`.
+
+The `set_unchecked` methods on builders perform masking (silent truncation to field width) rather than corruption -- the surrounding bits are never affected. Use the checked `build()` method for overflow detection.
+
 ## Compile-Time Validation
 
 The macro rejects invalid configurations at compile time:

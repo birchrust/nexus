@@ -186,11 +186,18 @@ pub struct Runtime {
     /// Spawned task storage.
     executor: Executor,
 
-    /// IO driver (mio).
-    io: IoDriver,
+    /// IO driver (mio). Wrapped in `UnsafeCell` because a raw pointer
+    /// is stored in TLS during `block_on`. Task futures access the IO
+    /// driver through TLS (e.g., `TcpStream::poll_read`), while the
+    /// run loop accesses it through `&mut self` (e.g., `poll_io()`).
+    /// Without `UnsafeCell`, `&mut self` would invalidate the TLS
+    /// pointer's provenance — see `Executor` docs for the full
+    /// explanation.
+    io: std::cell::UnsafeCell<IoDriver>,
 
-    /// Timer driver.
-    timers: TimerDriver,
+    /// Timer driver. Same `UnsafeCell` rationale — `Sleep::poll` accesses
+    /// through a stored raw pointer, `run_loop` accesses through `&mut self`.
+    timers: std::cell::UnsafeCell<TimerDriver>,
 
     /// World access handle.
     ctx: WorldCtx,
@@ -241,7 +248,8 @@ impl Runtime {
 
     /// Install signal handlers for SIGTERM and SIGINT.
     pub fn install_signal_handlers(&self) {
-        crate::shutdown::install_signal_handlers(&self.shutdown.flag_ptr(), &self.io.mio_waker());
+        // SAFETY: single-threaded, called during setup before block_on.
+        crate::shutdown::install_signal_handlers(&self.shutdown.flag_ptr(), &unsafe { &*self.io.get() }.mio_waker());
     }
 
     /// Number of live spawned tasks.
@@ -470,8 +478,8 @@ impl<'w> RuntimeBuilder<'w> {
 
         let rt = Runtime {
             executor,
-            io,
-            timers: TimerDriver::new(64),
+            io: std::cell::UnsafeCell::new(io),
+            timers: std::cell::UnsafeCell::new(TimerDriver::new(64)),
             ctx,
             event_time,
             shutdown,
@@ -522,8 +530,8 @@ impl Runtime {
         // Install TLS context.
         let _ctx_guard = crate::context::install(
             self.ctx.as_ptr(),
-            &raw mut self.io,
-            &raw mut self.timers,
+            self.io.get(),
+            self.timers.get(),
             &raw const self.event_time,
             std::sync::Arc::as_ptr(&self.shutdown.flag_ptr()),
             std::ptr::from_ref(&self.shutdown.task_waker),
@@ -540,7 +548,8 @@ impl Runtime {
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let root_waker = Waker::from(std::sync::Arc::new(RootWake {
             woken: std::sync::Arc::clone(&woken),
-            mio_waker: self.io.mio_waker(),
+            // SAFETY: single-threaded, called during block_on setup.
+            mio_waker: unsafe { &*self.io.get() }.mio_waker(),
         }));
         let mut root_cx = Context::from_waker(&root_waker);
 
@@ -548,7 +557,8 @@ impl Runtime {
         let _spawn_guard = RuntimeGuard::enter(&raw mut self.executor);
 
         // Install waker TLS: ready queue + deferred free list.
-        let (ready, deferred) = self.executor.poll_context_mut();
+        // Uses UnsafeCell::get() to derive pointers that survive &mut self reborrows.
+        let (ready, deferred) = self.executor.poll_context_ptrs();
         let _ready_guard = crate::waker::set_poll_context(ready, deferred);
 
         self.event_time.set(Instant::now());
@@ -579,7 +589,8 @@ impl Runtime {
             self.executor.poll();
 
             // 4. Fire expired timers.
-            self.timers.fire_expired(Instant::now());
+            // SAFETY: single-threaded runtime, no concurrent access.
+            unsafe { &mut *self.timers.get() }.fire_expired(Instant::now());
 
             // 4.5. Set parked early (park mode only) so cross-thread
             // wakers arriving from here on will poke the eventfd.
@@ -598,7 +609,7 @@ impl Runtime {
             // 6. Periodic non-blocking IO check every event_interval ticks.
             //    Prevents IO starvation under sustained task load.
             if tick % self.event_interval == 0 {
-                if let Err(e) = self.io.poll_io(Some(Duration::ZERO)) {
+                if let Err(e) = unsafe { &mut *self.io.get() }.poll_io(Some(Duration::ZERO)) {
                     assert!(
                         e.kind() == std::io::ErrorKind::Interrupted,
                         "mio::Poll::poll failed: {e}"
@@ -624,7 +635,7 @@ impl Runtime {
             match mode {
                 ParkMode::Spin => {
                     // Non-blocking IO check before spinning again.
-                    if let Err(e) = self.io.poll_io(Some(Duration::ZERO)) {
+                    if let Err(e) = unsafe { &mut *self.io.get() }.poll_io(Some(Duration::ZERO)) {
                         assert!(
                             e.kind() == std::io::ErrorKind::Interrupted,
                             "mio::Poll::poll failed: {e}"
@@ -636,12 +647,12 @@ impl Runtime {
                     // parked is already true (set at step 4.5).
                     // Park in epoll_wait until IO, timer, or cross-thread
                     // eventfd wakes us.
-                    let timeout = self
-                        .timers
+                    // SAFETY: single-threaded, no concurrent timer access.
+                    let timeout = unsafe { &*self.timers.get() }
                         .next_deadline()
                         .map(|d| d.saturating_duration_since(Instant::now()));
 
-                    if let Err(e) = self.io.poll_io(timeout) {
+                    if let Err(e) = unsafe { &mut *self.io.get() }.poll_io(timeout) {
                         assert!(
                             e.kind() == std::io::ErrorKind::Interrupted,
                             "mio::Poll::poll failed: {e}"

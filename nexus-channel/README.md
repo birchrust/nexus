@@ -198,6 +198,7 @@ let (tx, rx) = channel_with_config::<u64>(1024, 2);
 | Method | Description |
 |--------|-------------|
 | `recv()` | Blocking receive, returns `Err` on disconnect |
+| `recv_timeout(duration)` | Blocking receive with timeout, returns `Err` on timeout or disconnect |
 | `try_recv()` | Non-blocking receive, returns `Empty` or `Disconnected` |
 | `is_disconnected()` | Check if sender was dropped |
 | `capacity()` | Get channel capacity |
