@@ -1,6 +1,6 @@
 [package]
 name = "nexus-rate"
-version = "2.1.1"
+version = "2.1.2"
 description = "Rate limiting and flow control primitives for real-time systems"
 readme = "README.md"
 edition.workspace = true

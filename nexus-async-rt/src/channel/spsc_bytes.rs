@@ -696,7 +696,7 @@ mod tests {
         let (mut tx, mut rx) = test_channel(4096);
         let data = [0xFFu8; 32];
 
-        for _ in 0..10_000 {
+        let n = if cfg!(miri) { 100 } else { 10_000 }; for _ in 0..n {
             try_send(&mut tx, &data);
             let msg = rx.try_recv().unwrap();
             assert_eq!(msg.len(), 32);

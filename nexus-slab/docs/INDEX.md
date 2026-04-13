@@ -9,6 +9,10 @@ Pre-allocated slab allocator for deterministic latency.
 - [Unbounded Slab](unbounded.md) — Chunk-based growth, no copy on resize
 - [Byte Slab](byte-slab.md) — Type-erased storage for heterogeneous types
 
+## Architecture
+
+- [Architecture](ARCHITECTURE.md) — Design decisions, slab types, freelist design, provenance
+
 ## Internal Reference
 
 - [SlotCell](slotcell.md) — Union-based slot design, freelist mechanics

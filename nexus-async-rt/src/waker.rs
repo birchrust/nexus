@@ -42,13 +42,19 @@ std::thread_local! {
 
 /// Install TLS pointers for the duration of a poll cycle.
 /// Returns an RAII guard that restores previous values on drop.
+///
+/// # Safety
+///
+/// `ready` and `deferred_free` must be valid pointers to `Vec<*mut u8>`
+/// that outlive the returned guard. Typically derived from
+/// `UnsafeCell::get()` on the Executor's fields.
 #[inline]
 pub(crate) fn set_poll_context(
-    ready: &mut Vec<*mut u8>,
-    deferred_free: &mut Vec<*mut u8>,
+    ready: *mut Vec<*mut u8>,
+    deferred_free: *mut Vec<*mut u8>,
 ) -> PollContextGuard {
-    let prev_ready = READY_QUEUE.with(|cell| cell.replace(std::ptr::from_mut(ready)));
-    let prev_free = DEFERRED_FREE.with(|cell| cell.replace(std::ptr::from_mut(deferred_free)));
+    let prev_ready = READY_QUEUE.with(|cell| cell.replace(ready));
+    let prev_free = DEFERRED_FREE.with(|cell| cell.replace(deferred_free));
     PollContextGuard {
         prev_ready,
         prev_free,
