@@ -231,7 +231,11 @@ impl BucketAccumulator {
             BucketPolicy::WallTimeNanos(duration_ns) => {
                 let base = self.base_instant.get_or_insert(now);
                 let elapsed_nanos = now.saturating_duration_since(*base).as_nanos();
-                let elapsed_ns = if elapsed_nanos > u64::MAX as u128 { u64::MAX } else { elapsed_nanos as u64 };
+                let elapsed_ns = if elapsed_nanos > u64::MAX as u128 {
+                    u64::MAX
+                } else {
+                    elapsed_nanos as u64
+                };
                 if elapsed_ns >= duration_ns {
                     // base_instant is reset in close_inner() — no need to set here.
                     true
@@ -356,7 +360,8 @@ mod tests {
     fn count_policy_closes_every_n() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(10))
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let mut closure_count = 0u32;
         for i in 0..30 {
@@ -372,7 +377,8 @@ mod tests {
     fn volume_policy() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Volume(100.0))
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let mut closures = 0;
         // 10 observations with volume 15 each = 150, closes at 100
@@ -388,7 +394,8 @@ mod tests {
     fn volume_negative_rejected() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Volume(100.0))
-            .build().unwrap();
+            .build()
+            .unwrap();
         assert!(bucket.update_volume(1.0, -5.0).is_err());
     }
 
@@ -396,7 +403,8 @@ mod tests {
     fn wall_time_raw_policy() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::WallTimeNanos(1_000_000_000)) // 1 second
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         // First observation at t=0
         assert!(bucket.update_at_raw(1.0, 0).unwrap().is_none());
@@ -416,14 +424,17 @@ mod tests {
 
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::WallTimeNanos(1_000_000)) // 1ms
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let start = Instant::now();
         assert!(bucket.update_at(1.0, start).unwrap().is_none());
-        assert!(bucket
-            .update_at(2.0, start + Duration::from_micros(500))
-            .unwrap()
-            .is_none());
+        assert!(
+            bucket
+                .update_at(2.0, start + Duration::from_micros(500))
+                .unwrap()
+                .is_none()
+        );
         let s = bucket
             .update_at(3.0, start + Duration::from_millis(2))
             .unwrap()
@@ -437,7 +448,8 @@ mod tests {
     fn empty_close_returns_none() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(10))
-            .build().unwrap();
+            .build()
+            .unwrap();
         assert!(bucket.close().is_none());
     }
 
@@ -445,7 +457,8 @@ mod tests {
     fn force_close() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(100))
-            .build().unwrap();
+            .build()
+            .unwrap();
         bucket.update(1.0).unwrap();
         bucket.update(2.0).unwrap();
         bucket.update(3.0).unwrap();
@@ -459,7 +472,8 @@ mod tests {
     fn summary_accessors() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(5))
-            .build().unwrap();
+            .build()
+            .unwrap();
         let mut s = None;
         for i in 1..=5 {
             if let Ok(Some(summary)) = bucket.update(i as f64) {
@@ -479,7 +493,8 @@ mod tests {
     fn reset_clears_state() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(10))
-            .build().unwrap();
+            .build()
+            .unwrap();
         bucket.update(42.0).unwrap();
         assert_eq!(bucket.current_count(), 1);
         bucket.reset();
@@ -491,7 +506,8 @@ mod tests {
     fn nan_rejected() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(10))
-            .build().unwrap();
+            .build()
+            .unwrap();
         assert!(bucket.update(f64::NAN).is_err());
     }
 
@@ -499,7 +515,8 @@ mod tests {
     fn inf_rejected() {
         let mut bucket = BucketAccumulator::builder()
             .policy(BucketPolicy::Count(10))
-            .build().unwrap();
+            .build()
+            .unwrap();
         assert!(bucket.update(f64::INFINITY).is_err());
     }
 }

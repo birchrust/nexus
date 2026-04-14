@@ -1,3 +1,6 @@
+use rand_chacha::ChaCha8Rng;
+use rand_core::{RngCore, SeedableRng};
+
 use super::frame::Role;
 
 /// Error from WebSocket frame encoding.
@@ -52,39 +55,46 @@ impl FrameHeader {
 /// ```
 /// use nexus_net::ws::{FrameWriter, Role};
 ///
-/// let writer = FrameWriter::new(Role::Server);
+/// let mut writer = FrameWriter::new(Role::Server);
 /// let mut dst = vec![0u8; writer.max_encoded_len(5)];
 /// let n = writer.encode_text(b"Hello", &mut dst);
 /// assert_eq!(&dst[..n], &[0x81, 0x05, 0x48, 0x65, 0x6C, 0x6C, 0x6F]);
 /// ```
 pub struct FrameWriter {
     role: Role,
+    /// PRNG for mask key generation (client only). Seeded lazily from
+    /// OS randomness on first use, then produces mask keys at ~1 cycle
+    /// instead of ~50-200 cycles per getrandom syscall.
+    mask_rng: Option<ChaCha8Rng>,
 }
 
 impl FrameWriter {
     /// Create a writer for the given role.
     #[must_use]
     pub fn new(role: Role) -> Self {
-        Self { role }
+        Self {
+            role,
+            mask_rng: None,
+        }
     }
 
     /// Encode a text message frame. Returns bytes written.
     ///
     /// # Panics
     /// Panics if `dst` is too small. Use [`max_encoded_len`](Self::max_encoded_len).
-    pub fn encode_text(&self, payload: &[u8], dst: &mut [u8]) -> usize {
+    pub fn encode_text(&mut self, payload: &[u8], dst: &mut [u8]) -> usize {
         self.encode(0x81, payload, dst) // FIN + Text
     }
 
     /// Encode a binary message frame. Returns bytes written.
-    pub fn encode_binary(&self, payload: &[u8], dst: &mut [u8]) -> usize {
+    pub fn encode_binary(&mut self, payload: &[u8], dst: &mut [u8]) -> usize {
         self.encode(0x82, payload, dst) // FIN + Binary
     }
 
     /// Encode a ping control frame. Returns bytes written.
     ///
     /// Returns `Err` if payload exceeds 125 bytes (RFC 6455 §5.5).
-    pub fn encode_ping(&self, payload: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
+    pub fn encode_ping(&mut self, payload: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
         if payload.len() > 125 {
             return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
         }
@@ -94,7 +104,7 @@ impl FrameWriter {
     /// Encode a pong control frame. Returns bytes written.
     ///
     /// Returns `Err` if payload exceeds 125 bytes (RFC 6455 §5.5).
-    pub fn encode_pong(&self, payload: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
+    pub fn encode_pong(&mut self, payload: &[u8], dst: &mut [u8]) -> Result<usize, EncodeError> {
         if payload.len() > 125 {
             return Err(EncodeError::ControlPayloadTooLarge(payload.len()));
         }
@@ -105,7 +115,7 @@ impl FrameWriter {
     ///
     /// Returns `Err` if code + reason exceeds 125 bytes.
     pub fn encode_close(
-        &self,
+        &mut self,
         code: u16,
         reason: &[u8],
         dst: &mut [u8],
@@ -141,7 +151,7 @@ impl FrameWriter {
     ///
     /// Used when `CloseCode::NoStatus` is intended — RFC 6455 §7.4.1
     /// reserves code 1005 from appearing in close frame payloads.
-    pub fn encode_empty_close(&self, dst: &mut [u8]) -> usize {
+    pub fn encode_empty_close(&mut self, dst: &mut [u8]) -> usize {
         self.encode(0x88, &[], dst) // FIN + Close, zero payload
     }
 
@@ -152,7 +162,7 @@ impl FrameWriter {
     /// from appearing on the wire — use [`encode_empty_close`](Self::encode_empty_close)).
     /// Panics if 2 + reason.len() exceeds 125 bytes.
     pub fn encode_close_code(
-        &self,
+        &mut self,
         code: super::message::CloseCode,
         reason: &str,
         dst: &mut [u8],
@@ -167,7 +177,11 @@ impl FrameWriter {
     /// Build just the frame header. Returns (header_bytes, length, optional mask_key).
     ///
     /// For use with WriteBuf: append payload, apply mask if Some, prepend header.
-    pub fn build_header(&self, byte0: u8, payload_len: usize) -> (FrameHeader, Option<[u8; 4]>) {
+    pub fn build_header(
+        &mut self,
+        byte0: u8,
+        payload_len: usize,
+    ) -> (FrameHeader, Option<[u8; 4]>) {
         let mask_bit: u8 = if self.role == Role::Client { 0x80 } else { 0 };
         let mut hdr = FrameHeader {
             bytes: [0; 14],
@@ -191,7 +205,7 @@ impl FrameWriter {
         }
 
         let mask_key = if self.role == Role::Client {
-            let mask = generate_mask();
+            let mask = self.generate_mask();
             hdr.bytes[hdr.len as usize..hdr.len as usize + 4].copy_from_slice(&mask);
             hdr.len += 4;
             Some(mask)
@@ -206,18 +220,18 @@ impl FrameWriter {
     ///
     /// Clears the WriteBuf, appends payload, applies mask if client,
     /// prepends header. Result: contiguous `[header | masked_payload]`.
-    pub fn encode_text_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+    pub fn encode_text_into(&mut self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
         self.encode_into(0x81, payload, dst);
     }
 
     /// Encode a binary frame into a WriteBuf.
-    pub fn encode_binary_into(&self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+    pub fn encode_binary_into(&mut self, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
         self.encode_into(0x82, payload, dst);
     }
 
     /// Encode a ping frame into a WriteBuf.
     pub fn encode_ping_into(
-        &self,
+        &mut self,
         payload: &[u8],
         dst: &mut crate::buf::WriteBuf,
     ) -> Result<(), EncodeError> {
@@ -230,7 +244,7 @@ impl FrameWriter {
 
     /// Encode a pong frame into a WriteBuf.
     pub fn encode_pong_into(
-        &self,
+        &mut self,
         payload: &[u8],
         dst: &mut crate::buf::WriteBuf,
     ) -> Result<(), EncodeError> {
@@ -243,7 +257,7 @@ impl FrameWriter {
 
     /// Encode a close frame into a WriteBuf.
     pub fn encode_close_into(
-        &self,
+        &mut self,
         code: u16,
         reason: &[u8],
         dst: &mut crate::buf::WriteBuf,
@@ -275,7 +289,11 @@ impl FrameWriter {
     ///     serde_json::to_writer(w, &msg)
     /// })?;
     /// ```
-    pub fn encode_text_writer<F, E>(&self, dst: &mut crate::buf::WriteBuf, f: F) -> Result<(), E>
+    pub fn encode_text_writer<F, E>(
+        &mut self,
+        dst: &mut crate::buf::WriteBuf,
+        f: F,
+    ) -> Result<(), E>
     where
         F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
     {
@@ -283,7 +301,11 @@ impl FrameWriter {
     }
 
     /// Encode a binary frame, writing the payload via a closure.
-    pub fn encode_binary_writer<F, E>(&self, dst: &mut crate::buf::WriteBuf, f: F) -> Result<(), E>
+    pub fn encode_binary_writer<F, E>(
+        &mut self,
+        dst: &mut crate::buf::WriteBuf,
+        f: F,
+    ) -> Result<(), E>
     where
         F: FnOnce(&mut crate::buf::WriteBufWriter<'_>) -> Result<(), E>,
     {
@@ -294,7 +316,7 @@ impl FrameWriter {
     ///
     /// The closure receives `&mut [u8]` of exactly `len` bytes.
     pub fn encode_text_fixed(
-        &self,
+        &mut self,
         dst: &mut crate::buf::WriteBuf,
         len: usize,
         f: impl FnOnce(&mut [u8]),
@@ -304,7 +326,7 @@ impl FrameWriter {
 
     /// Encode a binary frame with a fixed-size payload via closure.
     pub fn encode_binary_fixed(
-        &self,
+        &mut self,
         dst: &mut crate::buf::WriteBuf,
         len: usize,
         f: impl FnOnce(&mut [u8]),
@@ -312,7 +334,7 @@ impl FrameWriter {
         self.encode_fixed_into(0x82, dst, len, f);
     }
 
-    fn encode_into(&self, byte0: u8, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
+    fn encode_into(&mut self, byte0: u8, payload: &[u8], dst: &mut crate::buf::WriteBuf) {
         dst.clear();
         dst.append(payload);
         let (hdr, mask_key) = self.build_header(byte0, payload.len());
@@ -323,7 +345,7 @@ impl FrameWriter {
     }
 
     fn encode_writer_into<F, E>(
-        &self,
+        &mut self,
         byte0: u8,
         dst: &mut crate::buf::WriteBuf,
         f: F,
@@ -346,7 +368,7 @@ impl FrameWriter {
     }
 
     fn encode_fixed_into(
-        &self,
+        &mut self,
         byte0: u8,
         dst: &mut crate::buf::WriteBuf,
         len: usize,
@@ -366,7 +388,23 @@ impl FrameWriter {
     // Internal
     // =========================================================================
 
-    fn encode(&self, byte0: u8, payload: &[u8], dst: &mut [u8]) -> usize {
+    /// Generate a 4-byte mask key from the internal PRNG.
+    ///
+    /// The PRNG is seeded from OS randomness on first use, then produces
+    /// mask keys without syscalls. RFC 6455 §10.3 requires unpredictable
+    /// masking keys — ChaCha8 satisfies this.
+    fn generate_mask(&mut self) -> [u8; 4] {
+        let rng = self.mask_rng.get_or_insert_with(|| {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).expect("OS randomness unavailable");
+            ChaCha8Rng::from_seed(seed)
+        });
+        let mut mask = [0u8; 4];
+        rng.fill_bytes(&mut mask);
+        mask
+    }
+
+    fn encode(&mut self, byte0: u8, payload: &[u8], dst: &mut [u8]) -> usize {
         let mask_bit: u8 = if self.role == Role::Client { 0x80 } else { 0 };
         let payload_len = payload.len();
 
@@ -394,7 +432,7 @@ impl FrameWriter {
 
         // Mask key (client only)
         if self.role == Role::Client {
-            let mask = generate_mask();
+            let mask = self.generate_mask();
             dst[offset..offset + 4].copy_from_slice(&mask);
             offset += 4;
 
@@ -409,23 +447,13 @@ impl FrameWriter {
     }
 }
 
-/// Generate a random 4-byte mask key using OS randomness.
-///
-/// RFC 6455 §10.3 requires unpredictable masking keys to prevent
-/// proxy cache poisoning attacks.
-fn generate_mask() -> [u8; 4] {
-    let mut mask = [0u8; 4];
-    getrandom::fill(&mut mask).expect("OS randomness unavailable");
-    mask
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn encode_text_server() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(5)];
         let n = writer.encode_text(b"Hello", &mut dst);
         assert_eq!(n, 7);
@@ -436,7 +464,7 @@ mod tests {
 
     #[test]
     fn encode_binary_server() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(4)];
         let n = writer.encode_binary(&[0xDE, 0xAD, 0xBE, 0xEF], &mut dst);
         assert_eq!(n, 6);
@@ -446,7 +474,7 @@ mod tests {
 
     #[test]
     fn encode_close_server() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(9)];
         let n = writer.encode_close(1000, b"goodbye", &mut dst).unwrap();
         assert_eq!(dst[0], 0x88); // FIN + Close
@@ -456,7 +484,7 @@ mod tests {
 
     #[test]
     fn encode_ping_server() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(4)];
         let n = writer.encode_ping(b"ping", &mut dst).unwrap();
         assert_eq!(dst[0], 0x89); // FIN + Ping
@@ -465,7 +493,7 @@ mod tests {
 
     #[test]
     fn encode_pong_server() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(4)];
         let n = writer.encode_pong(b"pong", &mut dst).unwrap();
         assert_eq!(dst[0], 0x8A); // FIN + Pong
@@ -474,7 +502,7 @@ mod tests {
 
     #[test]
     fn encode_client_is_masked() {
-        let writer = FrameWriter::new(Role::Client);
+        let mut writer = FrameWriter::new(Role::Client);
         let mut dst = vec![0u8; writer.max_encoded_len(5)];
         let n = writer.encode_text(b"Hello", &mut dst);
         assert_eq!(n, 11); // 2 header + 4 mask + 5 payload
@@ -487,7 +515,7 @@ mod tests {
 
     #[test]
     fn encode_16bit_length() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = vec![0x42; 256];
         let mut dst = vec![0u8; writer.max_encoded_len(256)];
         let n = writer.encode_binary(&payload, &mut dst);
@@ -512,7 +540,7 @@ mod tests {
     #[test]
     fn round_trip_server() {
         use crate::ws::{FrameReader, Message};
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; writer.max_encoded_len(5)];
         let n = writer.encode_text(b"Hello", &mut dst);
 
@@ -527,7 +555,7 @@ mod tests {
     #[test]
     fn round_trip_client() {
         use crate::ws::{FrameReader, Message};
-        let writer = FrameWriter::new(Role::Client);
+        let mut writer = FrameWriter::new(Role::Client);
         let mut dst = vec![0u8; writer.max_encoded_len(5)];
         let n = writer.encode_text(b"Hello", &mut dst);
 
@@ -542,7 +570,7 @@ mod tests {
     #[test]
     fn encode_close_code_round_trip() {
         use crate::ws::{CloseCode, FrameReader, Message};
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; 64];
         let n = writer
             .encode_close_code(CloseCode::Normal, "goodbye", &mut dst)
@@ -561,7 +589,7 @@ mod tests {
 
     #[test]
     fn ping_too_large_returns_err() {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut dst = vec![0u8; 256];
         assert!(matches!(
             writer.encode_ping(&[0; 126], &mut dst),
@@ -572,7 +600,7 @@ mod tests {
     #[test]
     fn encode_text_writer_matches_into() {
         use crate::buf::WriteBuf;
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = b"Hello, world!";
 
         let mut wbuf1 = WriteBuf::new(128, 14);
@@ -592,7 +620,7 @@ mod tests {
     #[test]
     fn encode_binary_fixed_matches_into() {
         use crate::buf::WriteBuf;
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = [0xDE, 0xAD, 0xBE, 0xEF];
 
         let mut wbuf1 = WriteBuf::new(128, 14);
@@ -611,7 +639,7 @@ mod tests {
         use crate::buf::WriteBuf;
         use crate::ws::{FrameReader, Message};
 
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let mut wbuf = WriteBuf::new(128, 14);
         writer
             .encode_text_writer(&mut wbuf, |w| {

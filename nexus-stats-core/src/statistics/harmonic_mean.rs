@@ -67,6 +67,13 @@ macro_rules! impl_harmonic_mean {
                 self.count
             }
 
+            /// Whether at least one sample has been recorded.
+            #[inline]
+            #[must_use]
+            pub fn is_primed(&self) -> bool {
+                self.count > 0
+            }
+
             /// Resets to empty state.
             #[inline]
             pub fn reset(&mut self) {

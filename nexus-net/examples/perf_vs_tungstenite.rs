@@ -265,7 +265,7 @@ fn main() {
 fn bench_nexus_write(label: &str, payload: &[u8], binary: bool) {
     use nexus_net::ws::{FrameWriter, Role};
 
-    let writer = FrameWriter::new(Role::Client); // Client = masked (harder case)
+    let mut writer = FrameWriter::new(Role::Client); // Client = masked (harder case)
     let mut dst = vec![0u8; writer.max_encoded_len(payload.len())];
     let mut samples = vec![0u64; SAMPLES];
 
@@ -286,7 +286,7 @@ fn bench_nexus_write(label: &str, payload: &[u8], binary: bool) {
     print_row(&format!("nexus-net  {label} (masked)"), &mut samples);
 
     // Also server (unmasked) — the market data relay path
-    let writer = FrameWriter::new(Role::Server);
+    let mut writer = FrameWriter::new(Role::Server);
     let mut dst = vec![0u8; writer.max_encoded_len(payload.len())];
 
     for s in &mut samples {

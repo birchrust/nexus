@@ -15,6 +15,8 @@ macro_rules! impl_holt {
         pub struct $name {
             alpha: $ty,
             beta: $ty,
+            one_minus_alpha: $ty,
+            one_minus_beta: $ty,
             level: $ty,
             trend: $ty,
             count: u64,
@@ -73,15 +75,13 @@ macro_rules! impl_holt {
                 } else {
                     let prev_level = self.level;
                     // Level: alpha * sample + (1 - alpha) * (prev_level + prev_trend)
-                    self.level = self.alpha.fma(
-                        sample,
-                        (1.0 as $ty - self.alpha) * (prev_level + self.trend),
-                    );
+                    self.level = self
+                        .alpha
+                        .fma(sample, self.one_minus_alpha * (prev_level + self.trend));
                     // Trend: beta * (level - prev_level) + (1 - beta) * prev_trend
-                    self.trend = self.beta.fma(
-                        self.level - prev_level,
-                        (1.0 as $ty - self.beta) * self.trend,
-                    );
+                    self.trend = self
+                        .beta
+                        .fma(self.level - prev_level, self.one_minus_beta * self.trend);
                 }
 
                 if self.count >= self.min_samples {
@@ -216,6 +216,8 @@ macro_rules! impl_holt {
                 Ok($name {
                     alpha,
                     beta,
+                    one_minus_alpha: 1.0 as $ty - alpha,
+                    one_minus_beta: 1.0 as $ty - beta,
                     level,
                     trend,
                     count,

@@ -1423,6 +1423,7 @@ where
     S: StepCall<Prev::Out>,
 {
     type Out = S::Out;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> S::Out {
         let mid = self.prev.call(world, input);
         self.step.call(world, mid)
@@ -1442,6 +1443,7 @@ where
     S: RefStepCall<Prev::Out, Out = ()>,
 {
     type Out = Prev::Out;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Prev::Out {
         let val = self.prev.call(world, input);
         self.step.call(world, &val);
@@ -1462,6 +1464,7 @@ where
     S: RefStepCall<Prev::Out, Out = bool>,
 {
     type Out = Option<Prev::Out>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<Prev::Out> {
         let val = self.prev.call(world, input);
         if self.step.call(world, &val) {
@@ -1481,6 +1484,7 @@ pub struct DedupNode<Prev, T> {
 
 impl<In, T: PartialEq + Clone, Prev: ChainCall<In, Out = T>> ChainCall<In> for DedupNode<Prev, T> {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         let val = self.prev.call(world, input);
         if self.last.as_ref() == Some(&val) {
@@ -1506,6 +1510,7 @@ where
     S: ScanStepCall<Acc, Prev::Out>,
 {
     type Out = S::Out;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> S::Out {
         let val = self.prev.call(world, input);
         self.step.call(world, &mut self.acc, val)
@@ -1525,6 +1530,7 @@ where
     H: Handler<Prev::Out>,
 {
     type Out = ();
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) {
         let out = self.prev.call(world, input);
         self.handler.run(world, out);
@@ -1545,6 +1551,7 @@ where
     C: for<'a> ChainCall<&'a Prev::Out, Out = ()>,
 {
     type Out = Prev::Out;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Prev::Out {
         let val = self.prev.call(world, input);
         self.side.call(world, &val);
@@ -1569,6 +1576,7 @@ where
     C1: ChainCall<Prev::Out, Out = C0::Out>,
 {
     type Out = C0::Out;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> C0::Out {
         let val = self.prev.call(world, input);
         if self.pred.call(world, &val) {
@@ -1594,6 +1602,7 @@ where
     S: StepCall<T>,
 {
     type Out = Option<S::Out>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<S::Out> {
         self.prev
             .call(world, input)
@@ -1614,6 +1623,7 @@ where
     S: RefStepCall<T, Out = bool>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         self.prev
             .call(world, input)
@@ -1634,6 +1644,7 @@ where
     S: RefStepCall<T, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         self.prev
             .call(world, input)
@@ -1654,6 +1665,7 @@ where
     S: StepCall<T, Out = Option<U>>,
 {
     type Out = Option<U>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<U> {
         self.prev
             .call(world, input)
@@ -1674,6 +1686,7 @@ where
     P: ProducerCall<Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         let result = self.prev.call(world, input);
         if result.is_none() {
@@ -1692,6 +1705,7 @@ pub struct OkOrNode<Prev, E> {
 
 impl<In, T, E: Clone, Prev: ChainCall<In, Out = Option<T>>> ChainCall<In> for OkOrNode<Prev, E> {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
         self.prev.call(world, input).ok_or_else(|| self.err.clone())
     }
@@ -1710,6 +1724,7 @@ where
     P: ProducerCall<Out = E>,
 {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
         self.prev
             .call(world, input)
@@ -1728,6 +1743,7 @@ impl<In, T: Clone, Prev: ChainCall<In, Out = Option<T>>> ChainCall<In>
     for UnwrapOrOptionNode<Prev, T>
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> T {
         self.prev
             .call(world, input)
@@ -1748,6 +1764,7 @@ where
     P: ProducerCall<Out = T>,
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> T {
         self.prev
             .call(world, input)
@@ -1770,6 +1787,7 @@ where
     S: StepCall<T>,
 {
     type Out = Result<S::Out, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<S::Out, E> {
         self.prev
             .call(world, input)
@@ -1790,6 +1808,7 @@ where
     S: StepCall<T, Out = Result<U, E>>,
 {
     type Out = Result<U, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<U, E> {
         self.prev
             .call(world, input)
@@ -1810,6 +1829,7 @@ where
     S: StepCall<E, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         match self.prev.call(world, input) {
             Ok(val) => Some(val),
@@ -1834,6 +1854,7 @@ where
     S: StepCall<E>,
 {
     type Out = Result<T, S::Out>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, S::Out> {
         self.prev
             .call(world, input)
@@ -1854,6 +1875,7 @@ where
     S: StepCall<E, Out = Result<T, E2>>,
 {
     type Out = Result<T, E2>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, E2> {
         self.prev
             .call(world, input)
@@ -1874,6 +1896,7 @@ where
     S: RefStepCall<T, Out = ()>,
 {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
         self.prev
             .call(world, input)
@@ -1894,6 +1917,7 @@ where
     S: RefStepCall<E, Out = ()>,
 {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
         self.prev
             .call(world, input)
@@ -1909,6 +1933,7 @@ pub struct OkResultNode<Prev> {
 
 impl<In, T, E, Prev: ChainCall<In, Out = Result<T, E>>> ChainCall<In> for OkResultNode<Prev> {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         self.prev.call(world, input).ok()
     }
@@ -1925,6 +1950,7 @@ impl<In, T: Clone, E, Prev: ChainCall<In, Out = Result<T, E>>> ChainCall<In>
     for UnwrapOrResultNode<Prev, T>
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> T {
         self.prev
             .call(world, input)
@@ -1945,6 +1971,7 @@ where
     S: StepCall<E, Out = T>,
 {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> T {
         match self.prev.call(world, input) {
             Ok(val) => val,
@@ -1963,6 +1990,7 @@ pub struct NotNode<Prev> {
 
 impl<In, Prev: ChainCall<In, Out = bool>> ChainCall<In> for NotNode<Prev> {
     type Out = bool;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> bool {
         !self.prev.call(world, input)
     }
@@ -1981,6 +2009,7 @@ where
     P: ProducerCall<Out = bool>,
 {
     type Out = bool;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> bool {
         self.prev.call(world, input) && self.producer.call(world)
     }
@@ -1999,6 +2028,7 @@ where
     P: ProducerCall<Out = bool>,
 {
     type Out = bool;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> bool {
         self.prev.call(world, input) || self.producer.call(world)
     }
@@ -2017,6 +2047,7 @@ where
     P: ProducerCall<Out = bool>,
 {
     type Out = bool;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> bool {
         self.prev.call(world, input) ^ self.producer.call(world)
     }
@@ -2032,6 +2063,7 @@ pub struct ClonedNode<Prev> {
 
 impl<'a, In, T: Clone + 'a, Prev: ChainCall<In, Out = &'a T>> ChainCall<In> for ClonedNode<Prev> {
     type Out = T;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> T {
         T::clone(self.prev.call(world, input))
     }
@@ -2047,6 +2079,7 @@ impl<'a, In, T: Clone + 'a, Prev: ChainCall<In, Out = Option<&'a T>>> ChainCall<
     for ClonedOptionNode<Prev>
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         self.prev.call(world, input).cloned()
     }
@@ -2062,6 +2095,7 @@ impl<'a, In, T: Clone + 'a, E, Prev: ChainCall<In, Out = Result<&'a T, E>>> Chai
     for ClonedResultNode<Prev>
 {
     type Out = Result<T, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<T, E> {
         self.prev.call(world, input).cloned()
     }
@@ -2091,6 +2125,7 @@ where
     S: for<'a> StepCall<&'a Prev::Out, Out = NewOut>,
 {
     type Out = NewOut;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> NewOut {
         let out = self.prev.call(world, input);
         self.step.call(world, &out)
@@ -2113,6 +2148,7 @@ where
     S: RefScanStepCall<Acc, Prev::Out>,
 {
     type Out = S::Out;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> S::Out {
         let val = self.prev.call(world, input);
         self.step.call(world, &mut self.acc, &val)
@@ -2141,6 +2177,7 @@ where
     C1: for<'a> ChainCall<&'a Prev::Out, Out = NewOut>,
 {
     type Out = NewOut;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> NewOut {
         let val = self.prev.call(world, input);
         if self.pred.call(world, &val) {
@@ -2167,6 +2204,7 @@ where
     S: for<'a> StepCall<&'a T, Out = U>,
 {
     type Out = Option<U>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<U> {
         self.prev
             .call(world, input)
@@ -2188,6 +2226,7 @@ where
     S: for<'a> StepCall<&'a T, Out = Option<U>>,
 {
     type Out = Option<U>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<U> {
         self.prev
             .call(world, input)
@@ -2209,6 +2248,7 @@ where
     S: for<'a> StepCall<&'a T, Out = U>,
 {
     type Out = Result<U, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<U, E> {
         self.prev
             .call(world, input)
@@ -2230,6 +2270,7 @@ where
     S: for<'a> StepCall<&'a T, Out = Result<U, E>>,
 {
     type Out = Result<U, E>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Result<U, E> {
         self.prev
             .call(world, input)
@@ -2252,6 +2293,7 @@ where
     S: for<'a> StepCall<&'a E, Out = ()>,
 {
     type Out = Option<T>;
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> Option<T> {
         match self.prev.call(world, input) {
             Ok(val) => Some(val),
@@ -2273,6 +2315,7 @@ pub struct DiscardOptionNode<Prev> {
 
 impl<In, Prev: ChainCall<In, Out = Option<()>>> ChainCall<In> for DiscardOptionNode<Prev> {
     type Out = ();
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) {
         let _ = self.prev.call(world, input);
     }
@@ -2643,6 +2686,7 @@ macro_rules! define_splat_builders {
             S: $SplatCall<$($T),+>,
         {
             type Out = S::Out;
+            #[inline(always)]
             fn call(&mut self, world: &mut World, input: In) -> S::Out {
                 let tuple = self.prev.call(world, input);
                 self.step.call_splat(world, $(tuple.$idx),+)

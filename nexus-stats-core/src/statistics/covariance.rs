@@ -46,13 +46,13 @@ macro_rules! impl_covariance {
                 check_finite!(x);
                 check_finite!(y);
                 self.count += 1;
-                let n = self.count as $ty;
+                let inv_n = 1.0 as $ty / self.count as $ty;
 
                 let dx = x - self.mean_x;
                 let dy = y - self.mean_y;
 
-                self.mean_x += dx / n;
-                self.mean_y += dy / n;
+                self.mean_x += dx * inv_n;
+                self.mean_y += dy * inv_n;
 
                 // Use the NEW mean_x but OLD mean_y for the co-moment update
                 let dx2 = x - self.mean_x;

@@ -207,7 +207,7 @@ fn bench_simdutf8_cycles(samples: &mut [u64], size: usize) {
 }
 
 fn bench_encode_cycles(samples: &mut [u64], size: usize, role: Role) {
-    let writer = FrameWriter::new(role);
+    let mut writer = FrameWriter::new(role);
     let payload = vec![b'x'; size];
     let mut dst = vec![0u8; writer.max_encoded_len(size)];
 
@@ -236,7 +236,7 @@ fn bench_encode_cycles(samples: &mut [u64], size: usize, role: Role) {
 }
 
 fn bench_encode_into_cycles(samples: &mut [u64], size: usize) {
-    let writer = FrameWriter::new(Role::Server);
+    let mut writer = FrameWriter::new(Role::Server);
     let payload = vec![b'x'; size];
     let mut wbuf = WriteBuf::new(size + 14, 14);
 
