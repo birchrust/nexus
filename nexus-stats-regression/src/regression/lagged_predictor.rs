@@ -79,7 +79,10 @@ impl LaggedPredictor {
         self.count += 1;
 
         if self.history.len() > self.lag {
-            let lagged_estimate = self.history.pop_front().expect("history non-empty: checked len > lag");
+            let lagged_estimate = self
+                .history
+                .pop_front()
+                .expect("history non-empty: checked len > lag");
             self.regression.update(lagged_estimate, realized)?;
         }
 

@@ -1,6 +1,6 @@
 [package]
 name = "nexus-stats-control"
-version = "1.0.1"
+version = "1.0.2"
 description = "Advanced control and frequency primitives for nexus-stats"
 readme = "README.md"
 edition.workspace = true

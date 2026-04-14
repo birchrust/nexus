@@ -1380,6 +1380,7 @@ where
 {
     type Out = MOut;
 
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> MOut {
         let fork_out = self.chain.call(world, input);
         let o0 = self.arm0.call(world, &fork_out);
@@ -1414,6 +1415,7 @@ where
 {
     type Out = MOut;
 
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> MOut {
         let fork_out = self.chain.call(world, input);
         let o0 = self.arm0.call(world, &fork_out);
@@ -1453,6 +1455,7 @@ where
 {
     type Out = MOut;
 
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) -> MOut {
         let fork_out = self.chain.call(world, input);
         let o0 = self.arm0.call(world, &fork_out);
@@ -1481,6 +1484,7 @@ where
 {
     type Out = ();
 
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) {
         let fork_out = self.chain.call(world, input);
         self.arm0.call(world, &fork_out);
@@ -1508,6 +1512,7 @@ where
 {
     type Out = ();
 
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) {
         let fork_out = self.chain.call(world, input);
         self.arm0.call(world, &fork_out);
@@ -1539,6 +1544,7 @@ where
 {
     type Out = ();
 
+    #[inline(always)]
     fn call(&mut self, world: &mut World, input: In) {
         let fork_out = self.chain.call(world, input);
         self.arm0.call(world, &fork_out);
@@ -1586,6 +1592,7 @@ macro_rules! define_dag_splat_builders {
         {
             type Out = NewOut;
 
+            #[inline(always)]
             fn call(&mut self, world: &mut World, input: In) -> NewOut {
                 let tuple = self.chain.call(world, input);
                 self.merge.call(world, ($(&tuple.$idx,)+))
@@ -1607,6 +1614,7 @@ macro_rules! define_dag_splat_builders {
         {
             type Out = Out;
 
+            #[inline(always)]
             fn call(&mut self, world: &mut World, input: &($($T,)+)) -> Out {
                 self.merge.call(world, ($(&input.$idx,)+))
             }

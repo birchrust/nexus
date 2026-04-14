@@ -27,6 +27,7 @@ macro_rules! impl_kama {
             value: $ty,
             fast_sc: $ty,
             slow_sc: $ty,
+            sc_range: $ty,
             volatility_sum: $ty,
             count: u64,
             min_samples: u64,
@@ -136,8 +137,8 @@ macro_rules! impl_kama {
                     0.0 as $ty
                 };
 
-                // Smoothing constant: sc = (er * (fast - slow) + slow)^2
-                let sc = er * (self.fast_sc - self.slow_sc) + self.slow_sc;
+                // Smoothing constant: sc = (er * sc_range + slow)^2
+                let sc = er * self.sc_range + self.slow_sc;
                 let alpha = sc * sc;
 
                 self.value = alpha.fma(sample - self.value, self.value);
@@ -258,13 +259,17 @@ macro_rules! impl_kama {
                 let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0.0 as $ty; window]);
                 let ring = vec.as_mut_ptr();
 
+                let fast_sc = 2.0 as $ty / (self.fast_span as $ty + 1.0 as $ty);
+                let slow_sc = 2.0 as $ty / (self.slow_span as $ty + 1.0 as $ty);
+
                 Ok($name {
                     ring,
                     window,
                     head: 0,
                     value: 0.0 as $ty,
-                    fast_sc: 2.0 as $ty / (self.fast_span as $ty + 1.0 as $ty),
-                    slow_sc: 2.0 as $ty / (self.slow_span as $ty + 1.0 as $ty),
+                    fast_sc,
+                    slow_sc,
+                    sc_range: fast_sc - slow_sc,
                     volatility_sum: 0.0 as $ty,
                     count: 0,
                     min_samples,
@@ -295,6 +300,7 @@ macro_rules! impl_kama {
                     value: self.value,
                     fast_sc: self.fast_sc,
                     slow_sc: self.slow_sc,
+                    sc_range: self.sc_range,
                     volatility_sum: self.volatility_sum,
                     count: self.count,
                     min_samples: self.min_samples,

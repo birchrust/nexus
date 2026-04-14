@@ -1,5 +1,3 @@
-use core::hash::Hash;
-
 /// Space-Saving algorithm for top-K frequent item tracking.
 ///
 /// Tracks the `CAP` most frequent items in a stream with bounded memory.
@@ -17,7 +15,7 @@ use core::hash::Hash;
 /// be tracked. Reported counts may overestimate by at most `total / CAP`
 /// (the overcount property).
 #[derive(Debug, Clone)]
-pub struct TopK<K: Eq + Hash + Clone, const CAP: usize> {
+pub struct TopK<K: Eq + Clone, const CAP: usize> {
     entries: [Option<Entry<K>>; CAP],
     len: usize,
     total: u64,
@@ -29,7 +27,7 @@ struct Entry<K> {
     count: u64,
 }
 
-impl<K: Eq + Hash + Clone, const CAP: usize> TopK<K, CAP> {
+impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
     /// Creates a new empty tracker.
     ///
     /// # Panics
@@ -154,7 +152,7 @@ impl<K: Eq + Hash + Clone, const CAP: usize> TopK<K, CAP> {
     }
 }
 
-impl<K: Eq + Hash + Clone, const CAP: usize> Default for TopK<K, CAP> {
+impl<K: Eq + Clone, const CAP: usize> Default for TopK<K, CAP> {
     /// Creates a new empty tracker.
     ///
     /// # Panics

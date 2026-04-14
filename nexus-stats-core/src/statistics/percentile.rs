@@ -50,6 +50,8 @@ macro_rules! impl_percentile {
             dn_inc: [$ty; 5],
             /// Target percentile in (0, 1).
             p: $ty,
+            /// Precomputed minimum samples for `is_primed()`.
+            min_samples: u64,
             /// Total observations processed.
             count: u64,
         }
@@ -222,10 +224,7 @@ macro_rules! impl_percentile {
             #[inline]
             #[must_use]
             pub fn is_primed(&self) -> bool {
-                // More observations needed for extreme percentiles.
-                // p=0.50 → min 5, p=0.99 → min 100, p=0.999 → min 1000.
-                let min_samples = (1.0 as $ty / (self.p * (1.0 as $ty - self.p))) as u64;
-                self.count >= min_samples.max(5)
+                self.count >= self.min_samples
             }
 
             /// Current minimum observed value, or `None` if empty.
@@ -311,6 +310,10 @@ macro_rules! impl_percentile {
                     ));
                 }
 
+                // Precompute min_samples: more observations for extreme percentiles.
+                // p=0.50 → 5, p=0.99 → 100, p=0.999 → 1000.
+                let min_samples = ((1.0 as $ty / (p * (1.0 as $ty - p))) as u64).max(5);
+
                 Ok($name {
                     q: [0.0 as $ty; 5],
                     n: [0.0 as $ty; 5],
@@ -323,6 +326,7 @@ macro_rules! impl_percentile {
                         1.0 as $ty,
                     ],
                     p,
+                    min_samples,
                     count: 0,
                 })
             }

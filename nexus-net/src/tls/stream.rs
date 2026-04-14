@@ -74,7 +74,7 @@ impl<S: Read + Write> TlsStream<S> {
     /// Call once after construction, before any read/write.
     pub fn handshake(&mut self) -> Result<(), super::TlsError> {
         while self.codec.is_handshaking() {
-            if self.codec.wants_write() {
+            while self.codec.wants_write() {
                 self.codec.write_tls_to(&mut self.stream)?;
             }
             if self.codec.wants_read() {
@@ -83,7 +83,7 @@ impl<S: Read + Write> TlsStream<S> {
             }
         }
         // Flush any remaining handshake data.
-        if self.codec.wants_write() {
+        while self.codec.wants_write() {
             self.codec.write_tls_to(&mut self.stream)?;
         }
         Ok(())
@@ -150,11 +150,11 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> TlsStream<S> {
 
         let mut tmp = [0u8; 8192];
         while self.codec.is_handshaking() {
-            if self.codec.wants_write() {
+            while self.codec.wants_write() {
                 let n = self.codec.write_tls_to(&mut tmp.as_mut_slice())?;
                 self.stream.write_all(&tmp[..n]).await?;
-                self.stream.flush().await?;
             }
+            self.stream.flush().await?;
             if self.codec.wants_read() {
                 let n = self.stream.read(&mut tmp).await?;
                 if n == 0 {
@@ -167,11 +167,11 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> TlsStream<S> {
                 self.codec.process_new_packets()?;
             }
         }
-        if self.codec.wants_write() {
+        while self.codec.wants_write() {
             let n = self.codec.write_tls_to(&mut tmp.as_mut_slice())?;
             self.stream.write_all(&tmp[..n]).await?;
-            self.stream.flush().await?;
         }
+        self.stream.flush().await?;
         Ok(())
     }
 }

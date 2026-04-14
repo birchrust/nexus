@@ -12,7 +12,9 @@ macro_rules! impl_spring {
         /// - Any "chase this value" without PID complexity
         #[derive(Debug, Clone)]
         pub struct $name {
+            #[allow(dead_code)]
             smooth_time: $ty,
+            omega: $ty,
             value: $ty,
             velocity: $ty,
             initialized: bool,
@@ -33,6 +35,7 @@ macro_rules! impl_spring {
                 }
                 Ok(Self {
                     smooth_time,
+                    omega: 2.0 as $ty / smooth_time,
                     value: 0.0 as $ty,
                     velocity: 0.0 as $ty,
                     initialized: false,
@@ -62,16 +65,14 @@ macro_rules! impl_spring {
                 }
 
                 // Critically damped spring using Padé approximant
-                // omega = 2 / smooth_time (natural frequency for critical damping)
-                let omega = 2.0 as $ty / self.smooth_time;
-                let x = omega * dt;
+                let x = self.omega * dt;
                 // Padé(2,2) approximant to exp(-x): (1 - x/2 + x²/12) / (1 + x/2 + x²/12)
                 // Simplified: use exact exp(-x) via (1 + x + x²/2)⁻¹ approximation
                 let exp_neg = 1.0 as $ty / (x.fma(x.fma(0.5 as $ty, 1.0 as $ty), 1.0 as $ty));
 
                 let delta = self.value - target;
-                let temp = (self.velocity + omega * delta) * dt;
-                self.velocity = (self.velocity - omega * temp) * exp_neg;
+                let temp = self.omega.fma(delta, self.velocity) * dt;
+                self.velocity = self.omega.fma(-temp, self.velocity) * exp_neg;
                 self.value = (delta + temp).fma(exp_neg, target);
 
                 Ok(self.value)

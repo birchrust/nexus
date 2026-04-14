@@ -10,7 +10,7 @@ use nexus_net::ws::{FrameWriter, Role};
 fn bench_encode_text_server(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_text_server");
     for size in [32, 128, 512, 2048, 4096] {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = vec![b'x'; size];
         let mut dst = vec![0u8; writer.max_encoded_len(size)];
         group.throughput(Throughput::Bytes(size as u64));
@@ -27,7 +27,7 @@ fn bench_encode_text_server(c: &mut Criterion) {
 fn bench_encode_text_client(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_text_client");
     for size in [32, 128, 512, 2048, 4096] {
-        let writer = FrameWriter::new(Role::Client);
+        let mut writer = FrameWriter::new(Role::Client);
         let payload = vec![b'x'; size];
         let mut dst = vec![0u8; writer.max_encoded_len(size)];
         group.throughput(Throughput::Bytes(size as u64));
@@ -44,7 +44,7 @@ fn bench_encode_text_client(c: &mut Criterion) {
 fn bench_encode_into_writebuf(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_into_writebuf");
     for size in [32, 128, 512, 2048, 4096] {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = vec![b'x'; size];
         let mut wbuf = WriteBuf::new(size + 14, 14);
         group.throughput(Throughput::Bytes(size as u64));
@@ -61,7 +61,7 @@ fn bench_encode_into_writebuf(c: &mut Criterion) {
 fn bench_encode_writer(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_text_writer");
     for size in [32, 128, 512, 2048, 4096] {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = vec![b'x'; size];
         let mut wbuf = WriteBuf::new(size + 14, 14);
         group.throughput(Throughput::Bytes(size as u64));
@@ -83,7 +83,7 @@ fn bench_encode_writer(c: &mut Criterion) {
 fn bench_encode_fixed(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_text_fixed");
     for size in [32, 128, 512, 2048, 4096] {
-        let writer = FrameWriter::new(Role::Server);
+        let mut writer = FrameWriter::new(Role::Server);
         let payload = vec![b'x'; size];
         let mut wbuf = WriteBuf::new(size + 14, 14);
         group.throughput(Throughput::Bytes(size as u64));
