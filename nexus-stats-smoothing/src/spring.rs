@@ -12,7 +12,6 @@ macro_rules! impl_spring {
         /// - Any "chase this value" without PID complexity
         #[derive(Debug, Clone)]
         pub struct $name {
-            #[allow(dead_code)]
             smooth_time: $ty,
             omega: $ty,
             value: $ty,
@@ -76,6 +75,13 @@ macro_rules! impl_spring {
                 self.value = (delta + temp).fma(exp_neg, target);
 
                 Ok(self.value)
+            }
+
+            /// The configured smooth time.
+            #[inline]
+            #[must_use]
+            pub fn smooth_time(&self) -> $ty {
+                self.smooth_time
             }
 
             /// Current output value.

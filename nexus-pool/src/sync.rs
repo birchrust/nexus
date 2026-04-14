@@ -204,11 +204,7 @@ impl<T> Pool<T> {
         R: Fn(&mut T) + Send + Sync + 'static,
     {
         assert!(capacity > 0, "capacity must be non-zero");
-        assert!(
-            capacity < NONE,
-            "capacity must be less than {}",
-            NONE
-        );
+        assert!(capacity < NONE, "capacity must be less than {}", NONE);
 
         // Build slots with linked free list: 0 -> 1 -> 2 -> ... -> NONE
         let slots: Box<[Slot<T>]> = (0..capacity)

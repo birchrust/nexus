@@ -42,9 +42,7 @@ pub struct ClientSlot {
 impl ClientSlot {
     /// Whether the connection is dead and needs reconnect.
     pub fn needs_reconnect(&self) -> bool {
-        self.conn
-            .as_ref()
-            .is_none_or(HttpConnection::is_poisoned)
+        self.conn.as_ref().is_none_or(HttpConnection::is_poisoned)
     }
 
     /// Split borrow: get mutable references to conn + reader

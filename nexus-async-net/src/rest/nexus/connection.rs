@@ -235,10 +235,7 @@ impl HttpConnectionBuilder {
     }
 
     /// Connect with a pre-connected async stream.
-    pub fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(
-        self,
-        stream: S,
-    ) -> HttpConnection<S> {
+    pub fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(self, stream: S) -> HttpConnection<S> {
         HttpConnection {
             stream,
             poisoned: false,

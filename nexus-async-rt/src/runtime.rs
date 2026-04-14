@@ -249,7 +249,10 @@ impl Runtime {
     /// Install signal handlers for SIGTERM and SIGINT.
     pub fn install_signal_handlers(&self) {
         // SAFETY: single-threaded, called during setup before block_on.
-        crate::shutdown::install_signal_handlers(&self.shutdown.flag_ptr(), &unsafe { &*self.io.get() }.mio_waker());
+        crate::shutdown::install_signal_handlers(
+            &self.shutdown.flag_ptr(),
+            &unsafe { &*self.io.get() }.mio_waker(),
+        );
     }
 
     /// Number of live spawned tasks.
