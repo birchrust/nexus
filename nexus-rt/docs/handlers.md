@@ -7,50 +7,74 @@ parameters at build time and dispatches with zero overhead.
 ## Writing a Handler
 
 ```rust
+use nexus_rt::{Res, ResMut, Resource};
+
+#[derive(Resource)]
+struct OrderBook { depth: u64 }
+#[derive(Resource)]
+struct Config { max_depth: u64 }
+
 fn process_order(
     mut state: ResMut<OrderBook>,   // exclusive write access
     config: Res<Config>,             // shared read access
-    clock: Res<Clock>,               // shared read access
-    event: OrderEvent,               // the event being processed
+    event: u64,                      // the event being processed
 ) {
-    state.apply(event, config.max_depth);
-    log::info!("processed at {}", clock.unix_nanos());
+    state.depth += event.min(config.max_depth);
 }
 ```
 
 **Rules:**
-- Must be a **named function** (not a closure — see below)
-- Parameters are `Res<T>`, `ResMut<T>`, `Local<T>`, `Option<Res<T>>`, or the event type
+- Must be a **named function** (not a closure -- see below)
+- Parameters are `Res<T>`, `ResMut<T>`, `Local<T>`, `Option<Res<T>>`,
+  `Seq`, `SeqMut`, `Shutdown`, `RegistryRef`, or the event type
 - The event type (if present) must be the last parameter
 - Up to 8 resource parameters are supported
 
-## Building a Handler
+## Building and Dispatching a Handler
 
-Convert a function into a `Handler` using `into_handler`:
+Convert a function into a `Handler` using `into_handler`, then call `run`:
 
 ```rust
-let registry = world.registry();
-let handler = process_order.into_handler(registry);
+use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
+
+#[derive(Resource)]
+struct Counter(u64);
+
+fn tick(mut counter: ResMut<Counter>, event: u32) {
+    counter.0 += event as u64;
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(Counter(0));
+let mut world = wb.build();
+
+let mut handler = tick.into_handler(world.registry());
+
+handler.run(&mut world, 10u32);
+handler.run(&mut world, 5u32);
+
+assert_eq!(world.resource::<Counter>().0, 15);
 ```
 
 `into_handler` resolves all parameter types against the registry at build
 time, producing pre-resolved `ResourceId`s. At dispatch time, there's no
-type lookup — just pointer dereferences.
+type lookup -- just pointer dereferences.
 
-## Dispatch
+## Handler Trait
 
 Handlers implement the `Handler<E>` trait:
 
 ```rust
 pub trait Handler<E>: Send {
     fn run(&mut self, world: &mut World, event: E);
+    fn name(&self) -> &'static str { "<unnamed>" }
 }
 ```
 
 The framework calls `run()` with the World and the event. The handler's
 internal state (resolved ResourceIds, Local storage) handles the rest.
 
-## Parameter Types
+## Parameter Types Reference
 
 | Parameter | Access | When to Use |
 |-----------|--------|------------|
@@ -59,87 +83,400 @@ internal state (resolved ResourceIds, Local storage) handles the rest.
 | `Local<T>` | `&mut T` (per-handler) | State private to this handler instance |
 | `Option<Res<T>>` | `Option<&T>` | Resource that may not be registered |
 | `Option<ResMut<T>>` | `Option<&mut T>` | Same, mutable |
-| `#[derive(Param)]` struct | grouped fields | Bundle multiple params into one struct |
-| Event type | by value | The event being processed |
+| `Seq` | `Sequence` (read-only) | Current event sequence number |
+| `SeqMut<'_>` | mutable sequence | Advance the sequence (stamp outbound) |
+| `Shutdown<'_>` | `&AtomicBool` | Trigger cooperative shutdown |
+| `RegistryRef<'_>` | `&Registry` | Create handlers at runtime |
+| `#[derive(Param)]` struct | grouped fields | Bundle multiple params into one |
+| Event type | by value | The event being processed (last param) |
 
-## Dynamic Dispatch (Virtual)
+## Multiple Resources
 
-For collections of handlers with different concrete types:
+Handlers can access up to 8 resources simultaneously:
 
 ```rust
-// Box<dyn Handler<E>> — heap allocated
-let handler: Box<dyn Handler<MyEvent>> = Box::new(
-    my_function.into_handler(registry)
-);
+use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
 
-// FlatVirtual<E> — inline storage, no heap (requires smartptr feature)
-let handler: FlatVirtual<MyEvent> = FlatVirtual::new(
-    my_function.into_handler(registry)
-);
+#[derive(Resource)]
+struct Prices { best_bid: f64, best_ask: f64 }
+#[derive(Resource)]
+struct Position { qty: i64 }
+#[derive(Resource)]
+struct RiskLimits { max_position: i64 }
+
+fn check_risk(
+    prices: Res<Prices>,
+    position: Res<Position>,
+    limits: Res<RiskLimits>,
+    _event: (),
+) {
+    let exposure = position.qty.abs() as f64 * prices.best_ask;
+    if position.qty.abs() > limits.max_position {
+        // breach -- would trigger alert
+    }
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(Prices { best_bid: 100.0, best_ask: 101.0 });
+wb.register(Position { qty: 50 });
+wb.register(RiskLimits { max_position: 100 });
+let mut world = wb.build();
+
+let mut handler = check_risk.into_handler(world.registry());
+handler.run(&mut world, ());
 ```
 
-## Callbacks (Handler with Context)
+## Optional Resources
 
-For handlers that own state beyond what's in the World:
+Handlers can declare optional dependencies that resolve to `None` if the
+resource was not registered:
 
 ```rust
-use nexus_rt::{Callback, Resource};
+use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler, Handler, Resource};
 
-struct MyContext {
-    connection_id: u64,
-    buffer: Vec<u8>,
+#[derive(Resource)]
+struct Counter(u64);
+#[derive(Resource)]
+struct DebugConfig { verbose: bool }
+
+fn on_tick(
+    mut counter: ResMut<Counter>,
+    debug: Option<Res<DebugConfig>>,
+    event: u64,
+) {
+    counter.0 += event;
+    if let Some(debug) = debug {
+        if debug.verbose {
+            // extra logging when debug is registered
+        }
+    }
+}
+
+// DebugConfig is NOT registered -- handler still works
+let mut wb = WorldBuilder::new();
+wb.register(Counter(0));
+let mut world = wb.build();
+
+let mut handler = on_tick.into_handler(world.registry());
+handler.run(&mut world, 5u64);
+assert_eq!(world.resource::<Counter>().0, 5);
+```
+
+## Local Per-Handler State
+
+`Local<T>` stores state private to a handler instance. It lives inside
+the handler, not in the World. Each handler instance gets its own copy.
+`T` must implement `Default`.
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, Local, IntoHandler, Handler, Resource};
+
+#[derive(Resource)]
+struct Total(u64);
+
+fn accumulate(mut local: Local<u64>, mut total: ResMut<Total>, event: u64) {
+    *local += 1;  // counts calls for THIS handler instance
+    total.0 += event;
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(Total(0));
+let mut world = wb.build();
+
+let mut handler = accumulate.into_handler(world.registry());
+handler.run(&mut world, 10u64);
+handler.run(&mut world, 20u64);
+
+assert_eq!(world.resource::<Total>().0, 30);
+// local counter is 2, but only accessible inside the handler
+```
+
+## Seq and SeqMut: Sequence Numbers
+
+`Seq` reads the world's current sequence number. `SeqMut` can advance it --
+useful for stamping outbound messages with monotonic sequence numbers.
+
+```rust
+use nexus_rt::{WorldBuilder, IntoHandler, Handler, Seq, SeqMut, Resource, ResMut};
+
+#[derive(Resource)]
+struct LastSeq(i64);
+
+fn stamp_outbound(seq: Seq, mut last: ResMut<LastSeq>, _event: ()) {
+    last.0 = seq.get().as_i64();
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(LastSeq(0));
+let mut world = wb.build();
+
+// Advance the sequence (normally done by the driver)
+world.next_sequence();
+
+let mut handler = stamp_outbound.into_handler(world.registry());
+handler.run(&mut world, ());
+assert_eq!(world.resource::<LastSeq>().0, 1);
+```
+
+## Shutdown Flag
+
+`Shutdown` accesses the world's cooperative shutdown flag. Handlers trigger
+shutdown; the poll loop checks it each iteration.
+
+```rust
+use nexus_rt::{WorldBuilder, IntoHandler, Handler};
+use nexus_rt::shutdown::Shutdown;
+
+fn on_fatal(shutdown: Shutdown, _event: ()) {
+    shutdown.trigger();
+}
+
+let mut world = WorldBuilder::new().build();
+let shutdown_handle = world.shutdown_handle();
+
+let mut handler = on_fatal.into_handler(world.registry());
+handler.run(&mut world, ());
+
+assert!(shutdown_handle.is_shutdown());
+```
+
+## RegistryRef: Creating Handlers at Runtime
+
+`RegistryRef` gives read-only registry access during dispatch, enabling
+dynamic handler creation (e.g., when a new connection arrives):
+
+```rust
+use nexus_rt::{
+    WorldBuilder, ResMut, IntoHandler, IntoCallback, Handler,
+    Resource, RegistryRef, Virtual,
+};
+
+#[derive(Resource)]
+struct Connections {
+    handlers: Vec<Virtual<u64>>,
+}
+
+struct ConnCtx { id: u64 }
+
+fn on_data(ctx: &mut ConnCtx, _event: u64) {
+    // per-connection processing
+}
+
+fn on_new_connection(
+    mut conns: ResMut<Connections>,
+    reg: RegistryRef,
+    event: u64,
+) {
+    let ctx = ConnCtx { id: event };
+    let cb = on_data.into_callback(ctx, &reg);
+    conns.handlers.push(Box::new(cb));
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(Connections { handlers: vec![] });
+let mut world = wb.build();
+
+let mut handler = on_new_connection.into_handler(world.registry());
+handler.run(&mut world, 42u64);
+
+assert_eq!(world.resource::<Connections>().handlers.len(), 1);
+```
+
+## Callback: Handler with Owned Context
+
+For handlers that own per-instance state beyond what's in the World,
+use `Callback` via `IntoCallback`. The context is the first parameter:
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler, Resource};
+
+struct SessionCtx {
+    session_id: u64,
+    message_count: u64,
 }
 
 #[derive(Resource)]
-struct SharedState {
-    bytes_received: u64,
-}
+struct TotalMessages(u64);
 
-fn on_data(
-    ctx: &mut MyContext,            // owned context
-    state: ResMut<SharedState>,     // world resource
-    event: DataEvent,
+fn on_message(
+    ctx: &mut SessionCtx,           // owned context -- first param
+    mut total: ResMut<TotalMessages>, // world resource
+    event: u64,
 ) {
-    ctx.buffer.extend_from_slice(&event.data);
-    state.bytes_received += event.data.len() as u64;
+    ctx.message_count += 1;
+    total.0 += event;
 }
 
-let callback = on_data.into_callback(
-    MyContext { connection_id: 42, buffer: Vec::new() },
-    registry,
+let mut wb = WorldBuilder::new();
+wb.register(TotalMessages(0));
+let mut world = wb.build();
+
+let mut cb = on_message.into_callback(
+    SessionCtx { session_id: 1, message_count: 0 },
+    world.registry(),
 );
+
+cb.run(&mut world, 10u64);
+cb.run(&mut world, 20u64);
+
+// Context is pub -- accessible outside dispatch
+assert_eq!(cb.ctx.message_count, 2);
+assert_eq!(cb.ctx.session_id, 1);
+assert_eq!(world.resource::<TotalMessages>().0, 30);
 ```
 
-The context is stored inside the callback — not in the World. Each
-callback instance has its own context.
+See [callbacks.md](callbacks.md) for the full callback guide including
+templates and pipeline integration.
+
+## OpaqueHandler: Raw World Access
+
+When you need `&mut World` directly (e.g., for dynamic resource access),
+use `OpaqueHandler`. This is an escape hatch -- prefer typed parameters.
+
+```rust
+use nexus_rt::{WorldBuilder, Handler, Resource, OpaqueHandler};
+
+#[derive(Resource)]
+struct Counter(u64);
+
+let mut wb = WorldBuilder::new();
+wb.register(Counter(0));
+let mut world = wb.build();
+
+let mut handler = OpaqueHandler::new(|world: &mut nexus_rt::World, event: u64| {
+    world.resource_mut::<Counter>().0 += event;
+});
+
+handler.run(&mut world, 5u64);
+assert_eq!(world.resource::<Counter>().0, 5);
+```
+
+`OpaqueHandler` does a HashMap lookup per resource access (cold path).
+Named functions with `Res<T>`/`ResMut<T>` parameters get direct pointer
+access (hot path).
+
+## Virtual: Heterogeneous Handler Collections
+
+`Virtual<E>` is `Box<dyn Handler<E>>` -- for storing handlers with different
+concrete types in a single collection:
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, IntoHandler, IntoCallback, Handler, Resource, Virtual};
+
+#[derive(Resource)]
+struct State(u64);
+
+fn add(mut s: ResMut<State>, event: u64) { s.0 += event; }
+fn mul(ctx: &mut u64, mut s: ResMut<State>, _event: u64) { s.0 *= *ctx; }
+
+let mut wb = WorldBuilder::new();
+wb.register(State(0));
+let mut world = wb.build();
+let reg = world.registry();
+
+let h1: Virtual<u64> = Box::new(add.into_handler(reg));
+let h2: Virtual<u64> = Box::new(mul.into_callback(3u64, reg));
+
+let mut handlers: Vec<Virtual<u64>> = vec![h1, h2];
+
+for h in &mut handlers {
+    h.run(&mut world, 5u64);
+}
+
+// 0 + 5 = 5, then 5 * 3 = 15
+assert_eq!(world.resource::<State>().0, 15);
+```
+
+With the `smartptr` feature, `FlatVirtual<E>` stores handlers inline (no
+heap allocation, panics if too large) and `FlexVirtual<E>` stores inline
+with heap fallback.
+
+## HandlerFn Type Alias
+
+`HandlerFn<F, Params>` is the concrete type produced by `into_handler`.
+Use it when you need to name the type rather than box it:
+
+```rust
+use nexus_rt::{WorldBuilder, ResMut, IntoHandler, Handler, Resource, HandlerFn};
+
+#[derive(Resource)]
+struct Val(u64);
+
+fn inc(mut v: ResMut<Val>, event: u64) { v.0 += event; }
+
+let mut wb = WorldBuilder::new();
+wb.register(Val(0));
+let mut world = wb.build();
+
+// HandlerFn names the concrete type -- no heap allocation
+let mut handler: HandlerFn<fn(ResMut<Val>, u64), _> = inc.into_handler(world.registry());
+handler.run(&mut world, 1u64);
+assert_eq!(world.resource::<Val>().0, 1);
+```
+
+In practice, `let mut h = f.into_handler(reg)` with type inference is
+simpler. `HandlerFn` is useful when you need the type for struct fields
+or explicit annotations.
+
+## Pre-built Handlers as IntoHandler
+
+Any type that already implements `Handler<E>` -- including `Pipeline`,
+`Dag`, `Callback`, and `TemplatedHandler` -- satisfies `IntoHandler<E, Resolved>`
+via a blanket impl. This means you can pass a built pipeline directly
+to any API that expects `impl IntoHandler`:
+
+```rust
+use nexus_rt::{WorldBuilder, PipelineBuilder, ResMut, IntoHandler, Handler, Resource};
+
+#[derive(Resource)]
+struct Out(u64);
+
+fn double(x: u32) -> u64 { x as u64 * 2 }
+fn store(mut out: ResMut<Out>, x: u64) { out.0 = x; }
+
+let mut wb = WorldBuilder::new();
+wb.register(Out(0));
+let mut world = wb.build();
+let reg = world.registry();
+
+let pipeline = PipelineBuilder::<u32>::new()
+    .then(double, reg)
+    .then(store, reg)
+    .build();
+
+// Pipeline IS a Handler -- pass it directly where Handler is expected
+let mut handler: Box<dyn Handler<u32>> = Box::new(pipeline);
+handler.run(&mut world, 5u32);
+assert_eq!(world.resource::<Out>().0, 10);
+```
 
 ## Returning Handlers from Functions (Rust 2024)
 
 When you write a factory function that takes `&Registry` and returns
 `impl Handler<E>`, Rust 2024's default capture rules hold the registry
-borrow in the return type — blocking subsequent `WorldBuilder` calls.
+borrow in the return type -- blocking subsequent `WorldBuilder` calls.
 
 Add `+ use<...>` listing only the type parameters the return type holds:
 
 ```rust
-fn build_handler<C: Config>(
-    reg: &Registry,
-) -> impl Handler<Order> + use<C> {
-    process_order::<C>.into_handler(reg)
+use nexus_rt::{Handler, IntoHandler, Res, ResMut, Resource};
+use nexus_rt::world::Registry;
+
+fn build_handler(reg: &Registry) -> impl Handler<u32> + use<> {
+    tick.into_handler(reg)
+}
+
+#[derive(Resource)]
+struct Counter(u64);
+
+fn tick(mut c: ResMut<Counter>, event: u32) {
+    c.0 += event as u64;
 }
 ```
 
-The `&Registry` is consumed during `into_handler` — the returned handler
+The `&Registry` is consumed during `into_handler` -- the returned handler
 holds pre-resolved `ResourceId`s, not a reference to the registry. The
-`use<C>` annotation tells the compiler exactly that.
-
-If there are no type parameters to capture, use an empty `use<>`:
-
-```rust
-fn build_handler(reg: &Registry) -> impl Handler<Order> + use<> {
-    process_order.into_handler(reg)
-}
-```
+`use<>` annotation tells the compiler exactly that.
 
 This applies to all handler-producing patterns: `into_handler`,
 `into_callback`, `PipelineBuilder::build()`, `DagBuilder::build()`,
@@ -148,47 +485,30 @@ and `template.generate()`.
 ## Why Named Functions?
 
 ```rust
-// ✓ Works
-fn my_handler(state: ResMut<MyState>, event: MyEvent) { ... }
-let h = my_handler.into_handler(registry);
+// Works
+fn my_handler(state: ResMut<MyState>, event: MyEvent) { /* ... */ }
 
-// ✗ Does not compile
-let h = (|state: ResMut<MyState>, event: MyEvent| { ... }).into_handler(registry);
+// Does not compile
+let h = (|state: ResMut<MyState>, event: MyEvent| { /* ... */ }).into_handler(registry);
 ```
 
 The parameter resolution uses Higher-Ranked Trait Bounds (HRTBs) with
 a double-bound pattern: one bound for type inference, another for
 dispatch. Closure types are unnameable and interact poorly with this
-pattern — the compiler can't infer the parameter types through the
+pattern -- the compiler can't infer the parameter types through the
 HRTB. Named functions have concrete types that resolve cleanly.
 
 This is the same limitation Bevy has with its systems. In practice,
-handlers are typically standalone functions — it's a natural code
+handlers are typically standalone functions -- it's a natural code
 organization pattern.
 
 **Exception:** Arity-0 closures (no resource parameters) DO work:
 
 ```rust
-// ✓ Works — no Res/ResMut parameters
-let h = (|event: MyEvent| { println!("{event:?}"); }).into_handler(registry);
+use nexus_rt::{WorldBuilder, IntoHandler, Handler};
+
+let world = WorldBuilder::new().build();
+// Works -- no Res/ResMut parameters
+let mut h = (|event: u32| { let _ = event; }).into_handler(world.registry());
+h.run(&mut { WorldBuilder::new().build() }, 42u32);
 ```
-
-## Pre-built handlers as `IntoHandler`
-
-Any type that already implements `Handler<E>` — including `Pipeline`,
-`Dag`, `Callback`, and `TemplatedHandler` — satisfies `IntoHandler<E, Resolved>`
-via a blanket impl. This means you can pass a built pipeline directly
-to any API that expects `impl IntoHandler`:
-
-```rust
-let pipeline = PipelineBuilder::<Order>::new()
-    .then(validate, reg)
-    .dispatch(submit.into_handler(reg))
-    .build();
-
-// Pass directly — no wrapping needed.
-// The `Resolved` marker type makes this work.
-driver.register(pipeline, reg);
-```
-
-Users never need to name `Resolved` — it's inferred automatically.

@@ -2,16 +2,26 @@
 
 Event-driven runtime with zero-cost dispatch.
 
+## Architecture
+
+- [Architecture](ARCHITECTURE.md) — Design philosophy, component map, data flow
+- [Unsafe & Soundness](UNSAFE_AND_SOUNDNESS.md) — Every unsafe pattern, invariants, miri coverage
+
 ## User Guide
 
 - [Getting Started](getting-started.md) — Build your first nexus-rt application
 - [World & Resources](world.md) — The resource model: registration, access, lifetimes
 - [Handlers](handlers.md) — Writing handlers, parameter resolution, named functions
-- [Pipelines & DAGs](pipelines.md) — Composing processing chains
+- [Callbacks](callbacks.md) — Handlers with owned mutable state
+- [Pipelines](pipelines.md) — Linear processing chains with combinators
+- [DAGs](dag.md) — Data-flow graphs with fan-out and merge
+- [Reactors](reactors.md) — Interest-based dynamic dispatch (feature: reactors)
+- [Templates](templates.md) — Stamping handlers from blueprints
 - [Drivers](drivers.md) — The installer/poller pattern for IO and timers
 - [Clock](clock.md) — Time sources: realtime, test, historical
+- [Poll Loop](poll-loop.md) — Building your event loop
+- [Testing Guide](testing-guide.md) — TestHarness, TestTimerDriver, deterministic replay
 - [Derive Macros](derives.md) — Resource, Param, Deref/DerefMut derives and new_resource!
-- [Templates](templates.md) — Advanced: blueprints for handler factories
 
 ## Internal Reference
 
