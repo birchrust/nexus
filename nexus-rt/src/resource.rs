@@ -145,8 +145,8 @@ pub struct Seq(pub(crate) Sequence);
 impl Seq {
     /// Returns the current sequence value.
     #[inline(always)]
-    pub const fn get(&self) -> i64 {
-        self.0.get()
+    pub const fn get(&self) -> Sequence {
+        self.0
     }
 }
 
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn seq_get() {
         let seq = Seq(Sequence(42));
-        assert_eq!(seq.get(), 42);
+        assert_eq!(seq.get(), Sequence(42));
     }
 
     #[test]
