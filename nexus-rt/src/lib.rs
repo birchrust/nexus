@@ -210,9 +210,9 @@ pub use ctx_dag::{
 };
 pub use ctx_pipeline::{
     CtxChainCall, CtxPipeline, CtxPipelineBuilder, CtxPipelineChain, CtxStepCall, IntoCtxProducer,
-    IntoCtxRefStep, IntoCtxStep,
+    IntoCtxRefStep, IntoCtxStep, resolve_ctx_step,
 };
-pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource, View};
+pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource, View, select};
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
     PipelineBuilder, PipelineChain, PipelineOutput, resolve_producer, resolve_ref_scan_step,

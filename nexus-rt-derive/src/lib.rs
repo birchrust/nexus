@@ -1,7 +1,9 @@
 //! Derive macros for nexus-rt.
 //!
 //! Use `nexus-rt` instead of depending on this crate directly.
-//! The derives are re-exported from `nexus_rt::{Resource, Deref, DerefMut}`.
+//! The derives are re-exported from `nexus_rt::{Resource, Deref, DerefMut, select}`.
+
+mod select;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -670,4 +672,118 @@ fn parse_source_attrs(
 /// Check if two paths match by comparing full path equality.
 fn path_matches(a: &syn::Path, b: &syn::Path) -> bool {
     a == b
+}
+
+// =============================================================================
+// select! — compile-time dispatch table
+// =============================================================================
+
+/// Compile-time dispatch table for pipeline/DAG steps — the nexus-rt
+/// analogue of tokio's `select!`.
+///
+/// Eliminates the `resolve_step` + match-closure boilerplate by expanding
+/// to a literal `match` with pre-resolved monomorphized arms. Preserves
+/// exhaustiveness checking, jump table optimization, and zero-cost
+/// monomorphization.
+///
+/// # Grammar
+///
+/// ```text
+/// select! {
+///     <reg>,
+///     [ctx: <Type>,]          // callback mode (optional)
+///     [key: <closure>,]       // key extraction (optional)
+///     [project: <closure>,]   // input projection (optional, requires key:)
+///     <pattern> => <handler>,
+///     ...
+///     [_ => <default>,]       // fallthrough (optional, must be last)
+/// }
+/// ```
+///
+/// Native `match` guards (`pat if cond => handler`) work in any arm
+/// because the expansion is a real `match`. Or-patterns, literal
+/// patterns, and any other pattern rustc accepts work too.
+///
+/// # Three tiers of ceremony
+///
+/// **Tier 1** — input is the match value, arms take the input. No
+/// `key:`, no `project:`. Use when upstream has already classified
+/// the event down to a discriminant.
+///
+/// ```ignore
+/// select! {
+///     reg,
+///     OrderKind::New    => handle_new,
+///     OrderKind::Cancel => handle_cancel,
+/// }
+/// ```
+///
+/// **Tier 2** — input is a struct, match on a field, arms take the
+/// whole struct. The most common shape.
+///
+/// ```ignore
+/// select! {
+///     reg,
+///     key: |o: &Order| o.kind,
+///     OrderKind::New    => handle_new,
+///     OrderKind::Cancel => handle_cancel,
+/// }
+/// ```
+///
+/// **Tier 3** — input is a composite (e.g., a tuple), arms take a
+/// projection. Use when upstream emits both a discriminant and a
+/// payload side-by-side.
+///
+/// ```ignore
+/// select! {
+///     reg,
+///     key:     |(_, ct): &(Event, CmdType)| *ct,
+///     project: |(e, _)| e,
+///     CmdType::A => handle_a,
+///     CmdType::B => handle_b,
+///     _ => |_w, (e, ct)| log::error!("unsupported {:?} id={}", ct, e.id),
+/// }
+/// ```
+///
+/// # Callback form (with `ctx:`)
+///
+/// Adding `ctx: SomeContext` switches the expansion from
+/// `resolve_step` to `resolve_ctx_step` and threads `&mut SomeContext`
+/// through every arm. Works with `CtxPipelineBuilder` and
+/// `CtxDagBuilder`. All three tiers apply.
+///
+/// ```ignore
+/// select! {
+///     reg,
+///     ctx: SessionCtx,
+///     key: |o: &Order| o.kind,
+///     OrderKind::New    => on_new,    // fn(&mut SessionCtx, Order)
+///     OrderKind::Cancel => on_cancel,
+/// }
+/// ```
+///
+/// # `key:` closures need a type annotation
+///
+/// When `key:` is present, the closure parameter must have an explicit
+/// type annotation (e.g., `|o: &Order| o.kind`). Without it, rustc
+/// can't infer the input type at the point of key extraction. This is
+/// a fundamental Rust closure-inference limitation, not a macro issue.
+///
+/// `project:` closures do **not** need annotation — they're called
+/// inside match arms after `key:` has already constrained the input
+/// type.
+///
+/// # Performance
+///
+/// Zero overhead. The expansion is identical to the hand-written
+/// `let mut arm_N = resolve_step(...)` + closure + match pattern.
+/// `cargo asm` on `examples/select_asm_check.rs` confirms the
+/// dispatch compiles to a jump table for dense enum discriminants.
+///
+/// See `nexus-rt/docs/pipelines.md` and `nexus-rt/docs/callbacks.md`
+/// for full usage guides.
+#[proc_macro]
+pub fn select(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as select::SelectInput);
+    select::expand(&parsed).into()
 }

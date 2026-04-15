@@ -629,3 +629,101 @@ for the full guide.
 
 Same combinator names, same builder pattern, same monomorphization —
 just with a context parameter threaded through.
+
+---
+
+## Dispatching by Discriminant — `select!`
+
+When a pipeline step needs to route to one of N handlers based on a
+runtime enum discriminant, the manual pattern requires `resolve_step`
+per arm plus a match closure:
+
+```rust
+let mut arm_a = resolve_step(handle_new, reg);
+let mut arm_b = resolve_step(handle_cancel, reg);
+pipeline.then(move |world: &mut World, order: Order| {
+    match order.kind {
+        OrderKind::New    => arm_a(world, order),
+        OrderKind::Cancel => arm_b(world, order),
+    }
+}, reg)
+```
+
+The `select!` macro eliminates this boilerplate while preserving
+exhaustiveness checking, jump table optimization, and monomorphization:
+
+### Tier 1 — Match on the input directly
+
+```rust
+pipeline.then(
+    select! {
+        reg,
+        OrderKind::New    => handle_new,
+        OrderKind::Cancel => handle_cancel,
+        OrderKind::Amend  => handle_amend,
+    },
+    reg,
+)
+```
+
+Each arm is pre-resolved via `resolve_step` at construction. The
+expansion is a literal `match` — rustc enforces exhaustiveness and
+LLVM emits a jump table for dense enums.
+
+### Tier 2 — Extract a key, arms receive the full input
+
+When the input is a struct and you match on a field:
+
+```rust
+pipeline.then(
+    select! {
+        reg,
+        key: |o: &Order| o.kind,
+        OrderKind::New    => handle_new_order,
+        OrderKind::Cancel => handle_cancel_order,
+    },
+    reg,
+)
+```
+
+The `key:` closure extracts the discriminant from `&input`. Each arm
+receives the full `Order` by value. The closure must have a type
+annotation on its parameter (rustc needs it for field resolution).
+
+### Tier 3 — Key + projection
+
+When the input is a composite and the arms should receive a projected
+subset:
+
+```rust
+pipeline.then(
+    select! {
+        reg,
+        key:     |(_, ct): &(AdminEvent, CommandType)| *ct,
+        project: |(event, _)| event,
+        CommandType::RouteAway       => handle_route_away,
+        CommandType::SuspendStrategy => handle_suspend,
+        _ => |_w, (e, ct)| log::error!("unsupported {:?} id={}", ct, e.id),
+    },
+    reg,
+)
+```
+
+The `project:` closure maps the input to what each arm receives.
+The default arm (`_ =>`) is a bare closure called inline — no
+`resolve_step`, no resource resolution.
+
+### Default arms
+
+Optional. If present, must be last. Receives the full input (or
+projected input in tier 3). If omitted, rustc enforces exhaustiveness
+— a missing variant is a compile error.
+
+### Performance
+
+Zero overhead. The expansion is identical to the hand-written
+`resolve_step` + match pattern. The dispatch compiles to the same
+jump table as a hand-written `match` on the discriminant. To verify
+yourself for a given enum, see `examples/select_asm_check.rs` and
+inspect with `cargo asm -p nexus-rt --release --example
+select_asm_check 'select_asm_check::dispatch_select'`.

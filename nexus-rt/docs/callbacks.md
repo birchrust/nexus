@@ -538,3 +538,44 @@ let mut cb = (|ctx: &mut Ctx, event: u32| {
 cb.run(&mut world, 5u32);
 assert_eq!(cb.ctx.count, 5);
 ```
+
+---
+
+## Dispatching by Discriminant — `select!` with `ctx:`
+
+The `select!` macro supports callback pipelines via the `ctx:` option.
+Adding `ctx: MyContextType` switches the expansion from `resolve_step`
+to `resolve_ctx_step`, threading `&mut C` through every arm.
+
+```rust
+use nexus_rt::{CtxPipelineBuilder, select};
+
+struct SessionCtx { count: u32 }
+
+fn on_new(ctx: &mut SessionCtx, order: OrderKind) { ctx.count += 1; }
+fn on_cancel(ctx: &mut SessionCtx, order: OrderKind) { ctx.count += 10; }
+
+let mut pipeline = CtxPipelineBuilder::<SessionCtx, OrderKind>::new()
+    .then(
+        select! {
+            reg,
+            ctx: SessionCtx,
+            OrderKind::New    => on_new,
+            OrderKind::Cancel => on_cancel,
+            OrderKind::Amend  => on_new,
+        },
+        reg,
+    )
+    .build();
+
+let mut ctx = SessionCtx { count: 0 };
+pipeline.run(&mut ctx, &mut world, OrderKind::Cancel);
+assert_eq!(ctx.count, 10);
+```
+
+All three tiers (`key:`, `project:`, default arms) work identically
+to the handler form. The only difference is `ctx:` triggers callback
+resolution and the emitted closure takes `&mut C` as its first parameter.
+
+See [pipelines.md — Dispatching by Discriminant](pipelines.md#dispatching-by-discriminant--select)
+for the full tier 1/2/3 guide.
