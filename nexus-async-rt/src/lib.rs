@@ -217,8 +217,14 @@ impl Executor {
         while drained < limit {
             match inbox.pop() {
                 Some(task_ptr) => {
-                    // SAFETY: single-threaded, called from poll() before TLS is set.
-                    if unsafe { task::is_completed(task_ptr) } {
+                    // Clear QUEUED flag now that we've popped it.
+                    unsafe { task::clear_queued(task_ptr) };
+
+                    // Check if TERMINAL was reached (e.g., cross-thread waker
+                    // produced TERMINAL via ref_dec while the task was queued).
+                    // Only TERMINAL tasks go to deferred_free. Completed tasks
+                    // with outstanding refs must NOT be freed prematurely.
+                    if unsafe { task::is_terminal(task_ptr) } {
                         unsafe { &mut *self.deferred_free.get() }.push(task_ptr);
                     } else {
                         unsafe { &mut *self.incoming.get() }.push(task_ptr);
@@ -317,6 +323,10 @@ impl Executor {
 
     /// Complete a task: handle joinable vs fire-and-forget paths.
     ///
+    /// Uses `complete_and_unref` to atomically set COMPLETED and decrement
+    /// the executor's reference in a single atomic operation — eliminating
+    /// the race window that caused SIGABRT with cross-thread wakers.
+    ///
     /// Three branches based on task state:
     /// - **Aborted:** drop F (still live — poll_join short-circuited), notify joiner
     /// - **Joinable (HAS_JOIN):** T is live in the union, don't touch it — JoinHandle owns it
@@ -325,40 +335,33 @@ impl Executor {
     /// # Safety invariants
     ///
     /// `ptr` must point to a task that just returned `Poll::Ready(())` from poll_task.
-    /// All accessor calls are safe because the task is live and single-threaded.
     fn complete_task(&mut self, ptr: *mut u8) {
         let aborted = unsafe { task::is_aborted(ptr) };
 
         if aborted {
             // Aborted: poll_join saw ABORTED and returned Ready without polling F.
             // F is still live in the union. drop_fn still targets F.
-            // SAFETY: drop_fn = drop_future_in_union::<F>, F is live.
             unsafe { task::drop_task_future(ptr) };
-            unsafe { task::set_completed(ptr) };
             self.live_count -= 1;
 
             if unsafe { task::has_join(ptr) } {
-                // JoinHandle still alive — wake it. It will see ABORTED and panic.
-                // (In practice, abort() consumes the handle, so has_join is false.
-                // This branch exists for defensive correctness.)
                 let waker = unsafe { task::take_join_waker(ptr) };
                 if let Some(w) = waker {
                     w.wake();
                 }
             }
 
-            // Release executor's reference.
-            let should_free = unsafe { task::ref_dec(ptr) };
-            if should_free {
-                let key = unsafe { task::tracker_key(ptr) } as usize;
-                // SAFETY: future already dropped above, refcount 0.
-                unsafe { task::free_task(ptr) };
-                self.all_tasks.remove(key);
+            match unsafe { task::complete_and_unref(ptr) } {
+                task::FreeAction::Retain => {}
+                task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
+                    let key = unsafe { task::tracker_key(ptr) } as usize;
+                    unsafe { task::free_task(ptr) };
+                    self.all_tasks.remove(key);
+                }
             }
         } else if unsafe { task::has_join(ptr) } {
             // Joinable: poll_join dropped F and wrote T. drop_fn = drop_output::<T>.
-            // Don't drop T — JoinHandle will read it (ptr::read) or drop it (on handle drop).
-            unsafe { task::set_completed(ptr) };
+            // Don't drop T — JoinHandle will read it or drop it on handle drop.
             self.live_count -= 1;
 
             // Wake the joiner so it can poll the JoinHandle and read T.
@@ -367,31 +370,28 @@ impl Executor {
                 w.wake();
             }
 
-            // Release executor's reference. JoinHandle still holds one (refcount >= 1).
-            let should_free = unsafe { task::ref_dec(ptr) };
-            if should_free {
-                // Refcount hit 0 — JoinHandle was already dropped (detached).
-                // HAS_JOIN was cleared by JoinHandle::Drop, but we checked it before
-                // the flag was cleared (this branch). Output T was never read.
-                // SAFETY: drop_fn = drop_output::<T>, T is live.
-                unsafe { task::drop_task_future(ptr) };
-                let key = unsafe { task::tracker_key(ptr) } as usize;
-                unsafe { task::free_task(ptr) };
-                self.all_tasks.remove(key);
+            match unsafe { task::complete_and_unref(ptr) } {
+                task::FreeAction::Retain => {}
+                task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
+                    // Terminal — JoinHandle already dropped (detached). Drop output.
+                    unsafe { task::drop_task_future(ptr) };
+                    let key = unsafe { task::tracker_key(ptr) } as usize;
+                    unsafe { task::free_task(ptr) };
+                    self.all_tasks.remove(key);
+                }
             }
         } else {
             // Fire-and-forget or detached (HAS_JOIN cleared by JoinHandle::Drop).
-            // SAFETY: poll_join returned Ready(()), so the F→T transition completed.
-            // drop_fn = drop_output::<T>. This drops T, which is the correct live value.
             unsafe { task::drop_task_future(ptr) };
-            unsafe { task::set_completed(ptr) };
             self.live_count -= 1;
 
-            let should_free = unsafe { task::ref_dec(ptr) };
-            if should_free {
-                let key = unsafe { task::tracker_key(ptr) } as usize;
-                unsafe { task::free_task(ptr) };
-                self.all_tasks.remove(key);
+            match unsafe { task::complete_and_unref(ptr) } {
+                task::FreeAction::Retain => {}
+                task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
+                    let key = unsafe { task::tracker_key(ptr) } as usize;
+                    unsafe { task::free_task(ptr) };
+                    self.all_tasks.remove(key);
+                }
             }
         }
     }
@@ -432,18 +432,30 @@ impl Drop for Executor {
         }
 
         for (_, &ptr) in &self.all_tasks {
-            // Drop the future if not already dropped.
-            if !unsafe { task::is_completed(ptr) } {
-                unsafe { task::drop_task_future(ptr) };
-                unsafe { task::set_completed(ptr) };
-                unsafe { task::ref_dec(ptr) };
+            if unsafe { task::is_terminal(ptr) } {
+                // TERMINAL: completed, zero refs, all flags cleared.
+                // This happens when a cross-thread waker produced TERMINAL
+                // via ref_dec but the executor hadn't scanned yet.
+                unsafe { task::free_task(ptr) };
+                continue;
             }
 
+            // Drop the future if not already completed.
+            if !unsafe { task::is_completed(ptr) } {
+                unsafe { task::drop_task_future(ptr) };
+                // Use complete_and_unref to atomically set COMPLETED + dec ref.
+                match unsafe { task::complete_and_unref(ptr) } {
+                    task::FreeAction::Retain => {}
+                    task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
+                        unsafe { task::free_task(ptr) };
+                        continue;
+                    }
+                }
+            }
+
+            // Task is completed but not TERMINAL — outstanding refs exist.
             let rc = unsafe { task::ref_count(ptr) };
             if rc > 0 {
-                // Outstanding references (wakers or JoinHandles) still alive.
-                // Freeing would create dangling pointers — leak instead.
-                // This is a bug in the caller, but leak > UB.
                 #[cfg(debug_assertions)]
                 panic!(
                     "executor dropped with {rc} outstanding reference(s) — \

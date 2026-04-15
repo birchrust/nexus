@@ -3,12 +3,29 @@
 //! Each task is a `Task<F>` struct. The raw pointer to the allocation
 //! IS the task handle — no index layer, no separate metadata store.
 //!
-//! The waker holds the raw pointer directly. `wake()` sets `is_queued`
+//! The waker holds the raw pointer directly. `wake()` sets `QUEUED`
 //! and pushes the pointer to the ready queue. Zero allocations.
 //!
 //! Tasks can be allocated via Box (default) or slab (power user).
 //! The `free_fn` in the header knows how to deallocate regardless
 //! of which allocator was used.
+//!
+//! ## Packed state word
+//!
+//! All task state (flags + refcount) is packed into a single `AtomicUsize`:
+//!
+//! ```text
+//! bits 0-5:   flags (COMPLETED, QUEUED, HAS_JOIN, ABORTED, OUTPUT_TAKEN, SLAB_ALLOCATED)
+//! bits 6+:    refcount (shifted by 6)
+//! ```
+//!
+//! This eliminates the SIGABRT race where `Executor::drop` reads
+//! `ref_count` and `is_completed` as separate atomics and a cross-thread
+//! waker can decrement the refcount between those reads.
+//!
+//! The state word naturally converges to `TERMINAL = COMPLETED = 1`
+//! when all refs are decremented and all transient flags are cleared.
+//! The free check is one comparison: `state == TERMINAL`.
 //!
 //! ## Union storage
 //!
@@ -22,19 +39,54 @@ use std::cell::UnsafeCell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
 // =============================================================================
-// Task flags
+// Packed state word — constants
 // =============================================================================
 
+/// Task has completed (future returned Ready or was aborted).
+const COMPLETED: usize = 1 << 0;
+/// Task is in a ready queue (dedup flag).
+const QUEUED: usize = 1 << 1;
 /// JoinHandle exists for this task.
-const HAS_JOIN: u8 = 0b001;
-/// JoinHandle consumed the output via poll.
-const OUTPUT_TAKEN: u8 = 0b010;
+const HAS_JOIN: usize = 1 << 2;
 /// abort() was called.
-const ABORTED: u8 = 0b100;
+const ABORTED: usize = 1 << 3;
+/// JoinHandle consumed the output via poll.
+const OUTPUT_TAKEN: usize = 1 << 4;
+/// Task was allocated from the slab (permanent flag, set at spawn).
+const SLAB_ALLOCATED: usize = 1 << 5;
+/// Mask for all flag bits (0-5).
+const FLAG_MASK: usize = 0b11_1111;
+/// One reference count unit (bit 6).
+const REF_ONE: usize = 1 << 6;
+/// Mask for refcount bits (6+).
+#[allow(dead_code)]
+const REF_MASK: usize = !FLAG_MASK;
+
+/// Lifecycle flags: must be cleared before a task can reach terminal.
+/// QUEUED: someone needs to pop this task from a queue.
+/// HAS_JOIN: a JoinHandle still exists and must be dropped.
+const LIFECYCLE_MASK: usize = QUEUED | HAS_JOIN;
+
+/// Inert flags: permanent metadata or historical — don't block terminal.
+/// SLAB_ALLOCATED: permanent, set at spawn.
+/// ABORTED: historical, set on abort — no cleanup gated on clearing it.
+/// OUTPUT_TAKEN: historical, set when output read — same.
+const INERT_MASK: usize = SLAB_ALLOCATED | ABORTED | OUTPUT_TAKEN;
+
+/// What to do when a ref_dec or complete_and_unref produces a terminal state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreeAction {
+    /// Task still has outstanding refs or unchecked flags. No action.
+    Retain,
+    /// Box-allocated terminal. Free from any thread via free_task.
+    FreeBox,
+    /// Slab-allocated terminal. Route to executor thread for slab free.
+    FreeSlab,
+}
 
 // =============================================================================
 // Task layout
@@ -55,16 +107,13 @@ pub const TASK_HEADER_SIZE: usize = 64;
 /// offset  0: poll_fn       (8B, fn pointer — polls the future)
 /// offset  8: drop_fn       (8B, fn pointer — drops F or T in place)
 /// offset 16: free_fn       (8B, fn pointer — deallocates the task storage)
-/// offset 24: is_queued      (1B, AtomicBool — cross-thread wakers CAS this)
-/// offset 25: is_completed   (1B, AtomicBool — cross-thread reads with Acquire)
-/// offset 26: ref_count      (2B, AtomicU16 — number of live references)
-/// offset 28: tracker_key    (4B, u32 — index in Executor::all_tasks slab)
-/// offset 32: cross_next     (8B, AtomicPtr — intrusive cross-thread wake queue)
-/// offset 40: join_waker     (16B, UnsafeCell<Option<Waker>>)
+/// offset 24: state         (8B, AtomicUsize — packed flags + refcount)
+/// offset 32: cross_next    (8B, AtomicPtr — intrusive cross-thread wake queue)
+/// offset 40: join_waker    (16B, UnsafeCell<Option<Waker>>)
 /// offset 56: storage_offset (2B, u16 — byte offset to storage field)
-/// offset 58: flags          (1B, Cell<u8> — HAS_JOIN | OUTPUT_TAKEN | ABORTED)
-/// offset 59: _pad           (5B)
-/// offset 64: storage        (S bytes — future F or union { F, T })
+/// offset 58: _pad          (2B)
+/// offset 60: tracker_key   (4B, u32 — index in Executor::all_tasks slab)
+/// offset 64: storage       (S bytes — future F or union { F, T })
 /// ```
 #[repr(C)]
 pub(crate) struct Task<S> {
@@ -74,13 +123,8 @@ pub(crate) struct Task<S> {
     drop_fn: unsafe fn(*mut u8),
     /// Deallocates the task storage.
     free_fn: unsafe fn(*mut u8),
-    is_queued: AtomicBool,
-    /// Set when the future completes or is aborted.
-    is_completed: AtomicBool,
-    /// Number of live references (executor + waker clones + JoinHandle).
-    ref_count: AtomicU16,
-    /// Index into the Executor's `all_tasks` slab.
-    tracker_key: u32,
+    /// Packed state word: flags (bits 0-5) + refcount (bits 6+).
+    state: AtomicUsize,
     /// Intrusive next pointer for the cross-thread wake queue.
     cross_next: AtomicPtr<u8>,
     /// Waker for the task awaiting this JoinHandle.
@@ -88,11 +132,10 @@ pub(crate) struct Task<S> {
     /// Byte offset from task base to the storage field.
     /// Set at construction from `offset_of!(Task<S>, storage)`.
     storage_offset: u16,
-    /// Packed flags: HAS_JOIN | OUTPUT_TAKEN | ABORTED.
-    /// Single-threaded — no atomics needed.
-    flags: std::cell::Cell<u8>,
-    /// Padding to reach 64 bytes.
-    _pad: [u8; 5],
+    /// Padding for alignment.
+    _pad: [u8; 2],
+    /// Index into the Executor's `all_tasks` slab.
+    tracker_key: u32,
     storage: S,
 }
 
@@ -129,15 +172,12 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
             poll_fn: poll_join::<F>,
             drop_fn: drop_future::<F>,
             free_fn: box_free::<F>,
-            is_queued: AtomicBool::new(false),
-            is_completed: AtomicBool::new(false),
-            ref_count: AtomicU16::new(1),
-            tracker_key,
+            state: AtomicUsize::new(REF_ONE),
             cross_next: AtomicPtr::new(std::ptr::null_mut()),
             join_waker: UnsafeCell::new(None),
-            flags: std::cell::Cell::new(0),
             storage_offset: std::mem::offset_of!(Task<F>, storage) as u16,
-            _pad: [0; 5],
+            tracker_key,
+            _pad: [0; 2],
             storage: future,
         }
     }
@@ -159,15 +199,12 @@ where
         poll_fn: poll_join::<F>,
         drop_fn: drop_future_in_union::<F>,
         free_fn: box_free::<Storage<F>>,
-        is_queued: AtomicBool::new(false),
-        is_completed: AtomicBool::new(false),
-        ref_count: AtomicU16::new(2), // executor + JoinHandle
-        tracker_key,
+        state: AtomicUsize::new(HAS_JOIN | (2 * REF_ONE)),
         cross_next: AtomicPtr::new(std::ptr::null_mut()),
         join_waker: UnsafeCell::new(None),
-        flags: std::cell::Cell::new(HAS_JOIN),
         storage_offset: std::mem::offset_of!(Task<Storage<F>>, storage) as u16,
-        _pad: [0; 5],
+        tracker_key,
+        _pad: [0; 2],
         storage: FutureOrOutput {
             future: std::mem::ManuallyDrop::new(future),
         },
@@ -188,21 +225,16 @@ where
     F: Future + 'static,
     F::Output: 'static,
 {
-    type Storage<F> = FutureOrOutput<F, <F as Future>::Output>;
-
     Task {
         poll_fn: poll_join::<F>,
         drop_fn: drop_future_in_union::<F>,
         free_fn,
-        is_queued: AtomicBool::new(false),
-        is_completed: AtomicBool::new(false),
-        ref_count: AtomicU16::new(2), // executor + JoinHandle
-        tracker_key,
+        state: AtomicUsize::new(HAS_JOIN | SLAB_ALLOCATED | (2 * REF_ONE)),
         cross_next: AtomicPtr::new(std::ptr::null_mut()),
         join_waker: UnsafeCell::new(None),
-        flags: std::cell::Cell::new(HAS_JOIN),
-        storage_offset: std::mem::offset_of!(Task<Storage<F>>, storage) as u16,
-        _pad: [0; 5],
+        storage_offset: std::mem::offset_of!(Task<FutureOrOutput<F, F::Output>>, storage) as u16,
+        tracker_key,
+        _pad: [0; 2],
         storage: FutureOrOutput {
             future: std::mem::ManuallyDrop::new(future),
         },
@@ -252,17 +284,14 @@ impl<T: 'static> Future for JoinHandle<T> {
 
         // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
         if unsafe { is_completed(ptr) } {
-            let flags = unsafe { task_flags(ptr) };
-            assert!(
-                flags & ABORTED == 0,
-                "polled JoinHandle after task was aborted"
-            );
+            let s = unsafe { state_load(ptr) };
+            assert!(s & ABORTED == 0, "polled JoinHandle after task was aborted");
             // SAFETY: Task completed, so poll_join already transitioned the union
             // from F to T. The output is live at storage_offset. ptr::read moves
             // it out (bitwise copy). OUTPUT_TAKEN prevents double-read.
             let output_ptr = unsafe { ptr.add(storage_offset(ptr)) };
             let value = unsafe { std::ptr::read(output_ptr.cast::<T>()) };
-            unsafe { set_flag(ptr, OUTPUT_TAKEN) };
+            unsafe { set_output_taken(ptr) };
             Poll::Ready(value)
         } else {
             // SAFETY: Task still running, single-threaded — safe to write waker.
@@ -299,7 +328,7 @@ impl<T> JoinHandle<T> {
         let ptr = self.ptr;
         let was_running = !unsafe { is_completed(ptr) };
         if was_running {
-            unsafe { set_flag(ptr, ABORTED) };
+            unsafe { set_aborted(ptr) };
         }
         // self is consumed — Drop runs, which clears HAS_JOIN,
         // takes the join waker, and decrements refcount.
@@ -311,11 +340,9 @@ impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
         let ptr = self.ptr;
         // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
-        // All accessor calls below are single-threaded and target valid
-        // header fields at known offsets.
-        let flags = unsafe { task_flags(ptr) };
+        let s = unsafe { state_load(ptr) };
 
-        if unsafe { is_completed(ptr) } && (flags & OUTPUT_TAKEN == 0) && (flags & ABORTED == 0) {
+        if (s & COMPLETED != 0) && (s & OUTPUT_TAKEN == 0) && (s & ABORTED == 0) {
             // Task completed but output was never read — drop it.
             // SAFETY: poll_join overwrote drop_fn to drop_output::<T>,
             // so this drops the output T (not the future F).
@@ -323,22 +350,17 @@ impl<T> Drop for JoinHandle<T> {
         }
 
         // Clear HAS_JOIN so complete_task knows nobody is waiting.
-        unsafe { clear_flag(ptr, HAS_JOIN) };
-
-        // If we previously polled to Pending, a cloned waker is stored in the
-        // task. Clear it so the parent task's refcount isn't kept alive until
-        // the child completes. take() returns None if no waker was stored.
+        // Take the join waker to release the parent task's refcount.
+        unsafe { clear_has_join(ptr) };
         let _ = unsafe { take_join_waker(ptr) };
 
-        // Release our reference. If refcount hits 0, the task is complete and
-        // all other refs (executor, wakers) are gone — defer the free.
-        let should_free = unsafe { ref_dec(ptr) };
-        if should_free {
-            // SAFETY: refcount is 0, task is completed. Can't free directly
-            // because we may be outside the poll cycle. defer_free pushes to
-            // TLS deferred list (or leaks if TLS unavailable — Executor::drop
-            // catches those).
-            unsafe { defer_free_slot(ptr) };
+        // Release our reference. If terminal, push to deferred free.
+        match unsafe { ref_dec(ptr) } {
+            FreeAction::Retain => {}
+            FreeAction::FreeBox | FreeAction::FreeSlab => {
+                // Executor thread — slab TLS available. Free via deferred path.
+                unsafe { defer_free_slot(ptr) };
+            }
         }
     }
 }
@@ -347,14 +369,37 @@ impl<T> Drop for JoinHandle<T> {
 ///
 /// # Safety
 ///
-/// `ptr` must point to a completed task with ref_count 0.
+/// `ptr` must point to a completed task in TERMINAL state.
 unsafe fn defer_free_slot(ptr: *mut u8) {
     unsafe { crate::waker::defer_free(ptr) };
 }
 
 // =============================================================================
-// Task header accessor functions
+// Packed state accessor functions
 // =============================================================================
+
+/// Get the raw state value.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+unsafe fn state_load(ptr: *mut u8) -> usize {
+    // SAFETY: state is AtomicUsize at offset 24 in repr(C) Task.
+    unsafe { &*ptr.add(24).cast::<AtomicUsize>() }.load(Ordering::Acquire)
+}
+
+/// Get a reference to the state atomic.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+unsafe fn state_ref(ptr: *mut u8) -> &'static AtomicUsize {
+    // SAFETY: state is AtomicUsize at offset 24 in repr(C) Task.
+    // 'static is a lie — the caller must not outlive the task.
+    unsafe { &*ptr.add(24).cast::<AtomicUsize>() }
+}
 
 /// Read the `tracker_key` from a task pointer.
 ///
@@ -363,8 +408,8 @@ unsafe fn defer_free_slot(ptr: *mut u8) {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn tracker_key(ptr: *mut u8) -> u32 {
-    // SAFETY: tracker_key is at offset 28 in repr(C) Task.
-    unsafe { *(ptr.add(28).cast::<u32>()) }
+    // SAFETY: tracker_key is at offset 60 in repr(C) Task.
+    unsafe { *(ptr.add(60).cast::<u32>()) }
 }
 
 /// Increment the waker refcount. Called on waker clone.
@@ -374,24 +419,39 @@ pub(crate) unsafe fn tracker_key(ptr: *mut u8) -> u32 {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn ref_inc(ptr: *mut u8) {
-    // SAFETY: ref_count is AtomicU16 at offset 26 in repr(C) Task.
-    let rc = unsafe { &*ptr.add(26).cast::<AtomicU16>() };
-    let prev = rc.fetch_add(1, Ordering::Relaxed);
-    assert!(prev < u16::MAX, "waker refcount overflow");
+    let state = unsafe { state_ref(ptr) };
+    let prev = state.fetch_add(REF_ONE, Ordering::Relaxed);
+    debug_assert!((prev & REF_MASK) > 0, "ref_inc on zero refcount");
 }
 
-/// Decrement the refcount. Returns true if refcount hit 0 (slot can be freed).
+/// Decrement the refcount. Returns `FreeAction` indicating whether
+/// a terminal state was produced and what kind of allocation it is.
 ///
 /// # Safety
 ///
 /// `ptr` must point to a live (or completed) `Task<F>`.
 #[inline]
-pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> bool {
-    // SAFETY: ref_count is AtomicU16 at offset 26.
-    let rc = unsafe { &*ptr.add(26).cast::<AtomicU16>() };
-    let prev = rc.fetch_sub(1, Ordering::AcqRel);
-    debug_assert!(prev > 0, "waker refcount underflow");
-    prev == 1
+pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> FreeAction {
+    let state = unsafe { state_ref(ptr) };
+    let prev = state.fetch_sub(REF_ONE, Ordering::AcqRel);
+    debug_assert!((prev & REF_MASK) >= REF_ONE, "ref_dec on zero refcount");
+
+    // Was this the last ref?
+    if (prev & REF_MASK) != REF_ONE {
+        return FreeAction::Retain;
+    }
+
+    // Last ref. Check: COMPLETED must be set, lifecycle flags must be clear.
+    // ABORTED, OUTPUT_TAKEN, SLAB_ALLOCATED are inert — don't block terminal.
+    let flags = prev & FLAG_MASK;
+    if (flags & COMPLETED == 0) || (flags & LIFECYCLE_MASK != 0) {
+        return FreeAction::Retain;
+    }
+    if flags & SLAB_ALLOCATED != 0 {
+        FreeAction::FreeSlab
+    } else {
+        FreeAction::FreeBox
+    }
 }
 
 /// Read the refcount.
@@ -401,20 +461,58 @@ pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[allow(dead_code)]
 #[inline]
-pub(crate) unsafe fn ref_count(ptr: *mut u8) -> u16 {
-    // SAFETY: ref_count is AtomicU16 at offset 26.
-    unsafe { &*ptr.add(26).cast::<AtomicU16>() }.load(Ordering::Relaxed)
+pub(crate) unsafe fn ref_count(ptr: *mut u8) -> usize {
+    (unsafe { state_load(ptr) } & REF_MASK) >> 6
 }
 
-/// Set the is_completed flag.
+/// Atomically set COMPLETED and decrement the executor's reference.
+/// Returns `FreeAction` indicating whether a terminal state was produced.
+///
+/// This is the key atomic operation that eliminates the race between
+/// `set_completed` and `ref_dec` that caused the SIGABRT.
+///
+/// # Safety
+///
+/// `ptr` must point to a live, not-yet-completed `Task<F>`.
+#[inline]
+pub(crate) unsafe fn complete_and_unref(ptr: *mut u8) -> FreeAction {
+    let state = unsafe { state_ref(ptr) };
+    // Atomically: set COMPLETED (add 1 to bit 0) + dec refcount (sub REF_ONE)
+    // Net subtraction = REF_ONE - COMPLETED.
+    let prev = state.fetch_sub(REF_ONE - COMPLETED, Ordering::AcqRel);
+    debug_assert!(prev & COMPLETED == 0, "double complete");
+    debug_assert!(
+        (prev & REF_MASK) >= REF_ONE,
+        "complete_and_unref on zero refcount"
+    );
+    // prev had COMPLETED=0. Last ref if prev had exactly REF_ONE.
+    // Lifecycle flags (QUEUED, HAS_JOIN) must be clear.
+    // Inert flags (ABORTED, OUTPUT_TAKEN, SLAB_ALLOCATED) don't matter.
+    if (prev & REF_MASK) != REF_ONE {
+        return FreeAction::Retain;
+    }
+    let flags = prev & FLAG_MASK;
+    if flags & LIFECYCLE_MASK != 0 {
+        return FreeAction::Retain;
+    }
+    if flags & SLAB_ALLOCATED != 0 {
+        FreeAction::FreeSlab
+    } else {
+        FreeAction::FreeBox
+    }
+}
+
+/// Check if the state is TERMINAL (safe to free).
 ///
 /// # Safety
 ///
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
-pub(crate) unsafe fn set_completed(ptr: *mut u8) {
-    // SAFETY: is_completed is AtomicBool at offset 25 in repr(C) Task.
-    unsafe { &*ptr.add(25).cast::<AtomicBool>() }.store(true, Ordering::Release);
+pub(crate) unsafe fn is_terminal(ptr: *mut u8) -> bool {
+    let s = unsafe { state_load(ptr) };
+    // Strip inert flags (SLAB_ALLOCATED, ABORTED, OUTPUT_TAKEN).
+    // What remains must be exactly COMPLETED with zero refcount.
+    (s & !INERT_MASK) == COMPLETED
 }
 
 /// Read the is_completed flag.
@@ -424,8 +522,110 @@ pub(crate) unsafe fn set_completed(ptr: *mut u8) {
 /// `ptr` must point to a (possibly completed) `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
-    // SAFETY: is_completed is AtomicBool at offset 25.
-    unsafe { &*ptr.add(25).cast::<AtomicBool>() }.load(Ordering::Acquire)
+    (unsafe { state_load(ptr) }) & COMPLETED != 0
+}
+
+/// Read the is_queued flag.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn is_queued(ptr: *mut u8) -> bool {
+    (unsafe { state_load(ptr) }) & QUEUED != 0
+}
+
+/// Set the `is_queued` flag.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn set_queued(ptr: *mut u8, queued: bool) {
+    let state = unsafe { state_ref(ptr) };
+    if queued {
+        state.fetch_or(QUEUED, Ordering::Release);
+    } else {
+        state.fetch_and(!QUEUED, Ordering::Release);
+    }
+}
+
+/// Atomically try to set QUEUED from false to true. Returns true if
+/// successful (was not queued). Used by cross-thread wakers.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
+    let state = unsafe { state_ref(ptr) };
+    // fetch_or always sets the bit. Check if it was already set.
+    let prev = state.fetch_or(QUEUED, Ordering::AcqRel);
+    (prev & QUEUED) == 0
+}
+
+/// Clear the QUEUED flag.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn clear_queued(ptr: *mut u8) {
+    let state = unsafe { state_ref(ptr) };
+    state.fetch_and(!QUEUED, Ordering::Release);
+}
+
+/// Check if ABORTED flag is set.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn is_aborted(ptr: *mut u8) -> bool {
+    (unsafe { state_load(ptr) }) & ABORTED != 0
+}
+
+/// Set the ABORTED flag.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn set_aborted(ptr: *mut u8) {
+    let state = unsafe { state_ref(ptr) };
+    state.fetch_or(ABORTED, Ordering::Release);
+}
+
+/// Check if HAS_JOIN flag is set.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn has_join(ptr: *mut u8) -> bool {
+    (unsafe { state_load(ptr) }) & HAS_JOIN != 0
+}
+
+/// Clear the HAS_JOIN flag.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn clear_has_join(ptr: *mut u8) {
+    let state = unsafe { state_ref(ptr) };
+    state.fetch_and(!HAS_JOIN, Ordering::Release);
+}
+
+/// Set the OUTPUT_TAKEN flag.
+///
+/// # Safety
+///
+/// `ptr` must point to a live, completed `Task<F>`. Single-threaded.
+#[inline]
+unsafe fn set_output_taken(ptr: *mut u8) {
+    let state = unsafe { state_ref(ptr) };
+    state.fetch_or(OUTPUT_TAKEN, Ordering::Release);
 }
 
 /// Get a raw pointer to the `cross_next` atomic pointer.
@@ -439,43 +639,6 @@ pub(crate) unsafe fn cross_next(ptr: *mut u8) -> *const AtomicPtr<u8> {
     unsafe { ptr.add(32).cast::<AtomicPtr<u8>>() }
 }
 
-/// Read the `is_queued` flag from a task pointer.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`.
-#[inline]
-pub(crate) unsafe fn is_queued(ptr: *mut u8) -> bool {
-    // SAFETY: is_queued is AtomicBool at offset 24 in repr(C) Task.
-    unsafe { &*ptr.add(24).cast::<AtomicBool>() }.load(Ordering::Relaxed)
-}
-
-/// Set the `is_queued` flag on a task.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`.
-#[inline]
-pub(crate) unsafe fn set_queued(ptr: *mut u8, queued: bool) {
-    // SAFETY: is_queued is AtomicBool at offset 24 in repr(C) Task.
-    unsafe { &*ptr.add(24).cast::<AtomicBool>() }.store(queued, Ordering::Relaxed);
-}
-
-/// Atomically try to set `is_queued` from false to true. Returns true if
-/// successful (was not queued). Used by cross-thread wakers.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`.
-#[inline]
-pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
-    // SAFETY: is_queued is AtomicBool at offset 24.
-    let queued = unsafe { &*ptr.add(24).cast::<AtomicBool>() };
-    queued
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
-}
-
 /// Read the storage offset from the task header.
 ///
 /// # Safety
@@ -485,59 +648,6 @@ pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
 pub(crate) unsafe fn storage_offset(ptr: *mut u8) -> usize {
     // SAFETY: storage_offset is u16 at offset 56 in repr(C) Task.
     unsafe { *(ptr.add(56).cast::<u16>()) as usize }
-}
-
-/// Read task_flags.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`. Single-threaded access only.
-#[inline]
-unsafe fn task_flags(ptr: *mut u8) -> u8 {
-    // SAFETY: flags is Cell<u8> at offset 58.
-    unsafe { &*ptr.add(58).cast::<std::cell::Cell<u8>>() }.get()
-}
-
-/// Set a flag bit in task_flags.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`. Single-threaded access only.
-#[inline]
-unsafe fn set_flag(ptr: *mut u8, flag: u8) {
-    let cell = unsafe { &*ptr.add(58).cast::<std::cell::Cell<u8>>() };
-    cell.set(cell.get() | flag);
-}
-
-/// Clear a flag bit in task_flags.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`. Single-threaded access only.
-#[inline]
-unsafe fn clear_flag(ptr: *mut u8, flag: u8) {
-    let cell = unsafe { &*ptr.add(58).cast::<std::cell::Cell<u8>>() };
-    cell.set(cell.get() & !flag);
-}
-
-/// Check if HAS_JOIN flag is set.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`.
-#[inline]
-pub(crate) unsafe fn has_join(ptr: *mut u8) -> bool {
-    (unsafe { task_flags(ptr) }) & HAS_JOIN != 0
-}
-
-/// Check if ABORTED flag is set.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Task<F>`.
-#[inline]
-pub(crate) unsafe fn is_aborted(ptr: *mut u8) -> bool {
-    (unsafe { task_flags(ptr) }) & ABORTED != 0
 }
 
 /// Store a waker for the JoinHandle awaiter.
@@ -596,7 +706,7 @@ pub(crate) unsafe fn drop_task_future(ptr: *mut u8) {
 /// # Safety
 ///
 /// `ptr` must point to a `Task<F>` whose future has already been dropped.
-/// Must only be called once (after refcount reaches 0).
+/// Must only be called once (after state reaches TERMINAL).
 #[inline]
 pub(crate) unsafe fn free_task(ptr: *mut u8) {
     // SAFETY: free_fn is at offset 16 in repr(C) Task.
@@ -706,9 +816,6 @@ unsafe fn box_free<F>(ptr: *mut u8) {
     unsafe { std::alloc::dealloc(ptr, layout) }
 }
 
-// Remove the dead new_joinable_boxed function that had a bad API.
-// box_spawn_joinable and new_joinable_slab are the correct APIs.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,15 +831,12 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Task<()>, poll_fn), 0);
         assert_eq!(std::mem::offset_of!(Task<()>, drop_fn), 8);
         assert_eq!(std::mem::offset_of!(Task<()>, free_fn), 16);
-        assert_eq!(std::mem::offset_of!(Task<()>, is_queued), 24);
-        assert_eq!(std::mem::offset_of!(Task<()>, is_completed), 25);
-        assert_eq!(std::mem::offset_of!(Task<()>, ref_count), 26);
-        assert_eq!(std::mem::offset_of!(Task<()>, tracker_key), 28);
+        assert_eq!(std::mem::offset_of!(Task<()>, state), 24);
         assert_eq!(std::mem::offset_of!(Task<()>, cross_next), 32);
         assert_eq!(std::mem::offset_of!(Task<()>, join_waker), 40);
         assert_eq!(std::mem::offset_of!(Task<()>, storage_offset), 56);
-        assert_eq!(std::mem::offset_of!(Task<()>, flags), 58);
-        assert_eq!(std::mem::offset_of!(Task<()>, _pad), 59);
+        assert_eq!(std::mem::offset_of!(Task<()>, _pad), 58);
+        assert_eq!(std::mem::offset_of!(Task<()>, tracker_key), 60);
         assert_eq!(std::mem::offset_of!(Task<()>, storage), 64);
     }
 
@@ -755,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_flag_via_pointer() {
+    fn packed_state_fire_and_forget() {
         struct Noop;
         impl Future for Noop {
             type Output = ();
@@ -768,42 +872,61 @@ mod tests {
         let ptr = Box::into_raw(task) as *mut u8;
 
         unsafe {
+            // Initial state: 1 ref, no flags
+            assert_eq!(ref_count(ptr), 1);
+            assert!(!is_completed(ptr));
             assert!(!is_queued(ptr));
+            assert!(!has_join(ptr));
+            assert!(!is_terminal(ptr));
+
+            // Set and clear queued
             set_queued(ptr, true);
             assert!(is_queued(ptr));
             set_queued(ptr, false);
             assert!(!is_queued(ptr));
 
-            // Drop future, then free storage (matches executor lifecycle).
+            // complete_and_unref with 1 ref → TERMINAL
             drop_task_future(ptr);
+            assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
+            assert!(is_terminal(ptr));
+
             free_task(ptr);
         }
     }
 
     #[test]
-    fn box_free_works() {
+    fn packed_state_joinable() {
         struct Noop;
         impl Future for Noop {
-            type Output = ();
-            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-                Poll::Ready(())
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
             }
         }
 
-        let task = Box::new(Task::new_boxed(Noop, 42));
-        let ptr = Box::into_raw(task) as *mut u8;
-
+        let ptr = box_spawn_joinable(Noop, 7);
         unsafe {
-            assert_eq!(tracker_key(ptr), 42);
-            assert_eq!(ref_count(ptr), 1);
-            // Drop future, then free storage.
+            assert!(has_join(ptr));
+            assert!(!is_aborted(ptr));
+            assert_eq!(ref_count(ptr), 2); // executor + JoinHandle
+            assert_eq!(tracker_key(ptr), 7);
+
+            // Simulate: handle drops before completion
+            clear_has_join(ptr);
+            assert!(!has_join(ptr));
+            assert!(matches!(ref_dec(ptr), FreeAction::Retain)); // still 1 ref, not completed
+
+            // complete_and_unref → TERMINAL
             drop_task_future(ptr);
+            assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
+            assert!(is_terminal(ptr));
+
             free_task(ptr);
         }
     }
 
     #[test]
-    fn joinable_task_flags() {
+    fn packed_state_joinable_completion_before_handle_drop() {
         struct Noop;
         impl Future for Noop {
             type Output = u64;
@@ -814,14 +937,49 @@ mod tests {
 
         let ptr = box_spawn_joinable(Noop, 0);
         unsafe {
-            assert!(has_join(ptr));
-            assert!(!is_aborted(ptr));
-            assert_eq!(ref_count(ptr), 2); // executor + JoinHandle
-
-            // Clean up
+            // complete_and_unref with 2 refs → not terminal
             drop_task_future(ptr);
-            ref_dec(ptr); // JoinHandle ref
-            ref_dec(ptr); // executor ref
+            assert!(matches!(complete_and_unref(ptr), FreeAction::Retain));
+            assert!(is_completed(ptr));
+            assert_eq!(ref_count(ptr), 1);
+
+            // Handle drop: clear HAS_JOIN, ref_dec → TERMINAL
+            clear_has_join(ptr);
+            assert!(matches!(ref_dec(ptr), FreeAction::FreeBox));
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_cross_thread_waker_scenario() {
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // Waker clone: ref_inc
+            ref_inc(ptr);
+            assert_eq!(ref_count(ptr), 3);
+
+            // complete_and_unref: executor releases its ref
+            drop_task_future(ptr);
+            assert!(matches!(complete_and_unref(ptr), FreeAction::Retain));
+
+            // Handle drop: clear HAS_JOIN, ref_dec
+            clear_has_join(ptr);
+            assert!(matches!(ref_dec(ptr), FreeAction::Retain)); // still 1 ref (waker)
+
+            // Waker drop: ref_dec → TERMINAL
+            assert!(matches!(ref_dec(ptr), FreeAction::FreeBox));
+            assert!(is_terminal(ptr));
+
             free_task(ptr);
         }
     }
@@ -854,9 +1012,6 @@ mod tests {
     fn poll_join_panic_in_drop_prevents_double_drop() {
         use std::task::{RawWaker, RawWakerVTable, Waker};
 
-        let noop_vtable =
-            RawWakerVTable::new(|p| RawWaker::new(p, &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
-        // Need a named static for the clone fn to reference.
         static NOOP_VTABLE: RawWakerVTable =
             RawWakerVTable::new(|p| RawWaker::new(p, &NOOP_VTABLE), |_| {}, |_| {}, |_| {});
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NOOP_VTABLE)) };
@@ -939,6 +1094,274 @@ mod tests {
         unsafe {
             ref_dec(ptr);
             ref_dec(ptr);
+            free_task(ptr);
+        }
+    }
+
+    // =========================================================================
+    // Packed state word — SIGABRT root cause regression tests
+    // =========================================================================
+
+    #[test]
+    fn packed_state_fire_and_forget_terminal() {
+        // Box task with 1 ref (no JoinHandle). complete_and_unref → FreeBox.
+        // Verify terminal state is exactly TERMINAL_BOX (1).
+        struct Noop;
+        impl Future for Noop {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+                Poll::Ready(())
+            }
+        }
+
+        let task = Box::new(Task::new_boxed(Noop, 0));
+        let ptr = Box::into_raw(task) as *mut u8;
+
+        unsafe {
+            assert_eq!(ref_count(ptr), 1);
+            assert!(!has_join(ptr));
+
+            drop_task_future(ptr);
+            let action = complete_and_unref(ptr);
+            assert_eq!(action, FreeAction::FreeBox);
+
+            let s = state_load(ptr);
+            assert_eq!(s, COMPLETED, "terminal state must have COMPLETED set");
+            assert_eq!(s, 1);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_slab_flag_terminal() {
+        // Task with SLAB_ALLOCATED set. complete_and_unref → FreeSlab.
+        // Verify terminal state is exactly TERMINAL_SLAB (33).
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        // Use new_joinable_slab to get SLAB_ALLOCATED flag set at construction.
+        // Provide a free_fn that does Box dealloc (we box it manually below).
+        type Storage = FutureOrOutput<Noop, u64>;
+        unsafe fn slab_free(ptr: *mut u8) {
+            let layout = std::alloc::Layout::new::<Task<Storage>>();
+            std::alloc::dealloc(ptr, layout);
+        }
+
+        let task = new_joinable_slab(Noop, 0, slab_free);
+        let ptr = Box::into_raw(Box::new(task)) as *mut u8;
+
+        unsafe {
+            assert_eq!(ref_count(ptr), 2); // executor + JoinHandle
+            assert!(has_join(ptr));
+
+            // Simulate handle detach: clear HAS_JOIN + ref_dec
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 1);
+
+            // Executor completes task
+            drop_task_future(ptr);
+            let action = complete_and_unref(ptr);
+            assert_eq!(action, FreeAction::FreeSlab);
+
+            let s = state_load(ptr);
+            assert_eq!(s, COMPLETED | SLAB_ALLOCATED, "terminal state must be COMPLETED | SLAB_ALLOCATED");
+            assert_eq!(s, 33);
+            assert!(is_terminal(ptr));
+
+            slab_free(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_joinable_handle_drops_first() {
+        // Joinable task (2 refs + HAS_JOIN). Handle drops first:
+        // clear HAS_JOIN → ref_dec → 1 ref remaining.
+        // Then complete_and_unref → terminal.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            assert_eq!(ref_count(ptr), 2);
+            assert!(has_join(ptr));
+
+            // Handle drops: clear HAS_JOIN, ref_dec
+            clear_has_join(ptr);
+            assert!(!has_join(ptr));
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 1);
+            assert!(!is_terminal(ptr));
+
+            // Executor completes
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_joinable_completion_first_then_handle() {
+        // Joinable task. Completion fires first (Retain because 2 refs).
+        // Then handle clears HAS_JOIN + ref_dec → FreeBox.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // complete_and_unref: sets COMPLETED, dec ref → 1 ref remains
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+            assert!(is_completed(ptr));
+            assert_eq!(ref_count(ptr), 1);
+
+            // Handle drops: clear HAS_JOIN, ref_dec → terminal
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_waker_clone_lifecycle() {
+        // Joinable task (2 refs). Waker clone adds 3rd ref.
+        // complete_and_unref → Retain (2 refs remain, HAS_JOIN still set).
+        // Handle drops (clear HAS_JOIN + ref_dec) → Retain (1 ref from waker).
+        // Waker drops (ref_dec) → FreeBox.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // Waker clone: ref_inc
+            ref_inc(ptr);
+            assert_eq!(ref_count(ptr), 3);
+
+            // Executor completes: complete_and_unref
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 2);
+
+            // Handle drops: clear HAS_JOIN, ref_dec
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 1);
+
+            // Waker drops: ref_dec → terminal
+            assert_eq!(ref_dec(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_leaked_flag_prevents_terminal() {
+        // If HAS_JOIN is NOT cleared before the final ref_dec, the state
+        // won't reach terminal (HAS_JOIN is a lifecycle flag that blocks it).
+        // Result: Retain. This is safe — the lifecycle flag prevents
+        // premature free.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // complete_and_unref with 2 refs → Retain
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+
+            // ref_dec WITHOUT clearing HAS_JOIN → still not terminal
+            // because HAS_JOIN is a lifecycle flag that blocks terminal.
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert!(!is_terminal(ptr));
+
+            // State is COMPLETED | HAS_JOIN | 0 refs — leaked but safe.
+            // In real code this can't happen (JoinHandle::Drop always
+            // clears HAS_JOIN), but the packed state correctly prevents
+            // a free even if it did.
+            let s = state_load(ptr);
+            assert_eq!(s & COMPLETED, COMPLETED);
+            assert_eq!(s & HAS_JOIN, HAS_JOIN);
+            assert_eq!(ref_count(ptr), 0);
+
+            // Clean up: manually clear HAS_JOIN to reach terminal, then free.
+            clear_has_join(ptr);
+            assert!(is_terminal(ptr));
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_many_refs_converge() {
+        // Clone waker 10 times (ref_inc 10x), complete, then ref_dec 10x.
+        // Only the last ref_dec returns FreeBox. All others Retain.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // 10 waker clones: ref 2 → 12
+            for _ in 0..10 {
+                ref_inc(ptr);
+            }
+            assert_eq!(ref_count(ptr), 12);
+
+            // Executor completes: ref 12 → 11
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 11);
+
+            // Handle drops: clear HAS_JOIN, ref_dec → 10
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 10);
+
+            // Drop 9 waker refs — all Retain
+            for i in 0..9 {
+                assert_eq!(ref_dec(ptr), FreeAction::Retain, "ref_dec #{i} should Retain");
+            }
+            assert_eq!(ref_count(ptr), 1);
+
+            // Last waker drop → FreeBox
+            assert_eq!(ref_dec(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
             free_task(ptr);
         }
     }

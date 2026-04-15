@@ -118,11 +118,13 @@ unsafe fn clone_fn(data: *const ()) -> RawWaker {
 unsafe fn wake_fn(data: *const ()) {
     // SAFETY: data is a valid task pointer.
     unsafe { wake_impl(data) };
-    // Consume: decrement refcount. If slot should be freed, call the
-    // free callback via TLS.
-    let should_free = unsafe { task::ref_dec(data as *mut u8) };
-    if should_free {
-        unsafe { free_completed_slot(data as *mut u8) };
+    // Consume: decrement refcount. If terminal, free via TLS deferred path.
+    // Executor thread — slab TLS always available.
+    match unsafe { task::ref_dec(data as *mut u8) } {
+        task::FreeAction::Retain => {}
+        task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
+            unsafe { free_completed_slot(data as *mut u8) };
+        }
     }
 }
 
@@ -136,9 +138,11 @@ unsafe fn wake_by_ref_fn(data: *const ()) {
 /// Drop (without waking): decrement refcount. If the task is completed
 /// and refcount hits 0, free the slot.
 unsafe fn drop_fn(data: *const ()) {
-    let should_free = unsafe { task::ref_dec(data as *mut u8) };
-    if should_free {
-        unsafe { free_completed_slot(data as *mut u8) };
+    match unsafe { task::ref_dec(data as *mut u8) } {
+        task::FreeAction::Retain => {}
+        task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
+            unsafe { free_completed_slot(data as *mut u8) };
+        }
     }
 }
 

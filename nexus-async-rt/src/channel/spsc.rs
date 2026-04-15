@@ -88,6 +88,20 @@ impl RxWakerSlot {
     fn has_waker(&self) -> bool {
         self.state.load(Ordering::Acquire) == STORED
     }
+
+    /// Clear the stored waker if one exists. Used by RecvFut::Drop to
+    /// prevent use-after-free when the recv task completes while a
+    /// sender on another thread may try to wake through the stale ptr.
+    fn clear(&self) {
+        if self
+            .state
+            .compare_exchange(STORED, EMPTY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.task_ptr
+                .store(std::ptr::null_mut(), Ordering::Release);
+        }
+    }
 }
 
 /// Fallback waker for non-runtime wakers (root future).
@@ -409,6 +423,16 @@ unsafe impl<T: Send> Send for Receiver<T> {}
 /// Future returned by [`Receiver::recv`].
 pub struct RecvFut<'a, T> {
     receiver: &'a Receiver<T>,
+}
+
+impl<T> Drop for RecvFut<'_, T> {
+    fn drop(&mut self) {
+        // Clear the RxWakerSlot to prevent use-after-free: if a sender on
+        // another thread calls wake() after this recv future is dropped,
+        // it would read a dangling task pointer. The CAS ensures mutual
+        // exclusion with the sender's wake() CAS on the same slot.
+        self.receiver.inner.rx_slot.clear();
+    }
 }
 
 impl<T: Send> Future for RecvFut<'_, T> {

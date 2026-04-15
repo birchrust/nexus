@@ -224,15 +224,19 @@ unsafe fn cross_task_wake(data: *const ()) {
     unsafe { cross_task_wake_by_ref(data) };
     let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossTaskWakerData>()) };
     let task_ptr = boxed.task_ptr;
-    let should_free = unsafe { crate::task::ref_dec(task_ptr) };
-    if should_free {
-        // wake_by_ref may have skipped the push (task already completed).
-        // Ensure the task is queued for executor cleanup. try_set_queued
-        // prevents double-push if wake_by_ref DID queue it.
-        if unsafe { crate::task::try_set_queued(task_ptr) } {
-            unsafe { boxed.ctx.queue.push(task_ptr) };
-            if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
-                let _ = boxed.ctx.mio_waker.wake();
+    match unsafe { crate::task::ref_dec(task_ptr) } {
+        crate::task::FreeAction::Retain => {}
+        crate::task::FreeAction::FreeBox | crate::task::FreeAction::FreeSlab => {
+            // Terminal. Route to executor for free + all_tasks bookkeeping.
+            // Can't free cross-thread: all_tasks (slab::Slab) is not thread-safe,
+            // and slab tasks need TLS for deallocation.
+            // wake_by_ref may have already pushed (if task wasn't completed).
+            // try_set_queued prevents double-push.
+            if unsafe { crate::task::try_set_queued(task_ptr) } {
+                unsafe { boxed.ctx.queue.push(task_ptr) };
+                if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
+                    let _ = boxed.ctx.mio_waker.wake();
+                }
             }
         }
     }
@@ -250,19 +254,17 @@ unsafe fn cross_task_wake_by_ref(data: *const ()) {
 unsafe fn cross_task_drop(data: *const ()) {
     let boxed = unsafe { Box::from_raw(data.cast_mut().cast::<CrossTaskWakerData>()) };
     let task_ptr = boxed.task_ptr;
-    let should_free = unsafe { crate::task::ref_dec(task_ptr) };
-    if should_free {
-        // Task completed, last waker dropped without waking.
-        // Push to queue for executor cleanup — but only if not already queued
-        // (a prior wake_by_ref may have pushed it).
-        if unsafe { crate::task::try_set_queued(task_ptr) } {
-            unsafe { boxed.ctx.queue.push(task_ptr) };
-            if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
-                let _ = boxed.ctx.mio_waker.wake();
+    match unsafe { crate::task::ref_dec(task_ptr) } {
+        crate::task::FreeAction::Retain => {}
+        crate::task::FreeAction::FreeBox | crate::task::FreeAction::FreeSlab => {
+            // Terminal. Route to executor — same as cross_task_wake.
+            if unsafe { crate::task::try_set_queued(task_ptr) } {
+                unsafe { boxed.ctx.queue.push(task_ptr) };
+                if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
+                    let _ = boxed.ctx.mio_waker.wake();
+                }
             }
         }
-        // If try_set_queued failed (already queued), the task is in the
-        // queue from a prior wake. drain_cross_thread will handle it.
     }
 }
 

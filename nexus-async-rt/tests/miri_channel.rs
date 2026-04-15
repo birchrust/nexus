@@ -419,3 +419,90 @@ fn mpsc_receiver_closes() {
         assert!(tx.try_send(2).unwrap_err().is_closed());
     });
 }
+
+// =============================================================================
+// RecvFut::Drop clears RxWakerSlot — SIGABRT regression tests
+// =============================================================================
+
+/// Spawn a task that parks on recv (registers waker in RxWakerSlot),
+/// then abort it. RecvFut::Drop must clear the slot. After the abort,
+/// try_send must not crash from reading a stale task pointer.
+///
+/// The key scenario: RecvFut registers the spawned task's waker ptr
+/// in the RxWakerSlot. When the future is dropped (abort), RecvFut::Drop
+/// calls clear() on the slot. Without the fix, the slot would hold a
+/// dangling task pointer that the sender's wake path would read → UB.
+#[test]
+fn spsc_recv_future_drop_then_send_no_ub() {
+    let (_world, mut rt) = runtime();
+    rt.block_on(async {
+        let (tx, rx) = spsc::channel::<u32>(4);
+
+        let jh = nexus_async_rt::spawn_boxed(async move {
+            // This recv().await parks (buffer empty). The RecvFut
+            // registers the local runtime waker in the RxWakerSlot,
+            // then suspends.
+            let _ = rx.recv().await;
+        });
+
+        // Yield to let the spawned task run and park on recv.
+        nexus_async_rt::yield_now().await;
+
+        // Abort — drops future → RecvFut::Drop → rx_slot.clear()
+        // Also drops rx (moved into the future).
+        jh.abort();
+        nexus_async_rt::yield_now().await; // process abort
+
+        // Send after abort — channel is closed (rx dropped by abort),
+        // so try_send returns Closed. The key assertion: it must NOT
+        // crash from reading a stale task pointer in the RxWakerSlot.
+        let _ = tx.try_send(42);
+    });
+}
+
+/// Same pattern for mpsc channel.
+#[test]
+fn mpsc_recv_future_drop_clears_slot() {
+    let (_world, mut rt) = runtime();
+    rt.block_on(async {
+        let (tx, rx) = mpsc::channel::<u32>(4);
+
+        let jh = nexus_async_rt::spawn_boxed(async move {
+            let _ = rx.recv().await;
+        });
+
+        nexus_async_rt::yield_now().await; // let it park on recv
+
+        // Abort — drops future → RecvFut::Drop → rx_slot.clear()
+        jh.abort();
+        nexus_async_rt::yield_now().await; // process abort
+
+        // Send after abort — rx is dropped (moved into aborted task),
+        // so channel is closed. The key: no UB from stale waker ptr.
+        let _ = tx.try_send(42);
+    });
+}
+
+/// Local channel variant. The local channel uses Option<Waker> directly
+/// (not RxWakerSlot), so this mainly verifies no UB from waker drop
+/// ordering.
+#[test]
+fn local_channel_recv_drop_no_ub() {
+    let (_world, mut rt) = runtime();
+    rt.block_on(async {
+        let (tx, rx) = local::channel::<u32>(4);
+
+        // Spawn a task that parks on recv.
+        let jh = nexus_async_rt::spawn_boxed(async move {
+            let _ = rx.recv().await;
+        });
+
+        nexus_async_rt::yield_now().await; // let it park
+
+        jh.abort();
+        nexus_async_rt::yield_now().await; // process abort
+
+        // Channel closed (rx dropped). Send must not crash.
+        let _ = tx.try_send(42);
+    });
+}
