@@ -15,8 +15,8 @@
 //! All task state (flags + refcount) is packed into a single `AtomicUsize`:
 //!
 //! ```text
-//! bits 0-4:   flags (COMPLETED, QUEUED, HAS_JOIN, ABORTED, OUTPUT_TAKEN)
-//! bits 5+:    refcount (shifted by 5)
+//! bits 0-5:   flags (COMPLETED, QUEUED, HAS_JOIN, ABORTED, OUTPUT_TAKEN, SLAB_ALLOCATED)
+//! bits 6+:    refcount (shifted by 6)
 //! ```
 //!
 //! This eliminates the SIGABRT race where `Executor::drop` reads
@@ -66,24 +66,16 @@ const REF_ONE: usize = 1 << 6;
 #[allow(dead_code)]
 const REF_MASK: usize = !FLAG_MASK;
 
-/// Terminal state for Box-allocated tasks.
-const TERMINAL_BOX: usize = COMPLETED;
-/// Terminal state for slab-allocated tasks.
-const TERMINAL_SLAB: usize = COMPLETED | SLAB_ALLOCATED;
+/// Lifecycle flags: must be cleared before a task can reach terminal.
+/// QUEUED: someone needs to pop this task from a queue.
+/// HAS_JOIN: a JoinHandle still exists and must be dropped.
+const LIFECYCLE_MASK: usize = QUEUED | HAS_JOIN;
 
-/// Last-ref-holding state for a Box task: one ref remaining, completed, ready to free.
-/// When ref_dec sees this as `prev`, the fetch_sub produces TERMINAL_BOX.
-const LAST_REF_BOX: usize = REF_ONE | COMPLETED;
-/// Last-ref-holding state for a slab task: one ref remaining, completed, slab flag set.
-/// When ref_dec sees this as `prev`, the fetch_sub produces TERMINAL_SLAB.
-const LAST_REF_SLAB: usize = REF_ONE | COMPLETED | SLAB_ALLOCATED;
-
-/// Pre-completion last-ref state for a Box task (COMPLETED not yet set).
-/// Used by complete_and_unref: after masking out COMPLETED, this means
-/// only one ref and no flags → will produce TERMINAL_BOX.
-const LAST_REF_UNCOMPLETED_BOX: usize = REF_ONE;
-/// Pre-completion last-ref state for a slab task (COMPLETED not yet set).
-const LAST_REF_UNCOMPLETED_SLAB: usize = REF_ONE | SLAB_ALLOCATED;
+/// Inert flags: permanent metadata or historical — don't block terminal.
+/// SLAB_ALLOCATED: permanent, set at spawn.
+/// ABORTED: historical, set on abort — no cleanup gated on clearing it.
+/// OUTPUT_TAKEN: historical, set when output read — same.
+const INERT_MASK: usize = SLAB_ALLOCATED | ABORTED | OUTPUT_TAKEN;
 
 /// What to do when a ref_dec or complete_and_unref produces a terminal state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +123,7 @@ pub(crate) struct Task<S> {
     drop_fn: unsafe fn(*mut u8),
     /// Deallocates the task storage.
     free_fn: unsafe fn(*mut u8),
-    /// Packed state word: flags (bits 0-4) + refcount (bits 5+).
+    /// Packed state word: flags (bits 0-5) + refcount (bits 6+).
     state: AtomicUsize,
     /// Intrusive next pointer for the cross-thread wake queue.
     cross_next: AtomicPtr<u8>,
@@ -443,12 +435,22 @@ pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> FreeAction {
     let state = unsafe { state_ref(ptr) };
     let prev = state.fetch_sub(REF_ONE, Ordering::AcqRel);
     debug_assert!((prev & REF_MASK) >= REF_ONE, "ref_dec on zero refcount");
-    if prev == LAST_REF_BOX {
-        FreeAction::FreeBox
-    } else if prev == LAST_REF_SLAB {
+
+    // Was this the last ref?
+    if (prev & REF_MASK) != REF_ONE {
+        return FreeAction::Retain;
+    }
+
+    // Last ref. Check: COMPLETED must be set, lifecycle flags must be clear.
+    // ABORTED, OUTPUT_TAKEN, SLAB_ALLOCATED are inert — don't block terminal.
+    let flags = prev & FLAG_MASK;
+    if (flags & COMPLETED == 0) || (flags & LIFECYCLE_MASK != 0) {
+        return FreeAction::Retain;
+    }
+    if flags & SLAB_ALLOCATED != 0 {
         FreeAction::FreeSlab
     } else {
-        FreeAction::Retain
+        FreeAction::FreeBox
     }
 }
 
@@ -483,15 +485,20 @@ pub(crate) unsafe fn complete_and_unref(ptr: *mut u8) -> FreeAction {
         (prev & REF_MASK) >= REF_ONE,
         "complete_and_unref on zero refcount"
     );
-    // prev had COMPLETED=0. Terminal if prev had exactly 1 ref and
-    // no transient flags (only possibly SLAB_ALLOCATED which is permanent).
-    let prev_masked = prev & !COMPLETED;
-    if prev_masked == LAST_REF_UNCOMPLETED_BOX {
-        FreeAction::FreeBox
-    } else if prev_masked == LAST_REF_UNCOMPLETED_SLAB {
+    // prev had COMPLETED=0. Last ref if prev had exactly REF_ONE.
+    // Lifecycle flags (QUEUED, HAS_JOIN) must be clear.
+    // Inert flags (ABORTED, OUTPUT_TAKEN, SLAB_ALLOCATED) don't matter.
+    if (prev & REF_MASK) != REF_ONE {
+        return FreeAction::Retain;
+    }
+    let flags = prev & FLAG_MASK;
+    if flags & LIFECYCLE_MASK != 0 {
+        return FreeAction::Retain;
+    }
+    if flags & SLAB_ALLOCATED != 0 {
         FreeAction::FreeSlab
     } else {
-        FreeAction::Retain
+        FreeAction::FreeBox
     }
 }
 
@@ -503,7 +510,9 @@ pub(crate) unsafe fn complete_and_unref(ptr: *mut u8) -> FreeAction {
 #[inline]
 pub(crate) unsafe fn is_terminal(ptr: *mut u8) -> bool {
     let s = unsafe { state_load(ptr) };
-    s == TERMINAL_BOX || s == TERMINAL_SLAB
+    // Strip inert flags (SLAB_ALLOCATED, ABORTED, OUTPUT_TAKEN).
+    // What remains must be exactly COMPLETED with zero refcount.
+    (s & !INERT_MASK) == COMPLETED
 }
 
 /// Read the is_completed flag.
@@ -1117,7 +1126,7 @@ mod tests {
             assert_eq!(action, FreeAction::FreeBox);
 
             let s = state_load(ptr);
-            assert_eq!(s, TERMINAL_BOX, "terminal state must be exactly COMPLETED (1)");
+            assert_eq!(s, COMPLETED, "terminal state must have COMPLETED set");
             assert_eq!(s, 1);
             assert!(is_terminal(ptr));
 
@@ -1163,7 +1172,7 @@ mod tests {
             assert_eq!(action, FreeAction::FreeSlab);
 
             let s = state_load(ptr);
-            assert_eq!(s, TERMINAL_SLAB, "terminal state must be COMPLETED | SLAB_ALLOCATED (33)");
+            assert_eq!(s, COMPLETED | SLAB_ALLOCATED, "terminal state must be COMPLETED | SLAB_ALLOCATED");
             assert_eq!(s, 33);
             assert!(is_terminal(ptr));
 
@@ -1275,9 +1284,9 @@ mod tests {
     #[test]
     fn packed_state_leaked_flag_prevents_terminal() {
         // If HAS_JOIN is NOT cleared before the final ref_dec, the state
-        // won't match LAST_REF_BOX (which requires no transient flags).
-        // Result: Retain (not terminal). This is safe — the flag leak
-        // prevents premature free.
+        // won't reach terminal (HAS_JOIN is a lifecycle flag that blocks it).
+        // Result: Retain. This is safe — the lifecycle flag prevents
+        // premature free.
         struct Noop;
         impl Future for Noop {
             type Output = u64;
@@ -1293,8 +1302,7 @@ mod tests {
             assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
 
             // ref_dec WITHOUT clearing HAS_JOIN → still not terminal
-            // because HAS_JOIN is a transient flag that prevents the
-            // LAST_REF_BOX match.
+            // because HAS_JOIN is a lifecycle flag that blocks terminal.
             assert_eq!(ref_dec(ptr), FreeAction::Retain);
             assert!(!is_terminal(ptr));
 

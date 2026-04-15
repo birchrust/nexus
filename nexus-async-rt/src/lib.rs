@@ -222,10 +222,9 @@ impl Executor {
 
                     // Check if TERMINAL was reached (e.g., cross-thread waker
                     // produced TERMINAL via ref_dec while the task was queued).
+                    // Only TERMINAL tasks go to deferred_free. Completed tasks
+                    // with outstanding refs must NOT be freed prematurely.
                     if unsafe { task::is_terminal(task_ptr) } {
-                        unsafe { &mut *self.deferred_free.get() }.push(task_ptr);
-                    } else if unsafe { task::is_completed(task_ptr) } {
-                        // Completed but not terminal — still has refs or flags.
                         unsafe { &mut *self.deferred_free.get() }.push(task_ptr);
                     } else {
                         unsafe { &mut *self.incoming.get() }.push(task_ptr);

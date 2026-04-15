@@ -226,14 +226,12 @@ unsafe fn cross_task_wake(data: *const ()) {
     let task_ptr = boxed.task_ptr;
     match unsafe { crate::task::ref_dec(task_ptr) } {
         crate::task::FreeAction::Retain => {}
-        crate::task::FreeAction::FreeBox => {
-            // Box-allocated terminal. Free from any thread.
-            unsafe { crate::task::free_task(task_ptr) };
-        }
-        crate::task::FreeAction::FreeSlab => {
-            // Slab-allocated terminal. Can't free here (no slab TLS).
-            // wake_by_ref may have skipped the push (task already completed
-            // when it checked is_completed). Ensure queued for executor cleanup.
+        crate::task::FreeAction::FreeBox | crate::task::FreeAction::FreeSlab => {
+            // Terminal. Route to executor for free + all_tasks bookkeeping.
+            // Can't free cross-thread: all_tasks (slab::Slab) is not thread-safe,
+            // and slab tasks need TLS for deallocation.
+            // wake_by_ref may have already pushed (if task wasn't completed).
+            // try_set_queued prevents double-push.
             if unsafe { crate::task::try_set_queued(task_ptr) } {
                 unsafe { boxed.ctx.queue.push(task_ptr) };
                 if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
@@ -258,13 +256,8 @@ unsafe fn cross_task_drop(data: *const ()) {
     let task_ptr = boxed.task_ptr;
     match unsafe { crate::task::ref_dec(task_ptr) } {
         crate::task::FreeAction::Retain => {}
-        crate::task::FreeAction::FreeBox => {
-            // Box-allocated terminal. Free from any thread.
-            unsafe { crate::task::free_task(task_ptr) };
-        }
-        crate::task::FreeAction::FreeSlab => {
-            // Slab-allocated terminal. Can't free here (no slab TLS).
-            // Route to executor via cross-wake queue.
+        crate::task::FreeAction::FreeBox | crate::task::FreeAction::FreeSlab => {
+            // Terminal. Route to executor — same as cross_task_wake.
             if unsafe { crate::task::try_set_queued(task_ptr) } {
                 unsafe { boxed.ctx.queue.push(task_ptr) };
                 if boxed.ctx.parked.load(std::sync::atomic::Ordering::Acquire) {
