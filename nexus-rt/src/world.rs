@@ -161,7 +161,7 @@ impl std::fmt::Display for ResourceId {
 /// let b = a.next();
 ///
 /// assert!(b > a);
-/// assert_eq!(b.get(), 1);
+/// assert_eq!(b.as_i64(), 1);
 /// assert_eq!(b.elapsed_since(a), 1);
 ///
 /// assert!(Sequence::NULL.is_null());
