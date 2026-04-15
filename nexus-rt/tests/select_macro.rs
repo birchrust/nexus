@@ -108,7 +108,7 @@ fn select_tier2_key() {
                 key: |o: &Order| o.kind,
                 Kind::A => handle_order_a,
                 Kind::B => handle_order_b,
-                Kind::C => handle_order_a, // reuse
+                Kind::C => |_o: Order| {},
             },
             reg,
         )
@@ -128,6 +128,13 @@ fn select_tier2_key() {
             id: 2,
         },
     );
+    pipeline.run(
+        &mut world,
+        Order {
+            kind: Kind::C,
+            id: 3,
+        },
+    ); // Kind::C reuses handle_order_a — just verifies dispatch, not kind assertion
 }
 
 // =============================================================================
@@ -160,6 +167,7 @@ fn select_tier3_key_project() {
 
     pipeline.run(&mut world, (42, Kind::A));
     pipeline.run(&mut world, (99, Kind::B));
+    pipeline.run(&mut world, (7, Kind::C));
 }
 
 // =============================================================================

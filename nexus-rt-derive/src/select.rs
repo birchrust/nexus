@@ -156,8 +156,17 @@ fn emit_handler(input: &SelectInput) -> TokenStream {
 
         if arm.is_default {
             // Default arm — inline directly in the match, no binding.
-            // The handler is a closure |world, input| { ... } called in-place.
-            if has_key {
+            if has_key && has_project {
+                // Tier 3: apply projection to default arm too — consistent
+                // with non-default arms that receive projected input.
+                let proj_fn = input.project_closure.as_ref().unwrap();
+                match_arms.push(quote! {
+                    _ => {
+                        let __projected = (#proj_fn)(__input);
+                        (#handler)(__world, __projected)
+                    }
+                });
+            } else if has_key {
                 match_arms.push(quote! {
                     _ => (#handler)(__world, __input)
                 });
@@ -237,7 +246,16 @@ fn emit_callback(input: &SelectInput) -> TokenStream {
 
         if arm.is_default {
             // Default arm — inline directly, no binding.
-            if has_key {
+            if has_key && has_project {
+                // Tier 3 callback: apply projection to default arm too.
+                let proj_fn = input.project_closure.as_ref().unwrap();
+                match_arms.push(quote! {
+                    _ => {
+                        let __projected = (#proj_fn)(__input);
+                        (#handler)(__ctx, __world, __projected)
+                    }
+                });
+            } else if has_key {
                 match_arms.push(quote! {
                     _ => (#handler)(__ctx, __world, __input)
                 });

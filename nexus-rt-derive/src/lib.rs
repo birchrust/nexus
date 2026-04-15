@@ -700,9 +700,8 @@ fn path_matches(a: &syn::Path, b: &syn::Path) -> bool {
 /// }
 /// ```
 ///
-/// Native `match` guards (`pat if cond => handler`) work in any arm
-/// because the expansion is a real `match`. Or-patterns, literal
-/// patterns, and any other pattern rustc accepts work too.
+/// Or-patterns, literal patterns, and any other pattern rustc accepts
+/// work because the expansion is a real `match`.
 ///
 /// # Three tiers of ceremony
 ///
