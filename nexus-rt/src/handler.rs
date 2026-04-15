@@ -1111,7 +1111,7 @@ mod tests {
     #[test]
     fn seq_reads_current() {
         fn check(seq: Seq, mut out: ResMut<i64>, _event: ()) {
-            *out = seq.get();
+            *out = seq.get().as_i64();
         }
 
         let mut builder = WorldBuilder::new();
@@ -1129,7 +1129,7 @@ mod tests {
         fn stamp(mut seq: SeqMut, mut counter: ResMut<u64>, _event: ()) {
             let a = seq.advance();
             let b = seq.advance();
-            *counter = a.get() as u64 * 100 + b.get() as u64;
+            *counter = a.as_i64() as u64 * 100 + b.as_i64() as u64;
         }
 
         let mut builder = WorldBuilder::new();
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn seq_only_param() {
         fn handle(seq: Seq, _event: ()) {
-            assert!(seq.get() >= 0);
+            assert!(seq.get().as_i64() >= 0);
         }
 
         let builder = WorldBuilder::new();
@@ -1175,7 +1175,7 @@ mod tests {
     #[test]
     fn seq_first_with_res() {
         fn handle(seq: Seq, config: Res<u64>, mut out: ResMut<i64>, _event: ()) {
-            *out = seq.get() + *config as i64;
+            *out = seq.get().as_i64() + *config as i64;
         }
 
         let mut builder = WorldBuilder::new();
@@ -1191,7 +1191,7 @@ mod tests {
     #[test]
     fn seq_middle_position() {
         fn handle(config: Res<u64>, seq: Seq, mut out: ResMut<i64>, _event: ()) {
-            *out = *config as i64 + seq.get();
+            *out = *config as i64 + seq.get().as_i64();
         }
 
         let mut builder = WorldBuilder::new();
@@ -1207,7 +1207,7 @@ mod tests {
     #[test]
     fn seq_last_position() {
         fn handle(mut out: ResMut<i64>, seq: Seq, _event: ()) {
-            *out = seq.get();
+            *out = seq.get().as_i64();
         }
 
         let mut builder = WorldBuilder::new();

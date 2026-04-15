@@ -161,7 +161,7 @@ impl std::fmt::Display for ResourceId {
 /// let b = a.next();
 ///
 /// assert!(b > a);
-/// assert_eq!(b.get(), 1);
+/// assert_eq!(b.as_i64(), 1);
 /// assert_eq!(b.elapsed_since(a), 1);
 ///
 /// assert!(Sequence::NULL.is_null());
@@ -190,11 +190,19 @@ impl Sequence {
         Self(value)
     }
 
+    /// Create a sequence from a raw `i64` value.
+    ///
+    /// Symmetric with [`as_i64`](Self::as_i64). Use for wire protocol
+    /// deserialization.
+    pub const fn from_i64(value: i64) -> Self {
+        Self(value)
+    }
+
     /// Returns the raw `i64` value.
     ///
     /// Use for logging, metrics, serialization, or passing to external
     /// systems.
-    pub const fn get(self) -> i64 {
+    pub const fn as_i64(self) -> i64 {
         self.0
     }
 
