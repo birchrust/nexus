@@ -615,3 +615,17 @@ writing the steps inline -- verified by the
 
 No allocation per dispatch. No vtable lookup. One function call
 that inlines to the sequence of steps.
+
+## Need Per-Instance State?
+
+This document covers `PipelineBuilder` — pipelines composed from
+`Handler`-style functions where state lives in the World.
+
+If each step needs access to per-instance context (a session ID, a
+retry counter, a connection handle), use `CtxPipelineBuilder` instead.
+It's the parallel API for callbacks, threading `&mut C` through every
+step. See [callbacks.md — Callback Pipelines](callbacks.md#callback-pipelines-ctxpipeline)
+for the full guide.
+
+Same combinator names, same builder pattern, same monomorphization —
+just with a context parameter threaded through.

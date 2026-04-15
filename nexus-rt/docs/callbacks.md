@@ -276,6 +276,247 @@ fn build_callback(ctx: u64, reg: &Registry) -> impl Handler<()> + use<> {
 }
 ```
 
+## Callback Pipelines (CtxPipeline)
+
+Callbacks have their own pipeline builder: `CtxPipelineBuilder`. It mirrors
+the regular `PipelineBuilder` but threads `&mut C` (the callback's context)
+through every step. Each step function takes the context FIRST, then
+resources, then the input.
+
+This is the parallel of the regular [pipelines.md](pipelines.md), but for
+context-owning steps. Use it when a multi-stage processing chain needs
+per-instance state at each step.
+
+### Step function convention
+
+```
+context first → params → input last
+fn step(ctx: &mut C, res: Res<T>, input: In) -> Out
+```
+
+Just like callbacks, only named functions work for arity ≥1. Arity-0
+closures (context + input only) work everywhere.
+
+### A complete callback pipeline
+
+```rust
+use nexus_rt::{
+    CtxPipelineBuilder, IntoCallback, Res, ResMut, Resource, WorldBuilder, Handler,
+};
+
+#[derive(Resource, Default)]
+struct OrderLog { count: u64 }
+
+#[derive(Resource)]
+struct RiskLimits { max_qty: u64 }
+
+#[derive(Clone, Copy)]
+struct RawOrder { qty: u64, price: f64 }
+
+#[derive(Clone, Copy)]
+struct ValidatedOrder { qty: u64, price: f64 }
+
+// Per-session context — holds state across pipeline runs
+struct SessionCtx {
+    session_id: u32,
+    orders_seen: u64,
+    last_price: f64,
+}
+
+// Step 1: validate against per-session state and risk limits
+fn validate(
+    ctx: &mut SessionCtx,
+    risk: Res<RiskLimits>,
+    order: RawOrder,
+) -> Option<ValidatedOrder> {
+    ctx.orders_seen += 1;
+    if order.qty > risk.max_qty { return None; }
+    Some(ValidatedOrder { qty: order.qty, price: order.price })
+}
+
+// Step 2: tap to update per-session state (no transformation)
+fn track_last_price(ctx: &mut SessionCtx, order: &ValidatedOrder) {
+    ctx.last_price = order.price;
+}
+
+// Step 3: persist to log (terminal — returns ())
+fn record(_ctx: &mut SessionCtx, mut log: ResMut<OrderLog>, _order: ValidatedOrder) {
+    log.count += 1;
+}
+
+// The callback function builds and runs the pipeline.
+// We have to embed it in a callback because the pipeline needs &mut Ctx.
+fn run_session_pipeline(
+    ctx: &mut SessionCtx,
+    world_input: (RawOrder, &mut nexus_rt::World),
+) {
+    // Note: in real use, the world+input are typically threaded via
+    // a Callback wrapping the pipeline — see "Wiring it up" below.
+    let _ = (ctx, world_input);
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(OrderLog::default());
+wb.register(RiskLimits { max_qty: 1000 });
+let mut world = wb.build();
+let reg = world.registry();
+
+// Build the pipeline. CtxPipelineBuilder takes no registry at construction
+// time; combinators take it the same way as normal PipelineBuilder.
+let mut pipeline = CtxPipelineBuilder::<SessionCtx, RawOrder>::new()
+    .then(validate, reg)        // Option<ValidatedOrder>
+    .map(|_ctx: &mut SessionCtx, v: ValidatedOrder| v, reg)  // unwrap-style passthrough
+    // .tap is a ref-step: takes &Out, no transformation
+    // (skipping for brevity — see ctx_pipeline source for full combinator list)
+    .build();
+
+// Run it manually — the pipeline takes (&mut Ctx, &mut World, In)
+let mut ctx = SessionCtx { session_id: 1, orders_seen: 0, last_price: 0.0 };
+pipeline.run(&mut ctx, &mut world, RawOrder { qty: 100, price: 50.0 });
+```
+
+### Wiring a CtxPipeline into a Callback
+
+The most common pattern: wrap a `CtxPipeline` inside a `Callback` so the
+runtime treats it as a regular `Handler<E>`. The callback owns the
+context AND the pipeline; its handler function dispatches into the
+pipeline:
+
+```rust
+use nexus_rt::{CtxPipeline, IntoCallback, Handler};
+
+// (Define the pipeline as above — let's call it `OrderPipeline`)
+type OrderPipeline = nexus_rt::CtxPipeline<SessionCtx, RawOrder, /* chain type */ ()>;
+
+struct SessionState {
+    pipeline: OrderPipeline,
+    ctx: SessionCtx,
+}
+
+// In practice you build one of these per session and store it in a
+// HashMap<SessionId, SessionState>, then dispatch incoming orders
+// to the right session.
+```
+
+For the full ergonomic pattern, use a `Callback` whose context IS the
+session state, and whose function body invokes the pipeline:
+
+```rust
+fn handle_order(state: &mut SessionState, order: RawOrder) {
+    // Pipeline run requires &mut World — see the runtime poll loop
+    // for how to get one. Inside a Handler<E>::run, you have it.
+}
+```
+
+### Combinators available on CtxPipeline
+
+All the same names as `PipelineBuilder`, with `&mut C` threaded through:
+
+- `.then(f, reg)` — transform with context
+- `.guard(pred, reg)` — filter; pred is `&mut C, &Out -> bool`
+- `.tap(observer, reg)` — side effect on `&Out` with context
+- `.map(f, reg)` — transform `Option<T>` inner value
+- `.and_then(f, reg)` — short-circuit `Option<T>`
+- `.catch(f, reg)` — handle `Result<T, E>` error path
+- `.map_err(f, reg)` — transform error type
+- `.build()` — terminal (when `Out = ()` or `Out = Option<()>`)
+
+Some combinators from `PipelineBuilder` are not yet on `CtxPipeline`
+(`scan`, `dispatch`, `route`, `tee`, `splat`, bool combinators, etc.).
+They can be added when a use case needs them.
+
+---
+
+## Callback DAGs (CtxDag)
+
+For fan-out + merge with per-instance context, use `CtxDagBuilder`. It
+mirrors the regular `DagBuilder` (see [dag.md](dag.md)) but threads
+`&mut C` through every arm and the merge function.
+
+### A complete callback DAG
+
+```rust
+use nexus_rt::{CtxDagBuilder, Res, ResMut, Resource, WorldBuilder};
+
+#[derive(Resource, Default)]
+struct Stats { trades: u64, vwap_pv: f64, vwap_qty: u64 }
+
+#[derive(Clone, Copy)]
+struct Trade { price: f64, qty: u64, symbol_id: u32 }
+
+// Per-instrument context
+struct InstrumentCtx {
+    symbol_id: u32,
+    last_price: f64,
+    trade_count: u64,
+}
+
+// Root: take the trade by value, return it to propagate
+fn receive_trade(_ctx: &mut InstrumentCtx, trade: Trade) -> Trade {
+    trade
+}
+
+// Arm 1: extract price for downstream mid calc
+fn extract_price(ctx: &mut InstrumentCtx, trade: &Trade) -> f64 {
+    ctx.last_price = trade.price;
+    trade.price
+}
+
+// Arm 2: extract notional (price * qty) for VWAP
+fn extract_notional(_ctx: &mut InstrumentCtx, trade: &Trade) -> (f64, u64) {
+    (trade.price * trade.qty as f64, trade.qty)
+}
+
+// Merge: combine arm outputs and update both stats and per-instrument ctx
+fn update_all(
+    ctx: &mut InstrumentCtx,
+    mut stats: ResMut<Stats>,
+    price: &f64,
+    notional: &(f64, u64),
+) {
+    ctx.trade_count += 1;
+    stats.trades += 1;
+    stats.vwap_pv += notional.0;
+    stats.vwap_qty += notional.1;
+    let _ = price;
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(Stats::default());
+let mut world = wb.build();
+let reg = world.registry();
+
+let mut dag = CtxDagBuilder::<InstrumentCtx, Trade>::new()
+    .root(receive_trade, reg)
+    .fork()
+        .arm(|seed| seed.then(extract_price, reg))
+        .arm(|seed| seed.then(extract_notional, reg))
+    .join(update_all, reg)
+    .build();
+
+let mut ctx = InstrumentCtx { symbol_id: 42, last_price: 0.0, trade_count: 0 };
+dag.run(&mut ctx, &mut world, Trade { price: 100.0, qty: 50, symbol_id: 42 });
+
+assert_eq!(ctx.trade_count, 1);
+assert_eq!(world.resource::<Stats>().trades, 1);
+```
+
+### When to use CtxDag vs CtxPipeline
+
+Same decision as for handlers (see [dag.md](dag.md)):
+
+- **CtxPipeline** — linear flow, context threaded through stages
+- **CtxDag** — one input fans out to multiple branches, all needing the
+  same context, results merged downstream
+
+### Wiring a CtxDag into a Callback
+
+Same pattern as CtxPipeline: wrap the dag + context in a `Callback` so
+the runtime sees a `Handler<E>`. The callback's function dispatches into
+`dag.run(&mut ctx, &mut world, event)`.
+
+---
+
 ## Named Functions Only
 
 The same HRTB limitation as `IntoHandler` applies: closures with resource

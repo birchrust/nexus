@@ -63,6 +63,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | Crate | Description |
 |-------|-------------|
 | [**nexus-rt**](./nexus-rt) | Event-driven runtime. World/ECS resource model, handler dispatch, pipelines, DAGs, driver system, clock. No async/await — explicit poll loops with monomorphized zero-cost dispatch. |
+| [**nexus-async-rt**](./nexus-async-rt) | Single-threaded async executor for nexus-rt applications. Slab-allocated tasks, zero-allocation waker vtable, mio-backed IO driver, timer wheel, signal handling. Optional tokio compatibility layer for bridging cold-path operations. Use when you need `.await` on top of nexus-rt. |
 
 ### Monitoring & Flow Control
 

@@ -18,6 +18,7 @@ Event-driven runtime with zero-cost dispatch.
 - [Reactors](reactors.md) — Interest-based dynamic dispatch (feature: reactors)
 - [Templates](templates.md) — Stamping handlers from blueprints
 - [Drivers](drivers.md) — The installer/poller pattern for IO and timers
+- [Writing Your Own Driver](writing-drivers.md) — Implementing custom drivers, the self-referential dispatch problem, take/return and deferred-operations patterns
 - [Clock](clock.md) — Time sources: realtime, test, historical
 - [Poll Loop](poll-loop.md) — Building your event loop
 - [Testing Guide](testing-guide.md) — TestHarness, TestTimerDriver, deterministic replay

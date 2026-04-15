@@ -324,8 +324,24 @@ to exclude the registry borrow.
 
 ---
 
+## Need Per-Instance State?
+
+This document covers `DagBuilder` — DAGs composed from `Handler`-style
+functions where state lives in the World.
+
+If each arm needs access to per-instance context (per-instrument state,
+per-session counters, per-connection metadata), use `CtxDagBuilder`
+instead. It's the parallel API for callbacks, threading `&mut C` through
+every arm and the merge function. See
+[callbacks.md — Callback DAGs](callbacks.md#callback-dags-ctxdag) for the
+full guide.
+
+Same fork/arm/join structure, same builder pattern, same monomorphization
+— just with a context parameter threaded through every step.
+
 ## See Also
 
 - [pipelines.md](pipelines.md) — Linear processing chains
 - [handlers.md](handlers.md) — Writing the functions used as arms and merges
-- [callbacks.md](callbacks.md) — When you need per-instance state
+- [callbacks.md](callbacks.md) — When you need per-instance state, including
+  CtxPipeline and CtxDag (the callback parallels of Pipeline and Dag)

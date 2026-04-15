@@ -1,0 +1,97 @@
+# Overview
+
+`nexus-stats-core` provides the foundation types of the nexus-stats ecosystem: error types, math utilities, and the most-used streaming primitives. It was factored out from the umbrella `nexus-stats` crate so that downstream crates (`nexus-stats-smoothing`, `nexus-stats-detection`, `nexus-stats-regression`, `nexus-stats-control`) can share a minimal common base.
+
+Most end users should depend on `nexus-stats` directly (which re-exports everything) rather than this crate.
+
+## Design Conventions
+
+Every streaming type in this crate follows the same shape:
+
+```rust
+use nexus_stats_core::statistics::WelfordF64;
+
+let mut w = WelfordF64::new();
+w.update(100.5)?;           // O(1), Result for NaN/Inf
+w.update(99.8)?;
+if w.is_primed() {
+    let mean = w.mean().unwrap();
+    let var  = w.variance().unwrap();
+}
+w.reset();
+```
+
+- **`update(sample)` → `Result<_, DataError>`** for float types. NaN/Inf inputs return an error. The caller decides whether to propagate, log, or swallow.
+- **`is_primed()` / `count()` / `reset()`** on every type.
+- **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
+- **`f64` and `f32` variants** for most types. Pick based on memory and SIMD needs.
+- **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmaVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, SlewLimiter) have a plain `new`.
+
+## Error Types
+
+Two error enums live at the crate root:
+
+```rust
+pub enum DataError {
+    NotANumber,      // input was NaN
+    Infinite,        // input was +Inf / -Inf
+    // ...
+}
+
+pub enum ConfigError {
+    Invalid(&'static str), // builder validation failed
+    // ...
+}
+```
+
+- `DataError` comes out of `update` on float types. Programmer policy: propagate, log, or discard.
+- `ConfigError` comes out of `new` / `build` when parameters are nonsensical (`halflife <= 0`, `alpha > 1`, etc.). Surface it at boot, not on the hot path.
+
+## Module Layout
+
+- `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, OnlineCovariance, HarmonicMean, Percentile, BucketAccumulator, AmihudF64, HitRate, HalfLife, HurstF64, VarianceRatio.
+- `nexus_stats_core::smoothing` — `EmaF64`, `EmaF32`, `EmaI64`, `EmaI32`, `AsymEmaF64`, `AsymEmaI64`, `SlewLimiterF64`, `SlewLimiterI64`.
+- `nexus_stats_core::monitoring` — Drawdown, RunningMax/Min, WindowedMax/Min (several time types), PeakHold, MaxGauge, Liveness, EventRate, CoDel, Saturation, ErrorRate, Jitter.
+- `nexus_stats_core::detection` — CUSUM, DistributionShift.
+- `nexus_stats_core::control` — DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff.
+
+Everything is namespaced by submodule. Import paths look like:
+
+```rust
+use nexus_stats_core::statistics::WelfordF64;
+use nexus_stats_core::smoothing::EmaF64;
+use nexus_stats_core::detection::CusumF64;
+use nexus_stats_core::monitoring::WindowedMaxF64;
+use nexus_stats_core::control::DeadBandF64;
+```
+
+## Performance
+
+O(1) per update, fixed memory, no allocation. Cycle counts are in the tens for the cheap types (Welford, EMA, DeadBand, RunningMax) and low-hundreds for the window-based types. See umbrella `nexus-stats/docs/reference/performance.md` for benchmark data.
+
+## no_std Story
+
+All types work in `no_std` with `libm`. The windowed monitoring types additionally require `alloc`.
+
+```toml
+[dependencies]
+nexus-stats-core = { version = "*", default-features = false, features = ["libm"] }
+# or with alloc
+nexus-stats-core = { version = "*", default-features = false, features = ["libm", "alloc"] }
+```
+
+Time-aware types (`Liveness`, `EventRate`, `CoDel`, `Windowed*`) offer both `Instant`-based versions (require `std`) and raw `u64`/`i64` timestamp versions that work in `no_std`.
+
+## Integer Variants
+
+For latency-critical hot paths where float ops are cycles you don't have, integer variants exist for the cheap primitives:
+
+- `EmaI64`, `EmaI32`, `AsymEmaI64`, `SlewLimiterI64`
+- `DeadBandI64`, `HysteresisI64`, `LevelCrossingI64`, `FirstDiffI64`, `SecondDiffI64`
+- `RunningMaxI64`, `RunningMinI64`, `WindowedMaxI64`, `WindowedMinI64`
+
+Integer types use fixed-point arithmetic internally and typically do not return `Result` from `update` because there's no NaN to worry about.
+
+## Re-exports
+
+If you depend on `nexus-stats` (the umbrella), everything in this crate is re-exported. Depend on `nexus-stats-core` directly only when you want nothing else in the family.
