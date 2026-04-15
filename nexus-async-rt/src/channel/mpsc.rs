@@ -106,6 +106,17 @@ impl RxWakerSlot {
     fn has_waker(&self) -> bool {
         self.state.load(Ordering::Acquire) == STORED
     }
+
+    fn clear(&self) {
+        if self
+            .state
+            .compare_exchange(STORED, EMPTY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.task_ptr
+                .store(std::ptr::null_mut(), Ordering::Release);
+        }
+    }
 }
 
 // =============================================================================
@@ -597,6 +608,12 @@ unsafe impl<T: Send> Send for Receiver<T> {}
 /// Future returned by [`Receiver::recv`].
 pub struct RecvFut<'a, T> {
     receiver: &'a Receiver<T>,
+}
+
+impl<T> Drop for RecvFut<'_, T> {
+    fn drop(&mut self) {
+        self.receiver.inner.rx_slot.clear();
+    }
 }
 
 impl<T: Send> Future for RecvFut<'_, T> {

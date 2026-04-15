@@ -1088,4 +1088,273 @@ mod tests {
             free_task(ptr);
         }
     }
+
+    // =========================================================================
+    // Packed state word — SIGABRT root cause regression tests
+    // =========================================================================
+
+    #[test]
+    fn packed_state_fire_and_forget_terminal() {
+        // Box task with 1 ref (no JoinHandle). complete_and_unref → FreeBox.
+        // Verify terminal state is exactly TERMINAL_BOX (1).
+        struct Noop;
+        impl Future for Noop {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+                Poll::Ready(())
+            }
+        }
+
+        let task = Box::new(Task::new_boxed(Noop, 0));
+        let ptr = Box::into_raw(task) as *mut u8;
+
+        unsafe {
+            assert_eq!(ref_count(ptr), 1);
+            assert!(!has_join(ptr));
+
+            drop_task_future(ptr);
+            let action = complete_and_unref(ptr);
+            assert_eq!(action, FreeAction::FreeBox);
+
+            let s = state_load(ptr);
+            assert_eq!(s, TERMINAL_BOX, "terminal state must be exactly COMPLETED (1)");
+            assert_eq!(s, 1);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_slab_flag_terminal() {
+        // Task with SLAB_ALLOCATED set. complete_and_unref → FreeSlab.
+        // Verify terminal state is exactly TERMINAL_SLAB (33).
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        // Use new_joinable_slab to get SLAB_ALLOCATED flag set at construction.
+        // Provide a free_fn that does Box dealloc (we box it manually below).
+        type Storage = FutureOrOutput<Noop, u64>;
+        unsafe fn slab_free(ptr: *mut u8) {
+            let layout = std::alloc::Layout::new::<Task<Storage>>();
+            std::alloc::dealloc(ptr, layout);
+        }
+
+        let task = new_joinable_slab(Noop, 0, slab_free);
+        let ptr = Box::into_raw(Box::new(task)) as *mut u8;
+
+        unsafe {
+            assert_eq!(ref_count(ptr), 2); // executor + JoinHandle
+            assert!(has_join(ptr));
+
+            // Simulate handle detach: clear HAS_JOIN + ref_dec
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 1);
+
+            // Executor completes task
+            drop_task_future(ptr);
+            let action = complete_and_unref(ptr);
+            assert_eq!(action, FreeAction::FreeSlab);
+
+            let s = state_load(ptr);
+            assert_eq!(s, TERMINAL_SLAB, "terminal state must be COMPLETED | SLAB_ALLOCATED (33)");
+            assert_eq!(s, 33);
+            assert!(is_terminal(ptr));
+
+            slab_free(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_joinable_handle_drops_first() {
+        // Joinable task (2 refs + HAS_JOIN). Handle drops first:
+        // clear HAS_JOIN → ref_dec → 1 ref remaining.
+        // Then complete_and_unref → terminal.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            assert_eq!(ref_count(ptr), 2);
+            assert!(has_join(ptr));
+
+            // Handle drops: clear HAS_JOIN, ref_dec
+            clear_has_join(ptr);
+            assert!(!has_join(ptr));
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 1);
+            assert!(!is_terminal(ptr));
+
+            // Executor completes
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_joinable_completion_first_then_handle() {
+        // Joinable task. Completion fires first (Retain because 2 refs).
+        // Then handle clears HAS_JOIN + ref_dec → FreeBox.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // complete_and_unref: sets COMPLETED, dec ref → 1 ref remains
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+            assert!(is_completed(ptr));
+            assert_eq!(ref_count(ptr), 1);
+
+            // Handle drops: clear HAS_JOIN, ref_dec → terminal
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_waker_clone_lifecycle() {
+        // Joinable task (2 refs). Waker clone adds 3rd ref.
+        // complete_and_unref → Retain (2 refs remain, HAS_JOIN still set).
+        // Handle drops (clear HAS_JOIN + ref_dec) → Retain (1 ref from waker).
+        // Waker drops (ref_dec) → FreeBox.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // Waker clone: ref_inc
+            ref_inc(ptr);
+            assert_eq!(ref_count(ptr), 3);
+
+            // Executor completes: complete_and_unref
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 2);
+
+            // Handle drops: clear HAS_JOIN, ref_dec
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 1);
+
+            // Waker drops: ref_dec → terminal
+            assert_eq!(ref_dec(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_leaked_flag_prevents_terminal() {
+        // If HAS_JOIN is NOT cleared before the final ref_dec, the state
+        // won't match LAST_REF_BOX (which requires no transient flags).
+        // Result: Retain (not terminal). This is safe — the flag leak
+        // prevents premature free.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // complete_and_unref with 2 refs → Retain
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+
+            // ref_dec WITHOUT clearing HAS_JOIN → still not terminal
+            // because HAS_JOIN is a transient flag that prevents the
+            // LAST_REF_BOX match.
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert!(!is_terminal(ptr));
+
+            // State is COMPLETED | HAS_JOIN | 0 refs — leaked but safe.
+            // In real code this can't happen (JoinHandle::Drop always
+            // clears HAS_JOIN), but the packed state correctly prevents
+            // a free even if it did.
+            let s = state_load(ptr);
+            assert_eq!(s & COMPLETED, COMPLETED);
+            assert_eq!(s & HAS_JOIN, HAS_JOIN);
+            assert_eq!(ref_count(ptr), 0);
+
+            // Clean up: manually clear HAS_JOIN to reach terminal, then free.
+            clear_has_join(ptr);
+            assert!(is_terminal(ptr));
+            free_task(ptr);
+        }
+    }
+
+    #[test]
+    fn packed_state_many_refs_converge() {
+        // Clone waker 10 times (ref_inc 10x), complete, then ref_dec 10x.
+        // Only the last ref_dec returns FreeBox. All others Retain.
+        struct Noop;
+        impl Future for Noop {
+            type Output = u64;
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u64> {
+                Poll::Ready(42)
+            }
+        }
+
+        let ptr = box_spawn_joinable(Noop, 0);
+        unsafe {
+            // 10 waker clones: ref 2 → 12
+            for _ in 0..10 {
+                ref_inc(ptr);
+            }
+            assert_eq!(ref_count(ptr), 12);
+
+            // Executor completes: ref 12 → 11
+            drop_task_future(ptr);
+            assert_eq!(complete_and_unref(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 11);
+
+            // Handle drops: clear HAS_JOIN, ref_dec → 10
+            clear_has_join(ptr);
+            assert_eq!(ref_dec(ptr), FreeAction::Retain);
+            assert_eq!(ref_count(ptr), 10);
+
+            // Drop 9 waker refs — all Retain
+            for i in 0..9 {
+                assert_eq!(ref_dec(ptr), FreeAction::Retain, "ref_dec #{i} should Retain");
+            }
+            assert_eq!(ref_count(ptr), 1);
+
+            // Last waker drop → FreeBox
+            assert_eq!(ref_dec(ptr), FreeAction::FreeBox);
+            assert!(is_terminal(ptr));
+
+            free_task(ptr);
+        }
+    }
 }

@@ -88,6 +88,17 @@ impl RxWakerSlot {
     fn has_waker(&self) -> bool {
         self.state.load(Ordering::Acquire) == STORED
     }
+
+    fn clear(&self) {
+        if self
+            .state
+            .compare_exchange(STORED, EMPTY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.task_ptr
+                .store(std::ptr::null_mut(), Ordering::Release);
+        }
+    }
 }
 
 struct FallbackWaker {
@@ -517,6 +528,12 @@ impl Receiver {
 /// Future returned by [`Receiver::recv`].
 pub struct RecvFut<'a> {
     receiver: &'a mut Receiver,
+}
+
+impl Drop for RecvFut<'_> {
+    fn drop(&mut self) {
+        self.receiver.inner.rx_slot.clear();
+    }
 }
 
 impl<'a> Future for RecvFut<'a> {
