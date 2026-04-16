@@ -1473,6 +1473,37 @@ impl<C, In, Chain: CtxChainCall<C, In, Out = ()>> CtxPipeline<C, In, Chain> {
 }
 
 // =============================================================================
+// resolve_ctx_step — free function for select! macro dispatch arms
+// =============================================================================
+
+/// Pre-resolve a context-aware step function against a [`Registry`].
+///
+/// Returns a closure `FnMut(&mut C, &mut World, In) -> Out` that can be
+/// called directly without per-call registry lookup. Used by the
+/// [`select!`](crate::select) macro to build monomorphized dispatch arms.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut arm = resolve_ctx_step::<SessionCtx, _, _, _, _>(on_new_order, &reg);
+/// // Later, in a match arm:
+/// arm(&mut ctx, &mut world, order);
+/// ```
+pub fn resolve_ctx_step<C, In, Out, Params, S>(
+    f: S,
+    registry: &Registry,
+) -> impl FnMut(&mut C, &mut World, In) -> Out + use<C, In, Out, Params, S>
+where
+    C: 'static,
+    In: 'static,
+    Out: 'static,
+    S: IntoCtxStep<C, In, Out, Params>,
+{
+    let mut resolved = f.into_ctx_step(registry);
+    move |ctx: &mut C, world: &mut World, input: In| resolved.call(ctx, world, input)
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

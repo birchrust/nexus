@@ -629,3 +629,142 @@ for the full guide.
 
 Same combinator names, same builder pattern, same monomorphization —
 just with a context parameter threaded through.
+
+---
+
+## Dispatching by Discriminant — `select!`
+
+When a pipeline step needs to route to one of N handlers based on a
+runtime enum discriminant, the manual pattern requires `resolve_step`
+per arm plus a match closure:
+
+```rust
+let mut arm_a = resolve_step(handle_new, reg);
+let mut arm_b = resolve_step(handle_cancel, reg);
+pipeline.then(move |world: &mut World, order: Order| {
+    match order.kind {
+        OrderKind::New    => arm_a(world, order),
+        OrderKind::Cancel => arm_b(world, order),
+    }
+}, reg)
+```
+
+The `select!` macro eliminates this boilerplate while preserving
+exhaustiveness checking, jump table optimization, and monomorphization:
+
+### Tier 1 — Match on the input directly
+
+```rust
+pipeline.then(
+    select! {
+        reg,
+        OrderKind::New    => handle_new,
+        OrderKind::Cancel => handle_cancel,
+        OrderKind::Amend  => handle_amend,
+    },
+    reg,
+)
+```
+
+Each arm is pre-resolved via `resolve_step` at construction. The
+expansion is a literal `match` — rustc enforces exhaustiveness and
+LLVM emits a jump table for dense enums.
+
+### Tier 2 — Extract a key, arms receive the full input
+
+When the input is a struct and you match on a field:
+
+```rust
+pipeline.then(
+    select! {
+        reg,
+        key: |o: &Order| o.kind,
+        OrderKind::New    => handle_new_order,
+        OrderKind::Cancel => handle_cancel_order,
+    },
+    reg,
+)
+```
+
+The `key:` closure extracts the discriminant from `&input`. Each arm
+receives the full `Order` by value. The closure must have a type
+annotation on its parameter (rustc needs it for field resolution).
+
+### Tier 3 — Key + projection
+
+When the input is a composite and the arms should receive a projected
+subset:
+
+```rust
+pipeline.then(
+    select! {
+        reg,
+        key:     |(_, ct): &(AdminEvent, CommandType)| *ct,
+        project: |(event, _)| event,
+        CommandType::RouteAway       => handle_route_away,
+        CommandType::SuspendStrategy => handle_suspend,
+        _ => |_w, (e, ct)| log::error!("unsupported {:?} id={}", ct, e.id),
+    },
+    reg,
+)
+```
+
+The `project:` closure maps the raw pipeline input into whatever each
+**named** arm receives. Named arms need this adaptation because they
+have fixed signatures — `handle_route_away` was declared elsewhere
+as `fn(ResMut<State>, AdminEvent)` and expects `AdminEvent`, not
+`(AdminEvent, CommandType)`.
+
+The **default arm** is different. It's an inline closure written at
+the `select!` site, with no pre-existing signature to adapt to, so it
+always receives the **raw** pipeline input (pre-projection) — even in
+tier 3. In the example above, the default sees `(AdminEvent,
+CommandType)` and can log both the event id and the unsupported
+discriminant `ct`. If you wanted the projected form instead, you can
+apply the projection manually inside the closure:
+
+```rust
+_ => |_w, input| {
+    let e = input.0;  // manual projection
+    log::error!("unsupported id={}", e.id);
+},
+```
+
+The asymmetry exists because the projection serves a specific
+purpose: adapting pipeline input to the fixed signatures of named
+functions. Default arms don't need that adaptation, and forcing
+projection on them would discard the discriminant — exactly the piece
+of information diagnostic logs typically need.
+
+### Default arms
+
+Optional. If present, must be last. Always receives the raw pipeline
+input (see tier 3 explanation above for the rationale). If omitted,
+rustc enforces exhaustiveness on the named arm patterns — a missing
+variant is a compile error.
+
+An inline arity-0 closure works as a non-default arm too, if you need
+a no-op or simple handler without naming a function:
+
+```rust
+select! {
+    reg,
+    key: |o: &Order| o.kind,
+    OrderKind::New    => handle_new,
+    OrderKind::Cancel => |_o: Order| {},  // inline no-op
+    OrderKind::Amend  => handle_amend,
+}
+```
+
+Inline closure arms participate in `resolve_step` just like named
+functions — they must implement `IntoStep`, which arity-0 closures do
+via the blanket `FnMut` impl.
+
+### Performance
+
+Zero overhead. The expansion is identical to the hand-written
+`resolve_step` + match pattern. The dispatch compiles to the same
+jump table as a hand-written `match` on the discriminant. To verify
+yourself for a given enum, see `examples/select_asm_check.rs` and
+inspect with `cargo asm -p nexus-rt --release --example
+select_asm_check 'select_asm_check::dispatch_select'`.
