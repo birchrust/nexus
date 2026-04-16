@@ -155,18 +155,16 @@ fn emit_handler(input: &SelectInput) -> TokenStream {
         let handler = &arm.handler;
 
         if arm.is_default {
-            // Default arm — inline directly in the match, no binding.
-            if has_key && has_project {
-                // Tier 3: apply projection to default arm too — consistent
-                // with non-default arms that receive projected input.
-                let proj_fn = input.project_closure.as_ref().unwrap();
-                match_arms.push(quote! {
-                    _ => {
-                        let __projected = (#proj_fn)(__input);
-                        (#handler)(__world, __projected)
-                    }
-                });
-            } else if has_key {
+            // Default arm — inline directly, no binding. Always receives
+            // the raw pipeline input, even in tier 3. Rationale: named arms
+            // get projected input because they have fixed signatures the
+            // projection adapts to. Default arms are user-written inline
+            // closures with no pre-existing signature, so there's no reason
+            // to force the projection on them — and doing so would discard
+            // the discriminant the user typically wants for diagnostic logs.
+            // The user can always apply the projection manually inside the
+            // default closure if they want the projected form.
+            if has_key {
                 match_arms.push(quote! {
                     _ => (#handler)(__world, __input)
                 });
@@ -245,17 +243,11 @@ fn emit_callback(input: &SelectInput) -> TokenStream {
         let handler = &arm.handler;
 
         if arm.is_default {
-            // Default arm — inline directly, no binding.
-            if has_key && has_project {
-                // Tier 3 callback: apply projection to default arm too.
-                let proj_fn = input.project_closure.as_ref().unwrap();
-                match_arms.push(quote! {
-                    _ => {
-                        let __projected = (#proj_fn)(__input);
-                        (#handler)(__ctx, __world, __projected)
-                    }
-                });
-            } else if has_key {
+            // Default arm — inline directly, no binding. Always receives
+            // the raw pipeline input, even in tier 3. See emit_handler for
+            // the full rationale; the callback form preserves the same
+            // contract for consistency across handler and callback modes.
+            if has_key {
                 match_arms.push(quote! {
                     _ => (#handler)(__ctx, __world, __input)
                 });

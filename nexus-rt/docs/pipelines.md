@@ -709,15 +709,56 @@ pipeline.then(
 )
 ```
 
-The `project:` closure maps the input to what each arm receives.
-The default arm (`_ =>`) is a bare closure called inline — no
-`resolve_step`, no resource resolution.
+The `project:` closure maps the raw pipeline input into whatever each
+**named** arm receives. Named arms need this adaptation because they
+have fixed signatures — `handle_route_away` was declared elsewhere
+as `fn(ResMut<State>, AdminEvent)` and expects `AdminEvent`, not
+`(AdminEvent, CommandType)`.
+
+The **default arm** is different. It's an inline closure written at
+the `select!` site, with no pre-existing signature to adapt to, so it
+always receives the **raw** pipeline input (pre-projection) — even in
+tier 3. In the example above, the default sees `(AdminEvent,
+CommandType)` and can log both the event id and the unsupported
+discriminant `ct`. If you wanted the projected form instead, you can
+apply the projection manually inside the closure:
+
+```rust
+_ => |_w, input| {
+    let e = input.0;  // manual projection
+    log::error!("unsupported id={}", e.id);
+},
+```
+
+The asymmetry exists because the projection serves a specific
+purpose: adapting pipeline input to the fixed signatures of named
+functions. Default arms don't need that adaptation, and forcing
+projection on them would discard the discriminant — exactly the piece
+of information diagnostic logs typically need.
 
 ### Default arms
 
-Optional. If present, must be last. Receives the full input (or
-projected input in tier 3). If omitted, rustc enforces exhaustiveness
-— a missing variant is a compile error.
+Optional. If present, must be last. Always receives the raw pipeline
+input (see tier 3 explanation above for the rationale). If omitted,
+rustc enforces exhaustiveness on the named arm patterns — a missing
+variant is a compile error.
+
+An inline arity-0 closure works as a non-default arm too, if you need
+a no-op or simple handler without naming a function:
+
+```rust
+select! {
+    reg,
+    key: |o: &Order| o.kind,
+    OrderKind::New    => handle_new,
+    OrderKind::Cancel => |_o: Order| {},  // inline no-op
+    OrderKind::Amend  => handle_amend,
+}
+```
+
+Inline closure arms participate in `resolve_step` just like named
+functions — they must implement `IntoStep`, which arity-0 closures do
+via the blanket `FnMut` impl.
 
 ### Performance
 

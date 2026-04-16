@@ -186,7 +186,7 @@ fn select_tier3_default() {
                 key:     |(_, k): &(u64, Kind)| *k,
                 project: |(id, _)| id,
                 Kind::A => process_id,
-                _ => |_w, _input| { /* default */ },
+                _ => |_w, _input: (u64, Kind)| { /* default — sees raw input */ },
             },
             reg,
         )
@@ -194,6 +194,53 @@ fn select_tier3_default() {
 
     pipeline.run(&mut world, (42, Kind::A));
     pipeline.run(&mut world, (42, Kind::B));
+}
+
+// =============================================================================
+// Tier 3 — default arm sees the RAW input (pre-projection)
+// =============================================================================
+//
+// Contract: named arms get the projected value (to match their fixed
+// signatures), but the default arm is an inline user closure with no
+// pre-existing signature, so it receives the raw pipeline input and can
+// access the discriminant for diagnostic logging. This test locks in
+// that contract so it can't regress silently.
+
+#[test]
+fn select_tier3_default_receives_raw_input() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static OBSERVED_ID: AtomicU64 = AtomicU64::new(0);
+    static OBSERVED_KIND: AtomicU64 = AtomicU64::new(99);
+
+    let mut world = WorldBuilder::new().build();
+    let reg = world.registry();
+
+    let mut pipeline = PipelineBuilder::<(u64, Kind)>::new()
+        .then(
+            select! {
+                reg,
+                key:     |(_, k): &(u64, Kind)| *k,
+                project: |(id, _)| id,
+                Kind::A => process_id,
+                _ => |_w, (id, kind): (u64, Kind)| {
+                    OBSERVED_ID.store(id, Ordering::SeqCst);
+                    OBSERVED_KIND.store(kind as u64, Ordering::SeqCst);
+                },
+            },
+            reg,
+        )
+        .build();
+
+    // Dispatch with Kind::B — goes to default — must see raw (17, Kind::B).
+    pipeline.run(&mut world, (17, Kind::B));
+    assert_eq!(OBSERVED_ID.load(Ordering::SeqCst), 17);
+    assert_eq!(OBSERVED_KIND.load(Ordering::SeqCst), Kind::B as u64);
+
+    // Different discriminant: must still be seen raw.
+    pipeline.run(&mut world, (23, Kind::C));
+    assert_eq!(OBSERVED_ID.load(Ordering::SeqCst), 23);
+    assert_eq!(OBSERVED_KIND.load(Ordering::SeqCst), Kind::C as u64);
 }
 
 // =============================================================================
